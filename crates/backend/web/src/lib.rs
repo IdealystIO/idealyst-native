@@ -40,9 +40,7 @@ mod a11y;
 mod animated;
 mod batch_queue;
 mod introspect;
-#[cfg(feature = "new-core")]
 pub mod newcore;
-#[cfg(all(feature = "new-core", feature = "prim-navigator"))]
 mod newcore_url_sync;
 #[cfg(test)]
 mod tests;
@@ -66,7 +64,6 @@ pub mod render_loop;
 pub mod scheduler;
 mod style;
 pub mod time_source;
-#[cfg(feature = "prim-navigator")]
 pub mod url_provider;
 mod viewport_observer;
 
@@ -87,7 +84,7 @@ pub use viewport_observer::{install_viewport_observer, page_is_prerendered, ssr_
 /// Install a `Weak` self-handle for the active `WebBackend`. Required
 /// by any code path that needs `&mut WebBackend` from outside the
 /// build walker:
-///  - [`AnimatedValue::bind`](runtime_core::animation::AnimatedValue::bind)
+///  - [`AnimatedValue::bind`](runtime_shared::animation::AnimatedValue::bind)
 ///    and friends (per-frame animation writes from author closures).
 ///  - The batched text-update microtask flush
 ///    ([`Backend::create_text_with_id`] / [`Backend::update_text_by_id`]).
@@ -119,7 +116,7 @@ pub fn install_global_self(backend: &std::rc::Rc<std::cell::RefCell<WebBackend>>
 /// next frame).
 pub fn set_animated_f32(
     node: &web_sys::Node,
-    prop: runtime_core::animation::AnimProp,
+    prop: runtime_shared::animation::AnimProp,
     value: f32,
 ) {
     // Clone the `Weak` inside the closure so the thread-local borrow
@@ -131,8 +128,7 @@ pub fn set_animated_f32(
     let Some(weak) = weak else { return };
     let Some(rc) = weak.upgrade() else { return };
     if let Ok(mut b) = rc.try_borrow_mut() {
-        use runtime_core::Backend;
-        b.set_animated_f32(node, prop, value);
+        b.set_animated_f32_impl(node, prop, value);
     };
 }
 
@@ -141,15 +137,14 @@ pub fn set_animated_f32(
 /// `[r, g, b, a]` with channels in `0..=1`.
 pub fn set_animated_color(
     node: &web_sys::Node,
-    prop: runtime_core::animation::AnimProp,
+    prop: runtime_shared::animation::AnimProp,
     value: [f32; 4],
 ) {
     let weak = WEB_BACKEND_HANDLE.with(|s| s.borrow().clone());
     let Some(weak) = weak else { return };
     let Some(rc) = weak.upgrade() else { return };
     if let Ok(mut b) = rc.try_borrow_mut() {
-        use runtime_core::Backend;
-        b.set_animated_color(node, prop, value);
+        b.set_animated_color_impl(node, prop, value);
     };
 }
 
@@ -279,11 +274,11 @@ pub fn with_ambient_backend<R>(f: impl FnOnce(&mut WebBackend) -> R) -> Option<R
     Some(f(&mut b))
 }
 
-use runtime_core::{
-    AssetId, AssetSource, AssetTag, Backend, ButtonHandle, StyleRules, SystemFallback,
+use runtime_shared::{
+    AssetId, AssetSource, AssetTag, ButtonHandle, StyleRules, SystemFallback,
     TypefaceFace, TypefaceId,
 };
-use runtime_core::{FxHashMap, FxHashSet};
+use runtime_shared::{FxHashMap, FxHashSet};
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -293,7 +288,6 @@ use web_sys::{Document, Node};
 /// on each navigator container. Returns `None` when `node` isn't an
 /// Element or the attribute isn't present — every Backend trait nav
 /// method gracefully no-ops in that case.
-#[cfg(feature = "prim-navigator")]
 fn nav_id_from_node(node: &Node) -> Option<u32> {
     let elem: web_sys::Element = node.clone().dyn_into().ok()?;
     elem.get_attribute("data-navigator-id")?.parse().ok()
@@ -303,29 +297,15 @@ fn nav_id_from_node(node: &Node) -> Option<u32> {
 /// SDK handler is registered for the given node. Keeps the
 /// fallback handle inert without depending on the helpers crate
 /// (which would be circular: helpers depends on backend-web).
-#[cfg(feature = "prim-navigator")]
 struct NoopNavOps;
-#[cfg(feature = "prim-navigator")]
-impl runtime_core::primitives::navigator::NavigatorOps for NoopNavOps {}
-#[cfg(feature = "prim-navigator")]
+impl runtime_shared::primitives::navigator::NavigatorOps for NoopNavOps {}
 static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
 
-#[cfg(feature = "prim-navigator")]
-thread_local! {
-    /// Counter for backend-assigned navigator ids (backend-neutral handlers
-    /// that don't stamp their own `data-navigator-id`). Based high so it can't
-    /// collide with the low, per-instance ids the `web-navigator-helpers` crate
-    /// stamps for the legacy handlers.
-    static BACKEND_NAV_ID: std::cell::Cell<u32> = const { std::cell::Cell::new(1_000_000) };
-}
-#[cfg(feature = "prim-navigator")]
-fn next_backend_nav_id() -> u32 {
-    BACKEND_NAV_ID.with(|c| {
-        let id = c.get();
-        c.set(id + 1);
-        id
-    })
-}
+// NOTE: the `BACKEND_NAV_ID` counter and `next_backend_nav_id()` lived here
+// to keep backend-assigned navigator ids from colliding with the low ids the
+// `web-navigator-helpers` crate stamped for the legacy handlers. Both that
+// crate and those handlers went with the runtime-v2 deletion, leaving the
+// counter with nothing to avoid and no call sites, so it was removed.
 
 pub struct WebBackend {
     pub(crate) doc: Document,
@@ -405,7 +385,6 @@ pub struct WebBackend {
     /// Has the virtualizer JS shim been injected? First Virtualizer
     /// creation injects `runtime/js/virtualizer.js` into a
     /// `<script>` tag in the document head.
-    #[cfg(feature = "prim-virtualizer")]
     pub(crate) virtualizer_shim_injected: bool,
     /// Has the local-render batch executor (`runtime/js/batch.js`)
     /// been injected? First batched `Element::Repeat` triggers
@@ -520,7 +499,6 @@ pub struct WebBackend {
     /// queued-but-not-yet-fired JS callbacks from reaching a
     /// freed-Signal arena slot after the surrounding scope has
     /// dropped.
-    #[cfg(feature = "prim-virtualizer")]
     pub(crate) virtualizer_instances: FxHashMap<u32, primitives::virtualizer::VirtualizerInstance>,
     /// Monotonic id counter for virtualizer containers, written as
     /// `data-virtualizer-id` on the container `<div>`. Same trick as
@@ -529,14 +507,12 @@ pub struct WebBackend {
     /// which gets cleared by `on_node_unstyled` before our cleanup
     /// hook runs (style effects drop before the virtualizer cleanup
     /// effect within a single `Scope::drop` batch).
-    #[cfg(feature = "prim-virtualizer")]
     pub(crate) next_virtualizer_id: u32,
     /// Per-Graphics-canvas runtime state — wgpu device, user closures,
     /// pending-paint flag, etc. Keyed by node id so `make_handle` can
     /// look up the matching instance after `create`. The `Rc` is the
     /// shared owner; the handle wraps the same Rc so `request_redraw`
     /// reaches the scheduler with no backend round-trip.
-    #[cfg(feature = "prim-graphics")]
     pub(crate) graphics_instances:
         FxHashMap<u32, std::rc::Rc<std::cell::RefCell<primitives::graphics::GraphicsInstance>>>,
     /// Monotonic id counter for Graphics canvases. Written as the
@@ -545,7 +521,6 @@ pub struct WebBackend {
     /// fresh `&Node` after the create call returned. Distinct from
     /// per-Node ids (those live in a JS-side `WeakMap` keyed by
     /// DOM identity; see [`WebBackend::node_id`]).
-    #[cfg(feature = "prim-graphics")]
     pub(crate) next_graphics_id: u32,
     /// Shared `<style>` element holding every active CSS rule.
     pub(crate) style_element: Option<web_sys::HtmlStyleElement>,
@@ -563,7 +538,7 @@ pub struct WebBackend {
     /// Populated by `register_stylesheet` alongside the content-keyed
     /// `pregen` map. Cleared on `unregister_stylesheet` /
     /// theme change.
-    pub(crate) pregen_by_ptr: FxHashMap<*const runtime_core::StyleRules, String>,
+    pub(crate) pregen_by_ptr: FxHashMap<*const runtime_shared::StyleRules, String>,
     /// Per-node dynamic class slot — `node_id -> (class_name, content_key)`.
     /// At most one dynamic class per node. Replaced atomically when
     /// the node's resolved style changes.
@@ -598,7 +573,7 @@ pub struct WebBackend {
     /// dereference; (b) the `RESOLUTION_CACHE` keeps the Rc alive
     /// for as long as its content is reachable, which is at least
     /// as long as we hold any `DynamicSlot` referencing it.
-    pub(crate) dynamic_by_ptr: FxHashMap<*const runtime_core::StyleRules, std::rc::Rc<DynamicPtrEntry>>,
+    pub(crate) dynamic_by_ptr: FxHashMap<*const runtime_shared::StyleRules, std::rc::Rc<DynamicPtrEntry>>,
     /// Indices in the shared `<style>` sheet that previously held a
     /// dynamic rule and are now available for re-use. See
     /// `insert_rule` / `delete_rule` in [`crate::style`] — instead
@@ -636,12 +611,10 @@ pub struct WebBackend {
     /// instance entry in `release_portal` is what frees the
     /// JS-side closures and prevents late-firing events from
     /// reaching a freed `Signal` slot.
-    #[cfg(feature = "prim-portal")]
     pub(crate) portal_instances: primitives::portal::PortalInstances,
     /// Monotonic id counter for portals. Same pattern as
     /// `next_navigator_id` — stamped as `data-portal-id` on the
     /// portal root.
-    #[cfg(feature = "prim-portal")]
     pub(crate) next_portal_id: u32,
     /// Asset id → resolved URL. Filled by `register_asset`; queried
     /// by `register_typeface` (for the `@font-face` `src: url(...)`)
@@ -657,22 +630,12 @@ pub struct WebBackend {
     /// `@font-face` rules emitted at registration. Lets
     /// `unregister_typeface` reclaim the slots through the regular
     /// `delete_rule` recycle path.
-    pub(crate) font_face_rule_indices: runtime_core::collections::SmallIdMap<TypefaceId, Vec<u32>>,
-    /// Registry of third-party `Element::External` handlers,
-    /// populated by `register_external::<T>(...)` calls from
-    /// per-platform leaf crates (e.g. `idealyst-maps-web::register`).
-    /// `create_external` looks the handler up by payload TypeId;
-    /// unregistered kinds fall through to a "not supported" placeholder.
-    pub(crate) external_handlers:
-        runtime_core::ExternalRegistry<WebBackend>,
+    pub(crate) font_face_rule_indices: runtime_shared::collections::SmallIdMap<TypefaceId, Vec<u32>>,
     /// Registry of `Element::Navigator` handler factories,
     /// populated by `register_navigator::<P, _>(...)` calls from
     /// SDK leaf crates (e.g. `stack_navigator::register`).
     /// `create_navigator` looks the factory up by presentation
     /// TypeId; unregistered kinds panic at create time.
-    #[cfg(feature = "prim-navigator")]
-    pub(crate) navigator_handlers:
-        runtime_core::NavigatorRegistry<WebBackend>,
     /// Per-navigator-instance SDK handler. Keyed by the navigator id
     /// stamped on the container's `data-navigator-id` attribute.
     /// `Backend::create_navigator` resolves the factory, runs `init`,
@@ -686,9 +649,6 @@ pub struct WebBackend {
     /// independent handle out of the map, drop the map borrow, then
     /// call `&mut B`-taking methods on the handler without
     /// double-borrowing `self`.
-    #[cfg(feature = "prim-navigator")]
-    pub(crate) nav_handler_instances:
-        FxHashMap<u32, std::rc::Rc<std::cell::RefCell<Box<dyn runtime_core::NavigatorHandler<WebBackend>>>>>,
     /// Per-node animated-property state. Tracks the most recent
     /// values written via `Backend::set_animated_f32` /
     /// `set_animated_color` so compound properties like CSS
@@ -774,24 +734,7 @@ pub(crate) struct DynamicRule {
     pub(crate) state_rule_indices: Vec<u32>,
 }
 
-/// An inventory-collected external registrar. An SDK's web module
-/// `inventory::submit!`s one of these (carrying a `fn(&mut WebBackend)`);
-/// [`WebBackend::new`] drains them so the SDK self-registers its
-/// `Element::External` handler without the app naming the concrete backend
-/// per platform. Survives the release `wasm-opt -Oz` pass (it's a code
-/// fn-pointer, not prunable data). See [[project_inventory_self_registration]].
-pub struct WebExternalRegistrar(pub fn(&mut WebBackend));
-inventory::collect!(WebExternalRegistrar);
 
-/// An inventory-collected navigator registrar — the navigator analogue of
-/// [`WebExternalRegistrar`]. A navigator SDK's web module `inventory::submit!`s
-/// one (carrying a `fn(&mut WebBackend)`); [`WebBackend::new`] drains it so the
-/// app needn't call `<nav>::register` per platform.
-/// See [[project_inventory_self_registration]].
-#[cfg(feature = "prim-navigator")]
-pub struct WebNavigatorRegistrar(pub fn(&mut WebBackend));
-#[cfg(feature = "prim-navigator")]
-inventory::collect!(WebNavigatorRegistrar);
 
 impl WebBackend {
     /// Constructs a backend that will mount its root under `mount_selector`
@@ -806,7 +749,7 @@ impl WebBackend {
     ///
     /// PREREQUISITE for a clean adoption: the first client render must
     /// match the server render. The viewport is the main divergence — seed
-    /// `runtime_core::set_viewport_size(...)` with the SSR-assumed viewport
+    /// `runtime_shared::set_viewport_size(...)` with the SSR-assumed viewport
     /// (see `data-ssr-viewport` / [`ssr_viewport`](crate::ssr_viewport))
     /// BEFORE `mount`, then `install_viewport_observer()` AFTER so the real
     /// viewport drives a reactive update post-adoption.
@@ -1183,22 +1126,6 @@ impl WebBackend {
         }
     }
 
-    /// Install every SDK-submitted external handler. SDKs `inventory::submit!`
-    /// a [`WebExternalRegistrar`] from their web module; this drains them at
-    /// construction so the app needn't call `sdk::register` per platform. The
-    /// submitted statics survive the release `wasm-opt -Oz` pass — they carry a
-    /// function pointer (code), not the prunable string data the catalog uses.
-    /// See [[project_inventory_self_registration]].
-    fn drain_self_registrars(&mut self) {
-        for r in inventory::iter::<WebExternalRegistrar> {
-            (r.0)(self);
-        }
-        #[cfg(feature = "prim-navigator")]
-        for r in inventory::iter::<WebNavigatorRegistrar> {
-            (r.0)(self);
-        }
-    }
-
     pub fn new(mount_selector: &str) -> Self {
         let window = web_sys::window().expect("no window");
         let doc = window.document().expect("no document");
@@ -1245,7 +1172,6 @@ impl WebBackend {
             _touch_closures: Vec::new(),
             state_listeners: FxHashMap::default(),
             spinner_keyframes_injected: false,
-            #[cfg(feature = "prim-virtualizer")]
             virtualizer_shim_injected: false,
             batch_shim_injected: false,
             batch_fn: None,
@@ -1279,13 +1205,9 @@ impl WebBackend {
                 "__idealystReleaseClassBindingsBatch",
             ),
             next_class_binding_id: 0,
-            #[cfg(feature = "prim-virtualizer")]
             virtualizer_instances: FxHashMap::default(),
-            #[cfg(feature = "prim-virtualizer")]
             next_virtualizer_id: 0,
-            #[cfg(feature = "prim-graphics")]
             graphics_instances: FxHashMap::default(),
-            #[cfg(feature = "prim-graphics")]
             next_graphics_id: 0,
             style_element: None,
             pregen: FxHashMap::default(),
@@ -1297,58 +1219,15 @@ impl WebBackend {
             theme_root_rule_index: None,
             app_bg_rule_index: None,
             scrollbar_rule_indices: Vec::new(),
-            #[cfg(feature = "prim-portal")]
             portal_instances: FxHashMap::default(),
-            #[cfg(feature = "prim-portal")]
             next_portal_id: 0,
             asset_urls: FxHashMap::default(),
             blob_asset_urls: FxHashSet::default(),
-            font_face_rule_indices: runtime_core::collections::SmallIdMap::new(),
-            external_handlers: runtime_core::ExternalRegistry::new(),
-            #[cfg(feature = "prim-navigator")]
-            navigator_handlers: runtime_core::NavigatorRegistry::new(),
-            #[cfg(feature = "prim-navigator")]
-            nav_handler_instances: FxHashMap::default(),
+            font_face_rule_indices: runtime_shared::collections::SmallIdMap::new(),
             animated_states: FxHashMap::default(),
             introspection_roots: js_sys::Set::new(&wasm_bindgen::JsValue::UNDEFINED),
         };
-        backend.drain_self_registrars();
         backend
-    }
-
-    /// Register a handler for the third-party external primitive
-    /// whose payload type is `T`. Called by per-platform leaf crates
-    /// (e.g. `idealyst_maps_web::register`) during app bootstrap. The
-    /// handler receives the typed payload + a mutable borrow of the
-    /// backend and produces the `web_sys::Element` to mount.
-    ///
-    /// The backend's `Node` type is `web_sys::Node` (the supertype);
-    /// we wrap the user's `Element`-returning handler to upcast,
-    /// so third-party code can return the natural type without
-    /// thinking about the Node/Element distinction.
-    pub fn register_external<T, F>(&mut self, handler: F)
-    where
-        T: 'static,
-        F: Fn(&std::rc::Rc<T>, &mut WebBackend) -> web_sys::Element + 'static,
-    {
-        self.external_handlers
-            .register::<T, _>(move |props, backend| handler(props, backend).into());
-    }
-
-    /// Register a navigator-kind handler factory for the per-backend
-    /// `NavigatorRegistry`. SDK leaf crates (`stack_navigator::register`,
-    /// `tab_navigator::register`, etc.) call this once per app
-    /// bootstrap. `P` is the SDK's presentation payload type; the
-    /// factory produces a fresh handler per
-    /// `Element::Navigator { type_id: TypeId::of::<P>(), .. }`
-    /// mounted in the tree.
-    #[cfg(feature = "prim-navigator")]
-    pub fn register_navigator<P, F>(&mut self, factory: F)
-    where
-        P: 'static,
-        F: Fn() -> Box<dyn runtime_core::NavigatorHandler<WebBackend>> + 'static,
-    {
-        self.navigator_handlers.register::<P, _>(factory);
     }
 
     /// Register a signal with the JS-side reactive layer so its
@@ -1386,7 +1265,7 @@ impl WebBackend {
                  to use register_signal_for_js",
             );
         let stringifier = std::rc::Rc::new(stringifier);
-        runtime_core::register_signal_js_notifier(sid_raw, move || {
+        runtime_shared::register_signal_js_notifier(sid_raw, move || {
             let value = stringifier();
             if let Some(rc) = weak.upgrade() {
                 rc.borrow_mut().ship_signal_change_to_js(sid_raw, &value);
@@ -1437,7 +1316,7 @@ impl WebBackend {
     /// Effect, no per-leaf wasm crossing on fan-out.
     ///
     /// - `text_id`         : the id returned by
-    ///                       [`Backend::create_text_with_id`](runtime_core::Backend::create_text_with_id).
+    ///                       [`Backend::create_text_with_id`](runtime_shared::Backend::create_text_with_id).
     /// - `signal_ids`      : signal raw ids (`Signal::id()`) the
     ///                       binding interpolates, in template-slot
     ///                       order.
@@ -1453,7 +1332,7 @@ impl WebBackend {
     ///
     /// Each signal in `signal_ids` should have a JS-side notifier
     /// installed by the time this returns; the
-    /// [`runtime_core::Backend::register_reactive_text_binding`]
+    /// [`runtime_shared::Backend::register_reactive_text_binding`]
     /// trait method that wraps this passes `stringifiers` and we
     /// auto-register a notifier per signal here (only if one isn't
     /// already installed — preserves notifiers a class-binding may
@@ -1493,7 +1372,7 @@ impl WebBackend {
         // notifier still calls `__idealystOnSignalChanged`, which
         // the text dispatcher taps regardless of who installed it.
         for (sid, stringifier) in signal_ids.iter().zip(stringifiers.iter()) {
-            if !runtime_core::signal_has_js_notifier(*sid) {
+            if !runtime_shared::signal_has_js_notifier(*sid) {
                 let stringifier = stringifier.clone();
                 self.register_signal_for_js(*sid, move || stringifier());
             }
@@ -1633,7 +1512,7 @@ impl WebBackend {
             .with(|s| s.borrow().clone())
             .expect("WEB_BACKEND_HANDLE must be set when class-binding path is active");
         let reader = value_reader.clone();
-        runtime_core::register_signal_js_notifier(signal_id, move || {
+        runtime_shared::register_signal_js_notifier(signal_id, move || {
             let value = reader();
             if let Some(rc) = weak.upgrade() {
                 rc.borrow_mut()
@@ -1760,19 +1639,12 @@ impl WebBackend {
             .with(|s| s.borrow().clone())
             .expect("WEB_BACKEND_HANDLE must be set when batched text path is active");
         let flag = self.text_queue.flush_flag();
-        runtime_core::schedule_microtask(move || {
+        runtime_shared::schedule_microtask(move || {
             flag.set(false);
             if let Some(rc) = weak.upgrade() {
                 rc.borrow_mut().flush_pending_text();
             }
         });
-    }
-
-    /// `true` if a handler for payload type `T` has been registered.
-    /// Useful for opt-in graceful degradation in user code (render a
-    /// static image if the SDK isn't available on this platform).
-    pub fn has_external<T: 'static>(&self) -> bool {
-        self.external_handlers.has::<T>()
     }
 
     /// Diagnostic: snapshot of all the per-node HashMaps the backend
@@ -1900,7 +1772,7 @@ impl WebBackend {
             .with(|s| s.borrow().clone())
             .expect("WEB_BACKEND_HANDLE must be set when batched class path is active");
         let flag = self.class_queue.flush_flag();
-        runtime_core::schedule_microtask(move || {
+        runtime_shared::schedule_microtask(move || {
             // Clear the flag BEFORE flushing so updates produced
             // during the flush (re-entrant signal writes) re-schedule
             // a fresh microtask rather than being dropped.
@@ -2035,7 +1907,7 @@ impl WebBackend {
     /// list differs (3 args vs 5).
     pub(crate) fn execute_batch_inner(
         &mut self,
-        batch: runtime_core::BackendBatch,
+        batch: runtime_shared::BackendBatch,
         attach: Option<(&mut web_sys::Node, &[u32])>,
     ) -> Vec<web_sys::Node> {
         use js_sys::Array;
@@ -2079,10 +1951,10 @@ impl WebBackend {
         let mut string_count: u32 = 0;
         for op in batch.ops.iter() {
             match op {
-                runtime_core::BatchOp::CreateView { local_id } => {
+                runtime_shared::BatchOp::CreateView { local_id } => {
                     u32s.extend_from_slice(&[0, *local_id, 0, 0]);
                 }
-                runtime_core::BatchOp::CreateText { local_id, content } => {
+                runtime_shared::BatchOp::CreateText { local_id, content } => {
                     if string_count > 0 {
                         strings.push('\0');
                     }
@@ -2090,7 +1962,7 @@ impl WebBackend {
                     u32s.extend_from_slice(&[1, *local_id, 0, string_count]);
                     string_count += 1;
                 }
-                runtime_core::BatchOp::ApplyStyleStatic {
+                runtime_shared::BatchOp::ApplyStyleStatic {
                     node,
                     class_name,
                     rules: _,
@@ -2102,7 +1974,7 @@ impl WebBackend {
                     u32s.extend_from_slice(&[2, *node, 0, string_count]);
                     string_count += 1;
                 }
-                runtime_core::BatchOp::Insert { parent, child } => {
+                runtime_shared::BatchOp::Insert { parent, child } => {
                     u32s.extend_from_slice(&[3, *parent, *child, 0]);
                 }
             }
@@ -2162,29 +2034,18 @@ impl WebBackend {
 // Keep this thin — anything substantial belongs in the primitive's file.
 // ---------------------------------------------------------------------------
 
-/// Backend-neutral external registration (the `RegisterExternal` trait)
-/// so SDKs can `register<B: RegisterExternal>(b)` without naming
-/// `WebBackend`. Forwards to the same `external_handlers` registry as the
-/// inherent `register_external`; here the handler returns `Self::Node`
-/// (a `Node`) directly — the generic-handler shape.
-impl runtime_core::RegisterExternal for WebBackend {
-    fn register_external<T, F>(&mut self, handler: F)
-    where
-        T: 'static,
-        F: Fn(&std::rc::Rc<T>, &mut WebBackend) -> Node + 'static,
-    {
-        self.external_handlers.register::<T, _>(handler);
-    }
-}
+// The backend mechanism, as inherent methods (runtime v2: the `Backend`
+// mega-trait is gone). Bodies are verbatim what the trait impl carried;
+// `newcore.rs` adapts them onto `runtime_scene::Host` + the
+// `runtime_vocabulary::caps::*Ops` capability traits, one delegation per
+// method. `_impl` suffix keeps the adapter's call sites unambiguous.
+impl WebBackend {
 
-impl Backend for WebBackend {
-    type Node = Node;
-
-    fn platform(&self) -> runtime_core::Platform {
-        runtime_core::Platform::Web
+    pub(crate) fn platform_impl(&self) -> runtime_shared::Platform {
+        runtime_shared::Platform::Web
     }
 
-    fn attach_html_class(&self, node: &Self::Node, class: &str) {
+    pub(crate) fn attach_html_class_impl(&self, node: &Node, class: &str) {
         // `classList.add` (not `className =`) so a preminted/structural
         // class composes with classes the style engine or hydration
         // already stamped. Idempotent on hydration re-adoption.
@@ -2193,11 +2054,11 @@ impl Backend for WebBackend {
         }
     }
 
-    fn supports_preminted_styles(&self) -> bool {
+    pub(crate) fn supports_preminted_styles_impl(&self) -> bool {
         true
     }
 
-    fn apply_default_text_font(&mut self, font: Option<&runtime_core::FontFamily>) {
+    pub(crate) fn apply_default_text_font_impl(&mut self, font: Option<&runtime_shared::FontFamily>) {
         // Inline custom property on `<html>` — wins over any stylesheet
         // `:root` definition and needs no rule bookkeeping. Preminted
         // rule bodies read it via `var(--iy-default-font, inherit)`.
@@ -2225,22 +2086,11 @@ impl Backend for WebBackend {
     // the robot bridge can call it (no extra feature); only the introspect
     // phase-timer inside auto-stubs out without `debug-stats`. See
     // `introspect.rs`.
-    fn supports_native_introspection(&self) -> bool {
+    pub(crate) fn supports_native_introspection_impl(&self) -> bool {
         true
     }
 
-    fn introspect_native(
-        &self,
-        node: &Self::Node,
-    ) -> Option<runtime_core::introspect::NativeNode> {
-        self.introspect_native_impl(node)
-    }
-
-    fn note_introspection_root(&self, node: &Self::Node) {
-        self.note_introspection_root_impl(node);
-    }
-
-    fn url_opener(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {
+    pub(crate) fn url_opener_impl(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {
         // `_blank` opens a new tab. Without a target the navigation
         // replaces the current document, which unmounts the framework
         // — `open_url` is for *leaving* to an external page, so a new
@@ -2253,7 +2103,7 @@ impl Backend for WebBackend {
         }))
     }
 
-    fn fullscreen_setter(&self) -> Option<std::rc::Rc<dyn Fn(bool)>> {
+    pub(crate) fn fullscreen_setter_impl(&self) -> Option<std::rc::Rc<dyn Fn(bool)>> {
         // Best-effort Fullscreen API. `requestFullscreen` MUST be called
         // from a user-gesture event handler or the browser rejects it
         // (the returned Promise rejects) — a `set_fullscreen(true)` fired
@@ -2273,10 +2123,10 @@ impl Backend for WebBackend {
         }))
     }
 
-    fn color_scheme(&self) -> runtime_core::ColorScheme {
+    pub(crate) fn color_scheme_impl(&self) -> runtime_shared::ColorScheme {
         let window = match self.doc.default_view() {
             Some(w) => w,
-            None => return runtime_core::ColorScheme::Auto,
+            None => return runtime_shared::ColorScheme::Auto,
         };
         let prefers_dark = window
             .match_media("(prefers-color-scheme: dark)")
@@ -2291,24 +2141,24 @@ impl Backend for WebBackend {
             .map(|mql| mql.matches())
             .unwrap_or(false);
         if prefers_dark {
-            runtime_core::ColorScheme::Dark
+            runtime_shared::ColorScheme::Dark
         } else if prefers_light {
-            runtime_core::ColorScheme::Light
+            runtime_shared::ColorScheme::Light
         } else {
-            runtime_core::ColorScheme::Auto
+            runtime_shared::ColorScheme::Auto
         }
     }
 
-    fn create_view(
+    pub(crate) fn create_view_impl(
         &mut self,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
         let node = primitives::view::create(self);
         a11y::apply(&node, a11y, None);
         node
     }
 
-    fn create_element(&mut self, tag: &str) -> Self::Node {
+    pub(crate) fn create_element_impl(&mut self, tag: &str) -> Node {
         // Cursor-aware: during hydration, adopt the matching SSR element
         // (so an External handler built through the Backend reuses the
         // server's DOM rather than bypassing it via raw `web_sys`).
@@ -2324,7 +2174,7 @@ impl Backend for WebBackend {
         node
     }
 
-    fn is_hydrating(&self) -> bool {
+    pub(crate) fn is_hydrating_impl(&self) -> bool {
         #[cfg(feature = "hydrate")]
         {
             self.hydrating
@@ -2339,14 +2189,14 @@ impl Backend for WebBackend {
     /// by `Element::Lazy`'s web handler to give the placeholder
     /// container a stable id the chunk's `mount_chunk` can root its
     /// own `WebBackend` against.
-    fn attach_html_id(&self, node: &Self::Node, id: &str) {
+    pub(crate) fn attach_html_id_impl(&self, node: &Node, id: &str) {
         use wasm_bindgen::JsCast;
         if let Some(el) = node.dyn_ref::<web_sys::Element>() {
             let _ = el.set_attribute("id", id);
         }
     }
 
-    fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
+    pub(crate) fn attach_html_style_impl(&self, node: &Node, prop: &str, value: &str) {
         use wasm_bindgen::JsCast;
         // `set_property` handles CSS custom properties (`--drawer-width`)
         // and normal declarations alike, and merges into the element's
@@ -2358,15 +2208,15 @@ impl Backend for WebBackend {
         }
     }
 
-    fn create_reactive_anchor(&mut self) -> Self::Node {
+    pub(crate) fn create_reactive_anchor_impl(&mut self) -> Node {
         primitives::view::create_reactive_anchor(self)
     }
 
-    fn create_text(
+    pub(crate) fn create_text_impl(
         &mut self,
         content: &str,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
         let node = primitives::text::create(self, content);
         // Text role has no first-class ARIA equivalent — the helper
         // emits nothing for it. Hint/identifier/live_region still apply.
@@ -2374,31 +2224,31 @@ impl Backend for WebBackend {
         node
     }
 
-    fn create_styled_text(
+    pub(crate) fn create_styled_text_impl(
         &mut self,
-        runs: &[runtime_core::TextRun],
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        runs: &[runtime_shared::TextRun],
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
         let node = primitives::text::create_styled(self, runs);
         a11y::apply(&node, a11y, None);
         node
     }
 
-    fn update_styled_text(&mut self, node: &Self::Node, runs: &[runtime_core::TextRun]) {
+    pub(crate) fn update_styled_text_impl(&mut self, node: &Node, runs: &[runtime_shared::TextRun]) {
         // Never called on theme swaps (the cohort driver
         // short-circuits on cascade-capable backends — run colors are
         // `var()` refs); kept for direct callers.
         primitives::text::update_styled(self, node, runs);
     }
 
-    fn create_button(
+    pub(crate) fn create_button_impl(
         &mut self,
         label: &str,
-        on_click: &runtime_core::Action,
-        leading_icon: Option<&runtime_core::IconData>,
-        trailing_icon: Option<&runtime_core::IconData>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        on_click: &runtime_shared::Action,
+        leading_icon: Option<&runtime_shared::IconData>,
+        trailing_icon: Option<&runtime_shared::IconData>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
         let node =
             primitives::button::create(self, label, on_click.fire.clone(), leading_icon, trailing_icon);
         // `<button>` has implicit ARIA role; skip inferring one so we
@@ -2408,55 +2258,55 @@ impl Backend for WebBackend {
         node
     }
 
-    fn create_pressable(
+    pub(crate) fn create_pressable_impl(
         &mut self,
         on_click: Rc<dyn Fn()>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
         let node = primitives::pressable::create(self, on_click);
         // Pressable is a `<div>` with click — explicit `role="button"`
         // is what tells the AX walker it's interactive.
         a11y::apply(
             &node,
             a11y,
-            Some(runtime_core::accessibility::Role::Button),
+            Some(runtime_shared::accessibility::Role::Button),
         );
         node
     }
 
-    fn install_touch_handler(
+    pub(crate) fn install_touch_handler_impl(
         &mut self,
-        node: &Self::Node,
-        handler: runtime_core::TouchHandler,
+        node: &Node,
+        handler: runtime_shared::TouchHandler,
     ) {
         primitives::touch::install(self, node, handler);
     }
 
-    fn install_wheel_handler(
+    pub(crate) fn install_wheel_handler_impl(
         &mut self,
-        node: &Self::Node,
-        handler: runtime_core::WheelHandler,
+        node: &Node,
+        handler: runtime_shared::WheelHandler,
     ) {
         primitives::wheel::install(self, node, handler);
     }
 
-    fn install_hover_handler(
+    pub(crate) fn install_hover_handler_impl(
         &mut self,
-        node: &Self::Node,
-        handler: runtime_core::HoverHandler,
+        node: &Node,
+        handler: runtime_shared::HoverHandler,
     ) {
         primitives::hover::install(self, node, handler);
     }
 
-    fn install_file_drop_handler(
+    pub(crate) fn install_file_drop_handler_impl(
         &mut self,
-        node: &Self::Node,
-        handler: runtime_core::FileDropHandler,
+        node: &Node,
+        handler: runtime_shared::FileDropHandler,
     ) {
         primitives::file_drop::install(self, node, handler);
     }
 
-    fn mark_preserves_focus(&mut self, node: &Self::Node) {
+    pub(crate) fn mark_preserves_focus_impl(&mut self, node: &Node) {
         primitives::focus_retention::mark(self, node);
     }
 
@@ -2466,7 +2316,7 @@ impl Backend for WebBackend {
     // trait method exists for symmetry with iOS / Android where the
     // framework dispatches events externally.
 
-    fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
+    pub(crate) fn insert_impl(&mut self, parent: &mut Node, child: Node) {
         #[cfg(feature = "hydrate")]
         if self.hydrating {
             // Subtree-remount resync: the fresh remount root is being
@@ -2487,7 +2337,7 @@ impl Backend for WebBackend {
         primitives::view::insert(parent, child)
     }
 
-    fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
+    pub(crate) fn insert_many_impl(&mut self, parent: &mut Node, children: Vec<Node>) {
         #[cfg(feature = "hydrate")]
         if self.hydrating {
             // Route each child through the same remount-resync + adopted
@@ -2496,7 +2346,7 @@ impl Backend for WebBackend {
             // `Repeat` fallback collects rows then hands them here) is
             // swapped in for its stale SSR node in place; adopted SSR
             // children are already parented and must not be re-inserted.
-            let mut fresh: Vec<Self::Node> = Vec::with_capacity(children.len());
+            let mut fresh: Vec<Node> = Vec::with_capacity(children.len());
             for child in children {
                 if self.hydrate_resync_remount(parent, &child) {
                     continue;
@@ -2517,11 +2367,11 @@ impl Backend for WebBackend {
     // rows keep their nodes (and their render scope), removed rows are
     // detached one-by-one, and reorders move existing nodes rather than
     // rebuilding. Without this the framework falls back to full rebuild.
-    fn supports_child_splice(&self) -> bool {
+    pub(crate) fn supports_child_splice_impl(&self) -> bool {
         true
     }
 
-    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
+    pub(crate) fn insert_at_impl(&mut self, parent: &mut Node, child: Node, index: usize) {
         #[cfg(feature = "hydrate")]
         if self.hydrating {
             // Anchorless `when` / `switch` splice + keyed `Each` reconcile
@@ -2540,19 +2390,19 @@ impl Backend for WebBackend {
         primitives::view::insert_at(parent, child, index)
     }
 
-    fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
+    pub(crate) fn remove_child_impl(&mut self, parent: &Node, child: &Node) {
         primitives::view::remove_child(parent, child)
     }
 
-    fn update_text(&mut self, node: &Self::Node, content: &str) {
+    pub(crate) fn update_text_impl(&mut self, node: &Node, content: &str) {
         primitives::text::update_text(node, content)
     }
 
-    fn create_text_with_id(
+    pub(crate) fn create_text_with_id_impl(
         &mut self,
         content: &str,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Option<(Self::Node, u32)> {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Option<(Node, u32)> {
         let _t = crate::phase_timer::PhaseTimer::start("text_create_with_id");
         // Without an installed self-handle in `WEB_BACKEND_HANDLE`,
         // the microtask flush has no way back to `&mut self`. Bail
@@ -2603,13 +2453,13 @@ impl Backend for WebBackend {
         Some((span, id))
     }
 
-    fn update_text_by_id(&mut self, id: u32, content: String) {
+    pub(crate) fn update_text_by_id_impl(&mut self, id: u32, content: String) {
         let _t = crate::phase_timer::PhaseTimer::start("text_update_by_id");
         self.append_pending_text(id, |buf| buf.push_str(&content));
         self.schedule_text_flush();
     }
 
-    fn release_text_id(&mut self, id: u32) {
+    pub(crate) fn release_text_id_impl(&mut self, id: u32) {
         self.text_release_batch.push(id);
         // Piggy-back on the same flush microtask the updates use.
         // Releases without queued updates are rare (scope teardown
@@ -2617,7 +2467,7 @@ impl Backend for WebBackend {
         self.schedule_text_flush();
     }
 
-    fn supports_js_text_bindings(&self) -> bool {
+    pub(crate) fn supports_js_text_bindings_impl(&self) -> bool {
         // True iff the variant has installed the text batcher (which
         // also pre-injects the bindings shim and sets
         // `WEB_BACKEND_HANDLE`). Without that, the signal-change
@@ -2627,7 +2477,7 @@ impl Backend for WebBackend {
         WEB_BACKEND_HANDLE.with(|s| s.borrow().is_some())
     }
 
-    fn register_reactive_text_binding(
+    pub(crate) fn register_reactive_text_binding_impl(
         &mut self,
         text_id: u32,
         signal_ids: &[u64],
@@ -2649,11 +2499,11 @@ impl Backend for WebBackend {
         )
     }
 
-    fn release_reactive_text_binding(&mut self, text_id: u32) {
+    pub(crate) fn release_reactive_text_binding_impl(&mut self, text_id: u32) {
         WebBackend::release_reactive_text_binding(self, text_id)
     }
 
-    fn supports_js_class_bindings(&self) -> bool {
+    pub(crate) fn supports_js_class_bindings_impl(&self) -> bool {
         // Same gate as text bindings — both rely on
         // `WEB_BACKEND_HANDLE` being set (the signal-changed notifier
         // needs the self-handle to call back into the backend) and on
@@ -2663,9 +2513,9 @@ impl Backend for WebBackend {
         WEB_BACKEND_HANDLE.with(|s| s.borrow().is_some())
     }
 
-    fn register_reactive_class_binding(
+    pub(crate) fn register_reactive_class_binding_impl(
         &mut self,
-        node: &Self::Node,
+        node: &Node,
         signal_id: u64,
         values: &[u32],
         classes: &[&str],
@@ -2681,24 +2531,23 @@ impl Backend for WebBackend {
         )
     }
 
-    fn release_reactive_class_binding(&mut self, binding_id: u32) {
+    pub(crate) fn release_reactive_class_binding_impl(&mut self, binding_id: u32) {
         WebBackend::release_reactive_class_binding(self, binding_id)
     }
 
-    fn mint_class_for_app(
+    pub(crate) fn mint_class_for_app_impl(
         &mut self,
-        app: &runtime_core::StyleApplication,
+        app: &runtime_shared::StyleApplication,
     ) -> Option<String> {
         Some(self.impl_mint_class_for_app(app))
     }
 
-    #[cfg(feature = "prim-image")]
-    fn create_image(
+    pub(crate) fn create_image_impl(
         &mut self,
         src: &str,
         alt: Option<&str>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
         let node = primitives::image::create(self, src, alt);
         // `<img>` carries implicit `role="img"` — don't infer.
         // `alt` and `a11y.label` both target accessibility text; the
@@ -2707,93 +2556,83 @@ impl Backend for WebBackend {
         node
     }
 
-    #[cfg(feature = "prim-image")]
-    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
+    pub(crate) fn update_image_src_impl(&mut self, node: &Node, src: &str) {
         primitives::image::update_src(self, node, src)
     }
 
-    #[cfg(feature = "prim-image")]
-    fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
+    pub(crate) fn update_image_alt_impl(&mut self, node: &Node, alt: Option<&str>) {
         primitives::image::update_alt(node, alt)
     }
 
-    #[cfg(feature = "prim-image")]
-    fn install_image_load_handler(
+    pub(crate) fn install_image_load_handler_impl(
         &mut self,
-        node: &Self::Node,
-        handler: runtime_core::ImageLoadHandler,
+        node: &Node,
+        handler: runtime_shared::ImageLoadHandler,
     ) {
         primitives::image::install_load(self, node, handler);
     }
 
-    #[cfg(feature = "prim-image")]
-    fn install_image_error_handler(
+    pub(crate) fn install_image_error_handler_impl(
         &mut self,
-        node: &Self::Node,
-        handler: runtime_core::ImageErrorHandler,
+        node: &Node,
+        handler: runtime_shared::ImageErrorHandler,
     ) {
         primitives::image::install_error(self, node, handler);
     }
 
-    #[cfg(feature = "prim-icon")]
-    fn create_icon(
+    pub(crate) fn create_icon_impl(
         &mut self,
-        data: &runtime_core::primitives::icon::IconData,
-        color: Option<&runtime_core::Color>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        data: &runtime_shared::primitives::icon::IconData,
+        color: Option<&runtime_shared::Color>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
         let node = primitives::icon::create(self, data, color);
         // SVG icons get explicit `role="img"` since `<svg>` doesn't
         // have an implicit role by default; the helper writes it when
         // the inferred role is supplied.
-        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Image));
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::Image));
         node
     }
 
-    #[cfg(feature = "prim-icon")]
-    fn update_icon_color(&mut self, node: &Self::Node, color: &runtime_core::Color) {
+    pub(crate) fn update_icon_color_impl(&mut self, node: &Node, color: &runtime_shared::Color) {
         primitives::icon::update_color(node, color)
     }
 
-    #[cfg(feature = "prim-icon")]
-    fn update_icon_data(
+    pub(crate) fn update_icon_data_impl(
         &mut self,
-        node: &Self::Node,
-        data: &runtime_core::primitives::icon::IconData,
+        node: &Node,
+        data: &runtime_shared::primitives::icon::IconData,
     ) {
         primitives::icon::update_data(self, node, data)
     }
 
-    #[cfg(feature = "prim-icon")]
-    fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
+    pub(crate) fn update_icon_stroke_impl(&mut self, node: &Node, progress: f32) {
         primitives::icon::update_stroke(node, progress)
     }
 
-    #[cfg(feature = "prim-icon")]
-    fn animate_icon_stroke(
+    pub(crate) fn animate_icon_stroke_impl(
         &mut self,
-        node: &Self::Node,
+        node: &Node,
         from: f32,
         to: f32,
         duration_ms: u32,
-        easing: runtime_core::Easing,
+        easing: runtime_shared::Easing,
         infinite: bool,
         _autoreverses: bool,
     ) {
         primitives::icon::animate_stroke(node, from, to, duration_ms, easing, infinite)
     }
 
-    #[cfg(feature = "prim-text-input")]
-    fn create_text_input(
+    pub(crate) fn create_text_input_impl(
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
+        on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
         secure: bool,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
         let node = primitives::text_input::create(
             self,
             initial_value,
@@ -2808,28 +2647,23 @@ impl Backend for WebBackend {
         node
     }
 
-    #[cfg(feature = "prim-text-input")]
-    fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
+    pub(crate) fn update_text_input_value_impl(&mut self, node: &Node, value: &str) {
         primitives::text_input::update_value(node, value)
     }
 
-    #[cfg(feature = "prim-text-input")]
-    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
+    pub(crate) fn update_text_input_secure_impl(&mut self, node: &Node, secure: bool) {
         primitives::text_input::update_secure(node, secure)
     }
 
-    #[cfg(feature = "prim-text-input")]
-    fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
+    pub(crate) fn set_text_input_focus_handler_impl(&mut self, node: &Node, handler: Rc<dyn Fn(bool)>) {
         primitives::text_input::set_focus_handler(self, node, handler);
     }
 
-    #[cfg(feature = "prim-text-input")]
-    fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
+    pub(crate) fn update_text_input_placeholder_impl(&mut self, node: &Node, placeholder: Option<&str>) {
         primitives::text_input::update_placeholder(node, placeholder)
     }
 
-    #[cfg(feature = "prim-text-input")]
-    fn create_text_area(
+    pub(crate) fn create_text_area_impl(
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
@@ -2837,9 +2671,9 @@ impl Backend for WebBackend {
         min_rows: Option<u32>,
         max_rows: Option<u32>,
         on_change: Rc<dyn Fn(String)>,
-        on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
         let node = primitives::text_area::create(
             self,
             initial_value,
@@ -2855,42 +2689,38 @@ impl Backend for WebBackend {
         node
     }
 
-    #[cfg(feature = "prim-text-input")]
-    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
+    pub(crate) fn update_text_area_value_impl(&mut self, node: &Node, value: &str) {
         primitives::text_area::update_value(node, value)
     }
 
-    #[cfg(feature = "prim-text-input")]
-    fn make_text_area_handle(
+    pub(crate) fn make_text_area_handle_impl(
         &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::text_area::TextAreaHandle {
+        node: &Node,
+    ) -> runtime_shared::primitives::text_area::TextAreaHandle {
         primitives::text_area::make_handle(node)
     }
 
-    #[cfg(feature = "prim-toggle")]
-    fn create_toggle(
+    pub(crate) fn create_toggle_impl(
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
         let node = primitives::toggle::create(self, initial_value, on_change);
-        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Switch));
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::Switch));
         node
     }
 
-    #[cfg(feature = "prim-toggle")]
-    fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
+    pub(crate) fn update_toggle_value_impl(&mut self, node: &Node, value: bool) {
         primitives::toggle::update_value(node, value)
     }
 
-    fn create_scroll_view(
+    pub(crate) fn create_scroll_view_impl(
         &mut self,
         horizontal: bool,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
         let node = primitives::scroll_view::create(self, horizontal, on_scroll);
         // ScrollView has no first-class ARIA role — it's a generic
         // container; the platform handles scroll affordances. Author
@@ -2899,79 +2729,71 @@ impl Backend for WebBackend {
         node
     }
 
-    #[cfg(feature = "prim-slider")]
-    fn create_slider(
+    pub(crate) fn create_slider_impl(
         &mut self,
         initial_value: f32,
         min: f32,
         max: f32,
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
         let node = primitives::slider::create(self, initial_value, min, max, step, on_change);
         // `<input type=range>` is implicitly `role=slider`; skip inference.
         a11y::apply(&node, a11y, None);
         node
     }
 
-    #[cfg(feature = "prim-slider")]
-    fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
+    pub(crate) fn update_slider_value_impl(&mut self, node: &Node, value: f32) {
         primitives::slider::update_value(node, value)
     }
 
-    #[cfg(feature = "prim-activity")]
-    fn create_activity_indicator(
+    pub(crate) fn create_activity_indicator_impl(
         &mut self,
-        size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
-        color: Option<&runtime_core::Color>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
+        color: Option<&runtime_shared::Color>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
         let node = primitives::activity_indicator::create(self, size, color);
-        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Spinner));
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::Spinner));
         node
     }
 
-    #[cfg(feature = "prim-activity")]
-    fn update_activity_indicator_size(
+    pub(crate) fn update_activity_indicator_size_impl(
         &mut self,
-        node: &Self::Node,
-        size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
+        node: &Node,
+        size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
     ) {
         primitives::activity_indicator::update_size(node, size)
     }
 
-    #[cfg(feature = "prim-virtualizer")]
-    fn create_virtualizer(
+    pub(crate) fn create_virtualizer_impl(
         &mut self,
-        callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
+        callbacks: runtime_shared::VirtualizerCallbacks<Node>,
         overscan: f32,
-        layout: runtime_core::VirtualLayout,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        layout: runtime_shared::VirtualLayout,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
         let node = primitives::virtualizer::create(self, callbacks, overscan, layout);
-        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::List));
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::List));
         node
     }
 
-    #[cfg(feature = "prim-virtualizer")]
-    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
+    pub(crate) fn virtualizer_data_changed_impl(&mut self, node: &Node) {
         primitives::virtualizer::data_changed(self, node)
     }
 
-    #[cfg(feature = "prim-virtualizer")]
-    fn release_virtualizer(&mut self, node: &Self::Node) {
+    pub(crate) fn release_virtualizer_impl(&mut self, node: &Node) {
         primitives::virtualizer::release(self, node)
     }
 
-    #[cfg(feature = "prim-graphics")]
-    fn create_graphics(
+    pub(crate) fn create_graphics_impl(
         &mut self,
-        on_ready: runtime_core::primitives::graphics::OnReady,
-        on_resize: runtime_core::primitives::graphics::OnResize,
-        on_lost: runtime_core::primitives::graphics::OnLost,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        on_ready: runtime_shared::primitives::graphics::OnReady,
+        on_resize: runtime_shared::primitives::graphics::OnResize,
+        on_lost: runtime_shared::primitives::graphics::OnLost,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
         let node = primitives::graphics::create(self, on_ready, on_resize, on_lost);
         // `<canvas>` has no implicit ARIA role; author code MUST set
         // `props.label` for screen-reader users to know what's
@@ -2982,155 +2804,46 @@ impl Backend for WebBackend {
         node
     }
 
-    #[cfg(feature = "prim-graphics")]
-    fn release_graphics(&mut self, node: &Self::Node) {
+    pub(crate) fn release_graphics_impl(&mut self, node: &Node) {
         primitives::graphics::release(self, node)
     }
 
-    #[cfg(feature = "prim-graphics")]
-    fn make_graphics_handle(
+    pub(crate) fn make_graphics_handle_impl(
         &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::graphics::GraphicsHandle {
+        node: &Node,
+    ) -> runtime_shared::primitives::graphics::GraphicsHandle {
         primitives::graphics::make_handle(self, node)
     }
 
-    //
-    // Navigator dispatch routes through the SDK handler stored on
-    // `nav_handler_instances` at create time. The handler's
-    // attach_initial / release / make_handle / apply_slot_style
-    // methods are the kind-specific entry points; web's three
-    // first-party SDKs (stack/tab/drawer) all forward to the shared
-    // `web-navigator-helpers` crate, but third-party kinds can do
-    // whatever DOM work they need without going through the backend.
-    // ------------------------------------------------------------------
-
-    #[cfg(feature = "prim-navigator")]
-    fn create_navigator(
+    pub(crate) fn create_link_impl(
         &mut self,
-        type_id: std::any::TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn std::any::Any>,
-        host: runtime_core::NavigatorHost<Self::Node>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        // Resolve the factory the SDK installed at app-bootstrap time.
-        let factory = self
-            .navigator_handlers
-            .get(type_id)
-            .unwrap_or_else(|| {
-                panic!(
-                    "WebBackend::create_navigator: navigator kind '{}' \
-                     is not registered. Did the app forget to call \
-                     `<navigator-sdk>::register(&mut backend)` during bootstrap?",
-                    type_name
-                )
-            });
-        let mut handler = factory();
-        let node = handler.init(self, host, presentation);
-        // Apply author-set accessibility props (identifier/label/hidden/…)
-        // to the navigator root, matching every other create_* path and
-        // the macOS/wgpu backends — otherwise navigator a11y silently
-        // vanishes on web.
-        a11y::apply(&node, a11y, None);
-        // Stash the handler under the nav id on the container so subsequent
-        // dispatch (attach_initial / release / make_handle / apply_slot_style)
-        // can find it. Legacy SDKs stamp `data-navigator-id` themselves
-        // (web-navigator-helpers); a BACKEND-NEUTRAL handler (swap / stack
-        // outlet model) returns a bare view with no id, so we assign one here.
-        // Without this the handler is dropped and the bound `.bind(handle)`
-        // never wires to the control plane — push/select through the handle
-        // silently no-op.
-        let id = nav_id_from_node(&node).unwrap_or_else(|| {
-            let id = next_backend_nav_id();
-            if let Ok(elem) = node.clone().dyn_into::<web_sys::Element>() {
-                let _ = elem.set_attribute("data-navigator-id", &id.to_string());
-            }
-            id
-        });
-        self.nav_handler_instances
-            .insert(id, std::rc::Rc::new(std::cell::RefCell::new(handler)));
-        node
-    }
-
-    #[cfg(feature = "prim-navigator")]
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn std::any::Any>,
-    ) {
-        let Some(id) = nav_id_from_node(navigator) else { return };
-        let handler = self.nav_handler_instances.get(&id).cloned();
-        let Some(handler) = handler else { return };
-        handler.borrow_mut().attach_initial(self, screen, scope_id, options);
-    }
-
-    #[cfg(feature = "prim-navigator")]
-    fn release_navigator(&mut self, node: &Self::Node) {
-        let Some(id) = nav_id_from_node(node) else { return };
-        let handler = self.nav_handler_instances.remove(&id);
-        let Some(handler) = handler else { return };
-        handler.borrow_mut().release(self);
-    }
-
-    #[cfg(feature = "prim-navigator")]
-    fn make_navigator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::NavigatorHandle {
-        let handler = nav_id_from_node(node)
-            .and_then(|id| self.nav_handler_instances.get(&id).cloned());
-        match handler {
-            Some(h) => h.borrow().make_handle(),
-            None => runtime_core::NavigatorHandle::new(Rc::new(()), &NOOP_NAV_OPS),
-        }
-    }
-
-    #[cfg(feature = "prim-navigator")]
-    fn apply_navigator_slot_style(
-        &mut self,
-        navigator: &Self::Node,
-        slot: &'static str,
-        style: &Rc<runtime_core::StyleRules>,
-    ) {
-        let Some(id) = nav_id_from_node(navigator) else { return };
-        let handler = self.nav_handler_instances.get(&id).cloned();
-        let Some(handler) = handler else { return };
-        handler.borrow_mut().apply_slot_style(self, slot, style);
-    }
-
-    fn create_link(
-        &mut self,
-        config: runtime_core::primitives::link::LinkConfig,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        config: runtime_shared::primitives::link::LinkConfig,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
         let node = primitives::link::create(self, config);
         // `<a>` has implicit role="link"; skip inference.
         a11y::apply(&node, a11y, None);
         node
     }
 
-    fn update_link_url(&mut self, node: &Self::Node, url: &str) {
+    pub(crate) fn update_link_url_impl(&mut self, node: &Node, url: &str) {
         primitives::link::update_url(node, url)
     }
 
-    fn make_link_handle(
+    pub(crate) fn make_link_handle_impl(
         &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::link::LinkHandle {
+        node: &Node,
+    ) -> runtime_shared::primitives::link::LinkHandle {
         primitives::link::make_handle(node)
     }
 
-    #[cfg(feature = "prim-portal")]
-    fn create_portal(
+    pub(crate) fn create_portal_impl(
         &mut self,
-        target: runtime_core::primitives::portal::PortalTarget,
+        target: runtime_shared::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
         let node = primitives::portal::create(self, target, on_dismiss, trap_focus);
         // Portal containers are transparent (the mounted content
         // carries its own role); pass None for inferred role and let
@@ -3139,131 +2852,111 @@ impl Backend for WebBackend {
         node
     }
 
-    #[cfg(feature = "prim-portal")]
-    fn release_portal(&mut self, node: &Self::Node) {
+    pub(crate) fn release_portal_impl(&mut self, node: &Node) {
         primitives::portal::release(self, node)
     }
 
-    #[cfg(feature = "prim-portal")]
-    fn make_portal_handle(
+    pub(crate) fn make_portal_handle_impl(
         &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::portal::PortalHandle {
+        node: &Node,
+    ) -> runtime_shared::primitives::portal::PortalHandle {
         primitives::portal::make_handle(node)
     }
 
-    fn create_external(
+    pub(crate) fn create_external_impl(
         &mut self,
-        type_id: std::any::TypeId,
+        _type_id: std::any::TypeId,
         type_name: &'static str,
-        payload: &Rc<dyn std::any::Any>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        // LAZY REGISTRATION: a lazy chunk that registers its own external
-        // handler (to keep the SDK out of `main.wasm` — see
-        // `runtime_core::defer_external_registration`) queued it when the chunk
-        // loaded. Apply the queue now, before lookup, so the chunk's own
-        // `Element::External` finds its freshly-installed handler. Guarded so
-        // the common no-lazy-registration path pays nothing.
-        if runtime_core::has_pending_external_registrations() {
-            runtime_core::drain_external_registrations(self);
-        }
-        // HYDRATION: snapshot the SSR cursor before the handler runs so we
-        // can tell whether the handler adopted the SSR host or built fresh.
+        _payload: &Rc<dyn std::any::Any>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
+        // Runtime v2: there is no backend-side External registry any more.
+        // Third-party primitives register a payload handler on the scene
+        // `Registry` (`runtime_scene::Registry::register`), which dispatches
+        // BEFORE reaching a backend cap, so this method is only ever the
+        // last-resort placeholder — the frozen degradation an SDK's own
+        // handler asks for on a host it has no leg for
+        // (`ExternalOps::create_external` → children → style → teardown).
+        // Hydration still applies: an unadopted fresh node must arm the
+        // subtree remount, or the cursor stalls on the unconsumed SSR host
+        // and every following sibling mismatches (the first
+        // `[hydrate] diverge`).
         let hydrate_cursor_before = self.hydrate_cursor_snapshot();
-        // Look up the handler; clone the Rc so we can drop the
-        // registry borrow before calling the handler (which needs
-        // `&mut self`).
-        let node = if let Some(handler) = self.external_handlers.get(type_id) {
-            handler(payload, self)
-        } else {
-            // No handler registered → render a "not supported" placeholder
-            // so the dev/user sees that something is missing rather than
-            // a silent hole in the UI.
-            external_placeholder_element(&self.doc, type_name).into()
-        };
+        let node: Node = external_placeholder_element(&self.doc, type_name).into();
         // External handlers don't know their semantic role; the author
         // supplies it via props.role. No inferred role here.
         a11y::apply(&node, a11y, None);
-        // If we're hydrating and the handler built a FRESH node (didn't adopt
-        // the SSR host at the cursor — e.g. the GPU canvas), arm a subtree
-        // remount so the fresh node replaces the stale SSR host in place.
-        // Without this the cursor stalls on the unconsumed host, the next
-        // sibling mismatches (the first `[hydrate] diverge`), and the stale
-        // host div is orphaned. No-op for hydration-aware handlers (which
-        // advance the cursor by adopting) and off the hydrate path.
         self.hydrate_external_note_if_unadopted(&hydrate_cursor_before, &node);
         node
     }
 
-    fn release_external(&mut self, _node: &Self::Node) {
+    pub(crate) fn release_external_impl(&mut self, _node: &Node) {
         // The web backend has no per-external bookkeeping today.
         // Future hooks (e.g. per-instance event-listener cleanup)
         // would land here, queried by `data-external-id` like
         // portals/virtualizers/graphics.
     }
 
-    #[cfg(feature = "prim-presence")]
-    fn apply_presence(
+    pub(crate) fn apply_presence_impl(
         &mut self,
-        node: &Self::Node,
-        state: runtime_core::PresenceState,
-        transition: Option<(u32, runtime_core::Easing)>,
+        node: &Node,
+        state: runtime_shared::PresenceState,
+        transition: Option<(u32, runtime_shared::Easing)>,
     ) {
         primitives::presence::apply(self, node, state, transition)
     }
 
-    fn clear_children(&mut self, node: &Self::Node) {
+    pub(crate) fn clear_children_impl(&mut self, node: &Node) {
         primitives::view::clear_children(node)
     }
 
-    fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
+    pub(crate) fn register_stylesheet_impl(&mut self, rules: &[Rc<StyleRules>]) {
         self.impl_register_stylesheet(rules)
     }
 
-    fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
+    pub(crate) fn unregister_stylesheet_impl(&mut self, rules: &[Rc<StyleRules>]) {
         self.impl_unregister_stylesheet(rules)
     }
 
-    fn install_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
+    pub(crate) fn install_tokens_impl(&mut self, tokens: &[runtime_shared::TokenEntry]) {
         self.impl_install_theme_variables(tokens)
     }
 
-    fn update_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
+    pub(crate) fn update_tokens_impl(&mut self, tokens: &[runtime_shared::TokenEntry]) {
         // Same machinery handles both — the impl detects whether
         // the :root rule already exists and either inserts or
         // setProperty's.
         self.impl_install_theme_variables(tokens)
     }
 
-    fn set_app_background(&mut self, color: &runtime_core::Tokenized<runtime_core::Color>) {
+    pub(crate) fn set_app_background_impl(&mut self, color: &runtime_shared::Tokenized<runtime_shared::Color>) {
         self.impl_set_app_background(color)
     }
 
-    fn set_scrollbar_theme(
+    pub(crate) fn set_scrollbar_theme_impl(
         &mut self,
-        thumb: &runtime_core::Tokenized<runtime_core::Color>,
-        track: &runtime_core::Tokenized<runtime_core::Color>,
+        thumb: &runtime_shared::Tokenized<runtime_shared::Color>,
+        track: &runtime_shared::Tokenized<runtime_shared::Color>,
     ) {
         self.impl_set_scrollbar_theme(thumb, track)
     }
 
-    fn set_app_key_handler(
+    pub(crate) fn set_app_key_handler_impl(
         &mut self,
-        handler: Option<runtime_core::primitives::key::KeyDownHandler>,
+        handler: Option<runtime_shared::primitives::key::KeyDownHandler>,
     ) {
         crate::primitives::keyboard::install_app_key_handler(self, handler)
     }
 
-    fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
+    pub(crate) fn register_asset_impl(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
         self.impl_register_asset(id, kind, source)
     }
 
-    fn unregister_asset(&mut self, id: AssetId, kind: AssetTag) {
+    pub(crate) fn unregister_asset_impl(&mut self, id: AssetId, kind: AssetTag) {
         self.impl_unregister_asset(id, kind)
     }
 
-    fn register_typeface(
+    pub(crate) fn register_typeface_impl(
         &mut self,
         id: TypefaceId,
         family_name: &str,
@@ -3273,18 +2966,18 @@ impl Backend for WebBackend {
         self.impl_register_typeface(id, family_name, faces, fallback)
     }
 
-    fn unregister_typeface(&mut self, id: TypefaceId) {
+    pub(crate) fn unregister_typeface_impl(&mut self, id: TypefaceId) {
         self.impl_unregister_typeface(id)
     }
 
-    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
+    pub(crate) fn apply_style_impl(&mut self, node: &Node, style: &Rc<StyleRules>) {
         self.impl_apply_style(node, style)
     }
 
     /// DOM scroll offset of `node` (0,0 for non-Element nodes and
     /// non-scrolling elements — `scrollLeft/Top` read 0 there). Used by
     /// the navigator substrate's URL sync for back-restores scroll.
-    fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
+    pub(crate) fn node_scroll_impl(&self, node: &Node) -> (f32, f32) {
         node.dyn_ref::<web_sys::Element>()
             .map(|el| (el.scroll_left() as f32, el.scroll_top() as f32))
             .unwrap_or((0.0, 0.0))
@@ -3292,26 +2985,26 @@ impl Backend for WebBackend {
 
     /// Set `node`'s DOM scroll offset. Setting on a non-scrolling
     /// element is a browser-defined no-op, matching the trait contract.
-    fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
+    pub(crate) fn set_node_scroll_impl(&mut self, node: &Node, x: f32, y: f32) {
         if let Some(el) = node.dyn_ref::<web_sys::Element>() {
             el.set_scroll_left(x as i32);
             el.set_scroll_top(y as i32);
         }
     }
 
-    fn set_animated_f32(
+    pub(crate) fn set_animated_f32_impl(
         &mut self,
-        node: &Self::Node,
-        prop: runtime_core::animation::AnimProp,
+        node: &Node,
+        prop: runtime_shared::animation::AnimProp,
         value: f32,
     ) {
         self.impl_set_animated_f32(node, prop, value);
     }
 
-    fn set_animated_color(
+    pub(crate) fn set_animated_color_impl(
         &mut self,
-        node: &Self::Node,
-        prop: runtime_core::animation::AnimProp,
+        node: &Node,
+        prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
         self.impl_set_animated_color(node, prop, value);
@@ -3321,7 +3014,7 @@ impl Backend for WebBackend {
     /// a `Element::Repeat` whose rows are pure View+Text+static-style,
     /// it builds a [`BackendBatch`] and ships it through
     /// [`execute_batch`] instead of issuing per-row backend calls.
-    fn supports_batched_repeat(&self) -> bool {
+    pub(crate) fn supports_batched_repeat_impl(&self) -> bool {
         true
     }
 
@@ -3337,7 +3030,7 @@ impl Backend for WebBackend {
     /// fires when every row's class can be name-shipped in one FFI
     /// call; if any row's style isn't pre-minted, falling back to
     /// per-call is correct.
-    fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
+    pub(crate) fn mint_style_class_impl(&mut self, style: &Rc<StyleRules>) -> Option<String> {
         let _t = crate::phase_timer::PhaseTimer::start("mint_style_class");
 
         // Fast path: pointer-keyed lookup. The framework's resolution
@@ -3379,7 +3072,7 @@ impl Backend for WebBackend {
     /// First call lazily injects the JS shim (`runtime/js/batch.js`)
     /// and caches the function handle so subsequent calls skip the
     /// `Reflect::get` lookup.
-    fn execute_batch(&mut self, batch: runtime_core::BackendBatch) -> Vec<Self::Node> {
+    pub(crate) fn execute_batch_impl(&mut self, batch: runtime_shared::BackendBatch) -> Vec<Node> {
         self.execute_batch_inner(batch, None)
     }
 
@@ -3398,12 +3091,12 @@ impl Backend for WebBackend {
     /// `parent` must be a real DOM node (the same kind you'd pass to
     /// `insert_many`); `attach_locals` must reference valid
     /// `local_id`s from `batch`.
-    fn execute_batch_with_attach(
+    pub(crate) fn execute_batch_with_attach_impl(
         &mut self,
-        batch: runtime_core::BackendBatch,
-        parent: &mut Self::Node,
+        batch: runtime_shared::BackendBatch,
+        parent: &mut Node,
         attach_locals: &[u32],
-    ) -> Vec<Self::Node> {
+    ) -> Vec<Node> {
         self.execute_batch_inner(batch, Some((parent, attach_locals)))
     }
 
@@ -3415,7 +3108,7 @@ impl Backend for WebBackend {
     /// pseudo). No Rust-side state signal is needed. The framework calls
     /// `apply_styled_states` instead of `apply_style` when this returns
     /// true.
-    fn handles_states_natively(&self) -> bool {
+    pub(crate) fn handles_states_natively_impl(&self) -> bool {
         true
     }
 
@@ -3424,25 +3117,25 @@ impl Backend for WebBackend {
     /// browser's cascade propagates the new values to every node
     /// referencing them — no per-node re-apply needed for theme
     /// value changes. Saves O(N) work per theme swap.
-    fn token_updates_propagate_via_cascade(&self) -> bool {
+    pub(crate) fn token_updates_propagate_via_cascade_impl(&self) -> bool {
         true
     }
 
-    fn apply_styled_states(
+    pub(crate) fn apply_styled_states_impl(
         &mut self,
-        node: &Self::Node,
+        node: &Node,
         base: &Rc<StyleRules>,
-        overlays: &[(runtime_core::StateBits, Rc<StyleRules>)],
+        overlays: &[(runtime_shared::StateBits, Rc<StyleRules>)],
     ) {
         self.impl_apply_styled_states(node, base, overlays)
     }
 
-    fn apply_styled_variants(
+    pub(crate) fn apply_styled_variants_impl(
         &mut self,
-        node: &Self::Node,
+        node: &Node,
         base: &Rc<StyleRules>,
-        state_overlays: &[(runtime_core::StateBits, Rc<StyleRules>)],
-        breakpoint_overlays: &[(runtime_core::Breakpoint, Rc<StyleRules>)],
+        state_overlays: &[(runtime_shared::StateBits, Rc<StyleRules>)],
+        breakpoint_overlays: &[(runtime_shared::Breakpoint, Rc<StyleRules>)],
         container_overlays: &[(f32, Rc<StyleRules>)],
     ) {
         self.impl_apply_styled_variants(
@@ -3454,15 +3147,15 @@ impl Backend for WebBackend {
         )
     }
 
-    fn mark_container(&mut self, node: &Self::Node) {
+    pub(crate) fn mark_container_impl(&mut self, node: &Node) {
         self.impl_mark_container(node)
     }
 
-    fn on_node_unstyled(&mut self, node: &Self::Node) {
+    pub(crate) fn on_node_unstyled_impl(&mut self, node: &Node) {
         self.impl_on_node_unstyled(node)
     }
 
-    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
+    pub(crate) fn set_disabled_impl(&mut self, node: &Node, disabled: bool) {
         // Mark the node with the HTML `disabled` *attribute*. Form
         // controls (button, input, select) treat it as inert natively;
         // for a `<div>` pressable it's the hook the disabled-state CSS
@@ -3492,58 +3185,57 @@ impl Backend for WebBackend {
     /// while a style is being applied, and the CSS path is both
     /// simpler and faster (browser tracks the state natively, no
     /// per-event Rust↔JS round trip).
-    fn attach_states(
+    pub(crate) fn attach_states_impl(
         &mut self,
-        _node: &Self::Node,
-        _setter: Rc<dyn Fn(runtime_core::StateBits, bool)>,
+        _node: &Node,
+        _setter: Rc<dyn Fn(runtime_shared::StateBits, bool)>,
     ) {
         // intentional no-op on web; CSS pseudo-classes drive states.
     }
 
-    fn make_button_handle(&self, node: &Self::Node) -> ButtonHandle {
+    pub(crate) fn make_button_handle_impl(&self, node: &Node) -> ButtonHandle {
         primitives::button::make_handle(node)
     }
 
-    fn make_pressable_handle(
+    pub(crate) fn make_pressable_handle_impl(
         &self,
-        node: &Self::Node,
-    ) -> runtime_core::PressableHandle {
+        node: &Node,
+    ) -> runtime_shared::PressableHandle {
         primitives::pressable::make_handle(node)
     }
 
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
+    pub(crate) fn make_view_handle_impl(&self, node: &Node) -> runtime_shared::ViewHandle {
         // Wrap the actual `web_sys::Node` (not the trait-default
         // `Rc<()>`), so framework helpers like `LayoutPlan` can
         // downcast back to the concrete node and operate on it.
-        runtime_core::ViewHandle::new(Rc::new(node.clone()), &WebViewOps)
+        runtime_shared::ViewHandle::new(Rc::new(node.clone()), &WebViewOps)
     }
 
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
+    pub(crate) fn make_text_handle_impl(&self, node: &Node) -> runtime_shared::TextHandle {
         // Same plumbing as `make_view_handle` for the text element so
         // author-level animation drivers (welcome's `drive_color_text_av`)
         // can downcast `text_ref.as_any()` to `web_sys::Node` and write
         // `style.color` directly. Without this the typed handle stores
         // the trait-default `Rc<()>` and the downcast silently fails,
         // leaving text color frozen at its stylesheet value.
-        runtime_core::TextHandle::new(Rc::new(node.clone()), &WebTextOps)
+        runtime_shared::TextHandle::new(Rc::new(node.clone()), &WebTextOps)
     }
 
-    #[cfg(feature = "prim-text-input")]
-    fn make_text_input_handle(
+    pub(crate) fn make_text_input_handle_impl(
         &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::text_input::TextInputHandle {
+        node: &Node,
+    ) -> runtime_shared::primitives::text_input::TextInputHandle {
         primitives::text_input::make_handle(node)
     }
 
-    fn make_scroll_view_handle(
+    pub(crate) fn make_scroll_view_handle_impl(
         &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::scroll_view::ScrollViewHandle {
+        node: &Node,
+    ) -> runtime_shared::primitives::scroll_view::ScrollViewHandle {
         primitives::scroll_view::make_handle(node)
     }
 
-    fn finish(&mut self, root: Self::Node) {
+    pub(crate) fn finish_impl(&mut self, root: Node) {
         #[cfg(feature = "hydrate")]
         if self.hydrating {
             // The initial adoption pass is done; subsequent reactive
@@ -3609,11 +3301,11 @@ impl Backend for WebBackend {
             .expect("mount append failed");
     }
 
-    fn update_accessibility(
+    pub(crate) fn update_accessibility_impl(
         &mut self,
-        node: &Self::Node,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-        inferred_role: Option<runtime_core::accessibility::Role>,
+        node: &Node,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+        inferred_role: Option<runtime_shared::accessibility::Role>,
     ) {
         // Reactive prop updates funnel through here. `a11y::apply` is
         // idempotent and clears attributes that drop to None, so the
@@ -3621,10 +3313,10 @@ impl Backend for WebBackend {
         a11y::apply(node, a11y, inferred_role);
     }
 
-    fn announce_for_accessibility(
+    pub(crate) fn announce_for_accessibility_impl(
         &mut self,
         msg: &str,
-        priority: runtime_core::accessibility::LiveRegionPriority,
+        priority: runtime_shared::accessibility::LiveRegionPriority,
     ) {
         a11y::announce(msg, priority);
     }
@@ -3640,11 +3332,11 @@ impl Backend for WebBackend {
 /// additions. We still need an instance to satisfy
 /// `ViewHandle::new`'s `&'static dyn ViewOps` parameter.
 struct WebViewOps;
-impl runtime_core::ViewOps for WebViewOps {
-    fn rect(&self, node: &dyn std::any::Any) -> runtime_core::ViewportRect {
+impl runtime_shared::ViewOps for WebViewOps {
+    fn rect(&self, node: &dyn std::any::Any) -> runtime_shared::ViewportRect {
         match view_rect_from_node(node) {
             Some(r) => r,
-            None => runtime_core::ViewportRect::default(),
+            None => runtime_shared::ViewportRect::default(),
         }
     }
 
@@ -3660,7 +3352,7 @@ impl runtime_core::ViewOps for WebViewOps {
     fn frame(
         &self,
         node: &dyn std::any::Any,
-    ) -> Option<runtime_core::primitives::portal::ViewportRect> {
+    ) -> Option<runtime_shared::primitives::portal::ViewportRect> {
         let el = element_from_any(node)?;
         if !el.is_connected() {
             return None;
@@ -3675,7 +3367,7 @@ impl runtime_core::ViewOps for WebViewOps {
             // overlays already opt into that trade-off via the
             // primitives that emit them.
             .unwrap_or((r.x() as f32, r.y() as f32));
-        Some(runtime_core::primitives::portal::ViewportRect {
+        Some(runtime_shared::primitives::portal::ViewportRect {
             x: ox,
             y: oy,
             width: r.width() as f32,
@@ -3690,13 +3382,13 @@ impl runtime_core::ViewOps for WebViewOps {
     fn absolute_frame(
         &self,
         node: &dyn std::any::Any,
-    ) -> Option<runtime_core::primitives::portal::ViewportRect> {
+    ) -> Option<runtime_shared::primitives::portal::ViewportRect> {
         let el = element_from_any(node)?;
         if !el.is_connected() {
             return None;
         }
         let r = el.get_bounding_client_rect();
-        Some(runtime_core::primitives::portal::ViewportRect {
+        Some(runtime_shared::primitives::portal::ViewportRect {
             x: r.x() as f32,
             y: r.y() as f32,
             width: r.width() as f32,
@@ -3712,7 +3404,7 @@ impl runtime_core::ViewOps for WebViewOps {
     fn set_animated_f32(
         &self,
         node: &dyn std::any::Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         value: f32,
     ) {
         if let Some(n) = node.downcast_ref::<web_sys::Node>() {
@@ -3724,7 +3416,7 @@ impl runtime_core::ViewOps for WebViewOps {
     fn set_animated_color(
         &self,
         node: &dyn std::any::Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
         if let Some(n) = node.downcast_ref::<web_sys::Node>() {
@@ -3742,9 +3434,9 @@ impl runtime_core::ViewOps for WebViewOps {
         &self,
         node: &dyn std::any::Any,
         callback: Box<dyn Fn(f32, f32)>,
-    ) -> runtime_core::LayoutSubscription {
+    ) -> runtime_shared::LayoutSubscription {
         let Some(el) = element_from_any(node) else {
-            return runtime_core::LayoutSubscription::noop();
+            return runtime_shared::LayoutSubscription::noop();
         };
         // Wrap the user callback into a JS callback that reads the
         // first observed entry's contentRect. Single-element
@@ -3762,14 +3454,14 @@ impl runtime_core::ViewOps for WebViewOps {
         )
             as Box<dyn FnMut(js_sys::Array, web_sys::ResizeObserver)>);
         let Ok(observer) = web_sys::ResizeObserver::new(cb.as_ref().unchecked_ref()) else {
-            return runtime_core::LayoutSubscription::noop();
+            return runtime_shared::LayoutSubscription::noop();
         };
         observer.observe(&el);
         // Move both into the cleanup closure so they live as long as
         // the subscription. Dropping the subscription drops the
         // observer (auto-disconnects via DOM ownership) and the JS
         // closure (so the wasm-bindgen ref doesn't leak).
-        runtime_core::LayoutSubscription::new(move || {
+        runtime_shared::LayoutSubscription::new(move || {
             observer.disconnect();
             drop(cb);
         })
@@ -3787,11 +3479,11 @@ fn element_from_any(node: &dyn std::any::Any) -> Option<web_sys::Element> {
 /// without a per-platform downcast block — same shape as
 /// [`WebViewOps::set_animated_color`].
 struct WebTextOps;
-impl runtime_core::TextOps for WebTextOps {
+impl runtime_shared::TextOps for WebTextOps {
     fn set_animated_color(
         &self,
         node: &dyn std::any::Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
         if let Some(n) = node.downcast_ref::<web_sys::Node>() {
@@ -3800,10 +3492,10 @@ impl runtime_core::TextOps for WebTextOps {
     }
 }
 
-fn view_rect_from_node(node: &dyn std::any::Any) -> Option<runtime_core::ViewportRect> {
+fn view_rect_from_node(node: &dyn std::any::Any) -> Option<runtime_shared::ViewportRect> {
     let el = element_from_any(node)?;
     let r = el.get_bounding_client_rect();
-    Some(runtime_core::ViewportRect {
+    Some(runtime_shared::ViewportRect {
         x: r.x() as f32,
         y: r.y() as f32,
         width: r.width() as f32,

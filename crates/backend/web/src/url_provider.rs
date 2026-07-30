@@ -1,6 +1,6 @@
 //! Browser History-API provider for the navigator substrate's URL sync.
 //!
-//! Installs `runtime_core::primitives::navigator::url_sync`'s platform
+//! Installs `runtime_shared::primitives::navigator::url_sync`'s platform
 //! provider (pushState / replaceState / back / current path) and wires
 //! the window `popstate` event to the substrate reconciler. Outlet-model
 //! navigators (`swap-navigator`, `stack-navigator`) opt in via
@@ -8,7 +8,7 @@
 //! navigators keep their own helpers-crate URL machinery and ignore
 //! this entirely.
 //!
-//! Also seeds `runtime_core`'s initial-path slot from
+//! Also seeds `runtime_shared`'s initial-path slot from
 //! `window.location.pathname` so the walker's cold-start deep-link
 //! resolution (the same path SSR and native deep links use) mounts the
 //! URL's screen instead of the configured initial. The walker clears
@@ -16,7 +16,7 @@
 //! web navigators discard the walker's initial build regardless, so the
 //! seed is invisible to them.
 
-use runtime_core::primitives::navigator::{self as nav, UrlProvider};
+use runtime_shared::primitives::navigator::{self as nav, UrlProvider};
 use std::cell::Cell;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;

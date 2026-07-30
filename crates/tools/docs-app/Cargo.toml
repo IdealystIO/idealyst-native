@@ -12,27 +12,30 @@ description = "Catalog-driven documentation app — renders an Idealyst project'
 crate-type = ["cdylib", "rlib"]
 
 [features]
-# No-op feature consumed by the auto-generated web wrapper under
-# `target/idealyst/<app>/web/wrapper/`. See websites/idea-ui-docs.
-runtime-server = []
-# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper.
-sidecar = ["dep:dev-server", "swap-navigator/runtime-server"]
-# `terminal`: forces the terminal backend on the host. The terminal target
-# builds for the host triple, so on a macOS host it collides with
-# `backend-macos` and `cfg(target_os)` can't disambiguate — the CLI's
-# terminal wrapper enables this feature to break the tie. (See the
-# tutorial's Cargo.toml for the full rationale.) swap-navigator needs no
-# terminal feature — its backend-neutral handler serves the terminal
-# backend through the generic fallback registration.
-terminal = ["dep:backend-terminal"]
+# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
+# (build-runtime-server). Pulls `dev-server` so
+# `register_scene_extensions_recorder` compiles against the recorder
+# backend's scene registry; device/web builds never see it.
+sidecar = ["dep:dev-server"]
 
 [dependencies]
-# `catalog` flips on the emission gate in `runtime-macros` AND pulls
-# `mcp-catalog` in transitively, so every `#[component]` expansion
-# across the dep graph (idea-ui's, the shell's, the SDKs') emits a
-# catalog entry. This is what lets the app read its OWN catalog at
-# runtime via `ResolvedCatalog::build()`.
+# The author surface. `runtime-core` is aliased to `runtime_core` at
+# the crate root (src/lib.rs) — one core, no feature switch.
+#
+# `catalog` is the mirror of the old `runtime-core/catalog`: it flips the
+# emission gate in `runtime-macros` AND the vocabulary's `glue::__mcp`
+# anchor (which this root's glob re-export carries, so alias-resolved
+# `#[derive(IdealystSchema)]` / `recipe!` / `doc_scope!` emissions land
+# there too), pulling `mcp-catalog` in transitively. That is what makes
+# every `#[component]` expansion across the dep graph — idea-ui's, the
+# shell's, the SDKs' — register a catalog entry the app can read back.
 runtime-core = { workspace = true, features = ["catalog"] }
+# The `ui!` / `#[component]` emission spells absolute
+# `::runtime_vocabulary::glue::…` paths, and `app()` names the
+# vocabulary's nav prims directly.
+runtime-vocabulary = { workspace = true }
+# `runtime_scene::Registry` — the type of the boot registration seam.
+runtime-scene = { workspace = true }
 # Read the catalog programmatically (typed `ResolvedCatalog` + the
 # entry structs). A pure-consumer app would only need
 # `runtime-core/catalog`, but this app inspects the catalog directly.
@@ -51,26 +54,39 @@ idea-ui = { workspace = true, features = ["docs"] }
 swap-navigator = { workspace = true }
 idea-ui-nav = { workspace = true }
 # Theme-aware syntax-highlighted code panels for usage snippets.
+# `codeblock::register` at boot is its scene-registry seam.
 codeblock = { workspace = true }
 # CommonMark/GFM prose rendering for guides + entry docs — one native
 # styled-text node per backend. Recipe code samples stay on `codeblock`.
+# `markdown::register` at boot is its scene-registry seam.
 markdown = { workspace = true }
-# Real HTML <table> on web via Element::External; flex fallback on
-# native. Powers the auto-generated props/fields tables.
+# Real HTML <table> on web; shared-track CSS-grid on native. Powers the
+# auto-generated props/fields tables. `table::register_handlers` at boot
+# is its scene-registry seam.
 table = { workspace = true }
 # Lucide icon pack — the `MENU` glyph for the mobile hamburger AND the
 # whole-pack `ALL` registry (the `registry` feature) the Icons gallery
 # page renders the live glyph grid from. Geometry comes from here; the
 # pack's catalog metadata (names/count/license) comes from catalog.json.
 icons-lucide = { workspace = true, features = ["registry"] }
-# Recorder backend for the runtime-server sidecar wrapper. Optional.
+# Recorder backend for the runtime-server sidecar wrapper. Optional —
+# pulled in only by the `sidecar` feature (host-side sidecar build);
+# never compiled for device/web targets.
 dev-server = { workspace = true, optional = true }
+
+# No backend deps. `register_scene_extensions` is generic over the scene
+# `Host` (all three SDK handlers this app registers are caps-generic), so
+# the app crate is fully platform-agnostic — the CLI-generated wrappers
+# bring their own concrete backend and own the boot, including the live
+# viewport source (`backend_web::newcore::start_in` installs the window
+# `resize` listener itself; there is no per-backend `register_extensions`
+# hook to write any more).
 
 # Build-time catalog extraction (see build.rs). These compile for the
 # HOST and run inside the build script, where inventory's `#[used]` ctors
 # survive — so we get the FULL framework catalog, immune to the wasm DCE
-# that prunes the runtime self-inventory. `runtime-core/catalog` flips the
-# emission gate on within the build-dep feature graph so every
+# that prunes the runtime self-inventory. `runtime-core/catalog` flips
+# the emission gate on within the build-dep feature graph so every
 # `#[component]` / `#[derive(IdealystSchema)]` in these crates emits.
 [build-dependencies]
 runtime-core = { workspace = true, features = ["catalog"] }
@@ -90,33 +106,6 @@ serde_json = { workspace = true }
 [dev-dependencies]
 # The unit tests build the catalog and exercise the view-model mapping.
 serde_json = { workspace = true }
-
-# Web-only deps. The cross-platform `app()` tree never references these.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { workspace = true }
-wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["console"] }
-console_error_panic_hook = "0.1"
-lol_alloc = "0.4"
-
-# Native backend deps for the CLI-generated wrappers.
-[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
-backend-ios-mobile = { workspace = true }
-
-[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
-backend-android-mobile = { workspace = true }
-
-[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
-backend-macos = { workspace = true }
-
-# Terminal backend — pulled in ONLY by the `terminal` feature (the CLI's
-# terminal wrapper enables it). It can't be a `target_os` dependency like
-# the others: the terminal target builds for the host triple, so on a
-# macOS host it shares macOS's triple and would collide with
-# `backend-macos`. The feature is the disambiguator. See `[features]`.
-[dependencies.backend-terminal]
-workspace = true
-optional = true
 
 # wasm-opt's bundled binaryen rejects bulk-memory ops emitted by recent
 # rustc; the wasm is still LTO'd at link time without the post-pass.

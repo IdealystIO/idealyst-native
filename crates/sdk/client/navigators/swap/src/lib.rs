@@ -8,8 +8,6 @@
 //! of react-router's `<Outlet/>`:
 //!
 //! ```ignore
-//! swap_navigator::register(&mut backend);
-//!
 //! let home = Route::<()>::new("home", "/");
 //! let nav: Ref<SwapHandle> = Ref::new();
 //!
@@ -19,7 +17,7 @@
 //!     // The layout OWNS the tree and splats `{nav.outlet}`. "Tab bar" =
 //!     // wrap the outlet in a bar; "drawer" = wrap it in an idea-ui Drawer.
 //!     .layout(|nav| ui! {
-//!         Column {
+//!         view {
 //!             { nav.outlet }
 //!             TabBar(active = nav.active_route, on_select = nav.on_select) { /* … */ }
 //!         }
@@ -27,35 +25,43 @@
 //!     .bind(nav.clone());
 //! ```
 //!
-//! # One backend-neutral handler
+//! # One handler, every host
 //!
-//! Because chrome is author layout, the handler drives everything through
-//! the framework's [`NavigatorHost`] callbacks
-//! ([`build_layout_with_outlet`](NavigatorHost::build_layout_with_outlet),
-//! [`mount_screen`](NavigatorHost::mount_screen),
-//! [`insert_node`](NavigatorHost::insert_node),
-//! [`clear_children`](NavigatorHost::clear_children)) plus
-//! [`schedule_microtask`](runtime_core::schedule_microtask). So ONE
-//! [`SwapHandler`] serves every backend — there are no per-backend twins to
-//! drift apart (the bug that made the old tab navigator panic on web). The
-//! per-backend modules below only submit the self-registration inventory
-//! entry.
+//! The authored surface here lowers to the vocabulary's
+//! [`swap_navigator`](runtime_vocabulary::builders::swap_navigator)
+//! builder, and the runtime side is the vocabulary's own swap handler —
+//! installed on EVERY host by `register_builtins`. There are no
+//! per-backend twins to drift apart (the bug that made the old tab
+//! navigator panic on web), and no registration call for an app to
+//! forget: [`register`] exists only so historical bootstrap code keeps
+//! compiling.
 //!
-//! Selecting a screen dispatches `NavCommand::Select`; a `Link` inside a
+//! Construction lowers to the vocabulary builder, the layout closure
+//! adapts through the [`SwapNav`] world context the navigator mount
+//! provides, `.bind` rides `.on_handle` (the unified [`NavHandle`]), and
+//! the outlet is the plain `navigator_outlet()` element handed back as
+//! `nav.outlet`.
+//!
+//! Selecting a screen dispatches a `Select` command; a `link` inside a
 //! swap screen is rewritten to `Select` by the installed link activator
 //! (so links switch, never push).
+//!
+//! **URL sync** needs no opt-in: every navigator registers with the
+//! host-installed `handlers::nav_url_sync::UrlSyncService` automatically
+//! (backend-web installs it at boot).
 //!
 //! # Sizing
 //!
 //! The navigator's root **fills its container by default** (width/height
-//! 100% + `flex-grow: 1` — see `navigator_fill_rules` in `runtime-core`), so
-//! an app whose root is a navigator fills the viewport on every backend.
-//! The **outlet fills too**: a style-less `{nav.outlet}` defaults to a
-//! bounded, fillable flex region (`flex: 1 1 0` + `min-height: 0` — see
-//! `outlet_fill_rules`), so screens that assume they can fill — and scroll
-//! views that need a bounded height — work with zero configuration.
-//! Override either by styling it directly: `.with_style(...)` on the
-//! navigator builder, `ctx.outlet.with_style(...)` on the outlet.
+//! 100% + `flex-grow: 1` — `navigator_fill_rules`), so an app whose root
+//! is a navigator fills the viewport on every backend. The **outlet
+//! fills too**: a style-less `{nav.outlet}` defaults to a bounded,
+//! fillable flex region (`flex: 1 1 0` + `min-height: 0` —
+//! `outlet_fill_rules`), so screens that assume they can fill — and
+//! scroll views that need a bounded height — work with zero
+//! configuration. Override either by styling it directly:
+//! `.with_style(...)` on the navigator builder,
+//! `ctx.outlet.with_style(...)` on the outlet.
 //!
 //! # The outlet is one-shot — keep it in one stable spot
 //!
@@ -67,31 +73,196 @@
 
 #![deny(missing_docs)]
 
-// Lets code inside this crate refer to itself by its external name, so the
-// captured `recipes` source shows the `use swap_navigator::{…}` import line an
-// app author needs verbatim (mirrors `extern crate self as stack_navigator` in
-// the stack navigator and `as runtime_core` in core).
-extern crate self as swap_navigator;
+use std::any::Any;
+use std::collections::HashMap;
+use std::rc::Rc;
 
-/// Compile-checked usage recipes (docs / MCP catalog). Present only under the
-/// `catalog` feature — see [`recipes`].
-#[cfg(all(feature = "catalog", not(feature = "new-core")))]
-pub mod recipes;
+use runtime_vocabulary::builders::{self, navigator_outlet};
+use runtime_vocabulary::glue::{inject, ChildList, Element, IntoElement, Ref, Signal};
+use runtime_vocabulary::prims::{NavHandle, SwapNav};
 
-// One authored surface, two cores (idea-lite migration P6): the default
-// build is the old-core implementation, byte-moved into `oldcore`; the
-// `new-core` feature swaps in `newcore`, which re-expresses the SAME
-// public names (`SwapNavigator`/`SwapBuilder`/`SwapHandle`/
-// `SwapContext`/`MountPolicy`/`Screen`…) over the vocabulary's
-// `swap_navigator()` builder + `SwapNav` world context — so a consuming
-// app compiles the same source against either core. Mutually exclusive
-// (same names), mirroring the build-graph-wide macro-lowering switch.
-#[cfg(not(feature = "new-core"))]
-mod oldcore;
-#[cfg(not(feature = "new-core"))]
-pub use oldcore::*;
+pub use runtime_vocabulary::glue::{Route, RouteParams};
+pub use runtime_vocabulary::prims::{MountPolicy, Screen};
 
-#[cfg(feature = "new-core")]
-mod newcore;
-#[cfg(feature = "new-core")]
-pub use newcore::*;
+/// Presentation-label marker. There is no typed navigator payload any
+/// more; the label string below is what introspection serves as
+/// `NavSnapshot::type_name`, and this ZST keeps the historical name
+/// resolvable for app code that spelled it.
+pub struct SwapPresentation;
+
+/// The presentation label reported by navigator introspection (and by
+/// the wire, for a recorded session) — frozen at the historical
+/// payload-struct path so snapshots stay comparable.
+const SWAP_LABEL: &str = "swap_navigator::SwapPresentation";
+
+/// Per-swap-screen options. Empty today (swap screens draw no navigator
+/// chrome of their own), kept as a named type so per-screen metadata
+/// can be added without an API break.
+#[derive(Default, Clone)]
+pub struct SwapScreenOptions {}
+
+impl SwapScreenOptions {
+    /// Empty options (`Default`).
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// The value a swap navigator hands its `.layout(|nav| …)` closure.
+/// Splat [`outlet`](Self::outlet) exactly once where the active screen
+/// renders. Not `Clone` (the outlet is a one-shot element).
+pub struct SwapContext {
+    /// Splat into the layout (`{nav.outlet}`) where the active screen
+    /// mounts.
+    pub outlet: Element,
+    /// Currently active route key — highlight the live tab/nav item.
+    pub active_route: Signal<&'static str>,
+    /// Full resolved path of the active screen.
+    pub active_path: Signal<String>,
+    /// Switch to a sibling screen by route name (`Select`).
+    pub on_select: Rc<dyn Fn(&'static str)>,
+}
+
+/// Typed runtime handle to a live swap navigator, filled into the
+/// [`Ref`] passed to [`SwapBuilder::bind`]. Wraps the vocabulary's
+/// unified [`NavHandle`]. Cheap to clone.
+#[derive(Clone)]
+pub struct SwapHandle {
+    inner: NavHandle,
+}
+
+impl SwapHandle {
+    /// Wrap the vocabulary handle (called by the `.bind` glue; authors
+    /// get one from [`SwapBuilder::bind`]).
+    pub fn from_inner(inner: NavHandle) -> Self {
+        Self { inner }
+    }
+
+    /// Switch to `route`, building its URL from typed `params`.
+    /// Selecting the already-active screen is a no-op at the driver.
+    pub fn select<P: RouteParams + Clone>(&self, route: &Route<P>, params: P) {
+        self.inner.select(route, params);
+    }
+
+    /// Borrow the underlying kind-agnostic [`NavHandle`].
+    pub fn inner(&self) -> &NavHandle {
+        &self.inner
+    }
+}
+
+/// The swap-navigator builder. [`SwapNavigator::new`] starts one; the
+/// fluent [`SwapBuilder`] methods register screens, set the author
+/// layout, and bind the `Ref`. The result drops into a `ui!` tree
+/// (it coerces to an `Element`).
+pub struct SwapNavigator {
+    b: builders::SwapNavigatorBuilder,
+}
+
+impl SwapNavigator {
+    /// Start a swap navigator whose initial (selected) screen is
+    /// `initial`.
+    pub fn new(initial: &Route<()>) -> Self {
+        Self {
+            b: builders::swap_navigator(initial).nav_label(SWAP_LABEL),
+        }
+    }
+}
+
+/// Fluent builder methods for the swap navigator. A trait (not inherent
+/// methods) so the builder surface stays swappable underneath.
+pub trait SwapBuilder: Sized {
+    /// Register a screen: its route and the closure that builds the
+    /// screen from typed params.
+    fn screen<P, R, F>(self, route: Route<P>, render: F) -> Self
+    where
+        P: RouteParams + 'static,
+        R: Into<Screen> + 'static,
+        F: Fn(P) -> R + 'static;
+    /// Set the author layout — the closure owns the chrome tree and
+    /// splats `{nav.outlet}` where the active screen renders.
+    fn layout<F>(self, f: F) -> Self
+    where
+        F: Fn(SwapContext) -> Element + 'static;
+    /// Set the screen mount lifecycle — see [`MountPolicy`].
+    fn mount_policy(self, policy: MountPolicy) -> Self;
+    /// Bind a [`Ref<SwapHandle>`] so the app can switch screens
+    /// imperatively.
+    fn bind(self, r: Ref<SwapHandle>) -> Self;
+}
+
+impl SwapBuilder for SwapNavigator {
+    fn screen<P, R, F>(mut self, route: Route<P>, render: F) -> Self
+    where
+        P: RouteParams + 'static,
+        R: Into<Screen> + 'static,
+        F: Fn(P) -> R + 'static,
+    {
+        self.b = self.b.screen(route, render);
+        self
+    }
+
+    fn layout<F>(mut self, f: F) -> Self
+    where
+        F: Fn(SwapContext) -> Element + 'static,
+    {
+        // The vocabulary layout closure takes no argument; the mount
+        // provides `SwapNav` for the build window — adapt it back into
+        // the old context-parameter shape.
+        self.b = self.b.layout(move || {
+            let nav = inject::<SwapNav>()
+                .expect("swap-navigator: SwapNav provided by the navigator mount");
+            f(SwapContext {
+                outlet: navigator_outlet().build(),
+                active_route: nav.active_route,
+                active_path: nav.active_path,
+                on_select: nav.on_select,
+            })
+        });
+        self
+    }
+
+    fn mount_policy(mut self, policy: MountPolicy) -> Self {
+        self.b = self.b.mount_policy(policy);
+        self
+    }
+
+    fn bind(mut self, r: Ref<SwapHandle>) -> Self {
+        self.b = self
+            .b
+            .on_handle(move |handle| r.fill(SwapHandle::from_inner(handle)));
+        self
+    }
+}
+
+impl IntoElement for SwapNavigator {
+    fn into_element(self) -> Element {
+        self.b.build()
+    }
+}
+
+impl ChildList for SwapNavigator {
+    fn append_to(self, out: &mut Vec<Element>) {
+        out.push(self.into_element());
+    }
+}
+
+/// No-op: the vocabulary's `register_builtins` installs the swap handler
+/// on every host, so there is nothing for an app to register. Kept so
+/// historical bootstrap code (`swap_navigator::register(&mut backend)`)
+/// compiles unchanged.
+pub fn register<B>(_backend: &mut B) {}
+
+/// No-op — see [`register`]. Generic-registry (SSR / test) hosts render
+/// navigators through `register_builtins` too.
+pub fn register_generic<B>(_backend: &mut B) {}
+
+/// Convenience re-exports — glob-import to bring the builder, handle,
+/// screen options, and value types into scope, including the shared data
+/// surface (`Route`, `Screen`, `SwapContext`), so an app imports
+/// everything from here.
+pub mod prelude {
+    pub use super::{
+        register, MountPolicy, Route, Screen, SwapBuilder, SwapContext, SwapHandle,
+        SwapNavigator, SwapPresentation, SwapScreenOptions,
+    };
+}

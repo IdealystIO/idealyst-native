@@ -22,24 +22,6 @@ crate-type = ["rlib"]
 
 [features]
 default = []
-# New-core (idea-lite) adoption: `newcore::start` mounts a scene-element
-# tree on a `runtime_world::World` through the vocabulary's builtin
-# handlers, with `CpuBackend` implementing `runtime_scene::Host` + all
-# 30 capability traits directly, and a dispatch-hook flush driver
-# (click handlers -> staged writes -> one deduped flush; the host owns
-# render cadence and fires `dispatch_hook` after scheduler-driven
-# author callbacks). Additive — the old-core mount path is untouched
-# with or without this feature (same convention as backend-terminal's
-# `new-core`).
-new-core = [
-    "dep:runtime-world",
-    "dep:runtime-scene",
-    "dep:runtime-vocabulary",
-    # `create_navigator` (old-Element-typed NavigatorHost) is behind the
-    # vocabulary's `legacy-bridge` gate; this backend's newcore.rs
-    # implements it by delegating to the old Backend impl.
-    "runtime-vocabulary/legacy-bridge",
-]
 # `preview` pulls in the desktop windowing stack (winit + softbuffer)
 # so the `preview` example can live inside this crate without
 # polluting the embedded / no-window build path. Embedded targets
@@ -48,17 +30,25 @@ new-core = [
 preview = ["dep:winit", "dep:softbuffer", "dep:pico-args"]
 
 [dependencies]
-runtime-core = { workspace = true }
+# The permanent substrate both cores compiled against (style engine,
+# tokens, prop/handle structs, scheduling, viewport). `runtime-core` is
+# NOT a dependency: this backend has no `Element`/`Backend` surface left.
+runtime-shared = { workspace = true }
 runtime-layout = { workspace = true }
-# New-core migration crates — only compiled under the `new-core` feature.
-runtime-world = { workspace = true, optional = true }
-runtime-scene = { workspace = true, optional = true }
-runtime-vocabulary = { workspace = true, optional = true }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
 
 # Optional — desktop preview only.
 winit = { version = "0.30", optional = true }
 softbuffer = { version = "0.4", optional = true }
 pico-args = { version = "0.5", optional = true }
+
+[dev-dependencies]
+# Frozen old-core framebuffers for the cross-core pixel-parity corpus, so
+# the gate survives the deletion of the old core. See
+# tests/goldens/README.md.
+parity-goldens = { workspace = true }
 
 [[example]]
 name = "preview"

@@ -14,25 +14,10 @@
 
 use idea_ui::stylesheets::{TableBodyCell, TableHeadCell};
 
-// The new-core alias: same-source `runtime_core::…` paths in this test
-// resolve against the glue facade (see idea-ui's lib.rs note).
-#[cfg(feature = "new-core")]
-extern crate runtime_facade as runtime_core;
-
 use runtime_core::{resolve_style, StyleApplication, TextAlign};
 
 /// The STATIC sheet application off a builder (these cell sheets are
-/// all-constant). The conversion trait's method name differs per core —
-/// the one fork (same shape as tests/theme_token_stylesheet.rs).
-#[cfg(not(feature = "new-core"))]
-fn static_app(b: impl runtime_core::IntoStyleSource) -> StyleApplication {
-    match b.into_style_source() {
-        runtime_core::StyleSource::Static(app) => app,
-        _ => panic!("table cell stylesheets are all-constant → static"),
-    }
-}
-
-#[cfg(feature = "new-core")]
+/// all-constant).
 fn static_app(b: impl runtime_core::IntoStyleSource) -> StyleApplication {
     match b.into_style_prop() {
         runtime_vocabulary::StyleProp::Sheet(app) => *app,

@@ -16,7 +16,7 @@
 //! But author code also runs from surfaces that are *not* input
 //! events:
 //!
-//! - `runtime_core::scheduling::after_ms` timers (a debounce that sets
+//! - `runtime_shared::scheduling::after_ms` timers (a debounce that sets
 //!   a signal; the smoke app's self-test),
 //! - one-shot `after_animation_frame` callbacks and `raf_loop`
 //!   iterations (animation ticks that stage writes),

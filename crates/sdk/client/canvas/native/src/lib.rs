@@ -1,42 +1,46 @@
 //! `canvas-native` — the native-2D-engine renderer for the `canvas` SDK.
 //!
-//! Registers an [`Element::External`](runtime_core::Element) handler for
-//! `canvas_core::CanvasProps` that replays the author's [`Scene`] with
-//! the platform's native 2D engine. The app selects this renderer (over
-//! `canvas-vello`) by calling [`register`] once at bootstrap.
+//! Registers a scene handler for [`canvas_core::CanvasPrim`] that replays
+//! the author's [`Scene`] with the platform's native 2D engine. The app
+//! selects this renderer (over `canvas-vello`) by passing [`register`] to
+//! the boot entry's registry seam.
 //!
 //! Per-target impls live in cfg-gated modules; only one compiles per
-//! build. Targets with no native module fall back to a no-op `register`
-//! (the framework draws its "not supported" placeholder) — use
-//! `canvas-vello` for those.
+//! build. Hosts with no native 2D engine (desktop Linux/Windows, the
+//! terminal, the wgpu host, the test harness) get the
+//! External-placeholder handler — use `canvas-vello` there.
 //!
 //! [`Scene`]: canvas_core::Scene
 #![deny(missing_docs)]
 
+use std::any::Any;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use canvas_core::CanvasPrim;
+use runtime_scene::{Element, MountCx, Registry};
+use runtime_vocabulary::caps::ExternalOps;
+use runtime_vocabulary::style_attach::{attach_style, on_teardown, StyleServices};
+
 // Shared glyph-outline expansion for `DrawOp::Glyphs`, used by every CPU
-// backend (web / apple / android). Gated to those targets so the fallback
-// build (no native 2D engine) doesn't carry an unused skrifa dependency.
-// (The native halves are old-core-only for now — see the `new-core`
-// feature notes below — so they drop out of new-core builds with their
-// consumers.)
+// backend (web / apple / android). Gated to those targets so the
+// placeholder build (no native 2D engine) doesn't carry an unused skrifa
+// dependency.
 #[cfg(any(
     target_arch = "wasm32",
     all(
         any(target_os = "ios", target_os = "macos", target_os = "android"),
-        not(target_arch = "wasm32"),
-        not(feature = "new-core")
+        not(target_arch = "wasm32")
     )
 ))]
 mod glyphs;
 
-// The web module is compiled on BOTH cores: its rasterizer / layer /
-// capture machinery is core-free and shared verbatim; only its
-// old-core `register` + `build_canvas` (the `effect!` wrapper) are
-// gated `not(new-core)` inside the module.
+// Web: the core-free Canvas2D rasterizer (`web`) + the
+// `WebBackend`-concrete mount handler that drives it (`web_scene`).
 #[cfg(target_arch = "wasm32")]
 mod web;
-#[cfg(all(target_arch = "wasm32", not(feature = "new-core")))]
-pub use web::register;
+#[cfg(target_arch = "wasm32")]
+mod web_scene;
 // Reusable Canvas2D rasterizer + capture helper — `canvas-vello`'s web renderer
 // calls these as its WebGPU-unavailable fallback (renders into the graphics
 // primitive's own `<canvas>`, same output as this crate's standalone handler)
@@ -44,184 +48,115 @@ pub use web::register;
 #[cfg(target_arch = "wasm32")]
 pub use web::{make_2d_rasterizer, publish_capture_stream};
 
-// New-core web leg: the same handler over the scene registry (see
-// web_newcore.rs — old `build_canvas` call-for-call, world effect
-// instead of `effect!`).
-#[cfg(all(target_arch = "wasm32", feature = "new-core"))]
-mod web_newcore;
-#[cfg(all(target_arch = "wasm32", feature = "new-core"))]
-pub use web_newcore::register;
-
 // Shared CoreGraphics painter for the Apple platforms (iOS + macOS).
 // The Scene→CGContext op-replay is platform-identical; only context
 // acquisition + the bezier/color vtable differ per backend.
-#[cfg(all(
-    any(target_os = "ios", target_os = "macos"),
-    not(target_arch = "wasm32"),
-    not(feature = "new-core")
-))]
+#[cfg(all(any(target_os = "ios", target_os = "macos"), not(target_arch = "wasm32")))]
 mod apple;
 
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32"), not(feature = "new-core")))]
+#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 mod ios;
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32"), not(feature = "new-core")))]
-pub use ios::register;
-
-#[cfg(all(
-    target_os = "macos",
-    not(target_arch = "wasm32"),
-    not(feature = "new-core")
-))]
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 mod macos;
-#[cfg(all(
-    target_os = "macos",
-    not(target_arch = "wasm32"),
-    not(feature = "new-core")
-))]
-pub use macos::register;
-
-#[cfg(all(
-    target_os = "android",
-    not(target_arch = "wasm32"),
-    not(feature = "new-core")
-))]
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 mod android;
-#[cfg(all(
-    target_os = "android",
-    not(target_arch = "wasm32"),
-    not(feature = "new-core")
-))]
-pub use android::register;
 
-#[cfg(all(
-    not(any(
-        target_arch = "wasm32",
-        target_os = "ios",
-        target_os = "android",
-        target_os = "macos"
-    )),
-    not(feature = "new-core")
-))]
-mod fallback {
-    use runtime_core::Backend;
-
-    /// No-op `register` for targets without a native canvas module
-    /// (desktop uses `canvas-vello`). Still registers the wire serde so a
-    /// canvas can round-trip over the runtime-server wire to a client that
-    /// *does* have a renderer.
-    pub fn register<B: Backend>(_backend: &mut B) {
-        canvas_core::ensure_wire_serde();
+/// Shared mount tail for a concrete-backend canvas handler: author style
+/// onto the node the platform builder returned, then the scope-tied
+/// `release_external` teardown (every external mount releases at unmount,
+/// handler-backed or not).
+pub(crate) fn finish_mount<H>(backend: &Rc<RefCell<H>>, node: &H::Node, prim: &CanvasPrim)
+where
+    H: ExternalOps + StyleServices,
+{
+    if let Some(style) = prim.take_style() {
+        attach_style(backend, node, style);
     }
+    let backend = backend.clone();
+    let node = node.clone();
+    on_teardown(move || {
+        backend.borrow_mut().release_external(&node);
+    });
 }
-#[cfg(all(
-    not(any(
-        target_arch = "wasm32",
-        target_os = "ios",
-        target_os = "android",
-        target_os = "macos"
-    )),
-    not(feature = "new-core")
-))]
-pub use fallback::register;
 
-// New-core, non-web targets: the native CoreGraphics/android painters
-// (and the GPU `canvas-vello` renderer) are old-core-only for now —
-// their ports ride the same seam (register a `CanvasPrim` handler on
-// the platform backend's registry; wrap any author callbacks with that
-// backend's `newcore::schedule_flush`, the External residual named in
-// each backend's newcore.rs module docs). Until then, `register`
-// installs the frozen External-placeholder degradation path so a canvas
-// in a new-core native tree renders the labeled "unsupported" box
-// instead of panicking at realize (unregistered payloads panic on the
-// scene registry).
-#[cfg(all(not(target_arch = "wasm32"), feature = "new-core"))]
-mod native_newcore {
-    use std::any::Any;
-    use std::rc::Rc;
-
-    use canvas_core::CanvasPrim;
-    use runtime_scene::{Element, MountCx, Registry};
-    use runtime_vocabulary::caps::ExternalOps;
-    use runtime_vocabulary::style_attach::{attach_style, on_teardown, StyleServices};
-
-    /// Placeholder `register` for new-core native targets (no ported
-    /// renderer yet). Mirrors the old walker's unregistered-External
-    /// posture: `create_external` placeholder + author style.
-    pub fn register<H>(registry: &mut Registry<H>)
-    where
-        H: ExternalOps + StyleServices + 'static,
-    {
-        canvas_core::ensure_wire_serde();
-        registry.register::<CanvasPrim, _>(
-            |cx: &mut MountCx<'_, H>, prim: &Rc<CanvasPrim>, _children: Vec<Element>| {
-                let backend = cx.backend().clone();
-                let payload: Rc<dyn Any> = prim.props.clone();
-                let node = backend.borrow_mut().create_external(
-                    std::any::TypeId::of::<canvas_core::CanvasProps>(),
-                    std::any::type_name::<canvas_core::CanvasProps>(),
-                    &payload,
-                    &runtime_core::accessibility::AccessibilityProps::default(),
-                );
-                if let Some(style) = prim.take_style() {
-                    attach_style(&backend, &node, style);
-                }
-                // Old walker parity: External mounts release at teardown.
-                let backend_for_drop = backend.clone();
-                let node_for_drop = node.clone();
-                on_teardown(move || {
-                    backend_for_drop.borrow_mut().release_external(&node_for_drop);
-                });
-                node
-            },
-        );
-    }
+/// Placeholder handler for hosts with no native 2D engine — the External
+/// degradation path, so a canvas renders the host's labeled "unsupported"
+/// box instead of panicking at realize (an unregistered payload panics on
+/// the scene registry). The fill default still attaches, so the box is
+/// visible.
+fn mount_placeholder<H>(
+    cx: &mut MountCx<'_, H>,
+    prim: &Rc<CanvasPrim>,
+    _children: Vec<Element>,
+) -> H::Node
+where
+    H: ExternalOps + StyleServices,
+{
+    let backend = cx.backend().clone();
+    let payload: Rc<dyn Any> = prim.props.clone();
+    let node = backend.borrow_mut().create_external(
+        std::any::TypeId::of::<canvas_core::CanvasProps>(),
+        std::any::type_name::<canvas_core::CanvasProps>(),
+        &payload,
+        &runtime_shared::accessibility::AccessibilityProps::default(),
+    );
+    finish_mount(&backend, &node, prim);
+    node
 }
-#[cfg(all(not(target_arch = "wasm32"), feature = "new-core"))]
-pub use native_newcore::register;
 
-/// Regression tests for the `self-register` feature gate. The bug being
-/// prevented: the inventory ctor is a LINK-TIME anchor — with it always on,
-/// merely depending on this crate (as `canvas-vello` does for its Canvas2D
-/// fallback delegate) made the rasterizer + glyph stack (skrifa/read_fonts,
-/// ~670 KB) reachable from `main`'s ctors, pinning it in a lazy web bundle's
-/// `main.wasm` even though the canvas itself lived in a wasm-split chunk.
+/// Install the native-2D canvas renderer on a scene registry. Pass as
+/// (part of) the boot registration seam —
+/// `backend_web::newcore::start_in("#app", canvas_native::register, app)`,
+/// `host_appkit::newcore::run_with(build, opts, |r| canvas_native::register(r))`,
+/// the mobile `run_in_view`, …
 ///
-/// Link-graph anchoring isn't observable from a unit test, so this asserts
-/// the closest reachable state: what the crate submits into the inventory
-/// registry under each feature setting, on the host target (the submit sites
-/// are gated identically on web/iOS/Android). Run both:
-///   cargo test -p canvas-native
-///   cargo test -p canvas-native --no-default-features
-// (`not(new-core)`: the new core has NO inventory self-registration by
-// design — the registry is built explicitly at boot — so the old-core
-// macos registrar ctor is gated out with its module and these link-graph
-// assertions only apply to the old-core build.)
-#[cfg(all(
-    test,
-    target_os = "macos",
-    not(target_arch = "wasm32"),
-    not(feature = "new-core")
-))]
-mod self_register_gate_tests {
-    #[cfg(feature = "self-register")]
-    #[test]
-    fn regression_self_register_default_submits_the_registrar() {
-        let count = inventory::iter::<backend_macos::MacosExternalRegistrar>
-            .into_iter()
-            .count();
-        assert_eq!(count, 1, "default features must self-register the handler");
+/// # One `register`, resolved at registration time
+///
+/// Every real renderer here is backend-CONCRETE (a `<canvas>` 2D context,
+/// a `UIView`/`NSView` subclass, an Android `ImageView` — none of it has a
+/// caps-trait expression), but a native build must ALSO serve
+/// `Registry<HostMock>` for the test harness. A cfg-split pair of
+/// same-named `register` fns cannot express that, so `register` stays
+/// generic on every target and type-dispatches ONCE at registration: it
+/// downcasts `&mut Registry<H>` to the platform's concrete registry
+/// (`H: 'static` makes the registry `Any`) and installs the native
+/// handler on hit; every other `H` gets the placeholder. Mount-path cost:
+/// zero.
+pub fn register<H>(registry: &mut Registry<H>)
+where
+    H: ExternalOps + StyleServices + 'static,
+{
+    #[cfg(target_arch = "wasm32")]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_web::WebBackend>>() {
+            reg.register::<CanvasPrim, _>(web_scene::mount_canvas);
+            return;
+        }
     }
-
-    #[cfg(not(feature = "self-register"))]
-    #[test]
-    fn regression_delegate_only_build_links_no_registrar_ctor() {
-        let count = inventory::iter::<backend_macos::MacosExternalRegistrar>
-            .into_iter()
-            .count();
-        assert_eq!(
-            count, 0,
-            "without self-register the ctor must not exist — it would anchor \
-             the rasterizer + glyph stack in a lazy bundle's main.wasm"
-        );
+    #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_ios::IosBackend>>() {
+            reg.register::<CanvasPrim, _>(ios::mount_canvas);
+            return;
+        }
     }
+    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_macos::MacosBackend>>() {
+            reg.register::<CanvasPrim, _>(macos::mount_canvas);
+            return;
+        }
+    }
+    #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_android::AndroidBackend>>() {
+            reg.register::<CanvasPrim, _>(android::mount_canvas);
+            return;
+        }
+    }
+    registry.register::<CanvasPrim, _>(mount_placeholder::<H>);
 }

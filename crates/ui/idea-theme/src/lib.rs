@@ -37,42 +37,26 @@
 //!   [`install_themes`], plus [`ThemeTokens`] / [`TokenEntry`] /
 //!   [`TokenValue`] for theme installation and live swap.
 
-// idea-lite core migration (P6 SDK retarget): under `new-core` this
-// alias shadows the extern-prelude `runtime-core` for the WHOLE crate
-// (use paths, inline paths, `::runtime_core::…` absolute paths alike),
-// so the same source compiles against `runtime_vocabulary::glue`'s
-// mirrors of the old author surface. The default build has no alias and
-// is byte-identical old-core.
-#[cfg(feature = "new-core")]
-extern crate runtime_facade as runtime_core;
-
 pub mod extensible;
 pub mod intent;
 mod theme_runtime;
 
-/// Same-source signal read-modify-write across cores.
+/// In-place signal read-modify-write.
 ///
-/// The two cores' `Signal::update` closure shapes differ and CANNOT be
-/// unified by the glue alias: old core `update(FnOnce(&mut T))` mutates
-/// in place; the new core's inherent `update(FnOnce(&T) -> T)` stages a
-/// returned value, and an inherent method always shadows any trait
-/// method of the same name. `modify` is the shared spelling — the ONE
-/// sanctioned per-core fork for this API, kept here so every idea-*
-/// crate (and app code built on them) shares a single definition.
+/// The kernel's inherent [`Signal::update`] takes `FnOnce(&T) -> T` —
+/// it reads the current (staged-aware) value and stages the returned
+/// one. `modify` is the `&mut`-closure spelling on top of it, so
+/// `sig.modify(|v| v.push(x))` reads naturally for collection-valued
+/// signals. Kept in one place so every idea-* crate (and app code built
+/// on them) shares a single definition.
+///
+/// [`Signal::update`]: runtime_core::Signal::update
 pub mod compat {
     /// In-place read-modify-write: `sig.modify(|v| v.push(x))`.
     pub trait SignalModify<T> {
         fn modify(&self, f: impl FnOnce(&mut T));
     }
 
-    #[cfg(not(feature = "new-core"))]
-    impl<T: Clone + 'static> SignalModify<T> for runtime_core::Signal<T> {
-        fn modify(&self, f: impl FnOnce(&mut T)) {
-            self.update(f);
-        }
-    }
-
-    #[cfg(feature = "new-core")]
     impl<T: PartialEq + Clone + 'static> SignalModify<T> for runtime_core::Signal<T> {
         fn modify(&self, f: impl FnOnce(&mut T)) {
             // The kernel's `update` reads the CURRENT (staged-aware)
@@ -88,34 +72,22 @@ pub mod compat {
     }
 }
 
-/// Test-support for same-source dual-core suites (this crate's own unit
-/// tests, and idea-ui's — which depends on idea-theme, so the correct
-/// per-core impl is selected by feature unification). Hidden: not part
-/// of the theming surface.
+/// Test-support shared by this crate's unit tests and idea-ui's.
+/// Hidden: not part of the theming surface.
 #[doc(hidden)]
 pub mod testing {
-    /// Run a test body in a reactive context valid for the active core.
+    /// Run a test body inside a reactive context.
     ///
-    /// Old core: reactive state is ambient thread-local — identity.
-    /// New core: signals/effects need an ambient world — runs `f`
-    /// inside a fresh `World` (entered, flushed, dropped afterwards).
-    #[cfg(not(feature = "new-core"))]
-    pub fn with_test_world<R>(f: impl FnOnce() -> R) -> R {
-        f()
-    }
-
-    #[cfg(feature = "new-core")]
+    /// Signals and effects are world-backed, so they need an ambient
+    /// world: `f` runs inside a fresh `World` (entered, flushed, and
+    /// dropped afterwards).
     pub fn with_test_world<R>(f: impl FnOnce() -> R) -> R {
         runtime_core::__with_fresh_world(f)
     }
 
-    /// Commit staged signal writes mid-test. Old core: writes apply
-    /// immediately — no-op. New core: flushes the innermost
-    /// `with_test_world` world (set-then-assert parity).
-    #[cfg(not(feature = "new-core"))]
-    pub fn commit() {}
-
-    #[cfg(feature = "new-core")]
+    /// Commit staged signal writes mid-test — flushes the innermost
+    /// [`with_test_world`] world so a `set` is observable by a following
+    /// `get` (writes stage until the world flushes).
     pub fn commit() {
         runtime_core::__flush_test_world();
     }

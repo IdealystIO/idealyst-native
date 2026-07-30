@@ -47,7 +47,7 @@ impl PickedFile {
 /// `install_file_drop_handler` is the no-op default), so this is dead until a
 /// GTK drag-dest impl lands — but it's ready for it.
 #[cfg(feature = "drop")]
-pub(crate) fn picked_from_dropped(f: &runtime_core::DroppedFile) -> Option<PickedFile> {
+pub(crate) fn picked_from_dropped(f: &runtime_shared::DroppedFile) -> Option<PickedFile> {
     let path = f.path.clone()?;
     Some(PickedFile {
         name: f.name.clone(),

@@ -1,9 +1,8 @@
 //! Benchmark runner — the page that drives each variant in
 //! sequence through an iframe, collects per-iteration results,
-//! and renders the comparison table. Built using the same
-//! `runtime-core` + `backend-web` stack as the idealyst-native
-//! variant, so the runner is itself a dogfood case for the
-//! framework.
+//! and renders the comparison table. Built on the same framework +
+//! `backend-web` stack as the idealyst-native variant, so the runner is
+//! itself a dogfood case for the framework.
 //!
 //! High-level architecture:
 //!
@@ -25,7 +24,6 @@
 //!      completion (signaled by a `bench-result` or `bench-error`
 //!      message) advances to the next one.
 
-use backend_web::WebBackend;
 use runtime_core::{
     button, signal, stylesheet, text_input, toggle, ui, AlignItems, Color,
     FlexDirection, JustifyContent, Length, Overflow, Element, Signal, TokenEntry, TokenValue,
@@ -849,7 +847,7 @@ fn state() -> Rc<RunnerState> {
 // =============================================================================
 
 fn bump_results(st: &RunnerState) {
-    st.results_version.update(|v| *v += 1);
+    st.results_version.update(|v| v + 1);
 }
 
 fn set_status(st: &RunnerState, id: &'static str, status: VariantStatus) {
@@ -1476,12 +1474,17 @@ fn frame_wrap() -> Element {
         view(style = FrameWrap()) {
             { frame_header() }
             {
-                webview::WebView(webview::WebViewProps {
-                    url: webview::url(move || url_sig.get()),
-                    on_message: Some(std::rc::Rc::new(handle_message)),
-                    ..Default::default()
-                })
-                .with_style(IframeStyle())
+                // `.with_style` returns the SDK's builder (`WebViewBound`),
+                // which is `IntoElement` but not `ChildList` — coerce it for
+                // the child-splat position.
+                runtime_core::IntoElement::into_element(
+                    webview::WebView(webview::WebViewProps {
+                        url: webview::url(move || url_sig.get()),
+                        on_message: Some(std::rc::Rc::new(handle_message)),
+                        ..Default::default()
+                    })
+                    .with_style(IframeStyle()),
+                )
             }
         }
     }
@@ -1625,59 +1628,55 @@ fn app() -> Element {
 #[wasm_bindgen]
 pub fn start() {
     console_error_panic_hook::set_once();
-    backend_web::install_scheduler();
-    backend_web::install_time_source();
+    // `newcore::start_in` installs the scheduler, the time source and
+    // the global self-handle itself; only the drop-deferral install is
+    // boot-path-independent.
     backend_web::install_drop_deferral();
 
-    // One param signal per (suite, param) pair so switching
-    // suites preserves whatever the user last entered. Each
-    // signal starts at its suite's declared default.
-    let mut params: HashMap<(&'static str, &'static str), Signal<String>> = HashMap::new();
-    for suite in SUITES {
-        for p in suite.params {
-            params.insert((suite.name, p.name), signal(param_initial_value(suite.name, p)));
+    // Everything reactive is minted INSIDE the build closure: signal
+    // creation requires the app world entered, and `newcore::start_in`
+    // enters it only around the build. Signal handles are Copy and route
+    // to their own world, so the `#[wasm_bindgen]` exports below keep
+    // reading/writing them from outside the world.
+    //
+    // The webview SDK's payload handler is installed through the
+    // registration seam so `frame_wrap()`'s iframe primitive mounts as a
+    // real `<iframe>`; an unregistered payload panics at realize.
+    backend_web::newcore::start_in("#app", webview::register, || {
+        // One param signal per (suite, param) pair so switching
+        // suites preserves whatever the user last entered. Each
+        // signal starts at its suite's declared default.
+        let mut params: HashMap<(&'static str, &'static str), Signal<String>> = HashMap::new();
+        for suite in SUITES {
+            for p in suite.params {
+                params.insert((suite.name, p.name), signal(param_initial_value(suite.name, p)));
+            }
         }
-    }
-    let all_selected: HashSet<&'static str> = VARIANTS.iter().map(|v| v.id).collect();
-    let initial_suite = SUITES.first().expect("SUITES must be non-empty").name;
+        let all_selected: HashSet<&'static str> = VARIANTS.iter().map(|v| v.id).collect();
+        let initial_suite = SUITES.first().expect("SUITES must be non-empty").name;
 
-    let state = Rc::new(RunnerState {
-        selected_variants:    signal(Rc::new(all_selected)),
-        current_suite:        signal(initial_suite),
-        params,
-        results:              Rc::new(RefCell::new(HashMap::new())),
-        results_version:      signal(0u64),
-        current_variant:      signal(None),
-        current_status:       signal("Choose variants and press Run".to_string()),
-        iframe_url:           signal("about:blank".to_string()),
-        run_in_progress:      signal(false),
-        run_finalized:        signal(false),
-        elapsed_seconds:      signal(0.0),
-        queue:                RefCell::new(Vec::new()),
-        run_start_ms:         RefCell::new(0.0),
-        ticker_handle:        RefCell::new(None),
-        current_params:       RefCell::new(HashMap::new()),
-        current_run_suite:    RefCell::new(initial_suite),
+        let state = Rc::new(RunnerState {
+            selected_variants:    signal(Rc::new(all_selected)),
+            current_suite:        signal(initial_suite),
+            params,
+            results:              Rc::new(RefCell::new(HashMap::new())),
+            results_version:      signal(0u64),
+            current_variant:      signal(None),
+            current_status:       signal("Choose variants and press Run".to_string()),
+            iframe_url:           signal("about:blank".to_string()),
+            run_in_progress:      signal(false),
+            run_finalized:        signal(false),
+            elapsed_seconds:      signal(0.0),
+            queue:                RefCell::new(Vec::new()),
+            run_start_ms:         RefCell::new(0.0),
+            ticker_handle:        RefCell::new(None),
+            current_params:       RefCell::new(HashMap::new()),
+            current_run_suite:    RefCell::new(initial_suite),
+        });
+        STATE.with(|s| *s.borrow_mut() = Some(state));
+
+        app()
     });
-    STATE.with(|s| *s.borrow_mut() = Some(state));
-
-    let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
-    // Install the webview SDK so `frame_wrap()`'s iframe primitive
-    // mounts as a real `<iframe>` instead of the framework's
-    // "external not supported" placeholder. Explicit deref because
-    // the host-target fallback `register<B>` is generic — it doesn't
-    // autoderef `RefMut` to `&mut WebBackend` like the wasm32-specific
-    // signature would.
-    {
-        let mut b = backend.borrow_mut();
-        webview::register(&mut *b);
-    }
-    let owner = runtime_core::render(backend, app());
-    OWNER.with(|s| *s.borrow_mut() = Some(owner));
-}
-
-thread_local! {
-    static OWNER: RefCell<Option<runtime_core::Owner>> = const { RefCell::new(None) };
 }
 
 fn format_param(v: f64) -> String {

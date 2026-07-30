@@ -1,7 +1,7 @@
-//! New-core adoption tests for the terminal backend: cross-core render
-//! parity (rule-7 gate — the same scene must paint the same cells on
-//! both cores) plus op-level coverage of the caps adoption's flush
-//! discipline (input event → staged writes → flush → paint).
+//! Render-parity tests for the terminal backend: the rule-7 gate (a
+//! scene must paint the exact cells the OLD core painted) plus op-level
+//! coverage of the caps adoption's flush discipline (input event →
+//! staged writes → flush → paint).
 //!
 //! Harness notes: the tests install a queue-only scheduler (mirroring
 //! `host-terminal`'s tick semantics for microtasks: drain-until-empty).
@@ -9,20 +9,28 @@
 //! state is thread-local, so each test thread drains only its own
 //! tasks.
 
-#![cfg(feature = "new-core")]
+//! # The frozen corpus is the contract
+//!
+//! The grid-parity gates compare against a **frozen old-core grid dump**
+//! committed under `tests/goldens/` (cell-exact: glyph + fg + bg,
+//! run-length encoded per row), written by the old walker before it was
+//! deleted. A mismatch is a real rendering change, NOT a stale artifact:
+//! `IDEALYST_FREEZE_GOLDENS=1` can now only RE-BASELINE against the
+//! current renderer, permanently discarding the old core's testimony —
+//! see `tests/goldens/README.md`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use backend_terminal::{ClickOutcome, Grid, TerminalBackend};
-use runtime_core::{Color, Length, StyleApplication, StyleRules, StyleSheet, Tokenized};
+use runtime_shared::{Color, Length, StyleRules, Tokenized};
 
 // ===========================================================================
 // Queue-only test scheduler (host-terminal's microtask semantics)
 // ===========================================================================
 
 mod test_scheduler {
-    use runtime_core::scheduling::{ScheduleHandle, Scheduler};
+    use runtime_shared::scheduling::{ScheduleHandle, Scheduler};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -53,8 +61,8 @@ mod test_scheduler {
     }
 
     pub fn ensure_installed() {
-        if !runtime_core::scheduling::is_scheduler_installed() {
-            runtime_core::scheduling::install_scheduler(Box::new(QueueScheduler));
+        if !runtime_shared::scheduling::is_scheduler_installed() {
+            runtime_shared::scheduling::install_scheduler(Box::new(QueueScheduler));
         }
     }
 
@@ -101,33 +109,73 @@ fn grid_rows(grid: &Grid) -> Vec<String> {
         .collect()
 }
 
-/// Cell-exact comparison (glyph + fg + bg), with a readable rows dump on
-/// divergence.
-fn assert_grids_identical(name: &str, old: &Grid, new: &Grid) {
-    assert_eq!((old.cols, old.rows), (new.cols, new.rows), "{name}: grid size");
-    for r in 0..old.rows {
-        for c in 0..old.cols {
-            let a = old.cell(c, r).copied().unwrap_or_default();
-            let b = new.cell(c, r).copied().unwrap_or_default();
-            if a != b {
-                panic!(
-                    "{name}: cell divergence at ({c},{r}): old {a:?} vs new {b:?}\n\
-                     old rows:\n{}\nnew rows:\n{}",
-                    grid_rows(old).join("\n"),
-                    grid_rows(new).join("\n"),
-                );
-            }
-        }
+// ---------------------------------------------------------------------------
+// Frozen-artifact gate
+// ---------------------------------------------------------------------------
+
+fn goldens() -> parity_goldens::Goldens {
+    parity_goldens::Goldens::new(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn color_token(c: Option<runtime_shared::color::Rgba>) -> String {
+    match c {
+        None => "-".to_string(),
+        Some(c) => format!("{:02x}{:02x}{:02x}{:02x}", c.r, c.g, c.b, c.a),
     }
 }
 
-fn render_old(app: impl Fn() -> runtime_core::Element + 'static) -> Grid {
-    let backend = fresh_backend();
-    let owner = runtime_core::mount(backend.clone(), app);
-    test_scheduler::drain();
-    let grid = backend.borrow_mut().render_to_grid();
-    drop(owner);
-    grid
+/// Run-length encode one row's color channel so the dump stays small and
+/// reviewable while remaining lossless.
+fn rle(tokens: impl Iterator<Item = String>) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur: Option<(String, u32)> = None;
+    for t in tokens {
+        match &mut cur {
+            Some((v, n)) if *v == t => *n += 1,
+            _ => {
+                if let Some((v, n)) = cur.take() {
+                    out.push(if n == 1 { v } else { format!("{n}*{v}") });
+                }
+                cur = Some((t, 1));
+            }
+        }
+    }
+    if let Some((v, n)) = cur {
+        out.push(if n == 1 { v } else { format!("{n}*{v}") });
+    }
+    out.join(" ")
+}
+
+/// Canonical, lossless serialization of a grid: size header, then per
+/// row a glyph line (with a `|` fence so trailing spaces survive) and
+/// run-length-encoded fg/bg lines. Cell-exact — this is the same
+/// information `assert_grids_identical` compares.
+fn grid_dump(grid: &Grid) -> String {
+    let mut out = format!("cols={} rows={}\n", grid.cols, grid.rows);
+    for r in 0..grid.rows {
+        let mut glyphs = String::with_capacity(grid.cols as usize);
+        for c in 0..grid.cols {
+            let g = grid.cell(c, r).map(|cell| cell.glyph).unwrap_or(' ');
+            glyphs.push(if g.is_control() || g == '\0' { ' ' } else { g });
+        }
+        out.push_str(&format!("r{r:02} glyph |{glyphs}|\n"));
+        out.push_str(&format!(
+            "r{r:02} fg    {}\n",
+            rle((0..grid.cols).map(|c| color_token(grid.cell(c, r).and_then(|x| x.fg))))
+        ));
+        out.push_str(&format!(
+            "r{r:02} bg    {}\n",
+            rle((0..grid.cols).map(|c| color_token(grid.cell(c, r).and_then(|x| x.bg))))
+        ));
+    }
+    out
+}
+
+/// The gate: the rendered grid must match the frozen old-core dump
+/// cell-for-cell (glyph + fg + bg), with a readable rows dump on
+/// divergence.
+fn check_new_grid(name: &str, new: &Grid) {
+    goldens().check_text(name, &grid_dump(new));
 }
 
 fn render_new(build: impl FnOnce() -> runtime_scene::Element) -> Grid {
@@ -147,36 +195,16 @@ fn test_rules(width: f32, background: &str) -> StyleRules {
     }
 }
 
-fn static_style(width: f32, background: &str) -> StyleApplication {
-    StyleApplication::new(Rc::new(StyleSheet::r#static(test_rules(width, background))))
-}
-
 // ===========================================================================
-// 1. Full-scene render snapshot: same tree, both cores, identical cells
+// 1. Full-scene render snapshot vs the frozen old-core grid
 // ===========================================================================
 
 /// The rule-7 gate for this port: a torture scene (styled views, text,
 /// button chrome `[ label ]`, toggle glyphs, pressable, colored
-/// backgrounds) composed on the OLD core (walker + `runtime_core::mount`)
-/// and the NEW core (`newcore::start`, vocabulary handlers) must paint
-/// cell-identical grids — glyphs AND colors.
+/// backgrounds) must paint the exact cells the OLD core painted —
+/// glyphs AND colors.
 #[test]
 fn newcore_full_scene_grid_parity() {
-    let old = render_old(|| {
-        use runtime_core::{button, pressable, signal, text, toggle, view, IntoElement};
-        let on = signal(true);
-        view(vec![
-            text("hello terminal").into_element(),
-            text("styled")
-                .with_style(static_style(20.0, "#334455"))
-                .into_element(),
-            button("Go", || {}).into_element(),
-            toggle(on, |_| {}).into_element(),
-            pressable(vec![text("press me").into_element()], || {}).into_element(),
-        ])
-        .with_style(static_style(40.0, "#101020"))
-        .into_element()
-    });
     let new = render_new(|| {
         use runtime_vocabulary::builders::{button, pressable, text, toggle, view};
         use runtime_world::signal;
@@ -190,12 +218,84 @@ fn newcore_full_scene_grid_parity() {
             .child(pressable(|| {}).child(text().content("press me")))
             .build()
     });
-    assert_grids_identical("full_scene", &old, &new);
+    check_new_grid("full_scene.grid", &new);
     // Sanity: the scene is live (button chrome + toggle glyph painted).
-    let rows = grid_rows(&old).join("\n");
+    let rows = grid_rows(&new).join("\n");
     assert!(rows.contains("[ Go ]"), "button chrome painted:\n{rows}");
     assert!(rows.contains('\u{25cf}'), "toggle on-glyph painted:\n{rows}");
     assert!(rows.contains("hello terminal"), "text painted:\n{rows}");
+}
+
+// ===========================================================================
+// 1b. Caps-breadth scene (guards the de-trait pass's default resolution)
+// ===========================================================================
+
+/// COVERAGE BREADTH: the leaf/container primitives the torture scene
+/// above does not reach, in one grid — image, icon, `link` (a real
+/// `NodeKind::Pressable` here, NOT the trait default), activity
+/// indicator, controlled text input, a `scroll_view` clipping an
+/// oversized child — plus `slider` and `text_area`, which this backend
+/// does NOT implement and therefore resolve to **trait defaults**.
+///
+/// Why this scene exists: the deletion wave moved this backend's caps
+/// impls off the `Backend` trait, so every default-resolved method
+/// stopped resolving to a `Backend` default and now resolves to a
+/// **caps** default. A frozen grid that actually paints these primitives
+/// makes a silently-differing default fail loudly. See
+/// `docs/runtime-v2-deletion-baseline.md` for this backend's
+/// default-resolved list.
+#[test]
+fn newcore_caps_breadth_grid_parity() {
+    fn icon_data() -> runtime_shared::primitives::icon::IconData {
+        runtime_shared::primitives::icon::IconData {
+            view_box: (24, 24),
+            paths: &["M4 4 L20 20"],
+            fill_rule: runtime_shared::FillRule::NonZero,
+            filled: false,
+        }
+    }
+
+    let new = render_new(|| {
+        use runtime_vocabulary::builders::{
+            activity_indicator, icon, image, link, scroll_view, slider, text, text_area,
+            text_input, view,
+        };
+        use runtime_world::signal;
+        let typed = signal(String::from("typed value"));
+        let notes = signal(String::from("notes"));
+        let amount = signal(0.25f32);
+        view()
+            .style(test_rules(44.0, "#101020"))
+            .child(
+                image()
+                    .src("https://example.test/a.png")
+                    .style(test_rules(10.0, "#223344")),
+            )
+            .child(icon().data(icon_data()).style(test_rules(6.0, "#443322")))
+            .child(
+                link()
+                    .url("https://example.test/")
+                    .external(true)
+                    .child(text().content("link text")),
+            )
+            .child(activity_indicator())
+            .child(text_input().value(typed))
+            .child(text_area().value(notes))
+            .child(slider().value(amount))
+            .child(
+                scroll_view()
+                    .style(test_rules(12.0, "#112211"))
+                    .child(text().content("clipped overflowing content")),
+            )
+            .build()
+    });
+    check_new_grid("caps_breadth.grid", &new);
+    // Liveness: the grid actually painted something.
+    let rows = grid_rows(&new).join("\n");
+    assert!(
+        rows.chars().any(|c| c != ' ' && c != '\n'),
+        "caps-breadth scene painted nothing:\n{rows}"
+    );
 }
 
 // ===========================================================================
@@ -305,18 +405,21 @@ fn newcore_toggle_press_flushes_and_flips_glyph() {
 // 3. Op-level caps adoption
 // ===========================================================================
 
-/// Host's structural seam must track the Backend splice contract (both
-/// currently `false` — anchored reactive regions). If either half flips
-/// independently, anchor placement diverges between cores.
+/// The structural seam must stay ANCHORED (`supports_splice == false`).
 #[test]
-fn newcore_host_splice_matches_backend() {
-    use runtime_core::Backend;
+fn newcore_host_splice_is_anchored() {
     use runtime_scene::Host;
     let b = TerminalBackend::new();
-    assert_eq!(
-        Host::supports_splice(&b),
-        Backend::supports_child_splice(&b),
-        "Host::supports_splice must delegate to the Backend contract"
+    // `supports_child_splice` used to be a `Backend` trait DEFAULT here
+    // (this backend never overrode it); `Host` makes it REQUIRED, so
+    // `newcore.rs` now carries an explicit body reproducing that default
+    // — see docs/runtime-v2-deletion-baseline.md §2.2. Pin the value so a
+    // silent flip to spliced (which would move reactive regions out from
+    // under their anchor and change every frozen grid dump) fails here
+    // rather than in a rendering diff.
+    assert!(
+        !Host::supports_splice(&b),
+        "the terminal backend renders ANCHORED (the frozen grid dumps pin it)"
     );
 }
 

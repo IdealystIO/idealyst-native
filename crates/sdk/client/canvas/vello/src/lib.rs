@@ -2,9 +2,9 @@
 //!
 //! Renders a `canvas_core::Scene` with [`vello`] (GPU-compute 2D) onto the
 //! framework's `graphics` primitive surface via `wgpu`. Selected over
-//! `canvas-native` by calling [`register`] at app bootstrap (registers an
-//! `Element::External` handler for `canvas_core::CanvasProps`,
-//! last-registration-wins).
+//! `canvas-native` by passing [`register`] to the boot entry's registry
+//! seam (it installs a scene handler for `canvas_core::CanvasPrim`;
+//! last registration for a payload wins).
 //!
 //! vello needs compute shaders (Metal / Vulkan / DX12 / WebGPU). On native
 //! backends that's always available; on **web** it requires WebGPU, which is
@@ -15,9 +15,9 @@
 //! in-place (web binds a `<canvas>` to its first context type permanently, and
 //! the web backend can't swap a mounted node).
 //!
-//! A single generic [`register`] covers every backend: the GPU surface is
-//! obtained from `Backend::create_graphics`, so no per-platform module is
-//! needed (unlike `canvas-native`).
+//! A single generic [`register`] covers every host: the GPU surface is
+//! obtained from `runtime_vocabulary::caps::GraphicsOps::create_graphics`,
+//! so no per-platform module is needed (unlike `canvas-native`).
 #![allow(missing_docs)]
 
 // Scene→vello translation, shared by the native and web renderers (no GPU or

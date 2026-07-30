@@ -12,7 +12,7 @@ pub const HOME_ROUTE: Route<()> = Route::<()>::new("home", "/");
 
 // ---- Idealyst 101: the unifying mental model ----
 pub const CORE_ENGINE_ROUTE: Route<()> = Route::<()>::new("core-engine", "/core/engine");
-pub const CORE_PERF_ROUTE: Route<()> = Route::<()>::new("core-performance", "/core/performance");
+pub const CORE_FLUSH_ROUTE: Route<()> = Route::<()>::new("core-flush", "/core/flush");
 
 // ---- Architecture: how the framework is layered ----
 pub const ARCH_OVERVIEW_ROUTE: Route<()> = Route::<()>::new("arch-overview", "/architecture/overview");
@@ -22,9 +22,9 @@ pub const ARCH_SDKS_ROUTE: Route<()> = Route::<()>::new("arch-sdks", "/architect
 
 // ---- Track 1: Reactivity ----
 pub const RX_SIGNALS_ROUTE: Route<()> = Route::<()>::new("rx-signals", "/reactivity/signals");
+pub const RX_FLUSH_ROUTE: Route<()> = Route::<()>::new("rx-flush", "/reactivity/flush");
 pub const RX_EFFECTS_ROUTE: Route<()> = Route::<()>::new("rx-effects", "/reactivity/effects");
 pub const RX_DERIVED_ROUTE: Route<()> = Route::<()>::new("rx-derived", "/reactivity/derived");
-pub const RX_BATCHING_ROUTE: Route<()> = Route::<()>::new("rx-batching", "/reactivity/batching");
 
 // ---- Track 2: Stylesheets ----
 pub const ST_TOKENS_ROUTE: Route<()> = Route::<()>::new("st-tokens", "/styles/tokens");
@@ -67,7 +67,7 @@ pub const SECTIONS: &[IndexSection] = &[
         title: "Foundations",
         entries: &[
             IndexEntry { route: &CORE_ENGINE_ROUTE, label: "One reactive engine" },
-            IndexEntry { route: &CORE_PERF_ROUTE, label: "Under the hood: batching" },
+            IndexEntry { route: &CORE_FLUSH_ROUTE, label: "Under the hood: the flush" },
         ],
     },
     IndexSection {
@@ -83,9 +83,9 @@ pub const SECTIONS: &[IndexSection] = &[
         title: "Reactivity",
         entries: &[
             IndexEntry { route: &RX_SIGNALS_ROUTE, label: "Signals" },
+            IndexEntry { route: &RX_FLUSH_ROUTE, label: "The flush boundary" },
             IndexEntry { route: &RX_EFFECTS_ROUTE, label: "Effects" },
             IndexEntry { route: &RX_DERIVED_ROUTE, label: "Derived state" },
-            IndexEntry { route: &RX_BATCHING_ROUTE, label: "Controlling when effects fire" },
         ],
     },
     IndexSection {

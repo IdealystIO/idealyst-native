@@ -2,12 +2,19 @@
 //! concepts, built with the framework itself.
 //!
 //! Three core tracks (Reactivity, Stylesheets, Media queries) teach the
-//! `runtime-core` surface *directly* — signals, effects, `stylesheet!`,
-//! breakpoint overlays — without leaning on the `idea-ui` component kit
-//! for the concepts themselves. (The tutorial's own chrome does use
-//! idea-ui; that's just the shell, not the lesson.) An Advanced track
-//! is scaffolded for the deeper topics (custom backends, interactive
-//! CLIs, embedded rendering) that come later.
+//! runtime-v2 author surface *directly* — signals, the flush boundary,
+//! effects, `stylesheet!`, breakpoint overlays — without leaning on the
+//! `idea-ui` component kit for the concepts themselves. (The tutorial's
+//! own chrome does use idea-ui; that's the shell, not the lesson.) An
+//! Advanced track is scaffolded for the deeper topics (custom backends,
+//! interactive CLIs, embedded rendering) that come later.
+//!
+//! Every Rust snippet in the Reactivity and Foundations tracks is
+//! `include_str!`-ed from a real module in [`samples`], so `cargo check`
+//! is the gate on the teaching material: a sample that stops compiling
+//! stops shipping. The interactive panels in [`demo`] run the same
+//! mechanisms live, which is how a reader can watch a staged write land
+//! at the flush instead of taking the prose's word for it.
 //!
 //! The shell is a swap navigator (outlet model) wrapped in an
 //! `idea_ui_nav::AppShell`: the sidebar lists the tracks and steps,
@@ -16,14 +23,12 @@
 //! breakpoint styling (real `@media` on web + SSR). Each step ends with
 //! a prev/next bar derived from the linear order in `routes`.
 
+use idea_ui::{install_idea_theme, light_theme};
 use idea_ui_nav::AppShell;
 use runtime_core::{
-    color_scheme, component, effect, signal, ui, Breakpoint, ColorScheme, Element, Ref, Route,
-    Signal,
+    component, effect, signal, ui, Breakpoint, Element, Ref, Route, Screen, Signal,
 };
-use runtime_core::primitives::navigator::Screen;
 use swap_navigator::{MountPolicy, SwapBuilder, SwapHandle, SwapNavigator};
-use idea_ui::{dark_theme, install_idea_theme, light_theme};
 
 /// Wrap a lesson's `Element` in a `Screen`. The label is drawn by the
 /// shell's own header (`shell::mobile_header` derives it reactively
@@ -49,44 +54,45 @@ pub(crate) fn label_for_route(route_name: &'static str) -> Option<&'static str> 
 
 mod chart;
 mod common;
+mod demo;
 mod lessons;
 mod routes;
+mod samples;
 mod shell;
 mod styles;
 
 use routes::{
     A11Y_DEFAULTS_ROUTE, A11Y_MODEL_ROUTE, ADV_BACKENDS_ROUTE, ADV_CLI_ROUTE, ADV_EMBEDDED_ROUTE,
-    ARCH_BACKENDS_ROUTE, ARCH_CATALOG_ROUTE, ARCH_OVERVIEW_ROUTE, ARCH_SDKS_ROUTE, CORE_ENGINE_ROUTE,
-    CORE_PERF_ROUTE, HOME_ROUTE, MQ_BREAKPOINTS_ROUTE, MQ_CONTAINER_ROUTE, MQ_MOBILE_FIRST_ROUTE,
-    MQ_SIGNAL_ROUTE,
-    RX_BATCHING_ROUTE, RX_DERIVED_ROUTE, RX_EFFECTS_ROUTE, RX_SIGNALS_ROUTE, ST_STYLESHEETS_ROUTE,
-    ST_TOKENS_ROUTE, ST_VARIANTS_ROUTE,
+    ARCH_BACKENDS_ROUTE, ARCH_CATALOG_ROUTE, ARCH_OVERVIEW_ROUTE, ARCH_SDKS_ROUTE,
+    CORE_ENGINE_ROUTE, CORE_FLUSH_ROUTE, HOME_ROUTE, MQ_BREAKPOINTS_ROUTE, MQ_CONTAINER_ROUTE,
+    MQ_MOBILE_FIRST_ROUTE, MQ_SIGNAL_ROUTE, RX_DERIVED_ROUTE, RX_EFFECTS_ROUTE, RX_FLUSH_ROUTE,
+    RX_SIGNALS_ROUTE, ST_STYLESHEETS_ROUTE, ST_TOKENS_ROUTE, ST_VARIANTS_ROUTE,
 };
 
 #[component]
 pub fn app() -> Element {
-    // Start in whatever theme the OS is using. `color_scheme()` is stashed at
-    // mount from the backend (here, macOS `NSApp.effectiveAppearance`); install
-    // the matching idea-ui theme up front so there's no light→dark flash, and
-    // seed the dark-mode toggle to match.
-    let start_dark = matches!(color_scheme(), ColorScheme::Dark);
-    install_idea_theme(if start_dark { dark_theme() } else { light_theme() });
+    // Start light and let the reader flip the sidebar's Dark switch.
+    // (The old build seeded this from the platform's `color_scheme()`
+    // host slot; runtime-v2 boots don't install the old mount preamble
+    // that fills it, so reading it here would always report `Light`
+    // anyway — see the "old mount preamble installs public seam" residual
+    // in the migration log.)
+    install_idea_theme(light_theme());
 
     let nav: Ref<SwapHandle> = Ref::new();
-    // Drawer-open state for narrow viewports — author-owned now (the
+    // Drawer-open state for narrow viewports — author-owned (the
     // AppShell scrim + the auto-close effect close it; the mobile
     // header's hamburger opens it). Pinned widths ignore it entirely.
     let drawer_open: Signal<bool> = signal(false);
     // App-level dark-mode state — lifted out of any screen scope so it
     // survives navigation. Captured by the sidebar builder below.
-    let is_dark: Signal<bool> = signal(start_dark);
+    let is_dark: Signal<bool> = signal(false);
 
     // Pin the sidebar at wide viewports: align the framework's `Lg`
-    // breakpoint with the tutorial's 900-dp collapse point (this replaces
-    // the legacy `install_navigator_pin_width(900.0)`) so `AppShell(pin_at
-    // = Lg)` and the mobile header's `breakpoint lg` overlay flip at the
-    // SAME width. First-install wins — must run before any
-    // breakpoint-keyed sheet resolves.
+    // breakpoint with the tutorial's 900-dp collapse point so
+    // `AppShell(pin_at = Lg)` and the mobile header's `breakpoint lg`
+    // overlay flip at the SAME width. First-install wins — must run
+    // before any breakpoint-keyed sheet resolves.
     let _ = runtime_core::install_breakpoints(runtime_core::Breakpoints {
         lg_min: 900.0,
         ..Default::default()
@@ -94,9 +100,9 @@ pub fn app() -> Element {
 
     let builder = SwapNavigator::new(&HOME_ROUTE)
         .screen(HOME_ROUTE, move |_| titled(&HOME_ROUTE, lessons::home::page()))
-        // Idealyst 101
+        // Foundations
         .screen(CORE_ENGINE_ROUTE, move |_| titled(&CORE_ENGINE_ROUTE, lessons::foundations::engine()))
-        .screen(CORE_PERF_ROUTE, move |_| titled(&CORE_PERF_ROUTE, lessons::foundations::performance()))
+        .screen(CORE_FLUSH_ROUTE, move |_| titled(&CORE_FLUSH_ROUTE, lessons::foundations::flush_boundary()))
         // Architecture
         .screen(ARCH_OVERVIEW_ROUTE, move |_| titled(&ARCH_OVERVIEW_ROUTE, lessons::architecture::overview()))
         .screen(ARCH_BACKENDS_ROUTE, move |_| titled(&ARCH_BACKENDS_ROUTE, lessons::architecture::backends()))
@@ -104,9 +110,9 @@ pub fn app() -> Element {
         .screen(ARCH_SDKS_ROUTE, move |_| titled(&ARCH_SDKS_ROUTE, lessons::architecture::sdks()))
         // Reactivity
         .screen(RX_SIGNALS_ROUTE, move |_| titled(&RX_SIGNALS_ROUTE, lessons::reactivity::signals()))
+        .screen(RX_FLUSH_ROUTE, move |_| titled(&RX_FLUSH_ROUTE, lessons::reactivity::flush()))
         .screen(RX_EFFECTS_ROUTE, move |_| titled(&RX_EFFECTS_ROUTE, lessons::reactivity::effects()))
         .screen(RX_DERIVED_ROUTE, move |_| titled(&RX_DERIVED_ROUTE, lessons::reactivity::derived()))
-        .screen(RX_BATCHING_ROUTE, move |_| titled(&RX_BATCHING_ROUTE, lessons::reactivity::batching()))
         // Stylesheets
         .screen(ST_TOKENS_ROUTE, move |_| titled(&ST_TOKENS_ROUTE, lessons::stylesheets::tokens()))
         .screen(ST_STYLESHEETS_ROUTE, move |_| titled(&ST_STYLESHEETS_ROUTE, lessons::stylesheets::stylesheets()))
@@ -123,18 +129,19 @@ pub fn app() -> Element {
         .screen(ADV_BACKENDS_ROUTE, move |_| titled(&ADV_BACKENDS_ROUTE, lessons::advanced::custom_backends()))
         .screen(ADV_CLI_ROUTE, move |_| titled(&ADV_CLI_ROUTE, lessons::advanced::interactive_cli()))
         .screen(ADV_EMBEDDED_ROUTE, move |_| titled(&ADV_EMBEDDED_ROUTE, lessons::advanced::embedded()))
-        // Legacy web behavior: one screen resident at a time; switching
-        // away disposes the screen's scope and a return rebuilds it fresh.
-        // Matches browser semantics and the old drawer-on-web engine.
+        // One screen resident at a time; switching away drops the
+        // screen's realized scope (and with it every signal and effect
+        // its lesson created) and a return rebuilds it fresh. That is
+        // drop-as-teardown, and it is why the interactive demos start
+        // over when you navigate away and back.
         .mount_policy(MountPolicy::LazyDisposing)
         // The shell: AppShell packages pinned-sidebar ⇄ drawer around the
         // one-shot outlet; the mobile header (hamburger + reactive title)
         // collapses in below the pin width.
         .layout(move |nav_ctx| {
             // Auto-close the drawer when a sidebar link navigates while
-            // unpinned (the legacy web drawer engine did this in its
-            // Select arm; author-owned now). Reading `active_route`
-            // inside the effect subscribes it to every navigation.
+            // unpinned. Reading `active_route` inside the effect
+            // subscribes it to every navigation.
             let active_route = nav_ctx.active_route;
             effect!({
                 let _ = active_route.get();
@@ -172,45 +179,41 @@ pub fn app() -> Element {
 }
 
 // =============================================================================
-// Per-target SDK-handler registration. Called by the CLI-generated
-// wrapper before mount.
+// Registration seams the CLI-generated wrappers call before mount.
+//
+// Runtime v2 has no separate "external primitive" concept: the scene
+// `Registry` treats primitives and third-party payloads uniformly, so an
+// SDK registers its handler exactly the way `register_builtins` registers
+// a core primitive. The tutorial's one such SDK is `codeblock` (the
+// syntax-tinted code panels), and its `register` IS the seam — no wrapper
+// fn needed. A payload with no registered handler panics at realize, so a
+// missing seam fails loudly instead of silently drawing a placeholder.
 // =============================================================================
 
-#[cfg(target_arch = "wasm32")]
-pub fn register_extensions(_backend: &mut backend_web::WebBackend) {
-    // Wire the framework's reactive viewport signal so `current_breakpoint()`
-    // (taught in the Media queries track) actually updates on resize.
-    backend_web::install_viewport_observer();
+/// Web / macOS / iOS / terminal wrappers: `start_in`, `hydrate_in`,
+/// `newcore::run_with`, `newcore::run_in_view`, `newcore::run` all take
+/// this as their `register` argument (invoked after
+/// `runtime_vocabulary::register_builtins`).
+pub use codeblock::register as register_scene_extensions;
+
+/// SSR / SSG wrappers (`backend_ssr::newcore::render_path_with`,
+/// `render_all`). Same generic handler — the code panels render the same
+/// `<pre>`/span DOM server-side as they do in the browser.
+pub use codeblock::register as register_ssr_scene_handlers;
+
+/// The `idealyst dev` sidecar's wire recorder
+/// (`dev_server::sidecar::run_newcore`). Same handler again, specialised
+/// to the recording backend, so a dev session serializes real code
+/// panels over the wire.
+#[cfg(feature = "sidecar")]
+pub fn register_scene_extensions_recorder(registry: &mut dev_server::newcore::SceneRegistry) {
+    codeblock::register(registry);
 }
 
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub fn register_extensions(_backend: &mut backend_ios::IosBackend) {}
-
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-pub fn register_extensions(_backend: &mut backend_android::AndroidBackend) {}
-
-// macOS native — but NOT when the `terminal` feature is on. The terminal
-// target builds for the macOS host triple, so without `not(feature =
-// "terminal")` both this and the terminal arm below would compile on a
-// macOS host and collide as duplicate `register_extensions` definitions.
-#[cfg(all(target_os = "macos", not(target_arch = "wasm32"), not(feature = "terminal")))]
-pub fn register_extensions(_backend: &mut backend_macos::MacosBackend) {}
-
-// Terminal — selected by the `terminal` feature (the CLI's terminal
-// wrapper enables it) rather than a `target_os` cfg, because the terminal
-// target builds for the host triple and would otherwise be shadowed by the
-// host's native backend (macOS) or the desktop fallback. On a non-Apple
-// desktop host the wrapper still enables the feature, so this is the only
-// terminal selector needed.
-#[cfg(feature = "terminal")]
-pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
-
-// Recorder-side registration for the runtime-server sidecar. Distinct fn
-// name (not an overload of `register_extensions`) so it never collides
-// with the host target's per-backend overload when both compile in the
-// sidecar build. Gated by `sidecar` (set only by the generated sidecar
-// wrapper) so device/web builds never pull `dev-server`.
-#[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {
-    swap_navigator::recording::register(backend);
+/// Android: the generated wrapper's attach branch mounts `scene_app()`
+/// through `backend_android::newcore::start`. Under the facade alias
+/// `app()` already returns the scene `Element`, so this is the
+/// conventionally-named shim.
+pub fn scene_app() -> Element {
+    app()
 }

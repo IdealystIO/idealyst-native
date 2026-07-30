@@ -197,7 +197,9 @@ fn generate_bridge_crate(
     std::fs::create_dir_all(bridge_dir.join(".cargo"))
         .with_context(|| format!("create {}", bridge_dir.join(".cargo").display()))?;
 
-    let rc_dep = source.dep("crates/runtime/core", &[]);
+    let scene_dep = source.dep("crates/runtime/scene", &[]);
+    let vocab_dep = source.dep("crates/runtime/vocabulary", &[]);
+    let world_dep = source.dep("crates/runtime/world", &[]);
     let bw_dep = source.dep("crates/backend/web", &[]);
     let patch_block = source.patch_block();
 
@@ -220,7 +222,12 @@ name = "external_bridge"
 crate-type = ["cdylib"]
 
 [dependencies]
-runtime-core = {rc_dep}
+# The bridge drives the scene contract directly: `Registry` +
+# `register_builtins` + `realize` (one detached subtree per exported
+# element) over a page-wide `World`.
+runtime-scene = {scene_dep}
+runtime-vocabulary = {vocab_dep}
+runtime-world = {world_dep}
 backend-web = {bw_dep}
 {user_name} = {{ path = "{user_path}" }}
 wasm-bindgen = "0.2"
@@ -228,7 +235,9 @@ js-sys = "0.3"
 web-sys = {{ version = "0.3", features = ["Element"] }}
 {patch_block}"#,
         name = manifest.name,
-        rc_dep = rc_dep,
+        scene_dep = scene_dep,
+        vocab_dep = vocab_dep,
+        world_dep = world_dep,
         bw_dep = bw_dep,
         user_name = manifest.name,
         user_path = project.display(),

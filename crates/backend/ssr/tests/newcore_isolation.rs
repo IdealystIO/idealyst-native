@@ -13,13 +13,12 @@
 //!   the request's effects do not outlive the request (cleanups fire,
 //!   post-render writes are dead-world no-ops).
 
-#![cfg(feature = "new-core")]
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use backend_ssr::SsrBackend;
-use runtime_core::Backend;
+use runtime_vocabulary::caps::LifecycleOps;
 use runtime_scene::{dyn_keyed, realize, Registry};
 use runtime_vocabulary::builders::{text, view};
 use runtime_vocabulary::register_builtins;
@@ -47,7 +46,7 @@ impl LiveRequest {
         let realized = world.enter(|| realize(&backend, &registry, build()));
         let mut roots = realized.collect_nodes();
         assert_eq!(roots.len(), 1, "single-root test trees");
-        Backend::finish(&mut *backend.borrow_mut(), roots.pop().expect("len checked"));
+        LifecycleOps::finish(&mut *backend.borrow_mut(), roots.pop().expect("len checked"));
         world.flush();
         LiveRequest { _realized: realized, backend, world }
     }
@@ -74,12 +73,12 @@ fn two_worlds_interleaved_renders_no_crosstalk() {
     // vocabulary theme drains pending host state when a sheet
     // registers), so each tree carries one sheet-styled root — same as
     // any real themed app.
-    fn surface_sheet() -> runtime_core::StyleApplication {
-        runtime_core::StyleApplication::new(Rc::new(runtime_core::StyleSheet::new(|_vs| {
-            runtime_core::StyleRules {
-                background: Some(runtime_core::Tokenized::token(
+    fn surface_sheet() -> runtime_shared::StyleApplication {
+        runtime_shared::StyleApplication::new(Rc::new(runtime_shared::StyleSheet::new(|_vs| {
+            runtime_shared::StyleRules {
+                background: Some(runtime_shared::Tokenized::token(
                     "color-surface",
-                    runtime_core::Color("#000".into()),
+                    runtime_shared::Color("#000".into()),
                 )),
                 ..Default::default()
             }
@@ -88,9 +87,9 @@ fn two_worlds_interleaved_renders_no_crosstalk() {
 
     let slot = label_a.clone();
     let req_a = LiveRequest::mount(move || {
-        runtime_vocabulary::theme::install_tokens(&[runtime_core::TokenEntry {
+        runtime_vocabulary::theme::install_tokens(&[runtime_shared::TokenEntry {
             name: "color-surface",
-            value: runtime_core::TokenValue::Color(runtime_core::Color("#a0a0a0".into())),
+            value: runtime_shared::TokenValue::Color(runtime_shared::Color("#a0a0a0".into())),
         }]);
         let label = signal(String::from("a-initial"));
         slot.set(Some(label));
@@ -101,9 +100,9 @@ fn two_worlds_interleaved_renders_no_crosstalk() {
     });
     let slot = label_b.clone();
     let req_b = LiveRequest::mount(move || {
-        runtime_vocabulary::theme::install_tokens(&[runtime_core::TokenEntry {
+        runtime_vocabulary::theme::install_tokens(&[runtime_shared::TokenEntry {
             name: "color-surface",
-            value: runtime_core::TokenValue::Color(runtime_core::Color("#b1b1b1".into())),
+            value: runtime_shared::TokenValue::Color(runtime_shared::Color("#b1b1b1".into())),
         }]);
         let label = signal(String::from("b-initial"));
         slot.set(Some(label));

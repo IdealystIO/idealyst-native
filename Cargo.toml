@@ -1,34 +1,28 @@
 [workspace]
 resolver = "2"
 members = [
-    # Runtime — platform-agnostic upper half (above the Backend Interface).
+    # The author surface: a paper-thin re-export of
+    # `runtime_vocabulary::glue` plus the macro set, published under the
+    # name every consumer already spells (`runtime_core::…`). The pre-v2
+    # walker that used to live here — Element, the Backend mega-trait,
+    # the render walker, Bound/builders — is deleted.
     "crates/runtime/core",
-    # The permanent shared substrate: runtime-core's non-walker half
-    # (style engine, assets, animation, touch, scheduling, robot, the
-    # shared prop/handle types, …), extracted so the new core
-    # (world/scene/vocabulary/facade) can depend on it WITHOUT pulling
-    # the old walker/Backend machinery. runtime-core re-exports all of
-    # it at the old paths, so old-core consumers compile unchanged.
+    # The permanent shared substrate: the style engine, assets, animation,
+    # touch, scheduling, robot, and the shared prop/handle types — every
+    # part of the old runtime-core that outlives the walker.
     "crates/runtime/shared",
     "crates/runtime/macros",
-    # New reactive kernel (idea-lite core migration, P0): worlds, staged
-    # commits, derivation-class flush. Parallel to runtime-core until the
-    # migration's parity gates pass.
+    # The reactive kernel: worlds, staged commits, derivation-class flush.
     "crates/runtime/world",
-    # New scene core (idea-lite core migration, P1): Element/realize/Host/
-    # Registry + the Dyn/Keyed structural drivers, on the runtime-world
-    # kernel. Parity-gated by crates/dev/scene-parity.
+    # The scene core: Element/realize/Host/Registry + the Dyn/Keyed
+    # structural drivers, on the runtime-world kernel. Its recorded
+    # behavior is pinned by the committed goldens in crates/dev/scene-parity.
     "crates/runtime/scene",
-    # Capability-trait split of the Backend mega-trait (idea-lite core
-    # migration, P2a): per-primitive Ops traits over the scene Host seam,
-    # plus the LegacyBridge adapter that proves the signature freeze.
+    # Capability-trait split of the deleted Backend mega-trait:
+    # per-primitive Ops traits over the scene Host seam, the built-in
+    # primitive handlers, and `glue` — the author-surface module
+    # `runtime-core` re-exports.
     "crates/runtime/vocabulary",
-    # `extern crate runtime_facade as runtime_core;` alias target for the
-    # P6 SDK retarget: a paper-thin crate whose ROOT mirrors the old
-    # runtime-core author surface (runtime_vocabulary::glue re-export +
-    # the macro set), so an SDK crate compiles the SAME source against
-    # the new core with zero per-file edits.
-    "crates/runtime/facade",
     "crates/runtime/reactive/arena",
     "crates/runtime/reactive/refs",
     "crates/runtime/layout",
@@ -36,7 +30,8 @@ members = [
     # Shared StyleRules → CSS conversion (used by web + ssr backends).
     "crates/css",
 
-    # Native backends — implement Backend on top of a platform's UI toolkit.
+    # Native backends — implement the scene Host + capability traits on
+    # top of a platform's UI toolkit.
     "crates/backend/apple/core",
     "crates/backend/macos",
     "crates/backend/ios/core",
@@ -90,6 +85,8 @@ members = [
     # (replaces the per-suite `impl Backend for Mini` + LegacyBridge
     # combos, so new-core tests survive the old Backend trait's deletion).
     "crates/dev/host-mock",
+    # Frozen-artifact substrate for the cross-core parity suites (wave 2c).
+    "crates/dev/parity-goldens",
     "crates/dev/headless-screenshot",
     "crates/dev/robot-e2e",
     "crates/dev/robot-relay",
@@ -120,11 +117,18 @@ members = [
     # offscreen-capture mode (NEWCORE_SMOKE_HEADLESS) for real-GPU PNG
     # evidence without a window.
     "crates/dev/newcore-gpu-smoke",
-    # Integration example for the ui!/#[component] new-core lowering
-    # (idea-lite P3a). Featureless (empty) by default on purpose: its
-    # `new-core` feature flips runtime-macros' lowering build-graph-wide,
-    # so it is only enabled via explicit `-p newcore-app --features …`.
+    # End-to-end integration app for the ui!/#[component] lowering and the
+    # vocabulary handlers: real button/toggle/virtualizer handlers driven
+    # through macro -> builders -> handlers -> drivers -> kernel, plus the
+    # recipe compile-and-realize gate.
     "crates/dev/newcore-app",
+    # New-core leg of the MCP catalog-emission suite (idea-lite wave 2c):
+    # compiles the SAME shared suite body as
+    # crates/mcp/catalog/tests/registers_component.rs under the facade
+    # alias, so both `__mcp` anchors are covered and the resulting
+    # inventory is proven identical. Its own crate because mcp-catalog
+    # can neither depend on the facade (cargo cycle) nor gate a dev-dep.
+    "crates/dev/newcore-catalog",
 
     # MCP — project-aware catalog + stdio server (catalog + Robot tools).
     "crates/mcp/catalog",
@@ -331,10 +335,6 @@ members = [
     "examples/welcome",
     "examples/fiddle",
     "examples/baseline",
-    "examples/lazy-canvas",
-    "examples/eager-canvas",
-    "examples/probe-canvas",
-    "examples/prune-repro",
     "examples/inspector",
     "examples/login-demo",
     "examples/nav-showcase",
@@ -349,9 +349,9 @@ members = [
     "tests/vtable-dispatch",
     "tests/theme-swap",
     "tests/lazy-chunk-handoff",
-    "tests/lazy-external-split/heavy",
-    "tests/lazy-external-split/eager",
-    "tests/lazy-external-split/lazy",
+    "tests/lazy-payload-split/heavy",
+    "tests/lazy-payload-split/eager",
+    "tests/lazy-payload-split/lazy",
     "tests/prune-regression",
 ]
 
@@ -384,7 +384,6 @@ runtime-shared = { path = "crates/runtime/shared" }
 runtime-world = { path = "crates/runtime/world" }
 runtime-scene = { path = "crates/runtime/scene" }
 runtime-vocabulary = { path = "crates/runtime/vocabulary" }
-runtime-facade = { path = "crates/runtime/facade" }
 # Fast non-cryptographic integer hasher (rustc's own FxHash). Used in the
 # reactive core's hot-path collections keyed by internal Signal/Effect ids,
 # which are never attacker-controlled — SipHash's DoS-resistance is pure
@@ -416,6 +415,7 @@ dev-client = { path = "crates/dev/client" }
 dev-server = { path = "crates/dev/server" }
 mock-backend = { path = "crates/dev/mock-backend" }
 host-mock = { path = "crates/dev/host-mock" }
+parity-goldens = { path = "crates/dev/parity-goldens" }
 headless-screenshot = { path = "crates/dev/headless-screenshot" }
 robot-e2e = { path = "crates/dev/robot-e2e" }
 robot-relay = { path = "crates/dev/robot-relay" }
@@ -463,11 +463,7 @@ backend-ssr = { path = "crates/backend/ssr" }
 backend-email = { path = "crates/backend/email" }
 backend-windows = { path = "crates/backend/windows" }
 backend-linux = { path = "crates/backend/linux" }
-# default-features = false: welcome defaults to `new-core` since the
-# runtime-v2 flip; in-repo consumers (the website's embedded-sim
-# cluster) choose a core explicitly per graph, so the workspace spec
-# pins defaults OFF and each consumer's own feature set decides.
-welcome = { path = "examples/welcome", default-features = false }
+welcome = { path = "examples/welcome" }
 render-api = { path = "crates/gpu-backend/api" }
 render-wgpu = { path = "crates/gpu-backend/engine" }
 ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }
@@ -486,48 +482,41 @@ variant-tablet = { path = "crates/gpu-backend/variant/tablet" }
 variant-tv = { path = "crates/gpu-backend/variant/tv" }
 runtime-server-shell-native = { path = "crates/dev/runtime-server-shell" }
 posix-log-capture = { path = "crates/backend/posix-log-capture" }
-# ── Runtime-v2 defaults flip ─────────────────────────────────────────
-# The dual-core UI/SDK crates below default to their `new-core` leg
-# since the flip. The workspace specs pin `default-features = false`
-# (re-listing the historical non-core defaults where a crate had them)
-# so every `{ workspace = true }` consumer keeps selecting a core
-# explicitly per graph — old-core parity/test graphs stay on the old
-# walker, new-core graphs forward `<crate>/new-core` themselves.
-idea-theme = { path = "crates/ui/idea-theme", default-features = false }
-idea-ui = { path = "crates/ui/idea-ui", default-features = false, features = [
-    "prim-icon", "prim-image", "prim-text-input", "prim-activity",
-    "prim-portal", "prim-presence", "table",
-] }
+# One core: these crates carry no core-selector feature any more, so the
+# workspace specs are plain — a `{ workspace = true }` consumer gets each
+# crate's own defaults.
+idea-theme = { path = "crates/ui/idea-theme" }
+idea-ui = { path = "crates/ui/idea-ui" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail" }
-idea-ui-nav = { path = "crates/ui/idea-ui-nav", default-features = false }
+idea-ui-nav = { path = "crates/ui/idea-ui-nav" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive" }
 icons-lucide = { path = "crates/ui/icons-lucide" }
 pan = { path = "crates/sdk/client/pan" }
 zoom = { path = "crates/sdk/client/zoom" }
 dnd = { path = "crates/sdk/client/dnd" }
-maps = { path = "crates/sdk/client/maps", default-features = false }
+maps = { path = "crates/sdk/client/maps" }
 maps-core = { path = "crates/sdk/client/maps/core" }
-maps-web = { path = "crates/sdk/client/maps/web", default-features = false }
+maps-web = { path = "crates/sdk/client/maps/web" }
 maps-ios = { path = "crates/sdk/client/maps/ios" }
-codeblock = { path = "crates/sdk/client/codeblock", default-features = false }
-markdown = { path = "crates/sdk/client/markdown", default-features = false }
-webview = { path = "crates/sdk/client/webview", default-features = false }
-video = { path = "crates/sdk/client/video", default-features = false }
-svg = { path = "crates/sdk/client/svg", default-features = false }
-canvas = { path = "crates/sdk/client/canvas", default-features = false }
-canvas-core = { path = "crates/sdk/client/canvas/core", default-features = false }
-canvas-native = { path = "crates/sdk/client/canvas/native", default-features = false, features = ["self-register"] }
+codeblock = { path = "crates/sdk/client/codeblock" }
+markdown = { path = "crates/sdk/client/markdown" }
+webview = { path = "crates/sdk/client/webview" }
+video = { path = "crates/sdk/client/video" }
+svg = { path = "crates/sdk/client/svg" }
+canvas = { path = "crates/sdk/client/canvas" }
+canvas-core = { path = "crates/sdk/client/canvas/core" }
+canvas-native = { path = "crates/sdk/client/canvas/native", features = ["self-register"] }
 canvas-vello = { path = "crates/sdk/client/canvas/vello" }
-toolbar = { path = "crates/sdk/client/toolbar", default-features = false }
+toolbar = { path = "crates/sdk/client/toolbar" }
 pdf = { path = "crates/sdk/client/pdf" }
-form = { path = "crates/sdk/client/form", default-features = false }
-table = { path = "crates/sdk/client/table", default-features = false }
+form = { path = "crates/sdk/client/form" }
+table = { path = "crates/sdk/client/table" }
 virtualized = { path = "crates/sdk/client/virtualized" }
 menu = { path = "crates/sdk/client/menu" }
 net = { path = "crates/sdk/client/net" }
 storage = { path = "crates/sdk/client/storage" }
 sync = { path = "crates/sdk/client/sync" }
-graphql = { path = "crates/sdk/client/graphql", default-features = false }
+graphql = { path = "crates/sdk/client/graphql" }
 microphone = { path = "crates/sdk/client/microphone" }
 camera = { path = "crates/sdk/client/camera" }
 media-stream = { path = "crates/sdk/client/media-stream" }
@@ -540,7 +529,7 @@ file-picker = { path = "crates/sdk/client/file-picker" }
 auto-update = { path = "crates/sdk/client/auto-update" }
 credentials = { path = "crates/sdk/client/credentials" }
 biometrics = { path = "crates/sdk/client/biometrics" }
-screen-recorder = { path = "crates/sdk/client/screen-recorder", default-features = false }
+screen-recorder = { path = "crates/sdk/client/screen-recorder" }
 files = { path = "crates/sdk/client/files" }
 i18n = { path = "crates/sdk/client/i18n" }
 i18n-macros = { path = "crates/sdk/client/i18n/macros" }
@@ -567,8 +556,8 @@ pubsub = { path = "crates/sdk/server/pubsub" }
 email = { path = "crates/sdk/server/email" }
 cache = { path = "crates/sdk/server/cache" }
 idealyst-config = { path = "crates/sdk/server/config" }
-swap-navigator = { path = "crates/sdk/client/navigators/swap", default-features = false }
-stack-navigator = { path = "crates/sdk/client/navigators/stack", default-features = false }
+swap-navigator = { path = "crates/sdk/client/navigators/swap" }
+stack-navigator = { path = "crates/sdk/client/navigators/stack" }
 android-navigator-helpers = { path = "crates/sdk/client/navigators/helpers/android" }
 ios-navigator-helpers = { path = "crates/sdk/client/navigators/helpers/ios" }
 

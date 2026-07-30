@@ -5,11 +5,11 @@
 
 use runtime_core::{ui, Element};
 
-use crate::components::content_layer::{ContentLayer, ContentLayerProps};
+use crate::components::content_layer::ContentLayer;
 use crate::components::page::page_sheet;
-use crate::components::planet::{Planet, PlanetProps};
-use crate::components::sun_glare::{SunGlare, SunGlareProps};
-use crate::components::vignette::{Vignette, VignetteProps};
+use crate::components::planet::Planet;
+use crate::components::sun_glare::SunGlare;
+use crate::components::vignette::Vignette;
 use crate::coordinator::use_welcome;
 
 pub fn app() -> Element {

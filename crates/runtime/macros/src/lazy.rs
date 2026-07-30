@@ -104,15 +104,6 @@ pub fn emit(input: TokenStream) -> TokenStream2 {
     // The caller (`lib.rs::lazy`) pipes the whole expansion through
     // `finish`, so these `::runtime_core::…` paths retarget to the
     // `runtime_vocabulary::glue` mirrors under `new-core`.
-    #[cfg(not(feature = "new-core"))]
-    let body_fn = quote! {
-        #[::runtime_core::__wasm_split::wasm_split(#split_name)]
-        async fn #body_ident(_: ()) -> ::runtime_core::Element {
-            use ::runtime_core::IntoElement as _;
-            { #body_tokens }.into_element()
-        }
-    };
-    #[cfg(feature = "new-core")]
     let body_fn = quote! {
         #[::runtime_core::__wasm_split::wasm_split(#split_name)]
         async fn #body_ident(_: ()) -> ::runtime_core::primitives::lazy::LazyBodyThunk {

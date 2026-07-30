@@ -1,8 +1,8 @@
 // Swift shell for newcore-ios-smoke — mirrors the CLI-generated
-// old-core wrapper template (crates/tools/run/ios/templates/
+// wrapper template (crates/tools/run/ios/templates/
 // ViewController.swift) minus the splash screen. `ios_main` here is
-// the smoke staticlib's NEW-core entry (backend_ios::newcore::
-// run_in_view), same C ABI as the old wrapper.
+// the smoke staticlib's own entry (backend_ios::newcore::run_in_view),
+// same C ABI as the generated wrapper's.
 
 import UIKit
 

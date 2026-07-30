@@ -1,8 +1,12 @@
 //! Track 2 — Stylesheets. Style tokens, the stylesheet! macro,
-//! variants and interaction states. All `runtime_core`.
+//! variants and interaction states.
+//!
+//! Every snippet is `include_str!`-ed from `crate::samples`, so the
+//! compiler checks the sheets, the generated builders, and the generated
+//! variant enums the lessons name.
 
-use runtime_core::{ui, Element};
 use idea_ui::{typography_kind, Typography};
+use runtime_core::{ui, Element};
 
 use crate::common::{Callout, CodePanel, DocsLink, LessonPage};
 use crate::routes::{ST_STYLESHEETS_ROUTE, ST_TOKENS_ROUTE, ST_VARIANTS_ROUTE};
@@ -20,22 +24,10 @@ pub fn tokens() -> Element {
                     the framework's runtime-restyle mechanism: change a token's value and the \
                     new value flows to everything using it, without recomputing any stylesheet. \
                     A theme is a collection of style tokens \u{2014} light, dark, a brand \
-                    palette \u{2014} so installing or swapping a theme is really installing or \
-                    updating a batch of tokens.".to_string()
+                    palette \u{2014} so installing or swapping a theme is installing or updating a \
+                    set of tokens in one turn.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::{install_tokens, update_tokens, TokenEntry, TokenValue, Color, Length};
-
-// Install the table once at startup.
-install_tokens(&[
-    TokenEntry { name: "color-accent", value: TokenValue::Color(Color("#5b6cff".into())) },
-    TokenEntry { name: "spacing-md",   value: TokenValue::Length(Length::Px(12.0)) },
-]);
-
-// Later — e.g. a light -> dark swap. Only nodes that read a changed
-// token re-apply; everything else is untouched.
-update_tokens(&[
-    TokenEntry { name: "color-accent", value: TokenValue::Color(Color("#22d3ee".into())) },
-]);"##.to_string())
+            CodePanel(src = include_str!("../samples/st_tokens.rs").to_string())
 
             Callout(label = "TokenValue variants must match".to_string()) {
                 Typography(
@@ -47,10 +39,10 @@ update_tokens(&[
                 )
             }
             Typography(
-                content = "Each token name owns its own signal under the hood, so a styled \
-                    effect subscribes only to the tokens it actually reads. update_tokens \
-                    batches its writes, so an effect that reads several changed tokens re-runs \
-                    once.".to_string()
+                content = "Each token name owns its own signal under the hood, so a styled effect \
+                    subscribes only to the tokens it actually reads. update_tokens stages its \
+                    writes like any other, so a swap that changes fifty tokens commits at one \
+                    flush and an effect that read five of them re-runs once.".to_string()
             )
 
             DocsLink(
@@ -72,24 +64,11 @@ pub fn stylesheets() -> Element {
             Typography(
                 content = "stylesheet! declares a style once. The base block is the \
                     unconditional rules; property values are either literals or token references \
-                    via Tokenized::token. The macro generates a builder (Card()) and a cached \
-                    sheet accessor (card_style()).".to_string()
+                    via Tokenized::token. The macro generates a builder (Panel()), an associated \
+                    Panel::sheet(), and the convention-named panel_style() \u{2014} both \
+                    accessors hand back the same cached Rc<StyleSheet>.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::{stylesheet, Tokenized, Color, Length, FlexDirection};
-
-stylesheet! {
-    pub Card<()> {
-        base(_t) {
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
-            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
-            padding: 16.0,                       // bare literal — auto-wrapped
-            flex_direction: FlexDirection::Column,
-        }
-    }
-}
-
-// Card() is a style source for a View; card_style() returns the
-// cached Rc<StyleSheet>."##.to_string())
+            CodePanel(src = include_str!("../samples/st_sheet.rs").to_string())
 
             Callout(label = "The <()> and (_t) are vestigial".to_string()) {
                 Typography(
@@ -133,26 +112,7 @@ pub fn variants() -> Element {
                     time, so the web backend mints one CSS class per value and picking a variant \
                     costs a lookup instead of a recompute.".to_string()
             )
-            CodePanel(src = r##"stylesheet! {
-    pub Btn<()> {
-        base(_t) { padding: 12.0, border_radius: 8.0 }
-        variant tone {
-            #[default]
-            neutral(_t) {
-                background: Tokenized::token("color-surface-alt", Color("#eee".into())),
-            }
-            primary(_t) {
-                background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
-            }
-        }
-        state hovered(_t) {
-            background: Tokenized::token("color-surface", Color("#fff".into())),
-        }
-    }
-}
-
-// pick a variant at the call site (BtnTone is generated):
-Btn().tone(BtnTone::Primary)"##.to_string())
+            CodePanel(src = include_str!("../samples/st_variants.rs").to_string())
 
             Typography(content = "Interaction states".to_string(), kind = typography_kind::H2)
             Typography(
@@ -174,12 +134,7 @@ Btn().tone(BtnTone::Primary)"##.to_string())
                     .with(axis, value), then layer the per-call value on top. Overrides merge \
                     in last, after base and variants, so they always win:".to_string()
             )
-            CodePanel(src = r##"use runtime_core::StyleApplication;
-
-// btn_style() is the cached sheet the macro generates for `Btn`.
-StyleApplication::new(btn_style())
-    .with("tone", "primary")    // select a variant by (axis, value)
-    .override_font_size(18.0)   // a one-off value, merged on top of everything"##.to_string())
+            CodePanel(src = include_str!("../samples/st_overrides.rs").to_string())
 
             Callout(label = "Why variants cache and overrides don't".to_string()) {
                 Typography(

@@ -35,10 +35,26 @@ use runtime_core::{
     ViewHandle,
 };
 
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+// SDK-handler registration seam, invoked by the CLI-generated wrappers
+// after `runtime_vocabulary::register_builtins`. Registry-generic over
+// the scene `Host` so ONE seam serves every backend. This app registers
+// no third-party scene handlers.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
+/// Recorder-side seam for the runtime-server sidecar
+/// (`dev_server::sidecar::run_newcore`). Gated by `sidecar` so device/web
+/// builds never pull `dev-server`.
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {}
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
+}
 
 struct EmptyTheme;
 impl ThemeTokens for EmptyTheme {
@@ -70,13 +86,28 @@ const ITEMS: [Item; 5] = [
 /// Shared sortable state. `order` is the logical order of ids; rows position
 /// themselves by their index in it. `Default` is required by the `#[component]`
 /// props derive; the real value is always passed explicitly.
-#[derive(Clone, Default)]
+///
+/// `Default` is hand-written: the world kernel's `Signal<T>` is a handle into
+/// the ambient world's arena, so it has no `Default` — a default value has to
+/// *create* a slot, which `signal(..)` does.
+#[derive(Clone)]
 struct Sort {
     ctx: DragContext<u32>,
     order: Signal<Vec<u32>>,
     /// While dragging: the id being dragged, and the slot it would land in.
     dragging: Signal<Option<u32>>,
     over: Signal<Option<usize>>,
+}
+
+impl Default for Sort {
+    fn default() -> Self {
+        Self {
+            ctx: DragContext::default(),
+            order: signal(Vec::new()),
+            dragging: signal(None),
+            over: signal(None),
+        }
+    }
 }
 
 /// The order to *render* right now: the committed `order`, but while a drag is

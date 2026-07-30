@@ -10,7 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use host_mock::{take_animated_log, Harness};
-use runtime_core::{StateBits, StyleRules, Tokenized};
+use runtime_shared::{StateBits, StyleRules, Tokenized};
 use runtime_scene::realize;
 use runtime_vocabulary::builders::{
     button, icon, image, link, pressable, slider, text, toggle, view, TextContent,
@@ -46,7 +46,7 @@ fn harness() -> Harness {
 
 fn px(w: f32) -> StyleRules {
     StyleRules {
-        width: Some(Tokenized::Literal(runtime_core::Length::Px(w))),
+        width: Some(Tokenized::Literal(runtime_shared::Length::Px(w))),
         ..Default::default()
     }
 }
@@ -110,7 +110,7 @@ fn glue_styled_text_mounts_runs_through_create_styled_text() {
     let h = harness();
     let element = styled_text(vec![
         TextRun::plain("the "),
-        TextRun::styled("ui!", runtime_core::TextRunStyle::default()),
+        TextRun::styled("ui!", runtime_shared::TextRunStyle::default()),
         TextRun::plain(" macro"),
     ])
     .with_style(px(7.0))
@@ -451,15 +451,15 @@ fn dyn_text_uses_update_text_fallback_without_id_support() {
 // scene-parity golden alphabet, so this is their behavioral gate)
 // ===========================================================================
 
-use runtime_core::{StyleApplication, StyleSheet, TokenEntry, TokenValue};
+use runtime_shared::{StyleApplication, StyleSheet, TokenEntry, TokenValue};
 use runtime_vocabulary::theme;
 
 fn tokened(width: f32) -> StyleRules {
     StyleRules {
-        width: Some(Tokenized::Literal(runtime_core::Length::Px(width))),
+        width: Some(Tokenized::Literal(runtime_shared::Length::Px(width))),
         background: Some(Tokenized::token(
             "color-surface",
-            runtime_core::Color("#000".into()),
+            runtime_shared::Color("#000".into()),
         )),
         ..Default::default()
     }
@@ -470,7 +470,7 @@ fn themed_sheet() -> Rc<StyleSheet> {
     Rc::new(
         StyleSheet::new(|_vs| tokened(100.0))
             .variant("size", "large", |_vs| StyleRules {
-                width: Some(Tokenized::Literal(runtime_core::Length::Px(400.0))),
+                width: Some(Tokenized::Literal(runtime_shared::Length::Px(400.0))),
                 ..Default::default()
             })
             .variant_default("size", "medium")
@@ -483,7 +483,7 @@ fn themed_sheet() -> Rc<StyleSheet> {
 fn hover_sheet() -> Rc<StyleSheet> {
     Rc::new(
         StyleSheet::new(|_vs| tokened(100.0)).variant("__state_hovered", "on", |_vs| StyleRules {
-            width: Some(Tokenized::Literal(runtime_core::Length::Px(999.0))),
+            width: Some(Tokenized::Literal(runtime_shared::Length::Px(999.0))),
             ..Default::default()
         }),
     )
@@ -492,7 +492,7 @@ fn hover_sheet() -> Rc<StyleSheet> {
 fn surface(value: &str) -> TokenEntry {
     TokenEntry {
         name: "color-surface",
-        value: TokenValue::Color(runtime_core::Color(value.into())),
+        value: TokenValue::Color(runtime_shared::Color(value.into())),
     }
 }
 
@@ -781,7 +781,7 @@ fn default_text_font_fills_absent_font_family() {
     let h = harness();
     let world = h.world.clone();
     let _realized = world.enter(|| {
-        theme::set_default_text_font(Some(runtime_core::FontFamily::System(
+        theme::set_default_text_font(Some(runtime_shared::FontFamily::System(
             "Test Sans".into(),
         )));
         realize(
@@ -798,7 +798,7 @@ fn default_text_font_fills_absent_font_family() {
     // the theme API surface.
     assert_eq!(
         world.enter(theme::default_text_font),
-        Some(runtime_core::FontFamily::System("Test Sans".into()))
+        Some(runtime_shared::FontFamily::System("Test Sans".into()))
     );
     let _ = h.take_log();
 }
@@ -1293,7 +1293,7 @@ mod repeat_handler {
 // ===========================================================================
 mod p6_glue {
     use super::*;
-    use runtime_core::{Color, Ref, TokenEntry, TokenValue};
+    use runtime_shared::{Color, Ref, TokenEntry, TokenValue};
     use runtime_vocabulary::glue;
 
     fn surface(value: &str) -> TokenEntry {
@@ -1372,7 +1372,7 @@ mod p6_glue {
             glue::update_tokens(&[surface("#654321")]);
             assert_eq!(reference.resolve().0, "#654321", "update re-seeds");
             assert!(
-                runtime_core::take_pending_token_updates().is_empty(),
+                runtime_shared::take_pending_token_updates().is_empty(),
                 "the old walker-flush queues are drained by the seeding path"
             );
         });
@@ -1386,7 +1386,7 @@ mod p6_glue {
     fn pressable_bind_fills_real_handle_at_mount() {
         use runtime_vocabulary::glue::IntoElement;
         let h = harness();
-        let r: Ref<runtime_core::PressableHandle> = Ref::new();
+        let r: Ref<runtime_shared::PressableHandle> = Ref::new();
         let r_for = r.clone();
         let el = h.world.enter(|| {
             glue::pressable(Vec::new(), || {}).bind(r_for).into_element()
@@ -1406,7 +1406,7 @@ mod p6_glue {
     fn scroll_view_bind_fills_real_handle_at_mount() {
         use runtime_vocabulary::glue::IntoElement;
         let h = harness();
-        let r: Ref<runtime_core::ScrollViewHandle> = Ref::new();
+        let r: Ref<runtime_shared::ScrollViewHandle> = Ref::new();
         let r_for = r.clone();
         let el = h
             .world
@@ -1442,7 +1442,7 @@ mod p6_glue {
     /// rounded px so every icon at a size shares one Rc.
     #[test]
     fn icon_size_mints_shared_square_sheet() {
-        use runtime_core::{FillRule, IconData};
+        use runtime_shared::{FillRule, IconData};
         const DOT: IconData = IconData {
             view_box: (24, 24),
             paths: &["M12 12h0"],
@@ -1450,7 +1450,7 @@ mod p6_glue {
             filled: false,
         };
 
-        fn icon_app(px: f32) -> runtime_core::StyleApplication {
+        fn icon_app(px: f32) -> runtime_shared::StyleApplication {
             use runtime_vocabulary::glue::IntoElement;
             let el = glue::icon(DOT).size(px).into_element();
             match el {
@@ -1480,15 +1480,15 @@ mod p6_glue {
             );
             assert!(!Rc::ptr_eq(&a.sheet, &c.sheet), "distinct px, distinct sheet");
 
-            let rules = runtime_core::resolve_style(&a);
+            let rules = runtime_shared::resolve_style(&a);
             assert_eq!(
                 rules.width,
-                Some(Tokenized::Literal(runtime_core::Length::Px(20.0))),
+                Some(Tokenized::Literal(runtime_shared::Length::Px(20.0))),
                 "square width"
             );
             assert_eq!(
                 rules.height,
-                Some(Tokenized::Literal(runtime_core::Length::Px(20.0))),
+                Some(Tokenized::Literal(runtime_shared::Length::Px(20.0))),
                 "square height"
             );
             assert_eq!(
@@ -1558,7 +1558,7 @@ mod p6_glue {
             // scope (like Switch's body), so the keepalive is owned by
             // the realized subtree.
             let element = runtime_scene::component_scope(|| {
-                let r: Ref<runtime_core::ViewHandle> = Ref::new();
+                let r: Ref<runtime_shared::ViewHandle> = Ref::new();
                 av_bind.bind(r, AnimProp::TranslateX);
                 view().on_handle(move |handle| r.fill(handle)).build()
             });

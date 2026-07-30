@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>idealyst-native · old-vs-new core measurement harness</title>
+<title>idealyst-native · A/B measurement harness</title>
 <style>
   html, body { margin: 0; padding: 0; font-family: -apple-system, sans-serif; }
   #app { min-height: 100vh; }
@@ -11,29 +11,30 @@
 <body>
   <div id="app"></div>
   <script type="module">
-    // Old-vs-new core A/B harness (idea-lite migration ±5% gate).
+    // A/B measurement harness. `?pkg=<dir>` picks which built package
+    // under `wasm/` to load, so a before/after comparison is two
+    // wasm-pack builds into two out-dirs:
     //
-    //   ?pkg=pkg      → old-core build   (wasm/pkg/)
-    //   ?pkg=pkg-new  → new-core build   (wasm/pkg-new/)
+    //   ?pkg=pkg        → wasm/pkg/        (the default build)
+    //   ?pkg=pkg-after  → wasm/pkg-after/  (the candidate build)
     //
     // Both bundles export the SAME function set from the SAME source
-    // (benchmark/idealyst-native/wasm/src/lib.rs, cfg-selected core).
-    // Methodology: see the "Old-core vs new-core gate" section in
+    // (benchmark/idealyst-native/wasm/src/lib.rs).
+    // Methodology: see the "A/B harness" section in
     // ../idealyst-native/README.md. Drive from Playwright/devtools via
     // `window.bench.run()` or per-op `window.bench.measure(name)`.
     const params = new URLSearchParams(window.location.search);
-    // Accept any pkg-dir name matching wasm/pkg*(-…) so the
-    // debug-stats profiling builds (`pkg-prof` / `pkg-new-prof`) load
-    // through the same harness; anything else falls back to `pkg`.
+    // Accept any pkg-dir name matching wasm/pkg*(-…) so a candidate
+    // build or a debug-stats profiling build (`pkg-prof`) loads through
+    // the same harness; anything else falls back to `pkg`.
     const rawPkg = params.get('pkg') || 'pkg';
     const pkg = /^pkg(-[a-z0-9-]+)?$/.test(rawPkg) ? rawPkg : 'pkg';
     const mod = await import(`./wasm/${pkg}/benchmark_idealyst_native.js`);
     await mod.default();
     mod.start(10);
 
-    // Drain the microtask queue (flush microtask + batched-text
-    // microtask ride here on the new core; the old core's exports are
-    // fully synchronous but its batched text updates also microtask).
+    // Drain the microtask queue (the flush microtask + the batched-text
+    // microtask both ride here).
     const drainMicro = async (n = 8) => { for (let i = 0; i < n; i++) await Promise.resolve(); };
     const raf = () => new Promise(r => requestAnimationFrame(r));
 
@@ -153,9 +154,9 @@
         return once(null, () => mod.set_point_color(500, b ? 'B' : 'A'), el0, 'rstyle_point');
       },
 
-      // Signal-class suite (mode 4): the JS class-binding fan-out risk
-      // op — old core = 1 FFI + JS classList loop; new core = per-node
-      // effect fallback.
+      // Signal-class suite (mode 4): the class-binding fan-out op —
+      // one world effect per bound node (see the README's note on the
+      // JS write-notifier channel the old walker had here).
       sclass_shared_1k: async (i) => {
         if (i === 0) { mod.setup_signal_class_rows(1000); await settle(textIncludes('sclass 999'), 'setup'); }
         const b = i % 2 === 0;

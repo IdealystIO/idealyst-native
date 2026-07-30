@@ -2,7 +2,7 @@
 //! kept alive in `WebBackend::_click_closures`.
 
 use crate::WebBackend;
-use runtime_core::{ButtonHandle, ButtonOps};
+use runtime_shared::{ButtonHandle, ButtonOps};
 use std::any::Any;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
@@ -13,8 +13,8 @@ pub(crate) fn create(
     b: &mut WebBackend,
     label: &str,
     on_click: Rc<dyn Fn()>,
-    leading_icon: Option<&runtime_core::IconData>,
-    trailing_icon: Option<&runtime_core::IconData>,
+    leading_icon: Option<&runtime_shared::IconData>,
+    trailing_icon: Option<&runtime_shared::IconData>,
 ) -> Node {
     // Ensure the global style element exists so the `:where(button)`
     // UA reset is in place before any author class rules attach to
@@ -45,7 +45,6 @@ pub(crate) fn create(
         let _ = button.set_attribute("style", css::BUTTON_CONTENT_STYLE);
         // Icon slot rides the icon primitive's gate: with `prim-icon`
         // off, a button renders its label only.
-        #[cfg(feature = "prim-icon")]
         if let Some(icon_data) = leading_icon {
             let svg_node = super::icon::create(b, icon_data, None);
             let _ = button.append_child(&svg_node);
@@ -56,7 +55,6 @@ pub(crate) fn create(
         let _ = button.append_child(&span);
         // Icon slot rides the icon primitive's gate: with `prim-icon`
         // off, a button renders its label only.
-        #[cfg(feature = "prim-icon")]
         if let Some(icon_data) = trailing_icon {
             let svg_node = super::icon::create(b, icon_data, None);
             let _ = button.append_child(&svg_node);
@@ -102,16 +100,16 @@ impl ButtonOps for WebButtonOps {
         }
     }
 
-    fn rect(&self, node: &dyn Any) -> runtime_core::ViewportRect {
+    fn rect(&self, node: &dyn Any) -> runtime_shared::ViewportRect {
         node.downcast_ref::<web_sys::HtmlElement>()
             .map(measure_element_rect)
             .unwrap_or_default()
     }
 }
 
-fn measure_element_rect(el: &web_sys::HtmlElement) -> runtime_core::ViewportRect {
+fn measure_element_rect(el: &web_sys::HtmlElement) -> runtime_shared::ViewportRect {
     let r = el.get_bounding_client_rect();
-    runtime_core::ViewportRect {
+    runtime_shared::ViewportRect {
         x: r.x() as f32,
         y: r.y() as f32,
         width: r.width() as f32,

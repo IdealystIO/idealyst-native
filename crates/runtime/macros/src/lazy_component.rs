@@ -127,16 +127,6 @@ pub(crate) fn emit_inline_lazy_glue(g: LazyGlue<'_>) -> TokenStream2 {
     // classification is identical across cores. The `::runtime_core::…`
     // paths below are retargeted to `runtime_vocabulary::glue::…` under
     // `new-core` (glue::primitives::lazy defines the thunk types).
-    #[cfg(not(feature = "new-core"))]
-    let lazy_body_fn = quote! {
-        #[::runtime_core::__wasm_split::wasm_split(#split_name)]
-        async fn __lazy_body(props: #props_ident) -> ::runtime_core::Element {
-            ::runtime_core::IntoElement::into_element(
-                #fn_name(#(props.#arg_names),*)
-            )
-        }
-    };
-    #[cfg(feature = "new-core")]
     let lazy_body_fn = quote! {
         #[::runtime_core::__wasm_split::wasm_split(#split_name)]
         async fn __lazy_body(

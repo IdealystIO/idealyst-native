@@ -177,27 +177,36 @@ fn native_and_ssr() -> Element {
 }
 
 fn heavy_sdks() -> Element {
-    let example = "#[component(lazy)]\n\
+    let example = "// Boot seam: declare the payload kind late-bound. This costs\n\
+                   // the main bundle a TypeId and nothing else.\n\
+                   pub fn register_scene_extensions<H: Host>(r: &mut Registry<H>) {\n    \
+                       r.defer::<CanvasProps>();\n\
+                   }\n\n\
+                   #[component(lazy)]\n\
                    fn CanvasCorner() -> Element {\n    \
-                       // Registration is the main-bundle anchor \u{2014} move it\n    \
-                       // into the chunk, then render.\n    \
-                       canvas_sdk::register_lazy();\n    \
+                       // The handler ships with the chunk, not the main bundle.\n    \
+                       canvas_sdk::register_from_chunk();\n    \
                        canvas_sdk::widget()\n\
                    }";
     ui! {
         Section(
             title = "Heavy SDKs".to_string(),
             paragraphs = vec![
-                "An SDK that renders through `Element::External` (canvas, PDF, \
-                 maps) is anchored in the main bundle by its handler registration, \
-                 wherever the rendering happens. Splitting such an SDK means \
-                 registering from inside the lazy component's body: the SDK exposes \
-                 a `register_lazy()` built on `defer_external_registration`, and \
-                 the app calls it as the body's first line.".to_string(),
-                "The framework drains the queued registration right before the \
-                 chunk's external dispatches, so the handler is in place when the \
-                 subtree mounts. The lazy-loading guide covers the full pattern, \
-                 including the inventory-registration pitfall.".to_string(),
+                "An SDK renders through a mount handler registered on the scene \
+                 registry. Registering at boot anchors that handler \u{2014} and \
+                 everything it reaches \u{2014} in the main bundle, wherever the \
+                 rendering happens. Splitting such an SDK means registering from \
+                 inside the chunk instead: the app declares the payload kind \
+                 late-bound with `Registry::defer`, and the SDK's \
+                 `register_from_chunk()` queues the real handler through \
+                 `defer_registration`.".to_string(),
+                "The framework drains queued registrations at the start of every \
+                 realization, so the handler is in place before the chunk's own \
+                 subtree mounts. A payload that already rendered elsewhere in the \
+                 tree waits behind a layout-transparent placeholder and completes \
+                 in place when the handler lands \u{2014} same position, no \
+                 remount. Declaring the kind is what licenses that wait: a payload \
+                 nobody declared still fails loudly at realize.".to_string(),
             ],
             code = Some(example.to_string()),
         )

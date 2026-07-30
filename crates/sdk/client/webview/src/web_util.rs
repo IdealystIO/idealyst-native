@@ -1,8 +1,8 @@
-//! Pure wasm32 DOM helpers shared by BOTH cores' web legs (no core
-//! types, no feature gates): the iframe event-listener wiring (with its
-//! `__wv_state` closure persistence) and the imperative ops bodies.
-//! Extracted from the old-core `web.rs` when the `new-core` leg landed
-//! so the two legs can't drift.
+//! Pure wasm32 DOM helpers for the web leg (no core types): the iframe
+//! event-listener wiring (with its `__wv_state` closure persistence)
+//! and the imperative `WebViewOps` bodies. Kept out of `lib.rs` so the
+//! DOM plumbing stays separable from the primitive's core-facing
+//! surface.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -29,8 +29,8 @@ struct WebViewState {
 /// Wire the author's message/load/error callbacks as DOM event
 /// listeners on `iframe`, then persist the listener closures via the
 /// iframe's `__wv_state` JS reflect slot so their lifetimes match the
-/// iframe's. Both cores' web handlers call this with the (possibly
-/// wrapped) callbacks they want fired.
+/// iframe's. The web handler calls this with the flush-wrapped
+/// callbacks it wants fired.
 pub(crate) fn wire_listeners(
     iframe: &web_sys::Element,
     on_message: Option<Rc<dyn Fn(String)>>,
@@ -133,9 +133,9 @@ fn wire_on_error(
 }
 
 // ============================================================================
-// Imperative ops bodies — the whole `WebViewOps` impl on web, shared by
-// both cores' ops structs. Each takes the type-erased handle node (a
-// `web_sys::Node` wrapping the `<iframe>`).
+// Imperative ops bodies — the whole `WebViewOps` impl on web. Each
+// takes the type-erased handle node (a `web_sys::Node` wrapping the
+// `<iframe>`).
 // ============================================================================
 
 /// Downcast the type-erased handle node to the mounted `<iframe>`.

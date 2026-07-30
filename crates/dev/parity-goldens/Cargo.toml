@@ -1,0 +1,32 @@
+[package]
+name = "parity-goldens"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Frozen-artifact substrate for the runtime-v2 migration's cross-core
+# parity suites.
+#
+# WHY THIS EXISTS: a large share of the migration's regression value
+# lived in old-vs-new parity harnesses that rendered the same scene on
+# BOTH cores in one process and asserted equality (byte-exact SSR/email
+# HTML, cell-exact terminal grids, pixel-exact CPU framebuffers,
+# byte-exact Roku command streams, wire-snapshot JSON). Deleting the old
+# core would have taken their reference side with them. This crate is
+# the mechanism that turned each of them into a GOLDEN comparison: the
+# old core's output was frozen to a committed file, and the surviving
+# test compares the current implementation against the frozen file.
+#
+# Contract, in one line: `freeze_*` writes only under
+# `IDEALYST_FREEZE_GOLDENS=1` (its call sites died with the old core);
+# `check_*` always compares and is the call that survives.
+#
+# See `docs/runtime-v2-deletion-baseline.md` and each consumer's
+# `tests/goldens/README.md`.
+
+[dependencies]
+# Lossless RGBA8 PNG for framebuffer goldens (alpha preserved, so the
+# round trip is byte-exact). Already in the lock via mock-backend /
+# icon-gen, so this adds no new build.
+image = { version = "0.25", default-features = false, features = ["png"] }

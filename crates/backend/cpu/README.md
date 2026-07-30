@@ -1,9 +1,9 @@
 # backend-cpu
 
-A software-rasterizing `Backend` for `runtime_core`. Renders the
-framework's primitive tree into a pixel framebuffer using a pure-Rust
-rasterizer — no GPU, no native UI toolkit, no operating-system
-window dependency.
+A software-rasterizing backend: `runtime_scene::Host` plus the
+`runtime_vocabulary::caps` traits, rendering the framework's primitive
+tree into a pixel framebuffer with a pure-Rust rasterizer — no GPU, no
+native UI toolkit, no operating-system window dependency.
 
 The renderer outputs through the [`Surface`] trait, so the same
 backend drives:
@@ -203,6 +203,6 @@ cargo test -p backend-cpu
 
 18 tests cover the rasterizer arithmetic (alpha blend rounding,
 rounded-rect inclusion), the font table, and end-to-end rendering
-through the `Backend` trait. Tests assert on pixel values from a
+through the `Host` + capability traits. Tests assert on pixel values from a
 `MemSurface`, so they catch any regression that changes what gets
 painted.

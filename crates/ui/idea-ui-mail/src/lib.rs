@@ -428,7 +428,7 @@ mod tests {
     /// content and inline styles baked in (no classes, no `var(--…)`).
     #[test]
     fn mail_components_render_through_email_backend() {
-        let out = backend_email::render_email(|| {
+        let out = backend_email::newcore::render_email(|| {
             ui! {
                 EmailBody(background = "#f0f0f5") {
                     EmailContainer() {
@@ -461,7 +461,7 @@ mod tests {
     /// A `Heading` is a single styled text node with the size/weight baked in.
     #[test]
     fn heading_bakes_font_styles_inline() {
-        let out = backend_email::render_email(|| {
+        let out = backend_email::newcore::render_email(|| {
             ui! { Heading(content = "Big", size = 30.0) }
         });
         assert!(out.html.contains("font-size: 30px"), "got: {}", out.html);

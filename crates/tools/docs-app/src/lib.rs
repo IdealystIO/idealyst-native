@@ -12,9 +12,9 @@
 //!
 //! ## How the catalog data flows in
 //!
-//! `runtime-core` is depended on with the `catalog` feature, which flips
-//! on the `#[component]` emission gate across the whole dep graph and
-//! pulls `mcp-catalog` in transitively. At startup `CatalogModel::build`
+//! `runtime-core` is depended on with the `catalog` feature, which
+//! flips on the `#[component]` emission gate across the whole dep graph
+//! and pulls `mcp-catalog` in transitively. At startup `CatalogModel::build`
 //! calls `mcp_catalog::ResolvedCatalog::build()` — reading the app's OWN
 //! in-process `inventory` catalog (no file, no codegen step). idea-ui's
 //! components show up because this crate links idea-ui and references
@@ -26,7 +26,7 @@
 //!
 //! ## Crate layout
 //!
-//! - `lib.rs` (this) — `app()` entry + per-target extension registration.
+//! - `lib.rs` (this) — `app()` entry + the boot registration seams.
 //! - `catalog.rs` — pure catalog → `CatalogModel` view-model mapping (unit-tested).
 //! - `routes.rs` — the single catalog root route + URL-encoded entry routing.
 //! - `shell.rs` — sidebar + detail-page components (`EntryPage`, `FieldsTable`, `CodePanel`, …).
@@ -37,7 +37,7 @@ use std::rc::Rc;
 
 use idea_ui_nav::AppShell;
 use runtime_core::primitives::navigator::Screen;
-use runtime_core::{component, effect, signal, ui, Breakpoint, Element, Ref, Signal};
+use runtime_core::{effect, signal, ui, Breakpoint, Element, Ref, Signal};
 use swap_navigator::{MountPolicy, SwapBuilder, SwapHandle, SwapNavigator};
 
 mod catalog;
@@ -49,12 +49,6 @@ mod theme;
 
 use catalog::CatalogModel;
 use routes::{decode_entry_route, ENTRY_ROUTE, OVERVIEW_ROUTE};
-
-// `codeblock` / `markdown` are referenced directly in page code (`shell.rs`),
-// but the `table` SDK is only reached transitively via idea-ui's `Table`
-// re-export — pin it so its `inventory` self-registration ctors link into
-// the binary now that the explicit `table::register` calls are gone.
-use table as _;
 
 thread_local! {
     /// The catalog is built once and shared by every screen closure. A
@@ -74,44 +68,60 @@ fn model() -> Rc<CatalogModel> {
 }
 
 // =============================================================================
-// Per-target SDK-handler registration. Called by the CLI-generated
-// wrapper before mount. Mirrors websites/idea-ui-docs.
+// Boot-time SDK-handler registration. Called by the CLI-generated
+// wrappers (web `start_in`/`hydrate_in`, macOS/GPU `run_with`, iOS
+// `run_in_view`, Android `start`, terminal `run`, the SSG crawl) with the
+// fresh scene registry, after `runtime_vocabulary::register_builtins`.
+// Mirrors websites/idea-ui-docs.
 // =============================================================================
 
-#[cfg(target_arch = "wasm32")]
-pub fn register_extensions(_backend: &mut backend_web::WebBackend) {
-    backend_web::install_viewport_observer();
+/// Register this app's third-party payload handlers on a scene registry.
+///
+/// - `codeblock::register` so `shell::CodePanel` renders the SDK's
+///   `<pre>`/span (web/SSR) or single-node native code block.
+/// - `markdown::register` so guide bodies and entry docs render real
+///   markdown DOM.
+/// - `table::register_handlers` so `FieldsTable` / the variants +
+///   animations tables render the SDK's `<table>`/`<tr>`/`<td>`.
+///
+/// Registration is mandatory: an unregistered payload **panics at
+/// realize** (the scene contract fails loud — the pre-v2 walker rendered
+/// a placeholder box instead).
+///
+/// Registry-generic over the scene `Host`, so ONE seam serves the web
+/// boot, the SSG crawl, the native hosts, and the GPU desktop host — each
+/// wrapper's call site pins `H` to its concrete backend. All three
+/// handlers are caps-generic, which is why this app needs no backend
+/// dependency of its own.
+///
+/// The navigator needs nothing here: swap navigators are vocabulary
+/// built-ins installed by `register_builtins` on every host.
+pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
+where
+    H: runtime_vocabulary::style_attach::StyleServices
+        + runtime_vocabulary::caps::TextOps
+        + runtime_vocabulary::caps::InputOps
+        + 'static,
+{
+    codeblock::register(registry);
+    markdown::register(registry);
+    table::register_handlers(registry);
 }
 
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub fn register_extensions(_backend: &mut backend_ios::IosBackend) {}
-
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-pub fn register_extensions(_backend: &mut backend_android::AndroidBackend) {}
-
-// `codeblock` / `markdown` / `table` are converted-External SDKs that now
-// self-register via `inventory`, so there are no per-backend register
-// calls in any of these arms. docs-app ships web/ios/android (see
-// `[package.metadata.idealyst.app].targets`); the macOS/terminal arms
-// exist only for the CLI-generated wrappers.
-// macOS native — but NOT when the `terminal` feature is on. The terminal
-// target builds for the macOS host triple, so without `not(feature =
-// "terminal")` this and the terminal arm below would both compile on a
-// macOS host and collide as duplicate definitions.
-#[cfg(all(target_os = "macos", not(target_arch = "wasm32"), not(feature = "terminal")))]
-pub fn register_extensions(_backend: &mut backend_macos::MacosBackend) {}
-
-// Terminal — selected by the `terminal` feature (the CLI's terminal
-// wrapper enables it), not a `target_os` cfg, because the terminal target
-// builds for the host triple and would otherwise be shadowed by the host's
-// native backend (macOS).
-#[cfg(feature = "terminal")]
-pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
-
-// Recorder-side registration for the runtime-server sidecar.
+/// Recorder-side registration for the runtime-server sidecar
+/// (`dev_server::sidecar::run_newcore`) — the recorder's scene-registry
+/// twin of [`register_scene_extensions`].
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {
-    swap_navigator::recording::register(backend);
+pub fn register_scene_extensions_recorder(registry: &mut dev_server::newcore::SceneRegistry) {
+    register_scene_extensions(registry);
+}
+
+/// Android entry: the generated Android wrapper's `attach` mounts
+/// `scene_app()` through `backend_android::newcore::start` (see
+/// crates/tools/build/android). `app()` already returns the scene
+/// `Element`, so this is a plain shim with the conventional name.
+pub fn scene_app() -> Element {
+    app()
 }
 
 /// Wrap a screen body in a `Screen`. The `title` used to drive the drawer
@@ -124,9 +134,13 @@ fn titled(title: String, el: Element) -> Screen {
     Screen::new(el)
 }
 
-#[component]
+/// Root entry — the symbol every boot path mounts (the CLI-generated
+/// per-platform wrappers, the SSG crawl, and the sidecar).
 pub fn app() -> Element {
-    theme::install_initial_theme();
+    // Mode signal + reactive theme install. MUST run here, in the build
+    // window: signal creation outside `World::enter` panics, and the
+    // sidebar's toggle only writes the signal from its handler.
+    theme::init();
     // Align the framework's `Lg` breakpoint with the sidebar pin width the
     // old drawer chrome used (`install_navigator_pin_width(960.0)`), so
     // `AppShell(pin_at = Lg)` and the mobile hamburger flip at the same
@@ -192,9 +206,12 @@ pub fn app() -> Element {
 
             let sidebar_el = shell::sidebar(active_path, model());
             let header = shell::mobile_header(drawer_open);
+            // The outlet is a one-shot, non-`Clone` element — bound to a
+            // local so the `ui!` child below is a bare-identifier splat.
+            let outlet = nav_ctx.outlet;
             let body: Element = ui! {
                 view(style = shell::outlet_grow_style) {
-                    { nav_ctx.outlet }
+                    outlet
                 }
             };
             let content: Element = ui! {
@@ -210,7 +227,7 @@ pub fn app() -> Element {
                     pin_at = Breakpoint::Lg,
                     width = 300.0,
                 ) {
-                    { content }
+                    content
                 }
             }
         });

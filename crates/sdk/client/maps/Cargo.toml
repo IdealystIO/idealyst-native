@@ -8,67 +8,42 @@ license.workspace = true
 #
 # Layering:
 # - `maps-core` (shared types, zero platform deps)
-# - this crate: facade + cfg-routed `register` re-export
-# - `maps-web`/`maps-ios`/etc.: per-backend leaves with the actual
-#   FFI / SDK wiring
+# - this crate: the author-facing constructor + the cfg-routed scene
+#   `register` (one handler per target family)
+# - `maps-web`/`maps-ios`/etc.: per-backend leaves holding the actual
+#   FFI / SDK node builders
 #
 # Cargo's target-specific deps pull in exactly one leaf for the current
-# build target. On platforms with no matching leaf, the umbrella's
-# fallback `register<B>(_: &mut B) {}` keeps user code compiling; the
-# framework's per-backend "not supported" placeholder renders at
-# runtime.
-
-[features]
-# Runtime-v2 defaults flip: the new-core leg is the default surface;
-# the old-core leg is the opt-in (`--no-default-features` — in-repo
-# consumers ride the workspace dep spec, which pins defaults off and
-# selects a core explicitly per graph).
-default = ["new-core"]
-# Old-core marker for uniform `--no-default-features --features
-# old-core` invocations (the old-core deps are unconditional).
-old-core = []
-# Idea-lite migration: re-express the SAME authored surface
-# (`MapView(MapViewProps { .. })` + a bootstrap `register`) over the
-# scene registry — the new core's unified primitive==external contract.
-# Default-off and MUTUALLY EXCLUSIVE with the old-core surface (the two
-# define the same public names — one core per build; a consuming app
-# crate forwards this from its own new-core feature). The old-core
-# modules are byte-untouched under the default build.
-# `maps-web/new-core` + `backend-web/new-core` are needed because the
-# wasm32 handler is `WebBackend`-concrete (the leaf's iframe DOM has no
-# caps-trait expression) and `Registry<WebBackend>` needs the backend's
-# new-core `Host` impl; `maps-ios` stays old-core-only (see
-# `src/newcore.rs`). No `runtime-world` dep — the maps handler installs
-# no reactive effects (the props are plain `Copy` data), matching the
-# codeblock precedent.
-new-core = [
-    "dep:runtime-vocabulary",
-    "dep:runtime-scene",
-    "maps-web/new-core",
-    "backend-web/new-core",
-]
+# build target. On platforms with no matching leaf, the umbrella
+# registers the External-placeholder handler and the host's "not
+# supported" box renders at runtime.
 
 [dependencies]
-runtime-core = { workspace = true }
 maps-core = { workspace = true }
-# New-core surface (feature `new-core`): the scene registry + the
-# vocabulary caps the handlers drive (`ExternalOps::create_external`
-# placeholder path) + `style_attach` for the author-style channel.
-runtime-scene = { workspace = true, optional = true }
-runtime-vocabulary = { workspace = true, optional = true }
+# The scene registry + the vocabulary caps the handlers drive
+# (`ExternalOps::create_external` placeholder path) + `style_attach` for
+# the author-style channel. `runtime-shared` supplies
+# `accessibility::AccessibilityProps`. No `runtime-world` — the maps
+# handlers install no reactive effects (the props are plain `Copy` data).
+runtime-scene = { workspace = true }
+runtime-shared = { workspace = true }
+runtime-vocabulary = { workspace = true }
 
 [dev-dependencies]
-# tests/newcore.rs (`--features new-core`) mounts `MapView(...)` through
-# the scene registry end-to-end on the shared host-mock recording
-# substrate; tests/oldcore.rs runs on the default (old-core) surface.
+# tests/maps.rs mounts `MapView(...)` through the scene registry
+# end-to-end on the shared host-mock recording substrate.
 host-mock = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 maps-web = { workspace = true }
-# The new-core wasm32 register is `WebBackend`-concrete; web-sys names
-# the node type the handler returns.
+# The wasm32 register is `WebBackend`-concrete (the leaf's iframe DOM has
+# no caps-trait expression), so `Registry<WebBackend>` needs the
+# backend's `Host` impl; web-sys names the node type the handler returns.
 backend-web = { workspace = true }
 web-sys = { version = "0.3", features = ["Element", "Node"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 maps-ios = { workspace = true }
+# Same story on iOS: the leaf returns an `IosNode` wrapping a real
+# `MKMapView`, so the handler is `IosBackend`-concrete.
+backend-ios-mobile = { workspace = true }

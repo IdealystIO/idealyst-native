@@ -80,25 +80,6 @@ inventory::submit! {
 
 inventory::submit! {
     UtilityEntry {
-        name: "defer_external_registration",
-        module_path: "runtime_core",
-        docs: "Register a third-party `External` handler LAZILY, from inside a lazy component's body (`#[component(lazy)]`), to keep a heavy SDK out of the web main bundle. Problem it solves: an `External` handler installed eagerly (at boot via `register_extensions`, or an `inventory::submit!` drained at backend construction) is statically reachable from `main.wasm`, so wasm-split keeps the whole SDK in the main bundle — wrapping the *usage* in a lazy component doesn't help, because REGISTRATION is the anchor, not rendering. Fix: have the SDK expose a `register_lazy()` that the app calls from within the lazy component's body — `defer_external_registration::<WebBackend, _>(|b| b.register_external::<Props,_>(handler))`. The closure (and the handler + heavy code it captures) is then reachable only from the chunk, so wasm-split keeps the SDK's code out of main (its data leaves main only under the experimental opt-in `idealyst build --web --release --data-prune`); the backend's `create_external` applies the queued registration (via `drain_external_registrations`, guarded by `has_pending_external_registrations`) before dispatching the chunk's own `External`. `B` is the concrete backend type (`WebBackend` on web); native registers eagerly (no chunk, no bundle cost) so `register_lazy` is a no-op there. See [[External]] and the [[lazy-loading]] guide.",
-        params: &[
-            ParamSpec {
-                name: "apply",
-                type_str: "impl FnOnce(&mut B)",
-                type_short_name: "FnOnce",
-            },
-        ],
-        return_type: "()",
-        return_type_short: "()",
-        category: UtilityCategory::Platform,
-        _seal: (),
-    }
-}
-
-inventory::submit! {
-    UtilityEntry {
         name: "parse",
         module_path: "runtime_core::color",
         docs: "Parse a CSS-ish color string (`#abc`, `#aabbcc`, `#aabbccdd`, `rgb(r,g,b)`, `rgba(r,g,b,a)`, named colors) into the canonical `Rgba` byte intermediate. Centralized in runtime-core; backends use 1-line shims. See `parse_or` for an infallible variant with a fallback.",

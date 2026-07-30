@@ -77,12 +77,6 @@ const EMPTY_ICON: IconData = IconData {
 /// Renders a sized, optionally tinted vector icon. Wraps the framework's
 /// `icon` primitive so call sites get a themed `#[component]` instead of
 /// the raw primitive.
-///
-/// **Cargo features:** requires `prim-icon` (in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without it compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Icon(props: &IconProps) -> Element {
     // `size` is a `.size()` sizing-sheet pin (a plain `f32`); a live `size`

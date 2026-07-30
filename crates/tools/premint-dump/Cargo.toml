@@ -3,8 +3,23 @@ name = "premint-dump"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Premint style-dump assembly: turns the runtime-core PREMINT_SHEETS registry into the shipped .css asset. Linked only by the CLI's ephemeral dump wrapper, never by shipped apps."
+description = "Premint style-dump assembly: turns the framework's PREMINT_SHEETS registry into the shipped .css asset. Linked only by the CLI's ephemeral dump wrapper, never by shipped apps."
 
 [dependencies]
+# The author-surface facade, aliased to `runtime_core` at the crate root
+# (see src/lib.rs). `style-dump` is what carries the `premint` registry
+# through to `runtime_core::premint` — both the registry this crate reads
+# (`PREMINT_SHEETS`) and the anchor the `stylesheet!` expansions in this
+# crate's tests register into under `cfg(idealyst_premint_dump)`. The
+# style DATA model (`StyleRules`, `assets`, `FontFamily`) rides the same
+# root.
 runtime-core = { workspace = true, features = ["style-dump"] }
 css = { workspace = true }
+
+[dev-dependencies]
+# The `stylesheet!` invocations in the tests emit absolute
+# `::runtime_vocabulary::glue::…` paths (including the
+# `cfg(idealyst_premint_dump)` linkme registration, which lands on
+# `glue::premint`), so the vocabulary must be nameable from the test
+# build. The lib itself only reaches the framework through the facade.
+runtime-vocabulary = { workspace = true }

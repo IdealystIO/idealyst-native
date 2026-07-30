@@ -17,15 +17,15 @@ default = []
 # WebSocket-driven dev-host client path. Off by default; the
 # local-render `run(skin, app)` path pays no transport cost.
 runtime-server = ["host-winit/runtime-server"]
-# idea-lite core migration: compile in `variant_phone::newcore::run` —
-# the new-core boot entries over `host_winit::newcore` (same window
-# profile as the old `run`). Off by default so the old-core build path
-# is unchanged. `runtime-server` stays old-core-only (named seam: the
-# native runtime-server shells render an old-core dev host's wire
-# stream — see src/newcore.rs).
-new-core = ["host-winit/new-core", "render-wgpu/new-core"]
 
 [dependencies]
 host-winit = { workspace = true }
 render-wgpu = { workspace = true }
-runtime-core = { workspace = true }
+# Style/host vocabulary (`ColorScheme`). `runtime-core` is NOT a
+# dependency: this variant has no `Element`/`Backend` surface left.
+runtime-shared = { workspace = true }
+
+[dev-dependencies]
+# The crate-doc example names the scene-element type `run`'s build
+# closure returns.
+runtime-scene = { workspace = true }

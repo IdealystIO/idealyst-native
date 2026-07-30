@@ -8,7 +8,16 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+# The author surface: `extern crate runtime_core as runtime_core;` in
+# lib.rs shadows the extern prelude, so `runtime_core::{ui, stylesheet,
+# signal, …}` resolves against `runtime_vocabulary::glue`.
 runtime-core = { workspace = true }
+# The `ui!` / `stylesheet!` emissions spell absolute
+# `::runtime_vocabulary::glue::…` paths.
+runtime-vocabulary = { workspace = true }
+# `Registry`, for the `start_in` registration seam the webview SDK
+# handler is installed through.
+runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 backend-web = { workspace = true }
 webview = { workspace = true }

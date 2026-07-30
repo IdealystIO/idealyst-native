@@ -20,7 +20,7 @@
 
 #[cfg(target_os = "macos")]
 fn main() {
-    use runtime_core::{install_tokens, signal, view, Element};
+    use runtime_core::{install_tokens, signal, view, Element, IntoElement};
 
     let count = signal(0_i32);
 
@@ -69,7 +69,7 @@ fn main() {
             ..Default::default()
         });
 
-        view(vec![bar.into()]).into()
+        view(vec![bar.into_element()]).into_element()
     };
 
     let opts = host_appkit::RunOptions {

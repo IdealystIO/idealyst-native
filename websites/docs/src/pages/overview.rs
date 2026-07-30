@@ -142,14 +142,14 @@ docs! {
            function returns a ", code("Element"), " — a tree of view, text, \
            button, and other primitive nodes, with reactive expressions \
            interleaved inside. The framework hands the tree to a piece of code \
-           called the render walker."),
-        p("The walker has two jobs: build the initial tree on the backend, and \
+           called realize."),
+        p("Realize has two jobs: build the initial tree on the backend, and \
            wire up the reactive expressions inside that tree so future changes \
            update the right nodes. It does both in a single pass."),
     },
 
     section(heading = "Building the initial tree") {
-        p("The walker visits each primitive in order. For each one:"),
+        p("Realize visits each primitive in order. For each one:"),
         list(
             ["It calls a ", code("create_*"), " method on the backend (",
               code("create_view"), ", ", code("create_text"), ", ",
@@ -157,23 +157,23 @@ docs! {
               handle — a DOM element, a ", code("UIView"), ", an Android ",
               code("View"), ", or whatever the platform uses to represent a thing \
               on screen."],
-            ["If the primitive has a style, the walker resolves it against the \
+            ["If the primitive has a style, realize resolves it against the \
               token registry and calls ", code("apply_style(node, rules)"), "."],
-            ["The walker recurses into children. Each child returns its own \
-              handle, which the walker passes to ", code("insert(parent, child)"), "."],
+            ["Realize recurses into children. Each child returns its own \
+              handle, which it passes to ", code("insert(parent, child)"), "."],
         ),
         p("The pass is purely additive: create, style, attach. There is no diff, \
            no patch, no second tree being compared."),
     },
 
     section(heading = "Wiring up reactivity") {
-        p("Whenever the walker meets a reactive expression — a ", code("Text"),
+        p("Whenever realize meets a reactive expression — a ", code("Text"),
           " whose contents read a signal, a style that reads a token, a ",
           code("for"), " loop over a signal-backed list, the condition of a \
            reactive ", code("if"), " — it wraps that expression in an Effect."),
         p("An Effect is the framework's lowest-level reactive primitive: a \
            closure with a stable identity that the framework re-runs whenever \
-           its dependencies change. Each Effect created by the walker does three \
+           its dependencies change. Each Effect realize creates does three \
            things in its body:"),
         list(
             ["Reads the source signals (each ", code(".get()"), " records the read)."],
@@ -186,51 +186,55 @@ docs! {
         p("The Effect runs once immediately. On that first run, every signal it \
            reads is recorded as a dependency, and the Effect's id is added to \
            those signals' subscriber lists. That is the wiring."),
-        p("By the time the walker reaches the end of the tree, the screen is on \
+        p("By the time realize reaches the end of the tree, the screen is on \
            the platform and every reactive expression is connected to its \
            sources."),
     },
 
     section(heading = "When a signal changes") {
-        p(code("signal.set(new_value)"), " runs synchronously:"),
+        p(code("signal.set(new_value)"),
+          " stages the write; the world commits it on the next flush:"),
         list(
-            ["The signal writes the new value into its arena slot."],
-            ["It looks up its subscriber set — the Effects whose most recent \
-              run read this signal."],
-            ["The framework runs each subscriber Effect in turn: the Effect's \
-              previous dependency set is cleared; the Effect is marked as \
-              currently running, then its closure runs (any signal it reads now \
-              is recorded as a fresh dependency); the closure produces a new \
-              value and (almost always) makes one backend call to apply it."],
-            ["When all subscribers have run, ", code("set"), " returns."],
+            ["The signal records the pending value. Nothing observable changes \
+              yet — a ", code(".get()"),
+             " on the next line still returns the committed value."],
+            ["When the author-code entry point returns — an event handler, a \
+              timer, an animation frame, an async-task poll — the backend's \
+              flush driver commits every staged write as ONE logical update, \
+              still in the same tick, before paint."],
+            ["The flush settles derivations first: memos recompute in \
+              dependency order, each one equality-guarded."],
+            ["Then it runs each subscriber Effect once — the Effect's previous \
+              dependency set is cleared, its closure runs (any signal it reads \
+              now is recorded as a fresh dependency), and the closure produces \
+              a new value and almost always makes one backend call to apply it."],
         ),
         p("No other nodes are visited. No other Effects are touched. The \
            framework knows exactly which nodes care about this signal because \
            they told it on their last run."),
     },
 
-    section(heading = "Cascading updates") {
-        p("A cascade is what happens when one Effect's body writes a signal \
-           that other Effects read. The cascade is the chain of re-runs that \
-           follows."),
-        p("Cascades are synchronous and depth-first. If Effect A runs and writes \
-           signal X (with subscribers B and C), B and C run on the same call \
-           stack before A's call frame returns. If B writes signal Y (subscriber \
-           D), D runs before B returns. By the time the outermost ", code("set"),
-          " returns, every downstream Effect has either run or been skipped, and \
-           every backend call those Effects produced has already been made."),
-        p("Cascades terminate naturally:"),
+    section(heading = "One turn, one update") {
+        p("Because writes stage, a whole turn of author code is implicitly one \
+           batch. Two writes to two signals that feed one Effect produce one \
+           Effect run, not two, and that Effect sees a consistent pair. There \
+           is no ", code("batch(…)"), " wrapper to reach for."),
+        p("Writes made from inside an Effect stage as well, and settle within \
+           the SAME flush — so a memo chain converges in one flush instead of \
+           cascading out through nested call frames."),
+        p("Two properties fall out of that ordering:"),
         list(
-            ["An Effect that reads but doesn't write doesn't extend the chain."],
-            ["An Effect that writes the same signal it reads is skipped — \
-              a re-entry guard prevents same-id loops, matching how Solid, \
-              MobX, and Reactively handle the same pattern."],
-            ["An Effect that writes to a signal with no subscribers stops the \
-              chain immediately."],
+            ["An Effect can never observe a fresh signal beside a stale memo \
+              over it, because the derivation class settles before user Effects \
+              run. The classic diamond glitch is closed structurally."],
+            ["An Effect runs at most once per flush, however many of its \
+              dependencies changed in the turn."],
         ),
-        p("There is no scheduler queue, no batch boundary, no microtask drain. \
-           The framework walks the dependency graph and calls into the backend \
-           as it goes."),
+        p("The one thing to internalize: a read-back increment. ",
+          code("set(get() + 1)"),
+          " twice in one handler nets +1, because the second ", code("get()"),
+          " still sees the committed value. ", code("update(|n| n + 1)"),
+          " composes on the staged value instead, so it nets +2."),
     },
 
     section(heading = "Dependencies are recomputed every run") {
@@ -248,7 +252,7 @@ docs! {
            behind an ", code("if"), " inside ", code("ui!"), " that reads a \
            signal — uses scopes to manage the lifetime of a subtree:"),
         list(
-            ["The walker creates an Effect for the condition."],
+            ["Realize creates an Effect for the condition."],
             ["The Effect builds the active branch inside a fresh nested scope. \
               Every signal and Effect created during that build is owned by the \
               scope."],
@@ -329,7 +333,7 @@ docs! {
         p("Once the framework's side is in place, a backend only has to know \
            how to create each kind of primitive, how to put one inside another, \
            how to update one when it changes, and how to apply a style. The \
-           walker takes care of everything else."),
+           realize takes care of everything else."),
     },
 
     section(heading = "Reactivity") {
@@ -351,7 +355,7 @@ docs! {
         code(rust, r##"
             let count = signal(0);
             count.set(5);
-            count.update(|n| *n += 1);
+            count.update(|n| n + 1);
         "##),
         p("Signals are the only kind of state the framework knows about. A \
            regular Rust variable is just data — if you want the UI to react when \
@@ -548,8 +552,8 @@ docs! {
   ┌─────────────────────────────────────────────────────────────┐
   │                      runtime-core                          │
   │  primitives  ·  signals + effects + scopes                   │
-  │  render walker  ·  style resolution + theming                │
-  │  identity  ·  scheduling  ·  Backend trait                   │
+  │  scene realization  ·  style resolution + theming            │
+  │  identity  ·  scheduling  ·  Host + capability traits        │
   │  (optional) Robot introspection                              │
   └─────────────────────────────────────────────────────────────┘
                               │
@@ -567,7 +571,7 @@ docs! {
                   │ app-side replayer  │
                   └────────────────────┘
                              │
-                       Backend trait
+                    Host + caps traits
           ┌──────────┬─────────┬─────────┬─────────┐
           ▼          ▼         ▼         ▼         ▼
         web        ios     android     roku    runtime-server
@@ -581,10 +585,13 @@ docs! {
               code("jsx!"), ", ", code("#[component]"), ", ", code("stylesheet!"),
               ", ", code("methods!"), "). Lowers source into plain runtime-core \
               calls; nothing here exists at runtime."],
-            [code("runtime-core"), " — The runtime everything else builds on. \
-              Primitives, signals + effects, render walker, style resolution, \
-              identity, the ", code("Backend"), " trait. Your app code talks \
-              mostly to this crate."],
+            [code("runtime-shared"), " / ", code("runtime-world"), " / ",
+              code("runtime-scene"), " / ", code("runtime-vocabulary"),
+              " — The runtime everything else builds on: the style engine and \
+              shared data model, the signal/effect kernel, the structural \
+              scene tree + mount drivers, and the primitive vocabulary with \
+              its capability traits. Your app code talks to one facade over \
+              the whole set."],
             [code("idea-ui"), " — Optional component library on top of \
               runtime-core. Heading, Card, Stack, Button, themed colors, \
               breakpoints. Use it, replace bits of it, or skip it."],
@@ -609,9 +616,10 @@ docs! {
               frames, click, and type. Powers automated testing without \
               per-platform harnesses."],
             ["Backends — One crate per platform under ", code("crates/backend/"),
-              ". Each implements ", code("Backend"), " by translating its method \
-              calls into native operations. The runtime-server backend is the odd one out — \
-              it serializes the tree onto the wire instead of rendering it."],
+              ". Each implements the host + capability traits by translating \
+              their calls into native operations. The runtime-server backend \
+              is the odd one out — it serializes the tree onto the wire \
+              instead of rendering it."],
             ["CLI — Orchestration. Scaffolds projects, runs the dev server, \
               materializes the per-platform host crate, drives builds. Not part \
               of the runtime; an Idealyst app can run without ever invoking the \
@@ -622,7 +630,7 @@ docs! {
     section(heading = "Seams that let you hook in") {
         p("Each crate boundary is a place to plug something new in:"),
         list(
-            ["The Backend trait. Write a new platform — terminal, embedded \
+            ["The backend traits. Write a new platform — terminal, embedded \
               display, game engine, anything you can drive from Rust. Implement \
               a handful of methods; everything above the seam stays the same."],
             ["wire. Write a new transport, a new viewer, or a \
@@ -646,8 +654,9 @@ docs! {
     section(heading = "Going deeper") {
         p("Topics that go past the overview, with their own pages:"),
         list(
-            ["Writing a backend — the ", code("Backend"), " trait, every \
-              method's contract, and what a minimal implementation looks like."],
+            ["Writing a backend — the host + capability traits, what each \
+              layer is responsible for, and what a minimal implementation \
+              looks like."],
             ["The dev server and wire protocol — what ", code("idealyst dev"),
               " does, what the wire commands carry, how reverse callbacks resolve."],
             ["Robot — controlling a running app from another process, the MCP \

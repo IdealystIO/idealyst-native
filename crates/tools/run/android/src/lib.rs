@@ -84,10 +84,6 @@ pub struct RunOptions {
     /// so the bridge dials out instead of self-hosting. Empty/None leaves the
     /// app self-hosting an on-device TCP bridge (the prior behavior).
     pub robot_relay_url: Option<String>,
-    /// Local mode: mount on the NEW core (runtime v2 — the default for
-    /// dual-core apps since the defaults flip). See
-    /// `build_android::BuildOptions::new_core`.
-    pub new_core: bool,
 }
 
 /// Mirrors `run-ios::RunMode` — same trade-offs (local self-contained
@@ -134,7 +130,6 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
             },
             source: opts.source.clone(),
             user_features: opts.user_features.clone(),
-            new_core: opts.new_core,
         },
     )?;
 

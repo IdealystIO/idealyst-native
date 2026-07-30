@@ -11,7 +11,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use runtime_core::animation::{AnimProp, AnimatedValue, SpringTo};
-use runtime_core::{effect, Bound, Element, Ref, Signal, ViewHandle};
+use runtime_core::{effect, signal, Element, GlueView, Ref, Signal, ViewHandle};
 
 use crate::context::{DragContext, PreviewBuilder};
 use crate::recognizer::{Activation, DragPhase, DragRecognizer};
@@ -79,7 +79,7 @@ impl<T: Clone + 'static> Draggable<T> {
             y: AnimatedValue::new(0.0),
             base: Rc::new(Cell::new((0.0, 0.0))),
             snap_back: true,
-            is_dragging: Signal::new(false),
+            is_dragging: signal(false),
             on_start: None,
             on_release: None,
             preview: None,
@@ -165,7 +165,7 @@ impl<T: Clone + 'static> Draggable<T> {
     /// [`Draggable::dim_source`] if set. Use [`Draggable::handler`] +
     /// [`Draggable::bind`] directly when you need the ref yourself (to bind
     /// other animated props to the node) or to compose in a `GestureGroup`.
-    pub fn attach(self, view: Bound<ViewHandle>) -> Element {
+    pub fn attach(self, view: GlueView) -> Element {
         let r: Ref<ViewHandle> = Ref::new();
         // Offset bind is harmless in the drag-layer model (the element never
         // translates) and required in the in-place model.
@@ -176,7 +176,7 @@ impl<T: Clone + 'static> Draggable<T> {
             let is_dragging = self.is_dragging;
             // Bridge the per-source drag flag to the bound opacity. Built
             // during render, so the surrounding component scope owns it.
-            effect!({
+            let _ = effect(move || {
                 dim_av.set(if is_dragging.get() { opacity } else { 1.0 });
             });
         }

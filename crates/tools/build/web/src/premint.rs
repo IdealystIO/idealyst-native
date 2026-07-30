@@ -9,7 +9,7 @@
 //!
 //! 1. **Dump build** (this module): an ephemeral NATIVE bin crate that
 //!    links the app rlib with `RUSTFLAGS="--cfg idealyst_premint_dump"`
-//!    and runtime-core's `style-dump` feature, so every `stylesheet!`
+//!    and the facade's `style-dump` feature, so every `stylesheet!`
 //!    in the app and its dependency tree registers into the
 //!    `PREMINT_SHEETS` distributed slice. Running it emits every
 //!    sheet's full variant space as CSS, which the caller writes into
@@ -114,8 +114,15 @@ path = "src/main.rs"
 # `style-dump` provides `runtime_core::premint` (the distributed slice
 # the app's `stylesheet!` registrations target under
 # `cfg(idealyst_premint_dump)`) and unifies onto every crate in the
-# graph that depends on runtime-core.
+# graph. `runtime-core/style-dump` forwards to
+# `runtime-vocabulary/style-dump`: the `stylesheet!` expansion emits
+# `::runtime_core::premint::…`, and the macro retarget rewrites that
+# into glue, so the dump registry has to have a glue home.
 runtime-core = {fcore_dep}
+# The dump builds the app's element tree, and building it creates
+# signals — which resolve the AMBIENT world. The entry below wraps the
+# build in an explicit `World`.
+runtime-world = {world_dep}
 premint-dump = {pdump_dep}
 {user_name} = {{ path = "{user_path}" }}
 
@@ -130,6 +137,7 @@ incremental = false
 {patch_block}"#,
         name = manifest.name,
         fcore_dep = source.dep("crates/runtime/core", &["style-dump"]),
+        world_dep = source.dep("crates/runtime/world", &[]),
         pdump_dep = source.dep("crates/tools/premint-dump", &[]),
         user_name = manifest.name,
         user_path = project_dir.display(),
@@ -150,7 +158,15 @@ fn main() {{
     // anything — the same force-link trick as the serverless-lambda
     // wrapper. Signals created during construction leak until process
     // exit, which is fine for a build step.
-    let tree = {lib}::app();
+    //
+    // The build MUST run inside a `World`: on runtime v2 `signal()` /
+    // `effect()` resolve the ambient world and abort with
+    // "called outside World::enter" otherwise, and essentially every
+    // real app body creates a signal while building. We never flush or
+    // realize — registration happens during `stylesheet!` evaluation,
+    // which the build triggers — so a bare world is enough.
+    let world = runtime_world::World::new();
+    let tree = world.enter(|| {lib}::app());
     let css = premint_dump::dump_all_css();
     std::fs::write(&out, &css).expect("write premint css");
     eprintln!("[premint-dump] {{}} bytes of preminted CSS", css.len());
@@ -158,6 +174,7 @@ fn main() {{
     // reactive thread-locals whose teardown order at process exit is
     // unspecified; `exit` sidesteps the whole class of TLS-drop aborts.
     std::mem::forget(tree);
+    std::mem::forget(world);
     std::process::exit(0);
 }}
 "#,
@@ -203,11 +220,30 @@ mod dump_wrapper_template_tests {
             cargo.contains("features = [\"style-dump\"]"),
             "runtime-core must carry style-dump so the registry exists:\n{cargo}"
         );
+        // The dep line itself. A generated Cargo.toml is not
+        // type-checked, so this assertion is the only thing standing
+        // between a rename and a broken `--premint` build (baseline doc
+        // §7.7). Scope to `[dependencies]` so the `[patch]` block can't
+        // satisfy it by accident.
+        let deps_section = cargo
+            .split("[patch.")
+            .next()
+            .expect("cargo.toml has a dependencies half");
+        assert!(
+            deps_section.contains("runtime-core = "),
+            "dump wrapper must depend on runtime-core:\n{cargo}"
+        );
         assert!(cargo.contains("premint-dump = "), "dump assembly crate dep:\n{cargo}");
         assert!(cargo.contains("demo-app = { path = "), "app dep line:\n{cargo}");
         assert!(
             main.contains("demo_app::app()"),
             "the wrapper must force-link the app via app():\n{main}"
+        );
+        // Building outside a world aborts the dump the moment the app
+        // body creates a signal.
+        assert!(
+            main.contains("runtime_world::World::new()") && main.contains("world.enter("),
+            "the app tree must be built inside a World:\n{main}"
         );
         assert!(main.contains("premint_dump::dump_all_css()"), "dump call:\n{main}");
         assert!(

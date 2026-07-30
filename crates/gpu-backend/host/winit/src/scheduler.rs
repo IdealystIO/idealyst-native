@@ -1,6 +1,6 @@
 //! Native scheduler for the wgpu sim runtime.
 //!
-//! The framework's `runtime_core::scheduling` helpers
+//! The framework's `runtime_shared::scheduling` helpers
 //! (`after_ms`, `raf_loop`, `schedule_microtask`) all dispatch
 //! through a single installed [`Scheduler`]. Without one:
 //! - `after_ms` runs *synchronously* (delay ignored), so a timeline
@@ -47,7 +47,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use runtime_core::scheduling::{install_scheduler, ScheduleHandle, Scheduler};
+use runtime_shared::scheduling::{install_scheduler, ScheduleHandle, Scheduler};
 use winit::event_loop::EventLoopProxy;
 
 use crate::app::AppEvent;
@@ -344,7 +344,7 @@ struct WinitScheduler;
 unsafe impl Send for WinitScheduler {}
 unsafe impl Sync for WinitScheduler {}
 
-/// Register a one-shot timer WITHOUT the new-core post-dispatch hook
+/// Register a one-shot timer WITHOUT the post-dispatch hook
 /// wrap. Shared registration body for [`Scheduler::after_ms`] (which
 /// wraps) and [`Scheduler::schedule_microtask`] (which must NOT wrap —
 /// see the comment there).
@@ -371,7 +371,7 @@ impl Scheduler for WinitScheduler {
         // iteration — same shape as iOS's NSTimer-based scheduler.
         //
         // Routed through `after_ms_raw`, NOT `after_ms`: microtasks
-        // must not fire the new-core post-dispatch hook. The new-core
+        // must not fire the post-dispatch hook. The
         // flush itself is dispatched as a scheduled microtask, so
         // hooking here would re-schedule a flush from inside the
         // flush's own dispatch and spin the 0 ms timer queue forever
@@ -409,7 +409,7 @@ impl Scheduler for WinitScheduler {
         // New-core flush driver: `after_ms` timers run author code (a
         // debounce that sets a signal); fire the post-dispatch hook
         // after the callback so staged writes commit. A single
-        // thread-local read when no hook is installed (old core).
+        // thread-local read when no hook is installed.
         // Wrapped HERE (at the Scheduler impl) rather than in
         // `drain_due` so `schedule_microtask`'s 0 ms timers stay
         // unhooked — the flush-microtask re-arm trap above.
@@ -471,7 +471,7 @@ impl ScheduleHandle for TimerHandle {
         // `try_with`, NOT `with`: handles can drop during THREAD
         // TEARDOWN, after `MAIN_QUEUE`'s own destructor ran. Concretely:
         // `std::process::exit` on macOS runs the main thread's TLS
-        // destructors, `runtime_core::scheduling::DETACHED_TASKS` drops
+        // destructors, `runtime_shared::scheduling::DETACHED_TASKS` drops
         // its parked `ScheduledTask`s (cancel-on-drop), and a plain
         // `with` here aborts the whole exit with "cannot access a TLS
         // value during or after destruction" → "panic in a destructor
@@ -535,7 +535,7 @@ impl Drop for RafHandle {
 }
 
 // ===========================================================================
-// Tests — the new-core post-dispatch hook contract on this scheduler.
+// Tests — the post-dispatch hook contract on this scheduler.
 //
 // Host-testable without a winit event loop: `after_ms_raw` and the
 // `Scheduler` impl only touch `MAIN_QUEUE` (thread-local) when `CMD_TX`
@@ -581,7 +581,7 @@ mod tests {
         clear_dispatch_hook();
     }
 
-    /// `schedule_microtask` must NOT fire the hook: the new-core flush
+    /// `schedule_microtask` must NOT fire the hook: the flush
     /// itself is dispatched as a microtask (a 0 ms timer here), so a
     /// hooked microtask would re-schedule a flush from inside the
     /// flush's own dispatch and spin the timer queue forever. This is
@@ -636,7 +636,7 @@ mod tests {
         clear_dispatch_hook();
     }
 
-    /// With no hook installed (old core), the wrapped closures degrade
+    /// With no hook installed, the wrapped closures degrade
     /// to plain dispatch — one thread-local read, no behavior change.
     #[test]
     fn no_hook_installed_is_plain_dispatch() {
@@ -652,7 +652,7 @@ mod tests {
     /// Regression: a `ScheduleHandle` dropped during THREAD TEARDOWN —
     /// after `MAIN_QUEUE`'s TLS destructor already ran — must not abort.
     /// This is exactly what `std::process::exit` triggers on macOS: the
-    /// main thread's TLS destructors run, `runtime_core::scheduling::
+    /// main thread's TLS destructors run, `runtime_shared::scheduling::
     /// DETACHED_TASKS` drops its parked timer handles, and (before the
     /// `try_with` fix in `TimerHandle::cancel`) the cancel's
     /// `MAIN_QUEUE.with` panicked inside a destructor → non-unwinding

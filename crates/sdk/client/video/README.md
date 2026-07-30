@@ -3,9 +3,9 @@
 A `Video` primitive for the idealyst framework — display a media URL **or
 a live `MediaStream`** (from `camera` / `screen-recorder`) inside your
 native UI tree with the platform's own player. Built on the
-framework's `Element::External` extension mechanism, so it's not part
+framework's third-party scene-primitive mechanism, so it's not part
 of runtime-core: an app opts in by depending on this crate and calling
-`video::register(&mut backend)` once at bootstrap.
+`video::register` to the boot entry once at bootstrap.
 
 Single-crate, `cfg`-gated — one crate ships every backend, selected at
 compile time. Mirrors the `webview` SDK's layout (see that crate for
@@ -15,16 +15,16 @@ the same rationale on why one crate beats the `maps`-style split).
 use video::prelude::*;
 use runtime_core::{signal, Ref};
 
-// App bootstrap — one line per third-party SDK:
-let mut backend = WebBackend::new("#app");
-video::register(&mut backend);
+// App bootstrap — one line per third-party SDK. `register` IS the boot
+// registration seam (it takes the scene `Registry`, not the backend):
+// backend_web::newcore::start_in("#app", video::register, app);
 
 // Inside a `ui!` block. `Video` is an external primitive, so it's
 // interpolated as an expression:
 let src = signal("https://example.com/clip.mp4".to_string());
 let v: Ref<VideoHandle> = Ref::new();
 ui! {
-    View {
+    view {
         { video::Video(VideoProps {
             // One extensible `source` prop — a VideoSource. Build it with
             // `url(...)` (string / Fn()->String) or `stream(...)` (a live
@@ -61,7 +61,7 @@ fetches it) or a live `Stream`. The *mechanism* differs per platform:
 | Web (wasm32) | `<video>` element (`src`) | `<video>.srcObject` ← the stream's native `MediaStream` (zero-copy) |
 | iOS | `AVPlayer` + `AVPlayerLayer` in a `UIView` | — (GPU/compositing phase) |
 | Android | `android.widget.VideoView` (`setVideoURI`) | — (GPU/compositing phase) |
-| Other (wgpu desktop, terminal, …) | the framework's `External` "not supported" placeholder | — |
+| Other (SSR, wgpu desktop, terminal, …) | the frozen External "not supported" placeholder | — |
 
 ### Backend caveats
 
@@ -94,7 +94,7 @@ on the value `Video(..)` returns.
 
 Manual verification per backend — an unchecked **native** box means the code
 compiles for that target but isn't confirmed on real hardware yet. Tick each
-item as you exercise it. This is an `Element::External` display primitive, so
+item as you exercise it. This is a display primitive, so
 verification is mostly interactive (register the renderer at bootstrap, then
 exercise a `Video` in a running app).
 
@@ -106,7 +106,7 @@ exercise a `Video` in a running app).
 - [ ] **Web** — a `url(..)` source plays in a `<video>`; a `stream(..)` source binds the live `MediaStream` via `.srcObject` (zero-copy); reactive `source` swaps the clip; `autoplay`/`controls`/`loop_playback` and imperative `play`/`pause`/`seek` work.
 - [ ] **iOS** — ⚠️ not yet device-confirmed: a `url(..)` source plays via `AVPlayer`/`AVPlayerLayer`; reactive `src` swap, `controls`, `loop_playback`, and imperative `play`/`pause`/`seek` work; live `stream` source is the GPU/compositing phase (unwired).
 - [ ] **Android** — ⚠️ not yet device-confirmed: a `url(..)` source plays via `VideoView`; reactive `src`, `play`/`pause`/`seek` work. Note `controls` and `loop_playback` are **not yet wired** (need a `MediaController`/`OnCompletionListener` shim); live `stream` source is the GPU/compositing phase (unwired).
-- [ ] **Other (wgpu desktop / terminal)** — renders the framework's `External` "not supported" placeholder.
+- [ ] **Other (SSR / wgpu desktop / terminal)** — renders the frozen External "not supported" placeholder.
 
 No OS permission of its own — playback uses the platform's native player.
 

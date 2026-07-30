@@ -37,19 +37,24 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use build_ios::{parse_manifest, Target};
 
-/// Cargo features for dev-mode builds. The macOS wrapper template
-/// declares its own `dev = ["runtime-core/dev"]` feature that
-/// gates `--emit-catalog` mode in main; passing the wrapper's
-/// own feature is what we want there. iOS / Android / Web wrappers
-/// don't (yet) have a wrapper-side `dev` feature, so we activate
-/// `runtime-core/dev` directly across the dep boundary — same
-/// effect on the framework, just no per-wrapper feature gates.
-fn dev_user_features_macos() -> Vec<String> {
+/// Cargo features for dev-mode builds of a NATIVE wrapper (macOS, iOS,
+/// Android, terminal).
+///
+/// Each of those wrapper templates declares its own
+/// `dev = ["runtime-core/dev", "runtime-shared/robot"]`, and passing
+/// the wrapper's own name is what we want: the template's
+/// `#[cfg(feature = "dev")]` blocks (`--emit-catalog` mode, the
+/// app-identity registration) are gated on it, so activating
+/// `runtime-core/dev` across the dep boundary instead would compile
+/// them out and leave the MCP catalog empty.
+///
+/// The two halves are both load-bearing: `runtime-core/dev` is
+/// robot + catalog (the automation registry and the inventory anchor),
+/// while `runtime-shared/robot` is the bridge TRANSPORT the templates
+/// call into (`robot::bridge::set_app_identity`) — the vocabulary's
+/// `robot` feature does not forward it.
+fn dev_user_features_native() -> Vec<String> {
     vec!["dev".to_string()]
-}
-
-fn dev_user_features_other() -> Vec<String> {
-    vec!["runtime-core/dev".to_string()]
 }
 
 /// Compute the env vars the dev launcher sets on the spawned app.
@@ -184,29 +189,25 @@ pub struct Args {
     #[arg(long)]
     pub local: bool,
 
-    /// DEPRECATED no-op alias: the NEW core (runtime v2) is the
-    /// default since the defaults flip — dual-core projects (any
-    /// project declaring the `new-core` cargo feature; every
-    /// `idealyst new` scaffold does) run it with no flags. In
-    /// runtime-server mode (the default) the sidecar mounts the app
+    /// Accepted no-op alias: runtime v2 is the only runtime, so every
+    /// dev session already runs on it. Kept so existing invocations,
+    /// scripts, and CI files don't break (see `crate::core_mode`).
+    ///
+    /// In runtime-server mode (the default) the sidecar mounts the app
     /// through a per-session `World` + scene `realize`
     /// (`dev_server::sidecar::run_newcore`); the wire protocol is
-    /// unchanged, so clients are identical either way. Saves apply via
-    /// rebuild-and-respawn (hot-PATCHING needs the `#[component]`
-    /// hot-dispatch split, which the new-core emission doesn't have
-    /// yet). In `--local` mode each platform wrapper boots its own
-    /// `newcore` entry. On a project WITHOUT the `new-core` feature
-    /// this flag errors with the migration pointer instead of
-    /// silently running the old core.
+    /// unchanged, so clients are identical. Saves apply via
+    /// rebuild-and-respawn — in-place hot-PATCHING needs the
+    /// `#[component]` hot-dispatch split, which the runtime-v2 emission
+    /// does not have. In `--local` mode each platform wrapper boots its
+    /// own `newcore` entry.
     #[arg(long)]
     pub new_core: bool,
 
-    /// Opt the dev session back onto the OLD core (the pre-runtime-v2
-    /// walker): old-core sidecar mount in runtime-server mode (which
-    /// restores in-place hot-PATCHING), old-core wrappers in `--local`
-    /// mode. Dual-core apps compile `default-features = false,
-    /// features = ["old-core"]`; legacy apps (no `new-core` feature)
-    /// are always old-core and don't need the flag.
+    /// REMOVED: the pre-runtime-v2 walker no longer exists. Passing
+    /// this fails with the migration pointer rather than silently
+    /// running runtime v2 with old-core semantics expected
+    /// (`crate::core_mode`, `docs/migrating-to-runtime-v2.md`).
     #[arg(long)]
     pub old_core: bool,
 
@@ -350,15 +351,8 @@ pub fn run(args: Args) -> Result<()> {
         format!("cannot resolve project dir {}", args.dir.display())
     })?;
 
-    // Runtime-v2 defaults flip: resolve the effective core once (new
-    // core unless `--old-core`, or the project never declared the
-    // dual-core convention) and let every launcher read the resolved
-    // value through `args.new_core`. Applies to BOTH modes: the
-    // runtime-server sidecar mounts the resolved core; `--local`
-    // wrappers boot the resolved core's per-platform entry.
-    let mut args = args;
-    args.new_core = crate::core_mode::resolve(&dir, args.new_core, args.old_core)?;
-    args.old_core = false;
+    // One core: `--new-core` is a no-op, `--old-core` is a hard error.
+    crate::core_mode::validate_flags(args.new_core, args.old_core)?;
 
     // Resolve the active target set. Explicit flags win; if none are
     // passed, fall back to the manifest's `targets`. We parse the
@@ -531,7 +525,7 @@ pub fn run(args: Args) -> Result<()> {
     // wait loop after the worker join.
     let mut host_pid: Option<u32> = None;
     let runtime_server_port: Option<u16> = if !args.local && !full_stack_web {
-        let host_binary = build_runtime_server_host(&dir, args.new_core)?;
+        let host_binary = build_runtime_server_host(&dir)?;
         let port_file = runtime_server_port_file(&dir);
         // Clear any stale value from a previous session before
         // letting the host overwrite it — keeps reads from picking
@@ -987,19 +981,14 @@ fn dedup_preserve_order(xs: Vec<Target>) -> Vec<Target> {
 /// Build (or rebuild) the runtime-server host binary for this project. The host
 /// is what serves the wire WebSocket; runs as a child process for the
 /// rest of this session.
-fn build_runtime_server_host(dir: &Path, new_core: bool) -> Result<PathBuf> {
-    crate::dlog!(
-        "dev",
-        "building runtime-server host{}…",
-        if new_core { " (new core)" } else { "" },
-    );
+fn build_runtime_server_host(dir: &Path) -> Result<PathBuf> {
+    crate::dlog!("dev", "building runtime-server host…");
     let source = crate::framework_source::resolve(dir)?;
     let artifact = build_runtime_server::build(
         dir,
         build_runtime_server::BuildOptions {
             release: false,
             source,
-            new_core,
         },
     )?;
     Ok(artifact.host_binary)
@@ -1091,9 +1080,8 @@ fn launch_terminal(dir: &Path, args: &Args, runtime_server_port: Option<u16>) ->
             release: false,
             mode,
             source,
-            user_features: dev_user_features_other(),
+            user_features: dev_user_features_native(),
             env_vars,
-            new_core: args.new_core,
         },
     )
     .context("terminal dev launch failed")?;
@@ -1169,34 +1157,27 @@ fn launch_web(
         if !args.no_build {
             crate::dlog!(
                 "dev web",
-                "building wasm shim with runtime-server + runtime-core/hot-reload…"
+                "building wasm shim with runtime-server…"
             );
             dev_reload::build_once(
                 dir,
                 &dev_reload::BuildOptions {
                     source: source.clone(),
-                    // Two features flipped on for the wasm build:
+                    // One feature flipped on for the wasm build:
+                    // `runtime-server` (bare, wrapper-local) switches
+                    // the generated `start()` from a local mount to a
+                    // `WireBackend` + `connect_web` against the URL
+                    // injected as `window.IDEALYST_RUNTIME_SERVER_URL`.
+                    // Without this the browser would render locally and
+                    // never open the WebSocket, so the runtime-server
+                    // sidecar would log `notifying 0 session(s) to
+                    // re-render` on every rebuild.
                     //
-                    // 1. `runtime-server` (bare feature) — wrapper-
-                    //    local; switches the generated `start()` from
-                    //    local `mount(app)` to a `WireBackend` +
-                    //    `connect_web` against the URL injected as
-                    //    `window.IDEALYST_RUNTIME_SERVER_URL`. Without
-                    //    this the browser would render locally and
-                    //    never open the WebSocket, so the runtime-
-                    //    server sidecar would log `notifying 0
-                    //    session(s) to re-render` on every hot-patch.
-                    //
-                    // 2. `runtime-core/hot-reload` (cross-crate) —
-                    //    flips the `#[component]` macro into its
-                    //    split form (`__<Name>_hot_impl` + outer
-                    //    dispatch via `dev_hot::call`) on the
-                    //    USER crate's compilation. Even though the
-                    //    browser doesn't apply patches, the wire
-                    //    protocol carries `HandlerId`s minted against
-                    //    the hot-reload-aware handler table, so the
-                    //    user crate must compile with the same
-                    //    flavor as the runtime-server sidecar.
+                    // There is no hot-reload counterpart: the
+                    // `#[component]` lowering has no hot-dispatch split,
+                    // so a source change rebuilds and respawns the
+                    // session rather than patching a handler table in
+                    // place (named gap in docs/migrating-to-runtime-v2.md).
                     features: vec![
                         // Wrapper-local feature; MUST match the
                         // template's declaration or the
@@ -1205,12 +1186,11 @@ fn launch_web(
                         // and require every user crate to declare an
                         // unused `runtime-server` feature.
                         "runtime-server".to_string(),
-                        "runtime-core/hot-reload".to_string(),
                     ],
                     bundle_out_dir: None,
                 },
             )
-            .context("web build failed (runtime-server + runtime-core/hot-reload)")?;
+            .context("web build failed (runtime-server)")?;
         }
 
         // The dev-server lives on this machine, so the browser always
@@ -1264,6 +1244,13 @@ fn launch_web(
                 signal.clone(),
                 dev_reload::BuildOptions {
                     source: source.clone(),
+                    // Unlike the native wrappers, the web wrapper declares
+                    // no `dev` feature of its own — it takes `runtime-core`
+                    // as a DIRECT dep so this cross-boundary activation
+                    // resolves. It needs no `runtime-shared/robot` either: a
+                    // browser app can't host the TCP bridge, it dials a relay
+                    // through the wrapper-local `robot` feature below.
+                    //
                     // Robot is on by default in dev → add the wrapper-local
                     // `robot` feature (→ `backend-web/robot`) so the local web
                     // bundle dials the relay run() hosts. --no-robot opts out.
@@ -1500,7 +1487,6 @@ fn launch_ssr(
                 bundle_out_dir: Some(bundle_dir.clone()),
                 gzip: false,
                 brotli: false,
-                primitives: None,
                 strip_panics: false,
                 // Always on in `dev --ssr` mode — the bundle is going
                 // to hydrate the server's DOM.
@@ -1513,8 +1499,7 @@ fn launch_ssr(
                 // Follows the session's resolved core (runtime-v2
                 // defaults flip) so the served SSR HTML and the
                 // hydrating bundle agree on a core.
-                new_core: args.new_core,
-            },
+                },
         )
         .with_context(|| "wasm build for SSR mode failed")?;
     }
@@ -1529,7 +1514,6 @@ fn launch_ssr(
             user_features: Vec::new(),
             // Follows the session's resolved core (runtime-v2
             // defaults flip).
-            new_core: args.new_core,
         },
     )
     .with_context(|| "SSR wrapper build failed")?;
@@ -1955,13 +1939,12 @@ fn launch_ios(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
             release: false,
             mode,
             source,
-            user_features: dev_user_features_other(),
+            user_features: dev_user_features_native(),
             // The dev loop relaunches on every change; the default
             // terminate-before-install (inside `run`) already keeps the
             // simulator from re-foregrounding a stale process. A full
             // uninstall would wipe app state on every reload, so keep it off.
             clean: false,
-            new_core: args.new_core,
         },
     )
     .context("iOS dev launch failed")?;
@@ -2015,11 +1998,10 @@ fn launch_android(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> 
             mode,
             runtime_server_port,
             source,
-            user_features: dev_user_features_other(),
+            user_features: dev_user_features_native(),
             // The dev process hosts the relay and exported its URL; pass it so
             // run-android bakes it into the manifest + sets up `adb reverse`.
             robot_relay_url: std::env::var("IDEALYST_ROBOT_RELAY_URL").ok(),
-            new_core: args.new_core,
         },
     )
     .context("Android dev launch failed")?;
@@ -2066,9 +2048,8 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>, macos
             release: false,
             mode: build_mode,
             source: source.clone(),
-            user_features: dev_user_features_macos(),
+            user_features: dev_user_features_native(),
             universal: false, // dev: fast host-arch build
-            new_core: args.new_core,
         },
     )
     .context("macOS dev build failed")?;
@@ -2098,9 +2079,8 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>, macos
             mode,
             source,
             background: true,
-            user_features: dev_user_features_macos(),
+            user_features: dev_user_features_native(),
             env_vars,
-            new_core: args.new_core,
         },
     )
     .context("macOS dev launch failed")?;
@@ -2241,8 +2221,6 @@ impl Args {
         Self {
             dir: self.dir.clone(),
             local: self.local,
-            new_core: self.new_core,
-            old_core: self.old_core,
             web: self.web,
             no_robot: self.no_robot,
             headless_client: self.headless_client,
@@ -2262,6 +2240,12 @@ impl Args {
             no_build: self.no_build,
             bridge_port: self.bridge_port,
             interactive: self.interactive,
+            // Compatibility flags only — `run` validates them once up
+            // front (`core_mode::validate_flags`) and no worker reads
+            // them, but they are part of the clap struct so the clone
+            // has to carry them.
+            new_core: self.new_core,
+            old_core: self.old_core,
         }
     }
 }

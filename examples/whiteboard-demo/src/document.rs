@@ -32,6 +32,20 @@ pub(crate) struct Stroke {
     pub ink: bool,
 }
 
+/// The camera's live [`MediaStream`](media_stream::MediaStream), wrapped so it
+/// can live in a signal: the reactive kernel's guarded `set` needs
+/// `T: PartialEq`, and a capture handle has no meaningful equality. Two live
+/// handles are therefore never equal — a new capture session always notifies —
+/// while `None == None` still dedupes through `Option`'s own impl.
+#[derive(Clone)]
+pub(crate) struct CamStream(pub(crate) media_stream::MediaStream);
+
+impl PartialEq for CamStream {
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
+
 /// Shared mutable list of strokes. The `on_touch` handler mutates it and the
 /// canvas painter reads it; a `version` signal bridges the two so a mutation
 /// triggers a reactive repaint without cloning the whole vec into a signal.
@@ -337,7 +351,8 @@ pub(crate) fn paint_stroke(s: &mut canvas::Scene, stroke: &Stroke, rgba: (u8, u8
 
 /// Parse a CSS color string into RGBA bytes (black on failure).
 pub(crate) fn parse_rgba(css: &str) -> (u8, u8, u8, u8) {
-    let c = runtime_core::color::parse_or(css, runtime_core::color::Rgba::BLACK);
+    // `color` is a shared-substrate module the facade root does not mirror yet.
+    let c = runtime_shared::color::parse_or(css, runtime_shared::color::Rgba::BLACK);
     (c.r, c.g, c.b, c.a)
 }
 

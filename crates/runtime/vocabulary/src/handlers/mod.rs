@@ -55,13 +55,19 @@ pub use widgets::{
     mount_activity_indicator, mount_slider, mount_text_area, mount_text_input, mount_toggle,
 };
 
-/// Install all 18 built-in handlers (the 13 P2 primitives + the P3-set
-/// `virtualizer`, `graphics`, `portal` — which also serves the
-/// `overlay`/`anchored_overlay` compositions — `presence`, and the
-/// `lazy` chunk boundary) on `registry`. Backends call this
-/// once at startup (alongside their platform-specific registrations);
-/// [`LegacyBridge`](crate::bridge::LegacyBridge) around any existing
-/// `Backend` satisfies the bound automatically.
+/// Install all 22 built-in handlers on `registry`: 21 single-node (the 13
+/// P2 primitives + the P3-set `virtualizer`, `graphics`, `portal` — which
+/// also serves the `overlay`/`anchored_overlay` compositions —
+/// `presence`, the three navigator prims, and the `lazy` chunk boundary)
+/// plus 1 multi-node (`repeat`). Backends call this once at startup,
+/// alongside their platform-specific registrations.
+///
+/// This set is the framework's **always-resident bundle floor**: scene
+/// registration is boot-only (`realize` takes an `Rc<Registry<H>>` with no
+/// interior mutability), so every handler here — and everything it
+/// transitively reaches — is statically reachable from the boot entry in
+/// every app on every target. Growing the set grows every app's binary.
+/// `tests/builtin_surface.rs` pins it.
 pub fn register_builtins<H: AllCaps + 'static>(registry: &mut Registry<H>) {
     registry.register::<PrimCell<ViewPrim>, _>(|cx, p, children| {
         mount_view(cx, p.take(), children)

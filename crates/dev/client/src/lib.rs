@@ -18,7 +18,21 @@ use std::rc::Rc;
 use std::sync::mpsc::Sender;
 
 
-use runtime_core::{Backend, ColorScheme, StateBits, StyleRules};
+use runtime_shared::{ColorScheme, StateBits, StyleRules};
+// The replayer drives the platform through the capability traits. They
+// are glob-imported so command dispatch can keep using plain
+// method-call syntax (`b.create_view(..)`); `AllCaps` is the single
+// bound that guarantees every one of them is present.
+use runtime_scene::Host;
+use runtime_vocabulary::caps;
+#[allow(unused_imports)]
+use runtime_vocabulary::caps::{
+    A11yOps, ActivityIndicatorOps, AnimationOps, AppEnvOps, AssetOps, BatchOps, ButtonOps,
+    DocumentOps, ExternalOps, GraphicsOps, IconOps, ImageOps, InputOps, IntrospectionOps,
+    LifecycleOps, LinkOps, NavigatorOps, PortalOps, PresenceOps, PressableOps, SafeAreaOps,
+    ScrollOps, SliderOps, StyleOps, TextInputOps, TextOps, ToggleOps, ViewOps, VirtualizerOps,
+    WireBindingOps,
+};
 use wire::{
     AppToDev, Command, EventArgs, HandlerId, NodeId, ScopeId, StyleId, WireColorScheme,
     WireItemSize,
@@ -27,15 +41,12 @@ use wire::{
 pub mod convert;
 pub mod graphics;
 pub mod navigators;
-// New-core replay target (idea-lite migration): `CapsReplay<B>` lets
-// this replayer drive a backend's `runtime_vocabulary::caps` surface
-// instead of the `Backend` mega-trait. Gated so old-core-only client
-// shells don't drag the scene/vocabulary crates.
-#[cfg(feature = "new-core")]
+// Compatibility aliases for the replay client's historical names
+// (`NewCoreReplayClient`, `WireBackend::new_newcore`). See the module.
 pub mod newcore;
 
 /// The runtime-server (Application-as-a-Server) **client-side replayer** —
-/// wraps any `runtime_core::Backend` and feeds it the wire
+/// wraps any `runtime_shared::Backend` and feeds it the wire
 /// [`wire::Command`]s shipped by an
 /// [`AasBackend`](dev_server::AasBackend). Idempotent
 /// apply means re-sending a snapshot only does DOM work for the
@@ -170,7 +181,7 @@ impl From<Sender<AppToDev>> for OutboundSender {
 
 /// The app-side replay engine. Generic over a `Backend` so a single
 /// implementation covers iOS, Android, web, and any future target.
-pub struct WireBackend<B: Backend>
+pub struct WireBackend<B: caps::AllCaps>
 where
     B::Node: 'static,
 {
@@ -223,14 +234,14 @@ where
     /// mirroring the framework's per-node `attach_safe_area` for the
     /// local-render path.
     #[allow(clippy::type_complexity)]
-    safe_area_nodes: Rc<RefCell<Vec<(NodeId, B::Node, runtime_core::SafeAreaSides, bool)>>>,
+    safe_area_nodes: Rc<RefCell<Vec<(NodeId, B::Node, runtime_shared::SafeAreaSides, bool)>>>,
     /// The shared re-application effect, created lazily on the first
     /// safe-area opt-in. Owns its arena slot (created outside any scope),
     /// so it lives until this backend drops.
-    safe_area_effect: Option<runtime_core::Subscription>,
+    safe_area_effect: Option<runtime_shared::Subscription>,
 }
 
-impl<B: Backend + 'static> WireBackend<B>
+impl<B: caps::AllCaps + 'static> WireBackend<B>
 where
     B::Node: 'static,
 {
@@ -463,7 +474,7 @@ where
                 // Wire side has no structured action metadata; wrap
                 // the closure as an opaque Action and let the
                 // backend's runtime path use `.fire`.
-                let action = runtime_core::IntoAction::into_action(move || cb());
+                let action = runtime_shared::IntoAction::into_action(move || cb());
                 let a11y = self.a11y_props(a11y);
                 let node = self.backend.borrow_mut().create_button(
                     &label,
@@ -483,7 +494,7 @@ where
             }
             Command::CreateReactiveAnchor { id } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
-                let node = self.backend.borrow_mut().create_reactive_anchor();
+                let node = Host::create_anchor(&mut *self.backend.borrow_mut());
                 self.nodes.insert(id, node);
             }
             Command::CreateImage { id, src, alt, a11y } => {
@@ -580,7 +591,7 @@ where
                 // payload, so the backend's `ExternalRegistry` (keyed by
                 // that same payload type) finds the handler.
                 if let Some(payload_any) =
-                    runtime_core::deserialize_external_payload(&type_name, &payload)
+                    wire::deserialize_external_payload(&type_name, &payload)
                 {
                     let type_id = (*payload_any).type_id();
                     // The wire type_name is owned; the backend wants
@@ -600,18 +611,18 @@ where
                     // didn't register a wire serde, or the server/client SDK
                     // sets are desynced. Surface it (RN-style) rather than
                     // silently rendering a blank box.
-                    runtime_core::log(
-                        runtime_core::LogLevel::Warn,
+                    runtime_shared::log(
+                        runtime_shared::LogLevel::Warn,
                         &format!(
                             "[wire] external '{}' has no client-side payload serde \
-                             — register one via `runtime_core::register_external_serde`, \
+                             — register one via `wire::register_external_serde`, \
                              or the server/client SDK sets are desynced",
                             type_name
                         ),
                     );
                     let mut node = self.backend.borrow_mut().create_view(&a11y_props);
                     let label = format!("Component not available: {}", type_name);
-                    let text_a11y = runtime_core::accessibility::AccessibilityProps::default();
+                    let text_a11y = runtime_shared::accessibility::AccessibilityProps::default();
                     let text_node = self.backend.borrow_mut().create_text(&label, &text_a11y);
                     self.backend.borrow_mut().insert(&mut node, text_node);
                     self.nodes.insert(id, node);
@@ -684,7 +695,7 @@ where
                 }
                 let cb = self.handler_unit(on_activate);
                 let route_static: &'static str = Box::leak(route.into_boxed_str());
-                let config = runtime_core::primitives::link::LinkConfig {
+                let config = runtime_shared::primitives::link::LinkConfig {
                     route: route_static,
                     url,
                     external,
@@ -701,7 +712,7 @@ where
                 trap_focus,
                 a11y,
             } => {
-                use runtime_core::primitives::portal::{
+                use runtime_shared::primitives::portal::{
                     ElementAlign, ElementSide, PortalTarget, ViewportPlacement,
                 };
                 // runtime-server doesn't have a way to reconstruct a live
@@ -1276,32 +1287,32 @@ where
                 // via this command (see dev-server `install_tokens`).
                 // Token names are a small, install-once set, so leaking
                 // them to `&'static str` is fine.
-                let entries: Vec<runtime_core::TokenEntry> = tokens
+                let entries: Vec<runtime_shared::TokenEntry> = tokens
                     .into_iter()
                     .filter_map(|t| {
                         let value = match t.value {
                             wire::WireTokenValue::Color(c) => {
-                                runtime_core::TokenValue::Color(convert::wire_color_to_color(c))
+                                runtime_shared::TokenValue::Color(convert::wire_color_to_color(c))
                             }
                             wire::WireTokenValue::Number(n) => {
-                                runtime_core::TokenValue::Number(n)
+                                runtime_shared::TokenValue::Number(n)
                             }
                             wire::WireTokenValue::Length(l) => {
-                                runtime_core::TokenValue::Length(convert::wire_length(l))
+                                runtime_shared::TokenValue::Length(convert::wire_length(l))
                             }
                             // Core `TokenValue` has no String variant and
                             // the recorder never emits one — skip cleanly.
                             wire::WireTokenValue::String(_) => return None,
                         };
                         let name: &'static str = Box::leak(t.name.into_boxed_str());
-                        Some(runtime_core::TokenEntry { name, value })
+                        Some(runtime_shared::TokenEntry { name, value })
                     })
                     .collect();
                 // Thread-local registry (fixes the resolve-on-unthemed-thread
                 // panic), then let the backend apply backend-specific theme
                 // variables too (web sets CSS custom properties; native
                 // backends typically no-op).
-                runtime_core::install_tokens(&entries);
+                runtime_shared::install_tokens(&entries);
                 self.backend.borrow_mut().install_tokens(&entries);
             }
             Command::RegisterAsset { id, kind, source } => {
@@ -1360,20 +1371,20 @@ where
             Command::SetAppBackground { color } => {
                 self.backend
                     .borrow_mut()
-                    .set_app_background(&runtime_core::Tokenized::Literal(runtime_core::Color(
+                    .set_app_background(&runtime_shared::Tokenized::Literal(runtime_shared::Color(
                         color.0,
                     )));
             }
             Command::SetScrollbarTheme { thumb, track } => {
                 self.backend.borrow_mut().set_scrollbar_theme(
-                    &runtime_core::Tokenized::Literal(runtime_core::Color(thumb.0)),
-                    &runtime_core::Tokenized::Literal(runtime_core::Color(track.0)),
+                    &runtime_shared::Tokenized::Literal(runtime_shared::Color(thumb.0)),
+                    &runtime_shared::Tokenized::Literal(runtime_shared::Color(track.0)),
                 );
             }
             Command::SetPageMetadata { meta } => {
                 self.backend
                     .borrow_mut()
-                    .set_page_metadata(&runtime_core::PageMetadata {
+                    .set_page_metadata(&runtime_shared::PageMetadata {
                         title: meta.title,
                         description: meta.description,
                         og_image: meta.og_image,
@@ -1409,7 +1420,7 @@ where
     fn a11y_props(
         &self,
         a11y: wire::WireAccessibilityProps,
-    ) -> runtime_core::accessibility::AccessibilityProps {
+    ) -> runtime_shared::accessibility::AccessibilityProps {
         let outbound = self.outbound.clone();
         convert::wire_a11y_to_props(a11y, move |id| {
             let outbound = outbound.clone();
@@ -1488,7 +1499,7 @@ where
         let a11y_props = self.a11y_props(a11y);
         let nav_node = self.backend.borrow_mut().create_view(&a11y_props);
 
-        let control = Rc::new(runtime_core::primitives::navigator::NavigatorControl::new());
+        let control = Rc::new(runtime_shared::primitives::navigator::NavigatorControl::new());
         let mounted_urls = Rc::new(RefCell::new(Vec::new()));
         let replay_pos = Rc::new(RefCell::new(0usize));
 
@@ -1508,7 +1519,6 @@ where
             mounted_urls,
             replay_pos,
             native: false,
-            chrome_scopes: Rc::new(RefCell::new(Vec::new())),
         });
 
         self.nodes.insert(id, nav_node);
@@ -1551,7 +1561,7 @@ where
             .get(&node)
             .ok_or(ReplayError::UnknownNode(node))?
             .clone();
-        let sides = runtime_core::SafeAreaSides(sides);
+        let sides = runtime_shared::SafeAreaSides(sides);
         {
             let mut list = self.safe_area_nodes.borrow_mut();
             list.retain(|(id, ..)| *id != node);
@@ -1582,10 +1592,10 @@ where
         }
         let backend = self.backend.clone();
         let nodes = self.safe_area_nodes.clone();
-        self.safe_area_effect = Some(runtime_core::watch(move || {
+        self.safe_area_effect = Some(runtime_shared::watch(move || {
             // Subscribe to the device insets; the backend reads the
             // concrete platform value itself inside the apply calls.
-            let _ = runtime_core::safe_area_insets().get();
+            let _ = runtime_shared::safe_area_insets().get();
             let mut b = backend.borrow_mut();
             for (_, node, sides, is_scroll) in nodes.borrow().iter() {
                 if *is_scroll {
@@ -1632,7 +1642,7 @@ where
             // `pending_mount`) hands it back; any handler-side reaction
             // to the Select (chrome updates etc.) runs on its own — no
             // kind-specific wire command needed for navigation.
-            use runtime_core::primitives::navigator::{MountResult, NavCommand};
+            use runtime_shared::primitives::navigator::{MountResult, NavCommand};
             let screen_node = self.lookup_node(screen)?;
             // The server rebuilds + ships a fresh node per select and owns
             // screen lifecycle, so the client must not reuse a cached view.
@@ -1771,7 +1781,7 @@ enum NavOp {
 }
 
 
-/// Convert a [`runtime_core::ColorScheme`] into the wire form.
+/// Convert a [`runtime_shared::ColorScheme`] into the wire form.
 pub fn color_scheme_to_wire(scheme: ColorScheme) -> WireColorScheme {
     match scheme {
         ColorScheme::Light => WireColorScheme::Light,

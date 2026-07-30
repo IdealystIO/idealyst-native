@@ -79,19 +79,6 @@ pub struct BuildOptions {
     /// defaults this ON for release bundles (brotli q11 beats
     /// gzip -9 by ~20% on wasm); `--no-brotli` opts out.
     pub brotli: bool,
-    /// Restrict the wrapper's `prim-*` primitive-family features to
-    /// exactly this set (`None` = all families, the no-surprise
-    /// default). Families are named without the `prim-` prefix
-    /// (`"icon"`, `"text-input"`, …; see [`PRIM_FAMILIES`]) and an
-    /// unknown name is a hard error listing the valid set. This is
-    /// one half of the minimal-bundle workflow: the wrapper stops
-    /// re-enabling unused families, but cargo feature unification
-    /// means the APP crate's own `runtime-core` dependency must also
-    /// set `default-features = false` (and any SDK it uses forwards
-    /// what it needs) — `build()` inspects the app manifest and
-    /// warns loudly when that edit is missing, because the flag is
-    /// silently ineffective without it.
-    pub primitives: Option<Vec<String>>,
     /// Strip panic machinery (`-Z build-std-features=panic_immediate_abort`).
     /// Every panic becomes a bare `unreachable` trap with no message.
     /// Requires a nightly toolchain + the `rust-src` component and
@@ -123,29 +110,13 @@ pub struct BuildOptions {
     /// space as CSS into `pkg/premint.css`) and compile the wasm with
     /// `--cfg idealyst_premint`, so all-constant style applications
     /// ship as build-time class references instead of invoking the
-    /// runtime style engine. Pair with `primitives`-style minimal
-    /// features (`default-features = false` on runtime-core AND
-    /// backend-web, dropping `style-dynamic`) to remove the engine
+    /// runtime style engine. Pair with `default-features = false` on
+    /// backend-web (dropping `style-dynamic`) to remove the engine
     /// from the bundle entirely. Opt-in while the parity soak is
     /// running; not yet compatible with `hydrate` (SSG/SSR emits
     /// live-minted classes — the build refuses the combination
     /// rather than shipping a hydration mismatch).
     pub premint: bool,
-    /// Build the wrapper against the NEW core (idea-lite migration —
-    /// `idealyst build --web --new-core`). Mirrors build-ssr's flag:
-    /// the user crate must follow the dual-core convention (expose a
-    /// `new-core` cargo feature with its defaults disabled for this
-    /// build — one core per build graph — plus a
-    /// `register_scene_extensions(&mut runtime_scene::Registry<backend_web::WebBackend>)`
-    /// seam). The generated wrapper boots via
-    /// `backend_web::newcore::{start_in, hydrate_in}` instead of
-    /// `runtime_core::mount`, and compiles `backend-web` with its
-    /// `new-core` feature. The wasm-split pipeline is IDENTICAL — the
-    /// `#[component(lazy)]` new-core emission rides the same
-    /// `#[wasm_split]` boundary/naming, so chunk classification and
-    /// the data-prune caveats carry over unchanged. Not combinable
-    /// with `runtime-server` mode (dev hot-reload stays old-core).
-    pub new_core: bool,
 }
 
 #[derive(Debug)]
@@ -188,12 +159,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         &manifest,
         &opts.user_features,
         opts.hydrate,
-        opts.primitives.as_deref(),
-        opts.new_core,
     )?;
-    if opts.primitives.is_some() {
-        warn_if_app_reenables_prims(&project_dir);
-    }
 
     // Direct pipeline (no wasm-pack), so we can hit the flag matrix
     // wasm-split-cli needs to actually extract chunks:
@@ -1095,110 +1061,6 @@ fn is_already_compressed(path: &Path) -> bool {
 /// the path runtime-server-mode hot reload uses to enable `dev-hot-reload` on
 /// the user crate without forcing every user crate to carry that
 /// feature in its default set.
-/// `--primitives` is defeated by cargo feature unification if the APP
-/// crate's own `runtime-core` dependency still carries default features
-/// (the default set is exactly the `prim-*` families): the wrapper builds
-/// app + framework in one graph, so the app's dep line unions everything
-/// back on and the flag silently does nothing. Detect that and warn —
-/// we can't edit the user's manifest for them.
-fn warn_if_app_reenables_prims(project_dir: &Path) {
-    let manifest_path = project_dir.join("Cargo.toml");
-    let Ok(text) = fs::read_to_string(&manifest_path) else { return };
-    let Ok(doc) = text.parse::<toml::Value>() else { return };
-    let dep_tables = ["dependencies", "dev-dependencies", "build-dependencies"];
-    // `idea-ui`'s default features mirror + forward the prim families its
-    // components use, so a defaults-on idea-ui dep re-widens the prim set
-    // through unification exactly like a defaults-on runtime-core dep.
-    let watched_deps = ["runtime-core", "idea-ui"];
-    let mut offending: Vec<&str> = Vec::new();
-    let mut check_table = |table: &toml::Value| {
-        for name in watched_deps {
-            if let Some(dep) = table.get(name) {
-                let opted_out = dep
-                    .get("default-features")
-                    .and_then(|v| v.as_bool())
-                    .map(|b| !b)
-                    .unwrap_or(false);
-                // `{ workspace = true }` inherits the workspace spec, whose
-                // defaults are ON — same problem as a bare version string.
-                if !opted_out && !offending.contains(&name) {
-                    offending.push(name);
-                }
-            }
-        }
-    };
-    for key in dep_tables {
-        if let Some(t) = doc.get(key) {
-            check_table(t);
-        }
-    }
-    if let Some(targets) = doc.get("target").and_then(|t| t.as_table()) {
-        for (_, cfg) in targets {
-            for key in dep_tables {
-                if let Some(t) = cfg.get(key) {
-                    check_table(t);
-                }
-            }
-        }
-    }
-    for name in offending {
-        eprintln!(
-            "[build-web] ⚠ --primitives is set, but {}'s `{name}` dependency keeps \
-default features — cargo feature unification re-enables every prim-* family that dependency \
-defaults to, so the flag is (partly) defeated. Set `{name} = {{ ..., default-features = \
-false }}` in the app crate and re-enable only the `prim-*` features you use (idea-ui \
-components are compiled out with their families, so a missing one is a compile error).",
-            manifest_path.display(),
-        );
-    }
-}
-
-/// The gateable primitive families, exactly as `runtime-core` /
-/// `backend-web` spell their `prim-*` cargo features (sans prefix).
-/// `--primitives` names are validated against this list.
-pub const PRIM_FAMILIES: &[&str] = &[
-    "virtualizer",
-    "icon",
-    "image",
-    "text-input",
-    "toggle",
-    "slider",
-    "activity",
-    "portal",
-    "presence",
-    "graphics",
-    "navigator",
-    "lazy",
-];
-
-/// Resolve a user-supplied `--primitives` list to `prim-*` feature
-/// names. Accepts bare family names (`icon`), the full feature name
-/// (`prim-icon`), and `_` for `-`; `none` (alone) selects the empty
-/// set. Unknown names are a hard error naming the valid families —
-/// a typo must not silently ship a placeholder-rendering bundle.
-pub fn resolve_prim_features(requested: &[String]) -> Result<Vec<String>> {
-    if requested.len() == 1 && requested[0].eq_ignore_ascii_case("none") {
-        return Ok(Vec::new());
-    }
-    let mut out = Vec::new();
-    for raw in requested {
-        let norm = raw.trim().to_ascii_lowercase().replace('_', "-");
-        let family = norm.strip_prefix("prim-").unwrap_or(&norm);
-        if !PRIM_FAMILIES.contains(&family) {
-            anyhow::bail!(
-                "--primitives: unknown primitive family '{raw}'. Valid families: {} \
-                 (or 'none' for a text/view-only bundle)",
-                PRIM_FAMILIES.join(", "),
-            );
-        }
-        let feat = format!("prim-{family}");
-        if !out.contains(&feat) {
-            out.push(feat);
-        }
-    }
-    Ok(out)
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn generate_wrapper(
     wrapper_dir: &Path,
@@ -1207,8 +1069,6 @@ pub fn generate_wrapper(
     manifest: &Manifest,
     user_features: &[String],
     hydrate: bool,
-    primitives: Option<&[String]>,
-    new_core: bool,
 ) -> Result<()> {
     fs::create_dir_all(wrapper_dir.join("src"))
         .with_context(|| format!("create {}", wrapper_dir.display()))?;
@@ -1223,16 +1083,13 @@ pub fn generate_wrapper(
     // output to use the original lib name by setting `[lib].name`
     // on the wrapper to `manifest.lib_name`, which wasm-pack
     // prefers over the package name when present.
-    // Like backend-web below, runtime-core is spelled with
-    // `default-features = false` + an explicit `prim-*` list: its default
-    // feature set IS the primitive families, so a plain dep line here
-    // would re-enable every family through unification and silently
-    // defeat `--primitives`. The same list feeds both dep lines — the
-    // walker gate (runtime-core) and the backend impls (backend-web)
-    // stay in lockstep by construction.
-    let fcore_base = source.dep("crates/runtime/core", &[]);
-    let fcore_inner =
-        fcore_base.trim().trim_start_matches('{').trim_end_matches('}').trim().to_string();
+    // `runtime-core` as a DIRECT dep so the dev build's `--features
+    // runtime-core/dev` spec resolves (cargo only accepts
+    // `<dep>/<feat>` for a direct dependency of the package being
+    // built). No `runtime-shared` here: the web wrapper spells no
+    // substrate name of its own — `install_scheduler` / the robot relay
+    // client all come through backend-web.
+    let runtime_core_dep = source.dep("crates/runtime/core", &[]);
     // The wrapper always installs `backend_web::install_async_executor()`
     // so `runtime_core::driver::spawn_async` works inside any
     // wasm app — required by `resource()`, `mutation()`, and the
@@ -1252,34 +1109,23 @@ pub fn generate_wrapper(
     // in the explicit feature set so the wrapper opts out of `hydrate`
     // when SSG/SSR isn't paired with this build.
     let bweb_inner = bweb_base.trim().trim_start_matches('{').trim_end_matches('}').trim();
-    // `prim-virtualizer` must be spelled explicitly because this dep line
-    // opts out of backend-web's defaults: the walker side comes in through
-    // runtime-core's default features, and a walker that dispatches to a
-    // backend without the matching impl would hit the trait's
-    // `unimplemented!` default at runtime. This is also the seam where a
-    // future `--primitives <list|auto>` flag will pick a per-app set.
-    let prim_feats: Vec<String> = match primitives {
-        // `--primitives` names the exact families this app uses.
-        Some(req) => resolve_prim_features(req)?,
-        // Default: every family, matching the crates' own defaults.
-        None => PRIM_FAMILIES.iter().map(|f| format!("prim-{f}")).collect(),
-    };
+    // Per-primitive-family gating is not a wrapper concern: the scene
+    // core reaches each primitive through `register_builtins`' registry
+    // handlers, so the only place a family could be compiled out is the
+    // vocabulary's registrar plus each backend's caps impls. There is no
+    // `prim-*` feature to forward, and the wrapper must not invent an
+    // app-facing lever that deletes components from the public API
+    // without shrinking the bundle.
     let mut bweb_features: Vec<String> = vec!["async-driver".to_string()];
     if hydrate {
         bweb_features.push("hydrate".to_string());
     }
-    if new_core {
-        // The newcore module (Host impl + start_in/hydrate_in boot +
-        // flush driver) — the wrapper's new-core start path below
-        // calls into it.
-        bweb_features.push("new-core".to_string());
-    }
-    bweb_features.extend(prim_feats.iter().cloned());
-    let fcore_dep = format!(
-        "{{ {}, default-features = false, features = [{}] }}",
-        fcore_inner,
-        prim_feats.iter().map(|f| format!("\"{f}\"")).collect::<Vec<_>>().join(", "),
-    );
+    // NOTE: no `new-core` feature is pushed. backend-web's scene module
+    // (Host + caps impls, `start_in`/`hydrate_in` boot, flush driver,
+    // viewport source) is UNCONDITIONAL — there is one core, and naming
+    // a feature that no longer exists is a hard cargo resolution error
+    // in the generated wrapper (which nothing type-checks; see the
+    // generated-code name-drift note in the deletion baseline §7.7).
     let bweb_features_clause = format!(
         "features = [{}]",
         bweb_features.iter().map(|f| format!("\"{}\"", f)).collect::<Vec<_>>().join(", "),
@@ -1300,22 +1146,9 @@ pub fn generate_wrapper(
         .trim_end_matches('}')
         .trim();
 
-    // The user-crate dep line. New-core builds follow the dual-core app
-    // convention (same as build-ssr's `--new-core` wrapper): defaults
-    // OFF — one core per build graph — and the app's `new-core` feature
-    // on, which flips the whole aliased-source subtree onto the glue
-    // facade.
-    let user_dep = if new_core {
-        format!(
-            "{{ path = \"{}\", default-features = false, features = [\"new-core\"] }}",
-            project_dir.display(),
-        )
-    } else {
-        // Dual-core apps default to new-core since the runtime-v2
-        // defaults flip — old-core builds pin `old-core` when the app
-        // declares it; legacy apps keep the historical plain path dep.
-        build_ios::old_core_user_dep(project_dir)
-    };
+    // Plain path dep on the user crate: the app's own defaults select
+    // its prim families / feature set, and there is one core.
+    let user_dep = format!("{{ path = \"{}\" }}", project_dir.display());
 
     let cargo_toml = format!(
         r#"# GENERATED by `idealyst build web`. Do not edit — rewritten
@@ -1343,7 +1176,11 @@ name = "{lib_name}"
 crate-type = ["cdylib"]
 
 [dependencies]
-runtime-core = {fcore_dep}
+# Direct dep so the launcher's dev `--features` switch (robot registry +
+# MCP catalog) resolves — cargo only accepts a `<dep>/<feat>` spec for a
+# direct dependency. Production builds never enable it; see
+# `wrapper_does_not_enable_catalog_in_production` in build-web.
+runtime-core = {runtime_core_dep}
 backend-web = {bweb_dep}
 # runtime-server-mode dep. Optional + gated by the `aas` feature so plain wasm
 # builds don't pull the `WireBackend` replay engine into their bundle.
@@ -1383,7 +1220,8 @@ aas = ["runtime-server"]
 # Robot-on-web (local/static builds only): the WebSocket dial-out transport
 # to a `robot-relay`. Enabled by `idealyst build --web --robot` /
 # `idealyst dev --web --local --robot`. Pulls `backend-web/robot`, which
-# cascades `runtime-core/robot` — exposing `install_robot_relay_client` and
+# cascades the shared substrate's `robot` gate — exposing
+# `install_robot_relay_client` and
 # the platform-agnostic dispatch core.
 robot = ["backend-web/robot"]
 {user_feature_forwards}
@@ -1431,36 +1269,22 @@ opt-level = 3
         lib_name = manifest.lib_name,
         user_name = manifest.name,
         user_dep = user_dep,
-        fcore_dep = fcore_dep,
+        runtime_core_dep = runtime_core_dep,
         bweb_dep = bweb_dep,
         dev_client_inner = dev_client_inner,
         user_feature_forwards = user_feature_forwards(&manifest.name, user_features),
         patch_block = source.patch_block(),
     );
 
-    // Import block + local-mode start fn — the one generation-time
-    // divergence between the cores. The old-core text is verbatim what
-    // this template always emitted; the new-core leg boots through
-    // `backend_web::newcore::{start_in, hydrate_in}`, which own the
-    // backend/registry/World lifecycle, the flush driver, and the
-    // viewport source (so no `install_viewport_observer` calls here),
-    // and registers through the dual-core app convention's
-    // `register_scene_extensions` seam.
-    let wrapper_imports = if new_core {
-        "use std::cell::RefCell;\n".to_string()
-    } else {
-        "use std::cell::RefCell;\nuse std::rc::Rc;\n\nuse backend_web::WebBackend;\n".to_string()
-    };
-    let start_local = if new_core {
-        format!(
-            r##"/// Local mode, NEW core (idea-lite migration): boots through
-/// `backend_web::newcore::{{start_in, hydrate_in}}`, which own the
-/// backend + scene registry + `World` lifecycle and install the
-/// microtask flush driver + the new-core viewport source themselves.
-/// A prerendered `#app` (SSG/SSR output) takes the adoption path
-/// (`hydrate_in` falls back to a fresh mount when there is no server
-/// DOM). Registration goes through the dual-core app convention's
-/// `register_scene_extensions(&mut runtime_scene::Registry<WebBackend>)`.
+    let start_local = format!(
+        r##"/// Local mode: boots through `backend_web::newcore::{{start_in,
+/// hydrate_in}}`, which own the backend + scene registry + `World`
+/// lifecycle and install the microtask flush driver + the viewport
+/// source themselves. A prerendered `#app` (SSG/SSR output) takes the
+/// adoption path (`hydrate_in` falls back to a fresh mount when there
+/// is no server DOM). Registration goes through the app's
+/// `register_scene_extensions(&mut runtime_scene::Registry<WebBackend>)`
+/// seam — an unregistered payload panics at realize.
 #[cfg(not(feature = "runtime-server"))]
 fn start_local() {{
     let selector = "#app";
@@ -1470,76 +1294,13 @@ fn start_local() {{
         backend_web::newcore::start_in(selector, {lib}::register_scene_extensions, || {lib}::app());
     }}
 
-    // Robot-on-web: same relay transport as the old-core leg; the
-    // new-core robot driver env is installed by the boot itself
-    // (`robot_transport::install_newcore_driver_env`).
-    #[cfg(feature = "robot")]
-    if let Some(url) = read_robot_relay_url() {{
-        if let Err(e) = backend_web::install_robot_relay_client(&url) {{
-            web_sys::console::error_2(&"[robot] relay connect failed:".into(), &e);
-        }}
-    }}
-}}"##,
-            lib = manifest.lib_name,
-        )
-    } else {
-        format!(
-            r##"/// Local mode: framework runtime lives in this browser. Same flow as
-/// `idealyst build --web` (no `--aas`).
-///
-/// HYDRATION: if `#app` was server-rendered (has children), ADOPT that
-/// DOM instead of mounting fresh — `WebBackend::hydrate` reuses the
-/// server's nodes and just wires handlers/reactivity. To keep the first
-/// (hydration) render matching the server's tree, we seed the
-/// SSR-assumed viewport (`#app[data-ssr-viewport]`) before the build,
-/// then install the viewport observer AFTER mount so the real viewport
-/// drives a reactive reconcile. A fresh boot (empty `#app`) reads the
-/// real viewport up front, as before.
-#[cfg(not(feature = "runtime-server"))]
-fn start_local() {{
-    let selector = "#app";
-    let prerendered = backend_web::page_is_prerendered(selector);
-
-    let mut web = if prerendered {{
-        WebBackend::hydrate(selector)
-    }} else {{
-        WebBackend::new(selector)
-    }};
-    // Hand the bare backend to the user crate so it can install
-    // navigator-SDK / external-primitive handlers before mount. The
-    // user crate must expose `pub fn register_extensions(&mut WebBackend)`;
-    // an empty body is fine when the crate has no SDK deps.
-    {lib}::register_extensions(&mut web);
-    let backend = Rc::new(RefCell::new(web));
-    backend_web::install_global_self(&backend);
-
-    // Fresh boot: read the real viewport BEFORE the first render.
-    if !prerendered {{
-        backend_web::install_viewport_observer();
-    }}
-
-    // Seed the SSR-assumed viewport INSIDE the mount scope so the
-    // hydration render matches the server's tree (clean DOM adoption).
-    let seed = if prerendered {{ backend_web::ssr_viewport(selector) }} else {{ None }};
-    let owner = runtime_core::mount(backend, move || {{
-        if let Some((w, h)) = seed {{
-            runtime_core::set_viewport_size(runtime_core::ViewportSize::new(w, h));
-        }}
-        {lib}::app()
-    }});
-    OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
-
-    // Hydration done: switch to the REAL viewport; reactivity reconciles
-    // any viewport-dependent content AFTER adoption.
-    if prerendered {{
-        backend_web::install_viewport_observer();
-    }}
-
     // Robot-on-web (local/static only): dial the relay so this
     // browser-hosted app exposes its Robot bridge to the MCP server /
-    // evaluator. In runtime-server mode the framework runs in the native
-    // sidecar (robot is native there), so the transport lives here in
-    // start_local, not start_aas.
+    // evaluator. The robot driver env is installed by the boot itself
+    // (`robot_transport::install_newcore_driver_env`). In
+    // runtime-server mode the framework runs in the native sidecar
+    // (robot is native there), so the transport lives here, not in
+    // `start_aas`.
     #[cfg(feature = "robot")]
     if let Some(url) = read_robot_relay_url() {{
         if let Err(e) = backend_web::install_robot_relay_client(&url) {{
@@ -1547,9 +1308,8 @@ fn start_local() {{
         }}
     }}
 }}"##,
-            lib = manifest.lib_name,
-        )
-    };
+        lib = manifest.lib_name,
+    );
 
     let lib_rs = format!(
         r##"//! GENERATED by `idealyst build web`. Two start paths, picked by
@@ -1562,7 +1322,7 @@ fn start_local() {{
 //!
 //! - **`aas` feature on:** reads `window.IDEALYST_RUNTIME_SERVER_URL` (the dev
 //!   HTTP server injects it into every served page) and connects a
-//!   `WireBackend<WebBackend>` to the runtime-server host over WebSocket via
+//!   caps-driven replay client to the runtime-server host over WebSocket via
 //!   `backend_web::connect_web`. The browser becomes a thin replayer;
 //!   the framework runtime lives in the runtime-server sidecar. This is what
 //!   `idealyst dev --aas --web` produces. Without the feature the
@@ -1572,7 +1332,14 @@ fn start_local() {{
 
 #![cfg(target_arch = "wasm32")]
 
-{wrapper_imports}
+// `RefCell` / `Rc` / `WebBackend` are only named by the runtime-server
+// replay client below; a plain wasm build would otherwise warn on them.
+#[cfg(feature = "runtime-server")]
+use std::cell::RefCell;
+#[cfg(feature = "runtime-server")]
+use std::rc::Rc;
+#[cfg(feature = "runtime-server")]
+use backend_web::WebBackend;
 use wasm_bindgen::prelude::*;
 
 // Smaller WASM allocator — trades a few cycles per allocation for a
@@ -1581,23 +1348,21 @@ use wasm_bindgen::prelude::*;
 static ALLOCATOR: lol_alloc::AssumeSingleThreaded<lol_alloc::FreeListAllocator> =
     unsafe {{ lol_alloc::AssumeSingleThreaded::new(lol_alloc::FreeListAllocator::new()) }};
 
+// Local mode keeps no wrapper-side slot: `newcore::start_in` /
+// `hydrate_in` own the `World` + realized tree for the page's lifetime.
+#[cfg(feature = "runtime-server")]
 thread_local! {{
-    /// Local-mode: `mount` returns an `Owner` that must outlive the
-    /// page. Stash it in a thread-local so it survives `start()`.
-    static OWNER: RefCell<Option<runtime_core::Owner>> =
-        const {{ RefCell::new(None) }};
     /// runtime-server-mode: the `WebClientHandle` owns the WebSocket + event
     /// closures + raf pump. Drop tears down the connection, so keep it
     /// alive for the page's lifetime.
-    #[cfg(feature = "runtime-server")]
     static AAS_HANDLE: RefCell<Option<backend_web::WebClientHandle>> =
         const {{ RefCell::new(None) }};
-    /// runtime-server-mode: the `WireBackend` lives behind an `Rc<RefCell<…>>`
-    /// because both the `connect_web` raf pump and the on-disconnect
-    /// reconnect closure want to retarget it.
-    #[cfg(feature = "runtime-server")]
-    static AAS_WIRE: RefCell<Option<Rc<RefCell<dev_client::WireBackend<WebBackend>>>>> =
-        const {{ RefCell::new(None) }};
+    /// runtime-server-mode: the replay client lives behind an
+    /// `Rc<RefCell<…>>` because both the `connect_web` raf pump and the
+    /// on-disconnect reconnect closure want to retarget it.
+    static AAS_WIRE: RefCell<
+        Option<Rc<RefCell<dev_client::newcore::NewCoreReplayClient<WebBackend>>>>,
+    > = const {{ RefCell::new(None) }};
 }}
 
 // Named `main` (not `start`) because `wasm-split-cli` looks for a
@@ -1632,7 +1397,7 @@ pub fn main() {{
     // and never paints -- the canvas mounts but stays blank.
     backend_web::install_scheduler();
     backend_web::install_time_source();
-    // Route runtime-core `log_*` through the browser `console.*`. Without
+    // Route the framework's `log_*` through the browser `console.*`. Without
     // this, `log_info!`/`log_error!` hit the wasm stderr no-op sink and
     // vanish — Rust-side logs (incl. an in-app E2E suite's `[E2E-RESULT]`
     // summary) never reach devtools. JS-side shim logs are unaffected; this
@@ -1672,13 +1437,13 @@ fn start_aas() {{
                 &"[dev-client] runtime-server mode enabled but window.IDEALYST_RUNTIME_SERVER_URL is missing — \
                   did the dev HTTP server fail to inject it? Falling back to local mount.".into(),
             );
-            // Defensive fallback so the page doesn't go blank.
-            let mut web = WebBackend::new("#app");
-            {lib}::register_extensions(&mut web);
-            let backend = Rc::new(RefCell::new(web));
-            backend_web::install_global_self(&backend);
-            let owner = runtime_core::mount(backend, {lib}::app);
-            OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
+            // Defensive fallback so the page doesn't go blank: mount
+            // locally through the same boot `start_local` uses.
+            backend_web::newcore::start_in(
+                "#app",
+                {lib}::register_scene_extensions,
+                || {lib}::app(),
+            );
             return;
         }}
     }};
@@ -1687,18 +1452,17 @@ fn start_aas() {{
         &format!("[dev-client] runtime-server mode: connecting to {{}}", url).into(),
     );
 
-    let mut backend = WebBackend::new("#app");
-    // Register SDK extensions on the REAL backend BEFORE wrapping it in
-    // the WireBackend. The wire client replays navigator commands by
-    // driving this backend's `create_navigator`, which dispatches to the
-    // SDK handler registered here — that handler builds the real native
-    // chrome (e.g. the web drawer's `ui-nav-drawer-*` CSS structure).
-    // `register` also installs each SDK's wire presentation-factory so
-    // `dev-client` can rebuild the presentation from wire config. Without
-    // this the client falls back to a structural sidebar (no chrome).
-    {lib}::register_extensions(&mut backend);
+    let backend = WebBackend::new("#app");
+    // `new_newcore` drives the backend's CAPABILITY surface (the 30
+    // `runtime_vocabulary::caps` traits) instead of a `Backend` impl —
+    // wire commands in, capability calls out. SDK web modules submit
+    // their navigator/presentation handlers into backend-web's
+    // link-time inventory registrar (`prim-navigator`), so the chrome
+    // the replayer drives is registered without a wrapper-side call.
     let outbound = dev_client::OutboundSender::new();
-    let wire = Rc::new(RefCell::new(dev_client::WireBackend::new(backend, outbound)));
+    let wire = Rc::new(RefCell::new(dev_client::WireBackend::new_newcore(
+        backend, outbound,
+    )));
     AAS_WIRE.with(|slot| *slot.borrow_mut() = Some(wire.clone()));
 
     let wire_for_reconnect = wire.clone();
@@ -1762,7 +1526,6 @@ fn read_robot_relay_url() -> Option<String> {{
 }}
 "##,
         lib = manifest.lib_name,
-        wrapper_imports = wrapper_imports,
         start_local = start_local,
     );
 
@@ -2251,10 +2014,10 @@ mod regression_tests {
     //! The web wrapper has both a `runtime-core` direct dep (so the
     //! launcher's `--features runtime-core/dev` resolves) AND an
     //! `aas` feature that flips on `backend-web/runtime-server`
-    //! (the WebSocket / WireBackend boot path). Dropping either
+    //! (the WebSocket / replay-client boot path). Dropping either
     //! breaks dev mode silently:
-    //!  - no runtime-core dep → `--features runtime-core/dev` errors
-    //!    at cargo time, MCP catalog ends up empty.
+    //!  - no runtime-core dep → `--features runtime-core/dev`
+    //!    errors at cargo time, MCP catalog ends up empty.
     //!  - no `aas` feature on the wrapper → `idealyst dev --web
     //!    --runtime-server` builds a wasm bundle that mounts
     //!    `app()` locally in the browser instead of connecting to
@@ -2302,72 +2065,38 @@ mod regression_tests {
         let source = FrameworkSource::Workspace {
             root: workspace_root,
         };
-        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &[], false, None, false)
+        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &[], false)
             .expect("generate wrapper");
         (wrapper_dir, tmp)
     }
 
+    /// The wrapper must NOT emit any `prim-*` feature: per-primitive
+    /// gating has no runtime counterpart on the scene core (each
+    /// primitive is reached through `register_builtins`' registry
+    /// handlers), so a wrapper-side lever would delete components from
+    /// the public API without shrinking the bundle.
     #[test]
-    fn resolve_prim_features_accepts_aliases_and_rejects_unknown() {
-        // Bare, prefixed, and underscore spellings all normalize.
-        let got = resolve_prim_features(&[
-            "icon".into(),
-            "prim-text-input".into(),
-            "text_input".into(), // duplicate of the previous, via alias
-            "NAVIGATOR".into(),
-        ])
-        .expect("valid families");
-        assert_eq!(got, vec!["prim-icon", "prim-text-input", "prim-navigator"]);
-
-        // `none` alone = empty set (text/view-only bundle).
-        assert!(resolve_prim_features(&["none".into()]).unwrap().is_empty());
-
-        // A typo must be a hard error naming the valid set, never a
-        // silently-placeholder-rendering bundle.
-        let err = resolve_prim_features(&["ikon".into()]).unwrap_err().to_string();
-        assert!(err.contains("ikon") && err.contains("virtualizer"), "got: {err}");
-    }
-
-    /// `--primitives icon,text-input` must restrict the wrapper's
-    /// backend-web feature list to exactly those families (plus the
-    /// unconditional `async-driver`) — and keep `default-features = false`
-    /// so nothing sneaks back in through the dep line itself.
-    #[test]
-    fn wrapper_primitives_flag_restricts_prim_features() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let project_dir = tmp.path().join("project");
-        let wrapper_dir = tmp.path().join("wrapper");
-        let workspace_root = tmp.path().join("workspace");
-        std::fs::create_dir_all(&project_dir).unwrap();
-        std::fs::create_dir_all(&workspace_root).unwrap();
-        let manifest = fake_manifest();
-        let source = FrameworkSource::Workspace { root: workspace_root };
-        let prims = vec!["icon".to_string(), "text-input".to_string()];
-        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &[], false, Some(&prims), false)
-            .expect("generate wrapper");
-
+    fn wrapper_emits_no_prim_family_features() {
+        let (wrapper_dir, _tmp) = run_generator();
         let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+        assert!(
+            !cargo.contains("prim-"),
+            "wrapper must not gate primitive families:\n{cargo}",
+        );
         let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
-        let bweb = parsed
+        let feats: Vec<&str> = parsed
             .get("dependencies")
             .and_then(|d| d.get("backend-web"))
-            .expect("backend-web dep");
-        assert_eq!(
-            bweb.get("default-features").and_then(|v| v.as_bool()),
-            Some(false),
-            "wrapper must opt out of backend-web defaults",
-        );
-        let feats: Vec<&str> = bweb
-            .get("features")
+            .and_then(|b| b.get("features"))
             .and_then(|f| f.as_array())
-            .expect("features array")
+            .expect("backend-web features array")
             .iter()
             .filter_map(|v| v.as_str())
             .collect();
         assert_eq!(
             feats,
-            vec!["async-driver", "prim-icon", "prim-text-input"],
-            "wrapper features must be exactly the requested families, got:\n{cargo}",
+            vec!["async-driver"],
+            "backend-web features must be exactly the boot set:\n{cargo}",
         );
     }
 
@@ -2399,15 +2128,19 @@ mod regression_tests {
     fn wrapper_does_not_enable_catalog_in_production() {
         let (wrapper_dir, _tmp) = run_generator();
         let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
-        for forbidden in ["runtime-core/catalog", "runtime-core/mcp", "runtime-core/dev"] {
+        for forbidden in [
+            "runtime-core/catalog",
+            "runtime-core/mcp",
+            "runtime-core/dev",
+        ] {
             assert!(
                 !cargo.contains(forbidden),
                 "production web wrapper must not enable {forbidden} — it pulls \
                  mcp-catalog and bloats the bundle with doc/catalog data. Got:\n{cargo}",
             );
         }
-        // And the runtime-core dep line itself must carry no catalog-ish
-        // feature, however it's spelled.
+        // And the runtime-core dep line itself must carry no
+        // catalog-ish feature, however it's spelled.
         let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
         if let Some(feats) = parsed
             .get("dependencies")
@@ -2459,7 +2192,7 @@ mod regression_tests {
     /// the wrapper's wrapper-LOCAL features (`runtime-server`, `aas`)
     /// must NEVER be forwarded to the user crate as
     /// `<user>/<feature>`. The dev launcher passes `runtime-server`
-    /// (+ `runtime-core/hot-reload`) as `user_features`; before the
+    /// (+ a `<dep>/<feat>` entry) as `user_features`; before the
     /// fix `user_feature_forwards` emitted
     /// `runtime-server = ["demo/runtime-server"]`, and since a
     /// scaffolded app declares no such feature, cargo failed with
@@ -2478,11 +2211,13 @@ mod regression_tests {
             root: workspace_root,
         };
         // Exactly what `idealyst dev --web` (runtime-server mode) passes.
+        // The `<dep>/<feat>` entry must be skipped (it is not a valid
+        // feature NAME) and `runtime-server` must stay wrapper-local.
         let user_features = vec![
             "runtime-server".to_string(),
-            "runtime-core/hot-reload".to_string(),
+            "runtime-core/dev".to_string(),
         ];
-        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &user_features, false, None, false)
+        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &user_features, false)
             .expect("generate wrapper");
         let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
 
@@ -2503,53 +2238,31 @@ mod regression_tests {
         );
     }
 
-    /// `--new-core` swaps the wrapper onto the newcore boot
-    /// (`backend_web::newcore::{start_in, hydrate_in}` via the
-    /// `register_scene_extensions` seam) and compiles the user crate
-    /// single-core (`default-features = false` + `new-core`) with
-    /// backend-web's `new-core` feature on — mirror of build-ssr's
-    /// `--new-core` wrapper contract.
+    /// The wrapper boots through `backend_web::newcore::{start_in,
+    /// hydrate_in}` via the `register_scene_extensions` seam, enables
+    /// backend-web's scene feature, and takes a plain path dep on the
+    /// user crate (no core pin — there is one core).
     #[test]
-    fn new_core_wrapper_boots_newcore_and_compiles_single_core() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let project_dir = tmp.path().join("project");
-        let wrapper_dir = tmp.path().join("wrapper");
-        let workspace_root = tmp.path().join("workspace");
-        std::fs::create_dir_all(&project_dir).unwrap();
-        std::fs::create_dir_all(&workspace_root).unwrap();
-        let manifest = fake_manifest(); // name = "demo"
-        let source = FrameworkSource::Workspace { root: workspace_root };
-        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &[], false, None, true)
-            .expect("generate wrapper");
+    fn wrapper_boots_newcore_with_plain_user_dep() {
+        let (wrapper_dir, _tmp) = run_generator();
 
         let lib_rs = std::fs::read_to_string(wrapper_dir.join("src/lib.rs")).unwrap();
         assert!(
             lib_rs.contains("backend_web::newcore::start_in"),
-            "new-core wrapper boots through newcore::start_in:\n{lib_rs}"
+            "wrapper boots through newcore::start_in:\n{lib_rs}"
         );
         assert!(
             lib_rs.contains("backend_web::newcore::hydrate_in"),
-            "new-core wrapper takes the adoption path on prerendered DOM:\n{lib_rs}"
+            "wrapper takes the adoption path on prerendered DOM:\n{lib_rs}"
         );
         assert!(
             lib_rs.contains("demo::register_scene_extensions"),
-            "new-core wrapper registers through the scene-registry seam:\n{lib_rs}"
+            "wrapper registers through the scene-registry seam:\n{lib_rs}"
         );
-        // The LOCAL start path must never touch the old-core mount.
-        // (The runtime-server fallback path keeps its old-core text but
-        // is compiled out — `runtime-server` + `--new-core` is a
-        // documented unsupported pairing, dev hot-reload stays
-        // old-core.)
-        let local = lib_rs
-            .split("fn start_local()")
-            .nth(1)
-            .expect("wrapper defines start_local")
-            .split("fn start_aas")
-            .next()
-            .unwrap();
         assert!(
-            !local.contains("runtime_core::mount"),
-            "new-core start_local must not touch the old-core mount:\n{local}"
+            !lib_rs.contains("runtime_core::mount")
+                && !lib_rs.contains("register_extensions(&mut"),
+            "no code path may reach the deleted walker mount:\n{lib_rs}"
         );
         // wasm-split-cli still keys off `fn main` as the call-graph root.
         assert!(lib_rs.contains("pub fn main()"), "{lib_rs}");
@@ -2560,19 +2273,14 @@ mod regression_tests {
             .get("dependencies")
             .and_then(|d| d.get("demo"))
             .expect("user dep");
-        assert_eq!(
-            user.get("default-features").and_then(|v| v.as_bool()),
-            Some(false),
-            "new-core wrapper compiles the user crate single-core:\n{cargo}",
+        assert!(
+            user.get("default-features").is_none() && user.get("features").is_none(),
+            "user crate keeps its own defaults (one core):\n{cargo}",
         );
-        let user_feats: Vec<&str> = user
-            .get("features")
-            .and_then(|f| f.as_array())
-            .expect("user features array")
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
-        assert_eq!(user_feats, vec!["new-core"], "{cargo}");
+        assert!(
+            !cargo.contains("old-core"),
+            "wrapper must not mention old-core:\n{cargo}",
+        );
         let bweb_feats: Vec<&str> = parsed
             .get("dependencies")
             .and_then(|d| d.get("backend-web"))
@@ -2582,26 +2290,42 @@ mod regression_tests {
             .iter()
             .filter_map(|v| v.as_str())
             .collect();
+        // backend-web's scene module is unconditional, so the wrapper must
+        // NOT name a `new-core` feature — that spelling was deleted with
+        // the old core and a generated manifest naming it fails cargo
+        // resolution before anything is compiled.
         assert!(
-            bweb_feats.contains(&"new-core"),
-            "backend-web must compile its newcore module: {bweb_feats:?}",
+            !bweb_feats.contains(&"new-core"),
+            "the deleted `new-core` feature must not appear: {bweb_feats:?}",
         );
     }
 
-    /// The default (old-core) wrapper is byte-stable through the
-    /// new-core parameterization: no `new-core` feature anywhere, the
-    /// classic `runtime_core::mount` boot intact.
+    /// The runtime-server (thin-client) leg replays wire commands
+    /// through the backend's CAPABILITY surface
+    /// (`dev_client::WireBackend::new_newcore`), and its
+    /// missing-URL fallback mounts locally through the same scene boot
+    /// `start_local` uses. `idealyst dev --web` builds this leg, so a
+    /// regression here breaks the primary dev loop.
     #[test]
-    fn default_wrapper_stays_old_core() {
+    fn runtime_server_leg_replays_through_the_caps_surface() {
         let (wrapper_dir, _tmp) = run_generator();
-        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
-        assert!(
-            !cargo.contains("\"new-core\""),
-            "old wrapper must not enable a new-core feature anywhere:\n{cargo}"
-        );
         let lib_rs = std::fs::read_to_string(wrapper_dir.join("src/lib.rs")).unwrap();
-        assert!(lib_rs.contains("runtime_core::mount"), "{lib_rs}");
-        assert!(!lib_rs.contains("newcore"), "{lib_rs}");
+        let aas = lib_rs
+            .split("fn start_aas()")
+            .nth(1)
+            .expect("wrapper defines start_aas");
+        assert!(
+            aas.contains("dev_client::WireBackend::new_newcore("),
+            "replay client must drive the caps surface:\n{aas}"
+        );
+        assert!(
+            aas.contains("backend_web::newcore::start_in("),
+            "the missing-URL fallback must mount through the scene boot:\n{aas}"
+        );
+        assert!(
+            lib_rs.contains("dev_client::newcore::NewCoreReplayClient<WebBackend>"),
+            "the retained replay handle must be the caps replay client:\n{lib_rs}"
+        );
     }
 }
 

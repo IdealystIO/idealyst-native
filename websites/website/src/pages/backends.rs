@@ -22,7 +22,8 @@ pub fn page() -> Element {
             PageHeader(
                 title = "Backends",
                 blurb = "What's implemented per target, what's in progress, what's planned. \
-                 The Backend trait is the framework's only seam to the platform; \
+                 The `Host` trait plus the capability traits are the framework's only \
+                 seam to the platform; \
                  this page is the per-platform status of that seam.",
             )
             PageSection(handle = matrix_ref) { matrix() }
@@ -117,7 +118,7 @@ fn roadmap() -> Element {
         ui! { Typography(content = "Framework-level subsystems".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! { Typography(content = "Working".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
-            Typography(content = "Primitives + reactivity + render walker; `ui!` / `jsx!` / \
+            Typography(content = "Primitives + reactivity + scene realization; `ui!` / `jsx!` / \
                 `#[component]` / `stylesheet!`; reactive `if` / `when` / `for` in the DSLs; \
                 refs via `Ref<H>`; idea-ui component library; icon registry; Robot + MCP \
                 introspection; hot-reload dev server with runtime-server shell; \

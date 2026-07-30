@@ -1,7 +1,7 @@
 //! Dev-side runtime for the hot-reload wire protocol.
 //!
 //! Provides a [`WireRecordingBackend`] that implements
-//! [`runtime_core::Backend`] with `Node = NodeId`. Each method
+//! [`runtime_shared::Backend`] with `Node = NodeId`. Each method
 //! emits one [`Command`] (or a small cluster) into the recorder's
 //! outbound queue, plus registers any closures the walker hands it
 //! into a [`HandlerTable`].
@@ -31,9 +31,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use runtime_core::primitives;
-use runtime_core::{
-    Backend, Color, ColorScheme, StateBits, StyleRules, TextHandle, TextOps, ViewHandle, ViewOps,
+use runtime_shared::primitives;
+use runtime_shared::{
+    Color, ColorScheme, StateBits, StyleRules, TextHandle, TextOps, ViewHandle, ViewOps,
 };
 use wire::{
     Command, EventArgs, HandlerId, NodeId, ScopeId, StyleId, WireColor,
@@ -41,12 +41,9 @@ use wire::{
 };
 
 pub mod convert_out;
-// New-core adoption (idea-lite migration): `runtime_scene::Host` + the
-// 30 `runtime_vocabulary::caps` traits on `WireRecordingBackend`,
-// delegating to the `Backend` impl below so wire emission is identical
-// by construction, plus `SceneSession` (the new-core session mount).
-// Gated so old-core-only consumers don't drag scene/vocabulary/world.
-#[cfg(feature = "new-core")]
+// `runtime_scene::Host` + the 30 `runtime_vocabulary::caps` traits on
+// `WireRecordingBackend`, delegating to the inherent op surface below,
+// plus `SceneSession` (the session mount).
 pub mod newcore;
 // runtime-server dev-host driver. Pulled in only when the consumer activates
 // the `runtime-server` feature — `host::run` and `HotPatchAdapter`
@@ -56,7 +53,7 @@ pub mod newcore;
 #[cfg(feature = "runtime-server")]
 pub mod host;
 mod scene_model;
-// Sidecar `runtime_core::scheduling::Scheduler` impl — installed
+// Sidecar `runtime_shared::scheduling::Scheduler` impl — installed
 // once at sidecar startup so `raf_loop_scoped`, `after_ms`, etc.
 // fire on the dev side. Otherwise the framework's animation clock
 // gets an inert handle and any author code using raf-driven custom
@@ -94,8 +91,8 @@ pub use transport::serve_with_robot_bridge;
 pub use watch::{spawn_change_loop, spawn_rebuild_loop, RebuildCommand, RebuildConfig};
 
 /// The runtime-server (Application-as-a-Server) **server-side backend** —
-/// implements `runtime_core::Backend` with `Node = NodeId`. Plug
-/// this into `runtime_core::render(...)` exactly like you'd plug
+/// implements `runtime_shared::Backend` with `Node = NodeId`. Plug
+/// this into `runtime_shared::render(...)` exactly like you'd plug
 /// in `WebBackend` / `IosBackend` / `AndroidBackend`. Instead of
 /// driving native widgets it records every walker call as a wire
 /// [`wire::Command`] for transport to one or more
@@ -118,7 +115,7 @@ pub use crate::WireRecordingBackend as AasBackend;
 /// from the app look up the entry and invoke the captured closure.
 ///
 /// **Identity-keyed dedup.** Closures registered with an
-/// [`runtime_core::Identity`] reuse the same `HandlerId` across
+/// [`runtime_shared::Identity`] reuse the same `HandlerId` across
 /// hot-reload rebuilds: the table keeps `identity_to_id` populated
 /// across [`Self::clear_closures`] (called from
 /// `reset_log_and_scene`), so a re-register from the freshly-walked
@@ -140,7 +137,7 @@ pub struct HandlerTable {
     /// [`Self::register_unit_for_identity`] / friends, where the
     /// existing slot is overwritten with the freshly-walked closure
     /// (capturing the post-reset `Rc<NavigatorControl>` etc.).
-    identity_to_id: HashMap<runtime_core::Identity, HandlerId>,
+    identity_to_id: HashMap<runtime_shared::Identity, HandlerId>,
 }
 
 enum Handler {
@@ -188,7 +185,7 @@ impl HandlerTable {
     }
 
     /// Identity-keyed register. Same logical emission site (same
-    /// [`runtime_core::Identity`]) across rebuilds reuses the same
+    /// [`runtime_shared::Identity`]) across rebuilds reuses the same
     /// `HandlerId` — the closure under the id is replaced with the
     /// freshly-walked one. Cross-rebuild stability is what keeps the
     /// client's leaked `HeaderButtonCallback`, button click pointer,
@@ -199,10 +196,10 @@ impl HandlerTable {
     /// without ambient identity get this gracefully.
     pub fn register_unit_for_identity(
         &mut self,
-        identity: runtime_core::Identity,
+        identity: runtime_shared::Identity,
         f: Rc<dyn Fn()>,
     ) -> HandlerId {
-        if identity == runtime_core::Identity::UNIDENTIFIED {
+        if identity == runtime_shared::Identity::UNIDENTIFIED {
             return self.register_unit(f);
         }
         let id = *self.identity_to_id.entry(identity).or_insert_with(|| {
@@ -217,10 +214,10 @@ impl HandlerTable {
     /// `Toggle.on_change`.
     pub fn register_bool_for_identity(
         &mut self,
-        identity: runtime_core::Identity,
+        identity: runtime_shared::Identity,
         f: Rc<dyn Fn(bool)>,
     ) -> HandlerId {
-        if identity == runtime_core::Identity::UNIDENTIFIED {
+        if identity == runtime_shared::Identity::UNIDENTIFIED {
             return self.register_bool(f);
         }
         let id = *self.identity_to_id.entry(identity).or_insert_with(|| {
@@ -235,10 +232,10 @@ impl HandlerTable {
     /// `Slider.on_change`.
     pub fn register_float_for_identity(
         &mut self,
-        identity: runtime_core::Identity,
+        identity: runtime_shared::Identity,
         f: Rc<dyn Fn(f32)>,
     ) -> HandlerId {
-        if identity == runtime_core::Identity::UNIDENTIFIED {
+        if identity == runtime_shared::Identity::UNIDENTIFIED {
             return self.register_float(f);
         }
         let id = *self.identity_to_id.entry(identity).or_insert_with(|| {
@@ -253,10 +250,10 @@ impl HandlerTable {
     /// `TextInput.on_change`.
     pub fn register_string_for_identity(
         &mut self,
-        identity: runtime_core::Identity,
+        identity: runtime_shared::Identity,
         f: Rc<dyn Fn(String)>,
     ) -> HandlerId {
-        if identity == runtime_core::Identity::UNIDENTIFIED {
+        if identity == runtime_shared::Identity::UNIDENTIFIED {
             return self.register_string(f);
         }
         let id = *self.identity_to_id.entry(identity).or_insert_with(|| {
@@ -312,7 +309,7 @@ pub type NavStateSnapshot = HashMap<u64, Vec<String>>;
 struct RecorderState {
     next_node: u64,
     next_style: u64,
-    /// Identity → NodeId memo. Keyed by [`runtime_core::Identity`]
+    /// Identity → NodeId memo. Keyed by [`runtime_shared::Identity`]
     /// (the structural identity the walker sets via
     /// `with_current_identity` before every `backend.create_*` call).
     /// Survives [`WireRecordingBackend::reset_log_and_scene`] so that
@@ -322,11 +319,11 @@ struct RecorderState {
     /// on the client; new `ApplyStyle` for the same node lands on
     /// the right native view).
     ///
-    /// Emissions that arrive under [`runtime_core::Identity::UNIDENTIFIED`]
+    /// Emissions that arrive under [`runtime_shared::Identity::UNIDENTIFIED`]
     /// bypass dedup (mint a fresh id every time). Used as a
     /// pressure-release for any emission site that hasn't been
     /// migrated to set an identity yet.
-    identity_to_node: HashMap<runtime_core::Identity, NodeId>,
+    identity_to_node: HashMap<runtime_shared::Identity, NodeId>,
     /// Monotonic generation counter. Bumped by
     /// [`WireRecordingBackend::reset_log_and_scene`] each time the
     /// scene is wiped + re-rendered (typically after a hot-reload
@@ -393,26 +390,7 @@ struct RecorderState {
     /// `out` is still used for incremental broadcast to clients
     /// already past the snapshot point.
     scene: SceneModel,
-    /// Per-presentation-type navigator handler factories, registered
-    /// by the app's `register_extensions(&mut recorder)` (the SDK leaf
-    /// crates call `recorder.register_navigator::<DrawerPresentation,
-    /// _>(...)`). `create_navigator` looks one up by the presentation's
-    /// `TypeId`; the handler RECORDS the navigator as wire commands
-    /// rather than rendering it. Mirrors `WgpuBackend`'s registry.
-    navigator_handlers: runtime_core::NavigatorRegistry<WireRecordingBackend>,
-    /// Live handler instances keyed by the navigator's `NodeId`, so
-    /// `navigator_attach_initial` / `apply_navigator_slot_style` /
-    /// `release_navigator` and the reverse-channel event handlers can
-    /// re-acquire the handler that owns a given navigator.
-    nav_handler_instances:
-        HashMap<NodeId, Rc<RefCell<Box<dyn runtime_core::NavigatorHandler<WireRecordingBackend>>>>>,
 }
-
-/// Inert `NavigatorOps` for `make_navigator_handle` on a navigator that
-/// has no registered handler — the returned handle ignores dispatch.
-struct NoopRecorderNavOps;
-impl runtime_core::primitives::navigator::NavigatorOps for NoopRecorderNavOps {}
-static NOOP_RECORDER_NAV_OPS: NoopRecorderNavOps = NoopRecorderNavOps;
 
 impl RecorderState {
     /// Single emit point: the scene model interprets the command to
@@ -435,7 +413,7 @@ impl RecorderState {
     /// `state`.
     fn wire_a11y(
         &mut self,
-        p: &runtime_core::accessibility::AccessibilityProps,
+        p: &runtime_shared::accessibility::AccessibilityProps,
     ) -> wire::WireAccessibilityProps {
         convert_out::a11y_to_wire(p, &mut self.handlers)
     }
@@ -474,8 +452,6 @@ impl WireRecordingBackend {
             scope_to_navigator: HashMap::new(),
             nav_state_mirror: nav_state_mirror.clone(),
             scene: SceneModel::new(),
-            navigator_handlers: runtime_core::NavigatorRegistry::new(),
-            nav_handler_instances: HashMap::new(),
         }));
         // Install a per-thread weak handle so `RecordingViewOps`
         // (called from `AnimatedValue::bind` -> `ViewHandle::set_animated_*`)
@@ -489,22 +465,6 @@ impl WireRecordingBackend {
             inner,
             nav_state_mirror,
         }
-    }
-
-    /// Register a navigator handler factory keyed by presentation type
-    /// `P`. The app's `register_extensions(&mut recorder)` calls this
-    /// (via the SDK leaf, e.g. `stack_navigator::recording::register`)
-    /// before mount so `create_navigator` can record the navigator.
-    /// Mirrors `WgpuBackend::register_navigator`.
-    pub fn register_navigator<P, F>(&mut self, factory: F)
-    where
-        P: 'static,
-        F: Fn() -> Box<dyn runtime_core::NavigatorHandler<WireRecordingBackend>> + 'static,
-    {
-        self.inner
-            .borrow_mut()
-            .navigator_handlers
-            .register::<P, _>(factory);
     }
 
     /// Hand a recording `NavigatorHandler` a cloneable, microtask-safe
@@ -590,7 +550,7 @@ impl WireRecordingBackend {
     /// registry.
     pub fn tick_animations(&self, dt: std::time::Duration) -> usize {
         scheduler::drive_pending();
-        runtime_core::animation::clock::tick_for_test(dt)
+        runtime_shared::animation::clock::tick_for_test(dt)
     }
 
     /// Drop every command from the log and reset the scene to empty.
@@ -649,9 +609,6 @@ impl WireRecordingBackend {
         state.state_handlers.clear();
         state.navigators.clear();
         state.scope_to_navigator.clear();
-        // Drop live handler instances; the post-reset re-walk re-creates
-        // them via `create_navigator` against the (preserved) registry.
-        state.nav_handler_instances.clear();
         // Drop old closures (frees their captured Rcs — old
         // NavigatorControl, signal handles, etc. — before the
         // next render starts) but keep `next` + `identity_to_id`
@@ -792,22 +749,22 @@ impl WireRecordingBackend {
     }
 
     /// Allocate a `NodeId` for the current emission site. Uses the
-    /// ambient [`runtime_core::current_identity`] to dedup across
+    /// ambient [`runtime_shared::current_identity`] to dedup across
     /// sidecar respawns: the same structural emission always gets the
     /// same `NodeId`, which is what makes hot reload incremental
     /// rather than a full-scene reset. Emissions under
-    /// [`runtime_core::Identity::UNIDENTIFIED`] (legacy path that
+    /// [`runtime_shared::Identity::UNIDENTIFIED`] (legacy path that
     /// hasn't been migrated yet) always mint fresh — no dedup.
     fn mint_node(state: &mut RecorderState) -> NodeId {
-        let id = runtime_core::current_identity();
-        if id != runtime_core::Identity::UNIDENTIFIED {
+        let id = runtime_shared::current_identity();
+        if id != runtime_shared::Identity::UNIDENTIFIED {
             if let Some(&existing) = state.identity_to_node.get(&id) {
                 return existing;
             }
         }
         state.next_node += 1;
         let assigned = NodeId(state.next_node);
-        if id != runtime_core::Identity::UNIDENTIFIED {
+        if id != runtime_shared::Identity::UNIDENTIFIED {
             state.identity_to_node.insert(id, assigned);
         }
         assigned
@@ -961,7 +918,7 @@ impl NavRecorder {
         &self,
         initial_route: &str,
         initial_path: &str,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> NodeId {
         self.with_state(|state| {
             let id = WireRecordingBackend::mint_node(state);
@@ -1099,9 +1056,9 @@ impl ViewOps for RecordingViewOps {
     fn frame(
         &self,
         _node: &dyn std::any::Any,
-    ) -> Option<runtime_core::primitives::portal::ViewportRect> {
+    ) -> Option<runtime_shared::primitives::portal::ViewportRect> {
         let (w, h) = SESSION_VIEWPORT.with(|c| c.get())?;
-        Some(runtime_core::primitives::portal::ViewportRect {
+        Some(runtime_shared::primitives::portal::ViewportRect {
             x: 0.0,
             y: 0.0,
             width: w,
@@ -1122,7 +1079,7 @@ impl ViewOps for RecordingViewOps {
     fn set_animated_f32(
         &self,
         node: &dyn std::any::Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         value: f32,
     ) {
         let Some(node_id) = node.downcast_ref::<NodeId>() else { return };
@@ -1147,7 +1104,7 @@ impl ViewOps for RecordingViewOps {
     fn set_animated_color(
         &self,
         node: &dyn std::any::Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
         let Some(node_id) = node.downcast_ref::<NodeId>() else { return };
@@ -1221,7 +1178,7 @@ impl TextOps for RecordingTextOps {
     fn set_animated_color(
         &self,
         node: &dyn std::any::Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
         let Some(node_id) = node.downcast_ref::<NodeId>() else { return };
@@ -1244,10 +1201,16 @@ impl TextOps for RecordingTextOps {
     }
 }
 
-impl Backend for WireRecordingBackend {
-    type Node = NodeId;
+/// The recorder's op surface: one inherent method per wire-visible
+/// operation. These were the `runtime_shared::Backend` impl before the old
+/// walker was deleted; they are now plain inherent methods that the
+/// capability impls in [`crate::newcore`] delegate to, so the wire
+/// emission mechanism (node/style interning, handler-table registration,
+/// `SceneModel` mirroring, the `Command` log) has exactly ONE
+/// implementation.
+impl WireRecordingBackend {
 
-    fn color_scheme(&self) -> ColorScheme {
+    pub fn color_scheme(&self) -> ColorScheme {
         self.inner.borrow().color_scheme
     }
 
@@ -1262,10 +1225,10 @@ impl Backend for WireRecordingBackend {
     /// Only ever called via the Robot bridge (never the render hot path),
     /// so the blocking round-trip is acceptable; see
     /// `sidecar::device_frame_over_wire`.
-    fn device_frame(
+    pub fn device_frame(
         &self,
-        node: &Self::Node,
-    ) -> Option<runtime_core::primitives::portal::ViewportRect> {
+        node: &NodeId,
+    ) -> Option<runtime_shared::primitives::portal::ViewportRect> {
         crate::sidecar::device_frame_over_wire(node.0)
     }
 
@@ -1275,7 +1238,7 @@ impl Backend for WireRecordingBackend {
     /// downcasting `ViewHandle::as_any()` back to `NodeId`. The default
     /// trait impl returns an `Rc<()>` which would make outlet
     /// resolution impossible.
-    fn make_view_handle(&self, node: &Self::Node) -> ViewHandle {
+    pub fn make_view_handle(&self, node: &NodeId) -> ViewHandle {
         ViewHandle::new(Rc::new(*node), &RecordingViewOps)
     }
 
@@ -1283,16 +1246,16 @@ impl Backend for WireRecordingBackend {
     /// Author code that calls `AnimatedValue::bind_text_color` (the
     /// welcome example's headline color fade) reaches `TextOps` via
     /// `TextHandle::set_animated_color`; without this override the
-    /// default [`runtime_core::Backend::make_text_handle`] returns
+    /// default [`runtime_shared::Backend::make_text_handle`] returns
     /// `NoopTextOps` and every animation tick is silently dropped.
-    fn make_text_handle(&self, node: &Self::Node) -> TextHandle {
+    pub fn make_text_handle(&self, node: &NodeId) -> TextHandle {
         TextHandle::new(Rc::new(*node), &RecordingTextOps)
     }
 
-    fn create_view(
+    pub fn create_view(
         &mut self,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> NodeId {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_a11y = state.wire_a11y(a11y);
@@ -1303,11 +1266,11 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn create_text(
+    pub fn create_text(
         &mut self,
         content: &str,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> NodeId {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_a11y = state.wire_a11y(a11y);
@@ -1319,16 +1282,16 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn create_button(
+    pub fn create_button(
         &mut self,
         label: &str,
-        on_click: &runtime_core::Action,
+        on_click: &runtime_shared::Action,
         leading_icon: Option<&primitives::icon::IconData>,
         trailing_icon: Option<&primitives::icon::IconData>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> NodeId {
         let mut state = self.inner.borrow_mut();
-        let identity = runtime_core::current_identity();
+        let identity = runtime_shared::current_identity();
         let id = Self::mint_node(&mut state);
         let handler = state
             .handlers
@@ -1347,13 +1310,13 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn create_pressable(
+    pub fn create_pressable(
         &mut self,
         on_click: Rc<dyn Fn()>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> NodeId {
         let mut state = self.inner.borrow_mut();
-        let identity = runtime_core::current_identity();
+        let identity = runtime_shared::current_identity();
         let id = Self::mint_node(&mut state);
         let handler = state
             .handlers
@@ -1367,14 +1330,14 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn create_reactive_anchor(&mut self) -> Self::Node {
+    pub fn create_reactive_anchor(&mut self) -> NodeId {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         state.emit(Command::CreateReactiveAnchor { id });
         id
     }
 
-    fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
+    pub fn insert(&mut self, parent: &mut NodeId, child: NodeId) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::Insert {
             parent: *parent,
@@ -1382,7 +1345,7 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
+    pub fn insert_many(&mut self, parent: &mut NodeId, children: Vec<NodeId>) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::InsertMany {
             parent: *parent,
@@ -1390,12 +1353,12 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn clear_children(&mut self, node: &Self::Node) {
+    pub fn clear_children(&mut self, node: &NodeId) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::ClearChildren { node: *node });
     }
 
-    fn update_text(&mut self, node: &Self::Node, content: &str) {
+    pub fn update_text(&mut self, node: &NodeId, content: &str) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UpdateText {
             node: *node,
@@ -1403,12 +1366,12 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn create_image(
+    pub fn create_image(
         &mut self,
         src: &str,
         alt: Option<&str>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> NodeId {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_a11y = state.wire_a11y(a11y);
@@ -1421,7 +1384,7 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
+    pub fn update_image_src(&mut self, node: &NodeId, src: &str) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UpdateImageSrc {
             node: *node,
@@ -1429,7 +1392,7 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
+    pub fn update_image_alt(&mut self, node: &NodeId, alt: Option<&str>) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UpdateImageAlt {
             node: *node,
@@ -1437,7 +1400,7 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn update_link_url(&mut self, node: &Self::Node, url: &str) {
+    pub fn update_link_url(&mut self, node: &NodeId, url: &str) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UpdateLinkUrl {
             node: *node,
@@ -1445,12 +1408,12 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn create_icon(
+    pub fn create_icon(
         &mut self,
         data: &primitives::icon::IconData,
         color: Option<&Color>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> NodeId {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_data = convert_out::icon_data_to_wire(data);
@@ -1464,7 +1427,7 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
+    pub fn update_icon_color(&mut self, node: &NodeId, color: &Color) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UpdateIconColor {
             node: *node,
@@ -1472,7 +1435,7 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn update_icon_data(&mut self, node: &Self::Node, data: &primitives::icon::IconData) {
+    pub fn update_icon_data(&mut self, node: &NodeId, data: &primitives::icon::IconData) {
         let mut state = self.inner.borrow_mut();
         let wire_data = convert_out::icon_data_to_wire(data);
         state.emit(Command::UpdateIconData {
@@ -1481,7 +1444,7 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn set_app_background(&mut self, color: &runtime_core::Tokenized<Color>) {
+    pub fn set_app_background(&mut self, color: &runtime_shared::Tokenized<Color>) {
         let mut state = self.inner.borrow_mut();
         // Resolve the token to a concrete literal dev-side (wire only
         // carries literals); the theme SDK re-calls this on theme swap so
@@ -1491,10 +1454,10 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn set_scrollbar_theme(
+    pub fn set_scrollbar_theme(
         &mut self,
-        thumb: &runtime_core::Tokenized<Color>,
-        track: &runtime_core::Tokenized<Color>,
+        thumb: &runtime_shared::Tokenized<Color>,
+        track: &runtime_shared::Tokenized<Color>,
     ) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::SetScrollbarTheme {
@@ -1503,7 +1466,7 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn set_page_metadata(&mut self, meta: &runtime_core::PageMetadata) {
+    pub fn set_page_metadata(&mut self, meta: &runtime_shared::PageMetadata) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::SetPageMetadata {
             meta: WirePageMetadata {
@@ -1515,14 +1478,14 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn register_raw_css(&mut self, css: &str) {
+    pub fn register_raw_css(&mut self, css: &str) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::RegisterRawCss {
             css: css.to_string(),
         });
     }
 
-    fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
+    pub fn update_icon_stroke(&mut self, node: &NodeId, progress: f32) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UpdateIconStroke {
             node: *node,
@@ -1530,13 +1493,13 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn animate_icon_stroke(
+    pub fn animate_icon_stroke(
         &mut self,
-        node: &Self::Node,
+        node: &NodeId,
         from: f32,
         to: f32,
         duration_ms: u32,
-        easing: runtime_core::Easing,
+        easing: runtime_shared::Easing,
         infinite: bool,
         autoreverses: bool,
     ) {
@@ -1552,7 +1515,7 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn update_button_label(&mut self, node: &Self::Node, label: &str) {
+    pub fn update_button_label(&mut self, node: &NodeId, label: &str) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UpdateButtonLabel {
             node: *node,
@@ -1560,22 +1523,22 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn create_text_input(
+    pub fn create_text_input(
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        _on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
+        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        _on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
         secure: bool,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> NodeId {
         // `_on_key_down` is not yet wired across the runtime-server protocol
         // (would require a new wire op + per-frame key event
         // dispatch). Snapshot/replay clients don't observe key
         // interception — they see the resulting Signal updates only.
         let mut state = self.inner.borrow_mut();
-        let identity = runtime_core::current_identity();
+        let identity = runtime_shared::current_identity();
         let id = Self::mint_node(&mut state);
         let handler = state
             .handlers
@@ -1592,7 +1555,7 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
+    pub fn update_text_input_value(&mut self, node: &NodeId, value: &str) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UpdateTextInputValue {
             node: *node,
@@ -1600,12 +1563,12 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
+    pub fn update_text_input_secure(&mut self, node: &NodeId, secure: bool) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UpdateTextInputSecure { node: *node, secure });
     }
 
-    fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
+    pub fn update_text_input_placeholder(&mut self, node: &NodeId, placeholder: Option<&str>) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UpdateTextInputPlaceholder {
             node: *node,
@@ -1613,7 +1576,7 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn create_text_area(
+    pub fn create_text_area(
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
@@ -1621,15 +1584,15 @@ impl Backend for WireRecordingBackend {
         min_rows: Option<u32>,
         max_rows: Option<u32>,
         on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> NodeId {
         // `_on_key_down` is dropped on the wire for the same reason as
         // `create_text_input` above — runtime-server doesn't yet carry intercepted
         // key events. Snapshot/replay clients still see the resulting
         // Signal updates.
         let mut state = self.inner.borrow_mut();
-        let identity = runtime_core::current_identity();
+        let identity = runtime_shared::current_identity();
         let id = Self::mint_node(&mut state);
         let handler = state
             .handlers
@@ -1648,7 +1611,7 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
+    pub fn update_text_area_value(&mut self, node: &NodeId, value: &str) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UpdateTextAreaValue {
             node: *node,
@@ -1664,19 +1627,19 @@ impl Backend for WireRecordingBackend {
     /// registration matches. Either way, this override stops the
     /// framework's `unimplemented!()` default from aborting the
     /// dev-server walker on every `Element::External` mount.
-    fn create_external(
+    pub fn create_external(
         &mut self,
         _type_id: std::any::TypeId,
         type_name: &'static str,
         payload: &Rc<dyn std::any::Any>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> NodeId {
         // Serialize the payload via the SDK's registered external serde so
         // it survives the trip to the device. Empty when no serde is
         // registered (sentinel externals) — the client then falls back to
         // the not-available placeholder, as before.
         let payload_bytes =
-            runtime_core::serialize_external_payload(type_name, &**payload).unwrap_or_default();
+            wire::serialize_external_payload(type_name, &**payload).unwrap_or_default();
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_a11y = state.wire_a11y(a11y);
@@ -1689,14 +1652,14 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn create_toggle(
+    pub fn create_toggle(
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> NodeId {
         let mut state = self.inner.borrow_mut();
-        let identity = runtime_core::current_identity();
+        let identity = runtime_shared::current_identity();
         let id = Self::mint_node(&mut state);
         let handler = state
             .handlers
@@ -1711,7 +1674,7 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
+    pub fn update_toggle_value(&mut self, node: &NodeId, value: bool) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UpdateToggleValue {
             node: *node,
@@ -1719,12 +1682,12 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn create_scroll_view(
+    pub fn create_scroll_view(
         &mut self,
         horizontal: bool,
         _on_scroll: Option<std::rc::Rc<dyn Fn(f32, f32)>>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> NodeId {
         // `on_scroll` cannot cross the wire to a client \u{2014} the
         // callback is a Rust closure with no serialized representation.
         // For runtime-server mode the user's `on_scroll` is accepted
@@ -1745,17 +1708,17 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn create_slider(
+    pub fn create_slider(
         &mut self,
         initial_value: f32,
         min: f32,
         max: f32,
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> NodeId {
         let mut state = self.inner.borrow_mut();
-        let identity = runtime_core::current_identity();
+        let identity = runtime_shared::current_identity();
         let id = Self::mint_node(&mut state);
         let handler = state
             .handlers
@@ -1773,7 +1736,7 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
+    pub fn update_slider_value(&mut self, node: &NodeId, value: f32) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UpdateSliderValue {
             node: *node,
@@ -1781,12 +1744,12 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn create_activity_indicator(
+    pub fn create_activity_indicator(
         &mut self,
         size: primitives::activity_indicator::ActivityIndicatorSize,
         color: Option<&Color>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> NodeId {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_size = match size {
@@ -1807,9 +1770,9 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn update_activity_indicator_size(
+    pub fn update_activity_indicator_size(
         &mut self,
-        node: &Self::Node,
+        node: &NodeId,
         size: primitives::activity_indicator::ActivityIndicatorSize,
     ) {
         let mut state = self.inner.borrow_mut();
@@ -1827,7 +1790,7 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
+    pub fn apply_style(&mut self, node: &NodeId, style: &Rc<StyleRules>) {
         let mut state = self.inner.borrow_mut();
         let sid = Self::intern_style(&mut state, style);
         state.emit(Command::ApplyStyle {
@@ -1836,9 +1799,9 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn apply_styled_states(
+    pub fn apply_styled_states(
         &mut self,
-        node: &Self::Node,
+        node: &NodeId,
         base: &Rc<StyleRules>,
         overlays: &[(StateBits, Rc<StyleRules>)],
     ) {
@@ -1858,14 +1821,14 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
+    pub fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
         let mut state = self.inner.borrow_mut();
         for r in rules {
             Self::intern_style(&mut state, r);
         }
     }
 
-    fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
+    pub fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
         let mut state = self.inner.borrow_mut();
         for r in rules {
             let ptr = Rc::as_ptr(r) as usize;
@@ -1875,11 +1838,11 @@ impl Backend for WireRecordingBackend {
         }
     }
 
-    fn register_asset(
+    pub fn register_asset(
         &mut self,
-        id: runtime_core::AssetId,
-        kind: runtime_core::AssetTag,
-        source: &runtime_core::AssetSource,
+        id: runtime_shared::AssetId,
+        kind: runtime_shared::AssetTag,
+        source: &runtime_shared::AssetSource,
     ) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::RegisterAsset {
@@ -1889,10 +1852,10 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn unregister_asset(
+    pub fn unregister_asset(
         &mut self,
-        id: runtime_core::AssetId,
-        kind: runtime_core::AssetTag,
+        id: runtime_shared::AssetId,
+        kind: runtime_shared::AssetTag,
     ) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UnregisterAsset {
@@ -1901,12 +1864,12 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn register_typeface(
+    pub fn register_typeface(
         &mut self,
-        id: runtime_core::TypefaceId,
+        id: runtime_shared::TypefaceId,
         family_name: &str,
-        faces: &[runtime_core::TypefaceFace],
-        fallback: runtime_core::SystemFallback,
+        faces: &[runtime_shared::TypefaceFace],
+        fallback: runtime_shared::SystemFallback,
     ) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::RegisterTypeface {
@@ -1917,7 +1880,7 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn unregister_typeface(&mut self, id: runtime_core::TypefaceId) {
+    pub fn unregister_typeface(&mut self, id: runtime_shared::TypefaceId) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UnregisterTypeface {
             id: convert_out::typeface_id_to_wire(id),
@@ -1937,14 +1900,14 @@ impl Backend for WireRecordingBackend {
     // hit by code paths that have a `&mut Backend` handle, which the
     // animation tick path never does — it has only a `&ViewHandle`).
 
-    fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
+    pub fn attach_states(&mut self, node: &NodeId, setter: Rc<dyn Fn(StateBits, bool)>) {
         let mut state = self.inner.borrow_mut();
         let handler_id = state.handlers.register_states(setter);
         state.state_handlers.insert(*node, handler_id);
         state.emit(Command::AttachStates { node: *node });
     }
 
-    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
+    pub fn set_disabled(&mut self, node: &NodeId, disabled: bool) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::SetDisabled {
             node: *node,
@@ -1952,7 +1915,7 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn on_node_unstyled(&mut self, node: &Self::Node) {
+    pub fn on_node_unstyled(&mut self, node: &NodeId) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::OnNodeUnstyled { node: *node });
     }
@@ -1963,29 +1926,29 @@ impl Backend for WireRecordingBackend {
     // replays this. The framework's `attach_safe_area` Effect calls this
     // once during the build (the dev-side insets signal is a stable ZERO),
     // so a single command is emitted per opted-in node.
-    fn apply_safe_area_padding(
+    pub fn apply_safe_area_padding(
         &mut self,
-        node: &Self::Node,
-        sides: runtime_core::SafeAreaSides,
+        node: &NodeId,
+        sides: runtime_shared::SafeAreaSides,
     ) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::ApplySafeAreaPadding { node: *node, sides: sides.0 });
     }
 
-    fn apply_scroll_view_safe_area_inset(
+    pub fn apply_scroll_view_safe_area_inset(
         &mut self,
-        node: &Self::Node,
-        sides: runtime_core::SafeAreaSides,
+        node: &NodeId,
+        sides: runtime_shared::SafeAreaSides,
     ) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::ApplyScrollViewSafeAreaInset { node: *node, sides: sides.0 });
     }
 
-    fn apply_presence(
+    pub fn apply_presence(
         &mut self,
-        node: &Self::Node,
+        node: &NodeId,
         s: primitives::presence::PresenceState,
-        transition: Option<(u32, runtime_core::Easing)>,
+        transition: Option<(u32, runtime_shared::Easing)>,
     ) {
         let mut state = self.inner.borrow_mut();
         let wire_state = wire::WirePresenceState {
@@ -2002,106 +1965,17 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn finish(&mut self, root: Self::Node) {
+    pub fn finish(&mut self, root: NodeId) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::Finish { root });
     }
 
-    // ----- Navigators -----------------------------------------------------
-    //
-    // The recorder dispatches to a registered RECORDING handler (one per
-    // navigator presentation type, installed by the app's
-    // `register_extensions(&mut recorder)`). The handler downcasts the
-    // SDK presentation and emits the navigator wire commands instead of
-    // rendering; the client replays them and reconstructs the native
-    // navigator via ITS registered handler. Mirrors `WgpuBackend`. When
-    // no handler is registered we degrade to a placeholder text node
-    // (never panic — the trait default would `unimplemented!()`).
 
-    fn create_navigator(
+    pub fn update_accessibility(
         &mut self,
-        type_id: std::any::TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn std::any::Any>,
-        host: runtime_core::primitives::navigator::NavigatorHost<Self::Node>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        // Clone the factory out before calling the handler so we hold no
-        // borrow on `inner` across `handler.init(self, …)` (which calls
-        // back into `self.create_view` / `emit`).
-        let factory = self.inner.borrow().navigator_handlers.get(type_id);
-        let Some(factory) = factory else {
-            return self.create_text(
-                &format!("Navigator \"{type_name}\" not registered on the recorder"),
-                a11y,
-            );
-        };
-        let mut handler = factory();
-        let node = handler.init(self, host, presentation);
-        self.inner
-            .borrow_mut()
-            .nav_handler_instances
-            .insert(node, Rc::new(RefCell::new(handler)));
-        node
-    }
-
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn std::any::Any>,
-    ) {
-        let handler = self
-            .inner
-            .borrow()
-            .nav_handler_instances
-            .get(navigator)
-            .cloned();
-        if let Some(handler) = handler {
-            handler
-                .borrow_mut()
-                .attach_initial(self, screen, scope_id, options);
-        }
-    }
-
-    fn apply_navigator_slot_style(
-        &mut self,
-        node: &Self::Node,
-        slot: &'static str,
-        style: &Rc<StyleRules>,
-    ) {
-        let handler = self.inner.borrow().nav_handler_instances.get(node).cloned();
-        if let Some(handler) = handler {
-            handler.borrow_mut().apply_slot_style(self, slot, style);
-        }
-    }
-
-    fn make_navigator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::navigator::NavigatorHandle {
-        if let Some(handler) = self.inner.borrow().nav_handler_instances.get(node).cloned() {
-            return handler.borrow().make_handle();
-        }
-        runtime_core::primitives::navigator::NavigatorHandle::new(
-            Rc::new(()),
-            &NOOP_RECORDER_NAV_OPS,
-        )
-    }
-
-    fn release_navigator(&mut self, node: &Self::Node) {
-        let handler = self.inner.borrow_mut().nav_handler_instances.remove(node);
-        if let Some(handler) = handler {
-            handler.borrow_mut().release(self);
-        }
-    }
-
-    fn update_accessibility(
-        &mut self,
-        node: &Self::Node,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-        inferred_role: Option<runtime_core::accessibility::Role>,
+        node: &NodeId,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+        inferred_role: Option<runtime_shared::accessibility::Role>,
     ) {
         let mut state = self.inner.borrow_mut();
         let wire_a11y = state.wire_a11y(a11y);
@@ -2112,10 +1986,10 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn announce_for_accessibility(
+    pub fn announce_for_accessibility(
         &mut self,
         msg: &str,
-        priority: runtime_core::accessibility::LiveRegionPriority,
+        priority: runtime_shared::accessibility::LiveRegionPriority,
     ) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::AnnounceForAccessibility {
@@ -2130,7 +2004,7 @@ impl Backend for WireRecordingBackend {
     /// no-op and any author-installed theme tokens never reached runtime-server
     /// clients — token-keyed `Tokenized<T>` references silently fell
     /// back to literals on every replay.
-    fn install_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
+    pub fn install_tokens(&mut self, tokens: &[runtime_shared::TokenEntry]) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::InstallThemeVariables {
             tokens: tokens.iter().map(token_entry_to_wire).collect(),
@@ -2141,22 +2015,22 @@ impl Backend for WireRecordingBackend {
     /// [`install_tokens`]; mirrors `update_tokens` on the framework
     /// side. Clients with a variable store update in place; clients
     /// without one re-resolve via the framework's token-version signal.
-    fn update_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
+    pub fn update_tokens(&mut self, tokens: &[runtime_shared::TokenEntry]) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::InstallThemeVariables {
             tokens: tokens.iter().map(token_entry_to_wire).collect(),
         });
     }
 
-    fn create_portal(
+    pub fn create_portal(
         &mut self,
         target: primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> NodeId {
         let mut state = self.inner.borrow_mut();
-        let identity = runtime_core::current_identity();
+        let identity = runtime_shared::current_identity();
         let id = Self::mint_node(&mut state);
         let handler = on_dismiss
             .map(|cb| state.handlers.register_unit_for_identity(identity, cb));
@@ -2194,13 +2068,13 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn create_graphics(
+    pub fn create_graphics(
         &mut self,
         _on_ready: primitives::graphics::OnReady,
         _on_resize: primitives::graphics::OnResize,
         _on_lost: primitives::graphics::OnLost,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> NodeId {
         // The author's `on_ready` / `on_resize` / `on_lost` closures
         // can't travel over the wire (they capture renderer state
         // tied to the dev-side process). Instead, ship the renderer
@@ -2226,13 +2100,13 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn create_link(
+    pub fn create_link(
         &mut self,
         config: primitives::link::LinkConfig,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> NodeId {
         let mut state = self.inner.borrow_mut();
-        let identity = runtime_core::current_identity();
+        let identity = runtime_shared::current_identity();
         let id = Self::mint_node(&mut state);
         let handler = state
             .handlers
@@ -2269,22 +2143,22 @@ impl Backend for WireRecordingBackend {
     // overlay would leak its `NodeId` on the client side (see
     // `SceneModel::apply` for the matching per-node map clears).
 
-    fn release_virtualizer(&mut self, node: &Self::Node) {
+    pub fn release_virtualizer(&mut self, node: &NodeId) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::ReleaseNode { node: *node });
     }
 
-    fn release_graphics(&mut self, node: &Self::Node) {
+    pub fn release_graphics(&mut self, node: &NodeId) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::ReleaseNode { node: *node });
     }
 
-    fn release_portal(&mut self, node: &Self::Node) {
+    pub fn release_portal(&mut self, node: &NodeId) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::ReleaseNode { node: *node });
     }
 
-    fn release_external(&mut self, node: &Self::Node) {
+    pub fn release_external(&mut self, node: &NodeId) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::ReleaseNode { node: *node });
     }
@@ -2297,12 +2171,12 @@ impl Backend for WireRecordingBackend {
     // a `flat_list` panicked the dev session thread on build.
     // ---------------------------------------------------------------------
 
-    fn create_virtualizer(
+    pub fn create_virtualizer(
         &mut self,
-        callbacks: runtime_core::VirtualizerCallbacks<NodeId>,
+        callbacks: runtime_shared::VirtualizerCallbacks<NodeId>,
         overscan: f32,
-        layout: runtime_core::VirtualLayout,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
+        layout: runtime_shared::VirtualLayout,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> NodeId {
         // Eagerly snapshot the current data set: count + keys +
         // initial sizes. The wire ships these so the app's
@@ -2340,7 +2214,7 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn virtualizer_data_changed(&mut self, node: &NodeId) {
+    pub fn virtualizer_data_changed(&mut self, node: &NodeId) {
         // Re-snapshot count for now — keys/sizes refresh in a follow-up
         // alongside mount-on-demand wiring above.
         self.inner.borrow_mut().emit(Command::VirtualizerDataChanged {
@@ -2354,30 +2228,30 @@ impl Backend for WireRecordingBackend {
 // Wire mappers for the new portal primitive's positioning enums.
 // ---------------------------------------------------------------------------
 
-fn token_entry_to_wire(entry: &runtime_core::TokenEntry) -> wire::WireTokenEntry {
+fn token_entry_to_wire(entry: &runtime_shared::TokenEntry) -> wire::WireTokenEntry {
     wire::WireTokenEntry {
         name: entry.name.to_string(),
         value: token_value_to_wire(&entry.value),
     }
 }
 
-fn token_value_to_wire(value: &runtime_core::TokenValue) -> wire::WireTokenValue {
+fn token_value_to_wire(value: &runtime_shared::TokenValue) -> wire::WireTokenValue {
     match value {
-        runtime_core::TokenValue::Color(c) => {
+        runtime_shared::TokenValue::Color(c) => {
             wire::WireTokenValue::Color(wire::WireColor(c.0.clone()))
         }
-        runtime_core::TokenValue::Number(n) => wire::WireTokenValue::Number(*n),
-        runtime_core::TokenValue::Length(l) => {
+        runtime_shared::TokenValue::Number(n) => wire::WireTokenValue::Number(*n),
+        runtime_shared::TokenValue::Length(l) => {
             wire::WireTokenValue::Length(length_to_wire_token(*l))
         }
     }
 }
 
-fn length_to_wire_token(l: runtime_core::Length) -> wire::WireLength {
+fn length_to_wire_token(l: runtime_shared::Length) -> wire::WireLength {
     match l {
-        runtime_core::Length::Px(v) => wire::WireLength::Px(v),
-        runtime_core::Length::Percent(v) => wire::WireLength::Pct(v),
-        runtime_core::Length::Auto => wire::WireLength::Auto,
+        runtime_shared::Length::Px(v) => wire::WireLength::Px(v),
+        runtime_shared::Length::Percent(v) => wire::WireLength::Pct(v),
+        runtime_shared::Length::Auto => wire::WireLength::Auto,
     }
 }
 

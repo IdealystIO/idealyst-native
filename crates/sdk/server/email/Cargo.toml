@@ -50,6 +50,9 @@ ses = ["dep:aws-config", "dep:aws-sdk-sesv2", "dep:tokio"]
 server = { workspace = true }
 # The email-rendering backend powers `Email::template(...)`.
 backend-email = { workspace = true }
+# The author surface, aliased to `runtime_core` at the crate root (see
+# src/lib.rs) — `Email::template` takes a `runtime_core::Element`, which
+# under the alias is `runtime_scene::Element`.
 runtime-core = { workspace = true }
 
 serde = { workspace = true }

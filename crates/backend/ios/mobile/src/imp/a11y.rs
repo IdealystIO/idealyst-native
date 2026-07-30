@@ -6,13 +6,13 @@
 //! function takes a node + resolved props and writes (or clears) every
 //! relevant UIAccessibility property. All `create_*` paths call it
 //! after constructing the view; the dynamic
-//! [`update_accessibility`](runtime_core::Backend::update_accessibility)
+//! [`update_accessibility`](runtime_shared::Backend::update_accessibility)
 //! path reuses it identically. Clearing on `None` is intentional —
 //! reactive a11y prop changes must not leak stale labels onto a view.
 //!
 //! UIKit walks each `UIView`'s accessibility properties directly, so
 //! we don't maintain a parallel semantics tree and
-//! [`dump_accessibility_tree`](runtime_core::Backend::dump_accessibility_tree)
+//! [`dump_accessibility_tree`](runtime_shared::Backend::dump_accessibility_tree)
 //! stays `None` for this backend.
 //!
 //! ### Live regions
@@ -40,7 +40,7 @@
 //!   exposes — `aria-busy="true"` doesn't have a closer equivalent on
 //!   iOS.
 
-use runtime_core::accessibility::{
+use runtime_shared::accessibility::{
     AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
 };
 use objc2::msg_send;
@@ -53,7 +53,7 @@ use crate::imp::IosNode;
 /// `props`.
 ///
 /// `inferred_role` is the primitive's default role (see
-/// [`runtime_core::accessibility::default_role`]). If
+/// [`runtime_shared::accessibility::default_role`]). If
 /// `props.role.is_none()` and `inferred_role.is_some()`, the inferred
 /// role is used to derive the UIAccessibilityTraits bag; if both are
 /// `None`, no role-derived bits are added (the caller's traits flags

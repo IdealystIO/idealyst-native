@@ -29,22 +29,9 @@ license.workspace = true
 # not yet wired.
 
 [features]
-# Runtime-v2 defaults flip: the facade-alias (new-core) build is the
-# default; old-core via `--no-default-features` (in-repo consumers ride
-# the workspace dep spec, which pins defaults off).
-default = ["new-core"]
-# Old-core marker for uniform invocations (old deps unconditional).
-old-core = []
 # Server-side execution. Off by default so client / wasm builds never pull
 # async-graphql. Mirrors how `crates/api/server` gates axum behind `server`.
 server = ["dep:async-graphql"]
-# Idea-lite migration (P6 SDK retarget): under `new-core`, lib.rs declares
-# `extern crate runtime_facade as runtime_core;`, which shadows the
-# extern-prelude `runtime-core` crate-wide — the hooks' `resource`/`mutation`
-# resolve against `runtime_vocabulary::glue::async_reactive`'s mirrors
-# instead. Same source, either core. Default-off (one core per build graph —
-# see runtime-macros/Cargo.toml's feature-unification hazard note).
-new-core = ["dep:runtime-facade"]
 
 [dependencies]
 serde = { workspace = true }
@@ -56,13 +43,10 @@ thiserror = { workspace = true }
 net = { workspace = true }
 
 # Reactive Signal + resource/mutation + driver::spawn_async for the
-# `use_query` / `use_mutation` hooks.
+# `use_query` / `use_mutation` hooks. Aliased as `runtime_core` at the
+# crate root (see lib.rs); `async-driver` gives the facade's root the glue
+# `resource`/`mutation` mirrors + `driver::spawn_async`.
 runtime-core = { workspace = true, features = ["async-driver"] }
-
-# The `new-core` alias target (see the feature's comment). `async-driver`
-# forwarded so the facade's root carries the glue `resource`/`mutation`
-# mirrors — the same gate the old runtime-core dep line enables above.
-runtime-facade = { workspace = true, optional = true, features = ["async-driver"] }
 
 # Typed client codegen + the transport-agnostic wire types
 # (`GraphQLQuery`, `QueryBody`, `Response`). `default-features = false`

@@ -39,10 +39,10 @@ mod stack;
 use backend_ios::IosNode;
 use objc2::rc::Retained;
 use objc2_foundation::{MainThreadMarker, NSObject};
-use runtime_core::primitives::navigator::{
+use runtime_shared::primitives::navigator::{
     MountResult, NavState, NavigatorControl, NavigatorHandle, NavigatorOps,
 };
-use runtime_core::Color;
+use runtime_shared::Color;
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -137,7 +137,7 @@ pub struct IosScreenOptions {
     /// (tab/drawer have no native back affordance to lock).
     pub back_enabled: Option<bool>,
     /// Whether this screen is full-screen while active. `Some(true)` ⇒
-    /// the stack engine calls `runtime_core::set_fullscreen(true)` when
+    /// the stack engine calls `runtime_shared::set_fullscreen(true)` when
     /// this screen is the top one and `false` when a non-full-screen
     /// screen becomes top (including on pop-back). Applied per active
     /// screen, alongside the back-gesture re-sync.
@@ -236,7 +236,7 @@ static IOS_NAV_OPS: IosNavigatorOps = IosNavigatorOps;
 /// `apply_drawer_body_style`.
 pub fn apply_stack_body_style(
     navigator: &IosNode,
-    style: &Rc<runtime_core::StyleRules>,
+    style: &Rc<runtime_shared::StyleRules>,
 ) {
     let entry = STACK_INSTANCES.with(|m| m.borrow().get(&navigator.view_key()).cloned());
     let Some(entry) = entry else { return };

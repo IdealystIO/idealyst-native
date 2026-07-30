@@ -1,25 +1,34 @@
-//! New-core adoption for the GTK4 backend (idea-lite migration).
+//! Rendering: the `runtime_scene::Host` + capability-trait surface, the
+//! boot entry, and the flush driver.
 //!
-//! Implements [`runtime_scene::Host`] plus **all 30** capability traits
-//! (`runtime_vocabulary::caps`) directly on [`LinuxBackend`] — the
-//! production shape of the migration (no `LegacyBridge` in the render
-//! path). Every trait method delegates via UFCS
-//! (`<LinuxBackend as Backend>::method(self, …)`) to the existing
-//! `Backend` impl, so the scaffold's mechanism code (GTK widget
-//! construction, Taffy layout, `Fixed::move_` framing, placeholder
-//! posture) is REUSED verbatim. Where a `Backend` method is not
-//! overridden by `LinuxBackend`, the UFCS call resolves to the same
-//! trait-default the old walker hits — behavior identical by
-//! construction. **30/30 direct, 0 adapted, 0 stubbed.** Generated
-//! from `backend_terminal::newcore` (the settled shape); the AllCaps
-//! bound on `register_builtins` is the compile gate.
+//! [`LinuxBackend`] implements [`runtime_scene::Host`] plus **all 30**
+//! capability traits (`runtime_vocabulary::caps`) — the production shape
+//! of the migration. Every mechanism body in this file was moved here
+//! verbatim from the crate's old `impl runtime_core::Backend for LinuxBackend`
+//! when the 159-method mega-trait was deleted, so the GTK widget mechanism code
+//! is unchanged: the same scene builds the same widget tree.
+//! Capabilities this backend does not implement are simply absent — the
+//! caps-trait DEFAULT bodies serve them, and those defaults were audited
+//! byte-for-byte against the `Backend` defaults they replace
+//! (`docs/runtime-v2-deletion-baseline.md` S2.1; 128 of this backend's
+//! 152 caps methods resolve to a default).
+//!
+//! **30/30 traits implemented, 0 adapted, 0 stubbed.**
+//!
+//! # Two layers in one file: mechanism + flush policy
+//!
+//! Capability methods that take an author callback wrap it before running
+//! the mechanism (`flushing0`/`flushing1`/`flushing_key` + the inline
+//! wrappers below) so a staged write commits after the callback returns.
+//! That dispatch-site policy is why the mechanism lives here rather than
+//! in an inherent impl: the wrap and the body are one method.
 //!
 //! # Boot sequence ([`start`])
 //!
 //! The host shell (out-of-repo; see the crate docs' test plan)
 //! realizes + presents its `gtk::Window`, wraps it in
 //! [`LinuxBackend::new`], and — if it has one — installs its
-//! `runtime_core::scheduling::Scheduler` BEFORE calling [`start`]:
+//! `runtime_shared::scheduling::Scheduler` BEFORE calling [`start`]:
 //!
 //! 1. Monotonic time source (idempotent, first install wins).
 //! 2. Registry: [`runtime_vocabulary::register_builtins`] + the app's
@@ -27,7 +36,7 @@
 //! 3. Fresh [`World`]; build + [`realize`] inside `world.enter`.
 //! 4. Entered buffered-microtask drain (no-op under a real scheduler;
 //!    load-bearing under a buffering test scheduler).
-//! 5. Single root → `Backend::finish`; `world.flush()` commits
+//! 5. Single root → `caps::LifecycleOps::finish`; `world.flush()` commits
 //!    anything staged during mount before the first paint.
 //! 6. Install the flush driver and retain
 //!    `{Realized, backend, registry, world}` in [`NewCoreApp`].
@@ -55,7 +64,7 @@
 //! a real widget.
 //!
 //! **Scheduler contract (honest statement).** The scaffold installs no
-//! `runtime_core::scheduling::Scheduler` and this repo has no Linux
+//! `runtime_shared::scheduling::Scheduler` and this repo has no Linux
 //! host crate. Two regimes:
 //!
 //! - *No scheduler installed* (the scaffold's world today):
@@ -80,7 +89,7 @@
 //!
 //! **No viewport source on this scaffold.** `finish()` reads
 //! `host_window.width()/height()` directly for the Taffy pass, and
-//! nothing writes `runtime_core::set_viewport_size` on EITHER core, so
+//! nothing writes `runtime_shared::set_viewport_size` on EITHER core, so
 //! the world's viewport ctx keeps its default seed and old/new
 //! behavior matches by construction. When a resize seam lands (window
 //! `default-width`/`default-height` notify or surface layout signal)
@@ -98,29 +107,22 @@
 //!   built-ins (swap/stack), so `Element::Navigator` routes through
 //!   `Backend::create_navigator` exactly as before.
 
-use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use runtime_core::accessibility::{AccessibilityProps, AccessibilityTree, LiveRegionPriority, Role};
-use runtime_core::animation::AnimProp;
-use runtime_core::assets::{
-    AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
-};
-use runtime_core::breakpoint::Breakpoint;
-use runtime_core::introspect::NativeNode;
-use runtime_core::primitives;
-use runtime_core::primitives::portal::ViewportRect;
-use runtime_core::styled_text::TextRun;
-use runtime_core::{
-    Action, Backend, BackendBatch, Color, ColorScheme, Easing, FileDropHandler, FontFamily,
-    HoverHandler, ImageErrorHandler, ImageLoadHandler, PageMetadata, Platform, SafeAreaSides,
-    Screenshot, StateBits, StyleApplication, StyleRules, TokenEntry, Tokenized, TouchHandler,
-    TouchId, VirtualizerCallbacks, WheelHandler,
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives;
+use runtime_shared::{
+    Action, Color, ColorScheme, Platform, StyleRules,
+    VirtualizerCallbacks,
 };
 use runtime_scene::{realize, Element, Host, Realized, Registry};
 use runtime_vocabulary::caps;
 use runtime_world::World;
+use runtime_vocabulary::caps::ViewOps as _;
+// The GTK widget mechanism (moved here from the crate's old `impl
+// Backend`) leans on gtk4's trait-based API surface.
+use gtk4::prelude::*;
 
 use crate::{LinuxBackend, LinuxNode};
 
@@ -200,8 +202,8 @@ pub fn start(
     // Monotonic clock (idempotent, first install wins) — animation and
     // presence timing read it; the old boot relied on the host's lazy
     // default, the new boot installs it explicitly like macOS/wgpu.
-    let platform = Backend::platform(&*backend.borrow());
-    runtime_core::time::install_default_time_source(platform);
+    let platform = caps::AppEnvOps::platform(&*backend.borrow());
+    runtime_shared::time::install_default_time_source(platform);
 
     let mut registry: Registry<LinuxBackend> = Registry::new();
     runtime_vocabulary::register_builtins(&mut registry);
@@ -219,7 +221,7 @@ pub fn start(
     // under a buffering test scheduler. Must run with NO backend
     // borrow held (drained tasks re-borrow); ENTERED because a
     // buffered task may do creation-side work.
-    world.enter(runtime_core::scheduling::drain_buffered_microtasks);
+    world.enter(runtime_shared::scheduling::drain_buffered_microtasks);
 
     // Single-root contract, matching the old-core mount (`find_root`
     // wants exactly one application root — id 1).
@@ -231,7 +233,7 @@ pub fn start(
              top-level node (got {n}) — wrap fragment/multi-root trees in a view"
         ),
     };
-    Backend::finish(&mut *backend.borrow_mut(), root);
+    caps::LifecycleOps::finish(&mut *backend.borrow_mut(), root);
 
     // Commit anything staged during mount before the first paint.
     world.flush();
@@ -279,7 +281,7 @@ pub fn schedule_flush() {
     if FLUSH_QUEUED.with(|q| q.replace(true)) {
         return;
     }
-    runtime_core::scheduling::schedule_microtask(|| {
+    runtime_shared::scheduling::schedule_microtask(|| {
         FLUSH_QUEUED.with(|q| q.set(false));
         flush_now();
     });
@@ -369,31 +371,121 @@ impl Host for LinuxBackend {
     type Node = LinuxNode;
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
-        <LinuxBackend as Backend>::insert(self, parent, child)
+        let Some(parent_layout) = self.layout_for_id.get(&parent.id).copied() else {
+            return;
+        };
+        let Some(child_layout) = self.layout_for_id.get(&child.id).copied() else {
+            return;
+        };
+        self.layout.add_child(parent_layout, child_layout);
+
+        // GTK4 attach pattern: `gtk::Fixed::put(child, x, y)` adds
+        // a child at absolute (x, y) within the container.
+        // Initial coordinates are (0, 0); `finish()` walks every
+        // registered widget and calls `fixed.move_()` once Taffy
+        // has computed the real frame.
+        //
+        // For ScrolledWindow parents we route to the inner Fixed
+        // installed by `create_scroll_view` — the outer
+        // ScrolledWindow takes exactly one child (the scrollable
+        // document), and that child is always our Fixed. Author-
+        // supplied children mount inside the Fixed, NOT as a
+        // sibling document replacing it.
+        //
+        // Leaf widgets (Button, Label, etc.) aren't containers —
+        // author code shouldn't try to mount children inside
+        // them; if it does, this call is a no-op rather than a
+        // panic.
+        if let Some(fixed) = parent.widget.downcast_ref::<gtk4::Fixed>() {
+            fixed.put(&child.widget, 0.0, 0.0);
+        } else if let Some(scrolled) = parent.widget.downcast_ref::<gtk4::ScrolledWindow>() {
+            if let Some(inner) = scrolled
+                .child()
+                .and_then(|c| c.downcast::<gtk4::Fixed>().ok())
+            {
+                inner.put(&child.widget, 0.0, 0.0);
+            }
+        }
     }
 
-    fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
-        <LinuxBackend as Backend>::insert_many(self, parent, children)
+    // `insert_many` is deliberately NOT implemented: `Host`'s default is
+    // the same N-x-`insert` loop the old `Backend` default ran, so the
+    // resulting child order is unchanged (deletion-baseline S2.2 —
+    // "byte-identical on `Host`, safe").
+
+    /// Explicit port of the old `Backend::insert_at` DEFAULT body: append,
+    /// ignoring the index. `Host` makes the method REQUIRED, so the default
+    /// that used to supply this body is gone — reproduced verbatim rather
+    /// than inherited (deletion-baseline S2.2). Never reached in practice:
+    /// [`supports_splice`](Self::supports_splice) is `false`, so reactive
+    /// regions rebuild wholesale under their own anchor and no positional
+    /// splice is ever emitted.
+    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, _index: usize) {
+        self.insert(parent, child)
     }
 
-    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
-        <LinuxBackend as Backend>::insert_at(self, parent, child, index)
-    }
-
-    fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
-        <LinuxBackend as Backend>::remove_child(self, parent, child)
+    /// Explicit port of the old `Backend::remove_child` DEFAULT body (a
+    /// no-op). `Host` makes it REQUIRED, so it is stated here rather than
+    /// inherited (deletion-baseline S2.2). Only meaningful for
+    /// splice-capable hosts; this one is anchored, so the framework never
+    /// calls it.
+    fn remove_child(&mut self, _parent: &Self::Node, _child: &Self::Node) {
+        // default: no-op
     }
 
     fn clear_children(&mut self, node: &Self::Node) {
-        <LinuxBackend as Backend>::clear_children(self, node)
+        // Walk + remove via the GTK4 `first_child`/`next_sibling`
+        // iteration. Works for any `gtk::Widget` that has children;
+        // the per-container removal API depends on the concrete
+        // type (Fixed::remove, Box::remove, ScrolledWindow::
+        // set_child(None)).
+        if let Some(fixed) = node.widget.downcast_ref::<gtk4::Fixed>() {
+            let mut child = fixed.first_child();
+            while let Some(c) = child {
+                let next = c.next_sibling();
+                fixed.remove(&c);
+                child = next;
+            }
+        } else if let Some(scrolled) = node.widget.downcast_ref::<gtk4::ScrolledWindow>() {
+            // The inner document is our own `gtk::Fixed`. Clear
+            // its children but keep the Fixed itself — author code
+            // can still mount fresh children after a clear, and a
+            // ScrolledWindow with no document widget would lose
+            // its scrollbar slot machinery.
+            if let Some(inner) = scrolled
+                .child()
+                .and_then(|c| c.downcast::<gtk4::Fixed>().ok())
+            {
+                let mut child = inner.first_child();
+                while let Some(c) = child {
+                    let next = c.next_sibling();
+                    inner.remove(&c);
+                    child = next;
+                }
+            }
+        }
     }
 
+    /// Explicit port of the old `Backend::create_reactive_anchor` DEFAULT
+    /// body (`create_view` with default a11y). `Host` makes it REQUIRED, so
+    /// it is stated here rather than inherited (deletion-baseline S2.2). A
+    /// plain container view is the right anchor for this backend: an
+    /// unstyled view draws nothing, so the anchor is invisible and
+    /// layout-neutral.
     fn create_anchor(&mut self) -> Self::Node {
-        <LinuxBackend as Backend>::create_reactive_anchor(self)
+        self.create_view(&AccessibilityProps::default())
     }
 
+    /// Explicit `false` — the port of the old
+    /// `Backend::supports_child_splice` DEFAULT this backend relied on.
+    /// `Host` makes it REQUIRED, so the value is stated here instead of
+    /// inherited (deletion-baseline S2.2). ANCHORED mode is what the frozen
+    /// artifacts in `tests/goldens/` recorded from the old core: flipping it
+    /// to `true` would move every reactive region out from under its anchor
+    /// and change the output wholesale. Pinned by a literal assertion in the
+    /// crate's parity suite.
     fn supports_splice(&self) -> bool {
-        <LinuxBackend as Backend>::supports_child_splice(self)
+        false
     }
 }
 
@@ -403,60 +495,83 @@ impl Host for LinuxBackend {
 
 impl caps::AppEnvOps for LinuxBackend {
     fn color_scheme(&self) -> ColorScheme {
-        <LinuxBackend as Backend>::color_scheme(self)
+        // GTK4 exposes the system dark-mode preference via
+        // `gtk::Settings::default().gtk_application_prefer_dark_theme`,
+        // but the canonical signal is `gtk::StyleContext::settings`'s
+        // `prefer_dark_theme` property combined with the system
+        // freedesktop color-scheme setting. For the scaffold we
+        // return Auto and let the framework's theme APIs decide.
+        ColorScheme::Auto
     }
 
     fn platform(&self) -> Platform {
-        <LinuxBackend as Backend>::platform(self)
-    }
-
-    fn url_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
-        <LinuxBackend as Backend>::url_opener(self)
-    }
-
-    fn fullscreen_setter(&self) -> Option<Rc<dyn Fn(bool)>> {
-        <LinuxBackend as Backend>::fullscreen_setter(self)
-    }
-
-    fn set_page_metadata(&mut self, meta: &PageMetadata) {
-        <LinuxBackend as Backend>::set_page_metadata(self, meta)
-    }
-
-    fn set_app_background(&mut self, color: &Tokenized<Color>) {
-        <LinuxBackend as Backend>::set_app_background(self, color)
-    }
-
-    fn set_scrollbar_theme(&mut self, thumb: &Tokenized<Color>, track: &Tokenized<Color>) {
-        <LinuxBackend as Backend>::set_scrollbar_theme(self, thumb, track)
-    }
-
-    fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
-        // Dispatch-site glue: the app-level key handler runs author code
-        // (`dispatch_key` routes here before the focused-input path).
-        let handler = handler.map(flushing_key);
-        <LinuxBackend as Backend>::set_app_key_handler(self, handler)
+        Platform::Custom("linux")
     }
 }
 
 impl caps::LifecycleOps for LinuxBackend {
     fn finish(&mut self, root: Self::Node) {
-        <LinuxBackend as Backend>::finish(self, root)
-    }
+        // First mount: attach the framework's root container to our
+        // root `gtk::Fixed`. Only the first time — subsequent
+        // `finish()` calls (re-render after data changes) keep the
+        // same root attached, just re-position.
+        if root.widget.parent().is_none() {
+            self.root_fixed.put(&root.widget, 0.0, 0.0);
+        }
 
-    fn run_layout(&mut self) {
-        <LinuxBackend as Backend>::run_layout(self)
-    }
+        // Compute against the host window's allocated size. Before
+        // the window is realized + presented, `width()`/`height()`
+        // return 0; bail in that case so Taffy doesn't compute
+        // against a degenerate viewport. The framework will call
+        // `finish()` again after the first GTK allocate pass once
+        // the window has real bounds.
+        let width = self.host_window.width() as f32;
+        let height = self.host_window.height() as f32;
+        if width <= 0.0 || height <= 0.0 {
+            return;
+        }
 
-    fn schedule_layout_pass() {
-        <LinuxBackend as Backend>::schedule_layout_pass()
-    }
+        let Some(root_layout) = self.layout_for_id.get(&root.id).copied() else {
+            return;
+        };
+        self.layout.compute(root_layout, width, height);
 
-    fn is_hydrating(&self) -> bool {
-        <LinuxBackend as Backend>::is_hydrating(self)
-    }
-
-    fn renders_lazy_chunks(&self) -> bool {
-        <LinuxBackend as Backend>::renders_lazy_chunks(self)
+        // Walk every registered widget and project its Taffy frame
+        // into GTK's positioning surface. `set_size_request`
+        // pins the widget's min size so GTK's own allocate pass
+        // honors the Taffy width × height. `fixed.move_()` repositions
+        // a child that's already attached to a Fixed parent.
+        //
+        // We split the walk into a collect-then-apply pass so the
+        // GTK calls don't alias the borrow on `self.widgets` /
+        // `self.layout_for_id`.
+        let mut updates: Vec<(gtk4::Widget, f32, f32, i32, i32)> =
+            Vec::with_capacity(self.widgets.len());
+        for (id, widget) in &self.widgets {
+            let Some(layout) = self.layout_for_id.get(id).copied() else {
+                continue;
+            };
+            let frame = self.layout.frame_of(layout);
+            updates.push((
+                widget.clone(),
+                frame.x,
+                frame.y,
+                frame.width.round() as i32,
+                frame.height.round() as i32,
+            ));
+        }
+        for (widget, x, y, w, h) in updates {
+            widget.set_size_request(w, h);
+            if let Some(parent) = widget.parent() {
+                if let Some(fixed) = parent.downcast_ref::<gtk4::Fixed>() {
+                    fixed.move_(&widget, x as f64, y as f64);
+                }
+                // Non-Fixed parents (Buttons accepting a Label
+                // child, ScrolledWindow holding our inner Fixed)
+                // don't have a coordinate concept — leave their
+                // positioning to GTK's own allocate pass.
+            }
+        }
     }
 }
 
@@ -465,77 +580,40 @@ impl caps::LifecycleOps for LinuxBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::ViewOps for LinuxBackend {
-    fn create_view(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-        <LinuxBackend as Backend>::create_view(self, a11y)
-    }
-
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
-        <LinuxBackend as Backend>::make_view_handle(self, node)
-    }
-}
-
-impl caps::InputOps for LinuxBackend {
-    fn install_touch_handler(&mut self, node: &Self::Node, handler: TouchHandler) {
-        // Dispatch-site glue (module docs): flush after author code.
-        let handler: TouchHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                let response = f(ev);
-                schedule_flush();
-                response
-            })
-        };
-        <LinuxBackend as Backend>::install_touch_handler(self, node, handler)
-    }
-
-    fn claim_touch(&mut self, node: &Self::Node, touch_id: TouchId) {
-        <LinuxBackend as Backend>::claim_touch(self, node, touch_id)
-    }
-
-    fn install_wheel_handler(&mut self, node: &Self::Node, handler: WheelHandler) {
-        let handler: WheelHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                let response = f(ev);
-                schedule_flush();
-                response
-            })
-        };
-        <LinuxBackend as Backend>::install_wheel_handler(self, node, handler)
-    }
-
-    fn install_hover_handler(&mut self, node: &Self::Node, handler: HoverHandler) {
-        <LinuxBackend as Backend>::install_hover_handler(self, node, flushing1(handler))
-    }
-
-    fn mark_preserves_focus(&mut self, node: &Self::Node) {
-        <LinuxBackend as Backend>::mark_preserves_focus(self, node)
-    }
-
-    fn install_file_drop_handler(&mut self, node: &Self::Node, handler: FileDropHandler) {
-        let handler: FileDropHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                let response = f(ev);
-                schedule_flush();
-                response
-            })
-        };
-        <LinuxBackend as Backend>::install_file_drop_handler(self, node, handler)
+    fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
+        // gtk::Fixed — absolute-positioning container that takes
+        // its children's (x, y) from our own `finish()` layout
+        // pass. We deliberately don't use `gtk::Box` here because
+        // Box's auto-stacking fights Taffy's frame assignments;
+        // every container in the framework's flex tree needs to
+        // be Fixed so finish() can write the computed position
+        // directly via `fixed.move_()`.
+        let widget = gtk4::Fixed::new();
+        self.wrap(widget.upcast::<gtk4::Widget>())
     }
 }
+
+impl caps::InputOps for LinuxBackend {}
 
 impl caps::PressableOps for LinuxBackend {
-    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> Self::Node {
+    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Self::Node {
         // Dispatch-site glue: the wrapped closure is what the old
         // `create_pressable` body moves into the `GestureClick`
         // `connect_released` signal closure — every GTK press
         // dispatch gets the flush for free.
-        <LinuxBackend as Backend>::create_pressable(self, flushing0(on_click), a11y)
-    }
-
-    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_core::PressableHandle {
-        <LinuxBackend as Backend>::make_pressable_handle(self, node)
+        let on_click = flushing0(on_click);
+        // Same container shape as `create_view` — a `gtk::Fixed`
+        // so children land at Taffy-computed coordinates — with a
+        // `GestureClick` controller mounted on top so the whole
+        // surface reports a press. The framework's Pressable is
+        // semantically a "transparent View that fires a callback"
+        // and that's exactly what this gives us.
+        let widget = gtk4::Fixed::new();
+        let gesture = gtk4::GestureClick::new();
+        let fire = on_click.clone();
+        gesture.connect_released(move |_, _, _, _| (fire)());
+        widget.add_controller(gesture);
+        self.wrap(widget.upcast::<gtk4::Widget>())
     }
 }
 
@@ -544,66 +622,17 @@ impl caps::PressableOps for LinuxBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::TextOps for LinuxBackend {
-    fn create_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
-        <LinuxBackend as Backend>::create_text(self, content, a11y)
-    }
-
-    fn create_styled_text(&mut self, runs: &[TextRun], a11y: &AccessibilityProps) -> Self::Node {
-        <LinuxBackend as Backend>::create_styled_text(self, runs, a11y)
-    }
-
-    fn update_styled_text(&mut self, node: &Self::Node, runs: &[TextRun]) {
-        <LinuxBackend as Backend>::update_styled_text(self, node, runs)
+    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
+        let label = gtk4::Label::new(Some(content));
+        label.set_wrap(true);
+        label.set_xalign(0.0);
+        self.wrap(label.upcast::<gtk4::Widget>())
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
-        <LinuxBackend as Backend>::update_text(self, node, content)
-    }
-
-    fn create_text_with_id(
-        &mut self,
-        content: &str,
-        a11y: &AccessibilityProps,
-    ) -> Option<(Self::Node, u32)> {
-        <LinuxBackend as Backend>::create_text_with_id(self, content, a11y)
-    }
-
-    fn update_text_by_id(&mut self, id: u32, content: String) {
-        <LinuxBackend as Backend>::update_text_by_id(self, id, content)
-    }
-
-    fn release_text_id(&mut self, id: u32) {
-        <LinuxBackend as Backend>::release_text_id(self, id)
-    }
-
-    fn supports_js_text_bindings(&self) -> bool {
-        <LinuxBackend as Backend>::supports_js_text_bindings(self)
-    }
-
-    fn register_reactive_text_binding(
-        &mut self,
-        text_id: u32,
-        signal_ids: &[u64],
-        template_parts: &[&str],
-        initial_values: &[&str],
-        stringifiers: &[Rc<dyn Fn() -> String>],
-    ) {
-        <LinuxBackend as Backend>::register_reactive_text_binding(
-            self,
-            text_id,
-            signal_ids,
-            template_parts,
-            initial_values,
-            stringifiers,
-        )
-    }
-
-    fn release_reactive_text_binding(&mut self, text_id: u32) {
-        <LinuxBackend as Backend>::release_reactive_text_binding(self, text_id)
-    }
-
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
-        <LinuxBackend as Backend>::make_text_handle(self, node)
+        if let Some(label) = node.widget.downcast_ref::<gtk4::Label>() {
+            label.set_text(content);
+        }
     }
 }
 
@@ -612,9 +641,9 @@ impl caps::ButtonOps for LinuxBackend {
         &mut self,
         label: &str,
         on_click: &Action,
-        leading_icon: Option<&primitives::icon::IconData>,
-        trailing_icon: Option<&primitives::icon::IconData>,
-        a11y: &AccessibilityProps,
+        _leading_icon: Option<&primitives::icon::IconData>,
+        _trailing_icon: Option<&primitives::icon::IconData>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: wrap the Action's runtime evaluator
         // (the closure the old body hands to `connect_clicked`);
@@ -626,22 +655,17 @@ impl caps::ButtonOps for LinuxBackend {
             output: on_click.output,
             fire: flushing0(on_click.fire.clone()),
         };
-        <LinuxBackend as Backend>::create_button(
-            self,
-            label,
-            &on_click,
-            leading_icon,
-            trailing_icon,
-            a11y,
-        )
+        let on_click = &on_click;
+        let button = gtk4::Button::with_label(label);
+        let fire = on_click.fire.clone();
+        button.connect_clicked(move |_| (fire)());
+        self.wrap(button.upcast::<gtk4::Widget>())
     }
 
     fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-        <LinuxBackend as Backend>::update_button_label(self, node, label)
-    }
-
-    fn make_button_handle(&self, node: &Self::Node) -> runtime_core::ButtonHandle {
-        <LinuxBackend as Backend>::make_button_handle(self, node)
+        if let Some(btn) = node.widget.downcast_ref::<gtk4::Button>() {
+            btn.set_label(label);
+        }
     }
 }
 
@@ -650,110 +674,28 @@ impl caps::ButtonOps for LinuxBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::ImageOps for LinuxBackend {
-    fn create_image(&mut self, src: &str, alt: Option<&str>, a11y: &AccessibilityProps) -> Self::Node {
-        <LinuxBackend as Backend>::create_image(self, src, alt, a11y)
-    }
-
-    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
-        <LinuxBackend as Backend>::update_image_src(self, node, src)
-    }
-
-    fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
-        <LinuxBackend as Backend>::update_image_alt(self, node, alt)
-    }
-
-    fn install_image_load_handler(&mut self, node: &Self::Node, handler: ImageLoadHandler) {
-        let handler: ImageLoadHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                f(ev);
-                schedule_flush();
-            })
-        };
-        <LinuxBackend as Backend>::install_image_load_handler(self, node, handler)
-    }
-
-    fn install_image_error_handler(&mut self, node: &Self::Node, handler: ImageErrorHandler) {
-        <LinuxBackend as Backend>::install_image_error_handler(self, node, flushing0(handler))
-    }
-
-    fn make_image_handle(&self, node: &Self::Node) -> primitives::image::ImageHandle {
-        <LinuxBackend as Backend>::make_image_handle(self, node)
+    fn create_image(
+        &mut self,
+        _src: &str,
+        _alt: Option<&str>,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.placeholder("Image not yet implemented on Linux backend")
     }
 }
 
 impl caps::IconOps for LinuxBackend {
     fn create_icon(
         &mut self,
-        data: &primitives::icon::IconData,
-        color: Option<&Color>,
-        a11y: &AccessibilityProps,
+        _data: &runtime_shared::primitives::icon::IconData,
+        _color: Option<&Color>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <LinuxBackend as Backend>::create_icon(self, data, color, a11y)
-    }
-
-    fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
-        <LinuxBackend as Backend>::update_icon_color(self, node, color)
-    }
-
-    fn update_icon_data(&mut self, node: &Self::Node, data: &primitives::icon::IconData) {
-        <LinuxBackend as Backend>::update_icon_data(self, node, data)
-    }
-
-    fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
-        <LinuxBackend as Backend>::update_icon_stroke(self, node, progress)
-    }
-
-    fn animate_icon_stroke(
-        &mut self,
-        node: &Self::Node,
-        from: f32,
-        to: f32,
-        duration_ms: u32,
-        easing: Easing,
-        infinite: bool,
-        autoreverses: bool,
-    ) {
-        <LinuxBackend as Backend>::animate_icon_stroke(
-            self,
-            node,
-            from,
-            to,
-            duration_ms,
-            easing,
-            infinite,
-            autoreverses,
-        )
-    }
-
-    fn make_icon_handle(&self, node: &Self::Node) -> primitives::icon::IconHandle {
-        <LinuxBackend as Backend>::make_icon_handle(self, node)
+        self.placeholder("Icon not yet implemented on Linux backend")
     }
 }
 
-impl caps::LinkOps for LinuxBackend {
-    fn create_link(
-        &mut self,
-        config: primitives::link::LinkConfig,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Dispatch-site glue: link activation dispatches navigation
-        // (stages nav-queue tick signals on the new core). The wrapped
-        // closure lands in the node's on_click slot, so nav-link clicks
-        // flush exactly like pressables.
-        let mut config = config;
-        config.on_activate = flushing0(config.on_activate.clone());
-        <LinuxBackend as Backend>::create_link(self, config, a11y)
-    }
-
-    fn update_link_url(&mut self, node: &Self::Node, url: &str) {
-        <LinuxBackend as Backend>::update_link_url(self, node, url)
-    }
-
-    fn make_link_handle(&self, node: &Self::Node) -> primitives::link::LinkHandle {
-        <LinuxBackend as Backend>::make_link_handle(self, node)
-    }
-}
+impl caps::LinkOps for LinuxBackend {}
 
 // ---------------------------------------------------------------------------
 // Form widgets
@@ -763,84 +705,67 @@ impl caps::TextInputOps for LinuxBackend {
     fn create_text_input(
         &mut self,
         initial_value: &str,
-        placeholder: Option<&str>,
+        _placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<primitives::key::KeyDownHandler>,
         on_blur: Option<primitives::text_input::BlurHandler>,
         secure: bool,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Wrapped uniformly, though the scaffold does not yet wire
         // on_change/on_key_down/on_blur to the native editor (see
         // lib.rs) — when it does, the flush comes with it for free.
-        <LinuxBackend as Backend>::create_text_input(
-            self,
-            initial_value,
-            placeholder,
-            flushing1(on_change),
-            on_key_down.map(flushing_key),
-            on_blur.map(|f| -> primitives::text_input::BlurHandler {
+        let _on_change = flushing1(on_change);
+        let _on_key_down = on_key_down.map(flushing_key);
+        let _on_blur = on_blur.map(|f| -> primitives::text_input::BlurHandler {
                 Rc::new(move || {
                     let outcome = f();
                     schedule_flush();
                     outcome
                 })
-            }),
-            secure,
-            a11y,
-        )
-    }
-
-    fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
-        <LinuxBackend as Backend>::update_text_input_value(self, node, value)
+            });
+        // gtk::Entry is the canonical single-line text editor. Wire
+        // initial value here; on_change wiring lands in the follow-up
+        // PR alongside placeholder string + key handler routing.
+        let entry = gtk4::Entry::new();
+        entry.set_text(initial_value);
+        // Password masking: GTK's Entry hides typed characters (shows
+        // the invisible-char bullet) when visibility is off.
+        if secure {
+            entry.set_visibility(false);
+        }
+        self.wrap(entry.upcast::<gtk4::Widget>())
     }
 
     fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
-        <LinuxBackend as Backend>::update_text_input_secure(self, node, secure)
-    }
-
-    fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
-        <LinuxBackend as Backend>::set_text_input_focus_handler(self, node, flushing1(handler))
-    }
-
-    fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
-        <LinuxBackend as Backend>::update_text_input_placeholder(self, node, placeholder)
+        // GTK masks by hiding the entry's characters; `visibility = !secure`
+        // toggles it in place on the same Entry.
+        if let Some(entry) = node.widget.downcast_ref::<gtk4::Entry>() {
+            entry.set_visibility(!secure);
+        }
     }
 
     fn create_text_area(
         &mut self,
         initial_value: &str,
-        placeholder: Option<&str>,
-        wrap: bool,
-        min_rows: Option<u32>,
-        max_rows: Option<u32>,
+        _placeholder: Option<&str>,
+        _wrap: bool,
+        _min_rows: Option<u32>,
+        _max_rows: Option<u32>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<primitives::key::KeyDownHandler>,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <LinuxBackend as Backend>::create_text_area(
-            self,
-            initial_value,
-            placeholder,
-            wrap,
-            min_rows,
-            max_rows,
-            flushing1(on_change),
-            on_key_down.map(flushing_key),
-            a11y,
-        )
-    }
-
-    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
-        <LinuxBackend as Backend>::update_text_area_value(self, node, value)
-    }
-
-    fn make_text_input_handle(&self, node: &Self::Node) -> primitives::text_input::TextInputHandle {
-        <LinuxBackend as Backend>::make_text_input_handle(self, node)
-    }
-
-    fn make_text_area_handle(&self, node: &Self::Node) -> primitives::text_area::TextAreaHandle {
-        <LinuxBackend as Backend>::make_text_area_handle(self, node)
+        let _on_change = flushing1(on_change);
+        let _on_key_down = on_key_down.map(flushing_key);
+        // gtk::TextView is the multi-line editor. Wrap in a
+        // gtk::ScrolledWindow so long content scrolls naturally — a
+        // bare TextView has no scrollbar.
+        let view = gtk4::TextView::new();
+        view.buffer().set_text(initial_value);
+        let scrolled = gtk4::ScrolledWindow::new();
+        scrolled.set_child(Some(&view));
+        self.wrap(scrolled.upcast::<gtk4::Widget>())
     }
 }
 
@@ -849,20 +774,17 @@ impl caps::ToggleOps for LinuxBackend {
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // The old body hands on_change to the Switch's
         // `connect_state_notify` closure — the wrap covers every
         // GTK state flip.
-        <LinuxBackend as Backend>::create_toggle(self, initial_value, flushing1(on_change), a11y)
-    }
-
-    fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
-        <LinuxBackend as Backend>::update_toggle_value(self, node, value)
-    }
-
-    fn make_toggle_handle(&self, node: &Self::Node) -> primitives::toggle::ToggleHandle {
-        <LinuxBackend as Backend>::make_toggle_handle(self, node)
+        let on_change = flushing1(on_change);
+        let switch = gtk4::Switch::new();
+        switch.set_active(initial_value);
+        let fire = on_change.clone();
+        switch.connect_state_notify(move |s| (fire)(s.is_active()));
+        self.wrap(switch.upcast::<gtk4::Widget>())
     }
 }
 
@@ -872,53 +794,37 @@ impl caps::SliderOps for LinuxBackend {
         initial_value: f32,
         min: f32,
         max: f32,
-        step: Option<f32>,
+        _step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <LinuxBackend as Backend>::create_slider(
-            self,
-            initial_value,
-            min,
-            max,
-            step,
-            flushing1(on_change),
-            a11y,
-        )
-    }
-
-    fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
-        <LinuxBackend as Backend>::update_slider_value(self, node, value)
-    }
-
-    fn make_slider_handle(&self, node: &Self::Node) -> primitives::slider::SliderHandle {
-        <LinuxBackend as Backend>::make_slider_handle(self, node)
+        let on_change = flushing1(on_change);
+        let scale = gtk4::Scale::with_range(
+            gtk4::Orientation::Horizontal,
+            min as f64,
+            max as f64,
+            // step_increment — GTK's keyboard step. Drag returns
+            // continuous values regardless.
+            1.0,
+        );
+        scale.set_value(initial_value as f64);
+        let fire = on_change.clone();
+        scale.connect_value_changed(move |s| (fire)(s.value() as f32));
+        self.wrap(scale.upcast::<gtk4::Widget>())
     }
 }
 
 impl caps::ActivityIndicatorOps for LinuxBackend {
     fn create_activity_indicator(
         &mut self,
-        size: primitives::activity_indicator::ActivityIndicatorSize,
-        color: Option<&Color>,
-        a11y: &AccessibilityProps,
+        _size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
+        _color: Option<&Color>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <LinuxBackend as Backend>::create_activity_indicator(self, size, color, a11y)
-    }
-
-    fn update_activity_indicator_size(
-        &mut self,
-        node: &Self::Node,
-        size: primitives::activity_indicator::ActivityIndicatorSize,
-    ) {
-        <LinuxBackend as Backend>::update_activity_indicator_size(self, node, size)
-    }
-
-    fn make_activity_indicator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> primitives::activity_indicator::ActivityIndicatorHandle {
-        <LinuxBackend as Backend>::make_activity_indicator_handle(self, node)
+        // gtk::Spinner is GTK's spinning loading indicator.
+        let spinner = gtk4::Spinner::new();
+        spinner.start();
+        self.wrap(spinner.upcast::<gtk4::Widget>())
     }
 }
 
@@ -931,7 +837,7 @@ impl caps::ScrollOps for LinuxBackend {
         &mut self,
         horizontal: bool,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: the old body attaches on_scroll to
         // both GTK Adjustments' `value-changed` signals; the flush
@@ -942,39 +848,70 @@ impl caps::ScrollOps for LinuxBackend {
                 schedule_flush();
             })
         });
-        <LinuxBackend as Backend>::create_scroll_view(self, horizontal, on_scroll, a11y)
-    }
+        let scrolled = gtk4::ScrolledWindow::new();
+        // Disable the axis the author didn't ask for. GTK's default
+        // is "show scrollbars on both axes when needed".
+        if horizontal {
+            scrolled.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Never);
+        } else {
+            scrolled.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+        }
+        // Inner document = `gtk::Fixed` so children mount via the
+        // standard Fixed `put()`/`move_()` path. ScrolledWindow's
+        // `set_child` takes exactly one widget; that one widget is
+        // our document container. Author-supplied children attach
+        // to the framework's logical ScrollView, which the host's
+        // `insert` redirects to this inner Fixed via the
+        // downcast-to-ScrolledWindow branch.
+        let inner = gtk4::Fixed::new();
+        scrolled.set_child(Some(&inner));
 
-    fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
-        <LinuxBackend as Backend>::node_scroll(self, node)
-    }
+        // Wire `on_scroll` via the ScrolledWindow's adjustments.
+        // GTK4 exposes one `gtk::Adjustment` per axis (`hadjustment` /
+        // `vadjustment`); the `value-changed` signal fires whenever
+        // the adjustment's `value` (the scroll offset, in widget
+        // coordinates) changes \u{2014} touchpad scroll, scroll bar
+        // drag, programmatic `set_value`, all of them.
+        //
+        // We connect to BOTH axes regardless of `horizontal` so the
+        // callback observes the disabled axis too (it stays at 0
+        // there, matching every other backend). The closure is
+        // cloned per signal since GTK's connect API takes `Fn` by
+        // ownership and we attach twice.
+        if let Some(cb) = on_scroll {
+            use gtk4::prelude::*;
+            let cb_for_h = cb.clone();
+            let scrolled_for_h = scrolled.clone();
+            scrolled
+                .hadjustment()
+                .connect_value_changed(move |adj| {
+                    let x = adj.value() as f32;
+                    let y = scrolled_for_h.vadjustment().value() as f32;
+                    cb_for_h(x, y);
+                });
+            let scrolled_for_v = scrolled.clone();
+            scrolled
+                .vadjustment()
+                .connect_value_changed(move |adj| {
+                    let x = scrolled_for_v.hadjustment().value() as f32;
+                    let y = adj.value() as f32;
+                    cb(x, y);
+                });
+        }
 
-    fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
-        <LinuxBackend as Backend>::set_node_scroll(self, node, x, y)
-    }
-
-    fn make_scroll_view_handle(&self, node: &Self::Node) -> primitives::scroll_view::ScrollViewHandle {
-        <LinuxBackend as Backend>::make_scroll_view_handle(self, node)
+        self.wrap(scrolled.upcast::<gtk4::Widget>())
     }
 }
 
-impl caps::SafeAreaOps for LinuxBackend {
-    fn apply_safe_area_padding(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-        <LinuxBackend as Backend>::apply_safe_area_padding(self, node, sides)
-    }
-
-    fn apply_scroll_view_safe_area_inset(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-        <LinuxBackend as Backend>::apply_scroll_view_safe_area_inset(self, node, sides)
-    }
-}
+impl caps::SafeAreaOps for LinuxBackend {}
 
 impl caps::VirtualizerOps for LinuxBackend {
     fn create_virtualizer(
         &mut self,
         callbacks: VirtualizerCallbacks<Self::Node>,
-        overscan: f32,
-        layout: primitives::virtualizer::VirtualLayout,
-        a11y: &AccessibilityProps,
+        _overscan: f32,
+        _layout: primitives::virtualizer::VirtualLayout,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue + world entry: mount/release run author
         // render closures and scope cleanups; mount_item REALIZES the
@@ -1018,19 +955,8 @@ impl caps::VirtualizerOps for LinuxBackend {
                 })
             },
         };
-        <LinuxBackend as Backend>::create_virtualizer(self, callbacks, overscan, layout, a11y)
-    }
-
-    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
-        <LinuxBackend as Backend>::virtualizer_data_changed(self, node)
-    }
-
-    fn release_virtualizer(&mut self, node: &Self::Node) {
-        <LinuxBackend as Backend>::release_virtualizer(self, node)
-    }
-
-    fn make_virtualizer_handle(&self, node: &Self::Node) -> primitives::virtualizer::VirtualizerHandle {
-        <LinuxBackend as Backend>::make_virtualizer_handle(self, node)
+        let _callbacks = callbacks;
+        self.placeholder("Virtualizer not yet implemented on Linux backend")
     }
 }
 
@@ -1044,7 +970,7 @@ impl caps::GraphicsOps for LinuxBackend {
         on_ready: primitives::graphics::OnReady,
         on_resize: primitives::graphics::OnResize,
         on_lost: primitives::graphics::OnLost,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: surface lifecycle callbacks run author
         // code (this scaffold never fires them — graphics is a
@@ -1071,113 +997,30 @@ impl caps::GraphicsOps for LinuxBackend {
                 schedule_flush();
             })
         };
-        <LinuxBackend as Backend>::create_graphics(self, on_ready, on_resize, on_lost, a11y)
-    }
-
-    fn release_graphics(&mut self, node: &Self::Node) {
-        <LinuxBackend as Backend>::release_graphics(self, node)
-    }
-
-    fn make_graphics_handle(&self, node: &Self::Node) -> primitives::graphics::GraphicsHandle {
-        <LinuxBackend as Backend>::make_graphics_handle(self, node)
+        let _on_ready = on_ready;
+        let _on_resize = on_resize;
+        let _on_lost = on_lost;
+        self.placeholder("Graphics not yet implemented on Linux backend")
     }
 }
 
 impl caps::PortalOps for LinuxBackend {
     fn create_portal(
         &mut self,
-        target: primitives::portal::PortalTarget,
+        _target: primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
-        trap_focus: bool,
-        a11y: &AccessibilityProps,
+        _trap_focus: bool,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let on_dismiss = on_dismiss.map(flushing0);
-        <LinuxBackend as Backend>::create_portal(self, target, on_dismiss, trap_focus, a11y)
-    }
-
-    fn release_portal(&mut self, node: &Self::Node) {
-        <LinuxBackend as Backend>::release_portal(self, node)
-    }
-
-    fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
-        <LinuxBackend as Backend>::set_portal_hidden(self, node, hidden)
-    }
-
-    fn make_portal_handle(&self, node: &Self::Node) -> primitives::portal::PortalHandle {
-        <LinuxBackend as Backend>::make_portal_handle(self, node)
+        let _on_dismiss = on_dismiss;
+        self.placeholder("Portal not yet implemented on Linux backend")
     }
 }
 
-impl caps::PresenceOps for LinuxBackend {
-    fn create_presence_placeholder(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-        <LinuxBackend as Backend>::create_presence_placeholder(self, a11y)
-    }
+impl caps::PresenceOps for LinuxBackend {}
 
-    fn apply_presence(
-        &mut self,
-        node: &Self::Node,
-        state: primitives::presence::PresenceState,
-        transition: Option<(u32, Easing)>,
-    ) {
-        <LinuxBackend as Backend>::apply_presence(self, node, state, transition)
-    }
-
-    fn make_presence_handle(&self, node: &Self::Node) -> primitives::presence::PresenceHandle {
-        <LinuxBackend as Backend>::make_presence_handle(self, node)
-    }
-}
-
-impl caps::NavigatorOps for LinuxBackend {
-    fn create_navigator(
-        &mut self,
-        type_id: TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn Any>,
-        host: primitives::navigator::NavigatorHost<Self::Node>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // NOT wrapped: NavigatorHost's callbacks belong to the OLD-core
-        // navigator path; the vocabulary navigator handlers own screens
-        // on the new core and their dispatch is handler-safe (queue +
-        // tick signal committed by a driver effect on flush). Author
-        // navigation stages via handlers already wrapped above.
-        <LinuxBackend as Backend>::create_navigator(
-            self,
-            type_id,
-            type_name,
-            presentation,
-            host,
-            a11y,
-        )
-    }
-
-    fn release_navigator(&mut self, node: &Self::Node) {
-        <LinuxBackend as Backend>::release_navigator(self, node)
-    }
-
-    fn apply_navigator_slot_style(
-        &mut self,
-        node: &Self::Node,
-        slot: &'static str,
-        style: &Rc<StyleRules>,
-    ) {
-        <LinuxBackend as Backend>::apply_navigator_slot_style(self, node, slot, style)
-    }
-
-    fn make_navigator_handle(&self, node: &Self::Node) -> primitives::navigator::NavigatorHandle {
-        <LinuxBackend as Backend>::make_navigator_handle(self, node)
-    }
-
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn Any>,
-    ) {
-        <LinuxBackend as Backend>::navigator_attach_initial(self, navigator, screen, scope_id, options)
-    }
-}
+impl caps::NavigatorOps for LinuxBackend {}
 
 // ---------------------------------------------------------------------------
 // External + document
@@ -1186,379 +1029,53 @@ impl caps::NavigatorOps for LinuxBackend {
 impl caps::ExternalOps for LinuxBackend {
     fn create_external(
         &mut self,
-        type_id: TypeId,
+        _type_id: std::any::TypeId,
         type_name: &'static str,
-        payload: &Rc<dyn Any>,
-        a11y: &AccessibilityProps,
+        _payload: &Rc<dyn std::any::Any>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <LinuxBackend as Backend>::create_external(self, type_id, type_name, payload, a11y)
-    }
-
-    fn release_external(&mut self, node: &Self::Node) {
-        <LinuxBackend as Backend>::release_external(self, node)
-    }
-
-    fn missing_primitive_placeholder(&mut self, label: &'static str) -> Self::Node {
-        <LinuxBackend as Backend>::missing_primitive_placeholder(self, label)
-    }
-}
-
-impl caps::DocumentOps for LinuxBackend {
-    fn create_element(&mut self, tag: &str) -> Self::Node {
-        <LinuxBackend as Backend>::create_element(self, tag)
-    }
-
-    fn attach_html_id(&self, node: &Self::Node, id: &str) {
-        <LinuxBackend as Backend>::attach_html_id(self, node, id)
-    }
-
-    fn attach_html_class(&self, node: &Self::Node, class: &str) {
-        <LinuxBackend as Backend>::attach_html_class(self, node, class)
-    }
-
-    fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
-        <LinuxBackend as Backend>::attach_html_style(self, node, prop, value)
-    }
-
-    fn register_raw_css(&mut self, css: &str) {
-        <LinuxBackend as Backend>::register_raw_css(self, css)
+        // Third-party primitives register a scene-`Registry` handler and
+        // never reach this method — `create_external` only serves
+        // `missing_primitive_placeholder`, so a labeled placeholder is the
+        // whole contract. (The old core routed here through a backend-side
+        // `ExternalRegistry`, which died with `Element::External`; the
+        // placeholder shape is unchanged.)
+        self.placeholder(&format!(
+            "External \"{type_name}\" not registered on Linux backend"
+        ))
     }
 }
+
+impl caps::DocumentOps for LinuxBackend {}
 
 // ---------------------------------------------------------------------------
 // Style + assets
 // ---------------------------------------------------------------------------
 
 impl caps::StyleOps for LinuxBackend {
-    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
-        <LinuxBackend as Backend>::apply_style(self, node, style)
-    }
-
-    fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
-        <LinuxBackend as Backend>::mint_style_class(self, style)
-    }
-
-    fn mint_class_for_app(&mut self, app: &StyleApplication) -> Option<String> {
-        <LinuxBackend as Backend>::mint_class_for_app(self, app)
-    }
-
-    fn apply_styled_states(
-        &mut self,
-        node: &Self::Node,
-        base: &Rc<StyleRules>,
-        overlays: &[(StateBits, Rc<StyleRules>)],
-    ) {
-        <LinuxBackend as Backend>::apply_styled_states(self, node, base, overlays)
-    }
-
-    fn apply_styled_variants(
-        &mut self,
-        node: &Self::Node,
-        base: &Rc<StyleRules>,
-        state_overlays: &[(StateBits, Rc<StyleRules>)],
-        breakpoint_overlays: &[(Breakpoint, Rc<StyleRules>)],
-        container_overlays: &[(f32, Rc<StyleRules>)],
-    ) {
-        <LinuxBackend as Backend>::apply_styled_variants(
-            self,
-            node,
-            base,
-            state_overlays,
-            breakpoint_overlays,
-            container_overlays,
-        )
-    }
-
-    fn mark_container(&mut self, node: &Self::Node) {
-        <LinuxBackend as Backend>::mark_container(self, node)
-    }
-
-    fn handles_states_natively(&self) -> bool {
-        <LinuxBackend as Backend>::handles_states_natively(self)
-    }
-
-    fn token_updates_propagate_via_cascade(&self) -> bool {
-        <LinuxBackend as Backend>::token_updates_propagate_via_cascade(self)
-    }
-
-    fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        <LinuxBackend as Backend>::register_stylesheet(self, rules)
-    }
-
-    fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        <LinuxBackend as Backend>::unregister_stylesheet(self, rules)
-    }
-
-    fn install_tokens(&mut self, tokens: &[TokenEntry]) {
-        <LinuxBackend as Backend>::install_tokens(self, tokens)
-    }
-
-    fn update_tokens(&mut self, tokens: &[TokenEntry]) {
-        <LinuxBackend as Backend>::update_tokens(self, tokens)
-    }
-
-    fn on_node_unstyled(&mut self, node: &Self::Node) {
-        <LinuxBackend as Backend>::on_node_unstyled(self, node)
-    }
-
-    fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
-        // Dispatch-site glue: state flips can stage writes when the
-        // style path routes states through signals.
-        let setter: Rc<dyn Fn(StateBits, bool)> = {
-            let f = setter;
-            Rc::new(move |bits, on| {
-                f(bits, on);
-                schedule_flush();
-            })
-        };
-        <LinuxBackend as Backend>::attach_states(self, node, setter)
-    }
-
-    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
-        <LinuxBackend as Backend>::set_disabled(self, node, disabled)
-    }
-
-    fn supports_preminted_styles(&self) -> bool {
-        <LinuxBackend as Backend>::supports_preminted_styles(self)
-    }
-
-    fn apply_default_text_font(&mut self, font: Option<&FontFamily>) {
-        <LinuxBackend as Backend>::apply_default_text_font(self, font)
-    }
-
-    fn supports_js_class_bindings(&self) -> bool {
-        <LinuxBackend as Backend>::supports_js_class_bindings(self)
-    }
-
-    fn register_reactive_class_binding(
-        &mut self,
-        node: &Self::Node,
-        signal_id: u64,
-        values: &[u32],
-        classes: &[&str],
-        value_reader: Rc<dyn Fn() -> u32>,
-    ) -> u32 {
-        <LinuxBackend as Backend>::register_reactive_class_binding(
-            self,
-            node,
-            signal_id,
-            values,
-            classes,
-            value_reader,
-        )
-    }
-
-    fn release_reactive_class_binding(&mut self, binding_id: u32) {
-        <LinuxBackend as Backend>::release_reactive_class_binding(self, binding_id)
+    fn apply_style(&mut self, _node: &Self::Node, _style: &Rc<StyleRules>) {
+        // No-op until we wire Taffy-driven size_allocate in finish().
+        // Author code calling apply_style today shouldn't crash; the
+        // style is silently dropped.
     }
 }
 
-impl caps::AssetOps for LinuxBackend {
-    fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
-        <LinuxBackend as Backend>::register_asset(self, id, kind, source)
-    }
-
-    fn unregister_asset(&mut self, id: AssetId, kind: AssetTag) {
-        <LinuxBackend as Backend>::unregister_asset(self, id, kind)
-    }
-
-    fn register_typeface(
-        &mut self,
-        id: TypefaceId,
-        family_name: &str,
-        faces: &[TypefaceFace],
-        fallback: SystemFallback,
-    ) {
-        <LinuxBackend as Backend>::register_typeface(self, id, family_name, faces, fallback)
-    }
-
-    fn unregister_typeface(&mut self, id: TypefaceId) {
-        <LinuxBackend as Backend>::unregister_typeface(self, id)
-    }
-}
+impl caps::AssetOps for LinuxBackend {}
 
 // ---------------------------------------------------------------------------
 // A11y + animation + introspection
 // ---------------------------------------------------------------------------
 
-impl caps::A11yOps for LinuxBackend {
-    fn update_accessibility(
-        &mut self,
-        node: &Self::Node,
-        a11y: &AccessibilityProps,
-        inferred_role: Option<Role>,
-    ) {
-        <LinuxBackend as Backend>::update_accessibility(self, node, a11y, inferred_role)
-    }
+impl caps::A11yOps for LinuxBackend {}
 
-    fn announce_for_accessibility(&mut self, msg: &str, priority: LiveRegionPriority) {
-        <LinuxBackend as Backend>::announce_for_accessibility(self, msg, priority)
-    }
+impl caps::AnimationOps for LinuxBackend {}
 
-    fn dump_accessibility_tree(&self) -> Option<AccessibilityTree> {
-        <LinuxBackend as Backend>::dump_accessibility_tree(self)
-    }
-}
-
-impl caps::AnimationOps for LinuxBackend {
-    fn set_animated_f32(&mut self, node: &Self::Node, prop: AnimProp, value: f32) {
-        <LinuxBackend as Backend>::set_animated_f32(self, node, prop, value)
-    }
-
-    fn set_animated_color(&mut self, node: &Self::Node, prop: AnimProp, value: [f32; 4]) {
-        <LinuxBackend as Backend>::set_animated_color(self, node, prop, value)
-    }
-}
-
-impl caps::IntrospectionOps for LinuxBackend {
-    fn frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <LinuxBackend as Backend>::frame(self, node)
-    }
-
-    fn absolute_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <LinuxBackend as Backend>::absolute_frame(self, node)
-    }
-
-    fn device_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <LinuxBackend as Backend>::device_frame(self, node)
-    }
-
-    fn supports_native_introspection(&self) -> bool {
-        <LinuxBackend as Backend>::supports_native_introspection(self)
-    }
-
-    fn introspect_native(&self, node: &Self::Node) -> Option<NativeNode> {
-        <LinuxBackend as Backend>::introspect_native(self, node)
-    }
-
-    fn note_introspection_root(&self, node: &Self::Node) {
-        <LinuxBackend as Backend>::note_introspection_root(self, node)
-    }
-
-    fn supports_screenshot(&self) -> bool {
-        <LinuxBackend as Backend>::supports_screenshot(self)
-    }
-
-    fn capture_screenshot(&self, done: Box<dyn FnOnce(Result<Screenshot, String>)>) {
-        <LinuxBackend as Backend>::capture_screenshot(self, done)
-    }
-}
+impl caps::IntrospectionOps for LinuxBackend {}
 
 // ---------------------------------------------------------------------------
 // Batch + wire bindings
 // ---------------------------------------------------------------------------
 
-impl caps::BatchOps for LinuxBackend {
-    fn supports_batched_repeat(&self) -> bool {
-        <LinuxBackend as Backend>::supports_batched_repeat(self)
-    }
+impl caps::BatchOps for LinuxBackend {}
 
-    fn execute_batch(&mut self, batch: BackendBatch) -> Vec<Self::Node> {
-        <LinuxBackend as Backend>::execute_batch(self, batch)
-    }
-
-    fn execute_batch_with_attach(
-        &mut self,
-        batch: BackendBatch,
-        parent: &mut Self::Node,
-        attach_locals: &[u32],
-    ) -> Vec<Self::Node> {
-        <LinuxBackend as Backend>::execute_batch_with_attach(self, batch, parent, attach_locals)
-    }
-}
-
-impl caps::WireBindingOps for LinuxBackend {
-    fn note_text_binding(&mut self, node: &Self::Node, signal_ids: &[u64], method: &'static str) {
-        <LinuxBackend as Backend>::note_text_binding(self, node, signal_ids, method)
-    }
-
-    fn note_signal_initial(&mut self, signal_id: u64, value: &runtime_core::__serde_json::Value) {
-        <LinuxBackend as Backend>::note_signal_initial(self, signal_id, value)
-    }
-
-    fn note_when_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        cond_method: &'static str,
-        then_node: &Self::Node,
-        otherwise_node: &Self::Node,
-    ) {
-        <LinuxBackend as Backend>::note_when_binding(
-            self,
-            anchor,
-            signal_ids,
-            cond_method,
-            then_node,
-            otherwise_node,
-        )
-    }
-
-    fn note_switch_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        cond_method: &'static str,
-        arms: &[(runtime_core::__serde_json::Value, Self::Node)],
-        default_node: &Self::Node,
-    ) {
-        <LinuxBackend as Backend>::note_switch_binding(
-            self,
-            anchor,
-            signal_ids,
-            cond_method,
-            arms,
-            default_node,
-        )
-    }
-
-    fn note_repeat_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        count_method: &'static str,
-        row_template: &Self::Node,
-        row_index_signal_id: Option<u64>,
-    ) {
-        <LinuxBackend as Backend>::note_repeat_binding(
-            self,
-            anchor,
-            signal_ids,
-            count_method,
-            row_template,
-            row_index_signal_id,
-        )
-    }
-
-    fn note_virtualizer_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        count_method: &'static str,
-        row_template: &Self::Node,
-        row_index_signal_id: Option<u64>,
-        horizontal: bool,
-    ) {
-        <LinuxBackend as Backend>::note_virtualizer_binding(
-            self,
-            anchor,
-            signal_ids,
-            count_method,
-            row_template,
-            row_index_signal_id,
-            horizontal,
-        )
-    }
-
-    fn supports_lazy_slot_capture(&self) -> bool {
-        <LinuxBackend as Backend>::supports_lazy_slot_capture(self)
-    }
-
-    fn begin_slot_capture(&mut self) {
-        <LinuxBackend as Backend>::begin_slot_capture(self)
-    }
-
-    fn end_slot_capture(&mut self, slot_root: &Self::Node) {
-        <LinuxBackend as Backend>::end_slot_capture(self, slot_root)
-    }
-}
+impl caps::WireBindingOps for LinuxBackend {}

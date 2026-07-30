@@ -5,80 +5,62 @@ edition.workspace = true
 license.workspace = true
 
 # Third-party `CodeBlock` primitive — a single backend node rendering
-# a flat sequence of `(text, color)` runs. Carved out of
-# `runtime-core` after a measurement showed the equivalent
-# composition (`View` + `Repeat<styled-View-with-Text>`) generates
-# 100-300× more backend ops per re-render than the single-node
-# primitive, even with the batched-Repeat fast path.
+# a flat sequence of `(text, color)` runs. Carved out of the framework
+# core after a measurement showed the equivalent composition
+# (`view` + `for`-over-styled-`text`) generates 100-300× more backend
+# ops per re-render than the single-node primitive, even with the
+# batched-repeat fast path.
 #
-# Single-node throughout: web emits one `<pre>` with child `<span>`s;
-# Android renders one `RustCodeBlock` (HorizontalScrollView + TextView
-# + SpannableString); iOS renders one UIScrollView wrapping an
-# inset-honoring label with NSAttributedString; macOS mirrors iOS with
-# NSScrollView + NSTextField. Per-target `register` functions live in
-# `lib.rs` behind `#[cfg(...)]`. Padding is author-driven (see the
-# lib.rs module doc) — handlers bake none in.
-
-[features]
-# Runtime-v2 defaults flip: the new-core leg is the default surface;
-# the old-core leg is the opt-in (`--no-default-features` — in-repo
-# consumers ride the workspace dep spec, which pins defaults off and
-# selects a core explicitly per graph).
-default = ["new-core"]
-# Old-core marker for uniform `--no-default-features --features
-# old-core` invocations (the old-core deps are unconditional).
-old-core = []
-# Idea-lite migration: re-express the SAME authored surface
-# (`code_block(spans).with_style(…)` + a bootstrap `register`) over the
-# scene registry — the new core's unified primitive==external contract.
-# Default-off and MUTUALLY EXCLUSIVE with the old-core surface (the two
-# define the same public names — one core per build, mirroring the
-# runtime-macros/new-core build-graph-wide switch; a consuming app crate
-# forwards this from its own new-core feature). The old-core modules are
-# byte-untouched under the default build.
-new-core = ["dep:runtime-vocabulary", "dep:runtime-scene"]
+# Single-node on the platforms with a real handler: Android renders one
+# `RustCodeBlock` (HorizontalScrollView + TextView + SpannableString);
+# iOS renders one UIScrollView wrapping an inset-honoring label with
+# NSAttributedString; macOS mirrors iOS with NSScrollView +
+# NSTextField. Every other caps-complete host (web, SSR, terminal, gpu,
+# host-mock) gets the portable `<pre>`/span handler. `register`
+# type-dispatches ONCE, by registry type — a cfg split cannot express
+# it, because `target_os = "macos"` is also true for a macOS SSG build.
+# Padding is author-driven (see the lib.rs module doc); handlers bake
+# none in.
+description = "Read-only colored-text (code) panel primitive — one native node per block."
 
 [dependencies]
-runtime-core = { workspace = true }
-# New-core surface (feature `new-core`): the scene registry (`item` +
-# `MountCx`/`Registry`) + the vocabulary caps the mount handler drives
-# (`DocumentOps::create_element`, `TextOps::create_text`, `StyleOps::
-# apply_style`) + `style_attach` for the author-style channel.
-runtime-scene = { workspace = true, optional = true }
-runtime-vocabulary = { workspace = true, optional = true }
-# Self-registration of the per-backend external handler at construction.
-inventory = "0.3"
-# Wire serde for `CodeBlockProps` so a `code_block(...)` external renders
-# over the runtime-server wire (recorder serializes the spans; the device
-# deserializes them back + dispatches to its real per-backend handler).
-serde_json = { workspace = true }
+# The scene registry (`item` + `MountCx`/`Registry`) + the vocabulary
+# caps the portable mount handler drives (`DocumentOps::create_element`,
+# `TextOps::create_text`, `StyleOps::apply_style`) + `style_attach` for
+# the author-style channel.
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+# The permanent shared substrate: `Color` / `StyleRules` / `Tokenized` /
+# `accessibility`, plus the canonical color parser the macOS handler
+# resolves author colors through.
+runtime-shared = { workspace = true }
 
-# tests/oldcore.rs runs on the default (old-core) surface; tests/newcore.rs
-# (`--features new-core`) mounts `code_block(...)` through the scene
-# registry end-to-end on the shared host-mock recording substrate.
+# tests/scene.rs mounts `code_block(...)` through the scene registry
+# end-to-end on the shared host-mock recording substrate.
 [dev-dependencies]
 runtime-world = { workspace = true }
 host-mock = { workspace = true }
 
-# Web handler self-registers a `WebExternalRegistrar` (the generic
-# `register` monomorphized to `WebBackend`), so the web backend must be a
-# named dependency on wasm32.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { workspace = true }
+# No wasm32-specific dependency: the web arm IS the portable
+# caps-generic handler, so `register` needs no backend-web dep there.
 
-# Android handler depends on the Android backend's `register_external`
-# inherent method plus its JNI surface for constructing the
-# `RustCodeBlock` view and feeding it a SpannableString. The dep is
-# target-gated so non-Android targets don't try to link the Android
-# backend.
+# Android handler needs the Android backend's JNI surface for
+# constructing the `RustCodeBlock` view and feeding it a
+# SpannableString, plus its `Host` impl so `Registry<AndroidBackend>`
+# resolves. Target-gated so non-Android targets don't link it.
+#
+# COORDINATION (runtime-v2 deletion wave): `` is
+# still required because the backends' `Host` + caps impls are behind
+# that feature. Drop the forward once the backend crates make them
+# unconditional.
 [target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
 backend-android-mobile = { workspace = true }
 jni = "0.21"
 log = "0.4"
 
-# iOS handler depends on the iOS backend + core for `IosBackend` /
-# `IosNode` / `color_to_uicolor`, plus objc2 for the obj-c message
-# sends that build the NSAttributedString and UILabel.
+# iOS handler depends on the iOS backend for `IosBackend` / `IosNode` /
+# `color_to_uicolor`, plus objc2 for the obj-c message sends that build
+# the NSAttributedString and UILabel.
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
 backend-ios-mobile = { workspace = true }
 backend-ios-core = { workspace = true }
@@ -116,4 +98,3 @@ objc2-app-kit = { version = "0.2", features = [
     "NSView",
     "NSResponder",
 ] }
-

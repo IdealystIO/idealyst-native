@@ -7,21 +7,17 @@
 //! rationale for collapsing per-token TextViews into a single
 //! SpannableString.
 
-use crate::CodeBlockProps;
 use backend_android::AndroidBackend;
 use jni::objects::{GlobalRef, JObject, JValue};
-use std::rc::Rc;
+use runtime_shared::Color;
 
-/// `Element::External` handler signature for the codeblock kind on
-/// Android. Returns the wrapper `GlobalRef` that the framework will
+/// Build the Android codeblock node.
+/// Returns the wrapper `GlobalRef` that the framework will
 /// parent into the surrounding view tree (with no Taffy children —
 /// the SpannableString lives inside one TextView, both invisible to
 /// the framework's layout pass).
-pub(crate) fn build(
-    props: &Rc<CodeBlockProps>,
-    backend: &mut AndroidBackend,
-) -> GlobalRef {
-    let node = build_widget(props, backend);
+pub(crate) fn build(spans: &[(String, Color)], backend: &mut AndroidBackend) -> GlobalRef {
+    let node = build_widget(spans, backend);
     // Divert author `padding_*` on this node to the widget's own
     // `setPadding` (RustCodeBlock sets `clipToPadding = false`), so the
     // padding scrolls WITH the content instead of insetting + clipping the
@@ -31,10 +27,7 @@ pub(crate) fn build(
     node
 }
 
-fn build_widget(
-    props: &Rc<CodeBlockProps>,
-    backend: &mut AndroidBackend,
-) -> GlobalRef {
+fn build_widget(spans: &[(String, Color)], backend: &mut AndroidBackend) -> GlobalRef {
     // Concatenate every span's text into one source string, recording
     // each span's (start, end, color) byte range. Java's
     // `String.length` is in UTF-16 code units; we feed Rust UTF-8
@@ -51,12 +44,12 @@ fn build_widget(
     // Span count is small (one per highlighted token, typically a few
     // hundred per block max). Allocate up front.
     let mut full_text = String::with_capacity(
-        props.spans.iter().map(|(s, _)| s.len()).sum::<usize>(),
+        spans.iter().map(|(s, _)| s.len()).sum::<usize>(),
     );
-    let mut starts: Vec<i32> = Vec::with_capacity(props.spans.len());
-    let mut ends: Vec<i32> = Vec::with_capacity(props.spans.len());
-    let mut colors: Vec<i32> = Vec::with_capacity(props.spans.len());
-    for (text, color) in &props.spans {
+    let mut starts: Vec<i32> = Vec::with_capacity(spans.len());
+    let mut ends: Vec<i32> = Vec::with_capacity(spans.len());
+    let mut colors: Vec<i32> = Vec::with_capacity(spans.len());
+    for (text, color) in spans {
         let start = full_text.encode_utf16().count() as i32;
         full_text.push_str(text);
         let end = full_text.encode_utf16().count() as i32;
@@ -149,7 +142,7 @@ fn new_empty_view(env: &mut jni::JNIEnv, context: &JObject) -> GlobalRef {
 /// `#AARRGGBB`, `rgba(...)`) into a packed Android ARGB int.
 /// Returns `None` for unparseable input.
 ///
-/// The framework owns the canonical parser in `runtime_core::color`,
+/// The framework owns the canonical parser in `runtime_shared::color`,
 /// but it lives behind an `Rgba` byte-intermediate that's overkill
 /// for the inline JNI call shape here. Re-implement the common
 /// shapes inline; the parser is small and the codeblock SDK doesn't

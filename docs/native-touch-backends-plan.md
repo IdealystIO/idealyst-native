@@ -1,6 +1,18 @@
 # iOS + Android touch backend implementations
 
-Status: runtime-core, wgpu, and web are landed; iOS and Android are
+> **Status note (2026-07-29, runtime-v2).** Both platform impls landed —
+> `install_touch_handler` is implemented in `crates/backend/ios/mobile` and
+> `crates/backend/android/mobile`. This doc is now the record of the
+> per-platform mechanics (UIKit `touches*` / Android `MotionEvent`), not
+> outstanding work. It also predates the `Backend` mega-trait's deletion: the
+> two methods below now live, unchanged, on the capability trait
+> `runtime_vocabulary::caps::InputOps`
+> (`crates/runtime/vocabulary/src/caps/input.rs`), still defaulting to no-ops.
+> `Element::View { on_touch: … }` is likewise gone as a spelling — the
+> vocabulary's `view` handler installs the handler from the view payload's
+> `on_touch` slot at mount.
+
+Status (as filed): runtime-core, wgpu, and web are landed; iOS and Android are
 the two missing platform impls of `Backend::install_touch_handler` and
 `Backend::claim_touch`. This doc describes how to land them.
 

@@ -11,7 +11,8 @@
 //! - [`HostHandle`] — the live preview handle. Drop it to tear down
 //!   the host; call [`HostHandle::resize`] when the surface size
 //!   changes.
-//! - [`MountError`] — failure modes from the underlying platform host.
+//! - [`MountError`] — failure modes: no wgpu host on this target, or
+//!   a [`PlatformMountError`] from the underlying platform host.
 //!
 //! See [`render_wgpu`] for the rendering engine and per-platform
 //! crates (`host_web`, `host_ios_mobile`) for the actual wgpu init.
@@ -23,28 +24,27 @@ use std::rc::Rc;
 pub use render_api::DeviceProfile;
 pub use render_wgpu::Painter;
 
-use runtime_core::primitives::graphics::GraphicsSurface;
-use runtime_core::Element;
+use runtime_shared::primitives::graphics::GraphicsSurface;
 
 // ---------------------------------------------------------------------------
-// Re-export `MountError` per platform — each underlying host crate
-// has its own enum and its own `Display`/`Error` impls. Aliasing
-// rather than inventing a new enum keeps the error messages honest
-// (the consumer sees the same string the underlying crate reports)
-// and avoids From shims at every call site.
+// Re-export the platform host's error per platform — each underlying
+// host crate has its own enum and its own `Display`/`Error` impls.
+// Aliasing rather than inventing a new enum keeps the error messages
+// honest (the consumer sees the same string the underlying crate
+// reports) and avoids From shims at every call site.
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "wasm32")]
-pub type MountError = host_web::MountError;
+pub type PlatformMountError = host_web::MountError;
 
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub type MountError = host_ios_mobile::MountError;
+pub type PlatformMountError = host_ios_mobile::MountError;
 
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-pub type MountError = host_android_mobile::MountError;
+pub type PlatformMountError = host_android_mobile::MountError;
 
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-pub type MountError = host_macos_desktop::MountError;
+pub type PlatformMountError = host_macos_desktop::MountError;
 
 #[cfg(not(any(
     target_arch = "wasm32",
@@ -53,12 +53,12 @@ pub type MountError = host_macos_desktop::MountError;
     all(target_os = "macos", not(target_arch = "wasm32"))
 )))]
 #[derive(Debug)]
-pub enum MountError {
-    /// No wgpu host is wired for this target yet. Returned by
-    /// [`mount`] on terminal, headless, etc. so consumers can
-    /// show a fallback (the chassis-around-an-empty-surface state
-    /// for the simulator preview) without confusing this with a
-    /// real init failure.
+pub enum PlatformMountError {
+    /// No wgpu host is wired for this target at all (terminal,
+    /// headless, Windows/Linux desktop). Unreachable in practice —
+    /// [`mount`] returns [`MountError::Unsupported`] before it could
+    /// construct one — but the type must exist so the signatures stay
+    /// uniform across targets.
     Unsupported,
 }
 
@@ -68,7 +68,7 @@ pub enum MountError {
     all(target_os = "android", not(target_arch = "wasm32")),
     all(target_os = "macos", not(target_arch = "wasm32"))
 )))]
-impl std::fmt::Display for MountError {
+impl std::fmt::Display for PlatformMountError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "host-wgpu: no wgpu host wired for this target")
     }
@@ -80,7 +80,7 @@ impl std::fmt::Display for MountError {
     all(target_os = "android", not(target_arch = "wasm32")),
     all(target_os = "macos", not(target_arch = "wasm32"))
 )))]
-impl std::error::Error for MountError {}
+impl std::error::Error for PlatformMountError {}
 
 // ---------------------------------------------------------------------------
 // HostHandle — type-aliased per platform. Both the web and iOS handles
@@ -128,50 +128,90 @@ impl HostHandle {
 }
 
 // ---------------------------------------------------------------------------
-// mount — one entry point. Routes to the per-platform host's `mount`
-// and returns its `HostHandle` (aliased as `HostHandle`). On
-// unsupported targets returns `Err(MountError::Unsupported)`
-// immediately so the call site can fall back to a static preview.
+// mount — the one entry point, routed per target. The build closure
+// returns a `runtime_scene::Element` (what an app's `app()` produces)
+// and the tree realizes through the per-host boot.
 // ---------------------------------------------------------------------------
 
-/// Mount a wgpu render backend behind a `Graphics`-primitive surface.
-///
-/// Each per-platform host (`host-web`, `host-ios-mobile`, …) takes
-/// the same shape — surface, physical-pixel size, device profile,
-/// painter skin, and a builder for the embedded Element tree — and
-/// hands back a `HostHandle` that owns the wgpu objects and the
-/// render-loop subscription.
-///
-/// Authors typically call this from inside their `Graphics`
-/// primitive's `on_ready` callback and stash the returned handle so
-/// `on_resize` can call [`HostHandle::resize`] and `on_lost` can
-/// drop it.
+/// A scene tree — what [`mount`]'s build closure returns. Re-exported
+/// so consumers spell one name.
+pub use runtime_scene::Element as SceneElement;
+
+/// Failure modes of [`mount`]. Distinct from [`PlatformMountError`]
+/// because the per-platform host error enums have no "no wgpu host on
+/// this target" variant to alias.
+#[derive(Debug)]
+pub enum MountError {
+    /// This target has no wgpu host. Web and the native sim hosts
+    /// (macOS / iOS / Android) are wired — each realizes the embedded
+    /// tree into its page/app backend's mounted world through the
+    /// shared `start_in_world` seam. The remaining targets (terminal,
+    /// headless, Windows/Linux desktop) have no wgpu host at all, so
+    /// consumers fall back to the chassis-around-an-empty-surface
+    /// state without confusing this with a real init failure.
+    Unsupported,
+    /// The underlying platform host failed.
+    Platform(PlatformMountError),
+}
+
+/// Compatibility alias. This enum was `NewCoreMountError` while the
+/// framework carried two cores; there is one mount now and its error
+/// is [`MountError`].
+pub use MountError as NewCoreMountError;
+
+impl std::fmt::Display for MountError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MountError::Unsupported => write!(
+                f,
+                "host-wgpu: no wgpu host wired for this target \
+                 (web + macOS/iOS/Android sim hosts are wired; terminal, \
+                 headless, and Windows/Linux desktop have no wgpu host)"
+            ),
+            MountError::Platform(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for MountError {}
+
+/// Mount a wgpu render backend behind a `Graphics`-primitive surface,
+/// realizing `build_ui`'s scene tree into the embedding host's world —
+/// on web the page's own world (`host_web::mount`), on macOS / iOS /
+/// Android the app's own world (`host_macos_desktop::mount` and
+/// siblings) — so the embedding host's flush driver commits the
+/// embedded app's staged writes: one thread, one world, one logical
+/// update stream.
 pub async fn mount(
     surface: GraphicsSurface,
     size: (u32, u32),
     profile: DeviceProfile,
     painter: Rc<dyn Painter>,
-    // `Rc<dyn Fn>` instead of `FnOnce` so per-host visibility gates
-    // can unmount/remount the embedded reactive scope without losing
-    // the build closure. Hosts that don't need this (web today) just
-    // call it once.
-    build_ui: Rc<dyn Fn() -> Element + 'static>,
+    build_ui: Rc<dyn Fn() -> SceneElement + 'static>,
 ) -> Result<HostHandle, MountError> {
     #[cfg(target_arch = "wasm32")]
     {
-        host_web::mount(surface, size, profile, painter, build_ui).await
+        host_web::mount(surface, size, profile, painter, build_ui)
+            .await
+            .map_err(MountError::Platform)
     }
     #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
     {
-        host_ios_mobile::mount(surface, size, profile, painter, build_ui).await
+        host_ios_mobile::mount(surface, size, profile, painter, build_ui)
+            .await
+            .map_err(MountError::Platform)
     }
     #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
     {
-        host_android_mobile::mount(surface, size, profile, painter, build_ui).await
+        host_android_mobile::mount(surface, size, profile, painter, build_ui)
+            .await
+            .map_err(MountError::Platform)
     }
     #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
     {
-        host_macos_desktop::mount(surface, size, profile, painter, build_ui).await
+        host_macos_desktop::mount(surface, size, profile, painter, build_ui)
+            .await
+            .map_err(MountError::Platform)
     }
     #[cfg(not(any(
         target_arch = "wasm32",
@@ -187,105 +227,8 @@ pub async fn mount(
     }
 }
 
-// ---------------------------------------------------------------------------
-// mount_newcore — the idea-lite-migration mount seam, routed like
-// `mount`. The build closure returns a `runtime_scene::Element` (what a
-// new-core graph's `app()` produces), and the tree realizes through the
-// per-host new-core boot instead of the old walker.
-// ---------------------------------------------------------------------------
-
-/// A new-core scene tree — what `mount_newcore`'s build closure
-/// returns. Re-exported so consumers spell one name.
-#[cfg(feature = "new-core")]
-pub use runtime_scene::Element as SceneElement;
-
-/// Failure modes of [`mount_newcore`]. Separate from [`MountError`]
-/// because the per-platform host error enums have no "no new-core port
-/// on this target" variant to alias.
-#[cfg(feature = "new-core")]
-#[derive(Debug)]
-pub enum NewCoreMountError {
-    /// This target's wgpu host has no new-core mount. Web and the
-    /// native sim hosts (macOS / iOS / Android) are ported — each
-    /// realizes the embedded tree into its page/app backend's mounted
-    /// world through the shared `start_in_world` seam. The remaining
-    /// targets (terminal, headless, Windows/Linux desktop) have no
-    /// wgpu host at all, so this mirrors `MountError::Unsupported`
-    /// exactly (consumers fall back to the chassis, no preview).
-    Unsupported,
-    /// The underlying platform host failed — same error the old-core
-    /// `mount` would report.
-    Platform(MountError),
-}
-
-#[cfg(feature = "new-core")]
-impl std::fmt::Display for NewCoreMountError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NewCoreMountError::Unsupported => write!(
-                f,
-                "host-wgpu: no new-core wgpu host wired for this target \
-                 (web + macOS/iOS/Android sim hosts are ported; terminal, \
-                 headless, and Windows/Linux desktop have no wgpu host)"
-            ),
-            NewCoreMountError::Platform(e) => write!(f, "{e}"),
-        }
-    }
-}
-
-#[cfg(feature = "new-core")]
-impl std::error::Error for NewCoreMountError {}
-
-/// New-core sibling of [`mount`]: mount a wgpu render backend behind a
-/// `Graphics`-primitive surface, realizing `build_ui`'s scene tree
-/// into the embedding host's world — on web the page's own new-core
-/// world (`host_web::mount_newcore`), on macOS / iOS / Android the
-/// app's own new-core world (`host_macos_desktop::mount_newcore` and
-/// siblings) — so the embedding host's flush driver commits the
-/// embedded app's staged writes: one thread, one world, one logical
-/// update stream.
-#[cfg(feature = "new-core")]
-pub async fn mount_newcore(
-    surface: GraphicsSurface,
-    size: (u32, u32),
-    profile: DeviceProfile,
-    painter: Rc<dyn Painter>,
-    build_ui: Rc<dyn Fn() -> SceneElement + 'static>,
-) -> Result<HostHandle, NewCoreMountError> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        host_web::mount_newcore(surface, size, profile, painter, build_ui)
-            .await
-            .map_err(NewCoreMountError::Platform)
-    }
-    #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-    {
-        host_ios_mobile::mount_newcore(surface, size, profile, painter, build_ui)
-            .await
-            .map_err(NewCoreMountError::Platform)
-    }
-    #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-    {
-        host_android_mobile::mount_newcore(surface, size, profile, painter, build_ui)
-            .await
-            .map_err(NewCoreMountError::Platform)
-    }
-    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-    {
-        host_macos_desktop::mount_newcore(surface, size, profile, painter, build_ui)
-            .await
-            .map_err(NewCoreMountError::Platform)
-    }
-    #[cfg(not(any(
-        target_arch = "wasm32",
-        all(target_os = "ios", not(target_arch = "wasm32")),
-        all(target_os = "android", not(target_arch = "wasm32")),
-        all(target_os = "macos", not(target_arch = "wasm32"))
-    )))]
-    {
-        // Bind the args so the function signature stays honest
-        // (no "unused parameter" warnings on unsupported targets).
-        let _ = (surface, size, profile, painter, build_ui);
-        Err(NewCoreMountError::Unsupported)
-    }
-}
+/// Compatibility alias. This entry was `mount_newcore` while the
+/// framework carried two cores; there is one mount now and it is
+/// [`mount`]. Kept so existing call sites (the website Simulator)
+/// keep resolving.
+pub use self::mount as mount_newcore;

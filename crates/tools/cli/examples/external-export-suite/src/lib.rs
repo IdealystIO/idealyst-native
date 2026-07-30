@@ -21,7 +21,8 @@ use runtime_core::{
 };
 
 // ---------------------------------------------------------------------------
-// Tiny style vocabulary (kept local so the example needs only runtime-core —
+// Tiny style vocabulary (kept local so the example needs only the framework
+// author surface —
 // no theme / idea-ui dependency).
 // ---------------------------------------------------------------------------
 

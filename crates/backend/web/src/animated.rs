@@ -1,7 +1,7 @@
 //! Web backend implementation of `Backend::set_animated_*`.
 //!
 //! Per-frame writes from
-//! [`AnimatedValue`](runtime_core::animation::AnimatedValue)
+//! [`AnimatedValue`](runtime_shared::animation::AnimatedValue)
 //! arrive here keyed by `(node, AnimProp)`. We:
 //!
 //! 1. Look up (or create) the node's [`AnimatedNodeState`] in
@@ -32,12 +32,12 @@
 //! static base to compose into the animated value should also
 //! bind a scale-animated value seeded at 0.5.
 
-use runtime_core::FxHashMap;
+use runtime_shared::FxHashMap;
 
 // `css_num`, not `f32: Display` — a bare `{}` on an f32 anywhere reinstates
 // core's ~12-15 KB flt2dec float formatter in every bundle (see css::css_num).
 use css::css_num;
-use runtime_core::animation::AnimProp;
+use runtime_shared::animation::AnimProp;
 use wasm_bindgen::JsCast;
 
 use crate::WebBackend;
@@ -72,7 +72,7 @@ pub(crate) struct AnimatedNodeState {
     pub gradient_stops: Vec<[f32; 4]>,
 }
 
-/// Everything about a `runtime_core::Gradient` *except* the stop
+/// Everything about a `runtime_shared::Gradient` *except* the stop
 /// colors — those live on `AnimatedNodeState::gradient_stops` so
 /// they can be mutated per frame without rebuilding the rest. The
 /// fields here are flat clones of the framework's enum (we don't
@@ -92,7 +92,7 @@ pub(crate) enum GradientShapeKind {
     Radial {
         center: (f32, f32),
         radius: f32,
-        extent: runtime_core::RadialExtent,
+        extent: runtime_shared::RadialExtent,
     },
 }
 
@@ -287,10 +287,10 @@ fn write_scale(element: &web_sys::HtmlElement, state: &AnimatedNodeState) {
 /// resulting string is in the canonical sRGB byte form most
 /// developers expect. Alpha stays in `0..=1` floating-point.
 fn rgba_css(value: [f32; 4]) -> String {
-    let r = (runtime_core::num::clamp_f32(value[0], 0.0, 1.0) * 255.0).round() as u8;
-    let g = (runtime_core::num::clamp_f32(value[1], 0.0, 1.0) * 255.0).round() as u8;
-    let b = (runtime_core::num::clamp_f32(value[2], 0.0, 1.0) * 255.0).round() as u8;
-    let a = runtime_core::num::clamp_f32(value[3], 0.0, 1.0);
+    let r = (runtime_shared::num::clamp_f32(value[0], 0.0, 1.0) * 255.0).round() as u8;
+    let g = (runtime_shared::num::clamp_f32(value[1], 0.0, 1.0) * 255.0).round() as u8;
+    let b = (runtime_shared::num::clamp_f32(value[2], 0.0, 1.0) * 255.0).round() as u8;
+    let a = runtime_shared::num::clamp_f32(value[3], 0.0, 1.0);
     format!("rgba({}, {}, {}, {})", r, g, b, css_num(a))
 }
 
@@ -319,8 +319,8 @@ pub(crate) fn gradient_inline_css(shape: &GradientShape, stops: &[[f32; 4]]) -> 
         }
         GradientShapeKind::Radial { center, radius, extent } => {
             let base_pct = match extent {
-                runtime_core::RadialExtent::ClosestSide => 50.0,
-                runtime_core::RadialExtent::FarthestCorner => 70.7106781,
+                runtime_shared::RadialExtent::ClosestSide => 50.0,
+                runtime_shared::RadialExtent::FarthestCorner => 70.7106781,
             };
             let pct = (radius * base_pct).max(0.0);
             format!(

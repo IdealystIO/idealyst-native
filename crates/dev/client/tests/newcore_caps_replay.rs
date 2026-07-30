@@ -1,24 +1,28 @@
-//! The new-core replay gate: a backend that implements ONLY the scene
+//! The caps-only replay gate: a backend that implements ONLY the scene
 //! seam (`runtime_scene::Host`) plus the `runtime_vocabulary::caps`
-//! traits — deliberately **no** `runtime_core::Backend` impl — can be
-//! driven end-to-end by the wire replayer through
-//! [`dev_client::newcore::CapsReplay`].
+//! traits can be driven end-to-end by the wire replayer.
 //!
 //! This is the client half of the dev-session wire-chain port: the
 //! compile succeeding is itself the proof that the replayer's dispatch
-//! reaches native UI through the capability surface (the `Backend`
-//! deletion wave can't strand the replayer), and the assertions pin
-//! that create / insert / update / style / finish commands land on the
-//! caps impls with the right payloads.
-
-#![cfg(feature = "new-core")]
-
+//! reaches native UI through the capability surface, and the assertions
+//! pin that create / insert / update / style / finish commands land on
+//! the caps impls with the right payloads.
+//!
+//! Historically the replayer was bounded on the `Backend` mega-trait and
+//! this file's whole point was that a `CapsReplay<B>` adapter bridged the
+//! two; it therefore lived behind a `new-core` cargo feature and opened
+//! with `#![cfg(feature = "new-core")]`. When the bound flipped onto
+//! `caps::AllCaps` the feature was deleted — and the `#![cfg]` silently
+//! turned the whole file into ZERO tests rather than a compile error.
+//! **That is the failure mode this wave exists to prevent**, so the gate
+//! is unconditional now: it is the only in-repo test that drives the wire
+//! replayer against a hand-written capability surface.
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use dev_client::{OutboundSender, WireBackend};
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::{Action, StyleRules};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::{Action, StyleRules};
 use runtime_scene::Host;
 use runtime_vocabulary::caps;
 use wire::{Command, NodeId, StyleId, WireAccessibilityProps, WireStyleRules};
@@ -110,8 +114,8 @@ impl caps::ButtonOps for CapsOnly {
         &mut self,
         label: &str,
         _on_click: &Action,
-        _leading_icon: Option<&runtime_core::primitives::icon::IconData>,
-        _trailing_icon: Option<&runtime_core::primitives::icon::IconData>,
+        _leading_icon: Option<&runtime_shared::primitives::icon::IconData>,
+        _trailing_icon: Option<&runtime_shared::primitives::icon::IconData>,
         _a11y: &AccessibilityProps,
     ) -> usize {
         self.alloc(Kind::Button(label.to_string()))
@@ -167,7 +171,7 @@ fn caps_only_backend_replays_wire_commands() {
     let backend = CapsOnly::default();
     let store = backend.store.clone();
 
-    let mut client = WireBackend::new_newcore(backend, OutboundSender::new());
+    let mut client = WireBackend::new(backend, OutboundSender::new());
 
     let a11y = WireAccessibilityProps::default;
     client

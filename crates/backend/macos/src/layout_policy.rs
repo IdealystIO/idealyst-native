@@ -79,7 +79,7 @@ pub(crate) fn insert_needs_layout_pass(parent_attached_to_window: bool) -> bool 
 /// moves. This (with `LayoutTree::set_style`'s geometry diff for non-text
 /// views) kills the scroll jitter where hover restyles fired a ~20ms global
 /// relayout per mouse-enter.
-pub(crate) fn text_measure_signature(style: &runtime_core::StyleRules) -> u64 {
+pub(crate) fn text_measure_signature(style: &runtime_shared::StyleRules) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     // Debug-format the measure-relevant subset: not every field type
@@ -542,7 +542,7 @@ mod tests {
     // must ignore paint-only changes and track only intrinsic-size inputs.
     #[test]
     fn text_measure_signature_ignores_paint_tracks_metrics() {
-        use runtime_core::{Color, Length, StyleRules, Tokenized};
+        use runtime_shared::{Color, Length, StyleRules, Tokenized};
         let mut base = StyleRules::default();
         base.font_size = Some(Tokenized::Literal(Length::Px(14.0)));
         let sig = text_measure_signature(&base);

@@ -4,7 +4,7 @@
 //! working when the text-input primitive is compiled out.
 
 use crate::WebBackend;
-use runtime_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
+use runtime_shared::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
 use wasm_bindgen::closure::Closure;
 
 /// Convert a browser `KeyboardEvent` into the framework's `KeyEvent`. Shared

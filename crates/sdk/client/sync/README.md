@@ -71,7 +71,9 @@ orderings are verified under simulated mid-operation crashes in
 ```rust
 use sync::{Merge, MergeCtx, Resolution};
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+// `PartialEq` is required: the partition's `Signal<Vec<T>>` is an
+// equality-guarded reactive slot.
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Project { id: String, name: String, archived: bool }
 
 impl Merge for Project {

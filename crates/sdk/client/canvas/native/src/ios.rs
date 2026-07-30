@@ -16,8 +16,8 @@
 //! `drawRect:` CTM already matches, so no axis flip is needed.
 
 use backend_ios::{IosBackend, IosNode};
-use canvas_core::{CanvasProps, Color, TextureLayer};
-use runtime_core::effect;
+use canvas_core::{CanvasPrim, CanvasProps, Color, TextureLayer};
+use runtime_scene::{Element, MountCx};
 
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, AnyObject, NSObject};
@@ -478,19 +478,18 @@ fn composite_layer(ctx: CGContextRef, layer: &TextureLayer) {
 // register + build
 // ============================================================================
 
-/// Register the iOS canvas renderer against an `IosBackend`.
-pub fn register(backend: &mut IosBackend) {
-    canvas_core::ensure_wire_serde();
-    backend.register_external::<CanvasProps, _>(|props, b| build_canvas(props, b));
-}
-
-// Self-register at backend construction (no app-side `register` call needed).
-// See [[project_inventory_self_registration]]. Behind the default-on
-// `self-register` feature so delegate-only consumers can opt out (matters
-// for web bundle size; gated on every target for feature consistency).
-#[cfg(feature = "self-register")]
-inventory::submit! {
-    backend_ios::IosExternalRegistrar(register)
+pub(crate) fn mount_canvas(
+    cx: &mut MountCx<'_, IosBackend>,
+    prim: &Rc<CanvasPrim>,
+    _children: Vec<Element>,
+) -> IosNode {
+    let backend = cx.backend().clone();
+    let node = {
+        let mut b = backend.borrow_mut();
+        build_canvas(&prim.props, &mut b)
+    };
+    crate::finish_mount(&backend, &node, prim);
+    node
 }
 
 fn build_canvas(props: &Rc<CanvasProps>, b: &mut IosBackend) -> IosNode {
@@ -508,7 +507,9 @@ fn build_canvas(props: &Rc<CanvasProps>, b: &mut IosBackend) -> IosNode {
 
     let view_for_effect = view_canvas.clone();
     let props_clone = props.clone();
-    effect!({
+    // Reactive repaint. Realize runs world-entered, so this effect is
+    // collected into the mounting subtree and dies at unmount.
+    runtime_world::effect(move || {
         let scene = canvas_core::paint_scene(&props_clone);
         // Clone the layer descriptors (cheap — Rc closures); their sources are
         // resolved per `drawRect:` so the live camera + drag rect stay current.

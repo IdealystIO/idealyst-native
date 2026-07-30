@@ -174,9 +174,8 @@ inventory::collect!(IconSetEntry);
 /// construct one. The `_seal` field is private, so external crates
 /// can't write `PrimitiveEntry { name: ..., _seal: () }` — `#[non_exhaustive]`
 /// further blocks struct-literal construction at any call site. The
-/// open extension point for third-party "primitive-like" things is
-/// `Element::External` + the per-backend `ExternalRegistry`, not
-/// this slice.
+/// open extension point for third-party "primitive-like" things is a
+/// payload handler on the scene `Registry`, not this slice.
 ///
 /// Read-only consumption: every metadata field is `pub`, so callers
 /// iterate the inventory slice and project entries normally.
@@ -312,8 +311,8 @@ impl UtilityCategory {
 ///
 /// **Locked** — same `_seal: ()` pattern as [`PrimitiveEntry`]. The
 /// macro surface ships with the framework version; third-party crates
-/// extend behavior through `#[idealyst_tool]` / `Element::External`,
-/// not by registering new entries here.
+/// extend behavior through `#[idealyst_tool]` / a scene-registry
+/// payload handler, not by registering new entries here.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct MacroEntry {
@@ -552,8 +551,8 @@ pub struct ScopeEntry {
 ///
 /// These are invisible to the component/primitive/utility slices because
 /// they expose plain Rust functions and types (`net::Client`,
-/// `storage::platform_storage()`) or `Element::External` primitives, not
-/// `#[component]`s the inventory walker can see. This slice is the
+/// `storage::platform_storage()`) or scene-registry extension
+/// primitives, not `#[component]`s the inventory walker can see. This slice is the
 /// discovery surface an agent uses to learn "which crate makes a network
 /// request / persists data / renders a map" — backed by the
 /// [`sdks`](crate::sdks) guide for the prose.
@@ -578,7 +577,9 @@ pub struct SdkEntry {
     /// Broad classification for grouping in `list_sdks`.
     pub category: SdkCategory,
     /// Whether the crate's surface is plain functions/types (`Api`) or a
-    /// `ui!` primitive wired through `Element::External` (`External`).
+    /// `ui!` primitive backed by a scene-registry payload handler
+    /// (`External` — the variant name is the catalog JSON's wire value
+    /// and predates the scene registry).
     pub kind: SdkKind,
     /// Slug of the guide (this slice's prose home) for cross-reference.
     /// Defaults to `"sdks"`; entries with a dedicated guide override it
@@ -600,7 +601,7 @@ pub enum SdkCategory {
     /// `screen-recorder`, `media-writer`, `media-stream`, `video`,
     /// `canvas`.
     Media,
-    /// UI components / `Element::External` primitives: `idea-ui`,
+    /// UI components / extension primitives: `idea-ui`,
     /// `idea-theme`, `icons-lucide`, `webview`, `maps`, `svg`,
     /// `markdown`, `codeblock`, `table`, `form`, `toolbar`, `menu`.
     Ui,
@@ -627,7 +628,8 @@ impl SdkCategory {
 pub enum SdkKind {
     /// Plain Rust functions/types called outside `ui!` (`net::Client`).
     Api,
-    /// A `ui!` primitive wired through `Element::External`.
+    /// A `ui!` primitive backed by a scene-registry payload handler.
+    /// (Name kept: it is the catalog JSON's wire value.)
     External,
 }
 

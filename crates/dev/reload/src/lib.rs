@@ -330,7 +330,6 @@ fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
             // Dev rebuilds skip the q11 encode; `.br` siblings are a
             // deploy-artifact concern (`idealyst build --web --release`).
             brotli: false,
-                primitives: None,
             // Dev keeps panic messages — stripping them is a
             // production-only `idealyst build --web --strip-panics` thing.
             strip_panics: false,
@@ -341,8 +340,6 @@ fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
             // rebuild.
             prune_dead_data_min: None,
             premint: false,
-            // The dev reload loop stays old-core (runtime-server mode).
-            new_core: false,
         },
     )
     .map(|_| ())

@@ -34,10 +34,9 @@
 //! - `click`/`set_text`/`set_toggle`/`set_slider` are the author
 //!   callbacks the mount handler already holds.
 //!
-//! [`LegacyBridge`](crate::bridge::LegacyBridge) implements all of the
-//! above by delegation, so every existing backend participates with
-//! ZERO backend edits. The transport half (conformance wave) is now in
-//! place: [`bridge::invoke_command`] dispatches the wire verbs against
+//! Every backend participates by implementing the caps traits it
+//! already implements — the registry reads through them, so there are
+//! no robot-specific backend hooks. The transport half is in place: [`bridge::invoke_command`] dispatches the wire verbs against
 //! THIS registry, [`current_revision`] drives the live-update push, and
 //! the [`install_driver_env`] seam lets the host supply `World::enter`
 //! (label-resolving queries need the ambient world) plus a synchronous

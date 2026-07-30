@@ -20,13 +20,13 @@ use crate::{
     BoardState, CanvasBg, CanvasCapture, CanvasStore, MicHandle, RecHandle, Strokes, PALETTE,
     PREVIEW, REC_FILE, REC_STORE, SETTINGS, WIDTH_MEDIUM, WIDTH_THICK, WIDTH_THIN,
 };
-use camera::{Camera, CameraConfig, CameraFacing, MediaStream};
+use camera::{Camera, CameraConfig, CameraFacing};
 use icons_lucide::{
     CAMERA, CIRCLE, LAYERS, PALETTE as ICON_PALETTE, PLUS, SETTINGS as ICON_SETTINGS, SQUARE,
     TRASH_2,
 };
 use runtime_core::{
-    component, icon, presence, safe_area_insets, ui, viewport_size, AlignItems, Color, Easing,
+    component, icon, presence, safe_area_insets, signal, ui, viewport_size, AlignItems, Color, Easing,
     Element, FlexDirection, FlexWrap, IconData, IntoElement, JustifyContent, Length, Overflow,
     Position, PresenceAnim, PresenceState, Ref, Signal, StyleRules, Tokenized, TouchPhase,
     TouchResponse, Transform,
@@ -195,7 +195,7 @@ impl Default for ToolRailProps {
             focused: Rc::new(|| true),
             state: BoardState::default(),
             strokes: Default::default(),
-            version: Signal::new(0),
+            version: signal(0),
         }
     }
 }
@@ -267,7 +267,7 @@ pub struct WidthButtonProps {
 
 impl Default for WidthButtonProps {
     fn default() -> Self {
-        Self { w: WIDTH_MEDIUM, width: Signal::new(WIDTH_MEDIUM) }
+        Self { w: WIDTH_MEDIUM, width: signal(WIDTH_MEDIUM) }
     }
 }
 
@@ -313,11 +313,11 @@ pub struct ColorButtonProps {
 impl Default for ColorButtonProps {
     fn default() -> Self {
         Self {
-            color_css: Signal::new(PALETTE[0].1),
-            palette_open: Signal::new(false),
-            layers_open: Signal::new(false),
-            canvas_bg: Signal::new(CanvasBg::Auto),
-            dark: Signal::new(false),
+            color_css: signal(PALETTE[0].1),
+            palette_open: signal(false),
+            layers_open: signal(false),
+            canvas_bg: signal(CanvasBg::Auto),
+            dark: signal(false),
         }
     }
 }
@@ -355,7 +355,7 @@ pub struct ClearButtonProps {
 
 impl Default for ClearButtonProps {
     fn default() -> Self {
-        Self { strokes: Default::default(), version: Signal::new(0) }
+        Self { strokes: Default::default(), version: signal(0) }
     }
 }
 
@@ -374,12 +374,12 @@ pub fn ClearButton(props: &ClearButtonProps) -> Element {
 /// Props for [`CameraToggle`].
 pub struct CameraToggleProps {
     pub cam_on: Signal<bool>,
-    pub cam_stream: Signal<Option<MediaStream>>,
+    pub cam_stream: Signal<Option<crate::CamStream>>,
 }
 
 impl Default for CameraToggleProps {
     fn default() -> Self {
-        Self { cam_on: Signal::new(false), cam_stream: Signal::new(None) }
+        Self { cam_on: signal(false), cam_stream: signal(None) }
     }
 }
 
@@ -402,7 +402,8 @@ pub fn CameraToggle(props: &CameraToggleProps) -> Element {
     bare_btn(glyph, move || {
         if cam_on.get() {
             cam_on.set(false);
-            // `set_always`: `MediaStream` has no `PartialEq`.
+            // `set_always`: a `CamStream` is never equal to another, but the
+            // None→None case would otherwise be swallowed by the guard.
             cam_stream.set_always(None);
         } else {
             cam_on.set(true);
@@ -412,7 +413,7 @@ pub fn CameraToggle(props: &CameraToggleProps) -> Element {
                     ..Default::default()
                 };
                 match Camera::new().open(config).await {
-                    Ok(stream) => cam_stream.set_always(Some(stream)),
+                    Ok(stream) => cam_stream.set_always(Some(crate::CamStream(stream))),
                     Err(e) => {
                         // Don't swallow it — e.g. on Android first tap this is
                         // `PermissionDenied` while the system dialog shows; the
@@ -443,10 +444,10 @@ impl Default for PalettePopoverProps {
     fn default() -> Self {
         Self {
             focused: Rc::new(|| true),
-            color_css: Signal::new(PALETTE[0].1),
-            palette_open: Signal::new(false),
-            canvas_bg: Signal::new(CanvasBg::Auto),
-            dark: Signal::new(false),
+            color_css: signal(PALETTE[0].1),
+            palette_open: signal(false),
+            canvas_bg: signal(CanvasBg::Auto),
+            dark: signal(false),
         }
     }
 }
@@ -555,10 +556,10 @@ impl Default for SwatchProps {
     fn default() -> Self {
         Self {
             css: PALETTE[0].1,
-            color_css: Signal::new(PALETTE[0].1),
-            palette_open: Signal::new(false),
-            canvas_bg: Signal::new(CanvasBg::Auto),
-            dark: Signal::new(false),
+            color_css: signal(PALETTE[0].1),
+            palette_open: signal(false),
+            canvas_bg: signal(CanvasBg::Auto),
+            dark: signal(false),
         }
     }
 }
@@ -612,7 +613,7 @@ pub struct LayersButtonProps {
 
 impl Default for LayersButtonProps {
     fn default() -> Self {
-        Self { layers_open: Signal::new(false), palette_open: Signal::new(false) }
+        Self { layers_open: signal(false), palette_open: signal(false) }
     }
 }
 
@@ -655,7 +656,7 @@ impl Default for LayersPopoverProps {
             state: BoardState::default(),
             strokes: Default::default(),
             canvases: Default::default(),
-            version: Signal::new(0),
+            version: signal(0),
         }
     }
 }
@@ -832,7 +833,7 @@ impl Default for CanvasRowProps {
             state: BoardState::default(),
             strokes: Default::default(),
             canvases: Default::default(),
-            version: Signal::new(0),
+            version: signal(0),
         }
     }
 }
@@ -1022,7 +1023,7 @@ impl Default for DeleteCanvasButtonProps {
             state: BoardState::default(),
             strokes: Default::default(),
             canvases: Default::default(),
-            version: Signal::new(0),
+            version: signal(0),
         }
     }
 }
@@ -1086,7 +1087,7 @@ impl Default for AddCanvasRowProps {
             state: BoardState::default(),
             strokes: Default::default(),
             canvases: Default::default(),
-            version: Signal::new(0),
+            version: signal(0),
         }
     }
 }
@@ -1175,7 +1176,7 @@ impl Default for RecordDockProps {
             rec_handle: Default::default(),
             mic_handle: Default::default(),
             capture: CanvasCapture::default(),
-            version: Signal::new(0),
+            version: signal(0),
         }
     }
 }
@@ -1260,7 +1261,7 @@ impl Default for RecordButtonProps {
             rec_handle: Default::default(),
             mic_handle: Default::default(),
             capture: CanvasCapture::default(),
-            version: Signal::new(0),
+            version: signal(0),
         }
     }
 }
@@ -1454,7 +1455,7 @@ pub struct RecIndicatorProps {
 
 impl Default for RecIndicatorProps {
     fn default() -> Self {
-        Self { focused: Rc::new(|| true), recording: Signal::new(false) }
+        Self { focused: Rc::new(|| true), recording: signal(false) }
     }
 }
 
@@ -1556,7 +1557,7 @@ impl Default for SettingsFabProps {
     fn default() -> Self {
         Self {
             focused: Rc::new(|| true),
-            recording: Signal::new(false),
+            recording: signal(false),
             nav: Ref::new(),
         }
     }

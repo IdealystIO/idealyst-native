@@ -1,63 +1,50 @@
 //! `codeblock` — read-only colored-text panel primitive.
 //!
 //! A flat sequence of `(text, color)` runs rendered as a **single
-//! native node** on every backend. Built for syntax-highlighted source
-//! display — the docs site renders ~140 line tokenized snippets and
-//! ships dozens of them per page.
+//! native node** on every platform that has a real handler. Built for
+//! syntax-highlighted source display — the docs site renders ~140 line
+//! tokenized snippets and ships dozens of them per page.
 //!
 //! ## Why this is a third-party primitive, not a framework one
 //!
-//! It used to be `Element::CodeBlock` in `runtime-core`. A measurement
-//! showed the perf justification was real: the equivalent composition
-//! (`View` + per-token styled `Text`) generates 100–300× more backend
-//! ops per re-render even with batched fast paths. The structural gap
-//! (composition rebuilds every span on each render; the single-node
-//! primitive replaces one node) can't be closed by framework
-//! optimization alone.
+//! It used to be `Element::CodeBlock` in the framework core. A
+//! measurement showed the perf justification was real: the equivalent
+//! composition (`view` + per-token styled `text`) generates 100–300×
+//! more backend ops per re-render even with batched fast paths. The
+//! structural gap (composition rebuilds every span on each render; the
+//! single-node primitive replaces one node) can't be closed by
+//! framework optimization alone.
 //!
-//! But the primitive doesn't fit runtime-core's intent — it isn't a
+//! But the primitive doesn't fit the core's intent — it isn't a
 //! platform-native widget and is expressible from existing primitives
 //! if perf weren't a concern. CLAUDE.md rule 3 says exactly this case
-//! belongs in a third-party extension via `Element::External`. So we
-//! kept the fast single-node renderer but moved the type out of core.
+//! belongs in a third-party extension. So we kept the fast single-node
+//! renderer but moved the type out of core.
 //!
-//! ## One authored surface, two cores
+//! ## Per-platform rendering
 //!
-//! The default build is the old-core implementation (`Element::External`
-//! payload + per-backend `ExternalRegistry`), byte-moved into
-//! [`oldcore`]; the `new-core` feature swaps in [`newcore`], which
-//! re-expresses the SAME public call shape
-//! (`code_block(spans).with_style(…)` + a bootstrap `register`) over
-//! the scene registry — the new core's unified primitive==external
-//! contract — so a consuming app compiles the same source against
-//! either core. Mutually exclusive (same names), mirroring the
-//! build-graph-wide macro-lowering switch. The new-core web/SSR handler
-//! reproduces the old handler's `<pre>`/span DOM byte-for-byte (see
-//! `newcore.rs`).
+//! [`register`] installs the payload handler on a scene
+//! [`Registry`](runtime_scene::Registry). It type-dispatches ONCE at
+//! registration (the toolbar SDK's pattern) so the concrete native
+//! backends get their single-node handler and every other
+//! caps-complete host gets the portable `<pre>`/span one:
 //!
-//! ## Per-backend rendering (single-node throughout)
-//!
-//! Every backend renders **one** native node per `code_block(...)` call:
-//!
-//! - **Web** — a `<pre>` containing one styled `<span>` per run
-//!   (built via the `Backend` trait so SSR + hydration stay in lock
-//!   step; the new-core leg drives the same calls through the caps
-//!   traits).
+//! - **macOS** — an `NSScrollView` (horizontal) wrapping an
+//!   `NSTextField` label with per-run `NSColor` ranges. One label per
+//!   block.
+//! - **iOS** — a `UIScrollView` (horizontal) containing an
+//!   inset-honoring label whose `attributedText` is an
+//!   `NSAttributedString` with per-run
+//!   `NSForegroundColorAttributeName` ranges. One label per block.
 //! - **Android** — a `RustCodeBlock` (HorizontalScrollView + TextView)
 //!   that sets a `SpannableString` with one `ForegroundColorSpan` per
 //!   run. One TextView per code block, regardless of token count.
-//! - **iOS** — a `UIScrollView` (horizontal) containing an inset-honoring
-//!   label whose `attributedText` is an `NSAttributedString` with per-run
-//!   `NSForegroundColorAttributeName` ranges. One label per block.
-//! - **macOS** — an `NSScrollView` (horizontal) wrapping an `NSTextField`
-//!   label with per-run `NSColor` ranges. Same shape as iOS.
-//! - **terminal / gpu** — fall through to the framework's
-//!   external-not-registered placeholder. Adding handlers there
-//!   follows the same shape as iOS/Android.
-//!
-//! The native handlers are old-core-only today (new-core native boots
-//! don't exist yet); the new-core leg covers web + SSR, the two
-//! surfaces new-core apps actually boot.
+//! - **Every other host (web, SSR, terminal, gpu, host-mock)** — one
+//!   `create_element("pre")` outer node with one `create_text` child
+//!   per run, each carrying its literal color. Backends with no tag
+//!   concept get a plain view (the `create_element` cap default), so
+//!   the panel still renders; only the one-node-per-block optimization
+//!   is absent.
 //!
 //! ## Padding is author-driven
 //!
@@ -78,9 +65,7 @@
 //! ```ignore
 //! use codeblock::code_block;
 //!
-//! // At app bootstrap, once per backend:
-//! codeblock::register(&mut backend);          // old core
-//! // …or on the new core, as the boot registration seam:
+//! // At app bootstrap: `register` IS the boot registration seam.
 //! backend_web::newcore::start_in("#app", codeblock::register, app);
 //!
 //! // Inside an effect / arm body:
@@ -88,35 +73,197 @@
 //! code_block(spans).with_style(my_codeblock_style())
 //! ```
 //!
-//! On backends without a registered handler, the framework renders a
-//! placeholder per its usual `Element::External` policy.
+//! An UNREGISTERED payload panics at realize (the scene contract), so a
+//! missed `register` fails loud rather than rendering a silent
+//! placeholder.
 #![deny(missing_docs)]
 
-#[cfg(all(
-    target_os = "android",
-    not(target_arch = "wasm32"),
-    not(feature = "new-core")
-))]
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use runtime_scene::{item, Element, MountCx, Registry};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::{Color, StyleRules, Tokenized};
+use runtime_vocabulary::caps::TextOps;
+use runtime_vocabulary::glue::IntoElement;
+use runtime_vocabulary::style_attach::{attach_style, IntoStyleProp, StyleProp, StyleServices};
+
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 mod android;
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32"), not(feature = "new-core")))]
+#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 mod ios;
-#[cfg(all(
-    target_os = "macos",
-    not(target_arch = "wasm32"),
-    not(feature = "new-core")
-))]
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 mod macos;
 
-// One authored surface, two cores: the default build is the old-core
-// implementation, byte-moved into `oldcore`; the `new-core` feature
-// swaps in `newcore`, which re-expresses the SAME public call shape
-// over the scene registry. Mutually exclusive (same names).
-#[cfg(not(feature = "new-core"))]
-mod oldcore;
-#[cfg(not(feature = "new-core"))]
-pub use oldcore::*;
+/// Payload for a code block. Single-take style slot (the vocabulary
+/// `PrimCell` discipline, inlined): the scene hands the handler a
+/// shared `&Rc<Self>`, but `StyleProp` must move at mount.
+struct CodeBlockPrim {
+    spans: Vec<(String, Color)>,
+    style: RefCell<Option<StyleProp>>,
+}
 
-#[cfg(feature = "new-core")]
-mod newcore;
-#[cfg(feature = "new-core")]
-pub use newcore::*;
+/// Author-side builder returned by [`code_block`] — `.with_style(…)`
+/// then element coercion.
+pub struct CodeBlockBuilder {
+    spans: Vec<(String, Color)>,
+    style: Option<StyleProp>,
+}
+
+/// Construct a `CodeBlock` from a flat span list.
+///
+/// ```ignore
+/// code_block(vec![
+///     ("fn ".into(),      Color("#888".into())),
+///     ("hello".into(),    Color("#0a0".into())),
+///     ("() { … }".into(), Color("#444".into())),
+/// ])
+/// ```
+pub fn code_block(spans: Vec<(String, Color)>) -> CodeBlockBuilder {
+    CodeBlockBuilder { spans, style: None }
+}
+
+impl CodeBlockBuilder {
+    /// Attach the author style — lands on the outer node (the `<pre>` /
+    /// scroller).
+    pub fn with_style(mut self, style: impl IntoStyleProp) -> Self {
+        self.style = Some(style.into_style_prop());
+        self
+    }
+}
+
+impl IntoElement for CodeBlockBuilder {
+    fn into_element(self) -> Element {
+        item(
+            CodeBlockPrim {
+                spans: self.spans,
+                style: RefCell::new(self.style),
+            },
+            Vec::new(),
+        )
+    }
+}
+
+/// Shared mount tail: the author style on the outer node, through the
+/// standard style channel.
+fn attach_author_style<H>(backend: &Rc<RefCell<H>>, node: &H::Node, prim: &CodeBlockPrim)
+where
+    H: StyleServices,
+{
+    if let Some(style) = prim.style.borrow_mut().take() {
+        attach_style(backend, node, style);
+    }
+}
+
+/// Portable mount handler: `<pre>` outer node, one text span per run
+/// with its color applied as a literal rule, author style attached to
+/// the `<pre>`. Generic over the caps traits so every caps-complete
+/// host shares it — the web backend (`backend_web::newcore::start_in`'s
+/// register seam) and the SSR backend
+/// (`backend_ssr::newcore::render_path_with`) mount the identical
+/// `<pre>`/span shape, which is what keeps the website's SSG parity
+/// dumps aligned.
+fn mount_code_block<H>(
+    cx: &mut MountCx<'_, H>,
+    prim: &Rc<CodeBlockPrim>,
+    _children: Vec<Element>,
+) -> H::Node
+where
+    H: StyleServices + TextOps,
+{
+    let backend = cx.backend().clone();
+    let a11y = AccessibilityProps::default();
+    let mut pre = backend.borrow_mut().create_element("pre");
+    for (text, color) in &prim.spans {
+        let span = backend.borrow_mut().create_text(text, &a11y);
+        let mut rules = StyleRules::default();
+        rules.color = Some(Tokenized::Literal(color.clone()));
+        backend.borrow_mut().apply_style(&span, &Rc::new(rules));
+        backend.borrow_mut().insert(&mut pre, span);
+    }
+    attach_author_style(&backend, &pre, prim);
+    pre
+}
+
+/// macOS single-node handler — `Registry<MacosBackend>`-concrete (the
+/// AppKit widget graph has no caps-trait expression).
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+fn mount_code_block_macos(
+    cx: &mut MountCx<'_, backend_macos::MacosBackend>,
+    prim: &Rc<CodeBlockPrim>,
+    _children: Vec<Element>,
+) -> backend_macos::MacosNode {
+    let backend = cx.backend().clone();
+    let node = macos::build(&prim.spans, &mut backend.borrow_mut());
+    attach_author_style(&backend, &node, prim);
+    node
+}
+
+/// iOS single-node handler — `Registry<IosBackend>`-concrete.
+#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+fn mount_code_block_ios(
+    cx: &mut MountCx<'_, backend_ios::IosBackend>,
+    prim: &Rc<CodeBlockPrim>,
+    _children: Vec<Element>,
+) -> backend_ios::IosNode {
+    let backend = cx.backend().clone();
+    let node = ios::build(&prim.spans, &mut backend.borrow_mut());
+    attach_author_style(&backend, &node, prim);
+    node
+}
+
+/// Android single-node handler — `Registry<AndroidBackend>`-concrete.
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+fn mount_code_block_android(
+    cx: &mut MountCx<'_, backend_android::AndroidBackend>,
+    prim: &Rc<CodeBlockPrim>,
+    _children: Vec<Element>,
+) -> jni::objects::GlobalRef {
+    let backend = cx.backend().clone();
+    let node = android::build(&prim.spans, &mut backend.borrow_mut());
+    attach_author_style(&backend, &node, prim);
+    node
+}
+
+/// Register the codeblock payload handler on a scene registry. Pass
+/// this as the boot registration seam — the `register` argument of
+/// `backend_web::newcore::start_in` /
+/// `backend_ssr::newcore::render_path_with` / a native host's
+/// `run_with` — against any caps-complete host.
+///
+/// The platform dispatch happens ONCE here, by registry type: on macOS
+/// / iOS / Android the concrete native registry gets the single-node
+/// handler, and anything else (including SSR + SSG builds that run on
+/// those same host OSes) gets the portable `<pre>`/span handler. A cfg
+/// split alone could not express that — `target_os = "macos"` is true
+/// for a macOS SSG build too.
+pub fn register<H>(registry: &mut Registry<H>)
+where
+    H: StyleServices + TextOps + 'static,
+{
+    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+    {
+        let any: &mut dyn std::any::Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_macos::MacosBackend>>() {
+            reg.register::<CodeBlockPrim, _>(mount_code_block_macos);
+            return;
+        }
+    }
+    #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+    {
+        let any: &mut dyn std::any::Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_ios::IosBackend>>() {
+            reg.register::<CodeBlockPrim, _>(mount_code_block_ios);
+            return;
+        }
+    }
+    #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+    {
+        let any: &mut dyn std::any::Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_android::AndroidBackend>>() {
+            reg.register::<CodeBlockPrim, _>(mount_code_block_android);
+            return;
+        }
+    }
+    registry.register::<CodeBlockPrim, _>(mount_code_block::<H>);
+}

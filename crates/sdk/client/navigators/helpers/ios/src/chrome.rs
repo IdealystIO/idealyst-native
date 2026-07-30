@@ -3,7 +3,7 @@
 //! Moved verbatim from `backend-ios-mobile::imp::mod` after the
 //! navigator-substrate refactor. The shape changed in one place: the
 //! `options` argument is now the helper crate's
-//! `IosScreenOptions` instead of the deleted `runtime_core::ScreenOptions`
+//! `IosScreenOptions` instead of the deleted old-core `ScreenOptions`
 //! struct — every field is identical, only the type's home moved.
 
 use crate::{BarButton, IosScreenOptions};
@@ -13,7 +13,7 @@ use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_foundation::{CGFloat, MainThreadMarker, NSObject, NSString};
 use objc2_ui_kit::{UIColor, UINavigationController, UIView, UIViewController};
-use runtime_core::StyleRules;
+use runtime_shared::StyleRules;
 use std::rc::Rc;
 
 /// Duration of the cross-fade attached to nav-bar appearance changes.
@@ -184,7 +184,7 @@ enum BarSide {
 fn apply_bar_button(
     vc: &UIViewController,
     btn: &BarButton,
-    fallback_tint: Option<runtime_core::Color>,
+    fallback_tint: Option<runtime_shared::Color>,
     side: BarSide,
     mtm: MainThreadMarker,
     retained: &mut Vec<Retained<NSObject>>,
@@ -317,13 +317,13 @@ pub(crate) fn apply_nav_title_style(
             .font_size
             .as_ref()
             .map(|t| match t.resolve() {
-                runtime_core::Length::Px(v) => v as CGFloat,
+                runtime_shared::Length::Px(v) => v as CGFloat,
                 _ => 17.0,
             })
             .unwrap_or(17.0);
         let weight = style
             .font_weight
-            .unwrap_or(runtime_core::FontWeight::SemiBold);
+            .unwrap_or(runtime_shared::FontWeight::SemiBold);
         let ui_weight = font_weight_to_uikit(weight);
         let font: Retained<NSObject> = msg_send_id![
             objc2::class!(UIFont),

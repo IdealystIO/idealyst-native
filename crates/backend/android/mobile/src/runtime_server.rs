@@ -178,7 +178,7 @@ pub fn attach_with_url_with_register<'l>(
 
         // Install the Handler-backed scheduler on the UI thread BEFORE
         // anything can defer work. Without it,
-        // `runtime_core::schedule_microtask` / `after_ms` run their
+        // `runtime_shared::schedule_microtask` / `after_ms` run their
         // closure SYNCHRONOUSLY (scheduling.rs: no installed scheduler
         // → `f()` inline). The SDK drawer handler defers its sidebar
         // build via `schedule_microtask` so the `backend.borrow_mut()`
@@ -309,7 +309,7 @@ pub fn report_viewport(width_px: jni::sys::jint, height_px: jni::sys::jint, dens
     // unit the wire protocol uses, so `viewport_size()` subscribers
     // see the same numbers a wire-replay backend would compute
     // against.
-    runtime_core::set_viewport_size(runtime_core::ViewportSize {
+    runtime_shared::set_viewport_size(runtime_shared::ViewportSize {
         width: width_dp,
         height: height_dp,
     });
@@ -317,8 +317,7 @@ pub fn report_viewport(width_px: jni::sys::jint, height_px: jni::sys::jint, dens
     // old core), but every seam that writes `set_viewport_size`
     // forwards so a future new-core shell inherits live breakpoints
     // for free. See newcore.rs, "Viewport source".
-    #[cfg(feature = "new-core")]
-    crate::newcore::forward_viewport(runtime_core::ViewportSize {
+    crate::newcore::forward_viewport(runtime_shared::ViewportSize {
         width: width_dp,
         height: height_dp,
     });

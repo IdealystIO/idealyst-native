@@ -16,6 +16,11 @@ sidecar = ["dep:dev-server"]
 
 [dependencies]
 runtime-core = { workspace = true }
+# The `ui!`/`#[component]` expansions spell absolute
+# `::runtime_vocabulary::glue::…` paths, so this is a direct dep.
+runtime-vocabulary = { workspace = true }
+# `register_scene_extensions` is generic over the scene `Registry` host.
+runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 dnd = { workspace = true }
 dev-server = { workspace = true, optional = true }

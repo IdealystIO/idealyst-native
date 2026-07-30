@@ -31,7 +31,6 @@ impl WebBackend {
     /// around when dynamically-inserted scripts execute, and some
     /// configurations (CSP, certain WASM hosts) don't run them at
     /// all. Eval-via-Function is unambiguous and reliable.
-    #[cfg(feature = "prim-virtualizer")]
     pub(crate) fn ensure_virtualizer_shim(&mut self) {
         if self.virtualizer_shim_injected {
             return;

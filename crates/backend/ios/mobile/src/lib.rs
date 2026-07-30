@@ -41,14 +41,12 @@ mod transform_transition_policy;
 // scheduler/world code kept host-compilable so its regression tests
 // run from any host — the UIKit-dependent Host/caps impls and boot
 // path are `cfg(target_os = "ios")` inside the module.
-#[cfg(feature = "new-core")]
 pub mod newcore;
 
 #[cfg(target_os = "ios")]
 pub use imp::{
     install_global_self, mount_screen_in_vc, pin_to_edges, schedule_layout_pass,
-    set_animated_color, set_animated_f32, with_backend, IosBackend, IosExternalRegistrar,
-    IosNavigatorRegistrar, IosNode,
+    set_animated_color, set_animated_f32, with_backend, IosBackend, IosNode,
 };
 
 /// Re-export of the helpers crate's most common ObjC anchor type so
@@ -61,14 +59,14 @@ pub use imp::callbacks::CallbackTarget;
 pub use backend_ios_core::render_loop::install_render_loop;
 
 /// Install the iOS scheduler (NSTimer-backed). Must be called once
-/// before `runtime_core::render(...)` so timer-driven features
+/// before `runtime_shared::render(...)` so timer-driven features
 /// (long-press recognizer, presence animations, anything calling
 /// `after_ms` / `schedule_microtask`) delay correctly instead of
 /// firing synchronously.
 #[cfg(target_os = "ios")]
 pub use backend_ios_core::scheduler::install_scheduler;
 
-/// Install the Apple NSLog-backed `Logger` so `runtime_core::log_*` reach the
+/// Install the Apple NSLog-backed `Logger` so `runtime_shared::log_*` reach the
 /// iOS system log (Xcode console / `simctl log show`). Without it,
 /// `log_info!`/`log_error!` fall back to `StderrLogger`, whose stderr the
 /// system log doesn't capture — Rust-side logs (e.g. an in-app E2E suite's
@@ -123,12 +121,12 @@ pub fn install_global_self(_weak: std::rc::Weak<std::cell::RefCell<IosBackend>>)
 /// matching `IosNode` is exposed only on iOS, so consumer code that
 /// reaches this path is necessarily host-target only.
 #[cfg(not(target_os = "ios"))]
-pub fn set_animated_f32<T>(_node: &T, _prop: runtime_core::animation::AnimProp, _value: f32) {}
+pub fn set_animated_f32<T>(_node: &T, _prop: runtime_shared::animation::AnimProp, _value: f32) {}
 
 #[cfg(not(target_os = "ios"))]
 pub fn set_animated_color<T>(
     _node: &T,
-    _prop: runtime_core::animation::AnimProp,
+    _prop: runtime_shared::animation::AnimProp,
     _value: [f32; 4],
 ) {
 }

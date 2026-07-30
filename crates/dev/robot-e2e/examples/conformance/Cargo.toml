@@ -6,9 +6,8 @@ license.workspace = true
 description = "Cross-platform conformance app: mounts the framework's primitives, idea-ui components, and navigators in deliberately weird configurations, each tagged with a stable test_id, and drives them with an in-app robot-e2e suite. Run it on any backend to get a pass/fail verdict on the framework core."
 
 [lib]
-# `cdylib` for the new-core web build (`wasm-pack build --target web -- \
-# --no-default-features --features new-core,robot`); the CLI's old-core
-# builds keep consuming the rlib through their generated wrapper.
+# `cdylib` for the standalone web build (`wasm-pack build --target web`);
+# the CLI's generated wrappers consume the rlib.
 crate-type = ["rlib", "cdylib"]
 
 [features]
@@ -17,75 +16,37 @@ crate-type = ["rlib", "cdylib"]
 # without it the lowered primitives omit their `test_id` slots and the whole
 # suite is blind. It also pulls the `robot-e2e` harness + turns on the real
 # Robot API. `--no-default-features` still builds a plain, untested app.
-default = ["robot", "new-core"]
-robot = ["runtime-core/robot", "idea-ui?/robot", "dep:robot-e2e"]
-
-# The two cores — SAME-SOURCE dual-core app (the newcore-app pattern):
-# exactly one per build. Runtime-v2 defaults flip: `new-core` is the
-# DEFAULT; `old-core` is the opt-in leg:
-#
-#   cargo check -p conformance                                        # new core
-#   cargo check -p conformance --no-default-features \
-#       --features old-core,robot                                     # old core
-#
-# Exactly one core per build graph: `new-core` forwards to
-# `runtime-macros/new-core`, and proc-macro features unify across a
-# build graph (see runtime-macros/Cargo.toml).
-# Both core features pull `robot` themselves: the CLI's single-core
-# builds compile `default-features = false, features = ["<core>"]`
-# (runtime-v2 defaults flip), which would otherwise strip the default
-# `robot` and leave the suite blind (no `test_id` emission).
-old-core = ["dep:idea-ui", "dep:stack-navigator", "robot"]
-new-core = [
-    "robot",
-    "dep:runtime-macros",
-    "runtime-macros/new-core",
-    "dep:runtime-vocabulary",
+default = ["robot"]
+robot = [
     "runtime-vocabulary/robot",
-    "dep:runtime-world",
-    # idea-ui rides BOTH cores now (P6 SDK retarget): the same
-    # Switch/Checkbox/Button screens + suite run same-source on the new
-    # core through idea-ui's own `new-core` alias build.
-    "dep:idea-ui",
-    "idea-ui/new-core",
-    "robot-e2e?/new-core",
-    "backend-web/new-core",
+    "idea-ui/robot",
+    "dep:robot-e2e",
     # The web host's robot surface: `newcore::start` installs the
     # vocabulary Robot driver env (queries enter the world, actions
     # settle via flush_sync) behind backend-web's `robot` feature —
     # without it the in-app suite's actions stage writes that never
     # commit.
     "backend-web/robot",
-    "dep:wasm-bindgen",
 ]
 
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
-# (build-runtime-server). Pulls `dev-server` + the navigators' recorder
-# registration so the suite can run over the runtime-server wire too.
-sidecar = ["dep:dev-server", "stack-navigator/runtime-server"]
+# (build-runtime-server). Pulls `dev-server` so the recorder-side
+# registration seam compiles.
+sidecar = ["dep:dev-server"]
 
 [dependencies]
-runtime-core = { workspace = true }
-runtime-macros = { workspace = true, optional = true }
-runtime-vocabulary = { workspace = true, optional = true }
-runtime-world = { workspace = true, optional = true }
-# PATH dep with `default-features = false` (the documented cargo gotcha:
-# the flag is ignored on `workspace = true` lines): idea-ui's `table`
-# default is old-core-authored and cannot join a new-core graph, so the
-# prim families are re-enabled explicitly. Conformance never renders
-# Table, so the old-core build is behavior-identical without it.
-idea-ui = { path = "../../../../ui/idea-ui", default-features = false, optional = true, features = [
-    "prim-icon", "prim-image", "prim-text-input", "prim-activity",
-    "prim-portal", "prim-presence",
-] }
+runtime-macros = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-world = { workspace = true }
+idea-ui = { workspace = true }
 icons-lucide = { workspace = true }
-stack-navigator = { workspace = true, optional = true }
 robot-e2e = { workspace = true, optional = true }
 dev-server = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
-wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen = "0.2"
 
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
 backend-ios-mobile = { workspace = true }

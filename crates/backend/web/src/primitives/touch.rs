@@ -1,7 +1,7 @@
 //! Raw touch delivery for the web backend.
 //!
-//! Implements [`runtime_core::Backend::install_touch_handler`] and
-//! [`runtime_core::Backend::claim_touch`] using the Pointer Events
+//! Implements [`runtime_shared::Backend::install_touch_handler`] and
+//! [`runtime_shared::Backend::claim_touch`] using the Pointer Events
 //! API. One DOM element receives four listeners — `pointerdown`,
 //! `pointermove`, `pointerup`, `pointercancel` — and translates each
 //! into a [`TouchEvent`] for the framework's handler.
@@ -18,12 +18,12 @@
 //! the web-side implementation of the claim protocol.
 
 use crate::WebBackend;
-use runtime_core::{
+use runtime_shared::{
     set_pointer_modifiers, PointerModifiers, TouchEvent, TouchHandler, TouchId, TouchPhase,
     TouchPoint,
 };
 use std::cell::RefCell;
-use runtime_core::collections::{SmallIdMap, SmallIdSet};
+use runtime_shared::collections::{SmallIdMap, SmallIdSet};
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -111,7 +111,7 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
                 force: pressure_to_force(ev.pressure()),
             };
             // Batching is automatic: the `on_touch` handler is wrapped in a
-            // reactive cycle at attach time (see `runtime_core::cycle`), so every
+            // reactive cycle at attach time (see `runtime_shared::cycle`), so every
             // signal write it makes (a camera pan writes pan_x, pan_y, + a repaint
             // tick) fans out ONCE after the handler returns. Without it each write
             // triggers the reactive repaint effect separately; web coalesces those
@@ -179,7 +179,7 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
                 force: pressure_to_force(ev.pressure()),
             };
             // Batching is automatic: the `on_touch` handler is wrapped in a
-            // reactive cycle at attach time (see `runtime_core::cycle`), so every
+            // reactive cycle at attach time (see `runtime_shared::cycle`), so every
             // signal write it makes (a camera pan writes pan_x, pan_y, + a repaint
             // tick) fans out ONCE after the handler returns. Without it each write
             // triggers the reactive repaint effect separately; web coalesces those
@@ -334,7 +334,7 @@ pub(crate) fn swallow_ancestor_touch(b: &mut WebBackend, el: &web_sys::Element) 
         .push(closure.into_js_value().unchecked_into());
 }
 
-/// Implementation of [`runtime_core::Backend::claim_touch`] —
+/// Implementation of [`runtime_shared::Backend::claim_touch`] —
 /// external claim invoked when a handler returned `claim: true` via
 /// any route other than the local `pointerdown` / `pointermove`
 /// callback we wired above (today there's no such route on web, but

@@ -30,30 +30,39 @@ fn swipe_action_is_horizontal_and_thresholded() {
 // Prev/Next clamp at the ends; they move the active pointer + restore strokes.
 #[test]
 fn apply_prev_next_clamp_and_switch() {
-    let (store, strokes, active, version, ids, next_id) = board();
-    add_canvas(&store, &strokes, active, version, ids, next_id); // canvas 1 (active)
-    // Prev → canvas 0; Prev again is a no-op (clamped).
-    apply_canvas_action(CanvasAction::Prev, &store, &strokes, active, version, ids, next_id);
-    assert_eq!(active.get(), 0);
-    apply_canvas_action(CanvasAction::Prev, &store, &strokes, active, version, ids, next_id);
-    assert_eq!(active.get(), 0, "clamped at the first canvas");
+    let b = board();
+    add_canvas(&b.store, &b.strokes, b.active, b.version, b.ids, b.next_id); // canvas 1
+    b.settle();
+    // Prev → canvas 0; Prev again is a no-op (clamped). One `settle` per action:
+    // that is the per-event flush the backend driver performs.
+    apply_canvas_action(CanvasAction::Prev, &b.store, &b.strokes, b.active, b.version, b.ids, b.next_id);
+    b.settle();
+    assert_eq!(b.active.get(), 0);
+    apply_canvas_action(CanvasAction::Prev, &b.store, &b.strokes, b.active, b.version, b.ids, b.next_id);
+    b.settle();
+    assert_eq!(b.active.get(), 0, "clamped at the first canvas");
     // Next → canvas 1; Next again clamps at the last.
-    apply_canvas_action(CanvasAction::Next, &store, &strokes, active, version, ids, next_id);
-    assert_eq!(active.get(), 1);
-    apply_canvas_action(CanvasAction::Next, &store, &strokes, active, version, ids, next_id);
-    assert_eq!(active.get(), 1, "clamped at the last canvas");
+    apply_canvas_action(CanvasAction::Next, &b.store, &b.strokes, b.active, b.version, b.ids, b.next_id);
+    b.settle();
+    assert_eq!(b.active.get(), 1);
+    apply_canvas_action(CanvasAction::Next, &b.store, &b.strokes, b.active, b.version, b.ids, b.next_id);
+    b.settle();
+    assert_eq!(b.active.get(), 1, "clamped at the last canvas");
 }
 
 // Remove deletes the current canvas, or clears it when it's the only one.
 #[test]
 fn apply_remove_deletes_or_clears_last() {
-    let (store, strokes, active, version, ids, next_id) = board();
-    add_canvas(&store, &strokes, active, version, ids, next_id); // 2 canvases
-    apply_canvas_action(CanvasAction::Remove, &store, &strokes, active, version, ids, next_id);
-    assert_eq!(ids.get().len(), 1, "deleted one canvas");
+    let b = board();
+    add_canvas(&b.store, &b.strokes, b.active, b.version, b.ids, b.next_id); // 2 canvases
+    b.settle();
+    apply_canvas_action(CanvasAction::Remove, &b.store, &b.strokes, b.active, b.version, b.ids, b.next_id);
+    b.settle();
+    assert_eq!(b.ids.get().len(), 1, "deleted one canvas");
     // Now the last canvas: Remove clears it instead of deleting.
-    strokes.borrow_mut().push(dot());
-    apply_canvas_action(CanvasAction::Remove, &store, &strokes, active, version, ids, next_id);
-    assert_eq!(ids.get().len(), 1, "last canvas survives");
-    assert!(strokes.borrow().is_empty(), "but it was cleared");
+    b.strokes.borrow_mut().push(dot());
+    apply_canvas_action(CanvasAction::Remove, &b.store, &b.strokes, b.active, b.version, b.ids, b.next_id);
+    b.settle();
+    assert_eq!(b.ids.get().len(), 1, "last canvas survives");
+    assert!(b.strokes.borrow().is_empty(), "but it was cleared");
 }

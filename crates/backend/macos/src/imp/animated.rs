@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use runtime_core::animation::AnimProp;
+use runtime_shared::animation::AnimProp;
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_app_kit::NSView;
@@ -98,10 +98,10 @@ pub(crate) type AnimatedStateMap = HashMap<usize, RefCell<AnimatedState>>;
 /// `backend-ios-mobile/src/imp/animated.rs::impl_apply_static_transform`.
 pub(crate) fn apply_static_transform(
     node: &MacosNode,
-    style: &runtime_core::StyleRules,
+    style: &runtime_shared::StyleRules,
     states: &mut AnimatedStateMap,
 ) {
-    use runtime_core::{Length, Transform};
+    use runtime_shared::{Length, Transform};
     let view = node.as_view();
     let key = view as *const NSView as usize;
     let state = states
@@ -206,7 +206,7 @@ fn current_layer_transform(view: &NSView) -> Option<CATransform3D> {
 fn animate_layer_transform(
     view: &NSView,
     from: CATransform3D,
-    transition: &runtime_core::Transition,
+    transition: &runtime_shared::Transition,
 ) {
     use objc2_foundation::NSString;
     let layer: Option<Retained<NSObject>> = unsafe { msg_send_id![view, layer] };

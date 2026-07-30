@@ -20,6 +20,9 @@ license.workspace = true
 # parity ports will land per-platform as separate follow-ups.
 
 [dependencies]
+# The author surface, aliased to `runtime_core` at the crate root (see
+# src/lib.rs). Only `watch` is used — but it must be glue's world-effect
+# version, because the spec closure reads the app's (world) signals.
 runtime-core = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

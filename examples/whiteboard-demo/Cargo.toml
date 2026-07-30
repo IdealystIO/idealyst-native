@@ -9,7 +9,19 @@ description = "Whiteboard demo — a freehand-drawable canvas (canvas SDK) that 
 crate-type = ["rlib"]
 
 [dependencies]
+# The author surface: `runtime-core` is aliased to `runtime_core` at the
+# crate root (see src/lib.rs); `async-driver` gives it `driver::spawn_async`.
+# `runtime-vocabulary` because the `ui!` emission spells absolute
+# `::runtime_vocabulary::glue::…` paths; `runtime-scene` because
+# `register_scene_extensions` takes the scene registry.
 runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+# The permanent shared substrate, for the three items the facade root does
+# not re-export yet: `color::parse_or` / `color::Rgba`, the app-level
+# `set_app_key_handler` hook, and `host::color_scheme()`. Drop this dep once
+# `runtime_vocabulary::glue` mirrors them.
+runtime-shared = { workspace = true }
 idea-ui = { workspace = true }
 icons-lucide = { workspace = true }
 stack-navigator = { workspace = true }
@@ -23,30 +35,22 @@ media-writer = { workspace = true }
 file-export = { workspace = true }
 files = { workspace = true }
 
-# The concrete backend each platform's wrapper hands to `register_extensions`,
-# where the canvas / video / screen-recorder externals register their handlers.
+# Web needs the CONCRETE backend type: `canvas_native::register` and
+# `video::register` take a `Registry<WebBackend>` there (the real Canvas2D /
+# `<video>` handlers), so `register_scene_extensions` is web-concrete. Every
+# other target uses the registry-GENERIC `register`, which type-dispatches
+# internally (video downcasts to the macOS/iOS/Android registry for its native
+# player; canvas type-dispatches to its per-platform painter) — so no native
+# backend deps.
+#
+# `canvas-vello` (the GPU/vello renderer) is deliberately NOT a dependency:
+# `canvas-native` now carries real painters on every target this demo ships to
+# (web Canvas2D, iOS/macOS CoreGraphics, Android `android.graphics`), and both
+# crates install a handler for the SAME `canvas_core::CanvasPrim` payload with
+# last-registration-wins. Adding vello here would only trade the CPU painter
+# for the GPU one and pull wgpu into the bundle; the demo does not need it.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
-# GPU canvas on web (vello over WebGPU) — overrides canvas-native (last-wins)
-# when the browser exposes WebGPU; falls back to Canvas2D per-canvas otherwise.
-canvas-vello = { workspace = true }
-
-[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
-backend-ios-mobile = { workspace = true }
-# GPU canvas on iOS (vello/Metal) — overrides canvas-native (last-wins). iOS uses
-# host Metal (f16/compute), so vello renders.
-canvas-vello = { workspace = true }
-
-[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
-backend-android-mobile = { workspace = true }
-# GPU canvas on Android (vello/Vulkan). Self-gates: wins on a real device with
-# f16, steps aside to canvas-native on the emulator (no f16).
-canvas-vello = { workspace = true }
-
-[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
-backend-macos = { workspace = true }
-# GPU canvas on macOS (vello/Metal) — overrides canvas-native (last-wins).
-canvas-vello = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Whiteboard"

@@ -22,11 +22,13 @@ license.workspace = true
 # app- or higher-SDK-level policy (see the `table` SDK, which can sit on
 # top of this).
 #
-# Pure Rust on top of `runtime-core`; nothing platform-specific to gate.
-# No permissions required.
+# Pure Rust on top of the author surface; nothing platform-specific to
+# gate. No permissions required.
 
 [dependencies]
-# This SDK renders through `Element::Virtualizer`, so it forwards the
-# primitive's feature: depending on `virtualized` re-enables exactly the
-# primitive it needs, even in an app built with default-features off.
-runtime-core = { workspace = true, features = ["prim-virtualizer"] }
+# The author surface, aliased to `runtime_core` at the crate root — the
+# `flat_list` / `virtualizer` builder lives there.
+runtime-core = { workspace = true }
+# One type only: `VirtualLayout`, which glue's `flat_list` module does not
+# re-export yet (see src/lib.rs).
+runtime-shared = { workspace = true }

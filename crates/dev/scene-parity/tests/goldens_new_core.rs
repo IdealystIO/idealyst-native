@@ -1,18 +1,19 @@
-//! The P1 exit gate proper: every (scenario, mode) pair rerun against the
-//! NEW scene core (`runtime-scene`) and asserted against the SAME golden
-//! files the old walker pins — modulo only the README's sanctioned
-//! divergences, handled explicitly by `new_core::normalize` (first-fire
-//! anchor clears) and the closed `goldens_newcore/` override set
-//! (cross-effect firing order). See `src/new_core.rs` for the mechanism.
+//! The structural-op gate: every (scenario, mode) pair run against the
+//! scene core (`runtime-scene`) and asserted against the frozen golden
+//! files — modulo only the README's sanctioned divergences, handled
+//! explicitly by `new_core::normalize` (first-fire anchor clears) and the
+//! closed `goldens_newcore/` override set (cross-effect firing order).
+//! See `src/new_core.rs` for the mechanism.
 //!
-//! The old-core tests (`tests/goldens.rs`) are untouched and keep pinning
-//! the walker byte-for-byte.
+//! The goldens were frozen from the old walker before it was deleted;
+//! `tests/goldens.rs` (the walker-side half that generated them) went
+//! with it.
 
 use std::collections::BTreeSet;
 
 use scene_parity::new_core::{check_new, newcore_golden_path, NEWCORE_OVERRIDES};
 use scene_parity::scenarios_new::new_scenarios;
-use scene_parity::{scenarios, Mode};
+use scene_parity::Mode;
 
 macro_rules! golden_test {
     ($test:ident, $name:literal, $mode:expr) => {
@@ -88,11 +89,42 @@ golden_test!(
 );
 golden_test!(dispose_order_when_spliced, "dispose_order_when", Mode::Spliced);
 
-/// The new-core registry must mirror the old one exactly — same scenario
-/// names, same modes — so both cores run the identical suite.
+/// The scenario registry is FROZEN: this literal is the (name, modes)
+/// inventory the old walker's registry carried when the goldens were
+/// generated, transcribed from the deleted `src/scenarios.rs`. It used
+/// to be checked live against that registry
+/// (`new_core_registry_matches_old`); with the walker gone the frozen
+/// list is the surviving half — it still catches a scenario being
+/// dropped, renamed, or silently having a mode removed, which is the
+/// failure mode the mirror test existed to prevent.
+const FROZEN_SCENARIO_REGISTRY: &[(&str, &[Mode])] = &[
+    ("when_toggle", &[Mode::Anchored, Mode::Spliced]),
+    ("when_dedup_extra_signal", &[Mode::Anchored, Mode::Spliced]),
+    ("switch_rotation", &[Mode::Anchored, Mode::Spliced]),
+    ("each_append", &[Mode::Anchored, Mode::Spliced]),
+    ("each_remove_middle", &[Mode::Spliced]),
+    ("each_reverse", &[Mode::Spliced]),
+    ("each_insert_middle_survivors", &[Mode::Spliced]),
+    ("each_multi_node_rows", &[Mode::Spliced]),
+    ("fragment_base_index", &[Mode::Spliced]),
+    ("dynamic_swap", &[Mode::Anchored]),
+    ("nested_when_in_each_row", &[Mode::Anchored, Mode::Spliced]),
+    ("dispose_order_each", &[Mode::Spliced]),
+    ("dispose_order_when", &[Mode::Anchored, Mode::Spliced]),
+];
+
 #[test]
-fn new_core_registry_matches_old() {
-    let old: BTreeSet<(String, Vec<String>)> = scenarios()
+fn scenario_registry_matches_the_frozen_inventory() {
+    let frozen: BTreeSet<(String, Vec<String>)> = FROZEN_SCENARIO_REGISTRY
+        .iter()
+        .map(|(name, modes)| {
+            (
+                name.to_string(),
+                modes.iter().map(|m| m.suffix().to_string()).collect(),
+            )
+        })
+        .collect();
+    let actual: BTreeSet<(String, Vec<String>)> = new_scenarios()
         .iter()
         .map(|s| {
             (
@@ -101,16 +133,11 @@ fn new_core_registry_matches_old() {
             )
         })
         .collect();
-    let new: BTreeSet<(String, Vec<String>)> = new_scenarios()
-        .iter()
-        .map(|s| {
-            (
-                s.name.to_string(),
-                s.modes.iter().map(|m| m.suffix().to_string()).collect(),
-            )
-        })
-        .collect();
-    assert_eq!(old, new, "new-core scenario registry drifted from the old one");
+    assert_eq!(
+        frozen, actual,
+        "scenario registry drifted from the frozen inventory \
+         (left = frozen, right = live)",
+    );
 }
 
 /// `goldens_newcore/` may contain EXACTLY the sanctioned override files —

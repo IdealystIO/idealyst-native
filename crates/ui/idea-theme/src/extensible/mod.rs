@@ -408,9 +408,9 @@ impl Default for TypographyKindRef {
 /// custom modifiers are allowed to share a `key()` — key equality
 /// would silently swallow a real change. Pointer identity can only
 /// produce false NEGATIVES (a redundant notify when a fresh
-/// `builtins()` Rc carries the same modifier), which is the old
+/// `builtins()` Rc carries the same modifier), which is exactly
 /// `set_always` behavior — safe. This impl exists so `Signal<*Ref>`
-/// satisfies the new core's `T: PartialEq` signal bound (doc-controls
+/// satisfies the kernel's `T: PartialEq` signal bound (doc-controls
 /// state signals); it is not a semantic "same modifier" test.
 macro_rules! ref_ptr_eq {
     ($ty:ident) => {

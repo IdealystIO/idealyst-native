@@ -9,6 +9,16 @@ tags = ["migration", "0.5.0", "bundle-size", "features", "primitives", "brotli",
 > **Status: 0.5.0 is in development.** This is the living record of its
 > changes — each section carries a `Status:` line and fills in as the change
 > lands. See [[migrations]] for the versioning policy.
+>
+> **Superseded in part by runtime v2.** The `prim-*` cargo features and
+> `idealyst build --web --primitives=…` described below **no longer exist**.
+> They gated pre-v2 walker dispatch arms, authoring builder fns, and
+> `Backend` trait methods — none of which survive. Nothing in the
+> primitive-gating sections is actionable on a current build; they are kept
+> as the historical record. The structural successor is per-primitive handler
+> registration (`runtime_vocabulary::handlers::register_builtins`) — see the
+> [[sdks]] guide, "There are no `prim-*` features". The brotli /
+> `dist/web` sections below are unaffected and still current.
 
 0.5.0 is the bundle-size release. The web framework floor drops from ~591 KB
 to ~392 KB raw (~133 KB over the wire with brotli) through per-family
@@ -230,17 +240,22 @@ covered by `tests/lazy-chunk-handoff`).
 
 ## Migration checklist
 
-- [ ] Apps: nothing mandatory. Optionally adopt `--primitives` + the
-      app-side `default-features = false` edit for smaller bundles.
-- [ ] SDK authors: forward `prim-*` for every gated family your crate
-      renders; if your crate sits between apps and runtime-core, path-dep
-      runtime-core with `default-features = false`.
-- [ ] idea-ui apps using `--primitives`: also set
-      `idea-ui = { default-features = false, features = ["prim-…"] }`;
-      components whose families are off are compile errors, not
-      placeholders.
-- [ ] Custom backends: expect placeholder rendering (not panics) for
-      families you haven't implemented.
+- ~~Apps: optionally adopt `--primitives` + the app-side
+  `default-features = false` edit for smaller bundles.~~ **Removed by
+  runtime v2** — the flag is now a hard CLI error. Do not do this.
+- ~~SDK authors: forward `prim-*` for every gated family your crate
+  renders; if your crate sits between apps and runtime-core, path-dep
+  runtime-core with `default-features = false`.~~ **Removed by runtime
+  v2** — there are no `prim-*` features to forward, and `runtime-core`
+  itself is gone.
+- ~~idea-ui apps using `--primitives`: also set
+  `idea-ui = { default-features = false, features = ["prim-…"] }`.~~
+  **Removed by runtime v2** — a stale `prim-*` entry is now a cargo
+  resolve error. Delete it; the component set is unconditional.
+- ~~Custom backends: expect placeholder rendering (not panics) for
+  families you haven't implemented.~~ **Removed by runtime v2** — there
+  is no `Backend` trait; backends implement capability traits and the
+  scene `Registry` decides what a missing handler does.
 - [ ] Deploy scripts: account for `*.br` siblings in `dist/web`, or pass
       `--no-brotli`.
 - [ ] If you previously avoided `--data-prune`, it's safe to re-verify.

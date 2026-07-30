@@ -18,14 +18,80 @@ use idea_ui::{install_idea_theme, light_theme, typography_kind, Stack, StackGap,
 use media_stream::MediaStream;
 use runtime_core::{signal, text, ui, Element, IntoElement, Signal};
 
-/// No per-platform registration needed: the `video` external self-registers
-/// via `inventory::submit!` at backend construction (see
-/// [[project_inventory_self_registration]]). The crate stays linked through
-/// the `video::Video` references in `app()`.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam, invoked by the CLI-generated wrappers
+/// after `runtime_vocabulary::register_builtins`. There is no inventory
+/// self-registration on the scene registry — an UNREGISTERED payload
+/// panics at realize — so the `video` handler MUST be composed in here.
+///
+/// wasm32 takes the `WebBackend`-concrete arm because the real `<video>`
+/// renderer is `web_sys`-bound and cannot be expressed over the caps
+/// traits.
+#[cfg(target_arch = "wasm32")]
+pub fn register_scene_extensions(
+    registry: &mut runtime_scene::Registry<backend_web::WebBackend>,
+) {
+    video::register(registry);
+}
 
+/// Native arm: `video::register` dispatches on the registry TYPE at
+/// registration time (macOS / iOS / Android get their native player,
+/// every other host the External placeholder), so one generic seam
+/// covers them all.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
+where
+    H: runtime_vocabulary::caps::ExternalOps
+        + runtime_vocabulary::style_attach::StyleServices
+        + 'static,
+{
+    video::register(registry);
+}
+
+/// Recorder-side seam for the runtime-server sidecar
+/// (`dev_server::sidecar::run_newcore`).
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {}
+pub fn register_scene_extensions_recorder(registry: &mut dev_server::newcore::SceneRegistry) {
+    video::register(registry);
+}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
+}
+
+/// A `MediaStream` in a shape a signal can hold.
+///
+/// Every signal payload must be `PartialEq` — the world kernel's `set` is
+/// equality-guarded, so it needs to decide at commit whether the value
+/// actually changed. A live capture handle has no meaningful value
+/// equality (and `MediaStream`'s `Rc` is private, so pointer identity
+/// isn't reachable from here), so the slot carries a monotonic id and
+/// compares on that: two slots are equal exactly when they hold the same
+/// assignment — which is precisely the "did the source change?" question
+/// the guard should answer.
+#[derive(Clone)]
+struct StreamSlot {
+    id: u64,
+    stream: MediaStream,
+}
+
+impl PartialEq for StreamSlot {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl StreamSlot {
+    fn new(stream: MediaStream) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self {
+            id: NEXT.fetch_add(1, AtomicOrdering::Relaxed),
+            stream,
+        }
+    }
+}
 
 pub fn app() -> Element {
     install_idea_theme(light_theme());
@@ -33,20 +99,20 @@ pub fn app() -> Element {
     // One stream signal per source. Each `Video` reads its own via a reactive
     // `stream(..)` source, so flipping the signal populates that video in
     // place — no remount.
-    let cam_sig: Signal<Option<MediaStream>> = signal(None);
-    let screen_sig: Signal<Option<MediaStream>> = signal(None);
+    let cam_sig: Signal<Option<StreamSlot>> = signal(None);
+    let screen_sig: Signal<Option<StreamSlot>> = signal(None);
     let cam_status: Signal<String> = signal("idle".to_string());
     let screen_status: Signal<String> = signal("idle".to_string());
 
     let cam_video = video::Video(video::VideoProps {
-        source: video::stream(move || cam_sig.get()),
+        source: video::stream(move || cam_sig.get().map(|s| s.stream)),
         autoplay: true,
         ..Default::default()
     })
     .into_element();
 
     let screen_video = video::Video(video::VideoProps {
-        source: video::stream(move || screen_sig.get()),
+        source: video::stream(move || screen_sig.get().map(|s| s.stream)),
         autoplay: true,
         ..Default::default()
     })
@@ -63,8 +129,9 @@ pub fn app() -> Element {
             match Camera::new().open(CameraConfig::default()).await {
                 Ok(stream) => {
                     cam_status.set("live".to_string());
-                    // `set_always`: `MediaStream` has no `PartialEq`.
-                    cam_sig.set_always(Some(stream));
+                    // Plain guarded `set`: the slot's id makes every fresh
+                    // stream a distinct value, so the guard never swallows it.
+                    cam_sig.set(Some(StreamSlot::new(stream)));
                 }
                 Err(e) => cam_status.set(camera_error(e)),
             }
@@ -77,7 +144,7 @@ pub fn app() -> Element {
             match open_screen_share().await {
                 Ok(stream) => {
                     screen_status.set("live".to_string());
-                    screen_sig.set_always(Some(stream));
+                    screen_sig.set(Some(StreamSlot::new(stream)));
                 }
                 Err(e) => screen_status.set(e),
             }

@@ -37,14 +37,19 @@ url = { version = "2", default-features = false }
 
 # Only pulled for the `catalog` feature's compile-checked recipes. The core
 # SDK (parse + registry + feed_link) is pure Rust and needs nothing from
-# the framework, so this stays optional and off in production.
+# the framework, so these stay optional and off in production — which is
+# also why the `runtime_core` alias at the crate root carries a `catalog`
+# cfg (it is an optional-dependency gate, not a core selector).
+# `runtime-vocabulary` is direct because the recipes' `ui!` emission spells
+# absolute `::runtime_vocabulary::glue::…` paths.
 runtime-core = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
 
 # Web (wasm32): read window.location.href for the initial link.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-sys = { version = "0.3", features = ["Window", "Location"] }
 
 # Compile-checked usage recipes for the docs / MCP catalog. Off in every
-# production build (the recipes — and `runtime-core` — don't compile then).
+# production build (the recipes — and the framework deps — do not compile then).
 [features]
-catalog = ["dep:runtime-core", "runtime-core/catalog"]
+catalog = ["dep:runtime-core", "dep:runtime-vocabulary", "runtime-core/catalog"]

@@ -1,18 +1,14 @@
-//! The permanent new-core test substrate: a first-class scene
+//! The permanent runtime test substrate: a first-class scene
 //! [`Host`] + **all 30** `runtime_vocabulary::caps::*Ops` traits,
-//! implemented DIRECTLY (no `Backend`, no `LegacyBridge`) over a
-//! recording op log.
+//! implemented DIRECTLY over a recording op log.
 //!
 //! ## Why this crate exists
 //!
-//! Until the old-core deletion wave, the new core's integration tests
-//! drove `runtime_vocabulary` through per-suite `impl Backend for Mini`
-//! mocks bridged by `LegacyBridge`. That made every new-core parity
-//! proof depend on the old `Backend` trait. `HostMock` is the
-//! replacement: the caps surface implemented natively, so the test base
-//! survives the old trait's removal — and stays the canonical way to
-//! unit-test vocabulary handlers, SDK components, and anything else
-//! that mounts through `runtime_scene::realize`.
+//! `HostMock` is the canonical way to unit-test vocabulary handlers, SDK
+//! components, and anything else that mounts through
+//! [`runtime_scene::realize`]: one recorder implements the entire
+//! capability surface natively, so a suite asserts against a byte-stable
+//! op log instead of hand-rolling a per-suite mock.
 //!
 //! ## Op-log format (canonical)
 //!
@@ -78,19 +74,19 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet};
 use std::rc::Rc;
 
-use runtime_core::accessibility::{AccessibilityProps, LiveRegionPriority, Role};
-use runtime_core::animation::AnimProp;
-use runtime_core::assets::{
+use runtime_shared::accessibility::{AccessibilityProps, LiveRegionPriority, Role};
+use runtime_shared::animation::AnimProp;
+use runtime_shared::assets::{
     AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
 };
-use runtime_core::primitives;
-use runtime_core::primitives::graphics::{OnLost, OnReady, OnResize};
-use runtime_core::primitives::icon::IconData;
-use runtime_core::primitives::link::LinkConfig;
-use runtime_core::primitives::portal::{PortalTarget, ViewportRect};
-use runtime_core::primitives::presence::PresenceState;
-use runtime_core::styled_text::TextRun;
-use runtime_core::{
+use runtime_shared::primitives;
+use runtime_shared::primitives::graphics::{OnLost, OnReady, OnResize};
+use runtime_shared::primitives::icon::IconData;
+use runtime_shared::primitives::link::LinkConfig;
+use runtime_shared::primitives::portal::{PortalTarget, ViewportRect};
+use runtime_shared::primitives::presence::PresenceState;
+use runtime_shared::styled_text::TextRun;
+use runtime_shared::{
     Action, BackendBatch, BatchOp, Color, Easing, FileDropHandler, HoverHandler,
     ImageErrorHandler, ImageLoadHandler, PageMetadata, Platform, SafeAreaSides, StateBits,
     StyleRules, TokenEntry, Tokenized, TouchHandler, TouchId, VirtualizerCallbacks, WheelHandler,
@@ -146,6 +142,17 @@ pub struct Shared {
     pub toggle_changes: RefCell<Vec<Rc<dyn Fn(bool)>>>,
     /// Text input AND text area `on_change`s (creation order).
     pub text_input_changes: RefCell<Vec<Rc<dyn Fn(String)>>>,
+    /// Text input / text area `on_blur` handlers, `None` when the author
+    /// declared none (creation order). Captured so the cancelable
+    /// `BlurOutcome` contract — a handler CAN veto the blur — is
+    /// assertable from a host test; the platform veto mechanisms
+    /// (`textFieldShouldEndEditing:`, AppKit outside-click, web refocus)
+    /// all consult exactly this handler.
+    pub blur_handlers: RefCell<Vec<Option<primitives::text_input::BlurHandler>>>,
+    /// Text input / text area `on_key_down` handlers, `None` when absent
+    /// (creation order) — the `KeyOutcome::PreventDefault` propagation
+    /// contract.
+    pub key_down_handlers: RefCell<Vec<Option<primitives::key::KeyDownHandler>>>,
     /// Link activations (`LinkConfig::on_activate` — fire like clicks).
     pub link_activations: RefCell<Vec<Rc<dyn Fn()>>>,
     /// Scroll-view `on_scroll` handlers (None when absent).
@@ -156,6 +163,12 @@ pub struct Shared {
     pub graphics: RefCell<Vec<GraphicsCapture>>,
     /// Portal `on_dismiss` (None when absent).
     pub portal_dismissals: RefCell<Vec<Option<Rc<dyn Fn()>>>>,
+    /// File-drop handlers installed via
+    /// `InputOps::install_file_drop_handler`, with their target node —
+    /// captured (not just logged) so a test can FIRE one and prove the
+    /// author callback is reached, which is the whole contract on
+    /// backends whose real drop source is unreachable from a host test.
+    pub file_drop_handlers: RefCell<Vec<(Node, FileDropHandler)>>,
     /// Touch handlers installed via `InputOps::install_touch_handler`,
     /// with their target node.
     pub touch_handlers: RefCell<Vec<(Node, TouchHandler)>>,
@@ -208,11 +221,14 @@ impl Default for Shared {
             slider_changes: RefCell::new(Vec::new()),
             toggle_changes: RefCell::new(Vec::new()),
             text_input_changes: RefCell::new(Vec::new()),
+            blur_handlers: RefCell::new(Vec::new()),
+            key_down_handlers: RefCell::new(Vec::new()),
             link_activations: RefCell::new(Vec::new()),
             scroll_handlers: RefCell::new(Vec::new()),
             virtualizers: RefCell::new(Vec::new()),
             graphics: RefCell::new(Vec::new()),
             portal_dismissals: RefCell::new(Vec::new()),
+            file_drop_handlers: RefCell::new(Vec::new()),
             touch_handlers: RefCell::new(Vec::new()),
             hover_handlers: RefCell::new(Vec::new()),
             splice: Cell::new(false),
@@ -269,7 +285,7 @@ fn presence_digest(state: &PresenceState) -> String {
 // Recording view-handle ops (animated-prop writes)
 // ===========================================================================
 
-/// `runtime_core::ViewOps` (the handle-ops trait) whose animated-prop
+/// `runtime_shared::ViewOps` (the handle-ops trait) whose animated-prop
 /// writers record into a thread-local log — `ViewHandle` ops must be
 /// `&'static`, so the log can't live in the harness. Drain with
 /// [`take_animated_log`].
@@ -285,7 +301,7 @@ pub fn take_animated_log() -> Vec<String> {
     ANIMATED_LOG.with(|l| std::mem::take(&mut *l.borrow_mut()))
 }
 
-impl runtime_core::ViewOps for RecordingViewOps {
+impl runtime_shared::ViewOps for RecordingViewOps {
     fn set_animated_f32(&self, node: &dyn Any, prop: AnimProp, value: f32) {
         let n = node.downcast_ref::<Node>().copied().unwrap_or(Node::MAX);
         ANIMATED_LOG.with(|l| {
@@ -471,11 +487,11 @@ impl caps::ViewOps for HostMock {
         self.mint("view".into())
     }
 
-    fn make_view_handle(&self, node: &Node) -> runtime_core::ViewHandle {
+    fn make_view_handle(&self, node: &Node) -> runtime_shared::ViewHandle {
         // Real (recording) animated-prop ops, not the trait's no-op
         // default — animated-bind regression tests assert writes reach
         // `ViewOps::set_animated_f32` (drain via `take_animated_log`).
-        runtime_core::ViewHandle::new(Rc::new(*node), &RECORDING_VIEW_OPS)
+        runtime_shared::ViewHandle::new(Rc::new(*node), &RECORDING_VIEW_OPS)
     }
 }
 
@@ -506,11 +522,12 @@ impl caps::InputOps for HostMock {
             .rec_v("mark_preserves_focus", format!("mark_preserves_focus n{node}"));
     }
 
-    fn install_file_drop_handler(&mut self, node: &Node, _handler: FileDropHandler) {
+    fn install_file_drop_handler(&mut self, node: &Node, handler: FileDropHandler) {
         self.s.rec_v(
             "install_file_drop_handler",
             format!("install_file_drop_handler n{node}"),
         );
+        self.s.file_drop_handlers.borrow_mut().push((*node, handler));
     }
 }
 
@@ -620,9 +637,13 @@ impl caps::IconOps for HostMock {
             .rec_v("update_icon_color", format!("update_icon_color n{node} {}", color.0));
     }
 
-    fn update_icon_data(&mut self, node: &Node, _data: &IconData) {
-        self.s
-            .rec_v("update_icon_data", format!("update_icon_data n{node}"));
+    fn update_icon_data(&mut self, node: &Node, data: &IconData) {
+        // The glyph geometry is the observable — a live `data` source has
+        // to reach the backend with the NEW paths, not just fire.
+        self.s.rec_v(
+            "update_icon_data",
+            format!("update_icon_data n{node} {:?}", data.paths),
+        );
     }
 
     fn update_icon_stroke(&mut self, node: &Node, progress: f32) {
@@ -672,12 +693,14 @@ impl caps::TextInputOps for HostMock {
         _initial_value: &str,
         _placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<primitives::key::KeyDownHandler>,
-        _on_blur: Option<primitives::text_input::BlurHandler>,
+        on_key_down: Option<primitives::key::KeyDownHandler>,
+        on_blur: Option<primitives::text_input::BlurHandler>,
         _secure: bool,
         _a11y: &AccessibilityProps,
     ) -> Node {
         self.s.text_input_changes.borrow_mut().push(on_change);
+        self.s.key_down_handlers.borrow_mut().push(on_key_down);
+        self.s.blur_handlers.borrow_mut().push(on_blur);
         self.mint("text_input".into())
     }
 
@@ -713,15 +736,22 @@ impl caps::TextInputOps for HostMock {
         &mut self,
         _initial_value: &str,
         _placeholder: Option<&str>,
-        _wrap: bool,
-        _min_rows: Option<u32>,
-        _max_rows: Option<u32>,
+        wrap: bool,
+        min_rows: Option<u32>,
+        max_rows: Option<u32>,
         on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<primitives::key::KeyDownHandler>,
+        on_key_down: Option<primitives::key::KeyDownHandler>,
         _a11y: &AccessibilityProps,
     ) -> Node {
         self.s.text_input_changes.borrow_mut().push(on_change);
-        self.mint("text_area".into())
+        self.s.key_down_handlers.borrow_mut().push(on_key_down);
+        // A text area has no `on_blur` slot; keep the two capture lists
+        // index-aligned with `text_input_changes` so `blur_handler(i)`
+        // means the same creation as `text_input_change(i)`.
+        self.s.blur_handlers.borrow_mut().push(None);
+        // Wrap / row bounds are create-time config with no update op, so
+        // the create line is the only place they are observable.
+        self.mint(format!("text_area wrap={wrap} min_rows={min_rows:?} max_rows={max_rows:?}"))
     }
 
     fn update_text_area_value(&mut self, node: &Node, value: &str) {
@@ -939,17 +969,6 @@ impl caps::PresenceOps for HostMock {
 }
 
 impl caps::NavigatorOps for HostMock {
-    fn create_navigator(
-        &mut self,
-        _type_id: TypeId,
-        type_name: &'static str,
-        _presentation: Rc<dyn Any>,
-        _host: primitives::navigator::NavigatorHost<Node>,
-        _a11y: &AccessibilityProps,
-    ) -> Node {
-        self.mint(format!("navigator {type_name}"))
-    }
-
     fn release_navigator(&mut self, node: &Node) {
         self.s
             .rec("release_navigator", format!("release_navigator n{node}"));
@@ -1095,7 +1114,7 @@ impl caps::StyleOps for HostMock {
         self.s.preminted.get()
     }
 
-    fn apply_default_text_font(&mut self, font: Option<&runtime_core::FontFamily>) {
+    fn apply_default_text_font(&mut self, font: Option<&runtime_shared::FontFamily>) {
         self.s.rec_v(
             "apply_default_text_font",
             format!("apply_default_text_font {}", if font.is_some() { "some" } else { "none" }),
@@ -1238,7 +1257,7 @@ impl caps::WireBindingOps for HostMock {
             .rec_v("note_text_binding", format!("note_text_binding n{node} {method}"));
     }
 
-    fn note_signal_initial(&mut self, signal_id: u64, _value: &runtime_core::__serde_json::Value) {
+    fn note_signal_initial(&mut self, signal_id: u64, _value: &runtime_shared::__serde_json::Value) {
         self.s
             .rec_v("note_signal_initial", format!("note_signal_initial {signal_id}"));
     }
@@ -1371,6 +1390,52 @@ impl Harness {
 
     pub fn text_input_change(&self, i: usize) -> Rc<dyn Fn(String)> {
         self.shared.text_input_changes.borrow()[i].clone()
+    }
+
+    /// The `on_blur` handler the i-th `create_text_input` received, or
+    /// `None` when the author declared none (index-aligned with
+    /// [`Harness::text_input_change`]; `create_text_area` pushes `None`).
+    /// Calling it returns the author's
+    /// [`BlurOutcome`](runtime_shared::primitives::text_input::BlurOutcome)
+    /// — the cancelable-blur contract every platform veto mechanism
+    /// consults.
+    pub fn blur_handler(&self, i: usize) -> Option<primitives::text_input::BlurHandler> {
+        self.shared.blur_handlers.borrow().get(i).cloned().flatten()
+    }
+
+    /// The `on_scroll` handler the i-th `create_scroll_view` received
+    /// (`None` when the author declared none) — firing it is how a test
+    /// reproduces a platform scroll report.
+    pub fn scroll_handler(&self, i: usize) -> Option<Rc<dyn Fn(f32, f32)>> {
+        self.shared.scroll_handlers.borrow().get(i).cloned().flatten()
+    }
+
+    /// How many scroll views were created (so "absence" is assertable
+    /// separately from "index out of range").
+    pub fn scroll_view_count(&self) -> usize {
+        self.shared.scroll_handlers.borrow().len()
+    }
+
+    /// The file-drop handler installed on the i-th
+    /// `install_file_drop_handler` call, with its target node.
+    pub fn file_drop_handler(&self, i: usize) -> Option<(Node, FileDropHandler)> {
+        self.shared
+            .file_drop_handlers
+            .borrow()
+            .get(i)
+            .map(|(n, h)| (*n, h.clone()))
+    }
+
+    /// The `on_key_down` handler the i-th text input / text area received
+    /// (`None` when absent) — the `KeyOutcome::PreventDefault`
+    /// propagation contract.
+    pub fn key_down_handler(&self, i: usize) -> Option<primitives::key::KeyDownHandler> {
+        self.shared
+            .key_down_handlers
+            .borrow()
+            .get(i)
+            .cloned()
+            .flatten()
     }
 
     /// Shallow clone (all fields `Rc` + one bool) of a captured

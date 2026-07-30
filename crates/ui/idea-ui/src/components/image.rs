@@ -69,12 +69,6 @@ impl Default for ImageProps {
 /// Themed wrapper over the framework's `image` primitive. Adds opt-in
 /// explicit `width`/`height` sizing and a `rounded` (circular) clip on
 /// top of the raw image.
-///
-/// **Cargo features:** requires `prim-image` (in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without it compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Image(props: &ImageProps) -> Element {
     // The style is REACTIVE when any style-driving dim prop is live; otherwise

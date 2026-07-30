@@ -20,7 +20,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use runtime_core::animation::{AnimProp, AnimatedValue};
-use runtime_core::{Element, Ref, Signal, TouchPoint, ViewHandle, ViewportRect};
+use runtime_core::{signal, Element, Ref, Signal, TouchPoint, ViewHandle, ViewportRect};
 
 /// Builds the visual that follows the pointer during a drag (the "drag
 /// preview" / ghost). Snapshotted once at drag start.
@@ -126,7 +126,7 @@ impl<T: Clone + 'static> DragContext<T> {
     pub fn new() -> Self {
         Self {
             inner: Rc::new(RefCell::new(Inner {
-                dragging: Signal::new(false),
+                dragging: signal(false),
                 payload: None,
                 droppables: Vec::new(),
                 session_rects: Vec::new(),
@@ -367,7 +367,9 @@ impl<T: Clone + 'static> DragContext<T> {
         // Re-apply the *current* value once the ghost has mounted, so the bound
         // translate isn't stuck unapplied for the first frame.
         let (gx2, gy2) = (gx, gy);
-        runtime_core::schedule_microtask(move || {
+        // `schedule_microtask` is a permanent-substrate scheduling entry glue
+        // does not re-export yet (a one-line gap, reported).
+        runtime_shared::scheduling::schedule_microtask(move || {
             gx2.set(gx2.get());
             gy2.set(gy2.get());
         });

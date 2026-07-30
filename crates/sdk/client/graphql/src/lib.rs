@@ -54,14 +54,6 @@
 
 #![deny(missing_docs)]
 
-// idea-lite core migration (P6 SDK retarget): under `new-core` this alias
-// shadows the extern-prelude `runtime_core` for the whole crate, so the
-// hooks' `runtime_core::{signal, resource, mutation, …}` resolve against
-// `runtime_vocabulary::glue`'s new-core mirrors (via runtime-facade's
-// root). Same source, either core — the idea-theme precedent.
-#[cfg(feature = "new-core")]
-extern crate runtime_facade as runtime_core;
-
 mod client;
 mod hooks;
 mod request;

@@ -3,27 +3,13 @@
 //! self-suppresses when the state is `native` (a native bar owns the header) or
 //! `hidden`.
 //!
-//! Dual-core: the TEST BODIES are shared; only the mount harness forks —
-//! old core mounts on `MockBackend` via the walker, new core realizes on
-//! the scene-parity recorder (`LegacyBridge<FullRecorder>`). Both
-//! reduce to a "rendered text dump" string the assertions grep.
-
-// The new-core leg needs the scene-parity harness, which lives behind
-// `new-core-harness` (NOT `new-core` — a consumer app graph must never
-// drag scene-parity, whose old-side scenarios pin the SDKs' old-core
-// surface; see Cargo.toml). Plain `new-core` compiles this file empty.
-#![cfg(any(not(feature = "new-core"), feature = "new-core-harness"))]
-
-use std::sync::OnceLock;
+//! Mounts on `host_mock::Harness` — the recording scene `Host` + capability
+//! mock — and reduces the recorded op log to a "rendered text dump" string the
+//! assertions grep.
 
 use idea_theme::theme::{install_idea_theme, light_theme};
 use idea_ui_nav::{StackHeader, StackHeaderProps};
 use runtime_core::primitives::navigator::{HeaderButton, StackHeaderState};
-
-// The new-core alias: same-source `runtime_core::…` paths in this test
-// resolve against the glue facade (see idea-ui-nav's lib.rs note).
-#[cfg(feature = "new-core")]
-extern crate runtime_facade as runtime_core;
 
 use runtime_core::Reactive;
 
@@ -32,56 +18,14 @@ fn header(title: &str) -> StackHeaderState {
 }
 
 /// Mount the header and return a text dump of everything rendered.
-#[cfg(not(feature = "new-core"))]
 fn rendered(state: StackHeaderState, show_back: bool) -> String {
-    use mock_backend::MockBackend;
-    use std::any::Any;
-    use std::cell::RefCell;
     use std::rc::Rc;
 
-    static INSTALLED: OnceLock<()> = OnceLock::new();
-    INSTALLED.get_or_init(|| install_idea_theme(light_theme()));
-
-    let backend = Rc::new(RefCell::new(MockBackend::new()));
+    let h = host_mock::Harness::new();
     let on_back: Rc<dyn Fn()> = Rc::new(|| {});
-    let _owner: Box<dyn Any> = Box::new(runtime_core::mount(backend.clone(), move || {
-        StackHeader(StackHeaderProps {
-            state: Reactive::Static(Some(state.clone())),
-            show_back: Reactive::Static(show_back),
-            on_back: Some(on_back.clone()),
-        })
-    }));
-    let dump = backend.borrow().dump();
-    dump
-}
-
-#[cfg(feature = "new-core")]
-fn rendered(state: StackHeaderState, show_back: bool) -> String {
-    use runtime_scene::{realize, Registry};
-    use runtime_vocabulary::LegacyBridge;
-    use runtime_world::World;
-    use scene_parity::full::FullRecorder;
-    use scene_parity::{Mode, Recorder};
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    // The theme installs per WORLD on the new core, so it runs inside
-    // each mount's `enter` (idempotent — same tokens each time).
-    let _ = OnceLock::<()>::new();
-
-    type Bridged = LegacyBridge<FullRecorder>;
-    let rec = Recorder::default();
-    let backend: Rc<RefCell<Bridged>> = Rc::new(RefCell::new(LegacyBridge(FullRecorder::new(
-        rec.clone(),
-        Mode::Spliced,
-    ))));
-    let mut registry: Registry<Bridged> = Registry::new();
-    runtime_vocabulary::register_builtins(&mut registry);
-    let registry = Rc::new(registry);
-
-    let world = World::new();
-    let on_back: Rc<dyn Fn()> = Rc::new(|| {});
-    let root = world.enter(|| {
+    // The theme installs per WORLD, so it runs inside each mount's `enter`
+    // (idempotent — same tokens each time).
+    let root = h.world.enter(|| {
         install_idea_theme(light_theme());
         StackHeader(StackHeaderProps {
             state: Reactive::Static(Some(state.clone())),
@@ -89,9 +33,9 @@ fn rendered(state: StackHeaderState, show_back: bool) -> String {
             on_back: Some(on_back.clone()),
         })
     });
-    let _realized = world.enter(|| realize(&backend, &registry, root));
-    world.flush();
-    rec.take_ops().join("\n")
+    let _realized = h.mount(root);
+    h.flush();
+    h.take_log().join("\n")
 }
 
 fn contains(dump: &str, needle: &str) -> bool {

@@ -19,13 +19,13 @@ use crate::encode::encode_scene;
 use crate::native_capture::{LayerCompositor, NativeCapture};
 use crate::plan::{plan_scene, CachedRef, ScenePlan};
 use crate::shape_pass::ShapePass;
-use canvas_core::{
-    paint_scene, CanvasProps, DrawOp, Scene as CanvasScene, ShapeInstance, TextureLayer,
-};
+use canvas_core::{paint_scene, CanvasPrim, CanvasProps, DrawOp, Scene as CanvasScene, TextureLayer};
 use media_stream::FrameWriter;
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::graphics::{OnReadyEvent, OnResizeEvent};
-use runtime_core::{effect, Backend, RegisterExternal};
+use runtime_scene::{Element, MountCx, Registry};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives::graphics::{OnReadyEvent, OnResizeEvent};
+use runtime_vocabulary::caps::GraphicsOps;
+use runtime_vocabulary::style_attach::{attach_style, on_teardown, StyleServices};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -39,9 +39,11 @@ use vello::{AaConfig, AaSupport, Renderer, RendererOptions, RenderParams, Scene 
 /// it to the surface (whatever the surface's own format is).
 pub(crate) const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-/// Register the vello canvas renderer. Generic over any backend that
-/// supports externals + graphics surfaces — the surface is obtained from
-/// `Backend::create_graphics`, so there's no per-platform code.
+/// Register the vello canvas renderer on a scene registry. Generic over
+/// any host with the graphics capability — the surface comes from
+/// `GraphicsOps::create_graphics`, so there's no per-platform code
+/// (unlike `canvas-native`). Pass as (part of) the boot registration
+/// seam.
 ///
 /// **Self-gating:** only takes over (from canvas-native, registered first) if
 /// this GPU can actually run vello's shaders. The one known-incompatible case
@@ -51,12 +53,49 @@ pub(crate) const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8
 /// canvas-native and canvas-vello uniformly on every platform: vello wins on a
 /// real GPU (Metal, or Vulkan with f16) and steps aside on the emulator,
 /// leaving canvas-native — no per-environment `cfg` or `is_simulator()` needed.
-pub fn register<B: RegisterExternal>(backend: &mut B) {
-    canvas_core::ensure_wire_serde();
+pub fn register<H>(registry: &mut Registry<H>)
+where
+    H: GraphicsOps + StyleServices + 'static,
+{
     if gpu_can_run_vello() {
-        backend.register_external::<CanvasProps, _>(|props, b| build_canvas(props, b));
+        registry.register::<CanvasPrim, _>(mount_canvas::<H>);
     }
 }
+
+fn mount_canvas<H>(
+    cx: &mut MountCx<'_, H>,
+    prim: &Rc<CanvasPrim>,
+    _children: Vec<Element>,
+) -> H::Node
+where
+    H: GraphicsOps + StyleServices,
+{
+    let backend = cx.backend().clone();
+    let node = {
+        let mut b = backend.borrow_mut();
+        build_canvas(&prim.props, &mut *b)
+    };
+    finish_mount(&backend, &node, prim);
+    node
+}
+
+/// Shared mount tail: author style onto the graphics node, then the
+/// scope-tied `release_external` teardown (every external mount releases
+/// at unmount, handler-backed or not).
+fn finish_mount<H>(backend: &Rc<RefCell<H>>, node: &H::Node, prim: &CanvasPrim)
+where
+    H: GraphicsOps + StyleServices,
+{
+    if let Some(style) = prim.take_style() {
+        attach_style(backend, node, style);
+    }
+    let backend = backend.clone();
+    let node = node.clone();
+    on_teardown(move || {
+        backend.borrow_mut().release_external(&node);
+    });
+}
+
 
 /// Probe the default adapter for vello compatibility. Returns `false` when
 /// vello's GPU-driven pipeline is known to fail on this adapter. A headless
@@ -112,7 +151,7 @@ fn gpu_can_run_vello() -> bool {
     ok
 }
 
-fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::Node {
+fn build_canvas<H: GraphicsOps>(props: &Rc<CanvasProps>, backend: &mut H) -> H::Node {
     // Latest painted scene + GPU state, shared between the reactive effect
     // and the surface lifecycle callbacks.
     let scene_cell: Rc<RefCell<CanvasScene>> = Rc::new(RefCell::new(CanvasScene::new()));
@@ -127,7 +166,7 @@ fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::Node
         let props = props.clone();
         let scene_cell = scene_cell.clone();
         let state_cell = state_cell.clone();
-        effect!({
+        runtime_world::effect(move || {
             *scene_cell.borrow_mut() = paint_scene(&props);
             if let Some(state) = state_cell.borrow_mut().as_mut() {
                 state.render(&scene_cell.borrow());
@@ -480,7 +519,7 @@ pub(crate) fn read_target_rgba(
 
 impl RenderState {
     fn new(
-        surface_target: runtime_core::primitives::graphics::GraphicsSurface,
+        surface_target: runtime_shared::primitives::graphics::GraphicsSurface,
         size: (u32, u32),
         scale: f32,
         capture: Option<FrameWriter>,
@@ -1126,7 +1165,7 @@ fn retry_first_frame(
     if attempts_left == 0 {
         return;
     }
-    runtime_core::scheduling::after_ms_detached(16, move || {
+    runtime_shared::scheduling::after_ms_detached(16, move || {
         let presented = match state_cell.borrow_mut().as_mut() {
             Some(state) => state.render(&scene_cell.borrow()),
             None => return, // surface lost / canvas dropped — stop retrying

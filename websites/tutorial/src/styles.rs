@@ -297,6 +297,92 @@ stylesheet! {
     }
 }
 
+// ---- Live demo panels ------------------------------------------------------
+//
+// The Reactivity and Foundations tracks each embed a running panel so a
+// reader can watch a staged write land at the flush instead of taking the
+// prose's word for it. Surface-tinted so it reads as "this is live", not
+// "this is a snippet".
+
+stylesheet! {
+    pub DemoPanel<()> {
+        base(_t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_width: 1.0,
+            border_color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+            border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            padding: 20.0,
+            gap: 12.0,
+            flex_direction: FlexDirection::Column,
+            min_width: 0.0,
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub DemoRow<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            flex_wrap: runtime_core::FlexWrap::Wrap,
+            align_items: AlignItems::Center,
+            gap: 8.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub DemoReadout<()> {
+        base(_t) {
+            font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            font_size: 15.0,
+            line_height: 22.0,
+            color: Tokenized::token("color-text", Color("#1f2328".into())),
+        }
+        transitions { color: 250ms EaseInOut, }
+    }
+}
+
+stylesheet! {
+    pub DemoTrace<()> {
+        base(_t) {
+            font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            font_size: 13.0,
+            line_height: 20.0,
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+        }
+        transitions { color: 250ms EaseInOut, }
+    }
+}
+
+stylesheet! {
+    pub DemoButton<()> {
+        base(_t) {
+            padding_vertical: 8.0,
+            padding_horizontal: 14.0,
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            background: Tokenized::token("color-surface-alt", Color("#f4eedb".into())),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            font_size: 14.0,
+            font_weight: runtime_core::FontWeight::SemiBold,
+            cursor: runtime_core::Cursor::Pointer,
+        }
+        state hovered(_t) {
+            background: Tokenized::token("intent-primary-soft-bg", Color("rgba(91, 108, 255, 0.12)".into())),
+            border_color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+        }
+        transitions {
+            background: 150ms EaseOut,
+            border_color: 150ms EaseOut,
+        }
+    }
+}
+
 // ---- Callout (tips + "read more in the docs") ------------------------------
 
 stylesheet! {

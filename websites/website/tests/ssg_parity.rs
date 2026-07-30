@@ -1,36 +1,38 @@
-//! Full-site SSG + SSR parity gate for the idea-lite core migration.
+//! Full-site SSG + SSR gate against the frozen corpus.
 //!
-//! ONE test does three things, per core:
+//! ONE test does three things:
 //!
-//! 1. **Crawls the whole site** through the production SSG driver —
-//!    `backend_ssr::render_all` on the old core,
-//!    `backend_ssr::newcore::render_all` on the new — and asserts the
-//!    navigator route collector discovered EVERY literal website route
+//! 1. **Crawls the whole site** through the production SSG driver
+//!    (`backend_ssr::newcore::render_all`) and asserts the navigator
+//!    route collector discovered EVERY literal website route
 //!    ([`EXPECTED_ROUTES`], 33 routes, none parameterized).
 //! 2. **Serves one route over real HTTP** through the production
-//!    per-request path (`serve` / `newcore::serve`) and asserts the
-//!    response is byte-identical to the direct render — the
-//!    request-serving wiring, not just the renderer.
+//!    per-request path (`newcore::serve`) and asserts the response is
+//!    byte-identical to the direct render — the request-serving wiring,
+//!    not just the renderer.
 //! 3. **Dumps every page** (`html` + `head_css` + the served document)
-//!    to `target/…/website-ssg/{oldcore,newcore}/` and — when the OTHER
-//!    core's dump exists — **byte-compares the two dumps** and fails on
-//!    the first divergence.
-//!
-//! Run both legs; whichever runs second performs the cross-core byte
-//! gate (each run rewrites its own dump, so order doesn't matter beyond
-//! that):
+//!    to `target/…/website-ssg/` and **byte-compares every file against
+//!    the frozen corpus** in `tests/goldens/ssg/`, failing on the first
+//!    divergence.
 //!
 //! ```text
 //! cargo test -p website --features ssr --test ssg_parity
-//! cargo test -p website --no-default-features \
-//!     --features new-core,ssr --test ssg_parity
 //! ```
 //!
-//! Byte-identity across cores is the hydration acceptance proof for the
-//! website: the web adopt-mode boot walks SSR DOM in creation order, so
-//! byte-identical server output adopts identically. Do NOT normalize
-//! divergences away here — a mismatch is a hydration bug (or a style
-//! resolution drift like the default-font fold-in this gate caught).
+//! # The frozen corpus
+//!
+//! `tests/goldens/ssg/` is the OLD walker's committed output — 33 real
+//! routes of a real app plus the served document, captured while the old
+//! core still existed. Byte-identity against it is the **hydration
+//! acceptance proof** for the website: the web adopt-mode boot walks SSR
+//! DOM in creation order, so byte-identical server output adopts
+//! identically.
+//!
+//! Nothing can re-derive that corpus anymore — the freeze half died with
+//! `runtime-core`. A mismatch here is therefore a bug to FIX (a
+//! hydration bug, or a style-resolution drift like the default-font
+//! fold-in this gate caught), never a golden to rewrite. Do NOT
+//! normalize divergences away; see `tests/goldens/ssg/README.md`.
 
 #![cfg(feature = "ssr")]
 
@@ -83,22 +85,6 @@ fn dump_root() -> PathBuf {
     Path::new(env!("CARGO_TARGET_TMPDIR")).join("website-ssg")
 }
 
-fn core_name() -> &'static str {
-    if cfg!(feature = "new-core") {
-        "newcore"
-    } else {
-        "oldcore"
-    }
-}
-
-fn other_core_name() -> &'static str {
-    if cfg!(feature = "new-core") {
-        "oldcore"
-    } else {
-        "newcore"
-    }
-}
-
 /// `/` → `index`; `/comparisons/react` → `comparisons__react`.
 fn file_stem(route: &str) -> String {
     let trimmed = route.trim_matches('/');
@@ -147,43 +133,41 @@ fn collapse_reactive_anchors(html: &str) -> String {
 /// Byte-level first-divergence report so a failure is actionable.
 ///
 /// One DOCUMENTED structural divergence is tolerated: reactive-anchor
-/// placement. The new core expresses `presence` as a standard Dyn hole,
+/// placement. The renderer expresses `presence` as a standard Dyn hole,
 /// which on an anchored host nests under a `display: contents` anchor
-/// its OWN hydration boot adopts; the old walker managed the presence
-/// swap imperatively with no anchor. Each core's SSR output matches its
+/// its own hydration boot adopts; the old walker managed the presence
+/// swap imperatively with no anchor. Each side's SSR output matches its
 /// own client's adoption contract, so the anchor sets legitimately
-/// differ (`display: contents` is layout-inert). The comparison is
-/// strict FIRST; only when the two sides become identical after
-/// collapsing anchor wrappers on BOTH is the difference accepted — any
-/// other divergence still fails with full context.
-fn assert_bytes(label: &str, other: &str, this: &str) {
-    if other == this {
+/// differ (`display: contents` is layout-inert). In practice this fires
+/// on exactly one page (`primitives.html`). The comparison is strict
+/// FIRST; only when the two sides become identical after collapsing
+/// anchor wrappers on BOTH is the difference accepted — any other
+/// divergence still fails with full context.
+fn assert_bytes(label: &str, expected: &str, actual: &str) {
+    if expected == actual {
         return;
     }
-    if collapse_reactive_anchors(other) == collapse_reactive_anchors(this) {
+    if collapse_reactive_anchors(expected) == collapse_reactive_anchors(actual) {
         println!(
-            "[ssg-{}] `{label}`: anchor-placement-only divergence (documented presence \
+            "[ssg] `{label}`: anchor-placement-only divergence (documented presence \
              Dyn-hole anchor) — accepted",
-            core_name(),
         );
         return;
     }
-    let at = other
+    let at = expected
         .bytes()
-        .zip(this.bytes())
+        .zip(actual.bytes())
         .position(|(a, b)| a != b)
-        .unwrap_or_else(|| other.len().min(this.len()));
+        .unwrap_or_else(|| expected.len().min(actual.len()));
     let lo = at.saturating_sub(80);
     panic!(
-        "cross-core byte divergence in `{label}` at byte {at}\n\
-         {other_core} (len {}): …{}…\n\
-         {this_core} (len {}): …{}…",
-        other.len(),
-        &other[lo..(at + 120).min(other.len())],
-        this.len(),
-        &this[lo..(at + 120).min(this.len())],
-        other_core = other_core_name(),
-        this_core = core_name(),
+        "byte divergence in `{label}` at byte {at}\n\
+         frozen (len {}): …{}…\n\
+         actual (len {}): …{}…",
+        expected.len(),
+        &expected[lo..(at + 120).min(expected.len())],
+        actual.len(),
+        &actual[lo..(at + 120).min(actual.len())],
     );
 }
 
@@ -229,6 +213,14 @@ fn http_get(addr: &str, path: &str) -> String {
     panic!("could not connect to test SSR server at {addr}: {last_err:?}");
 }
 
+// ---------------------------------------------------------------------------
+// Frozen-artifact corpus (tests/goldens/ssg)
+// ---------------------------------------------------------------------------
+
+fn frozen_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("goldens").join("ssg")
+}
+
 /// Reserve an ephemeral localhost port (bind-then-drop; the tiny race
 /// window is acceptable for a test).
 fn ephemeral_addr() -> String {
@@ -241,9 +233,6 @@ fn ephemeral_addr() -> String {
 #[test]
 fn ssg_crawl_and_ssr_serve_full_site_byte_parity() {
     // ---- 1) Full-site crawl through the production SSG driver. ----
-    #[cfg(not(feature = "new-core"))]
-    let result = backend_ssr::render_all(|b| website::register_ssr_extensions(b), website::app);
-    #[cfg(feature = "new-core")]
     let result =
         backend_ssr::newcore::render_all(website::register_ssr_scene_handlers, website::app);
 
@@ -270,10 +259,6 @@ fn ssg_crawl_and_ssr_serve_full_site_byte_parity() {
         let addr = addr.clone();
         std::thread::spawn(move || {
             // Blocks forever; the thread dies with the test process.
-            #[cfg(not(feature = "new-core"))]
-            backend_ssr::serve(&addr, config, |b| website::register_ssr_extensions(b), website::app)
-                .expect("serve");
-            #[cfg(feature = "new-core")]
             backend_ssr::newcore::serve(
                 &addr,
                 config,
@@ -294,10 +279,10 @@ fn ssg_crawl_and_ssr_serve_full_site_byte_parity() {
         None,
         None,
     );
-    assert_bytes("served-vs-direct (same core)", &direct, &served);
+    assert_bytes("served-vs-direct", &direct, &served);
 
-    // ---- 3) Dump + cross-core byte gate. ----
-    let dir = dump_root().join(core_name());
+    // ---- 3) Dump + frozen-corpus byte gate. ----
+    let dir = dump_root();
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create dump dir");
 
@@ -317,33 +302,36 @@ fn ssg_crawl_and_ssr_serve_full_site_byte_parity() {
     // failed/partial run is never used as a comparison baseline.
     std::fs::write(dir.join("MANIFEST.txt"), files.join("\n")).unwrap();
 
-    let other_dir = dump_root().join(other_core_name());
-    let other_manifest = other_dir.join("MANIFEST.txt");
-    if !other_manifest.is_file() {
-        println!(
-            "[ssg-{}] wrote {} files to {} — run the {} leg to complete the byte gate",
-            core_name(),
-            files.len(),
-            dir.display(),
-            other_core_name(),
-        );
-        return;
-    }
-    let other_files = std::fs::read_to_string(&other_manifest).unwrap();
+    // ---- 3b) Frozen-corpus gate. ----
+    //
+    // The corpus is the old walker's committed output; the freeze half
+    // died with `runtime-core`, so this comparison can only be satisfied
+    // by fixing the renderer, never by rewriting the artifacts. Same
+    // `assert_bytes` the served-vs-direct check uses (strict first,
+    // documented anchor-collapse fallback only).
+    let frozen = frozen_dir();
+    let manifest = frozen.join("MANIFEST.txt");
+    assert!(
+        manifest.is_file(),
+        "missing frozen SSG corpus at {} — it is the OLD walker's output, captured \
+         before `runtime-core` was deleted, and cannot be re-derived. \
+         See tests/goldens/ssg/README.md.",
+        frozen.display(),
+    );
+    let frozen_files = std::fs::read_to_string(&manifest).unwrap();
     assert_eq!(
-        other_files.lines().collect::<Vec<_>>(),
+        frozen_files.lines().collect::<Vec<_>>(),
         files.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-        "the two cores must dump the same file set"
+        "the frozen corpus and this run must cover the same file set \
+         (a route was added or removed — re-baseline deliberately)"
     );
     for file in &files {
-        let other = std::fs::read_to_string(other_dir.join(file)).unwrap();
-        let this = std::fs::read_to_string(dir.join(file)).unwrap();
-        assert_bytes(file, &other, &this);
+        let expected = std::fs::read_to_string(frozen.join(file)).unwrap();
+        let actual = std::fs::read_to_string(dir.join(file)).unwrap();
+        assert_bytes(&format!("frozen:{file}"), &expected, &actual);
     }
     println!(
-        "[ssg-{}] byte-identical to {} across {} files ({} routes + served doc)",
-        core_name(),
-        other_core_name(),
+        "[ssg] matches the frozen corpus across {} files ({} routes + served doc)",
         files.len(),
         result.pages.len(),
     );

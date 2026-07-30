@@ -9,7 +9,7 @@
 //! dynamically-mounted subtree would paint unlaid-out for one frame. See
 //! `schedule_layout_pass_retry` / `schedule_frame_callback` below.
 //!
-//! `runtime_core::scheduling` falls back to synchronous execution
+//! `runtime_shared::scheduling` falls back to synchronous execution
 //! on native when no scheduler is installed — fine for
 //! `schedule_microtask` (immediate dispatch is correct semantics on
 //! a single-threaded native target), but **wrong for `after_ms`**:
@@ -18,13 +18,13 @@
 //! and any other timer-driven feature follow.
 //!
 //! Hosts call [`install_scheduler`] once at startup, before the
-//! first `runtime_core::render(...)`.
+//! first `runtime_shared::render(...)`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use runtime_core::scheduling::{
+use runtime_shared::scheduling::{
     install_scheduler as install, ScheduleHandle, Scheduler,
 };
 use jni::objects::{GlobalRef, JObject, JValue};
@@ -56,14 +56,14 @@ thread_local! {
 ///
 /// Also installs the cooperative async executor
 /// ([`crate::imp::async_executor::install_async_executor`]) so
-/// `runtime_core::driver::spawn_async` polls futures on the main looper
+/// `runtime_shared::driver::spawn_async` polls futures on the main looper
 /// instead of falling back to `pollster::block_on` (which would FREEZE the
 /// main thread — a hard ANR for any future that needs the looper to make
 /// progress, e.g. the `camera` SDK's main-thread Camera2 setup). Matches the
 /// Apple scheduler, which installs its executor from `install_scheduler` too.
 pub fn install_scheduler() {
     install(Box::new(AndroidScheduler));
-    // Gated on `async-driver` (the feature that brings `runtime_core::driver`
+    // Gated on `async-driver` (the feature that brings `runtime_shared::driver`
     // into scope); mirrors the Apple scheduler installing its executor here.
     #[cfg(feature = "async-driver")]
     crate::imp::async_executor::install_async_executor();

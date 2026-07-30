@@ -3,8 +3,7 @@
 //! map keyed by message name, installed either directly (SSR-inlined) or
 //! by a loader fetching it on demand.
 
-use runtime_core::Signal;
-use std::cell::{OnceCell, RefCell};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -21,28 +20,21 @@ thread_local! {
     /// (eventually) calling `install_pack`. Unopinionated about *how* —
     /// sync, async, network, embedded — that's the app's choice.
     static LOADER: RefCell<Option<Rc<dyn Fn(&str)>>> = const { RefCell::new(None) };
-
-    /// Monotonic counter bumped on every pack install. Reactive scopes that
-    /// read it (via `current_locale_code`) recompute when a pack arrives.
-    static PACK_EPOCH: OnceCell<Signal<u64>> = const { OnceCell::new() };
 }
 
-fn epoch_signal() -> Signal<u64> {
-    // Thread-lifetime global — `unscope` so a transient first-access scope
-    // doesn't own (and later recycle) its arena slot. Same contract as the
-    // locale + viewport signals.
-    PACK_EPOCH.with(|cell| *cell.get_or_init(|| runtime_core::unscope(|| Signal::new(0u64))))
-}
-
-/// Subscribe the current reactive scope to pack installs. Called from
-/// `current_locale_code` so message derives recompute on pack arrival.
-pub(crate) fn subscribe_epoch() {
-    let _ = epoch_signal().get();
-}
-
+// The pack-install epoch is a SIGNAL, so it lives per-world in
+// `locale::I18nCtx` alongside the locale code (see that module's docs for
+// why a thread-lifetime signal is wrong on a per-world kernel). The pack
+// TABLES below stay thread-local: they are plain data, shared by every world
+// on the thread, and carry no reactive identity.
 fn bump_epoch() {
-    let sig = epoch_signal();
-    sig.set(sig.get().wrapping_add(1));
+    // No ctx means nothing has ever read a locale on this thread, so nothing
+    // is subscribed and there is nothing to notify — installing a pack before
+    // the first render is not an error. (A stale ctx from a dropped world is
+    // equally harmless: dead-world writes are silent no-ops.)
+    if let Some(ctx) = crate::locale::try_ctx() {
+        ctx.bump_epoch();
+    }
 }
 
 pub(crate) fn clear_in_flight(code: &str) {
@@ -125,7 +117,11 @@ pub fn ensure_pack_loaded(code: &str) {
 /// ```
 #[cfg(feature = "lazy-fetch")]
 pub fn net_pack_loader(base_url: impl Into<String>) -> impl Fn(&str) + 'static {
-    use runtime_core::logging::{log, LogLevel};
+    // `logging` is a permanent-substrate module that `runtime_vocabulary::glue`
+    // does not re-export yet, so it comes from the substrate directly rather
+    // than through the `runtime_core` facade. Re-point at the facade when glue
+    // grows the re-export (a one-line gap, reported).
+    use runtime_shared::logging::{log, LogLevel};
     let base = base_url.into();
     move |code: &str| {
         let url = resolve_pack_url(&base, code);

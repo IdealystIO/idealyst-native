@@ -52,7 +52,6 @@ mod sim_mode {
         unsafe { lol_alloc::AssumeSingleThreaded::new(lol_alloc::FreeListAllocator::new()) };
 
     thread_local! {
-        static OWNER: RefCell<Option<runtime_core::Owner>> = const { RefCell::new(None) };
         // `host-web::WebHostHandle` is `!Send + !Sync`; thread-local is
         // the right home.
         static HANDLE: RefCell<Option<host_web::WebHostHandle>> = const { RefCell::new(None) };
@@ -82,9 +81,10 @@ mod sim_mode {
         // `idea_ui::set_idea_theme(...)` to swap at runtime.
         idea_ui::install_idea_theme(idea_ui::light_theme());
 
-        let backend = Rc::new(RefCell::new(backend_web::WebBackend::new("#app")));
-        let owner = runtime_core::render(backend, simulator_tree());
-        OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
+        // The page's own world — `host_web::mount_newcore` requires it
+        // (`backend_web::newcore::mounted_world()`), and the embedded app's
+        // staged writes commit through this world's flush driver.
+        backend_web::newcore::start(simulator_tree);
     }
 
     fn simulator_tree() -> runtime_core::Element {
@@ -97,10 +97,10 @@ mod sim_mode {
                     color_scheme: ColorScheme::Light,
                 };
                 let skin: Rc<dyn Painter> = Rc::new(ios_sim::IosSim::new());
-                match host_web::mount(event.surface, event.size, profile, skin, || {
-                    super::snippet::app()
-                })
-                .await
+                let build: Rc<dyn Fn() -> runtime_core::Element> =
+                    Rc::new(|| super::snippet::app());
+                match host_web::mount_newcore(event.surface, event.size, profile, skin, build)
+                    .await
                 {
                     Ok(handle) => HANDLE.with(|slot| *slot.borrow_mut() = Some(handle)),
                     Err(err) => web_sys::console::warn_1(
@@ -148,18 +148,11 @@ pub use sim_mode::start;
 
 #[cfg(all(target_arch = "wasm32", feature = "web", not(feature = "simulator")))]
 mod web_mode {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
     use wasm_bindgen::prelude::*;
 
     #[global_allocator]
     static ALLOCATOR: lol_alloc::AssumeSingleThreaded<lol_alloc::FreeListAllocator> =
         unsafe { lol_alloc::AssumeSingleThreaded::new(lol_alloc::FreeListAllocator::new()) };
-
-    thread_local! {
-        static OWNER: RefCell<Option<runtime_core::Owner>> = const { RefCell::new(None) };
-    }
 
     #[wasm_bindgen(start)]
     pub fn start() {
@@ -173,13 +166,11 @@ mod web_mode {
         // `idea_ui::set_idea_theme(...)` at runtime.
         idea_ui::install_idea_theme(idea_ui::light_theme());
 
-        let backend = Rc::new(RefCell::new(backend_web::WebBackend::new("#app")));
         // No simulator wrapper — the user's `app()` IS the page in
         // web mode. The iframe shell's `#app` div fills the
         // viewport, so any `flex_grow: 1` / `height: 100%` at the
         // snippet's root will take the full preview area.
-        let owner = runtime_core::render(backend, super::snippet::app());
-        OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
+        backend_web::newcore::start(|| super::snippet::app());
     }
 }
 
@@ -212,6 +203,9 @@ pub mod __rt {
     // idea-ui's higher-level components, so snippets default to
     // the styled shape rather than building everything out of bare
     // `View` + per-instance stylesheets.
-    pub use idea_ui::{typography, card, stack, CardPadding, StackAlign, StackAxis, StackGap, StackJustify, StackPadding};
+    pub use idea_ui::{
+        Card, CardPadding, Stack, StackAlign, StackAxis, StackGap, StackJustify, StackPadding,
+        Typography,
+    };
     pub use std::rc::Rc;
 }

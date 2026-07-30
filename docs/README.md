@@ -15,17 +15,20 @@ the others.
 If you're new to the codebase, read the docs in this order:
 
 1. [`ui-layer.md`](./ui-layer.md). The author-facing surface. Components,
-   `ui!` / `jsx!`, `Element`, `Bound<H>`, refs, `stylesheet!`. Read this
-   first to see what application code looks like.
+   `ui!` / `jsx!`, `Element`, the primitive builders, refs,
+   `stylesheet!`. Read this first to see what application code looks
+   like.
 
 2. [`primitives.md`](./primitives.md). The framework's structural
    vocabulary. The fixed set of "things the renderer knows about,"
    what each one's contract is, and how to build a component suite
    on top. The entry point if you're designing your own widget kit.
 
-3. [`reactivity.md`](./reactivity.md). `Signal<T>`, `Effect`, `Scope`,
-   the arena, fine-grained updates. The reactive substrate everything
-   else assumes.
+3. [`reactivity.md`](./reactivity.md). `World`, `Signal<T>`, `Effect`,
+   `Memo<T>`, staged writes, ownership scopes, fine-grained updates. The
+   reactive substrate everything else assumes.
+   [`automatic-batching.md`](./automatic-batching.md) is its companion:
+   the flush model and the per-backend flush drivers.
 
 4. [`styling.md`](./styling.md). Themes, stylesheets, variants,
    overrides, interaction states. How application style declarations
@@ -33,7 +36,7 @@ If you're new to the codebase, read the docs in this order:
 
 5. [`animation.md`](./animation.md). The gesture/spring/decay-driven
    animation system. Value handles, animator factories, the
-   per-thread clock, and how the `Backend::set_animated_*` family
+   per-thread clock, and how the `AnimationOps::set_animated_*` pair
    carries per-frame writes to native widgets. Complements styling's
    `Transition` (declarative) with imperative, interruptible motion.
 
@@ -44,19 +47,19 @@ If you're new to the codebase, read the docs in this order:
    Read this when you're adding a custom font or debugging why one
    isn't rendering the weight you expected.
 
-7. [`backend.md`](./backend.md). The `Backend` trait, the render walker,
-   per-primitive lifecycle hooks, the rules a backend must follow.
-   Read this last; it's where the seam between framework and platform
-   lives, and it makes more sense after you've seen what gets handed
-   across it.
+7. [`backend.md`](./backend.md). The `runtime_scene::Host` trait, the 30
+   capability traits, the `Registry` mount path, the flush driver, and
+   the rules a backend must follow. Read this last; it's where the seam
+   between framework and platform lives, and it makes more sense after
+   you've seen what gets handed across it.
 
 8. [`accessibility.md`](./accessibility.md). The author-facing
    accessibility guide — default roles, the `AccessibilityProps` model
    (roles, traits, live regions, actions), and how it maps to each
    platform's native AX system.
    [`accessibility-design.md`](./accessibility-design.md) has the
-   internals: per-platform mapping tables, the Backend-trait surface,
-   and the GPU-backend semantics tree.
+   internals: per-platform mapping tables and the GPU-backend semantics
+   tree (its trait signatures predate runtime v2).
 
 9. [`server-functions.md`](./server-functions.md). The full-stack layer:
    `#[server]` fns (one function, two compilations), the `server` cargo
@@ -83,8 +86,8 @@ If you're new to the codebase, read the docs in this order:
 
 ## Migrating
 
-- [`migrating-to-runtime-v2.md`](./migrating-to-runtime-v2.md). The `new-core`
-  runtime: staged-commit reactivity (writes commit at the driver's flush,
+- [`migrating-to-runtime-v2.md`](./migrating-to-runtime-v2.md). Runtime v2 —
+  now the only runtime: staged-commit reactivity (writes commit at the driver's flush,
   `update` composes, `batch` removed), drop-as-teardown scopes and the
   tightened `on_cleanup` placement, handlers running outside the world,
   per-platform `newcore` boot entries, the not-yet-ported surface list,
@@ -104,30 +107,36 @@ If you're new to the codebase, read the docs in this order:
 
 ## Crate map
 
-The repo is grouped by concern (`crates/framework/`, `crates/backend/`,
-`crates/render/`, …). The crates these design docs refer to:
+The repo is grouped by concern (`crates/runtime/`, `crates/backend/`,
+`crates/gpu-backend/`, `crates/ui/`, `crates/sdk/`, `crates/dev/`,
+`crates/tools/`). The crates these design docs refer to:
 
 | Crate | Path | Role |
 | --- | --- | --- |
-| `runtime-core` | `crates/framework/core` | `Element`, `Backend` trait, render walker, reactivity, styles |
-| `runtime-macros` | `crates/framework/macros` | `#[component]`, `ui!`, `jsx!`, `stylesheet!` proc-macros |
-| `reactive-arena` | `crates/framework/reactive/arena` | Arena allocator used by the reactivity system |
-| `reactive-refs` | `crates/framework/reactive/refs` | `Ref<H>` machinery |
-| `runtime-layout` | `crates/framework/runtime-layout` | Taffy flex-layout helper used by native backends |
-| `wire` | `crates/framework/wire` | Hot-reload + server-driven UI wire protocol |
-| `backend-web` | `crates/backend/web` | WASM + DOM backend |
+| `runtime-world` | `crates/runtime/world` | The reactive kernel: per-world arenas, `Copy` handles, staged-commit flush |
+| `runtime-scene` | `crates/runtime/scene` | `Element`, `Host`, `Registry`, `realize` + the structural drivers |
+| `runtime-vocabulary` | `crates/runtime/vocabulary` | The primitives (payloads + handlers), the 30 `caps::*Ops` traits, `glue` (the author surface) |
+| `runtime-shared` | `crates/runtime/shared` | The permanent substrate: style engine, colors, assets/fonts, animation, event types, scheduling, robot registry, per-primitive handles |
+| `runtime-core` | `crates/runtime/core` | The author surface: the `runtime_core::…` spelling — re-exports `glue::*` plus the macro set. No implementation lives here |
+| `runtime-macros` | `crates/runtime/macros` | `#[component]`, `ui!`, `jsx!`, `stylesheet!` proc-macros |
+| `runtime-layout` | `crates/runtime/layout` | Taffy flex-layout helper used by native backends |
+| `css` | `crates/css` | `StyleRules` → CSS, shared by the web and SSR backends |
+| `wire` | `crates/dev/wire` | Hot-reload + server-driven UI wire protocol |
+| `backend-web` | `crates/backend/web` | WASM + DOM backend (the reference implementation) |
+| `backend-ssr` | `crates/backend/ssr` | Server-side render / SSG / SSR server |
 | `backend-android-mobile` | `crates/backend/android/mobile` | JNI + Android `View` hierarchy backend |
 | `backend-ios-mobile` | `crates/backend/ios/mobile` | UIKit / objc2 backend |
 | `backend-macos` | `crates/backend/macos` | AppKit / objc2 backend |
-| `backend-roku` | `crates/backend/roku` | BrightScript / SceneGraph generator backend |
-| `render-wgpu` | `crates/render/wgpu` | wgpu-backed renderer that implements `Backend` on a GPU pipeline |
+| `backend-terminal`, `backend-cpu`, `backend-roku`, `backend-email`, `backend-linux`, `backend-windows` | `crates/backend/*` | The remaining hosts |
+| `render-wgpu` | `crates/gpu-backend/engine` | wgpu-backed renderer; the GPU host/variant crates live beside it |
 
 Per-backend behaviour notes live in `README.md` files next to each backend
 crate. Start there if you're investigating a platform-specific quirk.
 
-Application crates depend on `runtime-core` and the macros. They do
-**not** depend on any backend; the platform host crate is the only
-place that names a concrete backend.
+Application crates depend on `runtime-core`, `runtime-vocabulary`, and
+`runtime-scene`. They do **not** depend on any backend; the platform host crate is the only place
+that names a concrete backend. `examples/welcome` is the scaffold's
+source of truth for the dep set.
 
 ## One-screen summary
 
@@ -137,15 +146,17 @@ Application code
    │  + `Signal<T>` for reactive state
    │  + `StyleSheet` for styling
    ▼
-Render walker  (runtime-core)
-   │  recurses Element → calls Backend trait methods
-   │  + wires Effects so signal changes drive backend updates
-   │  + resolves StyleSheets against active theme into StyleRules
+realize  (runtime-scene)
+   │  walks Element once; dispatches each payload by TypeId to its handler
+   │  + spawns one driver effect per structural hole
+   ▼
+Primitive handlers  (runtime-vocabulary)
+   │  call the backend's caps::*Ops methods to create + bind + style
+   │  + install binding effects so signal changes drive capability calls
    ▼
 Backend  (your platform impl)
-   │  creates / inserts / updates native widgets
-   │  + applies StyleRules however suits the platform
-   │  + (optionally) caches stylesheet state, exposes ref handles
+   │  Host (7 structural ops) + the caps traits it supports
+   │  + a flush driver that commits staged writes after author code runs
    ▼
 Native UI on screen
 ```

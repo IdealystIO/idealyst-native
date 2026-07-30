@@ -17,7 +17,11 @@ name = "toolbar-demo"
 path = "src/main.rs"
 
 [dependencies]
+# `runtime-core` is aliased to `runtime_core` at the crate root (see
+# src/main.rs). `runtime-scene` supplies `IntoElement` (the trait that turns
+# the SDK's `ToolbarBound` into the scene `Element` `run_with` builds).
 runtime-core = { workspace = true }
+runtime-scene = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 host-appkit = { workspace = true }

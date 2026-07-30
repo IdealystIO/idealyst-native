@@ -141,7 +141,7 @@ docs! {
         ),
         p("What this means in practice:"),
         list(
-            ["Signal values survive. Signals live in the reactive arena, not in the primitive tree. A hot patch doesn't touch them."],
+            ["Signal values survive. Signals live in the world's arena, not in the primitive tree. A hot patch doesn't touch them."],
             ["Component state survives if the component's place in the tree is stable. Move a component or change its props structurally and you may lose its state."],
             ["Backend nodes survive when their identity is stable. Editing the contents of a ", code("Text"), " keeps the same DOM/UIView/Android-View node — the backend just gets ", code("update_text(node, new_string)"), "."],
         ),
@@ -220,7 +220,7 @@ docs! {
     section(heading = "What runtime-server is good for") {
         list(
             ["Cross-platform comparison. Run web, iOS, and Android clients side by side, navigate on one, watch the others follow. Useful for spotting platform-specific rendering differences in real time."],
-            ["State that survives source edits. Navigation, scroll positions, complex form state — all of it lives in the dev-host's reactive arena and persists across rebuilds. Useful when you're 6 screens deep into testing and don't want to re-navigate after every change."],
+            ["State that survives source edits. Navigation, scroll positions, complex form state — all of it lives in the dev-host's world and persists across rebuilds. Useful when you're 6 screens deep into testing and don't want to re-navigate after every change."],
             ["Driving demos. One canonical instance of the app, multiple windows or devices showing it."],
             ["Debugging the wire protocol or backends. Because the wire is the seam, you can log it, replay it, modify it in flight."],
         ),

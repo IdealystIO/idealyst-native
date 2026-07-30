@@ -37,9 +37,11 @@ server = ["dep:axum", "dep:tokio", "dep:tower", "dep:http-body-util", "dep:futur
 [dependencies]
 server-macros = { workspace = true }
 net = { workspace = true }
-# Brings in `ResourceCancel`. Async-driver gate already enabled by
-# whatever else in the workspace uses `resource()`; we only need the
-# token type itself, which is light and trait-free.
+# The author surface, aliased to `runtime_core` at the crate root
+# (src/lib.rs). Used for the reactive hooks only — `Signal`/`signal`,
+# `effect`, `driver::spawn_async`, and the `ResourceCancel` token that
+# `#[server]`'s `resource()` integration hands to fetchers. `async-driver`
+# is what grows `driver` + the `resource`/`mutation` mirrors on the root.
 runtime-core = { workspace = true, features = ["async-driver"] }
 
 serde = { workspace = true }

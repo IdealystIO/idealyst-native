@@ -44,11 +44,6 @@ use runtime_core::{
     component, signal, text as text_node, ui, ChildList, Color, Cursor, Element, IdealystSchema,
     IntoElement, Reactive, Signal, StyleRules, Tokenized,
 };
-// Old-core only: the enum-introspection helpers below read/annotate the
-// old public `Element` style slot (the new-core fork goes through the
-// table SDK's payload helpers instead).
-#[cfg(not(feature = "new-core"))]
-use runtime_core::{StyleApplication, StyleSource};
 use table::{table as sdk_table, table_cell as sdk_cell, table_row as sdk_row};
 use table::{TableCellProps as SdkTableCellProps, TableProps as SdkTableProps, TableRowProps as SdkTableRowProps};
 
@@ -160,11 +155,10 @@ pub fn TableRow(props: TableRowProps) -> Element {
 }
 
 /// The whole-row hover overlay: pointer cursor always, the themed
-/// `color-surface-alt` background while `hovered` is on. Shared by both
-/// cores' `make_row_cell_interactive` — the override layer resolves
-/// last, so the `Some` background wins only while hovered and otherwise
-/// leaves the cell's base sheet (padding, border, head/body surface)
-/// untouched.
+/// `color-surface-alt` background while `hovered` is on. The override
+/// layer resolves last, so the `Some` background wins only while hovered
+/// and otherwise leaves the cell's base sheet (padding, border, head/body
+/// surface) untouched.
 fn row_hover_overlay(on: bool) -> StyleRules {
     let mut overlay = StyleRules {
         cursor: Some(Cursor::Pointer),
@@ -176,43 +170,16 @@ fn row_hover_overlay(on: bool) -> StyleRules {
     overlay
 }
 
-/// Layer a reactive whole-row hover background + pointer cursor onto a
-/// cell's existing themed style, driven by the row's shared `hovered`
-/// flag. Preserves the cell's base sheet (padding, border, head/body
-/// surface) by cloning its `StyleApplication` and merging an override on
-/// top — the override layer resolves last, so a `Some` background wins
-/// only while hovered and otherwise leaves the base untouched.
+/// Attach whole-row click + hover to a single cell.
 ///
-/// If the cell carries no static style (not the idea-ui path), the cell
-/// is returned unchanged — the caller still attaches the tap handler, so
-/// the row stays clickable, just without the highlight.
-#[cfg(not(feature = "new-core"))]
-fn apply_row_hover_style(cell: Element, hovered: Signal<bool>) -> Element {
-    let base: Option<StyleApplication> = match cell_style(&cell) {
-        Some(StyleSource::Static(app)) => Some(app.clone()),
-        _ => None,
-    };
-    let Some(base) = base else { return cell };
-
-    cell.with_style(move || base.clone().with_overrides(row_hover_overlay(hovered.get())))
-}
-
-/// Read a built cell's current style slot. Cells lower to an
-/// `Element::View` on native and an `Element::External` (`<td>`/`<th>`)
-/// on web; both carry a `style` field.
-#[cfg(not(feature = "new-core"))]
-fn cell_style(cell: &Element) -> Option<&StyleSource> {
-    match cell {
-        Element::View { style, .. } | Element::External { style, .. } => style.as_ref(),
-        _ => None,
-    }
-}
-
-/// Attach whole-row click + hover to a single cell. The tap recognizer and
-/// the shared hover flag ride on the cell's OWN backend node — a real
-/// `Element::View` grid item on native, a `<td>`/`<th>` `Element::External`
-/// on web (both carry `on_touch`/`on_hover`). The reactive row-hover
-/// background lands on that same node.
+/// The reactive row-hover style is layered over the cell's existing themed
+/// sheet, and the tap recognizer + shared hover flag ride on the cell's OWN
+/// backend node — a grid item on native, a `<td>`/`<th>` on web. The scene
+/// payload is type-erased, so the cell introspection lives in the table SDK
+/// (`cell_base_application` / `set_cell_style` / `set_cell_interaction`,
+/// which reach both shapes). Payloads are pre-mount, so in-place mutation is
+/// the sanctioned path (the navigator handlers' style-override fold uses the
+/// same `PrimCell::with_mut` mechanism).
 ///
 /// Putting the handler on the cell itself — an *ancestor* of whatever the
 /// cell contains — is what makes buttons-in-a-clickable-row work: an
@@ -222,47 +189,19 @@ fn cell_style(cell: &Element) -> Option<&StyleSource> {
 /// native). Taps on plain content or empty space fall through to the row.
 /// This replaces the earlier web-only full-bleed overlay, which physically
 /// covered the cell's content and so swallowed a button's click.
-///
-/// `Bound::<ViewHandle>` here is a type-check-only marker (see `Bound`'s
-/// rustdoc) — `on_touch`/`on_hover` write into a `View` OR an `External`,
-/// so the same call works for both cell shapes.
-#[cfg(not(feature = "new-core"))]
-fn make_row_cell_interactive(cell: Element, hovered: Signal<bool>, cb: Rc<dyn Fn()>) -> Element {
-    use runtime_core::{tap, Bound, TapRecognizer, ViewHandle};
-
-    let styled = apply_row_hover_style(cell, hovered);
-    // `tap(..)` yields an `Rc<dyn Fn(&TouchEvent) -> TouchResponse>`; wrap
-    // it so it satisfies `on_touch`'s `Fn` bound (an `Rc` isn't itself
-    // `Fn`).
-    let recognizer = tap(TapRecognizer::new(), move || (cb)());
-    Bound::<ViewHandle>::new(styled)
-        .on_hover(move |entering| hovered.set(entering))
-        .on_touch(move |ev| recognizer(ev))
-        .into_element()
-}
-
-/// New-core fork of the same feature. The scene `Element::Item` payload
-/// is type-erased, so the cell introspection the old core did against
-/// the public enum lives in the table SDK instead
-/// (`cell_base_application` / `set_cell_style` /
-/// `set_cell_interaction` — they reach both the native grid-item and
-/// web `<td>`/`<th>` payload shapes). Payloads are pre-mount, so
-/// in-place mutation is the sanctioned path (the navigator handlers'
-/// style-override fold uses the same `PrimCell::with_mut` mechanism).
-#[cfg(feature = "new-core")]
 fn make_row_cell_interactive(cell: Element, hovered: Signal<bool>, cb: Rc<dyn Fn()>) -> Element {
     use runtime_core::{tap, TapRecognizer};
 
     // Reactive whole-row hover style, layered over the cell's existing
     // themed sheet. A cell without a static sheet application keeps its
-    // style untouched but stays clickable — same fallback as old-core.
+    // style untouched but stays clickable.
     if let Some(base) = table::cell_base_application(&cell) {
         table::set_cell_style(&cell, move || {
             base.clone().with_overrides(row_hover_overlay(hovered.get()))
         });
     }
-    // `tap(..)` yields the `TouchHandler` Rc directly; the hover
-    // reporter feeds the row's shared flag exactly as on the old core.
+    // `tap(..)` yields the `TouchHandler` Rc directly; the hover reporter
+    // feeds the row's shared flag.
     let recognizer = tap(TapRecognizer::new(), move || (cb)());
     table::set_cell_interaction(&cell, recognizer, Rc::new(move |entering| hovered.set(entering)));
     cell
@@ -387,12 +326,10 @@ fn cell_text_children(header: bool, content: Reactive<Option<String>>) -> Vec<El
 }
 
 // =============================================================================
-// Tests — native (non-web) lowering, dual-core. On native a `TableRow`
-// lowers to a fragment of its cells (see the `table` SDK), so we can
-// read each cell's wiring straight off the built tree without a
-// backend. Introspection goes through `test_support::classify` — the
-// shared per-core mirror — so the SAME assertions pin both the old
-// enum fields and the new-core `ViewPrim` payload.
+// Tests — native (non-web) lowering. On native a `TableRow` lowers to a
+// fragment of its cells (see the `table` SDK), so we can read each cell's
+// wiring straight off the built tree without a backend. Introspection goes
+// through `test_support::classify`.
 // =============================================================================
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
@@ -419,9 +356,9 @@ mod tests {
     /// (`on_hover`), and its style is upgraded to a reactive source so the
     /// whole-row hover highlight can re-apply. This is the whole feature —
     /// if a refactor drops any of the three, the row stops being clickable
-    /// or stops highlighting. (On the new core the wiring goes through the
-    /// table SDK's `set_cell_style`/`set_cell_interaction` helpers — this
-    /// test is what fails if that seam regresses.)
+    /// or stops highlighting. (The wiring goes through the table SDK's
+    /// `set_cell_style`/`set_cell_interaction` helpers — this test is what
+    /// fails if that seam regresses.)
     #[test]
     fn clickable_row_makes_every_cell_interactive() {
         with_test_world(|| {

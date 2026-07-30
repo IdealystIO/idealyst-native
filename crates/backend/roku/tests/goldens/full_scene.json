@@ -1,0 +1,372 @@
+[
+  {
+    "id": 1,
+    "op": "CreateView"
+  },
+  {
+    "id": 2,
+    "op": "CreateView"
+  },
+  {
+    "content": "hello roku",
+    "id": 3,
+    "op": "CreateText"
+  },
+  {
+    "child": 3,
+    "op": "Insert",
+    "parent": 2
+  },
+  {
+    "content": "styled",
+    "id": 4,
+    "op": "CreateText"
+  },
+  {
+    "base": {
+      "align_items": null,
+      "aspect_ratio": null,
+      "background": {
+        "kind": "Literal",
+        "value": "#334455"
+      },
+      "border_bottom_left_radius": null,
+      "border_bottom_right_radius": null,
+      "border_top_left_radius": null,
+      "border_top_right_radius": null,
+      "color": null,
+      "flex_direction": null,
+      "font_size": null,
+      "font_weight": null,
+      "gap": null,
+      "height": null,
+      "justify_content": null,
+      "margin_bottom": null,
+      "margin_left": null,
+      "margin_right": null,
+      "margin_top": null,
+      "max_height": null,
+      "max_width": null,
+      "min_height": null,
+      "min_width": null,
+      "opacity": null,
+      "padding_bottom": null,
+      "padding_left": null,
+      "padding_right": null,
+      "padding_top": null,
+      "text_align": null,
+      "width": {
+        "kind": "Px",
+        "value": 20.0
+      }
+    },
+    "disabled": null,
+    "focused": null,
+    "hovered": null,
+    "id": 4,
+    "op": "ApplyStyleStates",
+    "pressed": null
+  },
+  {
+    "child": 4,
+    "op": "Insert",
+    "parent": 2
+  },
+  {
+    "base": {
+      "align_items": "Center",
+      "aspect_ratio": null,
+      "background": {
+        "kind": "Literal",
+        "value": "#101020"
+      },
+      "border_bottom_left_radius": null,
+      "border_bottom_right_radius": null,
+      "border_top_left_radius": null,
+      "border_top_right_radius": null,
+      "color": null,
+      "flex_direction": "Row",
+      "font_size": null,
+      "font_weight": null,
+      "gap": 8.0,
+      "height": null,
+      "justify_content": "SpaceBetween",
+      "margin_bottom": null,
+      "margin_left": null,
+      "margin_right": null,
+      "margin_top": null,
+      "max_height": null,
+      "max_width": null,
+      "min_height": null,
+      "min_width": null,
+      "opacity": null,
+      "padding_bottom": null,
+      "padding_left": 16.0,
+      "padding_right": null,
+      "padding_top": 12.0,
+      "text_align": null,
+      "width": {
+        "kind": "Percent",
+        "value": 100.0
+      }
+    },
+    "disabled": null,
+    "focused": null,
+    "hovered": null,
+    "id": 2,
+    "op": "ApplyStyleStates",
+    "pressed": null
+  },
+  {
+    "child": 2,
+    "op": "Insert",
+    "parent": 1
+  },
+  {
+    "id": 5,
+    "op": "CreateView"
+  },
+  {
+    "base": {
+      "align_items": null,
+      "aspect_ratio": null,
+      "background": {
+        "fallback": "#000",
+        "kind": "Token",
+        "name": "color-surface"
+      },
+      "border_bottom_left_radius": null,
+      "border_bottom_right_radius": null,
+      "border_top_left_radius": null,
+      "border_top_right_radius": null,
+      "color": null,
+      "flex_direction": null,
+      "font_size": null,
+      "font_weight": null,
+      "gap": null,
+      "height": null,
+      "justify_content": null,
+      "margin_bottom": null,
+      "margin_left": null,
+      "margin_right": null,
+      "margin_top": null,
+      "max_height": null,
+      "max_width": null,
+      "min_height": null,
+      "min_width": null,
+      "opacity": null,
+      "padding_bottom": null,
+      "padding_left": null,
+      "padding_right": null,
+      "padding_top": null,
+      "text_align": null,
+      "width": {
+        "kind": "Px",
+        "value": 100.0
+      }
+    },
+    "disabled": null,
+    "focused": null,
+    "hovered": {
+      "align_items": null,
+      "aspect_ratio": null,
+      "background": {
+        "kind": "Literal",
+        "value": "#222"
+      },
+      "border_bottom_left_radius": null,
+      "border_bottom_right_radius": null,
+      "border_top_left_radius": null,
+      "border_top_right_radius": null,
+      "color": null,
+      "flex_direction": null,
+      "font_size": null,
+      "font_weight": null,
+      "gap": null,
+      "height": null,
+      "justify_content": null,
+      "margin_bottom": null,
+      "margin_left": null,
+      "margin_right": null,
+      "margin_top": null,
+      "max_height": null,
+      "max_width": null,
+      "min_height": null,
+      "min_width": null,
+      "opacity": null,
+      "padding_bottom": null,
+      "padding_left": null,
+      "padding_right": null,
+      "padding_top": null,
+      "text_align": null,
+      "width": {
+        "kind": "Px",
+        "value": 100.0
+      }
+    },
+    "id": 5,
+    "op": "ApplyStyleStates",
+    "pressed": null
+  },
+  {
+    "child": 5,
+    "op": "Insert",
+    "parent": 1
+  },
+  {
+    "id": 6,
+    "label": "Go",
+    "leading_icon": null,
+    "on_click": 1,
+    "op": "CreateButton",
+    "trailing_icon": null
+  },
+  {
+    "child": 6,
+    "op": "Insert",
+    "parent": 1
+  },
+  {
+    "id": 7,
+    "initial_value": true,
+    "on_change": 2,
+    "op": "CreateToggle"
+  },
+  {
+    "id": 7,
+    "op": "UpdateToggleValue",
+    "value": true
+  },
+  {
+    "child": 7,
+    "op": "Insert",
+    "parent": 1
+  },
+  {
+    "id": 8,
+    "initial_value": 2.5,
+    "max": 10.0,
+    "min": 0.0,
+    "on_change": 3,
+    "op": "CreateSlider",
+    "step": 0.5
+  },
+  {
+    "id": 8,
+    "op": "UpdateSliderValue",
+    "value": 2.5
+  },
+  {
+    "child": 8,
+    "op": "Insert",
+    "parent": 1
+  },
+  {
+    "id": 9,
+    "initial_value": "hi",
+    "on_change": 4,
+    "op": "CreateTextInput",
+    "placeholder": "Type here",
+    "secure": false
+  },
+  {
+    "id": 9,
+    "op": "UpdateTextInputValue",
+    "value": "hi"
+  },
+  {
+    "child": 9,
+    "op": "Insert",
+    "parent": 1
+  },
+  {
+    "id": 10,
+    "on_click": 5,
+    "op": "CreatePressable"
+  },
+  {
+    "content": "press me",
+    "id": 11,
+    "op": "CreateText"
+  },
+  {
+    "child": 11,
+    "op": "Insert",
+    "parent": 10
+  },
+  {
+    "child": 10,
+    "op": "Insert",
+    "parent": 1
+  },
+  {
+    "alt": "Logo",
+    "id": 12,
+    "op": "CreateImage",
+    "src": "logo.png"
+  },
+  {
+    "id": 12,
+    "op": "UpdateImageSrc",
+    "src": "logo.png"
+  },
+  {
+    "child": 12,
+    "op": "Insert",
+    "parent": 1
+  },
+  {
+    "color": null,
+    "data": {
+      "cache_key": "#0",
+      "filled": false,
+      "paths": [
+        "M0 0h24v24H0z"
+      ],
+      "viewport_height": 24.0,
+      "viewport_width": 24.0
+    },
+    "id": 13,
+    "op": "CreateIcon"
+  },
+  {
+    "child": 13,
+    "op": "Insert",
+    "parent": 1
+  },
+  {
+    "color": null,
+    "id": 14,
+    "op": "CreateActivityIndicator",
+    "size": "Small"
+  },
+  {
+    "child": 14,
+    "op": "Insert",
+    "parent": 1
+  },
+  {
+    "horizontal": false,
+    "id": 15,
+    "op": "CreateScrollView"
+  },
+  {
+    "content": "scrollable",
+    "id": 16,
+    "op": "CreateText"
+  },
+  {
+    "child": 16,
+    "op": "Insert",
+    "parent": 15
+  },
+  {
+    "child": 15,
+    "op": "Insert",
+    "parent": 1
+  },
+  {
+    "op": "Finish",
+    "root": 1
+  }
+]

@@ -1,19 +1,20 @@
-//! New-core adoption for the email backend (idea-lite migration:
-//! one-shot worlds, the SSR shape applied to "SSG for emails").
+//! Email rendering: the `runtime_scene::Host` + capability-trait surface
+//! and the one-shot-world render entries (idea-lite core).
 //!
-//! Implements [`runtime_scene::Host`] plus **all 30** capability traits
-//! (`runtime_vocabulary::caps`) directly on [`EmailBackend`] — the
-//! production shape of the migration (the same choice ssr/web/macOS
-//! made): no `LegacyBridge` wrapper in the render path. Every trait
-//! method delegates via UFCS (`<EmailBackend as Backend>::method(self,
-//! …)`) to the existing `Backend` impl, so the HTML mechanism code
-//! (node building, deferred token resolution, inline-style
-//! serialization) is REUSED verbatim. Where a `Backend` method is not
-//! overridden by `EmailBackend` (handles, batching, wire recording,
-//! introspection), the UFCS call resolves to the same trait-default the
-//! old walker hits — behavior identical by construction.
+//! [`EmailBackend`] implements [`runtime_scene::Host`] plus **all 30**
+//! capability traits (`runtime_vocabulary::caps`) — the production shape
+//! of the migration (the same choice ssr/web/macOS made). Every method
+//! body in this file IS the email mechanism: it was moved here verbatim
+//! from the crate's old `impl Backend for EmailBackend` when the
+//! 159-method mega-trait was deleted, so the HTML mechanism (node
+//! building, deferred token resolution, inline-style serialization) is
+//! unchanged. Capabilities email does not implement are simply absent —
+//! the caps-trait DEFAULT bodies serve them, and those defaults were
+//! audited byte-for-byte against the `Backend` defaults they replace
+//! (`docs/runtime-v2-deletion-baseline.md` S2.1; 116 of email's 152
+//! caps methods resolve to a default).
 //!
-//! **30/30 direct, 0 adapted, 0 stubbed.**
+//! **30/30 traits implemented, 0 adapted, 0 stubbed.**
 //!
 //! # One-shot world per render
 //!
@@ -34,68 +35,47 @@
 //!   committed initial state; there is no event dispatch, so the single
 //!   post-realize `world.flush()` is the whole commit story.
 //! - **Frames/timers are dropped** by the crate's queue-only scheduler
-//!   (`crate::scheduler`, shared with the old render path): a static
-//!   email has no animation loop.
-//! - **No dispatch-site callback wrapping.** Email swallows every
-//!   author callback at the `Backend` layer already (no interaction in
-//!   the output), so the caps impls delegate raw — exactly like SSR.
+//!   (`crate::scheduler`): a static email has no animation loop.
+//! - **No dispatch-site callback wrapping.** Email swallows every author
+//!   callback (there is no interaction in the output), so no capability
+//!   method here wraps a callback — exactly like SSR. That is why every
+//!   body below could be moved from the old `Backend` impl unchanged.
 //!
 //! # Anchoring
 //!
-//! [`Host::supports_splice`] delegates to
-//! `Backend::supports_child_splice` (the shared `false` default), so
-//! every reactive region nests under the same `create_reactive_anchor`
-//! `<div>` the old walker emits — anchor placement stays in lockstep
-//! with the old core by construction. (Unlike SSR there is no hydration
-//! consumer pinning anchors; parity with the old output is the only
-//! contract, and delegation preserves it under any future default.)
+//! [`Host::supports_splice`] is `false`, so every reactive region nests
+//! under a [`Host::create_anchor`] `<div>`. See the method's comment: the
+//! value used to be inherited from a `Backend` trait default and is now
+//! stated explicitly, pinned by `newcore_host_is_anchored`.
 //!
-//! # Output parity with the old-core render
+//! # Output parity with the old core
 //!
-//! The same logical template rendered through [`crate::render_email`]
-//! (old core) and [`render_email`] (this module) emits
-//! **byte-identical** `html`, `text`, and `subject` — pinned by
-//! `tests/newcore_golden.rs` across static styled trees, installed
-//! tokens, dropped state/breakpoint overlays, links, dyn branches, and
-//! the idea-ui-mail welcome template (old side: the real components;
-//! new side: the same template authored against the vocabulary builders
-//! — `ui!`'s lowering is a build-graph-wide switch, so one test binary
-//! cannot compile the same component body for both cores).
+//! The frozen artifacts in `tests/goldens/` are what the OLD core
+//! rendered for the corpus (static styled trees, installed tokens,
+//! dropped state/breakpoint overlays, links, dyn branches, and the real
+//! idea-ui-mail welcome template). `tests/newcore_golden.rs` compares
+//! this module's output against them byte-for-byte, with zero
+//! normalization.
 
-use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_core::accessibility::{AccessibilityProps, AccessibilityTree, LiveRegionPriority, Role};
-use runtime_core::animation::AnimProp;
-use runtime_core::assets::{
-    AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
-};
-use runtime_core::breakpoint::Breakpoint;
-use runtime_core::introspect::NativeNode;
-use runtime_core::primitives;
-use runtime_core::primitives::portal::ViewportRect;
-use runtime_core::styled_text::TextRun;
-use runtime_core::{
-    Action, Backend, BackendBatch, Color, ColorScheme, Easing, FileDropHandler, FontFamily,
-    HoverHandler, ImageErrorHandler, ImageLoadHandler, PageMetadata, Platform, SafeAreaSides,
-    Screenshot, StateBits, StyleApplication, StyleRules, TokenEntry, Tokenized, TouchHandler,
-    TouchId, VirtualizerCallbacks, WheelHandler,
-};
 use runtime_scene::{realize, Element, Host, Registry};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::StyleRules;
 use runtime_vocabulary::caps;
 use runtime_world::World;
 
-use crate::{EmailBackend, RenderedEmail};
+use crate::{add_class, nref, push_style_dedup, set_attr, HtmlNode, LINK_RESET_STYLE};
+use crate::{EmailBackend, NodeRef, RenderedEmail};
 
 // ===========================================================================
 // Render entry points
 // ===========================================================================
 
-/// Render a new-core idealyst template to an email — the new-core
-/// mirror of [`crate::render_email`] (same shape, same
-/// [`RenderedEmail`] output: full inline-styled document + plaintext
-/// alternative + subject from page-metadata title).
+/// Render an idealyst template to an email: the self-contained HTML
+/// document (styles inline, tokens resolved to literals) plus a
+/// plaintext alternative and the subject from page metadata.
 pub fn render_email<F>(build: F) -> RenderedEmail
 where
     F: FnOnce() -> Element,
@@ -103,11 +83,10 @@ where
     render_email_with(|_| {}, build)
 }
 
-/// Like [`render_email`] but runs `setup` against the backend before
-/// the build — the same hook the old-core [`crate::render_email_with`]
-/// exposes to install theme tokens / app background for the render
-/// (e.g. `setup(|b| b.install_tokens(&theme))`). Token installs may
-/// equally happen inside the build via
+/// Like [`render_email`] but runs `setup` against the backend before the
+/// build — the hook to install theme tokens / app background for the
+/// render (e.g. `setup(|b| caps::StyleOps::install_tokens(b, &theme))`).
+/// Token installs may equally happen inside the build via
 /// `runtime_vocabulary::theme::install_tokens` — resolution is deferred
 /// to serialize time either way, so ordering never matters.
 pub fn render_email_with<S, F>(setup: S, build: F) -> RenderedEmail
@@ -115,13 +94,13 @@ where
     S: FnOnce(&mut EmailBackend),
     F: FnOnce() -> Element,
 {
-    // Queue-only scheduler (shared with the old render path): microtasks
-    // queue and drain below; frames/timers drop (module docs).
+    // Queue-only scheduler: microtasks queue and drain below;
+    // frames/timers drop (module docs).
     crate::scheduler::ensure_installed();
-    // Same viewport seed as the old render (old-core thread-level state,
-    // seeded OUTSIDE the world on purpose — the vocabulary's per-world
-    // viewport ctx reads it at creation during realize).
-    runtime_core::set_viewport_size(crate::EMAIL_VIEWPORT);
+    // Viewport seed for author code that reads `viewport_size()`, seeded
+    // OUTSIDE the world on purpose — the vocabulary's per-world viewport
+    // ctx reads it at creation during realize.
+    runtime_shared::set_viewport_size(crate::EMAIL_VIEWPORT);
 
     let backend = Rc::new(RefCell::new(EmailBackend::new()));
     setup(&mut backend.borrow_mut());
@@ -138,8 +117,7 @@ where
         realize(&backend, &registry, element)
     });
 
-    // Single-root contract, matching the old-core mount: `finish` roots
-    // the HTML serialization.
+    // Single-root contract: `finish` roots the HTML serialization.
     let mut roots = realized.collect_nodes();
     let root = match roots.len() {
         1 => roots.pop().expect("len checked"),
@@ -148,11 +126,10 @@ where
              one top-level node (got {n}) — wrap fragment/multi-root trees in a view"
         ),
     };
-    Backend::finish(&mut *backend.borrow_mut(), root);
+    caps::LifecycleOps::finish(&mut *backend.borrow_mut(), root);
 
     // Commit anything staged during mount — the render's one and only
-    // flush — then run queued microtasks with no backend borrow held
-    // (parity with the old render path's post-mount drain).
+    // flush — then run queued microtasks with no backend borrow held.
     world.flush();
     crate::scheduler::drain();
 
@@ -178,38 +155,54 @@ where
 // ===========================================================================
 
 impl Host for EmailBackend {
-    type Node = <EmailBackend as Backend>::Node;
+    type Node = NodeRef;
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
-        Backend::insert(self, parent, child)
+        parent.borrow_mut().children.push(child);
     }
 
-    fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
-        Backend::insert_many(self, parent, children)
-    }
+    // `insert_many` is deliberately NOT implemented: `Host`'s default is
+    // the same N-x-`insert` loop the old `Backend` default ran, so the
+    // emitted node order is unchanged (deletion-baseline S2.2 —
+    // "byte-identical on `Host`, safe").
 
     fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
-        Backend::insert_at(self, parent, child, index)
+        let mut p = parent.borrow_mut();
+        let index = index.min(p.children.len());
+        p.children.insert(index, child);
     }
 
-    fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
-        Backend::remove_child(self, parent, child)
+    /// Explicit port of the old `Backend::remove_child` DEFAULT body (a
+    /// no-op). `Host` makes it REQUIRED, so the default that used to
+    /// supply this body is gone — the body is reproduced verbatim rather
+    /// than inherited (deletion-baseline S2.2). Never called here anyway:
+    /// [`supports_splice`](Self::supports_splice) is `false`, so every
+    /// reactive region tears down through `clear_children` on its own
+    /// anchor.
+    fn remove_child(&mut self, _parent: &Self::Node, _child: &Self::Node) {
+        // default: no-op
     }
 
     fn clear_children(&mut self, node: &Self::Node) {
-        Backend::clear_children(self, node)
+        node.borrow_mut().children.clear();
     }
 
     fn create_anchor(&mut self) -> Self::Node {
-        Backend::create_reactive_anchor(self)
+        // A reactive `when`/`switch`/`each` placeholder. `display: contents`
+        // keeps it layout-transparent (matching web/SSR) — but email clients
+        // vary on `display: contents`, so we instead emit a plain wrapper
+        // with no box of its own via zero styling; children flow inside it.
+        nref(HtmlNode::new("div"))
     }
 
-    /// Delegated (currently the shared `false` default), NOT hard-coded:
-    /// email has no hydration consumer — old-output parity is the only
-    /// anchor contract, and delegation keeps both cores' anchor
-    /// placement in lockstep by construction (module docs, "Anchoring").
+    /// Explicit `false` — the port of the old `Backend::supports_child_splice`
+    /// DEFAULT this backend relied on. `Host` makes it REQUIRED, so the
+    /// value is now stated here instead of inherited
+    /// (deletion-baseline S2.2). Email has no hydration consumer; ANCHORED
+    /// mode is what every frozen golden in `tests/goldens/` recorded from
+    /// the old core, and `newcore_host_is_anchored` pins the value.
     fn supports_splice(&self) -> bool {
-        Backend::supports_child_splice(self)
+        false
     }
 }
 
@@ -218,58 +211,30 @@ impl Host for EmailBackend {
 // ===========================================================================
 
 impl caps::AppEnvOps for EmailBackend {
-    fn color_scheme(&self) -> ColorScheme {
-        Backend::color_scheme(self)
+    fn platform(&self) -> runtime_shared::Platform {
+        // Email is closest to the web surface (HTML/CSS output); author code
+        // branching on `platform()` treats it like the web target.
+        runtime_shared::Platform::Web
     }
 
-    fn platform(&self) -> Platform {
-        Backend::platform(self)
+    fn set_page_metadata(&mut self, meta: &runtime_shared::PageMetadata) {
+        self.metadata = meta.clone();
     }
 
-    fn url_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
-        Backend::url_opener(self)
-    }
-
-    fn fullscreen_setter(&self) -> Option<Rc<dyn Fn(bool)>> {
-        Backend::fullscreen_setter(self)
-    }
-
-    fn set_page_metadata(&mut self, meta: &PageMetadata) {
-        Backend::set_page_metadata(self, meta)
-    }
-
-    fn set_app_background(&mut self, color: &Tokenized<Color>) {
-        Backend::set_app_background(self, color)
-    }
-
-    fn set_scrollbar_theme(&mut self, thumb: &Tokenized<Color>, track: &Tokenized<Color>) {
-        Backend::set_scrollbar_theme(self, thumb, track)
-    }
-
-    fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
-        Backend::set_app_key_handler(self, handler)
+    fn set_app_background(&mut self, color: &runtime_shared::Tokenized<runtime_shared::Color>) {
+        self.app_bg = Some(color.clone());
     }
 }
 
 impl caps::LifecycleOps for EmailBackend {
     fn finish(&mut self, root: Self::Node) {
-        Backend::finish(self, root)
+        self.root = Some(root);
     }
 
-    fn run_layout(&mut self) {
-        Backend::run_layout(self)
-    }
-
-    fn schedule_layout_pass() {
-        <EmailBackend as Backend>::schedule_layout_pass()
-    }
-
-    fn is_hydrating(&self) -> bool {
-        Backend::is_hydrating(self)
-    }
-
+    /// Keep the `lazy` primitive at its placeholder — a static email can't paint
+    /// lazy/GPU content, and there's no client to load the chunk later.
     fn renders_lazy_chunks(&self) -> bool {
-        Backend::renders_lazy_chunks(self)
+        false
     }
 }
 
@@ -278,48 +243,21 @@ impl caps::LifecycleOps for EmailBackend {
 // ===========================================================================
 
 impl caps::ViewOps for EmailBackend {
-    fn create_view(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-        Backend::create_view(self, a11y)
-    }
-
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
-        Backend::make_view_handle(self, node)
+    fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
+        nref(HtmlNode::new("div"))
     }
 }
 
-impl caps::InputOps for EmailBackend {
-    fn install_touch_handler(&mut self, node: &Self::Node, handler: TouchHandler) {
-        Backend::install_touch_handler(self, node, handler)
-    }
-
-    fn claim_touch(&mut self, node: &Self::Node, touch_id: TouchId) {
-        Backend::claim_touch(self, node, touch_id)
-    }
-
-    fn install_wheel_handler(&mut self, node: &Self::Node, handler: WheelHandler) {
-        Backend::install_wheel_handler(self, node, handler)
-    }
-
-    fn install_hover_handler(&mut self, node: &Self::Node, handler: HoverHandler) {
-        Backend::install_hover_handler(self, node, handler)
-    }
-
-    fn mark_preserves_focus(&mut self, node: &Self::Node) {
-        Backend::mark_preserves_focus(self, node)
-    }
-
-    fn install_file_drop_handler(&mut self, node: &Self::Node, handler: FileDropHandler) {
-        Backend::install_file_drop_handler(self, node, handler)
-    }
-}
+impl caps::InputOps for EmailBackend {}
 
 impl caps::PressableOps for EmailBackend {
-    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> Self::Node {
-        Backend::create_pressable(self, on_click, a11y)
-    }
-
-    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_core::PressableHandle {
-        Backend::make_pressable_handle(self, node)
+    fn create_pressable(
+        &mut self,
+        _on_click: Rc<dyn Fn()>,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        // No interaction in email; a pressable is just a container.
+        nref(HtmlNode::new("div"))
     }
 }
 
@@ -328,66 +266,14 @@ impl caps::PressableOps for EmailBackend {
 // ===========================================================================
 
 impl caps::TextOps for EmailBackend {
-    fn create_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
-        Backend::create_text(self, content, a11y)
-    }
-
-    fn create_styled_text(&mut self, runs: &[TextRun], a11y: &AccessibilityProps) -> Self::Node {
-        Backend::create_styled_text(self, runs, a11y)
-    }
-
-    fn update_styled_text(&mut self, node: &Self::Node, runs: &[TextRun]) {
-        Backend::update_styled_text(self, node, runs)
+    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
+        let mut node = HtmlNode::new("span");
+        node.text = Some(content.to_string());
+        nref(node)
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
-        Backend::update_text(self, node, content)
-    }
-
-    fn create_text_with_id(
-        &mut self,
-        content: &str,
-        a11y: &AccessibilityProps,
-    ) -> Option<(Self::Node, u32)> {
-        Backend::create_text_with_id(self, content, a11y)
-    }
-
-    fn update_text_by_id(&mut self, id: u32, content: String) {
-        Backend::update_text_by_id(self, id, content)
-    }
-
-    fn release_text_id(&mut self, id: u32) {
-        Backend::release_text_id(self, id)
-    }
-
-    fn supports_js_text_bindings(&self) -> bool {
-        Backend::supports_js_text_bindings(self)
-    }
-
-    fn register_reactive_text_binding(
-        &mut self,
-        text_id: u32,
-        signal_ids: &[u64],
-        template_parts: &[&str],
-        initial_values: &[&str],
-        stringifiers: &[Rc<dyn Fn() -> String>],
-    ) {
-        Backend::register_reactive_text_binding(
-            self,
-            text_id,
-            signal_ids,
-            template_parts,
-            initial_values,
-            stringifiers,
-        )
-    }
-
-    fn release_reactive_text_binding(&mut self, text_id: u32) {
-        Backend::release_reactive_text_binding(self, text_id)
-    }
-
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
-        Backend::make_text_handle(self, node)
+        node.borrow_mut().text = Some(content.to_string());
     }
 }
 
@@ -395,20 +281,20 @@ impl caps::ButtonOps for EmailBackend {
     fn create_button(
         &mut self,
         label: &str,
-        on_click: &Action,
-        leading_icon: Option<&primitives::icon::IconData>,
-        trailing_icon: Option<&primitives::icon::IconData>,
-        a11y: &AccessibilityProps,
+        _on_click: &runtime_shared::Action,
+        _leading_icon: Option<&runtime_shared::primitives::icon::IconData>,
+        _trailing_icon: Option<&runtime_shared::primitives::icon::IconData>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        Backend::create_button(self, label, on_click, leading_icon, trailing_icon, a11y)
+        // No JS in email: a "button" is just a styled inline box. Authors who
+        // want a clickable CTA wrap a `link` (idea-ui-mail's Button does).
+        let mut node = HtmlNode::new("span");
+        node.text = Some(label.to_string());
+        nref(node)
     }
 
     fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-        Backend::update_button_label(self, node, label)
-    }
-
-    fn make_button_handle(&self, node: &Self::Node) -> runtime_core::ButtonHandle {
-        Backend::make_button_handle(self, node)
+        node.borrow_mut().text = Some(label.to_string());
     }
 }
 
@@ -417,86 +303,84 @@ impl caps::ButtonOps for EmailBackend {
 // ===========================================================================
 
 impl caps::ImageOps for EmailBackend {
-    fn create_image(&mut self, src: &str, alt: Option<&str>, a11y: &AccessibilityProps) -> Self::Node {
-        Backend::create_image(self, src, alt, a11y)
+    fn create_image(
+        &mut self,
+        src: &str,
+        alt: Option<&str>,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        let mut node = HtmlNode::new("img");
+        node.attrs.push(("src", src.to_string()));
+        node.attrs.push(("alt", alt.unwrap_or("").to_string()));
+        // Email images should not stretch; keep intrinsic unless styled.
+        node.attrs.push(("border", "0".to_string()));
+        nref(node)
     }
 
     fn update_image_src(&mut self, node: &Self::Node, src: &str) {
-        Backend::update_image_src(self, node, src)
-    }
-
-    fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
-        Backend::update_image_alt(self, node, alt)
-    }
-
-    fn install_image_load_handler(&mut self, node: &Self::Node, handler: ImageLoadHandler) {
-        Backend::install_image_load_handler(self, node, handler)
-    }
-
-    fn install_image_error_handler(&mut self, node: &Self::Node, handler: ImageErrorHandler) {
-        Backend::install_image_error_handler(self, node, handler)
-    }
-
-    fn make_image_handle(&self, node: &Self::Node) -> primitives::image::ImageHandle {
-        Backend::make_image_handle(self, node)
+        set_attr(node, "src", src.to_string());
     }
 }
 
 impl caps::IconOps for EmailBackend {
     fn create_icon(
         &mut self,
-        data: &primitives::icon::IconData,
-        color: Option<&Color>,
-        a11y: &AccessibilityProps,
+        data: &runtime_shared::primitives::icon::IconData,
+        color: Option<&runtime_shared::Color>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        Backend::create_icon(self, data, color, a11y)
-    }
-
-    fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
-        Backend::update_icon_color(self, node, color)
-    }
-
-    fn update_icon_data(&mut self, node: &Self::Node, data: &primitives::icon::IconData) {
-        Backend::update_icon_data(self, node, data)
-    }
-
-    fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
-        Backend::update_icon_stroke(self, node, progress)
-    }
-
-    fn animate_icon_stroke(
-        &mut self,
-        node: &Self::Node,
-        from: f32,
-        to: f32,
-        duration_ms: u32,
-        easing: Easing,
-        infinite: bool,
-        autoreverses: bool,
-    ) {
-        Backend::animate_icon_stroke(self, node, from, to, duration_ms, easing, infinite, autoreverses)
-    }
-
-    fn make_icon_handle(&self, node: &Self::Node) -> primitives::icon::IconHandle {
-        Backend::make_icon_handle(self, node)
+        // Inline SVG. Support varies across email clients (Apple Mail yes,
+        // Gmail/Outlook no) — the un-opinionated choice is to emit it and let
+        // idea-ui-mail steer authors toward hosted `<img>` icons where it
+        // matters. Same SVG shape backend-ssr emits.
+        let (vw, vh) = data.view_box;
+        let mut svg = HtmlNode::new("svg");
+        svg.attrs.push(("viewBox", format!("0 0 {} {}", vw, vh)));
+        svg.attrs.push(("xmlns", "http://www.w3.org/2000/svg".to_string()));
+        svg.attrs.push(("width", "1em".to_string()));
+        svg.attrs.push(("height", "1em".to_string()));
+        let icon_color = color
+            .map(|c| c.0.clone())
+            .unwrap_or_else(|| "currentColor".to_string());
+        if data.filled {
+            svg.attrs.push(("fill", icon_color));
+            svg.attrs.push(("stroke", "none".to_string()));
+        } else {
+            svg.attrs.push(("fill", "none".to_string()));
+            svg.attrs.push(("stroke", icon_color));
+            svg.attrs.push(("stroke-width", "2".to_string()));
+            svg.attrs.push(("stroke-linecap", "round".to_string()));
+            svg.attrs.push(("stroke-linejoin", "round".to_string()));
+        }
+        svg.default_style = Some("display:inline-block;vertical-align:middle;");
+        let fill_rule = match data.fill_rule {
+            runtime_shared::primitives::icon::FillRule::NonZero => "nonzero",
+            runtime_shared::primitives::icon::FillRule::EvenOdd => "evenodd",
+        };
+        for path_d in data.paths {
+            let mut path = HtmlNode::new("path");
+            path.attrs.push(("d", (*path_d).to_string()));
+            path.attrs.push(("fill-rule", fill_rule.to_string()));
+            svg.children.push(nref(path));
+        }
+        nref(svg)
     }
 }
 
 impl caps::LinkOps for EmailBackend {
     fn create_link(
         &mut self,
-        config: primitives::link::LinkConfig,
-        a11y: &AccessibilityProps,
+        config: runtime_shared::primitives::link::LinkConfig,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        Backend::create_link(self, config, a11y)
-    }
-
-    fn update_link_url(&mut self, node: &Self::Node, url: &str) {
-        Backend::update_link_url(self, node, url)
-    }
-
-    fn make_link_handle(&self, node: &Self::Node) -> primitives::link::LinkHandle {
-        Backend::make_link_handle(self, node)
+        let mut node = HtmlNode::new("a");
+        node.default_style = Some(LINK_RESET_STYLE);
+        node.attrs.push(("href", config.url.clone()));
+        if config.external {
+            node.attrs.push(("target", "_blank".to_string()));
+            node.attrs.push(("rel", "noopener noreferrer".to_string()));
+        }
+        nref(node)
     }
 }
 
@@ -509,74 +393,50 @@ impl caps::TextInputOps for EmailBackend {
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
-        on_change: Rc<dyn Fn(String)>,
-        on_key_down: Option<primitives::key::KeyDownHandler>,
-        on_blur: Option<primitives::text_input::BlurHandler>,
-        secure: bool,
-        a11y: &AccessibilityProps,
+        _on_change: Rc<dyn Fn(String)>,
+        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        _on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
+        _secure: bool,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        Backend::create_text_input(
-            self,
-            initial_value,
-            placeholder,
-            on_change,
-            on_key_down,
-            on_blur,
-            secure,
-            a11y,
-        )
+        // Forms don't work in email; degrade to the current value as text.
+        let mut node = HtmlNode::new("span");
+        let shown = if initial_value.is_empty() {
+            placeholder.unwrap_or("")
+        } else {
+            initial_value
+        };
+        node.text = Some(shown.to_string());
+        nref(node)
     }
 
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
-        Backend::update_text_input_value(self, node, value)
-    }
-
-    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
-        Backend::update_text_input_secure(self, node, secure)
-    }
-
-    fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
-        Backend::set_text_input_focus_handler(self, node, handler)
-    }
-
-    fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
-        Backend::update_text_input_placeholder(self, node, placeholder)
+        node.borrow_mut().text = Some(value.to_string());
     }
 
     fn create_text_area(
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
-        wrap: bool,
-        min_rows: Option<u32>,
-        max_rows: Option<u32>,
-        on_change: Rc<dyn Fn(String)>,
-        on_key_down: Option<primitives::key::KeyDownHandler>,
-        a11y: &AccessibilityProps,
+        _wrap: bool,
+        _min_rows: Option<u32>,
+        _max_rows: Option<u32>,
+        _on_change: Rc<dyn Fn(String)>,
+        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        Backend::create_text_area(
-            self,
-            initial_value,
-            placeholder,
-            wrap,
-            min_rows,
-            max_rows,
-            on_change,
-            on_key_down,
-            a11y,
-        )
+        let mut node = HtmlNode::new("div");
+        let shown = if initial_value.is_empty() {
+            placeholder.unwrap_or("")
+        } else {
+            initial_value
+        };
+        node.text = Some(shown.to_string());
+        nref(node)
     }
 
     fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
-        Backend::update_text_area_value(self, node, value)
-    }
-
-    fn make_text_input_handle(&self, node: &Self::Node) -> primitives::text_input::TextInputHandle {
-        Backend::make_text_input_handle(self, node)
-    }
-
-    fn make_text_area_handle(&self, node: &Self::Node) -> primitives::text_area::TextAreaHandle {
-        Backend::make_text_area_handle(self, node)
+        node.borrow_mut().text = Some(value.to_string());
     }
 }
 
@@ -584,66 +444,43 @@ impl caps::ToggleOps for EmailBackend {
     fn create_toggle(
         &mut self,
         initial_value: bool,
-        on_change: Rc<dyn Fn(bool)>,
-        a11y: &AccessibilityProps,
+        _on_change: Rc<dyn Fn(bool)>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        Backend::create_toggle(self, initial_value, on_change, a11y)
+        // Render a static indicator glyph — checkboxes don't toggle in email.
+        let mut node = HtmlNode::new("span");
+        node.text = Some(if initial_value { "\u{2611}" } else { "\u{2610}" }.to_string());
+        nref(node)
     }
 
     fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
-        Backend::update_toggle_value(self, node, value)
-    }
-
-    fn make_toggle_handle(&self, node: &Self::Node) -> primitives::toggle::ToggleHandle {
-        Backend::make_toggle_handle(self, node)
+        node.borrow_mut().text =
+            Some(if value { "\u{2611}" } else { "\u{2610}" }.to_string());
     }
 }
 
 impl caps::SliderOps for EmailBackend {
     fn create_slider(
         &mut self,
-        initial_value: f32,
-        min: f32,
-        max: f32,
-        step: Option<f32>,
-        on_change: Rc<dyn Fn(f32)>,
-        a11y: &AccessibilityProps,
+        _initial_value: f32,
+        _min: f32,
+        _max: f32,
+        _step: Option<f32>,
+        _on_change: Rc<dyn Fn(f32)>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        Backend::create_slider(self, initial_value, min, max, step, on_change, a11y)
-    }
-
-    fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
-        Backend::update_slider_value(self, node, value)
-    }
-
-    fn make_slider_handle(&self, node: &Self::Node) -> primitives::slider::SliderHandle {
-        Backend::make_slider_handle(self, node)
+        nref(HtmlNode::new("div"))
     }
 }
 
 impl caps::ActivityIndicatorOps for EmailBackend {
     fn create_activity_indicator(
         &mut self,
-        size: primitives::activity_indicator::ActivityIndicatorSize,
-        color: Option<&Color>,
-        a11y: &AccessibilityProps,
+        _size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
+        _color: Option<&runtime_shared::Color>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        Backend::create_activity_indicator(self, size, color, a11y)
-    }
-
-    fn update_activity_indicator_size(
-        &mut self,
-        node: &Self::Node,
-        size: primitives::activity_indicator::ActivityIndicatorSize,
-    ) {
-        Backend::update_activity_indicator_size(self, node, size)
-    }
-
-    fn make_activity_indicator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> primitives::activity_indicator::ActivityIndicatorHandle {
-        Backend::make_activity_indicator_handle(self, node)
+        nref(HtmlNode::new("div"))
     }
 }
 
@@ -654,57 +491,28 @@ impl caps::ActivityIndicatorOps for EmailBackend {
 impl caps::ScrollOps for EmailBackend {
     fn create_scroll_view(
         &mut self,
-        horizontal: bool,
-        on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
-        a11y: &AccessibilityProps,
+        _horizontal: bool,
+        _on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        Backend::create_scroll_view(self, horizontal, on_scroll, a11y)
-    }
-
-    fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
-        Backend::node_scroll(self, node)
-    }
-
-    fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
-        Backend::set_node_scroll(self, node, x, y)
-    }
-
-    fn make_scroll_view_handle(&self, node: &Self::Node) -> primitives::scroll_view::ScrollViewHandle {
-        Backend::make_scroll_view_handle(self, node)
+        // No scroll in email; a scroll_view is just a container.
+        nref(HtmlNode::new("div"))
     }
 }
 
-impl caps::SafeAreaOps for EmailBackend {
-    fn apply_safe_area_padding(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-        Backend::apply_safe_area_padding(self, node, sides)
-    }
-
-    fn apply_scroll_view_safe_area_inset(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-        Backend::apply_scroll_view_safe_area_inset(self, node, sides)
-    }
-}
+impl caps::SafeAreaOps for EmailBackend {}
 
 impl caps::VirtualizerOps for EmailBackend {
     fn create_virtualizer(
         &mut self,
-        callbacks: VirtualizerCallbacks<Self::Node>,
-        overscan: f32,
-        layout: primitives::virtualizer::VirtualLayout,
-        a11y: &AccessibilityProps,
+        _callbacks: runtime_shared::VirtualizerCallbacks<Self::Node>,
+        _overscan: f32,
+        _layout: runtime_shared::VirtualLayout,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        Backend::create_virtualizer(self, callbacks, overscan, layout, a11y)
-    }
-
-    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
-        Backend::virtualizer_data_changed(self, node)
-    }
-
-    fn release_virtualizer(&mut self, node: &Self::Node) {
-        Backend::release_virtualizer(self, node)
-    }
-
-    fn make_virtualizer_handle(&self, node: &Self::Node) -> primitives::virtualizer::VirtualizerHandle {
-        Backend::make_virtualizer_handle(self, node)
+        // Virtualized lists have no meaning in a static email; emit the
+        // container only (authors render real rows with `for` for email).
+        nref(HtmlNode::new("div"))
     }
 }
 
@@ -715,105 +523,31 @@ impl caps::VirtualizerOps for EmailBackend {
 impl caps::GraphicsOps for EmailBackend {
     fn create_graphics(
         &mut self,
-        on_ready: primitives::graphics::OnReady,
-        on_resize: primitives::graphics::OnResize,
-        on_lost: primitives::graphics::OnLost,
-        a11y: &AccessibilityProps,
+        _on_ready: runtime_shared::primitives::graphics::OnReady,
+        _on_resize: runtime_shared::primitives::graphics::OnResize,
+        _on_lost: runtime_shared::primitives::graphics::OnLost,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        Backend::create_graphics(self, on_ready, on_resize, on_lost, a11y)
-    }
-
-    fn release_graphics(&mut self, node: &Self::Node) {
-        Backend::release_graphics(self, node)
-    }
-
-    fn make_graphics_handle(&self, node: &Self::Node) -> primitives::graphics::GraphicsHandle {
-        Backend::make_graphics_handle(self, node)
+        // GPU canvas can't render into an email; emit an empty box.
+        nref(HtmlNode::new("div"))
     }
 }
 
 impl caps::PortalOps for EmailBackend {
     fn create_portal(
         &mut self,
-        target: primitives::portal::PortalTarget,
-        on_dismiss: Option<Rc<dyn Fn()>>,
-        trap_focus: bool,
-        a11y: &AccessibilityProps,
+        _target: runtime_shared::primitives::portal::PortalTarget,
+        _on_dismiss: Option<Rc<dyn Fn()>>,
+        _trap_focus: bool,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        Backend::create_portal(self, target, on_dismiss, trap_focus, a11y)
-    }
-
-    fn release_portal(&mut self, node: &Self::Node) {
-        Backend::release_portal(self, node)
-    }
-
-    fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
-        Backend::set_portal_hidden(self, node, hidden)
-    }
-
-    fn make_portal_handle(&self, node: &Self::Node) -> primitives::portal::PortalHandle {
-        Backend::make_portal_handle(self, node)
+        nref(HtmlNode::new("div"))
     }
 }
 
-impl caps::PresenceOps for EmailBackend {
-    fn create_presence_placeholder(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-        Backend::create_presence_placeholder(self, a11y)
-    }
+impl caps::PresenceOps for EmailBackend {}
 
-    fn apply_presence(
-        &mut self,
-        node: &Self::Node,
-        state: primitives::presence::PresenceState,
-        transition: Option<(u32, Easing)>,
-    ) {
-        Backend::apply_presence(self, node, state, transition)
-    }
-
-    fn make_presence_handle(&self, node: &Self::Node) -> primitives::presence::PresenceHandle {
-        Backend::make_presence_handle(self, node)
-    }
-}
-
-impl caps::NavigatorOps for EmailBackend {
-    fn create_navigator(
-        &mut self,
-        type_id: TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn Any>,
-        host: primitives::navigator::NavigatorHost<Self::Node>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        Backend::create_navigator(self, type_id, type_name, presentation, host, a11y)
-    }
-
-    fn release_navigator(&mut self, node: &Self::Node) {
-        Backend::release_navigator(self, node)
-    }
-
-    fn apply_navigator_slot_style(
-        &mut self,
-        node: &Self::Node,
-        slot: &'static str,
-        style: &Rc<StyleRules>,
-    ) {
-        Backend::apply_navigator_slot_style(self, node, slot, style)
-    }
-
-    fn make_navigator_handle(&self, node: &Self::Node) -> primitives::navigator::NavigatorHandle {
-        Backend::make_navigator_handle(self, node)
-    }
-
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn Any>,
-    ) {
-        Backend::navigator_attach_initial(self, navigator, screen, scope_id, options)
-    }
-}
+impl caps::NavigatorOps for EmailBackend {}
 
 // ===========================================================================
 // External + document
@@ -822,42 +556,54 @@ impl caps::NavigatorOps for EmailBackend {
 impl caps::ExternalOps for EmailBackend {
     fn create_external(
         &mut self,
-        type_id: TypeId,
-        type_name: &'static str,
-        payload: &Rc<dyn Any>,
-        a11y: &AccessibilityProps,
+        _type_id: std::any::TypeId,
+        _type_name: &'static str,
+        _payload: &Rc<dyn std::any::Any>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        Backend::create_external(self, type_id, type_name, payload, a11y)
-    }
-
-    fn release_external(&mut self, node: &Self::Node) {
-        Backend::release_external(self, node)
-    }
-
-    fn missing_primitive_placeholder(&mut self, label: &'static str) -> Self::Node {
-        Backend::missing_primitive_placeholder(self, label)
+        // Third-party externals aren't email-rendered (no registry); emit an
+        // empty host box. An email-specific external registry could be wired
+        // later if a use case appears.
+        nref(HtmlNode::new("div"))
     }
 }
 
 impl caps::DocumentOps for EmailBackend {
     fn create_element(&mut self, tag: &str) -> Self::Node {
-        Backend::create_element(self, tag)
-    }
-
-    fn attach_html_id(&self, node: &Self::Node, id: &str) {
-        Backend::attach_html_id(self, node, id)
+        // Intern the structural tags an external/component might emit; unknown
+        // tags fall back to `div`. Mirrors backend-ssr's tag set.
+        let tag: &'static str = match tag {
+            "p" => "p",
+            "ul" => "ul",
+            "ol" => "ol",
+            "li" => "li",
+            "blockquote" => "blockquote",
+            "table" => "table",
+            "thead" => "thead",
+            "tbody" => "tbody",
+            "tr" => "tr",
+            "td" => "td",
+            "th" => "th",
+            "section" => "section",
+            "article" => "article",
+            "header" => "header",
+            "footer" => "footer",
+            "h1" => "h1",
+            "h2" => "h2",
+            "h3" => "h3",
+            "h4" => "h4",
+            "h5" => "h5",
+            "h6" => "h6",
+            "a" => "a",
+            "br" => "br",
+            "hr" => "hr",
+            _ => "div",
+        };
+        nref(HtmlNode::new(tag))
     }
 
     fn attach_html_class(&self, node: &Self::Node, class: &str) {
-        Backend::attach_html_class(self, node, class)
-    }
-
-    fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
-        Backend::attach_html_style(self, node, prop, value)
-    }
-
-    fn register_raw_css(&mut self, css: &str) {
-        Backend::register_raw_css(self, css)
+        add_class(node, class);
     }
 }
 
@@ -867,304 +613,71 @@ impl caps::DocumentOps for EmailBackend {
 
 impl caps::StyleOps for EmailBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
-        Backend::apply_style(self, node, style)
-    }
-
-    fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
-        Backend::mint_style_class(self, style)
-    }
-
-    fn mint_class_for_app(&mut self, app: &StyleApplication) -> Option<String> {
-        Backend::mint_class_for_app(self, app)
+        // Store the resolved base style; flattened to inline CSS (tokens baked
+        // to literals) at serialize time. NO class, NO head stylesheet.
+        push_style_dedup(node, style);
     }
 
     fn apply_styled_states(
         &mut self,
         node: &Self::Node,
         base: &Rc<StyleRules>,
-        overlays: &[(StateBits, Rc<StyleRules>)],
+        _overlays: &[(runtime_shared::StateBits, Rc<StyleRules>)],
     ) {
-        Backend::apply_styled_states(self, node, base, overlays)
+        push_style_dedup(node, base);
     }
 
     fn apply_styled_variants(
         &mut self,
         node: &Self::Node,
         base: &Rc<StyleRules>,
-        state_overlays: &[(StateBits, Rc<StyleRules>)],
-        breakpoint_overlays: &[(Breakpoint, Rc<StyleRules>)],
-        container_overlays: &[(f32, Rc<StyleRules>)],
+        _overlays: &[(runtime_shared::StateBits, Rc<StyleRules>)],
+        _breakpoint_overlays: &[(runtime_shared::Breakpoint, Rc<StyleRules>)],
+        _container_overlays: &[(f32, Rc<StyleRules>)],
     ) {
-        Backend::apply_styled_variants(
-            self,
-            node,
-            base,
-            state_overlays,
-            breakpoint_overlays,
-            container_overlays,
-        )
+        // Email has no interaction and unreliable `@media`/`@container`
+        // support — emit only the resolved base, drop every overlay.
+        push_style_dedup(node, base);
     }
 
-    fn mark_container(&mut self, node: &Self::Node) {
-        Backend::mark_container(self, node)
-    }
-
+    // Email opts into the "native state" model only so the walker hands us the
+    // base + overlays in one call (`apply_styled_states`) — we keep the base
+    // and DROP the overlays. There is no `:hover`/`:active`/`:focus` in email.
     fn handles_states_natively(&self) -> bool {
-        Backend::handles_states_natively(self)
+        true
     }
 
-    fn token_updates_propagate_via_cascade(&self) -> bool {
-        Backend::token_updates_propagate_via_cascade(self)
+    fn install_tokens(&mut self, tokens: &[runtime_shared::TokenEntry]) {
+        self.tokens = tokens.to_vec();
     }
 
-    fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        Backend::register_stylesheet(self, rules)
-    }
-
-    fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        Backend::unregister_stylesheet(self, rules)
-    }
-
-    fn install_tokens(&mut self, tokens: &[TokenEntry]) {
-        Backend::install_tokens(self, tokens)
-    }
-
-    fn update_tokens(&mut self, tokens: &[TokenEntry]) {
-        Backend::update_tokens(self, tokens)
-    }
-
-    fn on_node_unstyled(&mut self, node: &Self::Node) {
-        Backend::on_node_unstyled(self, node)
-    }
-
-    fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
-        Backend::attach_states(self, node, setter)
-    }
-
-    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
-        Backend::set_disabled(self, node, disabled)
-    }
-
-    fn supports_preminted_styles(&self) -> bool {
-        Backend::supports_preminted_styles(self)
-    }
-
-    fn apply_default_text_font(&mut self, font: Option<&FontFamily>) {
-        Backend::apply_default_text_font(self, font)
-    }
-
-    fn supports_js_class_bindings(&self) -> bool {
-        Backend::supports_js_class_bindings(self)
-    }
-
-    fn register_reactive_class_binding(
-        &mut self,
-        node: &Self::Node,
-        signal_id: u64,
-        values: &[u32],
-        classes: &[&str],
-        value_reader: Rc<dyn Fn() -> u32>,
-    ) -> u32 {
-        Backend::register_reactive_class_binding(self, node, signal_id, values, classes, value_reader)
-    }
-
-    fn release_reactive_class_binding(&mut self, binding_id: u32) {
-        Backend::release_reactive_class_binding(self, binding_id)
+    fn update_tokens(&mut self, tokens: &[runtime_shared::TokenEntry]) {
+        for incoming in tokens {
+            if let Some(slot) = self.tokens.iter_mut().find(|t| t.name == incoming.name) {
+                slot.value = incoming.value.clone();
+            } else {
+                self.tokens.push(incoming.clone());
+            }
+        }
     }
 }
 
-impl caps::AssetOps for EmailBackend {
-    fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
-        Backend::register_asset(self, id, kind, source)
-    }
-
-    fn unregister_asset(&mut self, id: AssetId, kind: AssetTag) {
-        Backend::unregister_asset(self, id, kind)
-    }
-
-    fn register_typeface(
-        &mut self,
-        id: TypefaceId,
-        family_name: &str,
-        faces: &[TypefaceFace],
-        fallback: SystemFallback,
-    ) {
-        Backend::register_typeface(self, id, family_name, faces, fallback)
-    }
-
-    fn unregister_typeface(&mut self, id: TypefaceId) {
-        Backend::unregister_typeface(self, id)
-    }
-}
+impl caps::AssetOps for EmailBackend {}
 
 // ===========================================================================
 // A11y + animation + introspection
 // ===========================================================================
 
-impl caps::A11yOps for EmailBackend {
-    fn update_accessibility(
-        &mut self,
-        node: &Self::Node,
-        a11y: &AccessibilityProps,
-        inferred_role: Option<Role>,
-    ) {
-        Backend::update_accessibility(self, node, a11y, inferred_role)
-    }
+impl caps::A11yOps for EmailBackend {}
 
-    fn announce_for_accessibility(&mut self, msg: &str, priority: LiveRegionPriority) {
-        Backend::announce_for_accessibility(self, msg, priority)
-    }
+impl caps::AnimationOps for EmailBackend {}
 
-    fn dump_accessibility_tree(&self) -> Option<AccessibilityTree> {
-        Backend::dump_accessibility_tree(self)
-    }
-}
-
-impl caps::AnimationOps for EmailBackend {
-    fn set_animated_f32(&mut self, node: &Self::Node, prop: AnimProp, value: f32) {
-        Backend::set_animated_f32(self, node, prop, value)
-    }
-
-    fn set_animated_color(&mut self, node: &Self::Node, prop: AnimProp, value: [f32; 4]) {
-        Backend::set_animated_color(self, node, prop, value)
-    }
-}
-
-impl caps::IntrospectionOps for EmailBackend {
-    fn frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        Backend::frame(self, node)
-    }
-
-    fn absolute_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        Backend::absolute_frame(self, node)
-    }
-
-    fn device_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        Backend::device_frame(self, node)
-    }
-
-    fn supports_native_introspection(&self) -> bool {
-        Backend::supports_native_introspection(self)
-    }
-
-    fn introspect_native(&self, node: &Self::Node) -> Option<NativeNode> {
-        Backend::introspect_native(self, node)
-    }
-
-    fn note_introspection_root(&self, node: &Self::Node) {
-        Backend::note_introspection_root(self, node)
-    }
-
-    fn supports_screenshot(&self) -> bool {
-        Backend::supports_screenshot(self)
-    }
-
-    fn capture_screenshot(&self, done: Box<dyn FnOnce(Result<Screenshot, String>)>) {
-        Backend::capture_screenshot(self, done)
-    }
-}
+impl caps::IntrospectionOps for EmailBackend {}
 
 // ===========================================================================
 // Batch + wire bindings
 // ===========================================================================
 
-impl caps::BatchOps for EmailBackend {
-    fn supports_batched_repeat(&self) -> bool {
-        Backend::supports_batched_repeat(self)
-    }
+impl caps::BatchOps for EmailBackend {}
 
-    fn execute_batch(&mut self, batch: BackendBatch) -> Vec<Self::Node> {
-        Backend::execute_batch(self, batch)
-    }
-
-    fn execute_batch_with_attach(
-        &mut self,
-        batch: BackendBatch,
-        parent: &mut Self::Node,
-        attach_locals: &[u32],
-    ) -> Vec<Self::Node> {
-        Backend::execute_batch_with_attach(self, batch, parent, attach_locals)
-    }
-}
-
-impl caps::WireBindingOps for EmailBackend {
-    fn note_text_binding(&mut self, node: &Self::Node, signal_ids: &[u64], method: &'static str) {
-        Backend::note_text_binding(self, node, signal_ids, method)
-    }
-
-    fn note_signal_initial(&mut self, signal_id: u64, value: &runtime_core::__serde_json::Value) {
-        Backend::note_signal_initial(self, signal_id, value)
-    }
-
-    fn note_when_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        cond_method: &'static str,
-        then_node: &Self::Node,
-        otherwise_node: &Self::Node,
-    ) {
-        Backend::note_when_binding(self, anchor, signal_ids, cond_method, then_node, otherwise_node)
-    }
-
-    fn note_switch_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        cond_method: &'static str,
-        arms: &[(runtime_core::__serde_json::Value, Self::Node)],
-        default_node: &Self::Node,
-    ) {
-        Backend::note_switch_binding(self, anchor, signal_ids, cond_method, arms, default_node)
-    }
-
-    fn note_repeat_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        count_method: &'static str,
-        row_template: &Self::Node,
-        row_index_signal_id: Option<u64>,
-    ) {
-        Backend::note_repeat_binding(
-            self,
-            anchor,
-            signal_ids,
-            count_method,
-            row_template,
-            row_index_signal_id,
-        )
-    }
-
-    fn note_virtualizer_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        count_method: &'static str,
-        row_template: &Self::Node,
-        row_index_signal_id: Option<u64>,
-        horizontal: bool,
-    ) {
-        Backend::note_virtualizer_binding(
-            self,
-            anchor,
-            signal_ids,
-            count_method,
-            row_template,
-            row_index_signal_id,
-            horizontal,
-        )
-    }
-
-    fn supports_lazy_slot_capture(&self) -> bool {
-        Backend::supports_lazy_slot_capture(self)
-    }
-
-    fn begin_slot_capture(&mut self) {
-        Backend::begin_slot_capture(self)
-    }
-
-    fn end_slot_capture(&mut self, slot_root: &Self::Node) {
-        Backend::end_slot_capture(self, slot_root)
-    }
-}
+impl caps::WireBindingOps for EmailBackend {}

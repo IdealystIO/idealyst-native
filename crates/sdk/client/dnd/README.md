@@ -120,11 +120,11 @@ drag (drag a file out to Finder, accept a drop from another app) and the
 browser's native HTML5 drag/`DataTransfer` are a **separate, additive
 capability that is not implemented here** — see the `native` module docs.
 
-They are a separate phase because they require new `Backend` trait methods on
+They are a separate phase because they require a new per-backend capability on
 every backend (begin a native drag session, register a native drop target,
-read/write the platform pasteboard) — surface this crate, which depends only
-on `runtime-core`, can't reach — and because their output is by design *not*
-identical across platforms (each renders through its own OS drag chrome).
+read/write the platform pasteboard) — surface this crate, which depends only on
+the portable author API, can't reach — and because their output is by design
+*not* identical across platforms (each renders through its own OS drag chrome).
 
 | Platform | Native system |
 |----------|---------------|

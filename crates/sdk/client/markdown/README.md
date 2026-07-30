@@ -1,15 +1,16 @@
 # `markdown`
 
-Render a CommonMark/GFM document as a **single native styled-text node**
-per backend. Built on `Element::External`, the same third-party-primitive
-mechanism as [`codeblock`](../codeblock) — and for the same reason:
-performance.
+Render a CommonMark/GFM document from a **resolved document payload** —
+parsed and themed author-side, then mounted by ONE scene handler. Same
+third-party-primitive mechanism as [`codeblock`](../codeblock), and for
+the same reason: performance.
 
 ```rust
 use markdown::{Markdown, MdTheme};
 
-// At app bootstrap, once per backend:
-markdown::register(&mut backend);
+// At app bootstrap — the boot entry's `register` argument IS the
+// registration seam:
+backend_web::newcore::start_in("#app", markdown::register, app);
 
 // In a component tree:
 ui! { Markdown(source = "# Hello\n\nWorld **bold**".to_string()) }
@@ -18,61 +19,54 @@ ui! { Markdown(source = "# Hello\n\nWorld **bold**".to_string()) }
 markdown::markdown("# Hi", MdTheme::dark()).with_style(my_panel_style())
 ```
 
-## One authored surface, two cores
+An UNREGISTERED payload panics at realize (the scene contract), so a
+missed `register` fails loud rather than rendering a silent placeholder.
 
-The default build is the old-core implementation (`Element::External` +
-per-backend `ExternalRegistry`), byte-moved into `src/oldcore.rs`; the
-`new-core` feature swaps in `src/newcore.rs`, which re-expresses the SAME
-public names over the scene registry (the new core's unified
-primitive==external contract). The IR (`ir.rs`) and parser (`parse.rs`)
-are pure data and are shared between the cores untouched.
+## One handler, every host
 
-Because the old web handler was generic over the `Backend` trait, the
-new-core handler is a **caps-generic** scene handler (`StyleServices +
-TextOps`) — one `register` for every caps-complete host, so web AND SSR
-mount the identical semantic DOM (old-core SSR could never register the
-wasm32-gated web handler and fell back to the External placeholder). The
-iOS/Android single-node handlers stay old-core-only until the new-core
-native boots grow an external story (codeblock precedent). On the new
-core, pass `markdown::register` at the boot seam
-(`backend_web::newcore::start_in("#app", markdown::register, app)`); the
-old-core wire serde (`register_external_serde`) has no new-core role —
-the new dev-wire path serializes through the recorder's caps.
+`markdown::register` is **caps-generic** (`StyleServices + TextOps`):
+one registration covers every caps-complete host, and web, SSR and
+native all mount the identical semantic element tree. The IR (`ir.rs`)
+and parser (`parse.rs`) are pure data — no core types.
 
-## Why one node — the performance contract
+There is **no dedicated native single-node renderer**. An iOS `UILabel`
++ `NSAttributedString` / Android `TextView` + `SpannableStringBuilder`
+handler would be a separate `Registry<IosBackend>` /
+`Registry<AndroidBackend>` registration that lowers the same
+`MarkdownDoc` into attribute spans; it is not implemented. Native hosts
+realize the semantic element tree through their own caps impls instead.
+
+## Why a resolved document — the performance contract
 
 A markdown document is a deep tree: blocks (headings, paragraphs, lists,
 quotes, code) containing inline runs (bold, italic, code, links). The
-naive lowering emits **one styled `text`/`view` node per inline run** —
-the exact per-token explosion `codeblock` was carved out of `runtime-core`
-to avoid (a measured 100–300× more backend ops per render). A paragraph
-with twenty emphasis spans would be twenty-plus framework nodes, each with
-its own reactive scope and layout entry.
+naive lowering emits **one framework `Element` per inline run** — the
+exact per-token explosion `codeblock` was carved out to avoid (a
+measured 100–300× more backend ops per render). A paragraph with twenty
+emphasis spans would be twenty-plus framework nodes, each with its own
+reactive scope and layout entry.
 
-Native rich-text engines already solve this: `NSAttributedString` and
-`SpannableString` express the whole tree as **inline attribute ranges on
-one widget**. So this SDK lowers the entire document to a single styled
-string and hands it to one native text view. A 50-block document is **one
-native node**, not thousands.
+Instead the whole document is resolved to a serializable `MarkdownDoc`
+author-side and handed to the registry as ONE payload. The handler
+builds raw host nodes directly — real elements, but **not** framework
+reactive `Element`s, so there is no per-node reactive overhead.
 
-| Target | Mechanism |
+| Element | Host node |
 | --- | --- |
-| **iOS** | One `UILabel` whose `attributedText` is an `NSAttributedString` with per-range font (size + bold/italic/monospace), foreground color, background tint, underline, and strikethrough attributes. Wraps to the column width via a width-aware Taffy measure (`install_external_wrapping_measure`). |
-| **Android** | One `android.widget.TextView` fed a `SpannableStringBuilder` carrying `AbsoluteSizeSpan` / `StyleSpan` / `TypefaceSpan` / `ForegroundColorSpan` / `BackgroundColorSpan` / `UnderlineSpan` / `StrikethroughSpan` ranges. No custom Kotlin class — a plain TextView gets width-aware wrapping measurement automatically. |
-| **Web** | Semantic DOM (`<h1>`, `<p>`, `<pre>`, `<blockquote>`, `<hr>`, list rows) built through the `Backend` trait, with per-run inline styling. DOM layout is cheap and the semantic tree is accessible, so web keeps real elements. These are still raw backend nodes, **not** framework reactive `Element`s, so there's no per-node reactive overhead. |
-| **Other** (macOS / terminal / gpu) | The framework's external-not-registered placeholder until a handler lands. |
-
-The web/native split is deliberate and consistent with `codeblock`: native
-collapses to one styled-text node (perf-critical, and the toolkits make it
-trivial), web uses semantic elements (cheap layout, better accessibility).
-Observable output converges (CLAUDE.md rule 7); the *mechanism* differs.
+| Heading | `<h1>`…`<h6>`, UA margins zeroed (the column `gap` owns spacing) |
+| Paragraph | `<p>` |
+| Code block | `<pre>` with the theme's code background/foreground, mono family, padding, 6px radii |
+| Quote | `<blockquote>` with a 3px left rule + italic |
+| List | a column `<div>` of row `<div>`s: marker text + content, indented per nesting depth |
+| Rule | `<hr>` with a 1px top border |
+| Inline run | a styled text node (color, bold, italic, strikethrough, underline for links, mono + tinted background for code) |
 
 ## Styling + theming
 
-Parsing and theme resolution happen **author-side**, inside the `Markdown`
-component's reactive scope, producing a fully-resolved, serializable
-`MarkdownDoc` (blocks + a concrete `MdTheme`). `MdTheme` is the SDK's
-complete styling surface — a color or size per element type:
+Parsing and theme resolution happen **author-side**, inside the
+`Markdown` tag's reactive region, producing a fully-resolved,
+serializable `MarkdownDoc` (blocks + a concrete `MdTheme`). `MdTheme` is
+the SDK's complete styling surface — a color or size per element type:
 
 ```rust
 pub struct MdTheme {
@@ -90,28 +84,21 @@ pub struct MdTheme {
 ```
 
 `MdTheme::light()` and `MdTheme::dark()` ship as defaults; override any
-field to restyle. Because the component reads `source`/`theme` **reactively**,
-a theme toggle re-resolves the doc → new `Element::External` props → the
-single native node is rebuilt with the new colors. The `markdown-demo`
-example wires a light/dark toggle to a reactive `theme` prop and the page
-re-paints live on every backend.
+field to restyle. Both props are `Reactive`, so a theme toggle
+re-resolves the doc and the node is rebuilt with the new colors — the
+`switch` region dedupes on an equal `(source, theme)` tuple, so static
+props build exactly once. The `markdown-demo` example wires a light/dark
+toggle to a reactive `theme` prop and the page re-paints live.
 
 ### Why a struct, not framework stylesheets
 
-The native handlers build raw platform nodes (an `NSAttributedString`, a
-`SpannableString`) *below* the framework's `StyleRules`/token layer, so the
-stylesheet/token system can't flow into them automatically. Resolving a
-plain `MdTheme` author-side — and re-resolving it reactively — is what makes
-the styling both fully controllable and theme-reactive across all backends
-without per-platform code. Drive `MdTheme`'s fields from your app theme
-(tokens, `color_scheme()`, a `Signal`) and a theme switch propagates.
-
-## Over the runtime-server wire
-
-`markdown(...)` registers a wire serde pair for `MarkdownDoc` automatically
-(idempotent, thread-local guarded): the recorder serializes the resolved
-doc into `CreateExternal`, the device deserializes it and dispatches to its
-real per-backend handler. No app-level recorder wiring needed.
+The handler builds raw host nodes *below* the framework's
+`StyleRules`/token layer, so the stylesheet/token system can't flow into
+them automatically. Resolving a plain `MdTheme` author-side — and
+re-resolving it reactively — is what makes the styling both fully
+controllable and theme-reactive without per-platform code. Drive
+`MdTheme`'s fields from your app theme (tokens, `color_scheme()`, a
+`Signal`) and a theme switch propagates.
 
 ## Supported syntax (v1)
 
@@ -127,76 +114,41 @@ color + underline), strikethrough (GFM), soft/hard breaks.
 These were the judgment calls; they're logged here so the next person hits
 the constraint, not the workaround.
 
-- **Whole-document single node on native, semantic DOM on web.** See above.
-  The alternative — one native node *per block* — would need every block
-  registered with Taffy + a measure_fn, multiplying layout cost for no
-  visual gain over a single wrapping label. One node is both faster and
-  simpler.
-- **Block spacing is blank lines; list indents are leading spaces; rules
-  are a dash run.** On the single native label there's no per-block box to
-  carry margins/padding, so vertical rhythm is encoded as `\n\n` separators
-  and list nesting as leading spaces. This keeps iOS and Android pixel-
-  consistent with zero paragraph-style plumbing. A future revision could
-  use `NSParagraphStyle` / `LeadingMarginSpan` for true hanging indents.
-- **Code blocks get a rectangular background tint** (`NSBackgroundColor` /
-  `BackgroundColorSpan`), not a rounded padded card, on native — span
-  backgrounds are rectangular and span the text run. Web uses a real padded,
-  rounded `<pre>`.
+- **One payload, raw host nodes.** The alternative — lowering blocks and
+  runs to framework `Element`s — reintroduces the per-token explosion
+  this SDK exists to avoid.
 - **Links are styled but not tappable in v1.** The destination URL is parsed
   and carried in the IR (`MdRun::link`), and links render with the link
   color + underline, but tap-to-navigate is not wired. Hooking it up means a
-  per-backend tap target (an `NSTextView`/`UITextView` link attribute, an
-  Android `ClickableSpan`, an `<a href>` on web) — deferred, not faked.
+  per-host tap target (an `<a href>` on web, an `NSTextView`/`UITextView`
+  link attribute, an Android `ClickableSpan`) — deferred, not faked.
 - **No syntax highlighting** of code-block bodies — they render monospace in
   one color. Compose with the `codeblock` SDK if you need highlighting.
 - **Not yet supported:** images, tables, task-list checkboxes, footnotes.
   These parse to nothing (or, for tables, are ignored) rather than
   panicking.
 - **`line_height` is absolute px** in this framework's `StyleRules`, not a
-  unitless multiplier — the web handler leaves it unset so multi-size text
-  (headings vs. body) keeps the browser's proportional `normal` line height.
-
-## Verification
-
-Implemented and exercised on all three primary backends via the
-`markdown-demo` example:
-
-- **Web** — rendered in a browser; verified semantic blocks, every inline
-  style (bold/italic/both/code/strikethrough/link), nested + ordered lists,
-  code block, blockquote, rule, and a **live light↔dark theme toggle**
-  re-painting text and background.
-- **iOS** — built for and launched on the iOS Simulator; one `UILabel`
-  renders the document, wraps to the column, and re-themes on toggle.
-- **Android** — built for and launched on an emulator; one `TextView` with
-  the SpannableString renders the document and re-themes on toggle.
-
-Parser logic is unit-tested (`src/parse.rs` — headings, inline styles,
-links, ordered/unordered/nested lists, code blocks, quotes, rules).
+  unitless multiplier — the handler leaves it unset so multi-size text
+  (headings vs. body) keeps the host's proportional `normal` line height.
 
 ## Testing checklist
 
-Manual verification per backend — an unchecked **native** box means the code
-compiles for that target but isn't confirmed on real hardware yet. Tick each
-item as you exercise it.
-
 **Automated**
-- [ ] `cargo test -p markdown` — parser unit tests (`src/parse.rs`)
-- [ ] `cargo build -p markdown --target wasm32-unknown-unknown` — web target
+- [ ] `cargo test -p markdown` — parser unit tests (`src/parse.rs`) plus
+  the `tests/markdown.rs` op-log fence over the mounted DOM shape
+- [ ] `cargo check -p markdown --target wasm32-unknown-unknown` — web target
 
 **Rendering / behavior**
 
 Use the `markdown-demo` example. A CommonMark/GFM doc should render headings
 (h1–h6), paragraphs, ordered/unordered/nested lists, block quotes, code blocks,
-thematic rules, and every inline style (bold/italic/both/code/strikethrough/link)
-on each backend, plus a live light↔dark theme toggle re-painting text + background.
+thematic rules, and every inline style (bold/italic/both/code/strikethrough/link),
+plus a live light↔dark theme toggle re-painting text + background.
 
 - [ ] **Web** — semantic DOM (`<h1>`/`<p>`/`<pre>`/`<blockquote>`/`<hr>`/list rows);
   inspect the DOM to confirm real elements with per-run inline styling; theme toggle
   re-paints.
-- [ ] **iOS** — one `UILabel` with an `NSAttributedString` renders the document,
-  wraps to the column width, and re-themes on toggle (sim-verified per the
-  verification note; ⚠️ not yet device-confirmed).
-- [ ] **Android** — one `TextView` with a `SpannableStringBuilder` renders the
-  document and re-themes on toggle (emulator-verified; ⚠️ not yet device-confirmed).
-- [ ] **macOS / terminal / gpu** — no handler registered; verify the framework's
-  `External` placeholder renders cleanly (no layout artifact or crash).
+- [ ] **SSR** — the same semantic DOM in the rendered HTML.
+- [ ] **iOS / Android / macOS / gpu** — the same element tree realized through
+  each host's caps impls; confirm block spacing, list indents and inline
+  styling read correctly and the theme toggle re-paints.

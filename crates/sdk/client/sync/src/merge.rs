@@ -56,6 +56,11 @@ pub struct MergeCtx<'a, T> {
 /// Per-entity conflict resolution. Implement this for any type stored in a
 /// [`Partition`](crate::Partition).
 ///
+/// A partition's entity type must additionally be `Clone + PartialEq +
+/// Serialize + DeserializeOwned`. `PartialEq` is the runtime's
+/// requirement, not the SDK's: the partition's reactive views are
+/// equality-guarded `Signal<Vec<T>>` slots.
+///
 /// A reasonable default is "server wins" (`TakeIncoming`), but the whole
 /// point of the trait is that the app can do better — field-level merges,
 /// resurrect-on-delete-conflict, or surfacing `Unresolved` to a UI. The

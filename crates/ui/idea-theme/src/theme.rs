@@ -1155,7 +1155,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::{FontFamily, Length, Signal, TokenValue};
+    use runtime_core::{FontFamily, Length, TokenValue};
     use crate::theme_runtime::{active_theme_untracked, ThemeTokens};
 
     /// The active theme's `color-background` token value (the cheapest
@@ -1197,9 +1197,8 @@ mod tests {
             let dark_bg = theme_background(dark_theme());
             assert_ne!(light_bg.0, dark_bg.0, "light/dark backgrounds must differ for this test");
 
-            // `signal(...)` == the old `Signal::new(...)` (same constructor);
-            // spelled as the free fn because the new core's `Signal` has no
-            // inherent `new` (creation is world-ambient).
+            // The free `signal(...)` constructor — `Signal` has no inherent
+            // `new`, because creation is world-ambient.
             let dark = runtime_core::signal(false); // Copy: a clone moves into the selector
             install_idea_theme_reactive(move || if dark.get() { dark_theme() } else { light_theme() });
             assert_eq!(active_background().0, light_bg.0, "initial theme is light");
@@ -1573,8 +1572,8 @@ mod tests {
             install_idea_theme(reskin);
 
             // The same by-name reference now resolves to the reskin value.
-            // (On the new core this pins the glue's shared-token-registry
-            // seed: `Tokenized::resolve` must see per-world installs.)
+            // (This pins the glue's shared-token-registry seed:
+            // `Tokenized::resolve` must see per-world installs.)
             assert_eq!(
                 surface_ref.resolve().0,
                 "#FBF9F4",

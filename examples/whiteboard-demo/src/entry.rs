@@ -2,22 +2,11 @@
 //! self-capture bundles, and external registration — the surface the CLI host
 //! wrapper calls into.
 
-// Link anchor: `canvas-native` self-registers its renderer via `inventory` at
-// backend construction, but only if the crate is actually linked — an otherwise-
-// unreferenced rlib dep gets dropped and its `inventory::submit!` never runs (the
-// canvas would then not render, notably on web where native is the only renderer).
-// `use … as _` forces the link without a concrete-typed call. `video` needs no
-// anchor (it's referenced directly via `video::Video` in `screens.rs`). See
-// [[project_inventory_self_registration]]. Mirrors `crates/sdk/client/canvas/examples/canvas-demo`.
-use canvas_native as _;
-
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use camera::MediaStream;
-use runtime_core::primitives::navigator::use_can_go_back;
 use runtime_core::{component, node_ref, signal, ui, Element, Ref, Screen, Signal};
-use stack_navigator::{StackBuilder, StackHandle, StackNavigator, StackScreenExt};
+use stack_navigator::{StackBuilder, StackContext, StackHandle, StackNavigator, StackScreenExt};
 
 use crate::settings::{CameraShape, CameraSize, CanvasBg};
 use crate::{BoardScreen, CanvasDoc, CanvasStore, PreviewScreen, SettingsScreen, Strokes};
@@ -26,38 +15,45 @@ use crate::{BoardScreen, CanvasDoc, CanvasStore, PreviewScreen, SettingsScreen, 
 // External registration
 // ============================================================================
 
-/// Register the externals the board needs: the canvas renderer (so the drawable
-/// surface paints) and the video display (camera + recording-preview). The
-/// chrome is plain in-tree views, so no screen-recorder/PrivateLayer
+/// Register the scene handlers the board needs: the canvas renderer (so the
+/// drawable surface paints) and the video display (camera + recording preview).
+/// The chrome is plain in-tree views, so no screen-recorder/PrivateLayer
 /// registration is needed; `camera` needs none.
 ///
-/// One generic function over `Backend` — not four concrete-typed copies. The
-/// CLI host wrapper calls this with the platform's concrete backend, which binds
-/// to `B` directly.
+/// Registration is MANDATORY: an unregistered payload panics at realize, so a
+/// missed `register` here fails loud instead of drawing a placeholder box.
 ///
-/// `canvas-native` and `video` self-register via `inventory` at backend
-/// construction (which runs before this is called), so they need no explicit
-/// call here. `canvas-vello` has no inventory hook — it's generic over `Backend`
-/// and pulls the GPU surface from `create_graphics` — so it's the only one
-/// registered here, last (last-registration-wins over native where vello is
-/// viable; it self-gates off where the GPU can't run vello). The `cfg` mirrors
-/// the dependency table: `canvas-vello` is compiled for ios/android/macos AND
-/// web (wasm32 → vello over WebGPU, with a per-canvas Canvas2D fallback).
-pub fn register_extensions<B: runtime_core::RegisterExternal>(backend: &mut B) {
-    #[cfg(any(
-        target_os = "ios",
-        target_os = "android",
-        target_os = "macos",
-        target_arch = "wasm32"
-    ))]
-    canvas_vello::register(backend);
-    #[cfg(not(any(
-        target_os = "ios",
-        target_os = "android",
-        target_os = "macos",
-        target_arch = "wasm32"
-    )))]
-    let _ = backend; // desktop: inventory-only; vello absent from the build
+/// Web is registry-CONCRETE — `canvas_native::register` and `video::register`
+/// take a `Registry<WebBackend>` there, which is what makes the real
+/// `<canvas>`/`<video>` handlers reachable. See the generic twin below.
+#[cfg(target_arch = "wasm32")]
+pub fn register_scene_extensions(
+    registry: &mut runtime_scene::Registry<backend_web::WebBackend>,
+) {
+    canvas_native::register(registry);
+    video::register(registry);
+}
+
+/// Native registration seam. Both SDKs are registry-GENERIC off web and
+/// type-dispatch internally: `video::register` downcasts to the macOS / iOS /
+/// Android registry and installs the real player, and `canvas_native::register`
+/// installs the External placeholder — the GPU/vello renderer has no scene
+/// handler, so drawing on native shows the placeholder until one exists.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
+where
+    H: runtime_vocabulary::caps::ExternalOps
+        + runtime_vocabulary::style_attach::StyleServices
+        + 'static,
+{
+    canvas_native::register(registry);
+    video::register(registry);
+}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
 }
 
 // ============================================================================
@@ -123,7 +119,7 @@ pub(crate) struct BoardState {
     pub width: Signal<f32>,
     pub color_css: Signal<&'static str>,
     pub cam_on: Signal<bool>,
-    pub cam_stream: Signal<Option<MediaStream>>,
+    pub cam_stream: Signal<Option<crate::CamStream>>,
     /// Camera widget top-left, in STAGE-local points (the canvas's own coordinate
     /// space), so the composited layer rect and the widget box agree and the
     /// camera lives inside the aspect-locked board.
@@ -172,27 +168,27 @@ pub(crate) struct BoardState {
 impl Default for BoardState {
     fn default() -> Self {
         Self {
-            width: Signal::new(crate::WIDTH_MEDIUM),
-            color_css: Signal::new(crate::PALETTE[0].1),
-            cam_on: Signal::new(false),
-            cam_stream: Signal::new(None),
-            cam_x: Signal::new(-1.0),
-            cam_y: Signal::new(-1.0),
-            recording: Signal::new(false),
-            rec_path: Signal::new(None),
-            palette_open: Signal::new(false),
-            layers_open: Signal::new(false),
-            active_canvas: Signal::new(0),
-            canvas_ids: Signal::new(vec![0]),
-            next_id: Signal::new(1),
-            aspect: Signal::new(crate::settings::DEFAULT_ASPECT),
-            canvas_bg: Signal::new(CanvasBg::Auto),
-            dark: Signal::new(false),
-            camera_shape: Signal::new(CameraShape::RoundedRect),
-            camera_size: Signal::new(CameraSize::Medium),
-            keys_enabled: Signal::new(true),
-            gestures_enabled: Signal::new(true),
-            canvas_anim: Signal::new(1.0),
+            width: signal(crate::WIDTH_MEDIUM),
+            color_css: signal(crate::PALETTE[0].1),
+            cam_on: signal(false),
+            cam_stream: signal(None),
+            cam_x: signal(-1.0),
+            cam_y: signal(-1.0),
+            recording: signal(false),
+            rec_path: signal(None),
+            palette_open: signal(false),
+            layers_open: signal(false),
+            active_canvas: signal(0),
+            canvas_ids: signal(vec![0]),
+            next_id: signal(1),
+            aspect: signal(crate::settings::DEFAULT_ASPECT),
+            canvas_bg: signal(CanvasBg::Auto),
+            dark: signal(false),
+            camera_shape: signal(CameraShape::RoundedRect),
+            camera_size: signal(CameraSize::Medium),
+            keys_enabled: signal(true),
+            gestures_enabled: signal(true),
+            canvas_anim: signal(1.0),
             nav: Ref::new(),
         }
     }
@@ -209,8 +205,12 @@ pub fn app() -> Element {
     // Open matching the OS appearance (the Settings toggle still overrides). On
     // `Auto` (no platform preference) we fall back to light. `color_scheme()` is
     // stashed at mount like `platform()`, so it's readable here in the app body.
-    let start_dark =
-        matches!(runtime_core::color_scheme(), runtime_core::ColorScheme::Dark);
+    // `color_scheme()` is a shared host-slot read; the facade root does not
+    // mirror it yet, so it is spelled against the substrate directly.
+    let start_dark = matches!(
+        runtime_shared::host::color_scheme(),
+        runtime_core::ColorScheme::Dark
+    );
 
     // ---- State (root scope → survives navigation) ------------------------
     let nav: Ref<StackHandle> = node_ref!();
@@ -285,7 +285,9 @@ pub fn app() -> Element {
         let canvas_ids = state.canvas_ids;
         let next_id = state.next_id;
         let keys_enabled = state.keys_enabled;
-        runtime_core::set_app_key_handler(Some(Rc::new(move |ev: &runtime_core::KeyEvent| {
+        // Shared host slot (the backends' caps drain it); not mirrored on the
+        // facade root yet, hence the substrate path.
+        runtime_shared::set_app_key_handler(Some(Rc::new(move |ev: &runtime_core::KeyEvent| {
             if !keys_enabled.get() {
                 return runtime_core::KeyOutcome::Default;
             }
@@ -363,6 +365,14 @@ pub fn app() -> Element {
     // harmless no-op.
     let preview_url: Signal<String> = signal(String::new());
 
+    // Depth-derived "a screen is pushed over the board" flag. The navigator
+    // publishes it to its `.layout(…)` closure (below), which mirrors it into
+    // this app-owned signal so the board's chrome — built inside the screen
+    // closure, outside the layout — can gate on it. Depth-derived rather than
+    // `active_route`-derived: every backend updates depth on push AND pop, so
+    // the chrome comes back after a native back gesture.
+    let can_go_back: Signal<bool> = signal(false);
+
     // ---- The stack navigator: board (root) + Settings + Preview ----------
     // `header_shown(false)` everywhere — the board is full-bleed canvas, and the
     // Settings/Preview screens carry their own in-content header (a back button
@@ -376,19 +386,15 @@ pub fn app() -> Element {
             let capture = capture.clone();
             let canvases = canvases.clone();
             move |_| {
-                // `focused` is computed INSIDE the board-route builder so
-                // `use_can_go_back()` resolves in the navigator scope. `true`
-                // while the board is the stack root (no Settings/Preview pushed):
-                // the chrome is an in-tree sibling of the canvas, so it must
-                // vanish when a screen is pushed or it lingers over
-                // Settings/Preview. We gate on `!use_can_go_back()` rather
-                // than `use_focus()`: `use_focus` reads `active_route`, which
-                // native stack handlers leave STALE after a bare `pop`, so the
-                // chrome would never come back on return (the macOS "private
-                // layer goes missing" bug). `can_go_back` is depth-derived and
-                // every backend updates it on push AND pop.
-                let can_go_back = use_can_go_back();
-                let focused: Rc<dyn Fn() -> bool> = Rc::new(move || !can_go_back());
+                // `focused` is `true` while the board is the stack root (no
+                // Settings/Preview pushed): the chrome is an in-tree sibling of
+                // the canvas, so it must vanish when a screen is pushed or it
+                // lingers over Settings/Preview. It reads the depth-derived
+                // `can_go_back` mirror rather than `active_route`, which native
+                // stack handlers leave STALE after a bare `pop` (the macOS
+                // "private layer goes missing" bug) — depth updates on push AND
+                // pop on every backend.
+                let focused: Rc<dyn Fn() -> bool> = Rc::new(move || !can_go_back.get());
                 Screen::new(ui! {
                     BoardScreen(
                         state = state,
@@ -433,6 +439,15 @@ pub fn app() -> Element {
                 PreviewScreen(rec_path = state.rec_path, playback_url = preview_url, aspect = state.aspect, nav = nav)
             })
             .hide_header(true)
+        })
+        // The default layout is a bare outlet; this one adds only the mirror
+        // effect above it (the screens carry their own in-content headers).
+        .layout(move |nav: StackContext| {
+            let src = nav.can_go_back;
+            runtime_core::effect!({
+                can_go_back.set(src.get());
+            });
+            nav.outlet
         });
 
     ui! { builder.bind(nav) }

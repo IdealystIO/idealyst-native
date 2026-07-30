@@ -26,4 +26,13 @@ license.workspace = true
 # platform-specific to gate, so this is a single crate. No permissions.
 
 [dependencies]
+# The author surface, aliased to `runtime_core` at the crate root (see
+# src/lib.rs). The `AnimatedValue` this SDK exposes MUST be glue's wrapper:
+# the shared handle's `bind*` anchors its per-frame subscription through the
+# pre-v2 scope, which no longer exists, so a bare substrate `AnimatedValue`
+# would tear its listener down at bind time and never move the view.
 runtime-core = { workspace = true }
+# The `Recognizer` / `RecognizerCtx` trait pair (the composition path this
+# SDK's `recognizer()` feeds into a `GestureGroup`), which glue does not
+# re-export yet — see the unit tests. A one-line glue gap, reported.
+runtime-shared = { workspace = true }

@@ -1,9 +1,10 @@
 //! Host-side launcher: builds this project through the EXISTING
 //! Android tooling (`build-android` wrapper generation → NDK cargo
 //! build → `run-android`'s javac/aapt2/d8/apksigner APK assembly →
-//! `adb install` + launch), passing the wrapper's `new-core` feature
-//! so `NativeBridge.attach` mounts [`newcore_android_smoke::scene_app`]
-//! through `backend_android::newcore::start`.
+//! `adb install` + launch). The generated wrapper's `NativeBridge.attach`
+//! mounts [`newcore_android_smoke::scene_app`] through
+//! `backend_android::newcore::start`, passing the crate's
+//! `register_scene_extensions` seam alongside it.
 //!
 //! Prereqs: `ANDROID_HOME` (SDK w/ platform-tools + build-tools) and
 //! `ANDROID_NDK_HOME`; a booted emulator or connected device (the run
@@ -33,9 +34,9 @@ fn main() -> anyhow::Result<()> {
             mode: run_android::RunMode::Local,
             runtime_server_port: None,
             source: build_ios::FrameworkSource::Workspace { root },
-            // The whole point: flips the generated wrapper's attach
-            // onto `backend_android::newcore::start`.
-            user_features: vec!["new-core".to_string()],
+            // No extra features: the generated wrapper's `attach` mounts
+            // through `backend_android::newcore::start` unconditionally.
+            user_features: vec![],
             robot_relay_url: None,
         },
     )?;

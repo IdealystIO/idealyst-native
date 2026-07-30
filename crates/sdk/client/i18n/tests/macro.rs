@@ -4,6 +4,19 @@
 
 use std::collections::HashMap;
 
+/// Every reactive assertion runs inside a world: signal creation requires
+/// `World::enter`, and a write STAGES until a flush, so a set-then-read body
+/// needs an explicit commit between the two. `world(|| …)` supplies the
+/// world; `flush()` is the commit the backend's driver would perform after a
+/// handler returns.
+fn world<R>(f: impl FnOnce() -> R) -> R {
+    runtime_core::__with_fresh_world(f)
+}
+
+fn flush() {
+    runtime_core::__flush_test_world();
+}
+
 mod t {
     i18n::i18n! {
         locales: { En = "en" (default), Fr = "fr", Ja = "ja" (lazy) }
@@ -41,86 +54,108 @@ fn locale_enum_metadata() {
 
 #[test]
 fn bundled_locales_switch_and_interpolate() {
-    t::init();
-    let greet = t::greeting("Ada");
-    assert_eq!(greet.get(), "Hello, Ada");
+    world(|| {
+        t::init();
+        flush();
+        let greet = t::greeting("Ada");
+        assert_eq!(greet.get(), "Hello, Ada");
 
-    t::set_locale(t::Locale::Fr);
-    assert_eq!(greet.get(), "Bonjour, Ada");
-    assert_eq!(t::hello().get(), "Salut");
-    assert_eq!(t::items(3).get(), "3 articles");
+        t::set_locale(t::Locale::Fr);
+        flush();
+        assert_eq!(greet.get(), "Bonjour, Ada");
+        assert_eq!(t::hello().get(), "Salut");
+        assert_eq!(t::items(3).get(), "3 articles");
 
-    t::set_locale(t::Locale::En);
-    assert_eq!(t::items(1).get(), "1 items");
-    assert_eq!(t::current_locale(), t::Locale::En);
+        t::set_locale(t::Locale::En);
+        flush();
+        assert_eq!(t::items(1).get(), "1 items");
+        assert_eq!(t::current_locale(), t::Locale::En);
+    });
 }
 
 #[test]
 fn opt_in_locale_falls_back_then_upgrades() {
-    t::init();
-    let greet = t::greeting("Ada");
+    world(|| {
+        t::init();
+        flush();
+        let greet = t::greeting("Ada");
 
-    // Switching to a lazy locale with no pack installed and no loader:
-    // messages fall back to the default (en) string.
-    t::set_locale(t::Locale::Ja);
-    assert_eq!(greet.get(), "Hello, Ada");
+        // Switching to a lazy locale with no pack installed and no loader:
+        // messages fall back to the default (en) string.
+        t::set_locale(t::Locale::Ja);
+        flush();
+        assert_eq!(greet.get(), "Hello, Ada");
 
-    // Install the pack: the same value upgrades to the localized string.
-    let mut pack = HashMap::new();
-    pack.insert("greeting".to_string(), "こんにちは、{name}".to_string());
-    i18n::install_pack("ja", pack);
-    assert_eq!(greet.get(), "こんにちは、Ada");
+        // Install the pack: the same value upgrades to the localized string.
+        let mut pack = HashMap::new();
+        pack.insert("greeting".to_string(), "こんにちは、{name}".to_string());
+        i18n::install_pack("ja", pack);
+        flush();
+        assert_eq!(greet.get(), "こんにちは、Ada");
 
-    // A message the pack doesn't translate still falls back to default.
-    assert_eq!(t::hello().get(), "Hi");
+        // A message the pack doesn't translate still falls back to default.
+        assert_eq!(t::hello().get(), "Hi");
 
-    t::set_locale(t::Locale::En);
+        t::set_locale(t::Locale::En);
+        flush();
+    });
 }
 
 #[test]
 fn reactive_text_recomputes_inside_an_effect() {
-    use runtime_core::{watch, Signal};
+    use runtime_core::{signal, watch, Signal};
 
-    t::init();
-    let greet = t::greeting("Ada");
+    world(|| {
+        t::init();
+        flush();
+        let greet = t::greeting("Ada");
 
-    // Mirror what a `text()` node does: read the reactive value inside an
-    // Effect so the runtime subscribes it to the locale signal.
-    let captured: Signal<String> = Signal::new(String::new());
-    let _sub = watch({
-        let greet = greet.clone();
-        move || captured.set(greet.get())
+        // Mirror what a `text()` node does: read the reactive value inside an
+        // Effect so the runtime subscribes it to the locale signal.
+        let captured: Signal<String> = signal(String::new());
+        let _sub = watch({
+            let greet = greet.clone();
+            move || captured.set(greet.get())
+        });
+        flush();
+        assert_eq!(captured.get(), "Hello, Ada");
+
+        // Changing the locale must re-fire the effect (no manual re-read).
+        t::set_locale(t::Locale::Fr);
+        flush();
+        assert_eq!(captured.get(), "Bonjour, Ada");
+
+        // Installing an opt-in pack while on that locale must also re-fire.
+        t::set_locale(t::Locale::Ja);
+        flush();
+        assert_eq!(captured.get(), "Hello, Ada"); // fallback first
+        let mut pack = HashMap::new();
+        pack.insert("greeting".to_string(), "やあ、{name}".to_string());
+        i18n::install_pack("ja", pack);
+        flush();
+        assert_eq!(captured.get(), "やあ、Ada"); // upgraded via pack epoch
+
+        t::set_locale(t::Locale::En);
+        flush();
     });
-    assert_eq!(captured.get(), "Hello, Ada");
-
-    // Changing the locale must re-fire the effect (no manual re-read).
-    t::set_locale(t::Locale::Fr);
-    assert_eq!(captured.get(), "Bonjour, Ada");
-
-    // Installing an opt-in pack while on that locale must also re-fire.
-    t::set_locale(t::Locale::Ja);
-    assert_eq!(captured.get(), "Hello, Ada"); // fallback first
-    let mut pack = HashMap::new();
-    pack.insert("greeting".to_string(), "やあ、{name}".to_string());
-    i18n::install_pack("ja", pack);
-    assert_eq!(captured.get(), "やあ、Ada"); // upgraded via pack epoch
-
-    t::set_locale(t::Locale::En);
 }
 
 #[test]
 fn custom_formatter_swaps_in() {
-    t::init();
-    // A trivial "uppercase the whole rendered string" formatter stands in
-    // for a richer Fluent/ICU layer.
-    i18n::install_formatter(|template, args| {
-        let mut s = template.to_string();
-        for (k, v) in args {
-            s = s.replace(&format!("{{{k}}}"), v);
-        }
-        s.to_uppercase()
+    world(|| {
+        t::init();
+        flush();
+        // A trivial "uppercase the whole rendered string" formatter stands in
+        // for a richer Fluent/ICU layer.
+        i18n::install_formatter(|template, args| {
+            let mut s = template.to_string();
+            for (k, v) in args {
+                s = s.replace(&format!("{{{k}}}"), v);
+            }
+            s.to_uppercase()
+        });
+        assert_eq!(t::greeting("ada").get(), "HELLO, ADA");
+        i18n::clear_formatter();
+        assert_eq!(t::greeting("ada").get(), "Hello, ada");
     });
-    assert_eq!(t::greeting("ada").get(), "HELLO, ADA");
-    i18n::clear_formatter();
-    assert_eq!(t::greeting("ada").get(), "Hello, ada");
 }

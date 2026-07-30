@@ -216,8 +216,8 @@ impl Default for IosSim {
 /// on a transparent background, 17 pt body font, 12×16 padding,
 /// 10 pt corner radius (matches `UIButton.Configuration.plain()`).
 /// Authors can override any field via `.with_style(...)`.
-fn ios_button_defaults() -> runtime_core::StyleRules {
-    use runtime_core::{Color, Length, StyleRules, Tokenized};
+fn ios_button_defaults() -> runtime_shared::StyleRules {
+    use runtime_shared::{Color, Length, StyleRules, Tokenized};
     StyleRules {
         background: Some(Tokenized::Literal(Color("#00000000".into()))),
         color: Some(Tokenized::Literal(Color("#007AFF".into()))),
@@ -235,11 +235,11 @@ fn ios_button_defaults() -> runtime_core::StyleRules {
 }
 
 impl Painter for IosSim {
-    fn platform(&self) -> runtime_core::Platform {
-        runtime_core::Platform::Custom("Sim")
+    fn platform(&self) -> runtime_shared::Platform {
+        runtime_shared::Platform::Custom("Sim")
     }
 
-    fn button_defaults(&self) -> runtime_core::StyleRules {
+    fn button_defaults(&self) -> runtime_shared::StyleRules {
         ios_button_defaults()
     }
 
@@ -775,8 +775,8 @@ impl Painter for IosSim {
         }
     }
 
-    fn safe_area_insets(&self) -> runtime_core::EdgeInsets {
-        runtime_core::EdgeInsets {
+    fn safe_area_insets(&self) -> runtime_shared::EdgeInsets {
+        runtime_shared::EdgeInsets {
             top: IOS_STATUS_BAR_HEIGHT,
             right: 0.0,
             bottom: IOS_HOME_INDICATOR_HEIGHT,
@@ -798,7 +798,7 @@ impl Painter for IosSim {
     fn paint_device_chrome<'a>(
         &self,
         viewport: (f32, f32),
-        insets: runtime_core::EdgeInsets,
+        insets: runtime_shared::EdgeInsets,
         _now: web_time::Instant,
         glyphs: &'a HashMap<&'static str, Buffer>,
         rects: &mut Vec<RectInstance>,

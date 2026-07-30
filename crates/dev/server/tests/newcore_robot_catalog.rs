@@ -8,7 +8,7 @@
 //! recipes compiled `ui!` inside runtime-core). This test drives the
 //! exact wiring the sidecar session thread now installs —
 //! [`dev_server::newcore::install_robot_env`] — through the shared TCP
-//! bridge's in-process dispatch (`runtime_core::robot::bridge::
+//! bridge's in-process dispatch (`runtime_shared::robot::bridge::
 //! invoke_command`, the same path `BridgeHandle::poll` runs per socket
 //! command) and asserts the routing contract from both sides:
 //!
@@ -17,11 +17,15 @@
 //!   `SceneSession::flush` (a click's staged write is visible in the
 //!   registry's label immediately after the verb returns);
 //! - registry-independent verbs (`get_catalog`, custom commands) fall
-//!   through to the OLD dispatch — the catalog JSON (with the static
-//!   core recipes re-anchored into runtime-shared) is served in the
-//!   same session.
-
-#![cfg(feature = "new-core")]
+//!   through to the shared bridge's own dispatch — the catalog JSON
+//!   (with the static core recipes anchored in runtime-shared) is served
+//!   in the same session.
+//!
+//! This file used to open with `#![cfg(feature = "new-core")]`. When that
+//! core-selector feature was deleted the attribute silently reduced the
+//! whole file to ZERO tests instead of failing to compile — the exact
+//! "goes silent, not red" failure the deletion baseline warns about
+//! (§4.1 #8). It is unconditional now.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -31,7 +35,7 @@ use dev_server::WireRecordingBackend;
 use runtime_vocabulary::builders::{button, text, view};
 
 fn invoke(cmd: &str, args: serde_json::Value) -> Result<String, String> {
-    runtime_core::robot::bridge::invoke_command(cmd, &args)
+    runtime_shared::robot::bridge::invoke_command(cmd, &args)
 }
 
 #[test]
@@ -103,14 +107,14 @@ fn newcore_session_serves_robot_verbs_and_catalog_over_one_bridge() {
 
     // Custom commands (the sidecar's `screenshot` shape) still reach
     // the old dispatch's custom table through the fallback.
-    runtime_core::robot::bridge::register_command("wave2b_probe", |_args| {
+    runtime_shared::robot::bridge::register_command("wave2b_probe", |_args| {
         Ok("\"probe-ok\"".into())
     });
     assert_eq!(
         invoke("wave2b_probe", serde_json::json!({})).as_deref(),
         Ok("\"probe-ok\""),
     );
-    runtime_core::robot::bridge::unregister_command("wave2b_probe");
+    runtime_shared::robot::bridge::unregister_command("wave2b_probe");
 
     // A REAL vocab verb error (bad args) must NOT be masked by the
     // fallback — only the `unknown command:` marker falls through.

@@ -183,14 +183,19 @@ docs! {
         list(
             [code("state: Signal<S>"), " — caller-owned; the data your UI binds to."],
             [code("perform: I → Future<Result<R, E>>"), " — the async action."],
-            [code("apply: (&mut S, R) → ()"),
-             " — how to fold the response into state."],
+            [code("apply: (&S, R) → S"),
+             " — how to fold the response into state (takes the current \
+              state by reference, returns the next one)."],
         ),
         p("On trigger: status flips to Loading; ", code("perform(input)"),
           " is spawned; on Ok(r), ", code("state.update(|s| apply(s, r))"),
           " runs and status flips back to Idle; on Err(e), status flips to \
            Error(e). Notably the state is NOT touched on error — the apply closure \
            is the only thing that writes to ", code("Signal<S>"), "."),
+        p("The completion is event-boundary work: its write STAGES and \
+           commits at the driver's flush, and a completion that lands after \
+           its owning scope tore down is dropped silently — so \
+           unmount-with-a-fetch-in-flight is safe."),
         p("The handle's ", code("AsyncStatus<E>"),
           " has no Success(T) variant — successful responses have already gone into \
            the state signal, so there's nowhere else to keep them."),

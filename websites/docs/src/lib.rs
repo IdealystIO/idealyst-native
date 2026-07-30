@@ -6,10 +6,6 @@
 //! responsibility of the `idealyst` CLI, which materializes those
 //! wrappers into `target/idealyst/<platform>/` at build time.
 //!
-//! The `web` module's `wasm-bindgen` `start()` is transitional — it
-//! lives here until `idealyst dev` / `idealyst build web` generates
-//! that wrapper crate.
-//!
 //! # Module ordering
 //!
 //! `mod shell;` is declared with `#[macro_use]` and BEFORE `mod
@@ -43,20 +39,62 @@ mod pages;
 #[cfg(test)]
 mod macro_test;
 
-// Navigators + externals self-register at backend construction via
-// `inventory::submit!` inside their SDK crates — the app just uses them, no
-// per-platform registration. The hook remains for app-local externals; the CLI
-// bootstrap still calls it. See [[project_inventory_self_registration]].
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+// =============================================================================
+// Per-target registration seams. The CLI-generated wrapper calls
+// `register_extensions` (backend) before mount and hands
+// `register_scene_extensions` (scene registry) to the boot entry.
+// =============================================================================
 
-// Recorder-side registration for the runtime-server sidecar. Distinct fn
-// name (not an overload of `register_extensions`) so it never collides
-// with the host target's per-backend overload when both compile in the
-// sidecar build. Gated by `sidecar` (set only by the generated sidecar
-// wrapper) so device/web builds never pull `dev-server`.
+// The docs site registers no third-party scene primitives — every page
+// body is core primitives + idea-ui components — so both seams are
+// empty. They exist because the generated wrappers name them.
+
+#[cfg(target_arch = "wasm32")]
+pub fn register_extensions(_backend: &mut backend_web::WebBackend) {
+    // Push the initial window size + wire a resize listener into the
+    // reactive viewport signal, so the AppShell's pin/drawer split
+    // follows a live resize.
+    backend_web::install_viewport_observer();
+}
+
+#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+pub fn register_extensions(_backend: &mut backend_ios::IosBackend) {
+    // Render-loop driver for the Simulator page's embedded wgpu host.
+    backend_ios::install_render_loop();
+}
+
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+pub fn register_extensions(_backend: &mut backend_android::AndroidBackend) {}
+
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+pub fn register_extensions(_backend: &mut backend_macos::MacosBackend) {}
+
+#[cfg(not(any(
+    target_arch = "wasm32",
+    target_os = "ios",
+    target_os = "android",
+    target_os = "macos"
+)))]
+pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
+
+/// Boot-time scene-registry seam — invoked with the fresh registry after
+/// `runtime_vocabulary::register_builtins`. Registry-generic so the same
+/// fn serves the web boot, every native host's `newcore::run_with`, and
+/// the SSR/SSG drivers.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
+
+/// Recorder-side registration for the runtime-server sidecar
+/// (`dev_server::sidecar::run_newcore`). Distinct fn name (not an
+/// overload of `register_extensions`) so it never collides with the host
+/// target's per-backend overload when both compile in the sidecar build.
+/// Gated by `sidecar` (set only by the generated sidecar wrapper) so
+/// device/web builds never pull `dev-server`.
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {
-    swap_navigator::recording::register(backend);
+pub fn register_scene_extensions_recorder(registry: &mut dev_server::newcore::SceneRegistry) {
+    register_scene_extensions(registry);
 }
 
 use routes::{

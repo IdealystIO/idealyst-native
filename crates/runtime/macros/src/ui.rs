@@ -1379,18 +1379,6 @@ fn emit_component(
     // it was never a first-party primitive — the WebView SDK now ships
     // the `WebView` tag contract itself, so both cores emit ordinary
     // component dispatch. See `canonical_primitive`'s note.)
-    if cfg!(feature = "new-core") {
-        if name_str == "CardTabs" {
-            return quote! {
-                ::std::compile_error!(
-                    "`CardTabs` ui! sugar is not yet available on the new core \
-                     (idea-lite migration: it dispatches through the old `cardtabs!` \
-                     invocation macro). Build without `runtime-macros/new-core`."
-                )
-            };
-        }
-    }
-
     let (style_prop, disabled_prop, test_id_prop, a11y_props, other_props): (
         Vec<&Prop>,
         Vec<&Prop>,
@@ -1461,7 +1449,6 @@ fn emit_component(
         (Some("anchored_overlay"), _) => emit_anchored_overlay(&other_props, children),
         (Some("presence"), _) => emit_presence(&other_props, children),
         (_, "DrawerNavigator") => emit_drawer_navigator(&other_props, children),
-        (_, "CardTabs") => emit_card_tabs(&other_props, children),
         _ => emit_user(name, props, children),
     };
 
@@ -1786,18 +1773,10 @@ fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
                 // reactivity is identical: the closure reads each
                 // signal arg via `.get()`, exactly what `Derived`'s
                 // `compute` did.
-                if cfg!(feature = "new-core") {
-                    if let Some(call) = reactive_call_with_gets(expr) {
-                        return quote! {
-                            ::runtime_core::text(
-                                move || ::std::format!("{}", #call)
-                            )
-                        };
-                    }
-                } else if let Some(structured) = try_emit_derived_call::<String>(expr) {
+                if let Some(call) = reactive_call_with_gets(expr) {
                     return quote! {
                         ::runtime_core::text(
-                            ::runtime_core::TextSource::Bound(#structured)
+                            move || ::std::format!("{}", #call)
                         )
                     };
                 }
@@ -1915,84 +1894,6 @@ fn text_content_reads_signal_bare(children: Option<&[UiNode]>, props: &[Prop]) -
     false
 }
 
-/// Try to lower a call expression like `method(sig_a, sig_b)` into
-/// a fully-populated `Derived<T>` constructor. Returns `Some(tokens)`
-/// on match, `None` if the expression isn't a structured call.
-///
-/// Match criteria:
-/// - Top-level expression is `syn::Expr::Call`.
-/// - Function position is a single-segment path (`my_method`, not
-///   `module::my_method` or `Foo::method`).
-/// - At least one arg, and *every* arg is itself a single-segment
-///   path expression (bare identifier — the signal). Mixing literal
-///   args or method calls falls through, leaving the author to
-///   explicitly wrap.
-///
-/// `T` is the value type the emitted `Derived` produces. The
-/// expression's `compute` body re-evaluates the call against
-/// `.get()` on each signal arg; for `T = String` we wrap the
-/// return in `format!("{}", _)` so any `Display` return type
-/// fits. Other `T`s pass through as-is.
-fn try_emit_derived_call<T>(expr: &Expr) -> Option<TokenStream2>
-where
-    T: DerivedKind,
-{
-    let call = match expr {
-        Expr::Call(c) => c,
-        _ => return None,
-    };
-    // Function position must be a single-segment path.
-    let func_ident = match &*call.func {
-        Expr::Path(syn::ExprPath { qself: None, path, .. }) => {
-            if path.segments.len() != 1 || !path.segments[0].arguments.is_empty() {
-                return None;
-            }
-            path.segments[0].ident.clone()
-        }
-        _ => return None,
-    };
-    // Each arg must be a bare path (signal reference).
-    let args: Vec<&Expr> = call.args.iter().collect();
-    if args.is_empty() {
-        return None;
-    }
-    for a in &args {
-        match a {
-            Expr::Path(syn::ExprPath { qself: None, path, .. }) => {
-                if path.segments.len() != 1 || !path.segments[0].arguments.is_empty() {
-                    return None;
-                }
-            }
-            _ => return None,
-        }
-    }
-
-    let method_lit = syn::LitStr::new(&func_ident.to_string(), func_ident.span());
-    let get_calls: Vec<TokenStream2> = args.iter().map(|a| quote! { (#a).get() }).collect();
-    let id_calls: Vec<TokenStream2> = args.iter().map(|a| quote! { (#a).id() }).collect();
-    let initial_calls: Vec<TokenStream2> = args
-        .iter()
-        .map(|a| {
-            quote! {
-                ::runtime_core::__serde_json::to_value(&(#a).get())
-                    .unwrap_or(::runtime_core::__serde_json::Value::Null)
-            }
-        })
-        .collect();
-
-    let compute_body = T::compute_body(&func_ident, &get_calls);
-    let ty_tokens = T::type_tokens();
-
-    Some(quote! {
-        ::runtime_core::Derived::<#ty_tokens> {
-            method:  #method_lit,
-            inputs:  ::std::vec![ #(#id_calls),* ],
-            initial: ::std::vec![ #(#initial_calls),* ],
-            compute: ::std::rc::Rc::new(move || { #compute_body }),
-        }
-    })
-}
-
 /// Does `expr` have the "reactive call" shape — a single-segment
 /// function call whose every argument is a bare single-segment path
 /// (a signal reference)? This is the SAME syntactic shape
@@ -2055,35 +1956,6 @@ fn reactive_call_with_gets(expr: &Expr) -> Option<TokenStream2> {
     Some(quote! { #func( #(#get_args),* ) })
 }
 
-/// Per-type hooks for `try_emit_derived_call`. `String` wraps the
-/// call in `format!("{}", _)` so authors don't have to make their
-/// `#[method]` return `String` directly; `bool` passes through
-/// (the method must return a bool); etc.
-trait DerivedKind {
-    fn type_tokens() -> TokenStream2;
-    fn compute_body(func: &Ident, get_calls: &[TokenStream2]) -> TokenStream2;
-}
-
-impl DerivedKind for String {
-    fn type_tokens() -> TokenStream2 {
-        quote! { ::std::string::String }
-    }
-    fn compute_body(func: &Ident, get_calls: &[TokenStream2]) -> TokenStream2 {
-        quote! {
-            ::std::format!("{}", #func( #(#get_calls),* ))
-        }
-    }
-}
-
-impl DerivedKind for bool {
-    fn type_tokens() -> TokenStream2 {
-        quote! { bool }
-    }
-    fn compute_body(func: &Ident, get_calls: &[TokenStream2]) -> TokenStream2 {
-        quote! { #func( #(#get_calls),* ) }
-    }
-}
-
 /// Heuristic: does the token stream contain `.get()`? Used to decide
 /// whether `text { ... }` bodies should be wrapped in a reactive
 /// closure. Matches the same heuristic `condition_is_reactive` uses
@@ -2092,78 +1964,6 @@ impl DerivedKind for bool {
 fn expression_reads_signal(tokens: &TokenStream2) -> bool {
     let s = tokens.to_string();
     s.contains(".get()") || s.contains(". get ()")
-}
-
-/// Lower `on_click = method(sig)` or `on_click = method(sig) =>
-/// out_signal` into a fully-populated `Action` constructor.
-/// Returns `None` when `value` isn't a structured-call shape (the
-/// caller falls back to the existing closure / IntoAction path).
-///
-/// Same shape match as `try_emit_derived_call`: function-position
-/// single ident, every arg a bare path (signal reference). The
-/// optional `arrow_target` (parsed by `Prop::parse` when the
-/// author writes `=> out_signal`) becomes the Action's `output`
-/// field; the closure inside `fire` writes the method's return
-/// value to `out_signal` after invocation.
-fn try_emit_structured_action(value: &Expr, arrow_target: Option<&Expr>) -> Option<TokenStream2> {
-    let call = match value {
-        Expr::Call(c) => c,
-        _ => return None,
-    };
-    let func_ident = match &*call.func {
-        Expr::Path(syn::ExprPath { qself: None, path, .. }) => {
-            if path.segments.len() != 1 || !path.segments[0].arguments.is_empty() {
-                return None;
-            }
-            path.segments[0].ident.clone()
-        }
-        _ => return None,
-    };
-    let args: Vec<&Expr> = call.args.iter().collect();
-    for a in &args {
-        match a {
-            Expr::Path(syn::ExprPath { qself: None, path, .. }) => {
-                if path.segments.len() != 1 || !path.segments[0].arguments.is_empty() {
-                    return None;
-                }
-            }
-            _ => return None,
-        }
-    }
-
-    let method_lit = syn::LitStr::new(&func_ident.to_string(), func_ident.span());
-    let get_calls: Vec<TokenStream2> = args.iter().map(|a| quote! { (#a).get() }).collect();
-    let id_calls: Vec<TokenStream2> = args.iter().map(|a| quote! { (#a).id() }).collect();
-    let initial_calls: Vec<TokenStream2> = args
-        .iter()
-        .map(|a| {
-            quote! {
-                ::runtime_core::__serde_json::to_value(&(#a).get())
-                    .unwrap_or(::runtime_core::__serde_json::Value::Null)
-            }
-        })
-        .collect();
-
-    let (fire_body, output_tokens) = match arrow_target {
-        Some(out) => (
-            quote! { (#out).set(#func_ident( #(#get_calls),* )); },
-            quote! { ::std::option::Option::Some((#out).id()) },
-        ),
-        None => (
-            quote! { #func_ident( #(#get_calls),* ); },
-            quote! { ::std::option::Option::None },
-        ),
-    };
-
-    Some(quote! {
-        ::runtime_core::Action {
-            method:  #method_lit,
-            inputs:  ::std::vec![ #(#id_calls),* ],
-            initial: ::std::vec![ #(#initial_calls),* ],
-            output:  #output_tokens,
-            fire:    ::std::rc::Rc::new(move || { #fire_body }),
-        }
-    })
 }
 
 fn emit_button(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
@@ -2178,25 +1978,18 @@ fn emit_button(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     //   3. `on_click = closure_expression` — opaque coercion via IntoAction
     let on_click = match props.iter().find(|p| p.name == "on_click") {
         Some(p) => {
-            if cfg!(feature = "new-core") {
-                // Structured `Action` carries wire metadata (method
-                // name, signal ids) for generator backends — deferred.
-                // The same author shape (`on_click = method(sig)` /
-                // `… => out`) lowers to the equivalent fire closure:
-                // args read at press time, result written to the output
-                // signal, exactly what `Action::fire` did.
-                if let Some(call) = reactive_call_with_gets(&p.value) {
-                    match p.arrow_target.as_ref() {
-                        Some(out) => quote! { move || { (#out).set(#call); } },
-                        None => quote! { move || { #call; } },
-                    }
-                } else {
-                    p.value.to_token_stream()
+            // The structured `Action` (wire metadata: method name,
+            // signal ids) was generator-backend surface and died with
+            // the old core. The same author shape
+            // (`on_click = method(sig)` / `… => out`) lowers to the
+            // equivalent fire closure: args read at press time, result
+            // written to the output signal — exactly what
+            // `Action::fire` did.
+            if let Some(call) = reactive_call_with_gets(&p.value) {
+                match p.arrow_target.as_ref() {
+                    Some(out) => quote! { move || { (#out).set(#call); } },
+                    None => quote! { move || { #call; } },
                 }
-            } else if let Some(action) =
-                try_emit_structured_action(&p.value, p.arrow_target.as_ref())
-            {
-                action
             } else {
                 p.value.to_token_stream()
             }
@@ -2318,13 +2111,9 @@ fn emit_text_input(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2
         .find(|p| p.name == "value")
         .map(|p| p.value.to_token_stream())
         .unwrap_or_else(|| {
-            if cfg!(feature = "new-core") {
-                // `runtime_world::Signal` has no `new`; the glue's
-                // `fresh_signal` mints the uncontrolled default.
-                quote! { ::runtime_vocabulary::glue::fresh_signal(::std::string::String::new()) }
-            } else {
-                quote! { ::runtime_core::Signal::new(::std::string::String::new()) }
-            }
+            // `runtime_world::Signal` has no `new`; the glue's
+            // `fresh_signal` mints the uncontrolled default.
+            quote! { ::runtime_vocabulary::glue::fresh_signal(::std::string::String::new()) }
         });
     let on_change = props
         .iter()
@@ -2355,11 +2144,7 @@ fn emit_toggle(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
         .find(|p| p.name == "value")
         .map(|p| p.value.to_token_stream())
         .unwrap_or_else(|| {
-            if cfg!(feature = "new-core") {
-                quote! { ::runtime_vocabulary::glue::fresh_signal(false) }
-            } else {
-                quote! { ::runtime_core::Signal::new(false) }
-            }
+            quote! { ::runtime_vocabulary::glue::fresh_signal(false) }
         });
     let on_change = props
         .iter()
@@ -2397,11 +2182,7 @@ fn emit_slider(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
         .find(|p| p.name == "value")
         .map(|p| p.value.to_token_stream())
         .unwrap_or_else(|| {
-            if cfg!(feature = "new-core") {
-                quote! { ::runtime_vocabulary::glue::fresh_signal(0.0f32) }
-            } else {
-                quote! { ::runtime_core::Signal::new(0.0f32) }
-            }
+            quote! { ::runtime_vocabulary::glue::fresh_signal(0.0f32) }
         });
     let on_change = props
         .iter()
@@ -2765,14 +2546,10 @@ fn emit_flat_list(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 
         .find(|p| p.name == "data")
         .map(|p| p.value.to_token_stream())
         .unwrap_or_else(|| {
-            if cfg!(feature = "new-core") {
-                // `runtime_world::Signal` has no `new`; the glue's
-                // `fresh_signal` mints the empty default (same move as
-                // the text_input/toggle/slider uncontrolled defaults).
-                quote! { ::runtime_vocabulary::glue::fresh_signal(::std::vec::Vec::new()) }
-            } else {
-                quote! { ::runtime_core::Signal::new(::std::vec::Vec::new()) }
-            }
+            // `runtime_world::Signal` has no `new`; the glue's
+            // `fresh_signal` mints the empty default (same move as
+            // the text_input/toggle/slider uncontrolled defaults).
+            quote! { ::runtime_vocabulary::glue::fresh_signal(::std::vec::Vec::new()) }
         });
     let key = props
         .iter()
@@ -2914,23 +2691,7 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[UiNode]>) -> Token
 /// real (When-swappable) node that contributes nothing to layout when the
 /// branch is absent, so a false `if` is truly weightless.
 fn empty_view_primitive() -> TokenStream2 {
-    if cfg!(feature = "new-core") {
-        // Same rule, glue-side constructor (the old emission constructs
-        // a `StyleSheet`, which is old-core style machinery).
-        return quote! { ::runtime_vocabulary::glue::empty_absolute_view() };
-    }
-    quote! {
-        ::runtime_core::IntoElement::into_element(
-            ::runtime_core::view(::std::vec::Vec::new()).with_style(
-                ::std::rc::Rc::new(::runtime_core::StyleSheet::r#static(
-                    ::runtime_core::StyleRules {
-                        position: ::core::option::Option::Some(::runtime_core::Position::Absolute),
-                        ..::core::default::Default::default()
-                    }
-                ))
-            )
-        )
-    }
+    quote! { ::runtime_vocabulary::glue::empty_absolute_view() }
 }
 
 fn emit_if(
@@ -2990,23 +2751,15 @@ fn emit_if(
     if matches!(cond, Expr::Let(_)) {
         return emit_plain_if(cond, then_body, else_body, ctx);
     }
-    if cfg!(feature = "new-core") {
-        // Structured `Derived<bool>` is generator-backend metadata —
-        // lower the same shape to the equivalent reactive closure
-        // (see the `new-core` note in `emit_text`).
-        if let Some(call) = reactive_call_with_gets(cond) {
-            let then_expr = emit_block_as_primitive(then_body);
-            let else_expr =
-                else_body.map(emit_block_as_primitive).unwrap_or_else(empty_view_primitive);
-            return quote! {
-                ::runtime_core::when(move || #call, move || #then_expr, move || #else_expr)
-            };
-        }
-    } else if let Some(structured_cond) = try_emit_derived_call::<bool>(cond) {
+    // The structured `Derived<bool>` was generator-backend metadata and
+    // died with the old core; the same shape lowers to the equivalent
+    // reactive closure (see the note in `emit_text`).
+    if let Some(call) = reactive_call_with_gets(cond) {
         let then_expr = emit_block_as_primitive(then_body);
-        let else_expr = else_body.map(emit_block_as_primitive).unwrap_or_else(empty_view_primitive);
+        let else_expr =
+            else_body.map(emit_block_as_primitive).unwrap_or_else(empty_view_primitive);
         return quote! {
-            ::runtime_core::when(#structured_cond, move || #then_expr, move || #else_expr)
+            ::runtime_core::when(move || #call, move || #then_expr, move || #else_expr)
         };
     }
 
@@ -3275,15 +3028,10 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
     //      `if key(state)`). Lower to `runtime_core::switch(..)` — one
     //      Element per arm.
     //   3. Plain Rust `match` — no reactivity. Flattens in children-slot.
-    // Under `new-core` the structured `Element::Switch` (literal-armed
-    // Roku metadata) is skipped: the reactive-call fallback below claims
+    // The structured `Element::Switch` (literal-armed Roku metadata)
+    // died with the old core: the reactive-call fallback below claims
     // the same shape and rewrites `key(state)` → `key((state).get())`,
     // so observable reactivity is identical.
-    if !cfg!(feature = "new-core") {
-        if let Some(structured) = try_emit_structured_match(scrutinee, arms) {
-            return structured;
-        }
-    }
 
     // Reactive scrutinee — two shapes funnel into the closure-`switch`:
     //   (a) `.get()` appears literally in the scrutinee
@@ -3402,142 +3150,6 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
     }
 }
 
-/// Lower `match method(sig) { 0 => body0, 1 => body1, _ => default }`
-/// directly into a `Element::Switch` carrying a structured
-/// `Derived<serde_json::Value>` discriminant + literal-keyed arms.
-/// Returns `None` if any arm has a non-literal pattern, a guard,
-/// or the scrutinee isn't a structured call shape — the caller
-/// falls back to the closure-driven `switch()` builder.
-///
-/// Patterns supported as arm keys: integer / bool / string / float
-/// literals. Range patterns, struct destructuring, `|` alternation,
-/// and guards aren't supported in the structured path — Roku's
-/// runtime equality is JSON-value comparison and arm matching is
-/// linear, so anything richer than a literal is a closure-path
-/// affair.
-fn try_emit_structured_match(scrutinee: &Expr, arms: &[MatchArm]) -> Option<TokenStream2> {
-    let call = match scrutinee {
-        Expr::Call(c) => c,
-        _ => return None,
-    };
-    let func_ident = match &*call.func {
-        Expr::Path(syn::ExprPath { qself: None, path, .. }) => {
-            if path.segments.len() != 1 || !path.segments[0].arguments.is_empty() {
-                return None;
-            }
-            path.segments[0].ident.clone()
-        }
-        _ => return None,
-    };
-    let args: Vec<&Expr> = call.args.iter().collect();
-    if args.is_empty() {
-        return None;
-    }
-    for a in &args {
-        match a {
-            Expr::Path(syn::ExprPath { qself: None, path, .. }) => {
-                if path.segments.len() != 1 || !path.segments[0].arguments.is_empty() {
-                    return None;
-                }
-            }
-            _ => return None,
-        }
-    }
-
-    // Walk arms. Every arm must be (lit-pat | wildcard) with no guard.
-    let mut literal_arms: Vec<(TokenStream2, &Vec<UiNode>)> = Vec::new();
-    let mut default: Option<&Vec<UiNode>> = None;
-    for arm in arms {
-        if arm.guard.is_some() {
-            return None;
-        }
-        match &arm.pat {
-            syn::Pat::Lit(syn::PatLit { lit, .. }) => {
-                let v = lit_to_value_tokens(lit)?;
-                literal_arms.push((v, &arm.body));
-            }
-            syn::Pat::Wild(_) => {
-                if default.is_some() {
-                    return None;
-                }
-                default = Some(&arm.body);
-            }
-            _ => return None,
-        }
-    }
-    let default = default?;
-
-    let method_lit = syn::LitStr::new(&func_ident.to_string(), func_ident.span());
-    let get_calls: Vec<TokenStream2> = args.iter().map(|a| quote! { (#a).get() }).collect();
-    let id_calls: Vec<TokenStream2> = args.iter().map(|a| quote! { (#a).id() }).collect();
-    let initial_calls: Vec<TokenStream2> = args
-        .iter()
-        .map(|a| {
-            quote! {
-                ::runtime_core::__serde_json::to_value(&(#a).get())
-                    .unwrap_or(::runtime_core::__serde_json::Value::Null)
-            }
-        })
-        .collect();
-
-    let arm_tokens: Vec<TokenStream2> = literal_arms
-        .into_iter()
-        .map(|(pat_value, body)| {
-            let body_expr = emit_block_as_primitive(body);
-            quote! {
-                (
-                    #pat_value,
-                    ::std::boxed::Box::new(move || #body_expr)
-                        as ::std::boxed::Box<dyn ::std::ops::Fn() -> ::runtime_core::Element>,
-                )
-            }
-        })
-        .collect();
-    let default_expr = emit_block_as_primitive(default);
-
-    Some(quote! {
-        ::runtime_core::Element::Switch {
-            discriminant: ::runtime_core::Derived::<::runtime_core::__serde_json::Value> {
-                method:  #method_lit,
-                inputs:  ::std::vec![ #(#id_calls),* ],
-                initial: ::std::vec![ #(#initial_calls),* ],
-                compute: ::std::rc::Rc::new(move || {
-                    ::runtime_core::__serde_json::to_value(&#func_ident( #(#get_calls),* ))
-                        .unwrap_or(::runtime_core::__serde_json::Value::Null)
-                }),
-            },
-            arms:    ::std::vec![ #(#arm_tokens),* ],
-            default: ::std::boxed::Box::new(move || #default_expr),
-            style:   ::std::option::Option::None,
-        }
-    })
-}
-
-/// Emit a `serde_json::Value` constructor for a literal pattern.
-/// Returns `None` for unsupported literal kinds (chars, byte
-/// strings — we don't ship those over the Roku wire today).
-fn lit_to_value_tokens(lit: &syn::Lit) -> Option<TokenStream2> {
-    match lit {
-        syn::Lit::Int(i) => {
-            let i = i.clone();
-            Some(quote! { ::runtime_core::__serde_json::Value::from(#i) })
-        }
-        syn::Lit::Bool(b) => {
-            let b = b.value;
-            Some(quote! { ::runtime_core::__serde_json::Value::from(#b) })
-        }
-        syn::Lit::Str(s) => {
-            let s = s.value();
-            Some(quote! { ::runtime_core::__serde_json::Value::from(#s) })
-        }
-        syn::Lit::Float(f) => {
-            let f = f.clone();
-            Some(quote! { ::runtime_core::__serde_json::Value::from(#f as f64) })
-        }
-        _ => None,
-    }
-}
-
 fn emit_for(
     pat: &syn::Pat,
     iter: &Expr,
@@ -3585,34 +3197,28 @@ fn emit_for_children(
     // what `bind_repeat!` used to do explicitly. Try this BEFORE
     // the static range path so a method-call iterator wins over
     // any static-range matching.
-    if cfg!(feature = "new-core") {
-        // The virtualizer `for i in count_method(sig)` sugar lowers to
-        // `Element::Virtualizer` carrying a structured `Derived<usize>`
-        // COUNT binding — generator-backend wire metadata, which is
-        // deferred with the rest of that surface until generator
-        // backends re-land (post-P7). The closure-form `flat_list(...)`
-        // tag DOES lower on the new core; rather than silently building
-        // a static loop here, fail with the status (repo rule: no
-        // silent scope cuts).
-        if is_virtualizer_for_shape(pat, iter) {
-            return (
-                quote! {
-                    ::std::compile_error!(
-                        "`for i in count_method(sig)` (the virtualizer for-sugar) is not \
-                         available on the new core: it lowers to the structured \
-                         generator-backend count binding (`Derived<usize>` wire \
-                         metadata), deferred until generator backends re-land \
-                         (post-P7). Use the `flat_list(data = …, key = …, size = …, \
-                         render = …)` tag (which works on the new core), or iterate a \
-                         keyed reactive collection: `for item in items_signal, \
-                         key = item.id { … }`."
-                    )
-                },
-                true,
-            );
-        }
-    } else if let Some(virt) = try_emit_for_virtualizer(pat, iter, body, chain) {
-        return (virt, true);
+    // The virtualizer `for i in count_method(sig)` sugar lowered to
+    // `Element::Virtualizer` carrying a structured `Derived<usize>`
+    // COUNT binding — generator-backend wire metadata that died with the
+    // old core and is deferred until generator backends re-land. The
+    // closure-form `flat_list(...)` tag DOES lower; rather than silently
+    // building a static loop here, fail with the status (repo rule: no
+    // silent scope cuts).
+    if is_virtualizer_for_shape(pat, iter) {
+        return (
+            quote! {
+                ::std::compile_error!(
+                    "`for i in count_method(sig)` (the virtualizer for-sugar) is not \
+                     available on runtime v2: it lowered to the structured \
+                     generator-backend count binding (`Derived<usize>` wire \
+                     metadata), deferred until generator backends re-land. Use the \
+                     `flat_list(data = …, key = …, size = …, render = …)` tag, or \
+                     iterate a keyed reactive collection: `for item in items_signal, \
+                     key = item.id { … }`."
+                )
+            },
+            true,
+        );
     }
 
     // Reactive COUNT range — `for i in A..B` where a bound reads a
@@ -3759,137 +3365,6 @@ fn is_virtualizer_for_shape(pat: &syn::Pat, iter: &Expr) -> bool {
         && is_reactive_call_shape(iter)
 }
 
-/// Try to lower `for IDENT in count_method(sig, ...) { body }` to a
-/// `Element::Virtualizer` carrying a structured `Derived<usize>`
-/// (the count) + a captured row template. The IDENT inside the
-/// body becomes a `Signal<i32>` carrying the row's index — same
-/// trick `bind_repeat!` used. Returns `None` if the iterator
-/// isn't a structured call shape.
-fn try_emit_for_virtualizer(
-    pat: &syn::Pat,
-    iter: &Expr,
-    body: &[UiNode],
-    chain: &[TokenStream2],
-) -> Option<TokenStream2> {
-    // Pattern must be a bare ident.
-    let row_ident = match pat {
-        syn::Pat::Ident(p) if p.subpat.is_none() && p.by_ref.is_none() => &p.ident,
-        _ => return None,
-    };
-    // Iterator must be a structured call shape — same recognition
-    // criteria as `try_emit_derived_call` and friends.
-    let call = match iter {
-        Expr::Call(c) => c,
-        _ => return None,
-    };
-    let func_ident = match &*call.func {
-        Expr::Path(syn::ExprPath { qself: None, path, .. }) => {
-            if path.segments.len() != 1 || !path.segments[0].arguments.is_empty() {
-                return None;
-            }
-            path.segments[0].ident.clone()
-        }
-        _ => return None,
-    };
-    let args: Vec<&Expr> = call.args.iter().collect();
-    if args.is_empty() {
-        return None;
-    }
-    for a in &args {
-        match a {
-            Expr::Path(syn::ExprPath { qself: None, path, .. }) => {
-                if path.segments.len() != 1 || !path.segments[0].arguments.is_empty() {
-                    return None;
-                }
-            }
-            _ => return None,
-        }
-    }
-
-    let method_lit = syn::LitStr::new(&func_ident.to_string(), func_ident.span());
-    let get_calls: Vec<TokenStream2> = args.iter().map(|a| quote! { (#a).get() }).collect();
-    let id_calls: Vec<TokenStream2> = args.iter().map(|a| quote! { (#a).id() }).collect();
-    let initial_calls: Vec<TokenStream2> = args
-        .iter()
-        .map(|a| {
-            quote! {
-                ::runtime_core::__serde_json::to_value(&(#a).get())
-                    .unwrap_or(::runtime_core::__serde_json::Value::Null)
-            }
-        })
-        .collect();
-
-    let body_expr = emit_block_as_primitive(body);
-
-    Some(quote! {
-        {
-            // Allocate the per-row index signal at snapshot time
-            // (initial value 0). The device-side runtime mints a
-            // fresh synthetic signal per cloned row and remaps
-            // references to this id so a structured `method(i)` binding inside
-            // the body dispatches with each row's actual index.
-            let #row_ident: ::runtime_core::Signal<i32> =
-                ::runtime_core::signal(0i32);
-            let __row_index_id: ::std::option::Option<u64> =
-                ::std::option::Option::Some(::runtime_core::Signal::<i32>::id(&#row_ident));
-            // Build the row template against the index-0 placeholder.
-            let __row_template: ::runtime_core::Element =
-                ::runtime_core::IntoElement::into_element(#body_expr);
-            // Wrap in a `Bound<VirtualizerHandle>` so the trailing
-            // chain (e.g. `.with_style(...)`, `.horizontal(true)`)
-            // applies to the Bound's methods. The structured
-            // emission populates every field of the underlying
-            // `Element::Virtualizer`; chain methods can mutate
-            // them after construction.
-            #[allow(unused_mut)]
-            let mut __vh = ::runtime_core::primitives::virtualizer::virtualizer(
-                ::std::boxed::Box::new(|| 0usize),
-                ::std::boxed::Box::new(|i| i as u64),
-                ::runtime_core::primitives::virtualizer::ItemSize::Known(
-                    ::std::rc::Rc::new(|_| 40.0)
-                ),
-                ::std::rc::Rc::new(move |__idx: usize| {
-                    // Real per-row builder for runtime backends (web,
-                    // iOS, Android, wgpu). Each row gets its OWN index
-                    // signal, seeded to the row's index, declared fresh
-                    // on every call — `build_virtualizer` runs this
-                    // inside a per-item `Scope`, so reactive reads of the
-                    // loop variable resolve to *that* row's index with no
-                    // cross-row signal sharing. Generator backends (Roku)
-                    // ignore this closure and clone `row_template`,
-                    // remapping `row_index_signal_id` per device row.
-                    //
-                    // Previously this was an empty-View placeholder, so
-                    // `for i in count(sig) { … }` silently rendered blank
-                    // rows on every runtime backend.
-                    let #row_ident: ::runtime_core::Signal<i32> =
-                        ::runtime_core::signal(__idx as i32);
-                    ::runtime_core::IntoElement::into_element(#body_expr)
-                }),
-            );
-            // Patch the structured-only fields on the underlying
-            // Element::Virtualizer. The `virtualizer()` builder
-            // doesn't know about them (it only handles the closure
-            // shape) so we mutate them directly here.
-            if let ::runtime_core::Element::Virtualizer {
-                item_count, row_template, row_index_signal_id, ..
-            } = &mut __vh.primitive_mut() {
-                *item_count = ::runtime_core::Derived::<usize> {
-                    method:  #method_lit,
-                    inputs:  ::std::vec![ #(#id_calls),* ],
-                    initial: ::std::vec![ #(#initial_calls),* ],
-                    compute: ::std::rc::Rc::new(move || {
-                        #func_ident( #(#get_calls),* ) as usize
-                    }),
-                };
-                *row_template = ::std::option::Option::Some(::std::boxed::Box::new(__row_template));
-                *row_index_signal_id = __row_index_id;
-            }
-            __vh #(#chain)*
-        }
-    })
-}
-
 /// Try to lower `for PAT in RANGE { body }` to a single
 /// `Element::Repeat`. Returns `Some(tokens)` only when the
 /// shape is one we can statically recognize:
@@ -3934,37 +3409,18 @@ fn try_emit_for_repeat(
     // to `start + __i`, where `__i` is the closure's `usize` parameter
     // (always 0..count). This preserves the original visible semantics
     // of `for i in 5..10 { use(i) }` inside the row builder.
-    if cfg!(feature = "new-core") {
-        // Same recognition, glue-side lowering: `__static_repeat`
-        // returns a one-element `Vec<Element>` carrying the
-        // `Element::Many(RepeatPrim)` payload — the ChildList shape the
-        // old `::std::vec![Element::Repeat { … }]` emission has.
-        return Some(quote! {
-            ::runtime_core::__static_repeat(
-                (#end - #start) as usize,
-                move |__i: usize| {
-                    let #ident = (#start) + __i;
-                    ::runtime_core::IntoElement::into_element(#body_expr)
-                },
-            )
-        });
-    }
+    // `__static_repeat` returns a one-element `Vec<Element>` carrying
+    // the `Element::Many(RepeatPrim)` payload — the ChildList shape the
+    // emission needs. `(end - start)` is evaluated as `usize`: the
+    // macro's surface is `usize`-typed loops.
     Some(quote! {
-        ::std::vec![
-            ::runtime_core::Element::Repeat {
-                // `(end - start)` evaluated as `usize`. Author code
-                // commonly writes `0..n` where `n: usize`; this works
-                // with any integer type via the `usize::try_from`
-                // fallback in `Element::Repeat`'s constructor, but
-                // we accept the simpler cast here because the macro's
-                // surface is `usize`-typed loops.
-                count: (#end - #start) as usize,
-                row_builder: ::std::boxed::Box::new(move |__i: usize| {
-                    let #ident = (#start) + __i;
-                    ::runtime_core::IntoElement::into_element(#body_expr)
-                }),
-            }
-        ]
+        ::runtime_core::__static_repeat(
+            (#end - #start) as usize,
+            move |__i: usize| {
+                let #ident = (#start) + __i;
+                ::runtime_core::IntoElement::into_element(#body_expr)
+            },
+        )
     })
 }
 
@@ -4020,85 +3476,6 @@ fn emit_drawer_navigator(_props: &[Prop], _children: Option<&[UiNode]>) -> Token
     }
 }
 
-/// Emit a `CardTabs { Tab(label = "...") { ... } ... }` invocation
-/// as a user-component call carrying `tabs = vec![(label,
-/// render_closure), ...]`. Each Tab's body is wrapped in a render
-/// closure so the panel can be invoked lazily — the active panel
-/// builds at switch time, not eagerly at mount.
-///
-/// Non-`Tab` children fail compilation with a pointed message so
-/// the constraint reads at the call site.
-fn emit_card_tabs(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
-    let kids = children.unwrap_or(&[]);
-    let mut tab_pairs: Vec<TokenStream2> = Vec::new();
-    for kid in kids {
-        match kid {
-            UiNode::Component {
-                name,
-                props: tab_props,
-                children: tab_children,
-                chain: _,
-            } if name.to_string().to_ascii_lowercase() == "tab" => {
-                // `label` is required.
-                let label = match tab_props.iter().find(|p| p.name == "label") {
-                    Some(p) => p.value.clone(),
-                    None => {
-                        return quote! {
-                            ::std::compile_error!(
-                                "CardTabs: each Tab requires a `label` prop"
-                            )
-                        };
-                    }
-                };
-                // Build the body Element from the Tab's children
-                // and wrap it in a render closure. The closure is
-                // `Rc<dyn Fn() -> Element>` so it can be cheaply
-                // cloned into a `switch` branches closure that
-                // dispatches by index.
-                let body_nodes: &[UiNode] = tab_children.as_deref().unwrap_or(&[]);
-                let body_expr = emit_block_as_primitive(body_nodes);
-                tab_pairs.push(quote! {
-                    (
-                        ::std::string::String::from(#label),
-                        ::std::rc::Rc::new(move || #body_expr)
-                            as ::std::rc::Rc<dyn Fn() -> ::runtime_core::Element>,
-                    )
-                });
-            }
-            UiNode::Component { name, .. } => {
-                let got = name.to_string();
-                let msg = format!(
-                    "CardTabs children must be Tab(...) elements; got `{}`",
-                    got
-                );
-                return quote! { ::std::compile_error!(#msg) };
-            }
-            _ => {
-                return quote! {
-                    ::std::compile_error!(
-                        "CardTabs children must be Tab(...) elements"
-                    )
-                };
-            }
-        }
-    }
-
-    // Pass any other props through to the `cardtabs!` invocation
-    // unchanged — same shape as `emit_user`.
-    let other_prop_assignments = props.iter().map(|p| {
-        let n = &p.name;
-        let v = emit_attr_value(&p.value);
-        quote! { #n = #v }
-    });
-
-    quote! {
-        cardtabs!(
-            #(#other_prop_assignments,)*
-            tabs = vec![#(#tab_pairs),*]
-        )
-    }
-}
-
 // Silence "unused" complaints on items we may need later.
 #[allow(dead_code)]
 fn _unused(_: Span) {}
@@ -4127,13 +3504,10 @@ mod tests {
         assert!(out.contains("Vec :: new"));
     }
 
-    /// The `new-core` lowering deltas (idea-lite migration P3a). The
-    /// path RETARGET (`::runtime_core` → `::runtime_vocabulary::glue`)
-    /// happens in the lib.rs entry points and is unit-tested in
-    /// `new_core.rs`; these pin the EMISSION differences at the
-    /// decision points themselves. Run with
-    /// `cargo test -p runtime-macros --features new-core`.
-    #[cfg(feature = "new-core")]
+    /// The runtime-v2 lowering deltas. The path RETARGET
+    /// (`::runtime_core` → `::runtime_vocabulary::glue`) happens in the
+    /// lib.rs entry points and is unit-tested in `new_core.rs`; these
+    /// pin the EMISSION decisions at the sites themselves.
     mod new_core_lowering {
         use super::*;
 

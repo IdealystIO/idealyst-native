@@ -1,27 +1,32 @@
-//! Golden-output corpus: the SAME logical email template rendered
-//! through the old-core path ([`backend_email::render_email`], walker +
-//! `Element`) and the new-core path
-//! ([`backend_email::newcore::render_email`], one-shot `World` +
-//! vocabulary handlers) must emit **byte-identical** `html`, `text`,
-//! and `subject`.
+//! Golden-output corpus: the email backend's rendered output must match
+//! the **frozen bytes the OLD core produced** for the same logical
+//! template, exactly, with **zero normalization**.
 //!
-//! Model: `backend-ssr/tests/newcore_byte_identity.rs`. Like there, the
-//! two sides are twin-authored (old-core builders vs vocabulary
-//! builders) because `ui!`'s lowering is a build-graph-wide switch —
-//! one binary cannot compile the same component body for both cores.
-//! The headline item renders the REAL idea-ui-mail welcome template on
-//! the old side (the components emit old-core `Element` in this build)
-//! against a pinned vocabulary-builder replica on the new side; a
-//! divergence therefore means the cores disagree, not that the replica
-//! is "allowed to drift" — update the replica in lockstep with
-//! idea-ui-mail when the template itself changes.
-
-#![cfg(feature = "new-core")]
+//! Model: `backend-ssr/tests/newcore_byte_identity.rs`.
+//!
+//! # The frozen corpus is the contract
+//!
+//! Each item compares this crate's render against
+//! `tests/goldens/<item>.html` plus `tests/goldens/<item>.txt` (which
+//! carries the subject header + the plaintext alternative). Those files
+//! were written by the old walker + `Element` render path before it was
+//! deleted; a mismatch means a real behavior change, NOT a stale
+//! artifact. `IDEALYST_FREEZE_GOLDENS=1` can now only RE-BASELINE against
+//! the current renderer, permanently discarding the old core's testimony
+//! — see `tests/goldens/README.md`.
+//!
+//! For the headline item this matters most: `idea_ui_mail_welcome.{html,txt}`
+//! is the last artifact in the tree that records what the REAL
+//! idea-ui-mail welcome template rendered to under the old core. The
+//! builder replica below must stay in lockstep with
+//! `crates/ui/idea-ui-mail/src/lib.rs`; if the components change, the
+//! replica and the golden move together and the diff is the substance of
+//! the change.
 
 use std::rc::Rc;
 
 use backend_email::RenderedEmail;
-use runtime_core::{
+use runtime_shared::{
     AlignItems, Color, FlexDirection, FontWeight, JustifyContent, Length, StyleApplication,
     StyleRules, StyleSheet, TextAlign, TokenEntry, TokenValue, Tokenized,
 };
@@ -30,47 +35,36 @@ use runtime_core::{
 // Harness
 // ===========================================================================
 
-fn render_old(app: impl FnOnce() -> runtime_core::Element) -> RenderedEmail {
-    backend_email::render_email(app)
-}
-
-fn render_new(build: impl FnOnce() -> runtime_scene::Element) -> RenderedEmail {
+fn render(build: impl FnOnce() -> runtime_scene::Element) -> RenderedEmail {
     backend_email::newcore::render_email(build)
 }
 
-/// Assert exact string equality with a byte-level first-divergence
-/// report (same shape as the SSR corpus's helper).
-fn assert_bytes(name: &str, part: &str, old: &str, new: &str) {
-    if old == new {
-        return;
-    }
-    let at = old
-        .bytes()
-        .zip(new.bytes())
-        .position(|(a, b)| a != b)
-        .unwrap_or_else(|| old.len().min(new.len()));
-    let lo = at.saturating_sub(60);
-    let old_hi = (at + 60).min(old.len());
-    let new_hi = (at + 60).min(new.len());
-    panic!(
-        "byte divergence in corpus item `{name}` ({part}) at byte {at}\n\
-         old (len {}): …{}…\n\
-         new (len {}): …{}…\n\
-         full old:\n{}\n\
-         full new:\n{}",
-        old.len(),
-        &old[lo..old_hi],
-        new.len(),
-        &new[lo..new_hi],
-        old,
-        new,
-    );
+// ---------------------------------------------------------------------------
+// Frozen-artifact gate
+// ---------------------------------------------------------------------------
+
+fn goldens() -> parity_goldens::Goldens {
+    parity_goldens::Goldens::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn assert_emails_identical(name: &str, old: &RenderedEmail, new: &RenderedEmail) {
-    assert_bytes(name, "html", &old.html, &new.html);
-    assert_bytes(name, "text", &old.text, &new.text);
-    assert_eq!(old.subject, new.subject, "corpus item `{name}` (subject)");
+/// The gate: the rendered email must match the frozen old-core bytes
+/// exactly (html + subject + plaintext), with no normalization.
+fn assert_matches_frozen(name: &str, email: &RenderedEmail) {
+    goldens().check_text(&format!("{name}.html"), &email.html);
+    goldens().check_text(&format!("{name}.txt"), &plaintext_artifact(email));
+}
+
+/// `subject:`-prefixed header line + the plaintext alternative, so one
+/// frozen file carries both non-HTML halves of a `RenderedEmail`.
+fn plaintext_artifact(email: &RenderedEmail) -> String {
+    format!(
+        "subject: {}\n---\n{}",
+        match &email.subject {
+            Some(s) => format!("{s:?}"),
+            None => "<none>".to_string(),
+        },
+        email.text,
+    )
 }
 
 // ===========================================================================
@@ -93,13 +87,6 @@ fn test_rules(width: f32, background: &str) -> StyleRules {
     }
 }
 
-/// Old-core route to a resolved-rules apply: literal rules in a static
-/// sheet resolve to themselves, matching the new side's static
-/// `.style(rules)` (the same equivalence the SSR corpus relies on).
-fn static_style(rules: StyleRules) -> StyleApplication {
-    StyleApplication::new(Rc::new(StyleSheet::r#static(rules)))
-}
-
 fn surface_token(value: &str) -> TokenEntry {
     TokenEntry {
         name: "color-surface",
@@ -108,8 +95,7 @@ fn surface_token(value: &str) -> TokenEntry {
 }
 
 /// A sheet with a token-referencing base and a `state hovered` overlay
-/// — email must emit ONLY the resolved base (overlays dropped), on both
-/// cores.
+/// — email must emit ONLY the resolved base (overlays dropped).
 fn hover_sheet() -> Rc<StyleSheet> {
     Rc::new(
         StyleSheet::new(|_vs| StyleRules {
@@ -130,22 +116,7 @@ fn hover_sheet() -> Rc<StyleSheet> {
 
 #[test]
 fn corpus_static_styled_tree() {
-    let old = render_old(|| {
-        use runtime_core::{external_link, signal, text, toggle, view, IntoElement};
-        let on = signal(true);
-        view(vec![
-            text("hello").into_element(),
-            text("styled leaf")
-                .with_style(static_style(test_rules(80.0, "#445566")))
-                .into_element(),
-            external_link("https://example.com", vec![text("docs").into_element()])
-                .into_element(),
-            toggle(on, |_| {}).into_element(),
-        ])
-        .with_style(static_style(test_rules(120.0, "#112233")))
-        .into_element()
-    });
-    let new = render_new(|| {
+    let new = render(|| {
         use runtime_vocabulary::builders::{link, text, toggle, view};
         use runtime_world::signal;
         let on = signal(true);
@@ -162,11 +133,11 @@ fn corpus_static_styled_tree() {
             .child(toggle().value(on).on_change(|_| {}))
             .build()
     });
-    assert_emails_identical("static_styled_tree", &old, &new);
+    assert_matches_frozen("static_styled_tree", &new);
     // Sanity: the corpus item is live.
-    assert!(old.html.contains("background: #112233"), "styles inline: {}", old.html);
-    assert!(old.html.contains(r#"href="https://example.com""#), "link: {}", old.html);
-    assert!(old.html.contains('\u{2611}'), "toggle glyph: {}", old.html);
+    assert!(new.html.contains("background: #112233"), "styles inline: {}", new.html);
+    assert!(new.html.contains(r#"href="https://example.com""#), "link: {}", new.html);
+    assert!(new.html.contains('\u{2611}'), "toggle glyph: {}", new.html);
 }
 
 // ===========================================================================
@@ -175,18 +146,7 @@ fn corpus_static_styled_tree() {
 
 #[test]
 fn corpus_tokens_and_dropped_overlays() {
-    let old = render_old(|| {
-        use runtime_core::{text, view, IntoElement};
-        runtime_core::install_tokens(&[surface_token("#101010")]);
-        view(vec![
-            view(vec![])
-                .with_style(StyleApplication::new(hover_sheet()))
-                .into_element(),
-            text("themed").into_element(),
-        ])
-        .into_element()
-    });
-    let new = render_new(|| {
+    let new = render(|| {
         use runtime_vocabulary::builders::{text, view};
         runtime_vocabulary::theme::install_tokens(&[surface_token("#101010")]);
         view()
@@ -194,33 +154,21 @@ fn corpus_tokens_and_dropped_overlays() {
             .child(text().content("themed"))
             .build()
     });
-    assert_emails_identical("tokens_and_dropped_overlays", &old, &new);
-    assert!(old.html.contains("background: #101010"), "token resolved: {}", old.html);
-    assert!(!old.html.contains("#ff00ff"), "hover overlay dropped: {}", old.html);
-    assert!(!old.html.contains("var("), "no CSS variables: {}", old.html);
+    assert_matches_frozen("tokens_and_dropped_overlays", &new);
+    assert!(new.html.contains("background: #101010"), "token resolved: {}", new.html);
+    assert!(!new.html.contains("#ff00ff"), "hover overlay dropped: {}", new.html);
+    assert!(!new.html.contains("var("), "no CSS variables: {}", new.html);
 }
 
 // ===========================================================================
-// 3. Setup seam: app background via the backend hook (same-shape entry)
+// 3. Setup seam: app background via the backend hook
 // ===========================================================================
 
 #[test]
 fn corpus_setup_app_background() {
-    let old = backend_email::render_email_with(
-        |b| {
-            runtime_core::Backend::set_app_background(
-                b,
-                &Tokenized::Literal(Color("#0b1020".into())),
-            )
-        },
-        || {
-            use runtime_core::{text, view, IntoElement};
-            view(vec![text("hi").into_element()]).into_element()
-        },
-    );
     let new = backend_email::newcore::render_email_with(
         |b| {
-            runtime_core::Backend::set_app_background(
+            runtime_vocabulary::caps::AppEnvOps::set_app_background(
                 b,
                 &Tokenized::Literal(Color("#0b1020".into())),
             )
@@ -230,8 +178,8 @@ fn corpus_setup_app_background() {
             view().child(text().content("hi")).build()
         },
     );
-    assert_emails_identical("setup_app_background", &old, &new);
-    assert!(old.html.contains("background:#0b1020"), "body bg: {}", old.html);
+    assert_matches_frozen("setup_app_background", &new);
+    assert!(new.html.contains("background:#0b1020"), "body bg: {}", new.html);
 }
 
 // ===========================================================================
@@ -241,21 +189,7 @@ fn corpus_setup_app_background() {
 #[test]
 fn corpus_dyn_branch_both_initial_states() {
     for initial in [true, false] {
-        let old = render_old(move || {
-            use runtime_core::{signal, text, view, when, IntoElement};
-            let show = signal(initial);
-            view(vec![
-                text("before").into_element(),
-                when(
-                    move || show.get(),
-                    || text("shown").into_element(),
-                    || text("hidden").into_element(),
-                ),
-                text("after").into_element(),
-            ])
-            .into_element()
-        });
-        let new = render_new(move || {
+        let new = render(move || {
             use runtime_scene::dyn_keyed;
             use runtime_vocabulary::builders::{text, view};
             use runtime_world::signal;
@@ -275,13 +209,12 @@ fn corpus_dyn_branch_both_initial_states() {
                 .child(text().content("after"))
                 .build()
         });
-        assert_emails_identical(
+        assert_matches_frozen(
             if initial { "dyn_branch_then" } else { "dyn_branch_else" },
-            &old,
             &new,
         );
         let want = if initial { "shown" } else { "hidden" };
-        assert!(old.html.contains(want), "committed branch rendered: {}", old.html);
+        assert!(new.html.contains(want), "committed branch rendered: {}", new.html);
     }
 }
 
@@ -289,11 +222,10 @@ fn corpus_dyn_branch_both_initial_states() {
 // 5. The idea-ui-mail welcome template (the headline golden)
 // ===========================================================================
 //
-// Old side: the REAL idea-ui-mail components (this build compiles them
-// on the old-core `ui!` lowering). New side: the same template authored
-// against the vocabulary builders, with each component's StyleRules
-// replicated verbatim from `crates/ui/idea-ui-mail/src/lib.rs`. Keep
-// the replica in lockstep with the components.
+// Each component's StyleRules are replicated verbatim from
+// `crates/ui/idea-ui-mail/src/lib.rs`. Keep the replica in lockstep with
+// the components — the frozen files record what the real components
+// rendered to.
 
 fn pad_all(rules: &mut StyleRules, v: f32) {
     rules.padding_top = Some(px(v));
@@ -409,27 +341,7 @@ fn divider_rules() -> StyleRules {
 
 #[test]
 fn golden_idea_ui_mail_welcome_template() {
-    // Old core: the real components.
-    let old = render_old(|| {
-        use idea_ui_mail::{Button, Divider, EmailBody, EmailContainer, Heading, Section, Text};
-        use runtime_core::ui;
-        ui! {
-            EmailBody(background = "#f0f0f5") {
-                EmailContainer() {
-                    Section(padding = 32.0) {
-                        Heading(content = "Welcome aboard")
-                        Text(content = "Thanks for signing up — you're all set.")
-                        Button(label = "Get started", href = "https://app.dev/start")
-                        Divider()
-                        Text(content = "Questions? Just reply to this email.")
-                    }
-                }
-            }
-        }
-    });
-
-    // New core: the same template, vocabulary-builder replica.
-    let new = render_new(|| {
+    let new = render(|| {
         use runtime_vocabulary::builders::{link, text, view};
         view()
             .style(body_rules("#f0f0f5"))
@@ -463,11 +375,31 @@ fn golden_idea_ui_mail_welcome_template() {
             .build()
     });
 
-    assert_emails_identical("idea_ui_mail_welcome", &old, &new);
-    // Sanity: the template is live and email-safe on both sides.
-    assert!(old.html.contains("Welcome aboard"), "heading: {}", old.html);
-    assert!(old.html.contains(r#"href="https://app.dev/start""#), "cta: {}", old.html);
-    assert!(!old.html.contains("class="), "no classes in email: {}", old.html);
-    assert!(!old.html.contains("var("), "no CSS variables in email: {}", old.html);
-    assert!(old.text.contains("Welcome aboard"), "plaintext: {:?}", old.text);
+    assert_matches_frozen("idea_ui_mail_welcome", &new);
+    // Sanity: the template is live and email-safe.
+    assert!(new.html.contains("Welcome aboard"), "heading: {}", new.html);
+    assert!(new.html.contains(r#"href="https://app.dev/start""#), "cta: {}", new.html);
+    assert!(!new.html.contains("class="), "no classes in email: {}", new.html);
+    assert!(!new.html.contains("var("), "no CSS variables in email: {}", new.html);
+    assert!(new.text.contains("Welcome aboard"), "plaintext: {:?}", new.text);
+}
+
+// ===========================================================================
+// 6. The anchoring contract the goldens depend on
+// ===========================================================================
+
+/// `Host::supports_splice` used to be inherited from a `Backend` trait
+/// DEFAULT (`false`); `Host` makes it required, so the value is now an
+/// explicit body in `newcore.rs`. Every frozen artifact in
+/// `tests/goldens/` was recorded in ANCHORED mode — flipping this to
+/// `true` would move reactive regions out from under their anchor
+/// `<div>`s and change the emitted HTML wholesale.
+#[test]
+fn newcore_host_is_anchored() {
+    use runtime_scene::Host;
+    let b = backend_email::EmailBackend::new();
+    assert!(
+        !Host::supports_splice(&b),
+        "email must render ANCHORED (frozen goldens pin the anchor <div>s)"
+    );
 }

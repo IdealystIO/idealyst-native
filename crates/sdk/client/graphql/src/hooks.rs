@@ -30,9 +30,8 @@
 
 use crate::{GraphqlClient, GraphqlError, GraphqlRequest};
 use graphql_client::GraphQLQuery;
-// `signal(...)` (the free fn, present on both cores) rather than the
-// old-core-only `Signal::new(...)` — the dual-core spelling (see the
-// idea-theme precedent).
+// `signal(...)` — the free fn (the crate root aliases `runtime_core`,
+// so these resolve against `runtime_vocabulary::glue`).
 use runtime_core::{mutation, resource, signal, Mutation, Resource, Signal};
 
 /// Run a GraphQL query bound to the current component scope. Fetches on

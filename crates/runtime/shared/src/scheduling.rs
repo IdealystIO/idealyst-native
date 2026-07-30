@@ -289,12 +289,6 @@ impl RafLoop {
     }
 }
 
-/// Start a recurring animation-frame loop. The closure receives no
-/// arguments; if it needs frame timing, it can read
-/// `performance.now()` itself.
-///
-/// The closure is `FnMut` so it can hold mutable state across
-/// frames.
 // ---------------------------------------------------------------------------
 // Frame-active flag — cooperation between rendering hosts and
 // per-frame author code (animation tickers, etc).
@@ -371,6 +365,12 @@ pub fn debug_log(msg: &str) {
     });
 }
 
+/// Start a recurring animation-frame loop. The closure receives no
+/// arguments; if it needs frame timing, it can read
+/// `performance.now()` itself.
+///
+/// The closure is `FnMut` so it can hold mutable state across
+/// frames.
 pub fn raf_loop<F: FnMut() + 'static>(f: F) -> RafLoop {
     if let Some(s) = SCHEDULER.get() {
         return RafLoop {

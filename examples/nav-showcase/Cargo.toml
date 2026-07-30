@@ -9,63 +9,24 @@ description = "Kitchen-sink navigation demo — a Drawer at the root hosting Tab
 crate-type = ["rlib"]
 
 [features]
-# Runtime-v2 defaults flip: new core by default; old-core leg via
-# `--no-default-features --features old-core`.
-default = ["new-core"]
-# Old-core marker for the CLI single-core pin (old deps unconditional).
-old-core = []
-sidecar = ["dep:dev-server", "swap-navigator/runtime-server", "stack-navigator/runtime-server"]
-# idea-lite migration (P6 SDK retarget): same-source build against the
-# new core via the `extern crate runtime_facade as runtime_core;` alias
-# in lib.rs (the idea-ui-nav pattern). Default-off; one core per build
-# graph (proc-macro features unify — see runtime-macros/Cargo.toml).
-# Flips the whole nav subtree together: the navigator SDKs' new-core
-# surfaces + the idea-* chrome. New-core builds boot via the backends'
-# `newcore::start` (navigator handlers come from `register_builtins`),
-# so the old-core `register_extensions` hook is inert there.
-new-core = [
-    "dep:runtime-facade",
-    "dep:runtime-vocabulary",
-    "swap-navigator/new-core",
-    "stack-navigator/new-core",
-    "idea-ui/new-core",
-    "idea-ui-nav/new-core",
-]
+# `sidecar`: enabled ONLY by the CLI-generated runtime-server sidecar
+# wrapper (build-runtime-server), which calls
+# `register_scene_extensions_recorder`.
+sidecar = ["dep:dev-server"]
 
 [dependencies]
+# `runtime-core` is aliased to `runtime_core` at the crate root (see
+# src/lib.rs); `runtime-vocabulary` because the `ui!` emission spells
+# absolute `::runtime_vocabulary::glue::…` paths; `runtime-scene`
+# because `register_scene_extensions` is generic over the registry host.
 runtime-core = { workspace = true }
-# The new-core alias target + the retargeted ui! emission's absolute
-# `::runtime_vocabulary::glue::…` paths (see the `new-core` feature).
-runtime-facade = { workspace = true, optional = true }
-runtime-vocabulary = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 swap-navigator = { workspace = true }
 stack-navigator = { workspace = true }
-# `default-features = false` + the explicit prim list (the contract
-# idea-ui documents on its own runtime-core dep): idea-ui's `table`
-# default is old-core-authored and must stay out of new-core graphs.
-# This demo renders no Table, so the old-core build is
-# behavior-identical without it (the conformance-app precedent).
-idea-ui = { path = "../../crates/ui/idea-ui", default-features = false, features = [
-    "prim-icon", "prim-image", "prim-text-input", "prim-activity",
-    "prim-portal", "prim-presence",
-] }
+idea-ui = { workspace = true }
 idea-ui-nav = { workspace = true }
 dev-server = { workspace = true, optional = true }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { workspace = true }
-
-[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
-backend-ios-mobile = { workspace = true }
-
-[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
-backend-android-mobile = { workspace = true }
-
-[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
-backend-macos = { workspace = true }
-
-[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))'.dependencies]
-backend-terminal = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Nav Showcase"

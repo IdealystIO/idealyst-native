@@ -17,18 +17,18 @@
 //! ```no_run
 //! use idea_theme::{install_theme, set_theme, ThemeTokens, TokenEntry, TokenValue};
 //!
-//! struct MyTheme { accent: runtime_core::Color }
+//! struct MyTheme { accent: String }
 //! impl ThemeTokens for MyTheme {
 //!     fn tokens(&self) -> Vec<TokenEntry> {
 //!         vec![TokenEntry {
 //!             name: "accent",
-//!             value: TokenValue::Color(self.accent.clone()),
+//!             value: TokenValue::Color(self.accent.as_str().into()),
 //!         }]
 //!     }
 //! }
 //!
-//! install_theme(MyTheme { accent: "#06f".into() });
-//! set_theme(MyTheme { accent: "#39f".into() });
+//! install_theme(MyTheme { accent: "#06f".to_string() });
+//! set_theme(MyTheme { accent: "#39f".to_string() });
 //! ```
 
 use std::any::Any;
@@ -52,11 +52,10 @@ pub trait ThemeTokens: Any {
 }
 
 /// Cloneable, identity-comparable wrapper for the stashed theme.
-/// The new core's world signals require `PartialEq` (the kernel's
-/// equality cut), which `Rc<dyn Any>` lacks; pointer identity is the
-/// honest comparison for "same theme object". Swaps go through
-/// `set_always` on both cores, so the eq impl never suppresses a
-/// re-install notification.
+/// World signals require `PartialEq` (the kernel's equality cut), which
+/// `Rc<dyn Any>` lacks; pointer identity is the honest comparison for
+/// "same theme object". Swaps go through `set_always`, so the eq impl
+/// never suppresses a re-install notification.
 #[derive(Clone)]
 pub(crate) struct ThemeSlot(pub(crate) Rc<dyn Any>);
 
@@ -66,42 +65,17 @@ impl PartialEq for ThemeSlot {
     }
 }
 
-/// Storage for the active-theme signal — the ONE per-core fork in this
-/// crate, because the state MODEL (not an API name) differs:
+/// Storage for the active-theme signal.
 ///
-/// - **Old core**: a thread-lifetime TLS singleton. Signals live in the
-///   thread-local arena forever (the documented `unscope` contract), so
-///   a TLS handle is always valid.
-/// - **New core**: signals are world-backed and worlds are transient
-///   (one per SSR request / mounted app). The handle lives in the
-///   WORLD's typed context (`provide`/`inject`), mirroring how the
-///   vocabulary's own ThemeCtx is stored; each world's first
-///   `install_theme` creates its own slot. A TLS capture of the
-///   last-installed handle exists ALONGSIDE the context, consulted only
-///   OUTSIDE `World::enter`: platform event handlers run there and the
-///   context inject would panic (the docs-shell dark-button abort).
-///   Writes through a handle whose world died are silent kernel no-ops,
-///   so the capture can go stale but never dangle.
-#[cfg(not(feature = "new-core"))]
-mod active_slot {
-    use super::ThemeSlot;
-    use runtime_core::Signal;
-    use std::cell::RefCell;
-
-    thread_local! {
-        static ACTIVE_THEME: RefCell<Option<Signal<ThemeSlot>>> = const { RefCell::new(None) };
-    }
-
-    pub(super) fn current() -> Option<Signal<ThemeSlot>> {
-        ACTIVE_THEME.with(|t| *t.borrow())
-    }
-
-    pub(super) fn store(sig: Signal<ThemeSlot>) {
-        ACTIVE_THEME.with(|t| *t.borrow_mut() = Some(sig));
-    }
-}
-
-#[cfg(feature = "new-core")]
+/// Signals are world-backed and worlds are transient (one per SSR
+/// request / mounted app). The handle lives in the WORLD's typed context
+/// (`provide`/`inject`), mirroring how the vocabulary's own ThemeCtx is
+/// stored; each world's first `install_theme` creates its own slot. A TLS
+/// capture of the last-installed handle exists ALONGSIDE the context,
+/// consulted only OUTSIDE `World::enter`: platform event handlers run
+/// there and the context inject would panic (the docs-shell dark-button
+/// abort). Writes through a handle whose world died are silent kernel
+/// no-ops, so the capture can go stale but never dangle.
 mod active_slot {
     use super::ThemeSlot;
     use runtime_core::Signal;
@@ -152,8 +126,8 @@ thread_local! {
     /// effect. That way a hot-reload or fixture teardown that re-installs
     /// the theme system doesn't leak one subscription per call. Two
     /// concurrent active-theme signals never make sense — the new install
-    /// supersedes the old one. (Dropping a stale-world subscription on the
-    /// new core is a guarded no-op — `Owned::drop` skips dead arenas.)
+    /// supersedes the old one. (Dropping a stale-world subscription is a
+    /// guarded no-op — `Owned::drop` skips dead arenas.)
     static INSTALL_THEMES_KEEPALIVE: RefCell<Option<Subscription>> = const { RefCell::new(None) };
 }
 
@@ -169,17 +143,17 @@ pub fn install_theme<T: ThemeTokens + 'static>(theme: T) {
     apply_host_surface_from_tokens(&tokens);
 }
 
-/// Store `rc` as the active theme: reuse the existing thread-local signal
-/// slot when present, otherwise create it **outside any render scope**.
+/// Store `rc` as the active theme: reuse the existing signal slot when
+/// present, otherwise create it **outside any render scope**.
 ///
-/// `ACTIVE_THEME` is a thread-lifetime singleton owned by this module's
-/// thread-local — NOT by a reactive scope. Its backing signal must therefore
-/// be created via [`runtime_core::unscope`] so the *first* caller's scope
+/// The slot is owned by [`active_slot`] — the world's typed context plus
+/// the handler-path TLS capture — NOT by a reactive scope. Its backing
+/// signal must therefore be created via [`runtime_core::unscope`] so the *first* caller's scope
 /// doesn't adopt it. The hazard, concretely: an embedded sub-app (e.g. a
 /// whiteboard editor mounted on a navigator screen) re-installs the theme
 /// while building inside its screen's transient scope. If that scope owned
-/// the signal, popping the screen would free the slot while this thread-local
-/// kept pointing at it — and the next `active_theme()` from a still-mounted
+/// the signal, popping the screen would free the slot while the stored
+/// handle kept pointing at it — and the next `active_theme()` from a still-mounted
 /// sibling (a drawer header re-tinting on the back-nav, say) would read a
 /// recycled slot and abort with "signal used after its scope was dropped".
 /// Reusing the slot on re-install also keeps a stable signal id (no
@@ -396,7 +370,6 @@ pub fn active_font_family() -> runtime_core::FontFamily {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::Signal;
 
     #[derive(Clone)]
     struct TestTheme {
@@ -459,15 +432,14 @@ mod tests {
         }
     }
 
-    /// The docs-shell dark-theme-button crash (new core only): the whole
-    /// swap surface — `set_theme` → slot `set_always` + token/host-surface
-    /// forwarding — used to be ambient-only (`inject` from the world
-    /// context), and platform event handlers run OUTSIDE `World::enter`,
-    /// so the first theme swap aborted "signal()/effect() called outside
+    /// The docs-shell dark-theme-button crash: the whole swap surface —
+    /// `set_theme` → slot `set_always` + token/host-surface forwarding —
+    /// used to be ambient-only (`inject` from the world context), and
+    /// platform event handlers run OUTSIDE `World::enter`, so the first
+    /// theme swap aborted "signal()/effect() called outside
     /// World::enter". The swap must instead ride the install-time
     /// captures (slot handle + vocabulary ThemeCtx), stage, and commit
     /// on the owning world's next flush.
-    #[cfg(feature = "new-core")]
     #[test]
     fn regression_set_theme_from_handler_outside_enter_commits_on_flush() {
         let world = runtime_core::__World::new();

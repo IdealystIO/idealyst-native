@@ -1,9 +1,9 @@
 # `svg`
 
 An `Svg` primitive for the idealyst framework — render SVG markup
-inside your native UI tree. Built on the framework's `Element::External`
+inside your native UI tree. A third-party scene primitive
 extension mechanism, so it's not part of runtime-core: an app opts in by
-depending on this crate and calling `svg::register(&mut backend)` once
+depending on this crate and passing `svg::register` to the boot entry once
 at bootstrap.
 
 Single-crate, `cfg`-gated — one crate ships every backend, selected at
@@ -16,16 +16,16 @@ use svg::prelude::*;
 use runtime_core::{signal, Ref};
 use std::rc::Rc;
 
-// App bootstrap — one line per third-party SDK:
-let mut backend = WebBackend::new("#app");
-svg::register(&mut backend);
+// App bootstrap — one line per third-party SDK. `register` IS the boot
+// registration seam (it takes the scene `Registry`, not the backend):
+// backend_web::newcore::start_in("#app", svg::register, app);
 
 // Inside a `ui!` block. `Svg` is an external primitive, so it's
 // interpolated as an expression:
 let markup = signal(LOGO_SVG.to_string());
 let r: Ref<SvgHandle> = Ref::new();
 ui! {
-    View {
+    view {
         { svg::Svg(SvgProps {
             markup: svg::markup(move || markup.get()),
             on_load: Some(Rc::new(|| log::info!("svg parsed"))),
@@ -48,7 +48,7 @@ output. The *mechanism* differs per platform:
 | Web (wasm32) | `innerHTML` into a wrapper `<div>` — the browser is the SVG renderer |
 | iOS | `usvg` parse → replay into a `UIView` subclass's `drawRect:` `CGContext` (resolution-independent, no raster step) |
 | Android | `usvg` parse → walk into a `Picture` → `PictureDrawable` on an `ImageView` (scales with bounds, no raster step) |
-| Other (wgpu desktop, terminal, …) | the framework's `External` "not supported" placeholder |
+| Other (SSR, wgpu desktop, terminal, …) | the frozen External "not supported" placeholder |
 
 The native backends re-draw the parsed vector tree at the view's
 current bounds every frame, so output stays crisp through resize,

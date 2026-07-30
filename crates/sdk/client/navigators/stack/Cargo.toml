@@ -6,88 +6,55 @@ license.workspace = true
 
 # Stack navigator on the OUTLET model — the push/pop sibling of swap-navigator.
 # Depth-changing (Push/Pop/Replace/Reset); the visible screen is the top of a
-# back-stack, lower screens stay mounted so pop-back restores their state.
-# Chrome (a header) is AUTHOR LAYOUT via `.layout(|nav| …)` wrapping the single
-# outlet — the same StackHeader idea-ui-nav ships, rendered identically on
-# every backend (native push-surface + bar-hidden is a later per-backend step).
+# back-stack, lower screens follow `StackRetention` so pop-back can restore
+# their state. Chrome (a header) is AUTHOR LAYOUT via `.layout(|nav| …)`
+# wrapping the single outlet — the same StackHeader idea-ui-nav ships,
+# rendered identically on every backend.
 #
-# Built alongside the legacy `stack-navigator` (which keeps its native
-# UINavigationController chrome); this is the outlet-model replacement.
+# The authored surface lowers to the vocabulary's `stack_navigator()`
+# builder; the RUNTIME is the vocabulary's own stack handler, installed on
+# every host by `register_builtins`. So there is no per-backend handler to
+# register (hence no per-backend dependency here) and no registration call
+# for an app to forget — `stack_navigator::register` survives only as a
+# documented no-op for historical bootstrap code.
+#
+# A NATIVE PUSH SURFACE (real UINavigationController / RustNavigator under
+# the outlet-model handler) is not implemented: that seam lives in the
+# vocabulary navigator handler + the per-backend hosts, not here. The
+# backend-neutral outlet handler runs on every platform meanwhile.
+description = "Stack navigator SDK — push/pop depth with author chrome around one outlet."
 
-[features]
-# Runtime-v2 defaults flip: the new-core leg is the default surface;
-# the old-core leg is the opt-in (`--no-default-features` — in-repo
-# consumers ride the workspace dep spec, which pins defaults off and
-# selects a core explicitly per graph).
-default = ["new-core"]
-# Old-core marker for uniform `--no-default-features --features
-# old-core` invocations (the old-core deps are unconditional).
-old-core = []
-runtime-server = ["dep:dev-server", "dep:wire"]
-# Compile-checked usage recipes for the docs/MCP catalog. Off in every
-# production build (the `recipe!` macro then expands to nothing). Must be
-# THIS crate's own feature — the `#[cfg(feature = "catalog")]` gate on
-# `src/recipes.rs` only sees this crate's features, not runtime-core's.
-catalog = ["runtime-core/catalog"]
-# Idea-lite migration (P6): re-express the SAME authored surface over
-# the vocabulary's stack_navigator builder + StackNav world context.
-# Default-off and MUTUALLY EXCLUSIVE with the old-core surface — see the
-# same feature in swap-navigator.
-new-core = ["dep:runtime-vocabulary"]
+# No features. The MCP catalog's stack-navigator RECIPE is static data in
+# `runtime_shared::recipes` (compile-checked against this crate's live
+# surface by `crates/dev/newcore-app/tests/recipes_compile.rs`), so this
+# crate's own sources emit nothing into the catalog and need no `catalog`
+# switch.
 
 [dependencies]
-# New-core surface (feature `new-core`).
-runtime-vocabulary = { workspace = true, optional = true }
-# Forward the navigator gate: depending on this SDK re-enables the
-# walker/backend navigator machinery even under default-features = false.
-runtime-core = { workspace = true, features = ["prim-navigator"] }
-inventory = "0.3"
-dev-server = { workspace = true, optional = true }
-wire = { workspace = true, optional = true }
+# The builders + glue re-exports (Element/Ref/Signal/inject) + prims
+# (NavHandle/StackNav/ScreenChrome/Screen/StackRetention) the authored
+# surface lowers to.
+runtime-vocabulary = { workspace = true }
 
 [dev-dependencies]
-# New-core suite (tests/newcore.rs, `--features new-core`): the shared
-# host-mock recording substrate drives the same-source authored surface
-# end-to-end.
+# `tests/navigator.rs` + `tests/stack_local.rs`: the shared host-mock
+# recording substrate drives the authored surface end-to-end.
 runtime-scene = { workspace = true }
 runtime-world = { workspace = true }
+runtime-shared = { workspace = true }
 host-mock = { workspace = true }
 # `tests/ssr.rs`: render-at-path + SSG crawl for the outlet-model stack.
+#
+# COORDINATION (runtime-v2 deletion wave): `` is
+# still required because backend-ssr's `newcore` render path is
+# feature-gated. Drop the forward once it is unconditional.
 backend-ssr = { workspace = true }
 
-# Native-only: mock-backend transitively pulls dev-server/wire, whose
-# getrandom doesn't build for bare wasm32 — and the wasm test target only
-# needs backend-web/backend-ssr (tests/hydration_web.rs).
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-mock-backend = { workspace = true }
-# `tests/recipes.rs`: asserts the `stack_two_screens` recipe registers in the
-# catalog with the extension-trait import line intact (feature `catalog`).
-mcp-catalog = { workspace = true }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { workspace = true, features = ["prim-navigator"] }
-
-# Browser-run hydration tests (`tests/hydration_web.rs`): SSR HTML is
-# rendered in-test, injected, and hydrated by the real web backend.
+# Browser-run hydration test (`tests/hydration_web.rs`): SSR HTML is
+# rendered in-test, injected, and adopted by the real web backend's
+# `newcore::hydrate_in`.
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 backend-web = { workspace = true, features = ["hydrate"] }
-backend-ssr = { workspace = true }
 wasm-bindgen-test = "0.3"
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = ["History"] }
-
-[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
-backend-macos = { workspace = true }
-
-[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
-backend-ios-mobile = { workspace = true }
-# Native push surface (src/ios.rs): the shared UINavigationController
-# engine, bar hidden, author StackHeader chrome.
-ios-navigator-helpers = { workspace = true }
-
-[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
-backend-android-mobile = { workspace = true }
-# Native push surface (src/android.rs): the shared Kotlin RustNavigator
-# engine, Toolbar hidden, author StackHeader chrome.
-android-navigator-helpers = { workspace = true }
-jni = "0.21"

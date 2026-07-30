@@ -15,14 +15,6 @@
 //! Every chrome type is author layout wrapping an outlet: the drawer panel, the
 //! tab bar, the stack headers, and the wizard's step chrome are all just views.
 
-// idea-lite core migration (P6 SDK retarget): under `new-core` this alias
-// shadows the extern-prelude `runtime-core` for the WHOLE crate, so the
-// same source compiles against `runtime_vocabulary::glue`'s mirrors of
-// the old author surface. The default build has no alias and is
-// byte-identical old-core (the idea-ui-nav pattern).
-#[cfg(feature = "new-core")]
-extern crate runtime_facade as runtime_core;
-
 use idea_ui::{install_idea_theme, light_theme, Typography};
 use idea_ui_nav::{Drawer, StackHeader, TabBar, TabItem};
 // `SwapContext`/`HeaderButton` come from the SDK preludes — the
@@ -38,25 +30,26 @@ use std::rc::Rc;
 use swap_navigator::prelude::SwapContext;
 use swap_navigator::{SwapBuilder, SwapHandle, SwapNavigator};
 
-/// Navigators self-register via `inventory` (force-linked, so it works in dev +
-/// release). Hook kept for the CLI bootstrap.
-#[cfg(not(feature = "new-core"))]
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam the CLI-generated wrappers invoke after
+/// `runtime_vocabulary::register_builtins`. The swap + stack navigators
+/// ARE builtins on the scene registry (one backend-neutral handler
+/// each), so this demo has nothing extra to register — the seam is kept
+/// because every wrapper calls it.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
-/// New-core builds boot via the backends' `newcore::start`, where
-/// `register_builtins` covers the navigators — the hook keeps its shape
-/// without the old-core `Backend` bound (which has no glue mirror).
-#[cfg(feature = "new-core")]
-pub fn register_extensions<B>(_backend: &mut B) {}
-
-/// Runtime-server (sidecar) recorder registrations — the CLI-generated
-/// sidecar wrapper calls this so the outlet-model navigators run
-/// host-side in `idealyst dev` non-local mode (their screen swaps ship
-/// as plain node ops; see the SDKs' `recording` modules).
+/// Runtime-server (sidecar) recorder seam — the recorder's scene
+/// registry gets the navigators from `register_builtins` too, so there
+/// is nothing to register host-side either.
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {
-    swap_navigator::recording::register(backend);
-    stack_navigator::recording::register(backend);
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
 }
 
 // ---------------------------------------------------------------------------

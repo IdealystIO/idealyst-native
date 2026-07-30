@@ -25,7 +25,11 @@ license.workspace = true
 [dependencies]
 # The stream currency (input + output) and the reactive value handles.
 media-stream = { workspace = true }
-runtime-core = { workspace = true }
+# Substrate only: the host animation-frame registry (`raf_loop` / `RafLoop`)
+# drives the per-frame composite. No author surface here (no `ui!`, no
+# `Element`, no signals), so this depends on `runtime-shared` directly rather
+# than through the `runtime_core` facade.
+runtime-shared = { workspace = true }
 # The layer/scene model + the static-image watermark source + `Fit`. `decode`
 # pulls the `image` crate so `.watermark_image(png_or_jpeg_bytes)` can decode an
 # asset to RGBA (pure-Rust, wasm-safe).

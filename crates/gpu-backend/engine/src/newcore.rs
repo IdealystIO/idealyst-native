@@ -73,7 +73,7 @@
 //! entry apps call; the `headless::Screenshotter` path can drive the
 //! same `start` against its own backend for offscreen captures.
 //!
-//! Sequence (mirrors `runtime_core::mount`'s ordering where they
+//! Sequence (mirrors `runtime_shared::mount`'s ordering where they
 //! overlap):
 //!
 //! 1. Install the default monotonic time source (the analogue of web
@@ -85,7 +85,7 @@
 //!    later-phase migration item.
 //! 2. `Registry` (`register_builtins` + the `register` seam) + `World` +
 //!    `world.enter(realize)`.
-//! 3. `runtime_core::scheduling::drain_buffered_microtasks()` — a no-op
+//! 3. `runtime_shared::scheduling::drain_buffered_microtasks()` — a no-op
 //!    under the winit scheduler (which has no buffering window; deferred
 //!    build microtasks arrive as 0 ms timers on the event loop, same as
 //!    the old GPU boot), but load-bearing under the **headless buffering
@@ -122,7 +122,7 @@
 //!    lifecycle, virtualizer row mount/release/measure, state setters,
 //!    and the app-level key handler. The wrapper calls the author fn,
 //!    then [`schedule_flush`] — one deduped
-//!    `runtime_core::scheduling::schedule_microtask` → `world.flush()`.
+//!    `runtime_shared::scheduling::schedule_microtask` → `world.flush()`.
 //!    The interaction `Host` (`host.rs`) dispatches *these wrapped
 //!    closures* from whatever surface invokes them — winit
 //!    `WindowEvent`s, the on-screen keyboard router, momentum-scroll
@@ -157,7 +157,7 @@
 //!   not exist under a new-core mount — native nav-surface parity is
 //!   the same P5/P6 seam documented for iOS/Android.
 //! - Futures: no async executor is installed on this host today
-//!   (`runtime_core::driver::spawn` has no wgpu executor); when one is
+//!   (`runtime_shared::driver::spawn` has no wgpu executor); when one is
 //!   added it must fire the dispatch hook per poll like web's.
 //!
 //! Everything funnels through [`schedule_flush`]/`flush_now`, which
@@ -168,23 +168,19 @@ use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use runtime_core::accessibility::{AccessibilityProps, AccessibilityTree, LiveRegionPriority, Role};
-use runtime_core::animation::AnimProp;
-use runtime_core::assets::{
-    AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
-};
-use runtime_core::breakpoint::Breakpoint;
-use runtime_core::introspect::NativeNode;
-use runtime_core::primitives;
-use runtime_core::primitives::portal::ViewportRect;
-use runtime_core::styled_text::TextRun;
-use runtime_core::{
-    Action, Backend, BackendBatch, Color, ColorScheme, Easing, FileDropHandler, FontFamily,
-    HoverHandler, ImageErrorHandler, ImageLoadHandler, PageMetadata, Platform, SafeAreaSides,
-    Screenshot, StateBits, StyleApplication, StyleRules, TokenEntry, Tokenized, TouchHandler,
-    TouchId, VirtualizerCallbacks, WheelHandler,
-};
 use runtime_scene::{realize, Element, Host, Realized, Registry};
+use runtime_shared::accessibility::{
+    AccessibilityProps, AccessibilityTree, LiveRegionPriority, Role,
+};
+use runtime_shared::animation::AnimProp;
+use runtime_shared::assets::{AssetId, AssetSource, AssetTag};
+use runtime_shared::primitives;
+use runtime_shared::primitives::portal::ViewportRect;
+use runtime_shared::styled_text::TextRun;
+use runtime_shared::{
+    Action, Color, ColorScheme, Easing, Platform, SafeAreaSides, StateBits, StyleRules,
+    TouchHandler, VirtualizerCallbacks,
+};
 use runtime_vocabulary::caps;
 use runtime_world::World;
 
@@ -310,8 +306,8 @@ pub fn start(
     // install wins. The platform identity comes from the active skin
     // (`NativeSkin` reports the real host OS; sim skins report their
     // pretend platform) — same value the old boot would install.
-    let platform = backend.borrow().platform();
-    runtime_core::time::install_default_time_source(platform);
+    let platform = backend.borrow().platform_impl();
+    runtime_shared::time::install_default_time_source(platform);
 
     let mut registry: Registry<WgpuBackend> = Registry::new();
     runtime_vocabulary::register_builtins(&mut registry);
@@ -340,7 +336,7 @@ pub fn start(
     // so `enter_mounted_world`'s stored-world route can't cover it; the
     // ambient enter does. On the winit scheduler the same fill runs
     // post-`start` (0 ms timer), where the stored world covers it.
-    world.enter(runtime_core::scheduling::drain_buffered_microtasks);
+    world.enter(runtime_shared::scheduling::drain_buffered_microtasks);
 
     // Single-root contract, matching the old-core mount: `finish`
     // records the root for the renderer's frame walk and requests a
@@ -353,7 +349,7 @@ pub fn start(
              top-level node (got {n}) — wrap fragment/multi-root trees in a view"
         ),
     };
-    Backend::finish(&mut *backend.borrow_mut(), root);
+    WgpuBackend::finish_impl(&mut *backend.borrow_mut(), root);
 
     // Commit anything staged during mount before the first paint.
     world.flush();
@@ -439,7 +435,7 @@ pub fn start_in_world(
     // real-microtask schedulers like the web's; load-bearing under a
     // buffering test/headless scheduler). Entered for the same
     // creation-side reasons.
-    world.enter(runtime_core::scheduling::drain_buffered_microtasks);
+    world.enter(runtime_shared::scheduling::drain_buffered_microtasks);
 
     let mut roots = realized.collect_nodes();
     let root = match roots.len() {
@@ -449,7 +445,7 @@ pub fn start_in_world(
              one top-level node (got {n}) — wrap fragment/multi-root trees in a view"
         ),
     };
-    Backend::finish(&mut *backend.borrow_mut(), root);
+    WgpuBackend::finish_impl(&mut *backend.borrow_mut(), root);
 
     // Commit anything staged during mount before the first paint. The
     // shared world can't be mid-flush here: embeds mount from async
@@ -499,7 +495,7 @@ pub fn schedule_flush() {
     if FLUSH_QUEUED.with(|q| q.replace(true)) {
         return;
     }
-    runtime_core::scheduling::schedule_microtask(|| {
+    runtime_shared::scheduling::schedule_microtask(|| {
         FLUSH_QUEUED.with(|q| q.set(false));
         flush_now();
     });
@@ -586,18 +582,18 @@ thread_local! {
     /// The mounted world's viewport signal (`Copy` handle). `None`
     /// outside a windowed new-core boot, so `Host::set_viewport` costs
     /// one TLS read and nothing else on old-core and embedded paths.
-    static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_core::ViewportSize>>> =
+    static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_shared::ViewportSize>>> =
         const { Cell::new(None) };
 }
 
-fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_core::ViewportSize>>) {
+fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_shared::ViewportSize>>) {
     VIEWPORT_SINK.with(|s| s.set(sig));
 }
 
 /// Forward one logical-viewport report into the mounted world's
 /// viewport ctx (no-op before [`start`] / after teardown / on embedded
 /// boots). Called by [`crate::Host::set_viewport`].
-pub(crate) fn forward_viewport(size: runtime_core::ViewportSize) {
+pub(crate) fn forward_viewport(size: runtime_shared::ViewportSize) {
     let Some(sig) = VIEWPORT_SINK.with(|s| s.get()) else {
         return;
     };
@@ -662,31 +658,42 @@ impl Host for WgpuBackend {
     type Node = WgpuNode;
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
-        <WgpuBackend as Backend>::insert(self, parent, child)
-    }
-
-    fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
-        <WgpuBackend as Backend>::insert_many(self, parent, children)
+        WgpuBackend::insert_impl(self, parent, child)
     }
 
     fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
-        <WgpuBackend as Backend>::insert_at(self, parent, child, index)
+        // Runtime v2: `Host::insert_at` is REQUIRED, and this backend never
+        // overrode the old `Backend::insert_at`, whose default appended and
+        // ignored the index. Reproduced verbatim so behavior is unchanged —
+        // legitimate here because `supports_splice` is `false`, so the scene
+        // drivers only ever mount anchored (append-only) and no caller can
+        // observe the index. See docs/runtime-v2-deletion-baseline.md §2.2.
+        let _ = index;
+        WgpuBackend::insert_impl(self, parent, child)
     }
 
     fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
-        <WgpuBackend as Backend>::remove_child(self, parent, child)
+        // Runtime v2: required on `Host`; the old `Backend::remove_child`
+        // default was a no-op, and the framework never calls it while
+        // `supports_splice` is `false`. Verbatim default (§2.2).
+        let _ = (parent, child);
     }
 
     fn clear_children(&mut self, node: &Self::Node) {
-        <WgpuBackend as Backend>::clear_children(self, node)
+        WgpuBackend::clear_children_impl(self, node)
     }
 
     fn create_anchor(&mut self) -> Self::Node {
-        <WgpuBackend as Backend>::create_reactive_anchor(self)
+        WgpuBackend::create_reactive_anchor_impl(self)
     }
 
     fn supports_splice(&self) -> bool {
-        <WgpuBackend as Backend>::supports_child_splice(self)
+        // Verbatim value of the old `Backend::supports_child_splice`
+        // default this backend relied on: anchored (rebuild) regions only.
+        // Splicing needs `remove_child` + `insert_at`, which the wgpu scene
+        // tree does not implement — pinned by
+        // `tests/newcore.rs::newcore_host_is_anchored`.
+        false
     }
 }
 
@@ -696,60 +703,24 @@ impl Host for WgpuBackend {
 
 impl caps::AppEnvOps for WgpuBackend {
     fn color_scheme(&self) -> ColorScheme {
-        <WgpuBackend as Backend>::color_scheme(self)
+        WgpuBackend::color_scheme_impl(self)
     }
 
     fn platform(&self) -> Platform {
-        <WgpuBackend as Backend>::platform(self)
-    }
-
-    fn url_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
-        <WgpuBackend as Backend>::url_opener(self)
-    }
-
-    fn fullscreen_setter(&self) -> Option<Rc<dyn Fn(bool)>> {
-        <WgpuBackend as Backend>::fullscreen_setter(self)
-    }
-
-    fn set_page_metadata(&mut self, meta: &PageMetadata) {
-        <WgpuBackend as Backend>::set_page_metadata(self, meta)
-    }
-
-    fn set_app_background(&mut self, color: &Tokenized<Color>) {
-        <WgpuBackend as Backend>::set_app_background(self, color)
-    }
-
-    fn set_scrollbar_theme(&mut self, thumb: &Tokenized<Color>, track: &Tokenized<Color>) {
-        <WgpuBackend as Backend>::set_scrollbar_theme(self, thumb, track)
+        WgpuBackend::platform_impl(self)
     }
 
     fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
         // Dispatch-site glue: app-level key handlers run author code
         // (Host::key routes here before the focused-input path).
         let handler = handler.map(flushing_key);
-        <WgpuBackend as Backend>::set_app_key_handler(self, handler)
+        WgpuBackend::set_app_key_handler_impl(self, handler)
     }
 }
 
 impl caps::LifecycleOps for WgpuBackend {
     fn finish(&mut self, root: Self::Node) {
-        <WgpuBackend as Backend>::finish(self, root)
-    }
-
-    fn run_layout(&mut self) {
-        <WgpuBackend as Backend>::run_layout(self)
-    }
-
-    fn schedule_layout_pass() {
-        <WgpuBackend as Backend>::schedule_layout_pass()
-    }
-
-    fn is_hydrating(&self) -> bool {
-        <WgpuBackend as Backend>::is_hydrating(self)
-    }
-
-    fn renders_lazy_chunks(&self) -> bool {
-        <WgpuBackend as Backend>::renders_lazy_chunks(self)
+        WgpuBackend::finish_impl(self, root)
     }
 }
 
@@ -759,11 +730,11 @@ impl caps::LifecycleOps for WgpuBackend {
 
 impl caps::ViewOps for WgpuBackend {
     fn create_view(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-        <WgpuBackend as Backend>::create_view(self, a11y)
+        WgpuBackend::create_view_impl(self, a11y)
     }
 
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
-        <WgpuBackend as Backend>::make_view_handle(self, node)
+    fn make_view_handle(&self, node: &Self::Node) -> runtime_shared::ViewHandle {
+        WgpuBackend::make_view_handle_impl(self, node)
     }
 }
 
@@ -778,53 +749,17 @@ impl caps::InputOps for WgpuBackend {
                 response
             })
         };
-        <WgpuBackend as Backend>::install_touch_handler(self, node, handler)
-    }
-
-    fn claim_touch(&mut self, node: &Self::Node, touch_id: TouchId) {
-        <WgpuBackend as Backend>::claim_touch(self, node, touch_id)
-    }
-
-    fn install_wheel_handler(&mut self, node: &Self::Node, handler: WheelHandler) {
-        let handler: WheelHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                let response = f(ev);
-                schedule_flush();
-                response
-            })
-        };
-        <WgpuBackend as Backend>::install_wheel_handler(self, node, handler)
-    }
-
-    fn install_hover_handler(&mut self, node: &Self::Node, handler: HoverHandler) {
-        <WgpuBackend as Backend>::install_hover_handler(self, node, flushing1(handler))
-    }
-
-    fn mark_preserves_focus(&mut self, node: &Self::Node) {
-        <WgpuBackend as Backend>::mark_preserves_focus(self, node)
-    }
-
-    fn install_file_drop_handler(&mut self, node: &Self::Node, handler: FileDropHandler) {
-        let handler: FileDropHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                let response = f(ev);
-                schedule_flush();
-                response
-            })
-        };
-        <WgpuBackend as Backend>::install_file_drop_handler(self, node, handler)
+        WgpuBackend::install_touch_handler_impl(self, node, handler)
     }
 }
 
 impl caps::PressableOps for WgpuBackend {
-    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> Self::Node {
-        <WgpuBackend as Backend>::create_pressable(self, flushing0(on_click), a11y)
-    }
-
-    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_core::PressableHandle {
-        <WgpuBackend as Backend>::make_pressable_handle(self, node)
+    fn create_pressable(
+        &mut self,
+        on_click: Rc<dyn Fn()>,
+        a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        WgpuBackend::create_pressable_impl(self, flushing0(on_click), a11y)
     }
 }
 
@@ -834,65 +769,23 @@ impl caps::PressableOps for WgpuBackend {
 
 impl caps::TextOps for WgpuBackend {
     fn create_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
-        <WgpuBackend as Backend>::create_text(self, content, a11y)
+        WgpuBackend::create_text_impl(self, content, a11y)
     }
 
     fn create_styled_text(&mut self, runs: &[TextRun], a11y: &AccessibilityProps) -> Self::Node {
-        <WgpuBackend as Backend>::create_styled_text(self, runs, a11y)
+        WgpuBackend::create_styled_text_impl(self, runs, a11y)
     }
 
     fn update_styled_text(&mut self, node: &Self::Node, runs: &[TextRun]) {
-        <WgpuBackend as Backend>::update_styled_text(self, node, runs)
+        WgpuBackend::update_styled_text_impl(self, node, runs)
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
-        <WgpuBackend as Backend>::update_text(self, node, content)
+        WgpuBackend::update_text_impl(self, node, content)
     }
 
-    fn create_text_with_id(
-        &mut self,
-        content: &str,
-        a11y: &AccessibilityProps,
-    ) -> Option<(Self::Node, u32)> {
-        <WgpuBackend as Backend>::create_text_with_id(self, content, a11y)
-    }
-
-    fn update_text_by_id(&mut self, id: u32, content: String) {
-        <WgpuBackend as Backend>::update_text_by_id(self, id, content)
-    }
-
-    fn release_text_id(&mut self, id: u32) {
-        <WgpuBackend as Backend>::release_text_id(self, id)
-    }
-
-    fn supports_js_text_bindings(&self) -> bool {
-        <WgpuBackend as Backend>::supports_js_text_bindings(self)
-    }
-
-    fn register_reactive_text_binding(
-        &mut self,
-        text_id: u32,
-        signal_ids: &[u64],
-        template_parts: &[&str],
-        initial_values: &[&str],
-        stringifiers: &[Rc<dyn Fn() -> String>],
-    ) {
-        <WgpuBackend as Backend>::register_reactive_text_binding(
-            self,
-            text_id,
-            signal_ids,
-            template_parts,
-            initial_values,
-            stringifiers,
-        )
-    }
-
-    fn release_reactive_text_binding(&mut self, text_id: u32) {
-        <WgpuBackend as Backend>::release_reactive_text_binding(self, text_id)
-    }
-
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
-        <WgpuBackend as Backend>::make_text_handle(self, node)
+    fn make_text_handle(&self, node: &Self::Node) -> runtime_shared::TextHandle {
+        WgpuBackend::make_text_handle_impl(self, node)
     }
 }
 
@@ -914,15 +807,7 @@ impl caps::ButtonOps for WgpuBackend {
             output: on_click.output,
             fire: flushing0(on_click.fire.clone()),
         };
-        <WgpuBackend as Backend>::create_button(self, label, &on_click, leading_icon, trailing_icon, a11y)
-    }
-
-    fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-        <WgpuBackend as Backend>::update_button_label(self, node, label)
-    }
-
-    fn make_button_handle(&self, node: &Self::Node) -> runtime_core::ButtonHandle {
-        <WgpuBackend as Backend>::make_button_handle(self, node)
+        WgpuBackend::create_button_impl(self, label, &on_click, leading_icon, trailing_icon, a11y)
     }
 }
 
@@ -931,35 +816,17 @@ impl caps::ButtonOps for WgpuBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::ImageOps for WgpuBackend {
-    fn create_image(&mut self, src: &str, alt: Option<&str>, a11y: &AccessibilityProps) -> Self::Node {
-        <WgpuBackend as Backend>::create_image(self, src, alt, a11y)
+    fn create_image(
+        &mut self,
+        src: &str,
+        alt: Option<&str>,
+        a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        WgpuBackend::create_image_impl(self, src, alt, a11y)
     }
 
     fn update_image_src(&mut self, node: &Self::Node, src: &str) {
-        <WgpuBackend as Backend>::update_image_src(self, node, src)
-    }
-
-    fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
-        <WgpuBackend as Backend>::update_image_alt(self, node, alt)
-    }
-
-    fn install_image_load_handler(&mut self, node: &Self::Node, handler: ImageLoadHandler) {
-        let handler: ImageLoadHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                f(ev);
-                schedule_flush();
-            })
-        };
-        <WgpuBackend as Backend>::install_image_load_handler(self, node, handler)
-    }
-
-    fn install_image_error_handler(&mut self, node: &Self::Node, handler: ImageErrorHandler) {
-        <WgpuBackend as Backend>::install_image_error_handler(self, node, flushing0(handler))
-    }
-
-    fn make_image_handle(&self, node: &Self::Node) -> primitives::image::ImageHandle {
-        <WgpuBackend as Backend>::make_image_handle(self, node)
+        WgpuBackend::update_image_src_impl(self, node, src)
     }
 }
 
@@ -970,19 +837,15 @@ impl caps::IconOps for WgpuBackend {
         color: Option<&Color>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WgpuBackend as Backend>::create_icon(self, data, color, a11y)
+        WgpuBackend::create_icon_impl(self, data, color, a11y)
     }
 
     fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
-        <WgpuBackend as Backend>::update_icon_color(self, node, color)
-    }
-
-    fn update_icon_data(&mut self, node: &Self::Node, data: &primitives::icon::IconData) {
-        <WgpuBackend as Backend>::update_icon_data(self, node, data)
+        WgpuBackend::update_icon_color_impl(self, node, color)
     }
 
     fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
-        <WgpuBackend as Backend>::update_icon_stroke(self, node, progress)
+        WgpuBackend::update_icon_stroke_impl(self, node, progress)
     }
 
     fn animate_icon_stroke(
@@ -995,7 +858,7 @@ impl caps::IconOps for WgpuBackend {
         infinite: bool,
         autoreverses: bool,
     ) {
-        <WgpuBackend as Backend>::animate_icon_stroke(
+        WgpuBackend::animate_icon_stroke_impl(
             self,
             node,
             from,
@@ -1005,10 +868,6 @@ impl caps::IconOps for WgpuBackend {
             infinite,
             autoreverses,
         )
-    }
-
-    fn make_icon_handle(&self, node: &Self::Node) -> primitives::icon::IconHandle {
-        <WgpuBackend as Backend>::make_icon_handle(self, node)
     }
 }
 
@@ -1022,15 +881,7 @@ impl caps::LinkOps for WgpuBackend {
         // (stages nav-queue tick signals on the new core).
         let mut config = config;
         config.on_activate = flushing0(config.on_activate.clone());
-        <WgpuBackend as Backend>::create_link(self, config, a11y)
-    }
-
-    fn update_link_url(&mut self, node: &Self::Node, url: &str) {
-        <WgpuBackend as Backend>::update_link_url(self, node, url)
-    }
-
-    fn make_link_handle(&self, node: &Self::Node) -> primitives::link::LinkHandle {
-        <WgpuBackend as Backend>::make_link_handle(self, node)
+        WgpuBackend::create_link_impl(self, config, a11y)
     }
 }
 
@@ -1049,7 +900,7 @@ impl caps::TextInputOps for WgpuBackend {
         secure: bool,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WgpuBackend as Backend>::create_text_input(
+        WgpuBackend::create_text_input_impl(
             self,
             initial_value,
             placeholder,
@@ -1068,19 +919,11 @@ impl caps::TextInputOps for WgpuBackend {
     }
 
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
-        <WgpuBackend as Backend>::update_text_input_value(self, node, value)
+        WgpuBackend::update_text_input_value_impl(self, node, value)
     }
 
     fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
-        <WgpuBackend as Backend>::update_text_input_secure(self, node, secure)
-    }
-
-    fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
-        <WgpuBackend as Backend>::set_text_input_focus_handler(self, node, flushing1(handler))
-    }
-
-    fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
-        <WgpuBackend as Backend>::update_text_input_placeholder(self, node, placeholder)
+        WgpuBackend::update_text_input_secure_impl(self, node, secure)
     }
 
     fn create_text_area(
@@ -1094,7 +937,7 @@ impl caps::TextInputOps for WgpuBackend {
         on_key_down: Option<primitives::key::KeyDownHandler>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WgpuBackend as Backend>::create_text_area(
+        WgpuBackend::create_text_area_impl(
             self,
             initial_value,
             placeholder,
@@ -1108,15 +951,7 @@ impl caps::TextInputOps for WgpuBackend {
     }
 
     fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
-        <WgpuBackend as Backend>::update_text_area_value(self, node, value)
-    }
-
-    fn make_text_input_handle(&self, node: &Self::Node) -> primitives::text_input::TextInputHandle {
-        <WgpuBackend as Backend>::make_text_input_handle(self, node)
-    }
-
-    fn make_text_area_handle(&self, node: &Self::Node) -> primitives::text_area::TextAreaHandle {
-        <WgpuBackend as Backend>::make_text_area_handle(self, node)
+        WgpuBackend::update_text_area_value_impl(self, node, value)
     }
 }
 
@@ -1127,15 +962,11 @@ impl caps::ToggleOps for WgpuBackend {
         on_change: Rc<dyn Fn(bool)>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WgpuBackend as Backend>::create_toggle(self, initial_value, flushing1(on_change), a11y)
+        WgpuBackend::create_toggle_impl(self, initial_value, flushing1(on_change), a11y)
     }
 
     fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
-        <WgpuBackend as Backend>::update_toggle_value(self, node, value)
-    }
-
-    fn make_toggle_handle(&self, node: &Self::Node) -> primitives::toggle::ToggleHandle {
-        <WgpuBackend as Backend>::make_toggle_handle(self, node)
+        WgpuBackend::update_toggle_value_impl(self, node, value)
     }
 }
 
@@ -1149,7 +980,7 @@ impl caps::SliderOps for WgpuBackend {
         on_change: Rc<dyn Fn(f32)>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WgpuBackend as Backend>::create_slider(
+        WgpuBackend::create_slider_impl(
             self,
             initial_value,
             min,
@@ -1161,11 +992,7 @@ impl caps::SliderOps for WgpuBackend {
     }
 
     fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
-        <WgpuBackend as Backend>::update_slider_value(self, node, value)
-    }
-
-    fn make_slider_handle(&self, node: &Self::Node) -> primitives::slider::SliderHandle {
-        <WgpuBackend as Backend>::make_slider_handle(self, node)
+        WgpuBackend::update_slider_value_impl(self, node, value)
     }
 }
 
@@ -1176,22 +1003,7 @@ impl caps::ActivityIndicatorOps for WgpuBackend {
         color: Option<&Color>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WgpuBackend as Backend>::create_activity_indicator(self, size, color, a11y)
-    }
-
-    fn update_activity_indicator_size(
-        &mut self,
-        node: &Self::Node,
-        size: primitives::activity_indicator::ActivityIndicatorSize,
-    ) {
-        <WgpuBackend as Backend>::update_activity_indicator_size(self, node, size)
-    }
-
-    fn make_activity_indicator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> primitives::activity_indicator::ActivityIndicatorHandle {
-        <WgpuBackend as Backend>::make_activity_indicator_handle(self, node)
+        WgpuBackend::create_activity_indicator_impl(self, size, color, a11y)
     }
 }
 
@@ -1215,29 +1027,17 @@ impl caps::ScrollOps for WgpuBackend {
                 schedule_flush();
             })
         });
-        <WgpuBackend as Backend>::create_scroll_view(self, horizontal, on_scroll, a11y)
-    }
-
-    fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
-        <WgpuBackend as Backend>::node_scroll(self, node)
-    }
-
-    fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
-        <WgpuBackend as Backend>::set_node_scroll(self, node, x, y)
-    }
-
-    fn make_scroll_view_handle(&self, node: &Self::Node) -> primitives::scroll_view::ScrollViewHandle {
-        <WgpuBackend as Backend>::make_scroll_view_handle(self, node)
+        WgpuBackend::create_scroll_view_impl(self, horizontal, on_scroll, a11y)
     }
 }
 
 impl caps::SafeAreaOps for WgpuBackend {
     fn apply_safe_area_padding(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-        <WgpuBackend as Backend>::apply_safe_area_padding(self, node, sides)
+        WgpuBackend::apply_safe_area_padding_impl(self, node, sides)
     }
 
     fn apply_scroll_view_safe_area_inset(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-        <WgpuBackend as Backend>::apply_scroll_view_safe_area_inset(self, node, sides)
+        WgpuBackend::apply_scroll_view_safe_area_inset_impl(self, node, sides)
     }
 }
 
@@ -1298,19 +1098,11 @@ impl caps::VirtualizerOps for WgpuBackend {
                 })
             },
         };
-        <WgpuBackend as Backend>::create_virtualizer(self, callbacks, overscan, layout, a11y)
+        WgpuBackend::create_virtualizer_impl(self, callbacks, overscan, layout, a11y)
     }
 
     fn virtualizer_data_changed(&mut self, node: &Self::Node) {
-        <WgpuBackend as Backend>::virtualizer_data_changed(self, node)
-    }
-
-    fn release_virtualizer(&mut self, node: &Self::Node) {
-        <WgpuBackend as Backend>::release_virtualizer(self, node)
-    }
-
-    fn make_virtualizer_handle(&self, node: &Self::Node) -> primitives::virtualizer::VirtualizerHandle {
-        <WgpuBackend as Backend>::make_virtualizer_handle(self, node)
+        WgpuBackend::virtualizer_data_changed_impl(self, node)
     }
 }
 
@@ -1349,15 +1141,11 @@ impl caps::GraphicsOps for WgpuBackend {
                 schedule_flush();
             })
         };
-        <WgpuBackend as Backend>::create_graphics(self, on_ready, on_resize, on_lost, a11y)
-    }
-
-    fn release_graphics(&mut self, node: &Self::Node) {
-        <WgpuBackend as Backend>::release_graphics(self, node)
+        WgpuBackend::create_graphics_impl(self, on_ready, on_resize, on_lost, a11y)
     }
 
     fn make_graphics_handle(&self, node: &Self::Node) -> primitives::graphics::GraphicsHandle {
-        <WgpuBackend as Backend>::make_graphics_handle(self, node)
+        WgpuBackend::make_graphics_handle_impl(self, node)
     }
 }
 
@@ -1372,86 +1160,33 @@ impl caps::PortalOps for WgpuBackend {
         // Dispatch-site glue: backdrop click / Escape dismissal runs
         // the author's on_dismiss.
         let on_dismiss = on_dismiss.map(flushing0);
-        <WgpuBackend as Backend>::create_portal(self, target, on_dismiss, trap_focus, a11y)
-    }
-
-    fn release_portal(&mut self, node: &Self::Node) {
-        <WgpuBackend as Backend>::release_portal(self, node)
-    }
-
-    fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
-        <WgpuBackend as Backend>::set_portal_hidden(self, node, hidden)
-    }
-
-    fn make_portal_handle(&self, node: &Self::Node) -> primitives::portal::PortalHandle {
-        <WgpuBackend as Backend>::make_portal_handle(self, node)
+        WgpuBackend::create_portal_impl(self, target, on_dismiss, trap_focus, a11y)
     }
 }
 
 impl caps::PresenceOps for WgpuBackend {
-    fn create_presence_placeholder(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-        <WgpuBackend as Backend>::create_presence_placeholder(self, a11y)
-    }
-
     fn apply_presence(
         &mut self,
         node: &Self::Node,
         state: primitives::presence::PresenceState,
         transition: Option<(u32, Easing)>,
     ) {
-        <WgpuBackend as Backend>::apply_presence(self, node, state, transition)
-    }
-
-    fn make_presence_handle(&self, node: &Self::Node) -> primitives::presence::PresenceHandle {
-        <WgpuBackend as Backend>::make_presence_handle(self, node)
+        WgpuBackend::apply_presence_impl(self, node, state, transition)
     }
 }
 
 impl caps::NavigatorOps for WgpuBackend {
-    fn create_navigator(
-        &mut self,
-        type_id: TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn Any>,
-        host: primitives::navigator::NavigatorHost<Self::Node>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // NOT wrapped: NavigatorHost's callbacks (mount_screen etc.)
-        // belong to the OLD-core navigator path, which the new core
-        // does not route through (the vocabulary navigator handlers own
-        // screens and dispatch is handler-safe: commands stage into a
-        // queue + tick signal committed by a driver effect on flush).
-        // Author-initiated navigation stages via handlers already
-        // wrapped above and commits inside the flush.
-        <WgpuBackend as Backend>::create_navigator(self, type_id, type_name, presentation, host, a11y)
-    }
-
-    fn release_navigator(&mut self, node: &Self::Node) {
-        <WgpuBackend as Backend>::release_navigator(self, node)
-    }
-
-    fn apply_navigator_slot_style(
-        &mut self,
-        node: &Self::Node,
-        slot: &'static str,
-        style: &Rc<StyleRules>,
-    ) {
-        <WgpuBackend as Backend>::apply_navigator_slot_style(self, node, slot, style)
-    }
-
-    fn make_navigator_handle(&self, node: &Self::Node) -> primitives::navigator::NavigatorHandle {
-        <WgpuBackend as Backend>::make_navigator_handle(self, node)
-    }
-
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn Any>,
-    ) {
-        <WgpuBackend as Backend>::navigator_attach_initial(self, navigator, screen, scope_id, options)
-    }
+    // Every method of this capability is now the caps trait's default.
+    // The old-core `create_navigator` (which registered the per-instance
+    // `NavigatorHandler` these four methods dispatched to) was DELETED
+    // with the old core — it does not fall back to a default
+    // (docs/runtime-v2-deletion-baseline.md §2.3), so no handler is ever
+    // registered and the vocabulary's navigator handler never calls
+    // them — it mounts navigators over `ViewOps`/`LifecycleOps` and
+    // folds screen chrome itself. Native push / header chrome on this
+    // backend is the documented native-nav seam, tracked in the module
+    // docs; it must be re-entered through the scene registry, not
+    // through a resurrected mega-trait cap.
 }
 
 // ---------------------------------------------------------------------------
@@ -1466,39 +1201,15 @@ impl caps::ExternalOps for WgpuBackend {
         payload: &Rc<dyn Any>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WgpuBackend as Backend>::create_external(self, type_id, type_name, payload, a11y)
+        WgpuBackend::create_external_impl(self, type_id, type_name, payload, a11y)
     }
 
     fn release_external(&mut self, node: &Self::Node) {
-        <WgpuBackend as Backend>::release_external(self, node)
-    }
-
-    fn missing_primitive_placeholder(&mut self, label: &'static str) -> Self::Node {
-        <WgpuBackend as Backend>::missing_primitive_placeholder(self, label)
+        WgpuBackend::release_external_impl(self, node)
     }
 }
 
-impl caps::DocumentOps for WgpuBackend {
-    fn create_element(&mut self, tag: &str) -> Self::Node {
-        <WgpuBackend as Backend>::create_element(self, tag)
-    }
-
-    fn attach_html_id(&self, node: &Self::Node, id: &str) {
-        <WgpuBackend as Backend>::attach_html_id(self, node, id)
-    }
-
-    fn attach_html_class(&self, node: &Self::Node, class: &str) {
-        <WgpuBackend as Backend>::attach_html_class(self, node, class)
-    }
-
-    fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
-        <WgpuBackend as Backend>::attach_html_style(self, node, prop, value)
-    }
-
-    fn register_raw_css(&mut self, css: &str) {
-        <WgpuBackend as Backend>::register_raw_css(self, css)
-    }
-}
+impl caps::DocumentOps for WgpuBackend {}
 
 // ---------------------------------------------------------------------------
 // Style + assets
@@ -1506,74 +1217,11 @@ impl caps::DocumentOps for WgpuBackend {
 
 impl caps::StyleOps for WgpuBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
-        <WgpuBackend as Backend>::apply_style(self, node, style)
-    }
-
-    fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
-        <WgpuBackend as Backend>::mint_style_class(self, style)
-    }
-
-    fn mint_class_for_app(&mut self, app: &StyleApplication) -> Option<String> {
-        <WgpuBackend as Backend>::mint_class_for_app(self, app)
-    }
-
-    fn apply_styled_states(
-        &mut self,
-        node: &Self::Node,
-        base: &Rc<StyleRules>,
-        overlays: &[(StateBits, Rc<StyleRules>)],
-    ) {
-        <WgpuBackend as Backend>::apply_styled_states(self, node, base, overlays)
-    }
-
-    fn apply_styled_variants(
-        &mut self,
-        node: &Self::Node,
-        base: &Rc<StyleRules>,
-        state_overlays: &[(StateBits, Rc<StyleRules>)],
-        breakpoint_overlays: &[(Breakpoint, Rc<StyleRules>)],
-        container_overlays: &[(f32, Rc<StyleRules>)],
-    ) {
-        <WgpuBackend as Backend>::apply_styled_variants(
-            self,
-            node,
-            base,
-            state_overlays,
-            breakpoint_overlays,
-            container_overlays,
-        )
-    }
-
-    fn mark_container(&mut self, node: &Self::Node) {
-        <WgpuBackend as Backend>::mark_container(self, node)
-    }
-
-    fn handles_states_natively(&self) -> bool {
-        <WgpuBackend as Backend>::handles_states_natively(self)
-    }
-
-    fn token_updates_propagate_via_cascade(&self) -> bool {
-        <WgpuBackend as Backend>::token_updates_propagate_via_cascade(self)
-    }
-
-    fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        <WgpuBackend as Backend>::register_stylesheet(self, rules)
-    }
-
-    fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        <WgpuBackend as Backend>::unregister_stylesheet(self, rules)
-    }
-
-    fn install_tokens(&mut self, tokens: &[TokenEntry]) {
-        <WgpuBackend as Backend>::install_tokens(self, tokens)
-    }
-
-    fn update_tokens(&mut self, tokens: &[TokenEntry]) {
-        <WgpuBackend as Backend>::update_tokens(self, tokens)
+        WgpuBackend::apply_style_impl(self, node, style)
     }
 
     fn on_node_unstyled(&mut self, node: &Self::Node) {
-        <WgpuBackend as Backend>::on_node_unstyled(self, node)
+        WgpuBackend::on_node_unstyled_impl(self, node)
     }
 
     fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
@@ -1588,69 +1236,21 @@ impl caps::StyleOps for WgpuBackend {
                 schedule_flush();
             })
         };
-        <WgpuBackend as Backend>::attach_states(self, node, setter)
+        WgpuBackend::attach_states_impl(self, node, setter)
     }
 
     fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
-        <WgpuBackend as Backend>::set_disabled(self, node, disabled)
-    }
-
-    fn supports_preminted_styles(&self) -> bool {
-        <WgpuBackend as Backend>::supports_preminted_styles(self)
-    }
-
-    fn apply_default_text_font(&mut self, font: Option<&FontFamily>) {
-        <WgpuBackend as Backend>::apply_default_text_font(self, font)
-    }
-
-    fn supports_js_class_bindings(&self) -> bool {
-        <WgpuBackend as Backend>::supports_js_class_bindings(self)
-    }
-
-    fn register_reactive_class_binding(
-        &mut self,
-        node: &Self::Node,
-        signal_id: u64,
-        values: &[u32],
-        classes: &[&str],
-        value_reader: Rc<dyn Fn() -> u32>,
-    ) -> u32 {
-        <WgpuBackend as Backend>::register_reactive_class_binding(
-            self,
-            node,
-            signal_id,
-            values,
-            classes,
-            value_reader,
-        )
-    }
-
-    fn release_reactive_class_binding(&mut self, binding_id: u32) {
-        <WgpuBackend as Backend>::release_reactive_class_binding(self, binding_id)
+        WgpuBackend::set_disabled_impl(self, node, disabled)
     }
 }
 
 impl caps::AssetOps for WgpuBackend {
     fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
-        <WgpuBackend as Backend>::register_asset(self, id, kind, source)
+        WgpuBackend::register_asset_impl(self, id, kind, source)
     }
 
     fn unregister_asset(&mut self, id: AssetId, kind: AssetTag) {
-        <WgpuBackend as Backend>::unregister_asset(self, id, kind)
-    }
-
-    fn register_typeface(
-        &mut self,
-        id: TypefaceId,
-        family_name: &str,
-        faces: &[TypefaceFace],
-        fallback: SystemFallback,
-    ) {
-        <WgpuBackend as Backend>::register_typeface(self, id, family_name, faces, fallback)
-    }
-
-    fn unregister_typeface(&mut self, id: TypefaceId) {
-        <WgpuBackend as Backend>::unregister_typeface(self, id)
+        WgpuBackend::unregister_asset_impl(self, id, kind)
     }
 }
 
@@ -1665,59 +1265,35 @@ impl caps::A11yOps for WgpuBackend {
         a11y: &AccessibilityProps,
         inferred_role: Option<Role>,
     ) {
-        <WgpuBackend as Backend>::update_accessibility(self, node, a11y, inferred_role)
+        WgpuBackend::update_accessibility_impl(self, node, a11y, inferred_role)
     }
 
     fn announce_for_accessibility(&mut self, msg: &str, priority: LiveRegionPriority) {
-        <WgpuBackend as Backend>::announce_for_accessibility(self, msg, priority)
+        WgpuBackend::announce_for_accessibility_impl(self, msg, priority)
     }
 
     fn dump_accessibility_tree(&self) -> Option<AccessibilityTree> {
-        <WgpuBackend as Backend>::dump_accessibility_tree(self)
+        WgpuBackend::dump_accessibility_tree_impl(self)
     }
 }
 
 impl caps::AnimationOps for WgpuBackend {
     fn set_animated_f32(&mut self, node: &Self::Node, prop: AnimProp, value: f32) {
-        <WgpuBackend as Backend>::set_animated_f32(self, node, prop, value)
+        WgpuBackend::set_animated_f32_impl(self, node, prop, value)
     }
 
     fn set_animated_color(&mut self, node: &Self::Node, prop: AnimProp, value: [f32; 4]) {
-        <WgpuBackend as Backend>::set_animated_color(self, node, prop, value)
+        WgpuBackend::set_animated_color_impl(self, node, prop, value)
     }
 }
 
 impl caps::IntrospectionOps for WgpuBackend {
     fn frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <WgpuBackend as Backend>::frame(self, node)
+        WgpuBackend::frame_impl(self, node)
     }
 
     fn absolute_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <WgpuBackend as Backend>::absolute_frame(self, node)
-    }
-
-    fn device_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <WgpuBackend as Backend>::device_frame(self, node)
-    }
-
-    fn supports_native_introspection(&self) -> bool {
-        <WgpuBackend as Backend>::supports_native_introspection(self)
-    }
-
-    fn introspect_native(&self, node: &Self::Node) -> Option<NativeNode> {
-        <WgpuBackend as Backend>::introspect_native(self, node)
-    }
-
-    fn note_introspection_root(&self, node: &Self::Node) {
-        <WgpuBackend as Backend>::note_introspection_root(self, node)
-    }
-
-    fn supports_screenshot(&self) -> bool {
-        <WgpuBackend as Backend>::supports_screenshot(self)
-    }
-
-    fn capture_screenshot(&self, done: Box<dyn FnOnce(Result<Screenshot, String>)>) {
-        <WgpuBackend as Backend>::capture_screenshot(self, done)
+        WgpuBackend::absolute_frame_impl(self, node)
     }
 }
 
@@ -1725,117 +1301,6 @@ impl caps::IntrospectionOps for WgpuBackend {
 // Batch + wire bindings
 // ---------------------------------------------------------------------------
 
-impl caps::BatchOps for WgpuBackend {
-    fn supports_batched_repeat(&self) -> bool {
-        <WgpuBackend as Backend>::supports_batched_repeat(self)
-    }
+impl caps::BatchOps for WgpuBackend {}
 
-    fn execute_batch(&mut self, batch: BackendBatch) -> Vec<Self::Node> {
-        <WgpuBackend as Backend>::execute_batch(self, batch)
-    }
-
-    fn execute_batch_with_attach(
-        &mut self,
-        batch: BackendBatch,
-        parent: &mut Self::Node,
-        attach_locals: &[u32],
-    ) -> Vec<Self::Node> {
-        <WgpuBackend as Backend>::execute_batch_with_attach(self, batch, parent, attach_locals)
-    }
-}
-
-impl caps::WireBindingOps for WgpuBackend {
-    fn note_text_binding(&mut self, node: &Self::Node, signal_ids: &[u64], method: &'static str) {
-        <WgpuBackend as Backend>::note_text_binding(self, node, signal_ids, method)
-    }
-
-    fn note_signal_initial(&mut self, signal_id: u64, value: &runtime_core::__serde_json::Value) {
-        <WgpuBackend as Backend>::note_signal_initial(self, signal_id, value)
-    }
-
-    fn note_when_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        cond_method: &'static str,
-        then_node: &Self::Node,
-        otherwise_node: &Self::Node,
-    ) {
-        <WgpuBackend as Backend>::note_when_binding(
-            self,
-            anchor,
-            signal_ids,
-            cond_method,
-            then_node,
-            otherwise_node,
-        )
-    }
-
-    fn note_switch_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        cond_method: &'static str,
-        arms: &[(runtime_core::__serde_json::Value, Self::Node)],
-        default_node: &Self::Node,
-    ) {
-        <WgpuBackend as Backend>::note_switch_binding(
-            self,
-            anchor,
-            signal_ids,
-            cond_method,
-            arms,
-            default_node,
-        )
-    }
-
-    fn note_repeat_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        count_method: &'static str,
-        row_template: &Self::Node,
-        row_index_signal_id: Option<u64>,
-    ) {
-        <WgpuBackend as Backend>::note_repeat_binding(
-            self,
-            anchor,
-            signal_ids,
-            count_method,
-            row_template,
-            row_index_signal_id,
-        )
-    }
-
-    fn note_virtualizer_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        count_method: &'static str,
-        row_template: &Self::Node,
-        row_index_signal_id: Option<u64>,
-        horizontal: bool,
-    ) {
-        <WgpuBackend as Backend>::note_virtualizer_binding(
-            self,
-            anchor,
-            signal_ids,
-            count_method,
-            row_template,
-            row_index_signal_id,
-            horizontal,
-        )
-    }
-
-    fn supports_lazy_slot_capture(&self) -> bool {
-        <WgpuBackend as Backend>::supports_lazy_slot_capture(self)
-    }
-
-    fn begin_slot_capture(&mut self) {
-        <WgpuBackend as Backend>::begin_slot_capture(self)
-    }
-
-    fn end_slot_capture(&mut self, slot_root: &Self::Node) {
-        <WgpuBackend as Backend>::end_slot_capture(self, slot_root)
-    }
-}
+impl caps::WireBindingOps for WgpuBackend {}

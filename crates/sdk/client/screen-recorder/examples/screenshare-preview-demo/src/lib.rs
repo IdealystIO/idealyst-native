@@ -18,12 +18,55 @@ use runtime_core::{
 use screen_recorder::{MediaStream, PrivateLayer, RecorderError, RecordingConfig, ScreenRecorder};
 use std::rc::Rc;
 
-// The `video` and `screen-recorder` (`PrivateLayer`) externals each
-// self-register their handler at backend construction via `inventory::submit!`
-// inside their SDK crate — the app just uses `Video` / `PrivateLayer`, no
-// per-platform registration. The hook remains for app-local externals; the CLI
-// bootstrap still calls it. See [[project_inventory_self_registration]].
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// Web registration seam — registry-CONCRETE. `video::register` takes a
+/// `Registry<WebBackend>` on wasm32 (the real `<video>` handler has no
+/// caps-trait expression), so the seam is specialized to that registry here.
+///
+/// Registration is MANDATORY for anything the tree renders: an unregistered
+/// payload panics at realize.
+#[cfg(target_arch = "wasm32")]
+pub fn register_scene_extensions(registry: &mut runtime_scene::Registry<backend_web::WebBackend>) {
+    video::register(registry);
+    screen_recorder::register_scene(registry);
+}
+
+/// Native registration seam. Both SDKs are registry-GENERIC off web and
+/// type-dispatch ONCE at registration: `video::register` downcasts to the
+/// macOS / iOS / Android registry and installs the real player, and
+/// `screen_recorder::register_scene` installs the capture-excluded overlay
+/// window where the platform has one (passthrough container elsewhere).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
+where
+    H: runtime_vocabulary::caps::ExternalOps
+        + runtime_vocabulary::style_attach::StyleServices
+        + 'static,
+{
+    video::register(registry);
+    screen_recorder::register_scene(registry);
+}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
+}
+
+/// Signal payload for the live source. A `MediaStream` is an IDENTITY, not a
+/// value, and carries no `PartialEq` — but the world kernel's signals are
+/// equality-guarded and require one. This newtype supplies the semantics the
+/// demo wants: two empty slots are equal (a redundant clear stays a no-op),
+/// and any slot holding a stream is treated as distinct, so starting capture
+/// always notifies. That is the runtime-v2 replacement for the old core's
+/// `set_always` on a payload with no `PartialEq`.
+#[derive(Clone)]
+struct StreamSlot(Option<MediaStream>);
+
+impl PartialEq for StreamSlot {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.is_none() && other.0.is_none()
+    }
+}
 
 pub fn app() -> Element {
     install_idea_theme(light_theme());
@@ -31,17 +74,15 @@ pub fn app() -> Element {
     // The live source, once capture starts. `MediaStream` is `Clone` (Rc); the
     // signal holds it (keeping capture alive) and the `Video` clones it to
     // display.
-    let stream_sig: Signal<Option<MediaStream>> = signal(None);
+    let stream_sig: Signal<StreamSlot> = signal(StreamSlot(None));
     let status: Signal<String> = signal("Idle — press Start screen share".to_string());
     let started: Signal<bool> = signal(false);
-
-    let status_text = text(move || status.get()).into_element();
 
     // Always-mounted Video with a REACTIVE stream source: `stream(|| ..)`'s
     // `resolve()` reads `stream_sig`, so when capture starts and sets the
     // signal, the video re-populates with no remount.
     //
-    // The Video is an `Element::External` with NO intrinsic size — on native
+    // The Video is a handler-backed scene payload with NO intrinsic size — on native
     // it lays out at main-axis size 0 and collapses. So we give it an explicit
     // size: a fixed-height box, with the Video filling it. (Same fix as
     // camera-preview-demo.)
@@ -56,7 +97,7 @@ pub fn app() -> Element {
         ..Default::default()
     };
     let preview = view(vec![video::Video(video::VideoProps {
-        source: video::stream(move || stream_sig.get()),
+        source: video::stream(move || stream_sig.get().0),
         autoplay: true,
         ..Default::default()
     })
@@ -76,8 +117,9 @@ pub fn app() -> Element {
             match ScreenRecorder::new().start(RecordingConfig::new()).await {
                 Ok(stream) => {
                     status.set("Live — screen feed via Video(source = stream)".to_string());
-                    // `set_always`: `MediaStream` has no `PartialEq`.
-                    stream_sig.set_always(Some(stream));
+                    // `StreamSlot`'s `PartialEq` never reports a present
+                    // stream as equal, so a plain guarded `set` notifies.
+                    stream_sig.set(StreamSlot(Some(stream)));
                 }
                 Err(e) => {
                     started.set(false);
@@ -124,22 +166,6 @@ pub fn app() -> Element {
         .into_element();
     let private_layer = PrivateLayer(vec![rec_badge]).into_element();
 
-    let body: Vec<Element> = vec![
-        ui! { Typography(content = "Screen → Video".to_string(), kind = idea_ui::typography_kind::H1) },
-        ui! {
-            Typography(
-                content = "The screen-recorder SDK yields a `MediaStream`; the video SDK displays \
-                    it. On iOS that's ReplayKit in-app capture — so you'll see a recursive mirror \
-                    of this very screen, which is what proves the path works."
-                    .to_string(),
-                muted = true,
-            )
-        },
-        status_text,
-        preview,
-        ui! { button(label = "Start screen share".to_string(), on_click = on_start) },
-    ];
-
     // Root view holds the page Stack plus the PrivateLayer. On native
     // the PrivateLayer escapes into its own (capture-excluded) window —
     // its position in the tree is irrelevant — but keeping it a sibling
@@ -151,7 +177,19 @@ pub fn app() -> Element {
         ..Default::default()
     };
     let page = ui! {
-        Stack(gap = StackGap::Md, padding = StackPadding::Lg) { body }
+        Stack(gap = StackGap::Md, padding = StackPadding::Lg) {
+            Typography(content = "Screen → Video".to_string(), kind = idea_ui::typography_kind::H1)
+            Typography(
+                content = "The screen-recorder SDK yields a `MediaStream`; the video SDK displays \
+                    it. On iOS that's ReplayKit in-app capture — so you'll see a recursive mirror \
+                    of this very screen, which is what proves the path works."
+                    .to_string(),
+                muted = true,
+            )
+            text { move || status.get() }
+            preview
+            button(label = "Start screen share".to_string(), on_click = on_start)
+        }
     };
     view(vec![page, private_layer])
         .with_style(Rc::new(StyleSheet::r#static(fill_root)))

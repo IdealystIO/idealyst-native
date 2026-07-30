@@ -42,26 +42,24 @@ use web_sys::{MessageEvent, WebSocket};
 /// The fallback keys on the exact `unknown command:` marker so a REAL
 /// verb error (missing argument, deferred seam) is never masked.
 fn dispatch_verb(cmd: &str, args: &serde_json::Value) -> Result<String, String> {
-    #[cfg(feature = "new-core")]
-    if crate::newcore::is_booted() {
+        if crate::newcore::is_booted() {
         return match runtime_vocabulary::robot::bridge::invoke_command(cmd, args) {
             Err(e) if e.starts_with("unknown command:") => {
-                runtime_core::robot::bridge::invoke_command(cmd, args)
+                runtime_shared::robot::bridge::invoke_command(cmd, args)
             }
             other => other,
         };
     }
-    runtime_core::robot::bridge::invoke_command(cmd, args)
+    runtime_shared::robot::bridge::invoke_command(cmd, args)
 }
 
 /// The live-update revision for the push pump — the new-core registry's
 /// counter when that core is booted, the old one otherwise.
 fn robot_revision() -> u64 {
-    #[cfg(feature = "new-core")]
-    if crate::newcore::is_booted() {
+        if crate::newcore::is_booted() {
         return runtime_vocabulary::robot::current_revision();
     }
-    runtime_core::robot::current_revision()
+    runtime_shared::robot::current_revision()
 }
 
 /// Install the vocabulary robot driver env over this host's boot seams:
@@ -69,7 +67,6 @@ fn robot_revision() -> u64 {
 /// actions settle via `flush_sync` (staged writes commit before the
 /// verb returns — the old core's synchronous-apply parity). Called by
 /// `newcore::start_in` once the flush world exists.
-#[cfg(feature = "new-core")]
 pub(crate) fn install_newcore_driver_env() {
     runtime_vocabulary::robot::install_driver_env(
         |f| {
@@ -84,7 +81,6 @@ pub(crate) fn install_newcore_driver_env() {
 }
 
 /// Uninstall the env (host `stop()` — tests boot repeatedly).
-#[cfg(feature = "new-core")]
 pub(crate) fn clear_newcore_driver_env() {
     runtime_vocabulary::robot::clear_driver_env();
 }
@@ -95,7 +91,7 @@ struct RobotRelayState {
     _socket: WebSocket,
     _on_open: Closure<dyn FnMut(JsValue)>,
     _on_message: Closure<dyn FnMut(MessageEvent)>,
-    _push_pump: runtime_core::scheduling::RafLoop,
+    _push_pump: runtime_shared::scheduling::RafLoop,
 }
 
 thread_local! {
@@ -190,7 +186,7 @@ pub fn install_robot_relay_client(url: &str) -> Result<(), JsValue> {
     let socket_for_push = socket.clone();
     let subscribed_push = subscribed.clone();
     let last_rev = Cell::new(robot_revision());
-    let push_pump = runtime_core::raf_loop(move || {
+    let push_pump = runtime_shared::raf_loop(move || {
         if socket_for_push.ready_state() != WebSocket::OPEN || !subscribed_push.get() {
             return;
         }
@@ -218,7 +214,7 @@ pub fn install_robot_relay_client(url: &str) -> Result<(), JsValue> {
 //   wasm-pack test --headless --chrome -- --features new-core,robot
 // ===========================================================================
 
-#[cfg(all(test, feature = "new-core"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;

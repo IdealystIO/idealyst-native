@@ -1,11 +1,10 @@
-//! Core-free item model shared by BOTH core legs.
+//! Runtime-free item model.
 //!
 //! [`ToolbarItem`] / [`ToolbarButton`] carry no reactive or element
-//! types — they are pure data + builder methods — so they are defined
-//! once here (no feature gate) and re-exported by `oldcore` and
-//! `newcore` alike. The macOS native machinery (`macos_shared`) also
-//! consumes them directly, which is what lets the NSToolbar code be
-//! shared across cores without duplicating the item model.
+//! types — they are pure data + builder methods — so they live here and
+//! are re-exported from the crate root. The platform machinery
+//! (`macos_shared`, `windows`, `linux`) consumes them directly, which is
+//! what keeps the native code free of any runtime import.
 
 use std::rc::Rc;
 

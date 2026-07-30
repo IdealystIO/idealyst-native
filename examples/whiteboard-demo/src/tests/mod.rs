@@ -10,22 +10,50 @@ mod navigation;
 
 use crate::{CanvasDoc, CanvasStore, Stroke, Strokes};
 use runtime_core::Signal;
+// The kernel `World` behind the facade's test-support seam: unit tests need
+// enter/flush control that no author-facing API exposes.
+use runtime_core::__World as World;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 /// A fresh single-canvas board, matching `app()`'s seed. Shared by the document
-/// and navigation tests. Returns `(store, strokes, active, version, ids, next_id)`.
-fn board() -> (CanvasStore, Strokes, Signal<usize>, Signal<u64>, Signal<Vec<u64>>, Signal<u64>) {
+/// and navigation tests.
+///
+/// Signal creation needs an entered world, and writes STAGE until that world
+/// flushes — the app gets a flush per event from the backend's driver, so a test
+/// that chains two document ops has to [`Board::settle`] between them or the
+/// second op reads the first's pre-write values.
+struct Board {
+    world: World,
+    store: CanvasStore,
+    strokes: Strokes,
+    active: Signal<usize>,
+    version: Signal<u64>,
+    ids: Signal<Vec<u64>>,
+    next_id: Signal<u64>,
+}
+
+impl Board {
+    /// Commit the staged writes — the test-side stand-in for the backend's
+    /// post-event flush.
+    fn settle(&self) {
+        self.world.flush();
+    }
+}
+
+fn board() -> Board {
     let store: CanvasStore = Rc::new(RefCell::new(vec![CanvasDoc::default()]));
     let strokes: Strokes = Rc::new(RefCell::new(Vec::new()));
-    (
-        store,
-        strokes,
-        Signal::new(0usize),  // active
-        Signal::new(0u64),    // version
-        Signal::new(vec![0]), // canvas_ids
-        Signal::new(1u64),    // next_id
-    )
+    let world = World::new();
+    let (active, version, ids, next_id) = world.enter(|| {
+        (
+            runtime_core::signal(0usize),  // active
+            runtime_core::signal(0u64),    // version
+            runtime_core::signal(vec![0]), // canvas_ids
+            runtime_core::signal(1u64),    // next_id
+        )
+    });
+    Board { world, store, strokes, active, version, ids, next_id }
 }
 
 /// A one-point stroke, for asserting stroke counts.

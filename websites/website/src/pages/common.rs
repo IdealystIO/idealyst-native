@@ -112,12 +112,11 @@ const DARK_PALETTE: Palette = Palette {
 /// is robust against minor palette tweaks on either side as long as the
 /// backgrounds remain roughly in the standard light/dark zones.
 ///
-/// Reads via [`idea_ui::active_theme`] (a TRACKED signal read on both
-/// cores) rather than `Tokenized::resolve()`: the Tokenized-registry
-/// read is old-core-only reactivity — on the new core it neither
-/// updates on `set_idea_theme` nor subscribes the `switch` scrutinee
-/// (Tokenized freshness is a documented migration deferral), which
-/// left dark-mode code panels with the light-palette ink.
+/// Reads via [`idea_ui::active_theme`] (a TRACKED signal read) rather
+/// than `Tokenized::resolve()`: the Tokenized-registry read is not
+/// reactive — it neither updates on `set_idea_theme` nor subscribes the
+/// `switch` scrutinee (Tokenized freshness is a documented deferral),
+/// which left dark-mode code panels with the light-palette ink.
 fn theme_is_dark() -> bool {
     if idea_ui::theme_installed() {
         let theme = idea_ui::active_theme();
@@ -256,10 +255,9 @@ pub fn CodeBlock(props: CodeBlockProps) -> Element {
         let palette = if is_dark { DARK_PALETTE } else { LIGHT_PALETTE };
         let spans = highlight(&src_owned, palette);
         let code_style = move || StyleApplication::new(CodeText::sheet());
-        // Dual-core `codeblock` SDK: old core dispatches the
-        // Element::External per-backend handler, new core the SDK's
-        // scene-registry handler — identical `<pre>`/span DOM, same
-        // spans, same call shape.
+        // The `codeblock` SDK's scene-registry handler renders the
+        // real `<pre>`/span DOM (registered at boot — see
+        // `register_scene_extensions`).
         codeblock::code_block(spans)
             .with_style(code_style)
             .into_element()

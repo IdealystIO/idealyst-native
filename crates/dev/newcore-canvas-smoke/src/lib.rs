@@ -1,12 +1,11 @@
-//! Smoke app: the canvas SDK on the new-core web boot — the
-//! External-SDK wave's live-verification vehicle.
+//! Smoke app: the canvas SDK on the web boot path — the External-SDK
+//! wave's live-verification vehicle.
 //!
 //! Direct vocabulary-builder calls (no `ui!`/`jsx!` — the
 //! newcore-web-smoke posture: this crate gates the layer *under* the
 //! macro). The tree: a heading, a `canvas::Canvas` whose draw closure
 //! READS a signal (bar count + hue), and a button that bumps the
-//! signal. Clicking must repaint the canvas through the full new-core
-//! chain: wrapped button callback → staged write → dispatch-site flush
+//! signal. Clicking must repaint the canvas through the full chain: wrapped button callback → staged write → dispatch-site flush
 //! → the SDK handler's world effect re-runs the author painter →
 //! canvas-native's shared Canvas2D rasterizer replays the scene.
 //!
@@ -15,7 +14,7 @@
 //! mount without pixel-reading.
 
 use canvas::prelude::*;
-use runtime_core::{Length, StyleRules, Tokenized};
+use runtime_shared::{Length, StyleRules, Tokenized};
 use runtime_scene::Element;
 use runtime_vocabulary::glue::IntoElement;
 use runtime_vocabulary::{button, text, view};
@@ -69,7 +68,7 @@ fn app() -> Element {
 
     view()
         .style(column())
-        .child(text().content("canvas on the new core"))
+        .child(text().content("canvas through the scene registry"))
         .child(text().content(move || format!("bars = {}", bars.get())))
         .child(bar_canvas(bars))
         .child(button().label("Add bar").on_press(move || bars.set(bars.get() + 1)))

@@ -1,18 +1,30 @@
-//! New-core adoption for the terminal backend (idea-lite migration:
-//! event-loop host, the macOS/wgpu shape applied to the cell grid).
+//! Rendering: the `runtime_scene::Host` + capability-trait surface, the
+//! boot entry, and the flush driver.
 //!
-//! Implements [`runtime_scene::Host`] plus **all 30** capability traits
-//! (`runtime_vocabulary::caps`) directly on [`TerminalBackend`] — the
-//! production shape of the migration (no `LegacyBridge` in the render
-//! path). Every trait method delegates via UFCS
-//! (`<TerminalBackend as Backend>::method(self, …)`) to the existing
-//! `Backend` impl, so the grid mechanism code (node allocation, Taffy
-//! layout, hit-testing, `render_to_grid`) is REUSED verbatim: the same
-//! scene renders to the same cells on both cores (pinned by
-//! `tests/newcore_parity.rs`). Where a `Backend` method is not
-//! overridden by `TerminalBackend`, the UFCS call resolves to the same
-//! trait-default the old walker hits — behavior identical by
-//! construction. **30/30 direct, 0 adapted, 0 stubbed.**
+//! [`TerminalBackend`] implements [`runtime_scene::Host`] plus **all 30**
+//! capability traits (`runtime_vocabulary::caps`) — the production shape
+//! of the migration. Every mechanism body in this file was moved here
+//! verbatim from the crate's old `impl runtime_core::Backend for TerminalBackend`
+//! when the 159-method mega-trait was deleted, so the grid mechanism code (node allocation, Taffy
+//! layout, hit-testing, `render_to_grid`)
+//! is unchanged: the same scene renders to the same cells
+//! (pinned by `tests/newcore_parity.rs` against the frozen old-core grid
+//! dumps).
+//! Capabilities this backend does not implement are simply absent — the
+//! caps-trait DEFAULT bodies serve them, and those defaults were audited
+//! byte-for-byte against the `Backend` defaults they replace
+//! (`docs/runtime-v2-deletion-baseline.md` S2.1; 120 of this backend's
+//! 152 caps methods resolve to a default).
+//!
+//! **30/30 traits implemented, 0 adapted, 0 stubbed.**
+//!
+//! # Two layers in one file: mechanism + flush policy
+//!
+//! Capability methods that take an author callback wrap it before running
+//! the mechanism (`flushing0`/`flushing1`/`flushing_key` + the inline
+//! wrappers below) so a staged write commits after the callback returns.
+//! That dispatch-site policy is why the mechanism lives here rather than
+//! in an inherent impl: the wrap and the body are one method.
 //!
 //! # Boot sequence ([`start`])
 //!
@@ -29,7 +41,7 @@
 //!    same ordering comment as backend-web/wgpu).
 //! 4. Entered buffered-microtask drain (no-op under a real scheduler;
 //!    load-bearing under a buffering test scheduler).
-//! 5. Single root → `Backend::finish`; `world.flush()` commits
+//! 5. Single root → `caps::LifecycleOps::finish`; `world.flush()` commits
 //!    anything staged during mount before the first paint.
 //! 6. Install the flush driver and retain
 //!    `{Realized, backend, registry, world}` in [`NewCoreApp`].
@@ -74,38 +86,34 @@
 //!
 //! # Residual seams (named, none silent)
 //!
-//! - The old-core `NavigatorRegistry`/inventory registrars keep serving
-//!   the old path only; new-core navigators are vocabulary built-ins
-//!   (swap/stack), so `Element::Navigator` with an SDK presentation
-//!   type routes through `Backend::create_navigator` exactly as before.
+//! - Navigators are vocabulary built-ins (swap/stack) mounted through
+//!   `runtime_vocabulary::handlers::navigator`; the backend-side
+//!   `NavigatorRegistry` + inventory registrars the old core dispatched
+//!   through are gone (deletion-baseline S2.3), and every surviving
+//!   `NavigatorOps` method resolves to its caps default.
 //! - `dispatch_key`'s default-editing path defers its `on_change` to a
 //!   microtask (borrow discipline); the wrapped `on_change` then queues
 //!   the flush from inside that microtask — the host's drain-until-empty
 //!   loop runs it the same tick.
 
-use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use runtime_core::accessibility::{AccessibilityProps, AccessibilityTree, LiveRegionPriority, Role};
-use runtime_core::animation::AnimProp;
-use runtime_core::assets::{
-    AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
-};
-use runtime_core::breakpoint::Breakpoint;
-use runtime_core::introspect::NativeNode;
-use runtime_core::primitives;
-use runtime_core::primitives::portal::ViewportRect;
-use runtime_core::styled_text::TextRun;
-use runtime_core::{
-    Action, Backend, BackendBatch, Color, ColorScheme, Easing, FileDropHandler, FontFamily,
-    HoverHandler, ImageErrorHandler, ImageLoadHandler, PageMetadata, Platform, SafeAreaSides,
-    Screenshot, StateBits, StyleApplication, StyleRules, TokenEntry, Tokenized, TouchHandler,
-    TouchId, VirtualizerCallbacks, WheelHandler,
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::animation::AnimProp;
+use runtime_shared::primitives;
+use runtime_shared::{
+    Action, ColorScheme, Platform, StyleRules,
 };
 use runtime_scene::{realize, Element, Host, Realized, Registry};
 use runtime_vocabulary::caps;
 use runtime_world::World;
+use crate::node::{self, NodeKind};
+use crate::{format_button_label, handles, terminal_advance_spinner, terminal_toggle_press};
+use runtime_shared::color::{parse_or, Rgba};
+use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
+use runtime_shared::Color as FwColor;
+use runtime_vocabulary::caps::{TextOps as _, ViewOps as _};
 
 use crate::{TermNode, TerminalBackend};
 
@@ -190,8 +198,8 @@ pub fn start(
     // Monotonic clock (idempotent, first install wins) — animation and
     // presence timing read it; the old boot relied on the host's lazy
     // default, the new boot installs it explicitly like macOS/wgpu.
-    let platform = Backend::platform(&*backend.borrow());
-    runtime_core::time::install_default_time_source(platform);
+    let platform = caps::AppEnvOps::platform(&*backend.borrow());
+    runtime_shared::time::install_default_time_source(platform);
 
     let mut registry: Registry<TerminalBackend> = Registry::new();
     runtime_vocabulary::register_builtins(&mut registry);
@@ -214,7 +222,7 @@ pub fn start(
     // scheduler, load-bearing under a buffering test scheduler. Must
     // run with NO backend borrow held (drained tasks re-borrow);
     // ENTERED because a buffered task may do creation-side work.
-    world.enter(runtime_core::scheduling::drain_buffered_microtasks);
+    world.enter(runtime_shared::scheduling::drain_buffered_microtasks);
 
     // Single-root contract, matching the old-core mount (`find_root`
     // wants exactly one application root — id 1).
@@ -226,7 +234,7 @@ pub fn start(
              top-level node (got {n}) — wrap fragment/multi-root trees in a view"
         ),
     };
-    Backend::finish(&mut *backend.borrow_mut(), root);
+    caps::LifecycleOps::finish(&mut *backend.borrow_mut(), root);
 
     // Commit anything staged during mount before the first paint.
     world.flush();
@@ -277,7 +285,7 @@ pub fn schedule_flush() {
     if FLUSH_QUEUED.with(|q| q.replace(true)) {
         return;
     }
-    runtime_core::scheduling::schedule_microtask(|| {
+    runtime_shared::scheduling::schedule_microtask(|| {
         FLUSH_QUEUED.with(|q| q.set(false));
         flush_now();
     });
@@ -303,18 +311,15 @@ fn flush_now() {
     }
 }
 
-/// Run a platform-invoked vocabulary callback with the mounted world
-/// ambient (`World::enter`). Same rationale as the wgpu/web glue:
-/// virtualizer `mount_item`/`release_item` REALIZE/tear down a row —
-/// creation-side work that needs the ambient world. Pre-boot the boot's
-/// own `enter` is still ambient, so the bare-call fallback never
-/// double-books.
-fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
-    match FLUSH_WORLD.with(|w| w.borrow().clone()) {
-        Some(world) => world.enter(f),
-        None => f(),
-    }
-}
+// NOTE: there is deliberately no `enter_mounted_world` helper here (the
+// web/wgpu glue has one). It exists to make virtualizer
+// `mount_item`/`release_item` — the one platform-callback family that
+// REALIZES a row, i.e. creation-side work needing the ambient world —
+// run inside `World::enter`. This backend implements no `VirtualizerOps`
+// method, so `create_virtualizer` resolves to the caps default
+// (`missing_primitive_placeholder`) and those callbacks are never
+// invoked. If a real terminal virtualizer lands, port the helper from
+// `backend_web::newcore` along with it.
 
 // ===========================================================================
 // Viewport source (the new-core terminal viewport seam)
@@ -324,11 +329,11 @@ thread_local! {
     /// The mounted world's viewport signal (`Copy` handle). `None`
     /// outside a new-core boot, so `set_viewport` costs one TLS read
     /// and nothing else on the old core.
-    static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_core::ViewportSize>>> =
+    static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_shared::ViewportSize>>> =
         const { Cell::new(None) };
 }
 
-fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_core::ViewportSize>>) {
+fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_shared::ViewportSize>>) {
     VIEWPORT_SINK.with(|s| s.set(sig));
 }
 
@@ -336,7 +341,7 @@ fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_core::ViewportSiz
 /// same value the old TLS write carries) into the mounted world's
 /// viewport ctx. No-op before [`start`] / after teardown. Called by
 /// [`TerminalBackend::set_viewport`].
-pub(crate) fn forward_viewport(size: runtime_core::ViewportSize) {
+pub(crate) fn forward_viewport(size: runtime_shared::ViewportSize) {
     let Some(sig) = VIEWPORT_SINK.with(|s| s.get()) else {
         return;
     };
@@ -399,31 +404,88 @@ impl Host for TerminalBackend {
     type Node = TermNode;
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
-        <TerminalBackend as Backend>::insert(self, parent, child)
+        let (parent_layout, child_layout) = match (
+            self.nodes.get(&parent.id).map(|d| d.layout),
+            self.nodes.get(&child.id).map(|d| d.layout),
+        ) {
+            (Some(p), Some(c)) => (p, c),
+            _ => return,
+        };
+        self.layout.add_child(parent_layout, child_layout);
+        if let Some(p) = self.nodes.get_mut(&parent.id) {
+            p.children.push(child.id);
+        }
     }
 
-    fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
-        <TerminalBackend as Backend>::insert_many(self, parent, children)
+    // `insert_many` is deliberately NOT implemented: `Host`'s default is
+    // the same N-x-`insert` loop the old `Backend` default ran, so the
+    // resulting child order is unchanged (deletion-baseline S2.2 —
+    // "byte-identical on `Host`, safe").
+
+    /// Explicit port of the old `Backend::insert_at` DEFAULT body: append,
+    /// ignoring the index. `Host` makes the method REQUIRED, so the default
+    /// that used to supply this body is gone — reproduced verbatim rather
+    /// than inherited (deletion-baseline S2.2). Never reached in practice:
+    /// [`supports_splice`](Self::supports_splice) is `false`, so reactive
+    /// regions rebuild wholesale under their own anchor and no positional
+    /// splice is ever emitted.
+    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, _index: usize) {
+        self.insert(parent, child)
     }
 
-    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
-        <TerminalBackend as Backend>::insert_at(self, parent, child, index)
-    }
-
-    fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
-        <TerminalBackend as Backend>::remove_child(self, parent, child)
+    /// Explicit port of the old `Backend::remove_child` DEFAULT body (a
+    /// no-op). `Host` makes it REQUIRED, so it is stated here rather than
+    /// inherited (deletion-baseline S2.2). Only meaningful for
+    /// splice-capable hosts; this one is anchored, so the framework never
+    /// calls it.
+    fn remove_child(&mut self, _parent: &Self::Node, _child: &Self::Node) {
+        // default: no-op
     }
 
     fn clear_children(&mut self, node: &Self::Node) {
-        <TerminalBackend as Backend>::clear_children(self, node)
+        let Some(data) = self.nodes.get(&node.id) else { return };
+        let parent_layout = data.layout;
+        let children = data.children.clone();
+        for cid in &children {
+            let cdata = self.nodes.remove(cid);
+            if let Some(cd) = cdata {
+                // Strip the Taffy edge first, then drop the slot.
+                // Mirrors the iOS pattern; see
+                // [[project_ios_clear_children_taffy_sync]].
+                self.layout.remove_child(parent_layout, cd.layout);
+                self.layout.remove_node(cd.layout);
+                self.layout_to_id.remove(&cd.layout);
+                // Also tear down any grandchildren that this node
+                // owned — recursive free.
+                self.drop_subtree(&cd.children);
+            }
+        }
+        self.layout.mark_dirty(parent_layout);
+        if let Some(p) = self.nodes.get_mut(&node.id) {
+            p.children.clear();
+        }
     }
 
+    /// Explicit port of the old `Backend::create_reactive_anchor` DEFAULT
+    /// body (`create_view` with default a11y). `Host` makes it REQUIRED, so
+    /// it is stated here rather than inherited (deletion-baseline S2.2). A
+    /// plain container view is the right anchor for this backend: an
+    /// unstyled view draws nothing, so the anchor is invisible and
+    /// layout-neutral.
     fn create_anchor(&mut self) -> Self::Node {
-        <TerminalBackend as Backend>::create_reactive_anchor(self)
+        self.create_view(&AccessibilityProps::default())
     }
 
+    /// Explicit `false` — the port of the old
+    /// `Backend::supports_child_splice` DEFAULT this backend relied on.
+    /// `Host` makes it REQUIRED, so the value is stated here instead of
+    /// inherited (deletion-baseline S2.2). ANCHORED mode is what the frozen
+    /// artifacts in `tests/goldens/` recorded from the old core: flipping it
+    /// to `true` would move every reactive region out from under its anchor
+    /// and change the output wholesale. Pinned by a literal assertion in the
+    /// crate's parity suite.
     fn supports_splice(&self) -> bool {
-        <TerminalBackend as Backend>::supports_child_splice(self)
+        false
     }
 }
 
@@ -433,61 +495,26 @@ impl Host for TerminalBackend {
 
 impl caps::AppEnvOps for TerminalBackend {
     fn color_scheme(&self) -> ColorScheme {
-        <TerminalBackend as Backend>::color_scheme(self)
+        // Most terminals these days are dark by default. Apps that
+        // care can branch on `Platform::Custom("Terminal")` for a
+        // proper choice.
+        ColorScheme::Dark
     }
 
     fn platform(&self) -> Platform {
-        <TerminalBackend as Backend>::platform(self)
-    }
-
-    fn url_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
-        <TerminalBackend as Backend>::url_opener(self)
-    }
-
-    fn fullscreen_setter(&self) -> Option<Rc<dyn Fn(bool)>> {
-        <TerminalBackend as Backend>::fullscreen_setter(self)
-    }
-
-    fn set_page_metadata(&mut self, meta: &PageMetadata) {
-        <TerminalBackend as Backend>::set_page_metadata(self, meta)
-    }
-
-    fn set_app_background(&mut self, color: &Tokenized<Color>) {
-        <TerminalBackend as Backend>::set_app_background(self, color)
-    }
-
-    fn set_scrollbar_theme(&mut self, thumb: &Tokenized<Color>, track: &Tokenized<Color>) {
-        <TerminalBackend as Backend>::set_scrollbar_theme(self, thumb, track)
+        Platform::Custom("Terminal")
     }
 
     fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
         // Dispatch-site glue: the app-level key handler runs author code
         // (`dispatch_key` routes here before the focused-input path).
         let handler = handler.map(flushing_key);
-        <TerminalBackend as Backend>::set_app_key_handler(self, handler)
+        self.app_key_handler = handler;
     }
 }
 
 impl caps::LifecycleOps for TerminalBackend {
-    fn finish(&mut self, root: Self::Node) {
-        <TerminalBackend as Backend>::finish(self, root)
-    }
-
-    fn run_layout(&mut self) {
-        <TerminalBackend as Backend>::run_layout(self)
-    }
-
-    fn schedule_layout_pass() {
-        <TerminalBackend as Backend>::schedule_layout_pass()
-    }
-
-    fn is_hydrating(&self) -> bool {
-        <TerminalBackend as Backend>::is_hydrating(self)
-    }
-
-    fn renders_lazy_chunks(&self) -> bool {
-        <TerminalBackend as Backend>::renders_lazy_chunks(self)
-    }
+    fn finish(&mut self, _root: Self::Node) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -495,76 +522,28 @@ impl caps::LifecycleOps for TerminalBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::ViewOps for TerminalBackend {
-    fn create_view(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-        <TerminalBackend as Backend>::create_view(self, a11y)
+    fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
+        self.alloc_node(NodeKind::View, String::new())
     }
 
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
-        <TerminalBackend as Backend>::make_view_handle(self, node)
+    fn make_view_handle(&self, node: &Self::Node) -> runtime_shared::ViewHandle {
+        handles::make_view_handle(node)
     }
 }
 
-impl caps::InputOps for TerminalBackend {
-    fn install_touch_handler(&mut self, node: &Self::Node, handler: TouchHandler) {
-        // Dispatch-site glue (module docs): flush after author code.
-        let handler: TouchHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                let response = f(ev);
-                schedule_flush();
-                response
-            })
-        };
-        <TerminalBackend as Backend>::install_touch_handler(self, node, handler)
-    }
-
-    fn claim_touch(&mut self, node: &Self::Node, touch_id: TouchId) {
-        <TerminalBackend as Backend>::claim_touch(self, node, touch_id)
-    }
-
-    fn install_wheel_handler(&mut self, node: &Self::Node, handler: WheelHandler) {
-        let handler: WheelHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                let response = f(ev);
-                schedule_flush();
-                response
-            })
-        };
-        <TerminalBackend as Backend>::install_wheel_handler(self, node, handler)
-    }
-
-    fn install_hover_handler(&mut self, node: &Self::Node, handler: HoverHandler) {
-        <TerminalBackend as Backend>::install_hover_handler(self, node, flushing1(handler))
-    }
-
-    fn mark_preserves_focus(&mut self, node: &Self::Node) {
-        <TerminalBackend as Backend>::mark_preserves_focus(self, node)
-    }
-
-    fn install_file_drop_handler(&mut self, node: &Self::Node, handler: FileDropHandler) {
-        let handler: FileDropHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                let response = f(ev);
-                schedule_flush();
-                response
-            })
-        };
-        <TerminalBackend as Backend>::install_file_drop_handler(self, node, handler)
-    }
-}
+impl caps::InputOps for TerminalBackend {}
 
 impl caps::PressableOps for TerminalBackend {
-    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> Self::Node {
+    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Self::Node {
         // Dispatch-site glue: the wrapped closure is what
         // `dispatch_click` hands back in `ClickOutcome::HandlerFired`,
         // so the host's plain `h()` call gets the flush for free.
-        <TerminalBackend as Backend>::create_pressable(self, flushing0(on_click), a11y)
-    }
-
-    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_core::PressableHandle {
-        <TerminalBackend as Backend>::make_pressable_handle(self, node)
+        let on_click = flushing0(on_click);
+        let node = self.alloc_node(NodeKind::Pressable, String::new());
+        if let Some(data) = self.nodes.get_mut(&node.id) {
+            data.on_click = Some(on_click);
+        }
+        node
     }
 }
 
@@ -573,66 +552,34 @@ impl caps::PressableOps for TerminalBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::TextOps for TerminalBackend {
-    fn create_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
-        <TerminalBackend as Backend>::create_text(self, content, a11y)
-    }
-
-    fn create_styled_text(&mut self, runs: &[TextRun], a11y: &AccessibilityProps) -> Self::Node {
-        <TerminalBackend as Backend>::create_styled_text(self, runs, a11y)
-    }
-
-    fn update_styled_text(&mut self, node: &Self::Node, runs: &[TextRun]) {
-        <TerminalBackend as Backend>::update_styled_text(self, node, runs)
+    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
+        let node = self.alloc_node(NodeKind::Text, content.to_string());
+        self.install_text_measure(node.id);
+        node
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
-        <TerminalBackend as Backend>::update_text(self, node, content)
+        let layout = match self.nodes.get(&node.id) {
+            Some(d) if d.content == content => return,
+            Some(d) => d.layout,
+            None => return,
+        };
+        if let Some(data) = self.nodes.get_mut(&node.id) {
+            data.content = content.to_string();
+        }
+        // The Taffy measure_fn captures its content snapshot by
+        // value (we can't borrow `&mut self` inside the closure), so
+        // the measure_fn still believes the text is the original
+        // empty string until we re-install it. Without this, the
+        // text node measures 0x0 and the rendered glyphs land in
+        // a zero-size frame — nothing visible. Re-installing is
+        // cheap (one Rc clone per swap).
+        self.install_text_measure(node.id);
+        self.layout.mark_dirty(layout);
     }
 
-    fn create_text_with_id(
-        &mut self,
-        content: &str,
-        a11y: &AccessibilityProps,
-    ) -> Option<(Self::Node, u32)> {
-        <TerminalBackend as Backend>::create_text_with_id(self, content, a11y)
-    }
-
-    fn update_text_by_id(&mut self, id: u32, content: String) {
-        <TerminalBackend as Backend>::update_text_by_id(self, id, content)
-    }
-
-    fn release_text_id(&mut self, id: u32) {
-        <TerminalBackend as Backend>::release_text_id(self, id)
-    }
-
-    fn supports_js_text_bindings(&self) -> bool {
-        <TerminalBackend as Backend>::supports_js_text_bindings(self)
-    }
-
-    fn register_reactive_text_binding(
-        &mut self,
-        text_id: u32,
-        signal_ids: &[u64],
-        template_parts: &[&str],
-        initial_values: &[&str],
-        stringifiers: &[Rc<dyn Fn() -> String>],
-    ) {
-        <TerminalBackend as Backend>::register_reactive_text_binding(
-            self,
-            text_id,
-            signal_ids,
-            template_parts,
-            initial_values,
-            stringifiers,
-        )
-    }
-
-    fn release_reactive_text_binding(&mut self, text_id: u32) {
-        <TerminalBackend as Backend>::release_reactive_text_binding(self, text_id)
-    }
-
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
-        <TerminalBackend as Backend>::make_text_handle(self, node)
+    fn make_text_handle(&self, node: &Self::Node) -> runtime_shared::TextHandle {
+        handles::make_text_handle(node)
     }
 }
 
@@ -641,9 +588,9 @@ impl caps::ButtonOps for TerminalBackend {
         &mut self,
         label: &str,
         on_click: &Action,
-        leading_icon: Option<&primitives::icon::IconData>,
-        trailing_icon: Option<&primitives::icon::IconData>,
-        a11y: &AccessibilityProps,
+        _leading_icon: Option<&primitives::icon::IconData>,
+        _trailing_icon: Option<&primitives::icon::IconData>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: wrap the Action's runtime evaluator (the
         // closure `dispatch_click` returns); the serialization metadata
@@ -655,22 +602,27 @@ impl caps::ButtonOps for TerminalBackend {
             output: on_click.output,
             fire: flushing0(on_click.fire.clone()),
         };
-        <TerminalBackend as Backend>::create_button(
-            self,
-            label,
-            &on_click,
-            leading_icon,
-            trailing_icon,
-            a11y,
-        )
+        let on_click = &on_click;
+        // Render Button as `[ label ]` for a consistent at-a-glance
+        // affordance on terminal — matches the existing Toggle's
+        // `[ ● ]` bracket convention. Store the bracketed form
+        // directly so the captured `measure_fn` (which reads
+        // `data.content`) sizes the node for the bracketed width.
+        // Paint goes through `paint_text` unchanged.
+        let bracketed = format_button_label(label);
+        let node = self.alloc_node(NodeKind::Button, bracketed);
+        let fire = on_click.fire.clone();
+        if let Some(data) = self.nodes.get_mut(&node.id) {
+            data.on_click = Some(fire);
+        }
+        self.install_text_measure(node.id);
+        node
     }
 
     fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-        <TerminalBackend as Backend>::update_button_label(self, node, label)
-    }
-
-    fn make_button_handle(&self, node: &Self::Node) -> runtime_core::ButtonHandle {
-        <TerminalBackend as Backend>::make_button_handle(self, node)
+        // Re-wrap reactive label updates to keep the bracketed
+        // form in sync with what `create_button` stored.
+        self.update_text(node, &format_button_label(label));
     }
 }
 
@@ -679,84 +631,24 @@ impl caps::ButtonOps for TerminalBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::ImageOps for TerminalBackend {
-    fn create_image(&mut self, src: &str, alt: Option<&str>, a11y: &AccessibilityProps) -> Self::Node {
-        <TerminalBackend as Backend>::create_image(self, src, alt, a11y)
-    }
-
-    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
-        <TerminalBackend as Backend>::update_image_src(self, node, src)
-    }
-
-    fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
-        <TerminalBackend as Backend>::update_image_alt(self, node, alt)
-    }
-
-    fn install_image_load_handler(&mut self, node: &Self::Node, handler: ImageLoadHandler) {
-        let handler: ImageLoadHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                f(ev);
-                schedule_flush();
-            })
-        };
-        <TerminalBackend as Backend>::install_image_load_handler(self, node, handler)
-    }
-
-    fn install_image_error_handler(&mut self, node: &Self::Node, handler: ImageErrorHandler) {
-        <TerminalBackend as Backend>::install_image_error_handler(self, node, flushing0(handler))
-    }
-
-    fn make_image_handle(&self, node: &Self::Node) -> primitives::image::ImageHandle {
-        <TerminalBackend as Backend>::make_image_handle(self, node)
+    fn create_image(
+        &mut self,
+        _src: &str,
+        _alt: Option<&str>,
+        a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.create_view(a11y)
     }
 }
 
 impl caps::IconOps for TerminalBackend {
     fn create_icon(
         &mut self,
-        data: &primitives::icon::IconData,
-        color: Option<&Color>,
+        _data: &runtime_shared::primitives::icon::IconData,
+        _color: Option<&FwColor>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <TerminalBackend as Backend>::create_icon(self, data, color, a11y)
-    }
-
-    fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
-        <TerminalBackend as Backend>::update_icon_color(self, node, color)
-    }
-
-    fn update_icon_data(&mut self, node: &Self::Node, data: &primitives::icon::IconData) {
-        <TerminalBackend as Backend>::update_icon_data(self, node, data)
-    }
-
-    fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
-        <TerminalBackend as Backend>::update_icon_stroke(self, node, progress)
-    }
-
-    fn animate_icon_stroke(
-        &mut self,
-        node: &Self::Node,
-        from: f32,
-        to: f32,
-        duration_ms: u32,
-        easing: Easing,
-        infinite: bool,
-        autoreverses: bool,
-    ) {
-        <TerminalBackend as Backend>::animate_icon_stroke(
-            self,
-            node,
-            from,
-            to,
-            duration_ms,
-            easing,
-            infinite,
-            autoreverses,
-        )
-    }
-
-    fn make_icon_handle(&self, node: &Self::Node) -> primitives::icon::IconHandle {
-        <TerminalBackend as Backend>::make_icon_handle(self, node)
+        self.create_view(a11y)
     }
 }
 
@@ -764,7 +656,7 @@ impl caps::LinkOps for TerminalBackend {
     fn create_link(
         &mut self,
         config: primitives::link::LinkConfig,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: link activation dispatches navigation
         // (stages nav-queue tick signals on the new core). The wrapped
@@ -772,15 +664,17 @@ impl caps::LinkOps for TerminalBackend {
         // flush exactly like pressables.
         let mut config = config;
         config.on_activate = flushing0(config.on_activate.clone());
-        <TerminalBackend as Backend>::create_link(self, config, a11y)
-    }
-
-    fn update_link_url(&mut self, node: &Self::Node, url: &str) {
-        <TerminalBackend as Backend>::update_link_url(self, node, url)
-    }
-
-    fn make_link_handle(&self, node: &Self::Node) -> primitives::link::LinkHandle {
-        <TerminalBackend as Backend>::make_link_handle(self, node)
+        // Terminal renders links as plain Pressable wrappers — a click
+        // anywhere inside fires `on_activate`. The trait default
+        // collapses to `create_view` and drops `on_activate` entirely,
+        // which is why nav-link clicks were silently no-op'ing
+        // before. The on_click slot mirrors what `create_pressable`
+        // sets, so the existing hit-test path picks it up.
+        let node = self.alloc_node(NodeKind::Pressable, String::new());
+        if let Some(data) = self.nodes.get_mut(&node.id) {
+            data.on_click = Some(config.on_activate);
+        }
+        node
     }
 }
 
@@ -797,79 +691,70 @@ impl caps::TextInputOps for TerminalBackend {
         on_key_down: Option<primitives::key::KeyDownHandler>,
         on_blur: Option<primitives::text_input::BlurHandler>,
         secure: bool,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // on_change is fired from `apply_key_default`'s deferred
         // microtask; the wrapper queues the flush from inside it — the
         // host's drain-until-empty loop commits the same tick.
-        <TerminalBackend as Backend>::create_text_input(
-            self,
-            initial_value,
-            placeholder,
-            flushing1(on_change),
-            on_key_down.map(flushing_key),
-            on_blur.map(|f| -> primitives::text_input::BlurHandler {
+        let on_change = flushing1(on_change);
+        let on_key_down = on_key_down.map(flushing_key);
+        let _on_blur = on_blur.map(|f| -> primitives::text_input::BlurHandler {
                 Rc::new(move || {
                     let outcome = f();
                     schedule_flush();
                     outcome
                 })
-            }),
-            secure,
-            a11y,
-        )
+            });
+        let node = self.alloc_node(NodeKind::TextInput, String::new());
+        if let Some(d) = self.nodes.get_mut(&node.id) {
+            let placeholder_owned = placeholder.map(|s| s.to_string());
+            // Seed an intrinsic width that fits the placeholder (so
+            // empty inputs aren't 0-wide) plus 2 cells of breathing
+            // room. Authors can override with explicit `width` in
+            // the stylesheet.
+            let intrinsic_cells = placeholder_owned
+                .as_ref()
+                .map(|s| s.chars().count() as f32)
+                .unwrap_or(0.0)
+                .max(initial_value.chars().count() as f32)
+                .max(8.0)
+                + 2.0;
+            let (cw, ch) = self.cell_size;
+            self.layout
+                .set_intrinsic_size(d.layout, intrinsic_cells * cw, 1.0 * ch);
+            d.input = Some(Box::new(node::InputState {
+                value: initial_value.to_string(),
+                cursor: initial_value.chars().count(),
+                placeholder: placeholder_owned,
+                secure,
+                on_change,
+                on_key_down,
+            }));
+        }
+        node
     }
 
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
-        <TerminalBackend as Backend>::update_text_input_value(self, node, value)
+        let Some(d) = self.nodes.get_mut(&node.id) else { return };
+        let Some(input) = d.input.as_mut() else { return };
+        if input.value == value {
+            return;
+        }
+        input.value = value.to_string();
+        // Clamp the cursor in case the controlled value got
+        // truncated below the previous cursor position.
+        let max = input.value.chars().count();
+        if input.cursor > max {
+            input.cursor = max;
+        }
     }
 
     fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
-        <TerminalBackend as Backend>::update_text_input_secure(self, node, secure)
-    }
-
-    fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
-        <TerminalBackend as Backend>::set_text_input_focus_handler(self, node, flushing1(handler))
-    }
-
-    fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
-        <TerminalBackend as Backend>::update_text_input_placeholder(self, node, placeholder)
-    }
-
-    fn create_text_area(
-        &mut self,
-        initial_value: &str,
-        placeholder: Option<&str>,
-        wrap: bool,
-        min_rows: Option<u32>,
-        max_rows: Option<u32>,
-        on_change: Rc<dyn Fn(String)>,
-        on_key_down: Option<primitives::key::KeyDownHandler>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        <TerminalBackend as Backend>::create_text_area(
-            self,
-            initial_value,
-            placeholder,
-            wrap,
-            min_rows,
-            max_rows,
-            flushing1(on_change),
-            on_key_down.map(flushing_key),
-            a11y,
-        )
-    }
-
-    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
-        <TerminalBackend as Backend>::update_text_area_value(self, node, value)
-    }
-
-    fn make_text_input_handle(&self, node: &Self::Node) -> primitives::text_input::TextInputHandle {
-        <TerminalBackend as Backend>::make_text_input_handle(self, node)
-    }
-
-    fn make_text_area_handle(&self, node: &Self::Node) -> primitives::text_area::TextAreaHandle {
-        <TerminalBackend as Backend>::make_text_area_handle(self, node)
+        // Flip the stored mask flag; the next render bullet-masks (or reveals)
+        // the value. No rebuild — the cursor/value state is untouched.
+        let Some(d) = self.nodes.get_mut(&node.id) else { return };
+        let Some(input) = d.input.as_mut() else { return };
+        input.secure = secure;
     }
 }
 
@@ -878,76 +763,89 @@ impl caps::ToggleOps for TerminalBackend {
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // The backend's toggle click handler (via the global
         // self-handle) forwards to on_change — wrapping it here covers
         // the whole press path.
-        <TerminalBackend as Backend>::create_toggle(self, initial_value, flushing1(on_change), a11y)
+        let on_change = flushing1(on_change);
+        // Render: `[ ]` (off) / `[●]` (on). 3 cells wide intrinsic.
+        let node = self.alloc_node(NodeKind::Toggle, String::new());
+        if let Some(d) = self.nodes.get_mut(&node.id) {
+            d.toggle_value = initial_value;
+            // Wrap `on_change` so the click handler (no args) reads
+            // the *current* value at click time, flips it, and
+            // forwards the new value. The framework's controlled-
+            // value Effect re-fires `update_toggle_value` so the
+            // backend's `toggle_value` stays in sync with the
+            // signal.
+            //
+            // We pull the current value from the backend via the
+            // shared id — no need for a separate Cell.
+            let id = node.id;
+            let oc = on_change.clone();
+            d.on_click = Some(Rc::new(move || {
+                // The framework's controlled-value cycle: this fires
+                // on press, we flip and call on_change with the new
+                // value; the parent updates its `Signal<bool>`; the
+                // framework's effect calls `update_toggle_value`
+                // with the same new value, which is a no-op (we
+                // skip on equality). One coherent state.
+                terminal_toggle_press(id, &oc);
+            }));
+            // Cells: "[ x ]" — 5 cells wide for breathing room.
+            let (cw, ch) = self.cell_size;
+            self.layout.set_intrinsic_size(d.layout, 5.0 * cw, 1.0 * ch);
+        }
+        node
     }
 
     fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
-        <TerminalBackend as Backend>::update_toggle_value(self, node, value)
-    }
-
-    fn make_toggle_handle(&self, node: &Self::Node) -> primitives::toggle::ToggleHandle {
-        <TerminalBackend as Backend>::make_toggle_handle(self, node)
+        if let Some(d) = self.nodes.get_mut(&node.id) {
+            d.toggle_value = value;
+        }
     }
 }
 
-impl caps::SliderOps for TerminalBackend {
-    fn create_slider(
-        &mut self,
-        initial_value: f32,
-        min: f32,
-        max: f32,
-        step: Option<f32>,
-        on_change: Rc<dyn Fn(f32)>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        <TerminalBackend as Backend>::create_slider(
-            self,
-            initial_value,
-            min,
-            max,
-            step,
-            flushing1(on_change),
-            a11y,
-        )
-    }
-
-    fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
-        <TerminalBackend as Backend>::update_slider_value(self, node, value)
-    }
-
-    fn make_slider_handle(&self, node: &Self::Node) -> primitives::slider::SliderHandle {
-        <TerminalBackend as Backend>::make_slider_handle(self, node)
-    }
-}
+impl caps::SliderOps for TerminalBackend {}
 
 impl caps::ActivityIndicatorOps for TerminalBackend {
     fn create_activity_indicator(
         &mut self,
-        size: primitives::activity_indicator::ActivityIndicatorSize,
-        color: Option<&Color>,
-        a11y: &AccessibilityProps,
+        size: ActivityIndicatorSize,
+        color: Option<&FwColor>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <TerminalBackend as Backend>::create_activity_indicator(self, size, color, a11y)
-    }
-
-    fn update_activity_indicator_size(
-        &mut self,
-        node: &Self::Node,
-        size: primitives::activity_indicator::ActivityIndicatorSize,
-    ) {
-        <TerminalBackend as Backend>::update_activity_indicator_size(self, node, size)
-    }
-
-    fn make_activity_indicator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> primitives::activity_indicator::ActivityIndicatorHandle {
-        <TerminalBackend as Backend>::make_activity_indicator_handle(self, node)
+        let node = self.alloc_node(NodeKind::ActivityIndicator, String::new());
+        if let Some(d) = self.nodes.get_mut(&node.id) {
+            // Color seed: optional explicit color, otherwise muted.
+            if let Some(c) = color {
+                d.fg = Some(parse_or(&c.0, Rgba::new(180, 180, 180, 255)));
+            }
+            // Small = 1 cell tall, Large = 1 cell tall too — we
+            // can't actually grow a single braille glyph. Width: 3
+            // cells either way to give the spinner some space.
+            let w_cells = match size {
+                ActivityIndicatorSize::Small => 3.0,
+                ActivityIndicatorSize::Large => 5.0,
+            };
+            let (cw, ch) = self.cell_size;
+            self.layout.set_intrinsic_size(d.layout, w_cells * cw, 1.0 * ch);
+        }
+        // The walker fires no per-frame effect for this primitive,
+        // so we install our own `raf_loop` to advance the phase.
+        // Each tick bumps `anim_phase` by ~one frame's worth of the
+        // 10-step braille cycle. The render path samples
+        // `anim_phase` to pick the current glyph.
+        let id = node.id;
+        let task = runtime_shared::raf_loop(move || {
+            terminal_advance_spinner(id);
+        });
+        // Anchor to the current reactive scope so unmount cancels
+        // the loop. `on_cleanup` is a no-op outside a scope, which
+        // is fine — top-level binaries leak the handle until exit.
+        runtime_shared::on_cleanup(move || drop(task));
+        node
     }
 }
 
@@ -960,7 +858,7 @@ impl caps::ScrollOps for TerminalBackend {
         &mut self,
         horizontal: bool,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: on_scroll fires from `apply_scroll_delta`
         // per wheel tick; the flush microtask is deduped so a burst
@@ -971,241 +869,74 @@ impl caps::ScrollOps for TerminalBackend {
                 schedule_flush();
             })
         });
-        <TerminalBackend as Backend>::create_scroll_view(self, horizontal, on_scroll, a11y)
-    }
-
-    fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
-        <TerminalBackend as Backend>::node_scroll(self, node)
-    }
-
-    fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
-        <TerminalBackend as Backend>::set_node_scroll(self, node, x, y)
-    }
-
-    fn make_scroll_view_handle(&self, node: &Self::Node) -> primitives::scroll_view::ScrollViewHandle {
-        <TerminalBackend as Backend>::make_scroll_view_handle(self, node)
-    }
-}
-
-impl caps::SafeAreaOps for TerminalBackend {
-    fn apply_safe_area_padding(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-        <TerminalBackend as Backend>::apply_safe_area_padding(self, node, sides)
-    }
-
-    fn apply_scroll_view_safe_area_inset(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-        <TerminalBackend as Backend>::apply_scroll_view_safe_area_inset(self, node, sides)
-    }
-}
-
-impl caps::VirtualizerOps for TerminalBackend {
-    fn create_virtualizer(
-        &mut self,
-        callbacks: VirtualizerCallbacks<Self::Node>,
-        overscan: f32,
-        layout: primitives::virtualizer::VirtualLayout,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Dispatch-site glue + world entry: mount/release run author
-        // render closures and scope cleanups; mount_item REALIZES the
-        // row (creation-side work that needs the ambient world — the
-        // flat_list-renders-zero-rows bug every backend shared).
-        // item_count/item_key/item_size are pure reads, unwrapped.
-        let VirtualizerCallbacks {
-            item_count,
-            item_key,
-            item_size,
-            measure_sizes,
-            mount_item,
-            release_item,
-            set_measured_size,
-        } = callbacks;
-        let callbacks = VirtualizerCallbacks {
-            item_count,
-            item_key,
-            item_size,
-            measure_sizes,
-            mount_item: {
-                let f = mount_item;
-                Rc::new(move |i| {
-                    let mounted = enter_mounted_world(|| f(i));
-                    schedule_flush();
-                    mounted
-                })
-            },
-            release_item: {
-                let f = release_item;
-                Rc::new(move |scope_id| {
-                    enter_mounted_world(|| f(scope_id));
-                    schedule_flush();
-                })
-            },
-            set_measured_size: {
-                let f = set_measured_size;
-                Rc::new(move |key, size| {
-                    f(key, size);
-                    schedule_flush();
-                })
-            },
-        };
-        <TerminalBackend as Backend>::create_virtualizer(self, callbacks, overscan, layout, a11y)
-    }
-
-    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
-        <TerminalBackend as Backend>::virtualizer_data_changed(self, node)
-    }
-
-    fn release_virtualizer(&mut self, node: &Self::Node) {
-        <TerminalBackend as Backend>::release_virtualizer(self, node)
-    }
-
-    fn make_virtualizer_handle(&self, node: &Self::Node) -> primitives::virtualizer::VirtualizerHandle {
-        <TerminalBackend as Backend>::make_virtualizer_handle(self, node)
+        // Terminal owns its own mouse-wheel dispatch (see
+        // `dispatch_scroll` + `apply_scroll_delta`) which mutates
+        // each ScrollView's `(scroll_x, scroll_y)` in cell units.
+        // We stash the `on_scroll` callback on the node and fire it
+        // from `apply_scroll_delta` after the offset is clamped.
+        // Offsets are reported in cells \u{2014} the terminal's
+        // native unit \u{2014} matching the other backends'
+        // "current offset in native coordinate space" semantic
+        // (web pixels, iOS points, Android dp post-conversion).
+        let node = self.alloc_node(NodeKind::ScrollView, String::new());
+        let layout = self.nodes.get(&node.id).map(|d| d.layout);
+        if let Some(d) = self.nodes.get_mut(&node.id) {
+            d.horizontal = horizontal;
+            d.on_scroll = on_scroll;
+        }
+        // Tell Taffy this node behaves like CSS `overflow: scroll` on
+        // the chosen axis. Without this, Taffy sizes the scroll view
+        // to its content's intrinsic size — i.e. the content fits
+        // inside it exactly and there's nothing to scroll. The
+        // helper also sets `flex_grow: 1, flex_basis: 0` so the
+        // scroll view fills its parent's available main-axis space
+        // (matches how an unsized ScrollView behaves on
+        // iOS/Android/web where the native scroll view's frame is
+        // set by its parent and content has its own coordinate
+        // space).
+        if let Some(l) = layout {
+            self.layout.set_overflow_scroll(l, horizontal);
+        }
+        node
     }
 }
+
+impl caps::SafeAreaOps for TerminalBackend {}
+
+impl caps::VirtualizerOps for TerminalBackend {}
 
 // ---------------------------------------------------------------------------
 // Graphics + portal + presence + navigator
 // ---------------------------------------------------------------------------
 
-impl caps::GraphicsOps for TerminalBackend {
-    fn create_graphics(
-        &mut self,
-        on_ready: primitives::graphics::OnReady,
-        on_resize: primitives::graphics::OnResize,
-        on_lost: primitives::graphics::OnLost,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Dispatch-site glue: surface lifecycle callbacks run author
-        // code (the terminal never fires them — no GPU surface — but
-        // the wrap keeps the delegation mechanically uniform).
-        let on_ready: primitives::graphics::OnReady = {
-            let mut f = on_ready;
-            Box::new(move |ev| {
-                f(ev);
-                schedule_flush();
-            })
-        };
-        let on_resize: primitives::graphics::OnResize = {
-            let mut f = on_resize;
-            Box::new(move |ev| {
-                f(ev);
-                schedule_flush();
-            })
-        };
-        let on_lost: primitives::graphics::OnLost = {
-            let mut f = on_lost;
-            Box::new(move || {
-                f();
-                schedule_flush();
-            })
-        };
-        <TerminalBackend as Backend>::create_graphics(self, on_ready, on_resize, on_lost, a11y)
-    }
-
-    fn release_graphics(&mut self, node: &Self::Node) {
-        <TerminalBackend as Backend>::release_graphics(self, node)
-    }
-
-    fn make_graphics_handle(&self, node: &Self::Node) -> primitives::graphics::GraphicsHandle {
-        <TerminalBackend as Backend>::make_graphics_handle(self, node)
-    }
-}
+impl caps::GraphicsOps for TerminalBackend {}
 
 impl caps::PortalOps for TerminalBackend {
     fn create_portal(
         &mut self,
-        target: primitives::portal::PortalTarget,
+        _target: primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
-        trap_focus: bool,
+        _trap_focus: bool,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
         let on_dismiss = on_dismiss.map(flushing0);
-        <TerminalBackend as Backend>::create_portal(self, target, on_dismiss, trap_focus, a11y)
-    }
-
-    fn release_portal(&mut self, node: &Self::Node) {
-        <TerminalBackend as Backend>::release_portal(self, node)
-    }
-
-    fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
-        <TerminalBackend as Backend>::set_portal_hidden(self, node, hidden)
-    }
-
-    fn make_portal_handle(&self, node: &Self::Node) -> primitives::portal::PortalHandle {
-        <TerminalBackend as Backend>::make_portal_handle(self, node)
+        let _on_dismiss = on_dismiss;
+        self.create_view(a11y)
     }
 }
 
-impl caps::PresenceOps for TerminalBackend {
-    fn create_presence_placeholder(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-        <TerminalBackend as Backend>::create_presence_placeholder(self, a11y)
-    }
+impl caps::PresenceOps for TerminalBackend {}
 
-    fn apply_presence(
-        &mut self,
-        node: &Self::Node,
-        state: primitives::presence::PresenceState,
-        transition: Option<(u32, Easing)>,
-    ) {
-        <TerminalBackend as Backend>::apply_presence(self, node, state, transition)
-    }
-
-    fn make_presence_handle(&self, node: &Self::Node) -> primitives::presence::PresenceHandle {
-        <TerminalBackend as Backend>::make_presence_handle(self, node)
-    }
-}
-
-impl caps::NavigatorOps for TerminalBackend {
-    fn create_navigator(
-        &mut self,
-        type_id: TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn Any>,
-        host: primitives::navigator::NavigatorHost<Self::Node>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // NOT wrapped: NavigatorHost's callbacks belong to the OLD-core
-        // navigator path; the vocabulary navigator handlers own screens
-        // on the new core and their dispatch is handler-safe (queue +
-        // tick signal committed by a driver effect on flush). Author
-        // navigation stages via handlers already wrapped above.
-        <TerminalBackend as Backend>::create_navigator(
-            self,
-            type_id,
-            type_name,
-            presentation,
-            host,
-            a11y,
-        )
-    }
-
-    fn release_navigator(&mut self, node: &Self::Node) {
-        <TerminalBackend as Backend>::release_navigator(self, node)
-    }
-
-    fn apply_navigator_slot_style(
-        &mut self,
-        node: &Self::Node,
-        slot: &'static str,
-        style: &Rc<StyleRules>,
-    ) {
-        <TerminalBackend as Backend>::apply_navigator_slot_style(self, node, slot, style)
-    }
-
-    fn make_navigator_handle(&self, node: &Self::Node) -> primitives::navigator::NavigatorHandle {
-        <TerminalBackend as Backend>::make_navigator_handle(self, node)
-    }
-
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn Any>,
-    ) {
-        <TerminalBackend as Backend>::navigator_attach_initial(self, navigator, screen, scope_id, options)
-    }
-}
+// The four surviving `NavigatorOps` methods all resolve to their caps
+// DEFAULTS (no-op release / no-op slot style / no-op handle). The old
+// bodies routed through a backend-side `NavigatorRegistry` +
+// per-instance `NavigatorHandler`, both populated exclusively by
+// `create_navigator` — the one caps method that CEASES TO EXIST with the
+// old core (deletion-baseline S2.3), so the registry could never be
+// populated again. Navigators mount through
+// `runtime_vocabulary::handlers::navigator` over the Lifecycle/View caps
+// instead, and never call this trait.
+impl caps::NavigatorOps for TerminalBackend {}
 
 // ---------------------------------------------------------------------------
 // External + document
@@ -1214,44 +945,27 @@ impl caps::NavigatorOps for TerminalBackend {
 impl caps::ExternalOps for TerminalBackend {
     fn create_external(
         &mut self,
-        type_id: TypeId,
+        _type_id: std::any::TypeId,
         type_name: &'static str,
-        payload: &Rc<dyn Any>,
+        _payload: &std::rc::Rc<dyn std::any::Any>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <TerminalBackend as Backend>::create_external(self, type_id, type_name, payload, a11y)
-    }
-
-    fn release_external(&mut self, node: &Self::Node) {
-        <TerminalBackend as Backend>::release_external(self, node)
-    }
-
-    fn missing_primitive_placeholder(&mut self, label: &'static str) -> Self::Node {
-        <TerminalBackend as Backend>::missing_primitive_placeholder(self, label)
-    }
-}
-
-impl caps::DocumentOps for TerminalBackend {
-    fn create_element(&mut self, tag: &str) -> Self::Node {
-        <TerminalBackend as Backend>::create_element(self, tag)
-    }
-
-    fn attach_html_id(&self, node: &Self::Node, id: &str) {
-        <TerminalBackend as Backend>::attach_html_id(self, node, id)
-    }
-
-    fn attach_html_class(&self, node: &Self::Node, class: &str) {
-        <TerminalBackend as Backend>::attach_html_class(self, node, class)
-    }
-
-    fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
-        <TerminalBackend as Backend>::attach_html_style(self, node, prop, value)
-    }
-
-    fn register_raw_css(&mut self, css: &str) {
-        <TerminalBackend as Backend>::register_raw_css(self, css)
+        // The terminal backend has no external-primitive registry, so every
+        // `Element::External` (codeblock, maps, webview, …) lands here. The
+        // default `Backend::create_external` is `unimplemented!()`, which
+        // PANICS — a terminal app that mounts any external aborts at render
+        // (the tutorial mounts `codeblock`, so local `--terminal` crashed
+        // here). Render the framework's standard "not supported" text
+        // placeholder instead, mirroring the macOS/iOS backends. When a
+        // terminal external handler is genuinely needed, add a registry +
+        // inventory registrar here (see `MacosBackend::external_handlers`);
+        // until then graceful degradation beats a crash.
+        let text = format!("[external \"{type_name}\" not supported in terminal]");
+        self.create_text(&text, a11y)
     }
 }
+
+impl caps::DocumentOps for TerminalBackend {}
 
 // ---------------------------------------------------------------------------
 // Style + assets
@@ -1259,334 +973,183 @@ impl caps::DocumentOps for TerminalBackend {
 
 impl caps::StyleOps for TerminalBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
-        <TerminalBackend as Backend>::apply_style(self, node, style)
-    }
-
-    fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
-        <TerminalBackend as Backend>::mint_style_class(self, style)
-    }
-
-    fn mint_class_for_app(&mut self, app: &StyleApplication) -> Option<String> {
-        <TerminalBackend as Backend>::mint_class_for_app(self, app)
-    }
-
-    fn apply_styled_states(
-        &mut self,
-        node: &Self::Node,
-        base: &Rc<StyleRules>,
-        overlays: &[(StateBits, Rc<StyleRules>)],
-    ) {
-        <TerminalBackend as Backend>::apply_styled_states(self, node, base, overlays)
-    }
-
-    fn apply_styled_variants(
-        &mut self,
-        node: &Self::Node,
-        base: &Rc<StyleRules>,
-        state_overlays: &[(StateBits, Rc<StyleRules>)],
-        breakpoint_overlays: &[(Breakpoint, Rc<StyleRules>)],
-        container_overlays: &[(f32, Rc<StyleRules>)],
-    ) {
-        <TerminalBackend as Backend>::apply_styled_variants(
-            self,
-            node,
-            base,
-            state_overlays,
-            breakpoint_overlays,
-            container_overlays,
-        )
-    }
-
-    fn mark_container(&mut self, node: &Self::Node) {
-        <TerminalBackend as Backend>::mark_container(self, node)
-    }
-
-    fn handles_states_natively(&self) -> bool {
-        <TerminalBackend as Backend>::handles_states_natively(self)
-    }
-
-    fn token_updates_propagate_via_cascade(&self) -> bool {
-        <TerminalBackend as Backend>::token_updates_propagate_via_cascade(self)
-    }
-
-    fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        <TerminalBackend as Backend>::register_stylesheet(self, rules)
-    }
-
-    fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        <TerminalBackend as Backend>::unregister_stylesheet(self, rules)
-    }
-
-    fn install_tokens(&mut self, tokens: &[TokenEntry]) {
-        <TerminalBackend as Backend>::install_tokens(self, tokens)
-    }
-
-    fn update_tokens(&mut self, tokens: &[TokenEntry]) {
-        <TerminalBackend as Backend>::update_tokens(self, tokens)
-    }
-
-    fn on_node_unstyled(&mut self, node: &Self::Node) {
-        <TerminalBackend as Backend>::on_node_unstyled(self, node)
-    }
-
-    fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
-        // Dispatch-site glue: state flips can stage writes when the
-        // style path routes states through signals.
-        let setter: Rc<dyn Fn(StateBits, bool)> = {
-            let f = setter;
-            Rc::new(move |bits, on| {
-                f(bits, on);
-                schedule_flush();
-            })
+        let layout_node = match self.nodes.get(&node.id) {
+            Some(d) => d.layout,
+            None => return,
         };
-        <TerminalBackend as Backend>::attach_states(self, node, setter)
-    }
+        // Eagerly resolve `background` and `color` BEFORE handing the
+        // rules to `runtime-layout`'s `set_style`. This is load-
+        // bearing: the cohort driver Effect re-fires on token-signal
+        // changes, calls `apply_one` → this `apply_style`, which
+        // resolves the same Tokenized values to cache `bg`/`fg`
+        // further down. Without this early read, the cohort path's
+        // sidebar updates went through (`d.bg` was updated, the
+        // log even showed the dark color), but the render didn't
+        // visually pick up the change — the framework's token-
+        // subscription bookkeeping needs the resolve to happen
+        // BEFORE other style processing for the per-token edges to
+        // land in this Effect's dependency set on the first
+        // post-toggle re-fire. Without it, the sidebar darkened
+        // only on the second-or-later toggle, which read to the
+        // user as "doesn't update".
+        let _ = style.background.as_ref().map(|t| t.resolve());
+        let _ = style.color.as_ref().map(|t| t.resolve());
+        self.layout.set_style(layout_node, style);
 
-    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
-        <TerminalBackend as Backend>::set_disabled(self, node, disabled)
-    }
+        // Cache the resolved fg/bg + gradient so the renderer's hot
+        // path doesn't re-parse on every cell write.
+        let fg = style
+            .color
+            .as_ref()
+            .map(|t| parse_or(&t.resolve().0, Rgba::default()));
+        let bg = style
+            .background
+            .as_ref()
+            .map(|t| parse_or(&t.resolve().0, Rgba::TRANSPARENT));
+        let gradient = style.background_gradient.as_ref().map(|g| {
+            let stops: Vec<(f32, Rgba)> = g
+                .stops
+                .iter()
+                .map(|s| (s.offset, parse_or(&s.color.0, Rgba::TRANSPARENT)))
+                .collect();
+            let animated_stops = vec![None; stops.len()];
+            node::ResolvedGradient {
+                kind: g.kind.clone(),
+                stops,
+                animated_stops,
+            }
+        });
 
-    fn supports_preminted_styles(&self) -> bool {
-        <TerminalBackend as Backend>::supports_preminted_styles(self)
-    }
+        // Extract static translate from `style.transform: [...]`.
+        // We only support TranslateX/Y on this backend — Scale /
+        // Rotate / Skew don't translate to cell semantics. Last-write
+        // wins per axis (matches the RN/web "matrix multiply" feel
+        // for the translates-only subset).
+        let mut static_tx: Option<runtime_shared::Length> = None;
+        let mut static_ty: Option<runtime_shared::Length> = None;
+        if let Some(transforms) = style.transform.as_ref() {
+            for t in transforms {
+                match t {
+                    runtime_shared::Transform::TranslateX(l) => static_tx = Some(*l),
+                    runtime_shared::Transform::TranslateY(l) => static_ty = Some(*l),
+                    _ => {}
+                }
+            }
+        }
 
-    fn apply_default_text_font(&mut self, font: Option<&FontFamily>) {
-        <TerminalBackend as Backend>::apply_default_text_font(self, font)
-    }
+        // Static opacity from the stylesheet. Without this, an
+        // element declared with `opacity: 0.0` (welcome's sun, the
+        // vignette wrapper, planets pre-Act-2) starts fully visible
+        // because `NodeData.opacity` defaults to 1.0 — only the
+        // animation path (`set_animated_f32(Opacity, …)`) ever
+        // touched it. Read the resolved value and seed `data.opacity`
+        // up front; the animation Effect later overwrites at every
+        // frame.
+        let static_opacity = style
+            .opacity
+            .as_ref()
+            .map(|t| t.resolve().clamp(0.0, 1.0));
 
-    fn supports_js_class_bindings(&self) -> bool {
-        <TerminalBackend as Backend>::supports_js_class_bindings(self)
-    }
-
-    fn register_reactive_class_binding(
-        &mut self,
-        node: &Self::Node,
-        signal_id: u64,
-        values: &[u32],
-        classes: &[&str],
-        value_reader: Rc<dyn Fn() -> u32>,
-    ) -> u32 {
-        <TerminalBackend as Backend>::register_reactive_class_binding(
-            self,
-            node,
-            signal_id,
-            values,
-            classes,
-            value_reader,
-        )
-    }
-
-    fn release_reactive_class_binding(&mut self, binding_id: u32) {
-        <TerminalBackend as Backend>::release_reactive_class_binding(self, binding_id)
+        if let Some(d) = self.nodes.get_mut(&node.id) {
+            d.style = Some(style.clone());
+            d.fg = fg;
+            d.bg = bg;
+            d.static_translate_x = static_tx;
+            d.static_translate_y = static_ty;
+            if let Some(o) = static_opacity {
+                d.opacity = o;
+            }
+            // Preserve any already-animated stop overrides if the
+            // gradient's shape didn't change — re-applying a static
+            // stylesheet (state overlays, theme refresh) shouldn't
+            // reset per-frame animation state. Conservative: only
+            // preserve when the new gradient has the same stop
+            // count as the old one. Anything more aggressive risks
+            // mismatched indices.
+            let preserved = d
+                .gradient
+                .as_ref()
+                .and_then(|old| {
+                    gradient
+                        .as_ref()
+                        .filter(|new| new.stops.len() == old.stops.len())
+                        .map(|_| old.animated_stops.clone())
+                });
+            d.gradient = gradient.map(|mut g| {
+                if let Some(p) = preserved {
+                    g.animated_stops = p;
+                }
+                g
+            });
+        }
     }
 }
 
-impl caps::AssetOps for TerminalBackend {
-    fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
-        <TerminalBackend as Backend>::register_asset(self, id, kind, source)
-    }
-
-    fn unregister_asset(&mut self, id: AssetId, kind: AssetTag) {
-        <TerminalBackend as Backend>::unregister_asset(self, id, kind)
-    }
-
-    fn register_typeface(
-        &mut self,
-        id: TypefaceId,
-        family_name: &str,
-        faces: &[TypefaceFace],
-        fallback: SystemFallback,
-    ) {
-        <TerminalBackend as Backend>::register_typeface(self, id, family_name, faces, fallback)
-    }
-
-    fn unregister_typeface(&mut self, id: TypefaceId) {
-        <TerminalBackend as Backend>::unregister_typeface(self, id)
-    }
-}
+impl caps::AssetOps for TerminalBackend {}
 
 // ---------------------------------------------------------------------------
 // A11y + animation + introspection
 // ---------------------------------------------------------------------------
 
-impl caps::A11yOps for TerminalBackend {
-    fn update_accessibility(
-        &mut self,
-        node: &Self::Node,
-        a11y: &AccessibilityProps,
-        inferred_role: Option<Role>,
-    ) {
-        <TerminalBackend as Backend>::update_accessibility(self, node, a11y, inferred_role)
-    }
-
-    fn announce_for_accessibility(&mut self, msg: &str, priority: LiveRegionPriority) {
-        <TerminalBackend as Backend>::announce_for_accessibility(self, msg, priority)
-    }
-
-    fn dump_accessibility_tree(&self) -> Option<AccessibilityTree> {
-        <TerminalBackend as Backend>::dump_accessibility_tree(self)
-    }
-}
+impl caps::A11yOps for TerminalBackend {}
 
 impl caps::AnimationOps for TerminalBackend {
-    fn set_animated_f32(&mut self, node: &Self::Node, prop: AnimProp, value: f32) {
-        <TerminalBackend as Backend>::set_animated_f32(self, node, prop, value)
+    fn set_animated_f32(
+        &mut self,
+        node: &Self::Node,
+        prop: AnimProp,
+        value: f32,
+    ) {
+        let Some(d) = self.nodes.get_mut(&node.id) else { return };
+        match prop {
+            // Route to the animated slot — apply_style replays
+            // (hot-patch path) would otherwise clobber the in-
+            // flight value with the stylesheet's static starting
+            // opacity. See [`NodeData::animated_opacity`].
+            AnimProp::Opacity => d.animated_opacity = Some(value.clamp(0.0, 1.0)),
+            AnimProp::TranslateX => d.translate_x = value,
+            AnimProp::TranslateY => d.translate_y = value,
+            // Sibling-relative ordering. Higher value renders on top
+            // of lower. Welcome's planets sweep through positive and
+            // negative values as they orbit so they pass in front of
+            // and behind the headline.
+            AnimProp::ZIndex => d.z_index = value,
+            // Scale / Rotate don't map cleanly to a cell grid —
+            // documented no-ops so author code stays portable.
+            _ => {}
+        }
     }
 
-    fn set_animated_color(&mut self, node: &Self::Node, prop: AnimProp, value: [f32; 4]) {
-        <TerminalBackend as Backend>::set_animated_color(self, node, prop, value)
+    fn set_animated_color(
+        &mut self,
+        node: &Self::Node,
+        prop: AnimProp,
+        value: [f32; 4],
+    ) {
+        let Some(d) = self.nodes.get_mut(&node.id) else { return };
+        let rgba = Rgba::from_srgb_f32(value);
+        match prop {
+            AnimProp::BackgroundColor => d.animated_bg = Some(rgba),
+            AnimProp::ForegroundColor => d.animated_fg = Some(rgba),
+            AnimProp::GradientStopColor(idx) => {
+                if let Some(g) = d.gradient.as_mut() {
+                    let i = idx as usize;
+                    if i < g.animated_stops.len() {
+                        g.animated_stops[i] = Some(rgba);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
-impl caps::IntrospectionOps for TerminalBackend {
-    fn frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <TerminalBackend as Backend>::frame(self, node)
-    }
-
-    fn absolute_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <TerminalBackend as Backend>::absolute_frame(self, node)
-    }
-
-    fn device_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <TerminalBackend as Backend>::device_frame(self, node)
-    }
-
-    fn supports_native_introspection(&self) -> bool {
-        <TerminalBackend as Backend>::supports_native_introspection(self)
-    }
-
-    fn introspect_native(&self, node: &Self::Node) -> Option<NativeNode> {
-        <TerminalBackend as Backend>::introspect_native(self, node)
-    }
-
-    fn note_introspection_root(&self, node: &Self::Node) {
-        <TerminalBackend as Backend>::note_introspection_root(self, node)
-    }
-
-    fn supports_screenshot(&self) -> bool {
-        <TerminalBackend as Backend>::supports_screenshot(self)
-    }
-
-    fn capture_screenshot(&self, done: Box<dyn FnOnce(Result<Screenshot, String>)>) {
-        <TerminalBackend as Backend>::capture_screenshot(self, done)
-    }
-}
+impl caps::IntrospectionOps for TerminalBackend {}
 
 // ---------------------------------------------------------------------------
 // Batch + wire bindings
 // ---------------------------------------------------------------------------
 
-impl caps::BatchOps for TerminalBackend {
-    fn supports_batched_repeat(&self) -> bool {
-        <TerminalBackend as Backend>::supports_batched_repeat(self)
-    }
+impl caps::BatchOps for TerminalBackend {}
 
-    fn execute_batch(&mut self, batch: BackendBatch) -> Vec<Self::Node> {
-        <TerminalBackend as Backend>::execute_batch(self, batch)
-    }
-
-    fn execute_batch_with_attach(
-        &mut self,
-        batch: BackendBatch,
-        parent: &mut Self::Node,
-        attach_locals: &[u32],
-    ) -> Vec<Self::Node> {
-        <TerminalBackend as Backend>::execute_batch_with_attach(self, batch, parent, attach_locals)
-    }
-}
-
-impl caps::WireBindingOps for TerminalBackend {
-    fn note_text_binding(&mut self, node: &Self::Node, signal_ids: &[u64], method: &'static str) {
-        <TerminalBackend as Backend>::note_text_binding(self, node, signal_ids, method)
-    }
-
-    fn note_signal_initial(&mut self, signal_id: u64, value: &runtime_core::__serde_json::Value) {
-        <TerminalBackend as Backend>::note_signal_initial(self, signal_id, value)
-    }
-
-    fn note_when_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        cond_method: &'static str,
-        then_node: &Self::Node,
-        otherwise_node: &Self::Node,
-    ) {
-        <TerminalBackend as Backend>::note_when_binding(
-            self,
-            anchor,
-            signal_ids,
-            cond_method,
-            then_node,
-            otherwise_node,
-        )
-    }
-
-    fn note_switch_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        cond_method: &'static str,
-        arms: &[(runtime_core::__serde_json::Value, Self::Node)],
-        default_node: &Self::Node,
-    ) {
-        <TerminalBackend as Backend>::note_switch_binding(
-            self,
-            anchor,
-            signal_ids,
-            cond_method,
-            arms,
-            default_node,
-        )
-    }
-
-    fn note_repeat_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        count_method: &'static str,
-        row_template: &Self::Node,
-        row_index_signal_id: Option<u64>,
-    ) {
-        <TerminalBackend as Backend>::note_repeat_binding(
-            self,
-            anchor,
-            signal_ids,
-            count_method,
-            row_template,
-            row_index_signal_id,
-        )
-    }
-
-    fn note_virtualizer_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        count_method: &'static str,
-        row_template: &Self::Node,
-        row_index_signal_id: Option<u64>,
-        horizontal: bool,
-    ) {
-        <TerminalBackend as Backend>::note_virtualizer_binding(
-            self,
-            anchor,
-            signal_ids,
-            count_method,
-            row_template,
-            row_index_signal_id,
-            horizontal,
-        )
-    }
-
-    fn supports_lazy_slot_capture(&self) -> bool {
-        <TerminalBackend as Backend>::supports_lazy_slot_capture(self)
-    }
-
-    fn begin_slot_capture(&mut self) {
-        <TerminalBackend as Backend>::begin_slot_capture(self)
-    }
-
-    fn end_slot_capture(&mut self, slot_root: &Self::Node) {
-        <TerminalBackend as Backend>::end_slot_capture(self, slot_root)
-    }
-}
+impl caps::WireBindingOps for TerminalBackend {}

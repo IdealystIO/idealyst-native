@@ -2,7 +2,7 @@
 //! (the generated wrapper binary) compile on any host even though
 //! the run loop is macOS-only.
 
-use runtime_core::Element;
+use runtime_scene::Element;
 
 #[derive(Clone, Debug, Default)]
 pub struct RunOptions {
@@ -37,17 +37,17 @@ impl std::fmt::Display for RunError {
 
 impl std::error::Error for RunError {}
 
-pub fn run<F: FnOnce() -> Element>(_app: F, _opts: RunOptions) -> Result<(), RunError> {
+pub fn run<F: FnOnce() -> Element>(_build: F, _opts: RunOptions) -> Result<(), RunError> {
     Err(RunError::NotMacos)
 }
 
-/// Cross-host stub for [`crate::run_with`]. The `R` extension callback
+/// Cross-host stub for [`crate::run_with`]. The `R` registry callback
 /// is never invoked since the run loop can't boot off-macOS; takes the
 /// same shape as the real impl so consumer code type-checks
 /// uniformly. The bound is intentionally generic over `R` rather than
-/// fixing a concrete `&mut MacosBackend` parameter — MacosBackend
-/// isn't even compiled here.
-pub fn run_with<F, R>(_app: F, _opts: RunOptions, _register_extensions: R) -> Result<(), RunError>
+/// fixing a concrete `&mut SceneRegistry<MacosBackend>` parameter —
+/// `MacosBackend` isn't even compiled here.
+pub fn run_with<F, R>(_build: F, _opts: RunOptions, _register: R) -> Result<(), RunError>
 where
     F: FnOnce() -> Element,
 {

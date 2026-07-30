@@ -18,8 +18,8 @@ license.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-# `robot` for `runtime_core::robot::bridge::register_command`.
-runtime-core = { workspace = true, features = ["robot"] }
+# `robot` for `runtime_shared::robot::bridge::register_command`.
+runtime-shared = { workspace = true, features = ["robot"] }
 wire = { workspace = true }
 dev-client = { workspace = true }
 render-wgpu = { workspace = true, features = ["headless"] }

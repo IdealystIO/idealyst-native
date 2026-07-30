@@ -9,8 +9,8 @@
 use crate::imp::callbacks::{leak, KeyDownCallback, TextChangeCallback};
 use backend_android_core::helpers::{apply_default_layout_params, set_text};
 use crate::imp::{with_env, AndroidBackend};
-use runtime_core::primitives::text_area::{TextAreaHandle, TextAreaOps};
-use runtime_core::primitives::text_input::{TextInputHandle, TextInputOps};
+use runtime_shared::primitives::text_area::{TextAreaHandle, TextAreaOps};
+use runtime_shared::primitives::text_input::{TextInputHandle, TextInputOps};
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::sys::jlong;
 use std::any::Any;
@@ -21,7 +21,7 @@ pub(crate) fn create(
     initial_value: &str,
     placeholder: Option<&str>,
     on_change: Rc<dyn Fn(String)>,
-    on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+    on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
 ) -> GlobalRef {
     create_inner(b, initial_value, placeholder, on_change, on_key_down, false, true)
 }
@@ -36,7 +36,7 @@ pub(crate) fn create_multiline(
     placeholder: Option<&str>,
     wrap: bool,
     on_change: Rc<dyn Fn(String)>,
-    on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+    on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
 ) -> GlobalRef {
     create_inner(b, initial_value, placeholder, on_change, on_key_down, true, wrap)
 }
@@ -46,7 +46,7 @@ fn create_inner(
     initial_value: &str,
     placeholder: Option<&str>,
     on_change: Rc<dyn Fn(String)>,
-    on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+    on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
     multiline: bool,
     wrap: bool,
 ) -> GlobalRef {

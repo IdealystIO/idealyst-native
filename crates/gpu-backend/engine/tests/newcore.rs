@@ -10,7 +10,7 @@
 //!
 //! Integration test (own process) ON PURPOSE: these tests install a
 //! buffering test scheduler via the global first-install-wins
-//! `runtime_core::scheduling::install_scheduler` slot. The lib unit
+//! `runtime_shared::scheduling::install_scheduler` slot. The lib unit
 //! tests rely on the no-scheduler synchronous fallback; sharing a
 //! process would make their behavior depend on test ordering.
 //!
@@ -21,7 +21,6 @@
 //! until the driver's microtask runs" is observable, which the
 //! synchronous fallback would hide.
 
-#![cfg(feature = "new-core")]
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -29,9 +28,9 @@ use std::rc::Rc;
 
 use render_wgpu::newcore::{self, NewCoreApp};
 use render_wgpu::{NativeSkin, NodeKind, WgpuBackend, WgpuNode};
-use runtime_core::scheduling::{install_scheduler, ScheduleHandle, Scheduler};
-use runtime_core::{ColorScheme, Length, Platform, StyleRules, Tokenized};
 use runtime_scene::keyed;
+use runtime_shared::scheduling::{install_scheduler, ScheduleHandle, Scheduler};
+use runtime_shared::{ColorScheme, Length, Platform, StyleRules, Tokenized};
 use runtime_vocabulary::builders::IntoSceneElement;
 use runtime_vocabulary::{button, pressable, slider, text, text_input, toggle, view};
 use runtime_world::signal;
@@ -96,7 +95,7 @@ impl Scheduler for TestScheduler {
 }
 
 fn ensure_test_scheduler() {
-    // First-install-wins inside runtime_core; calling per test keeps
+    // First-install-wins inside runtime_shared; calling per test keeps
     // any test-thread able to boot first.
     install_scheduler(Box::new(TestScheduler));
 }
@@ -104,7 +103,7 @@ fn ensure_test_scheduler() {
 /// Pump every queued flush/build microtask (the test stand-in for the
 /// winit event loop draining its 0 ms timers).
 fn drain() {
-    runtime_core::scheduling::drain_buffered_microtasks();
+    runtime_shared::scheduling::drain_buffered_microtasks();
 }
 
 fn microtasks_queued() -> usize {
@@ -279,7 +278,10 @@ fn flush_tolerates_no_world_and_reentry() {
     let sig = slot.get().expect("signal");
     sig.set(1);
     newcore::flush_sync();
-    assert!(observed.get(), "effect ran; re-entrant flush didn't recurse/panic");
+    assert!(
+        observed.get(),
+        "effect ran; re-entrant flush didn't recurse/panic"
+    );
     app.stop();
     assert!(!newcore::is_booted(), "stop unhooks the driver");
 }
@@ -328,7 +330,7 @@ fn timer_staged_write_commits_via_dispatch_hook_route() {
     let root = root_of(&app);
 
     // Author schedules a timer that stages a write (a debounce shape).
-    runtime_core::scheduling::after_ms_detached(0, move || {
+    runtime_shared::scheduling::after_ms_detached(0, move || {
         count.set(7);
         // The production scheduler (host-winit) fires the hook after
         // this callback returns; the test scheduler is minimal, so
@@ -378,17 +380,27 @@ fn realize_builds_live_node_tree_and_finish_records_root() {
     );
 
     // Style delegated through StyleOps::apply_style.
-    assert!(root.borrow().style.is_some(), "author style applied to root");
+    assert!(
+        root.borrow().style.is_some(),
+        "author style applied to root"
+    );
 
     // Children: text + button + toggle, payloads intact.
     assert_eq!(texts_of(&root), vec!["New-core GPU smoke".to_string()]);
     assert!(
-        find_node(&root, &|k| matches!(k, NodeKind::Button { label, .. } if label == "Increment"))
-            .is_some(),
+        find_node(
+            &root,
+            &|k| matches!(k, NodeKind::Button { label, .. } if label == "Increment")
+        )
+        .is_some(),
         "button realized with label"
     );
     assert!(
-        find_node(&root, &|k| matches!(k, NodeKind::Toggle { value: false, .. })).is_some(),
+        find_node(&root, &|k| matches!(
+            k,
+            NodeKind::Toggle { value: false, .. }
+        ))
+        .is_some(),
         "toggle realized with initial value"
     );
     assert!(count_nodes(&root) >= 4, "root + three primitive children");
@@ -459,8 +471,8 @@ fn button_press_commits_through_wrapped_on_click() {
             .build()
     });
     let root = root_of(&app);
-    let button_node = find_node(&root, &|k| matches!(k, NodeKind::Button { .. }))
-        .expect("button in tree");
+    let button_node =
+        find_node(&root, &|k| matches!(k, NodeKind::Button { .. })).expect("button in tree");
     let on_click = match &button_node.borrow().kind {
         NodeKind::Button { on_click, .. } => on_click.clone(),
         _ => unreachable!(),
@@ -505,15 +517,12 @@ fn pressable_click_commits_through_wrapped_on_click() {
         s.set(Some(hits));
         view()
             .child(text().content(move || format!("hits={}", hits.get())))
-            .child(
-                pressable(move || hits.update(|n| n + 1))
-                    .child(text().content("press me")),
-            )
+            .child(pressable(move || hits.update(|n| n + 1)).child(text().content("press me")))
             .build()
     });
     let root = root_of(&app);
-    let node = find_node(&root, &|k| matches!(k, NodeKind::Pressable { .. }))
-        .expect("pressable in tree");
+    let node =
+        find_node(&root, &|k| matches!(k, NodeKind::Pressable { .. })).expect("pressable in tree");
     let on_click = match &node.borrow().kind {
         NodeKind::Pressable { on_click } => on_click.clone(),
         _ => unreachable!(),
@@ -613,8 +622,7 @@ fn text_input_change_commits_and_updates_node_value() {
     });
     let value = slot.get().expect("signal");
     let root = root_of(&app);
-    let node =
-        find_node(&root, &|k| matches!(k, NodeKind::TextInput { .. })).expect("text input");
+    let node = find_node(&root, &|k| matches!(k, NodeKind::TextInput { .. })).expect("text input");
     let on_change = match &node.borrow().kind {
         NodeKind::TextInput { on_change, .. } => on_change.clone(),
         _ => unreachable!(),
@@ -730,7 +738,10 @@ fn keyed_list_anchored_rebuild_tracks_edits() {
         vec!["row #3", "row #2", "row #1"]
     );
     for (content, node) in &reversed {
-        let original = initial.iter().find(|(t, _)| t == content).expect("same key set");
+        let original = initial
+            .iter()
+            .find(|(t, _)| t == content)
+            .expect("same key set");
         assert!(
             !Rc::ptr_eq(node, &original.1),
             "{content}: anchored keyed rebuilds rows (old-core no-splice contract)"
@@ -747,7 +758,10 @@ fn keyed_list_anchored_rebuild_tracks_edits() {
     newcore::schedule_flush();
     drain();
     assert_eq!(
-        row_nodes(&root).iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(),
+        row_nodes(&root)
+            .iter()
+            .map(|(t, _)| t.as_str())
+            .collect::<Vec<_>>(),
         vec!["row #2", "row #1"]
     );
 
@@ -759,7 +773,10 @@ fn keyed_list_anchored_rebuild_tracks_edits() {
     newcore::schedule_flush();
     drain();
     assert_eq!(
-        row_nodes(&root).iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(),
+        row_nodes(&root)
+            .iter()
+            .map(|(t, _)| t.as_str())
+            .collect::<Vec<_>>(),
         vec!["row #2", "row #1", "row #4"]
     );
     app.stop();
@@ -778,7 +795,11 @@ fn stop_tears_down_without_panic_and_unhooks() {
             .build()
     });
     let root = root_of(&app);
-    assert_eq!(count_nodes(&root), 4, "root + text + inner view + inner text");
+    assert_eq!(
+        count_nodes(&root),
+        4,
+        "root + text + inner view + inner text"
+    );
     app.stop();
     assert!(!newcore::is_booted());
     assert!(
@@ -825,7 +846,7 @@ fn regression_virtualizer_rows_realize_world_entered() {
                     count_for_items.get()
                 },
                 |i| i as u64,
-                runtime_core::primitives::virtualizer::ItemSize::Known(Rc::new(|_| 20.0)),
+                runtime_shared::primitives::virtualizer::ItemSize::Known(Rc::new(|_| 20.0)),
                 |i| {
                     // Creation-side row work — the aborting class: a
                     // row-local signal plus a Dyn text effect.
@@ -841,7 +862,10 @@ fn regression_virtualizer_rows_realize_world_entered() {
     let root = root_of(&app);
     let texts = texts_of(&root);
     for row in ["row-0", "row-1", "row-2"] {
-        assert!(texts.iter().any(|t| t.contains(row)), "expected {row}, got {texts:?}");
+        assert!(
+            texts.iter().any(|t| t.contains(row)),
+            "expected {row}, got {texts:?}"
+        );
     }
 
     // Data change: grow the list; the re-fill mounts the new row.
@@ -982,7 +1006,10 @@ fn start_in_world_scoped_timer_fires_while_mounted() {
         world.clone(),
     );
     pump_timers();
-    assert!(fired.get(), "scoped timer fires while the embedded app is live");
+    assert!(
+        fired.get(),
+        "scoped timer fires while the embedded app is live"
+    );
     app.stop();
     newcore::flush_sync();
 }
@@ -1061,7 +1088,7 @@ fn regression_host_set_viewport_recomputes_breakpoint() {
     // (`host_winit::newcore::run_with`): the ctx seeds from this at
     // first breakpoint read, so the build classifies the real profile
     // size instead of 0-width Xs.
-    runtime_core::set_viewport_size(runtime_core::ViewportSize {
+    runtime_shared::set_viewport_size(runtime_shared::ViewportSize {
         width: 1280.0,
         height: 832.0,
     });
@@ -1073,24 +1100,28 @@ fn regression_host_set_viewport_recomputes_breakpoint() {
     let backend = host.backend().clone();
 
     let runs: Rc<Cell<usize>> = Rc::new(Cell::new(0));
-    let last: Rc<Cell<runtime_core::Breakpoint>> =
-        Rc::new(Cell::new(runtime_core::Breakpoint::Xs));
+    let last: Rc<Cell<runtime_shared::Breakpoint>> =
+        Rc::new(Cell::new(runtime_shared::Breakpoint::Xs));
     let (runs_c, last_c) = (runs.clone(), last.clone());
-    let app = newcore::start(backend, |_| {}, move || {
-        // Stand-in for the shell's `when(!sidebar_pinned(Lg))`: a
-        // breakpoint-reading effect created during the build.
-        let bp = runtime_vocabulary::viewport::viewport_ctx().breakpoint();
-        let _e = runtime_world::effect(move || {
-            last_c.set(bp.get());
-            runs_c.set(runs_c.get() + 1);
-        });
-        view().child(text().content("vp")).build()
-    });
+    let app = newcore::start(
+        backend,
+        |_| {},
+        move || {
+            // Stand-in for the shell's `when(!sidebar_pinned(Lg))`: a
+            // breakpoint-reading effect created during the build.
+            let bp = runtime_vocabulary::viewport::viewport_ctx().breakpoint();
+            let _e = runtime_world::effect(move || {
+                last_c.set(bp.get());
+                runs_c.set(runs_c.get() + 1);
+            });
+            view().child(text().content("vp")).build()
+        },
+    );
     drain();
     assert_eq!(runs.get(), 1);
     assert_eq!(
         last.get(),
-        runtime_core::Breakpoint::Xl,
+        runtime_shared::Breakpoint::Xl,
         "ctx seeded from the pre-mount TLS seed, not 0-width Xs"
     );
 
@@ -1099,7 +1130,11 @@ fn regression_host_set_viewport_recomputes_breakpoint() {
     host.set_viewport(700.0, 832.0);
     assert_eq!(runs.get(), 1, "staged — commits on the driver's microtask");
     drain();
-    assert_eq!(last.get(), runtime_core::Breakpoint::Sm, "bucket followed");
+    assert_eq!(
+        last.get(),
+        runtime_shared::Breakpoint::Sm,
+        "bucket followed"
+    );
     assert_eq!(runs.get(), 2);
 
     // Same-bucket report: no bucket flip, no re-fire (memo equality
@@ -1126,13 +1161,13 @@ fn regression_host_set_viewport_recomputes_breakpoint() {
 fn embedded_start_in_world_does_not_clobber_the_page_viewport() {
     ensure_test_scheduler();
     // The "page": a world whose ctx tracks a desktop viewport.
-    runtime_core::set_viewport_size(runtime_core::ViewportSize {
+    runtime_shared::set_viewport_size(runtime_shared::ViewportSize {
         width: 1280.0,
         height: 800.0,
     });
     let world = runtime_world::World::new();
     let page_ctx = world.enter(runtime_vocabulary::viewport::viewport_ctx);
-    assert_eq!(page_ctx.breakpoint().peek(), runtime_core::Breakpoint::Xl);
+    assert_eq!(page_ctx.breakpoint().peek(), runtime_shared::Breakpoint::Xl);
 
     let mut host = render_wgpu::Host::new(
         Rc::new(NativeSkin::new(Platform::MacOs)),
@@ -1154,10 +1189,139 @@ fn embedded_start_in_world_does_not_clobber_the_page_viewport() {
     drain();
     assert_eq!(
         page_ctx.breakpoint().peek(),
-        runtime_core::Breakpoint::Xl,
+        runtime_shared::Breakpoint::Xl,
         "sim viewport report must not reach the page's ctx"
     );
 
     app.stop();
+    newcore::flush_sync();
+}
+
+// ===========================================================================
+// Host structural seam — the four `Backend`-default landmines
+// ===========================================================================
+
+/// `insert_at`, `remove_child`, `supports_splice` and `create_anchor` are
+/// REQUIRED on `runtime_scene::Host`, but this backend never overrode
+/// their old `Backend` counterparts — it rode the mega-trait's defaults,
+/// which the de-trait pass had to respell as real bodies (see
+/// `docs/runtime-v2-deletion-baseline.md` §2.2). This pins each one's
+/// behavior to the deleted default, so a future "improvement" to any of
+/// them is a deliberate, visible change rather than a silent one.
+#[test]
+fn newcore_host_seam_reproduces_the_deleted_backend_defaults() {
+    use runtime_scene::Host;
+
+    let backend = make_backend();
+    let mut b = backend.borrow_mut();
+
+    // supports_child_splice's default was `false` — anchored regions
+    // only. Literal assertion (the cross-core comparison against
+    // `Backend::supports_child_splice` died with the old core).
+    assert!(
+        !Host::supports_splice(&*b),
+        "wgpu has no remove_child/insert_at, so regions must stay anchored"
+    );
+
+    // `create_anchor` is NOT one of this backend's landmines — it has a
+    // real override (`NodeKind::ReactiveAnchor`, a transparent
+    // control-flow container). Pinned here so the four-landmine list
+    // stays honest about which of them wgpu actually inherited.
+    let anchor = Host::create_anchor(&mut *b);
+    assert!(
+        matches!(anchor.borrow().kind, NodeKind::ReactiveAnchor),
+        "wgpu overrides the anchor with its own transparent container kind"
+    );
+
+    // insert_at's default APPENDED and ignored the index.
+    let mut parent = Host::create_anchor(&mut *b);
+    let first = Host::create_anchor(&mut *b);
+    let second = Host::create_anchor(&mut *b);
+    Host::insert(&mut *b, &mut parent, first.clone());
+    Host::insert_at(&mut *b, &mut parent, second.clone(), 0);
+    let children = parent.borrow().children.clone();
+    assert_eq!(children.len(), 2, "both children landed");
+    assert!(
+        Rc::ptr_eq(&children[1], &second),
+        "index 0 was ignored — insert_at appended, exactly as the default did"
+    );
+
+    // remove_child's default was a no-op (the framework never calls it
+    // while supports_splice is false).
+    Host::remove_child(&mut *b, &parent, &first);
+    assert_eq!(
+        parent.borrow().children.len(),
+        2,
+        "remove_child is the default no-op"
+    );
+
+    // insert_many's Host default is the same N-x-insert loop the Backend
+    // default was; order is preserved.
+    let mut bulk = Host::create_anchor(&mut *b);
+    let a = Host::create_anchor(&mut *b);
+    let c = Host::create_anchor(&mut *b);
+    Host::insert_many(&mut *b, &mut bulk, vec![a.clone(), c.clone()]);
+    let bulk_children = bulk.borrow().children.clone();
+    assert_eq!(bulk_children.len(), 2);
+    assert!(Rc::ptr_eq(&bulk_children[0], &a) && Rc::ptr_eq(&bulk_children[1], &c));
+}
+
+// ===========================================================================
+// Touch-handler install (ported from the deleted old-walker tests that
+// lived in `src/host.rs::tests` — "Walker → Backend wiring")
+// ===========================================================================
+
+/// A `view().on_touch(..)` primitive must reach the backend's
+/// `install_touch_handler` and leave the handler on `NodeData`, and the
+/// stored handler must be CALLABLE with the author's semantics intact
+/// (the new-core caps impl wraps it to schedule a flush after the author
+/// fn returns — the wrapper must not change the returned
+/// `TouchResponse`). Ported from `render_view_with_on_touch_installs_handler`
+/// / `render_view_without_on_touch_leaves_handler_unset` /
+/// `installed_handler_is_callable`, which drove `runtime_shared::render`.
+#[test]
+fn on_touch_reaches_the_node_and_the_stored_handler_is_callable() {
+    use runtime_shared::{TouchEvent, TouchId, TouchPhase, TouchPoint, TouchResponse};
+
+    let fires = Rc::new(Cell::new(0u32));
+    let f = fires.clone();
+    let app = boot(|| {
+        view()
+            .on_touch(Rc::new(move |_| {
+                f.set(f.get() + 1);
+                TouchResponse::CONSUMED
+            }))
+            .child(text().content("touchable"))
+            .build()
+    });
+    let root = root_of(&app);
+    let handler = root
+        .borrow()
+        .touch_handler
+        .clone()
+        .expect("on_touch handler did not reach the backend node");
+
+    let synthetic = TouchEvent {
+        id: TouchId(1),
+        phase: TouchPhase::Began,
+        position: TouchPoint::new(5.0, 5.0),
+        window_position: TouchPoint::new(5.0, 5.0),
+        timestamp_ns: 0,
+        force: None,
+    };
+    let response = handler(&synthetic);
+    assert!(
+        response.consumed,
+        "the wrapper must return the author's response"
+    );
+    assert_eq!(fires.get(), 1, "author handler ran exactly once");
+
+    app.stop();
+    newcore::flush_sync();
+
+    // The no-handler half: a plain view leaves the slot unset.
+    let plain = boot(|| view().child(text().content("plain")).build());
+    assert!(root_of(&plain).borrow().touch_handler.is_none());
+    plain.stop();
     newcore::flush_sync();
 }

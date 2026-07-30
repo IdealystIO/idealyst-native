@@ -33,8 +33,8 @@ use objc2::msg_send_id;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSView};
 use objc2_foundation::{CGPoint, CGRect, CGSize, NSObject, NSString};
-use runtime_core::primitives::icon::{FillRule, IconData};
-use runtime_core::Color;
+use runtime_shared::primitives::icon::{FillRule, IconData};
+use runtime_shared::Color;
 
 use backend_apple_core::icon_path::{parse_svg_path, PathEmitter};
 

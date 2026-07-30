@@ -17,4 +17,4 @@ license.workspace = true
 # the trait and wires up its own surface management.
 
 [dependencies]
-runtime-core = { workspace = true }
+runtime-shared = { workspace = true }

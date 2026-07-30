@@ -26,13 +26,24 @@ use runtime_core::{
 use std::rc::Rc;
 use swap_navigator::{SwapBuilder, SwapHandle, SwapNavigator};
 
-/// Navigators self-register via `inventory::submit!`; nothing to do here. The
-/// CLI bootstrap still calls this hook.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam the CLI-generated wrappers invoke after
+/// `runtime_vocabulary::register_builtins`. The swap navigator's runtime IS a
+/// vocabulary built-in, so there is nothing extra to register — the seam is
+/// kept because every wrapper calls it.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
+/// Runtime-server (sidecar) recorder seam — the recorder's scene registry
+/// also gets the navigator from `register_builtins`.
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {
-    swap_navigator::recording::register(backend);
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
 }
 
 // Outer (primary sidebar) routes.

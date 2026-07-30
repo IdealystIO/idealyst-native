@@ -2,8 +2,8 @@
 //! into a 2D grid of [`Cell`]s. The host turns the grid into ANSI-
 //! escaped bytes and dumps it to stdout.
 
-use runtime_core::color::Rgba;
-use runtime_core::{GradientKind, Length, RadialExtent};
+use runtime_shared::color::Rgba;
+use runtime_shared::{GradientKind, Length, RadialExtent};
 
 use crate::node::{NodeData, NodeKind, ResolvedGradient};
 use crate::TerminalBackend;
@@ -422,7 +422,7 @@ fn default_fg(data: &NodeData) -> Rgba {
 
 fn border_requested(data: &NodeData) -> bool {
     let Some(style) = &data.style else { return false };
-    let read = |t: &Option<runtime_core::Tokenized<f32>>| -> f32 {
+    let read = |t: &Option<runtime_shared::Tokenized<f32>>| -> f32 {
         t.as_ref().map(|t| *t.value()).unwrap_or(0.0)
     };
     read(&style.border_top_width) > 0.0

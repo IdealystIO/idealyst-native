@@ -106,7 +106,7 @@ pub struct MdListItem {
 }
 
 /// A fully-parsed, render-ready document: blocks + the theme to paint
-/// them with. This is the `Element::External` payload.
+/// them with. This is the scene payload the mount handler dispatches on.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MarkdownDoc {
     /// The document's blocks, in order.

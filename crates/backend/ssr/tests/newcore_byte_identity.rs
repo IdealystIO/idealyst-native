@@ -1,28 +1,27 @@
-//! Byte-identity corpus: the SAME logical app rendered through the
-//! old-core SSR path ([`backend_ssr::render_path`], walker + `Element`)
-//! and the new-core path ([`backend_ssr::newcore::render_path`],
-//! per-request `World` + vocabulary handlers) must emit **byte-identical**
-//! `html` AND `head_css`.
+//! Frozen-golden corpus: the SSR backend's output must match the
+//! **frozen bytes the OLD core produced** for the same logical app,
+//! exactly — `html` AND `head_css`, with **zero normalization**.
 //!
 //! This is the hydration acceptance gate for the port: the web backend's
 //! adopt-mode boot (`backend-web`'s `newcore_hydrate`) walks SSR DOM
-//! cursor-style in creation order and already adopts old-core SSR
-//! output — byte-identical output therefore adopts identically. Any
-//! divergence found here is a hydration bug, not a formatting nit; do
-//! NOT normalize differences away.
+//! cursor-style in creation order and adopted old-core SSR output, so
+//! byte-identical output adopts identically. Any divergence found here is
+//! a hydration bug, not a formatting nit; do NOT normalize it away, and
+//! do NOT re-freeze to make it pass (`IDEALYST_FREEZE_GOLDENS=1` can now
+//! only RE-BASELINE against the current renderer, permanently discarding
+//! the old core's testimony — see `tests/goldens/README.md`).
 //!
 //! Corpus (mirrors scene-parity's paired scenarios, serialized to HTML
 //! instead of op streams): static kitchen sink, sheet/token styling with
 //! variants + state overlays, dyn branches (both committed initial
-//! states), keyed lists, styled-text runs, and a swap navigator with
-//! author chrome rendered at two paths.
-
-#![cfg(feature = "new-core")]
+//! states), keyed lists, styled-text runs, a swap navigator with author
+//! chrome rendered at two paths, the SSG crawl, and the default-font
+//! fill contract.
 
 use std::rc::Rc;
 
 use backend_ssr::RenderedPage;
-use runtime_core::{
+use runtime_shared::{
     Color, SafeAreaSides, StyleApplication, StyleRules, StyleSheet, TextRun, TokenEntry,
     TokenValue, Tokenized,
 };
@@ -31,18 +30,6 @@ use runtime_core::{
 // Harness
 // ===========================================================================
 
-/// Old-core render with the session-wide registration dedup reset first
-/// (same reset `render_all` performs per page), so every corpus item
-/// starts from a clean old-core registration table regardless of test
-/// ordering within a thread.
-fn render_old(
-    path: &str,
-    app: impl FnOnce() -> runtime_core::Element,
-) -> RenderedPage {
-    runtime_core::reset_for_ssg_render();
-    backend_ssr::render_path(path, app)
-}
-
 fn render_new(
     path: &str,
     build: impl FnOnce() -> runtime_scene::Element,
@@ -50,39 +37,31 @@ fn render_new(
     backend_ssr::newcore::render_path(path, build)
 }
 
-/// Assert exact string equality with a byte-level first-divergence
-/// report (index + surrounding context from both sides) so a corpus
-/// failure is directly actionable.
-fn assert_bytes(name: &str, part: &str, old: &str, new: &str) {
-    if old == new {
-        return;
-    }
-    let at = old
-        .bytes()
-        .zip(new.bytes())
-        .position(|(a, b)| a != b)
-        .unwrap_or_else(|| old.len().min(new.len()));
-    let lo = at.saturating_sub(60);
-    let old_hi = (at + 60).min(old.len());
-    let new_hi = (at + 60).min(new.len());
-    panic!(
-        "byte divergence in corpus item `{name}` ({part}) at byte {at}\n\
-         old (len {}): …{}…\n\
-         new (len {}): …{}…\n\
-         full old:\n{}\n\
-         full new:\n{}",
-        old.len(),
-        &old[lo..old_hi],
-        new.len(),
-        &new[lo..new_hi],
-        old,
-        new,
-    );
+// ---------------------------------------------------------------------------
+// Frozen-artifact gate
+// ---------------------------------------------------------------------------
+
+fn goldens() -> parity_goldens::Goldens {
+    parity_goldens::Goldens::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn assert_pages_identical(name: &str, old: &RenderedPage, new: &RenderedPage) {
-    assert_bytes(name, "html", &old.html, &new.html);
-    assert_bytes(name, "head_css", &old.head_css, &new.head_css);
+/// Corpus item names carry route separators (`swap_navigator@/about`), so
+/// flatten them into one filename stem.
+fn stem(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        out.push(if ch.is_ascii_alphanumeric() { ch } else { '_' });
+    }
+    out.trim_matches('_').to_string()
+}
+
+/// The gate: the rendered page must match the frozen old-core bytes
+/// exactly (html + head_css), with no normalization. This is the
+/// hydration-compatibility proof, so any difference is a bug.
+fn assert_matches_frozen(name: &str, page: &RenderedPage) {
+    let stem = stem(name);
+    goldens().check_text(&format!("{stem}.html"), &page.html);
+    goldens().check_text(&format!("{stem}.head.css"), &page.head_css);
 }
 
 // ===========================================================================
@@ -92,17 +71,10 @@ fn assert_pages_identical(name: &str, old: &RenderedPage, new: &RenderedPage) {
 
 fn test_rules(width: f32, background: &str) -> StyleRules {
     StyleRules {
-        width: Some(Tokenized::Literal(runtime_core::Length::Px(width))),
+        width: Some(Tokenized::Literal(runtime_shared::Length::Px(width))),
         background: Some(Tokenized::Literal(Color(background.to_string()))),
         ..Default::default()
     }
-}
-
-/// Old-core route to a resolved-rules apply: literal rules in a static
-/// sheet resolve to themselves, digesting identically to the new side's
-/// `StyleProp::Static` (the same equivalence scene-parity relies on).
-fn static_style(width: f32, background: &str) -> StyleApplication {
-    StyleApplication::new(Rc::new(StyleSheet::r#static(test_rules(width, background))))
 }
 
 fn surface_token(value: &str) -> TokenEntry {
@@ -117,7 +89,7 @@ fn surface_token(value: &str) -> TokenEntry {
 fn themed_sheet() -> Rc<StyleSheet> {
     fn base() -> StyleRules {
         StyleRules {
-            width: Some(Tokenized::Literal(runtime_core::Length::Px(100.0))),
+            width: Some(Tokenized::Literal(runtime_shared::Length::Px(100.0))),
             background: Some(Tokenized::token("color-surface", Color("#000".into()))),
             ..Default::default()
         }
@@ -125,7 +97,7 @@ fn themed_sheet() -> Rc<StyleSheet> {
     Rc::new(
         StyleSheet::new(|_vs| base())
             .variant("size", "large", |_vs| StyleRules {
-                width: Some(Tokenized::Literal(runtime_core::Length::Px(400.0))),
+                width: Some(Tokenized::Literal(runtime_shared::Length::Px(400.0))),
                 ..Default::default()
             })
             .variant("size", "medium", |_vs| StyleRules::default())
@@ -139,71 +111,27 @@ fn themed_sheet() -> Rc<StyleSheet> {
 fn hover_sheet() -> Rc<StyleSheet> {
     Rc::new(
         StyleSheet::new(|_vs| StyleRules {
-            width: Some(Tokenized::Literal(runtime_core::Length::Px(100.0))),
+            width: Some(Tokenized::Literal(runtime_shared::Length::Px(100.0))),
             ..Default::default()
         })
         .variant("__state_hovered", "on", |_vs| StyleRules {
-            width: Some(Tokenized::Literal(runtime_core::Length::Px(999.0))),
+            width: Some(Tokenized::Literal(runtime_shared::Length::Px(999.0))),
             ..Default::default()
         }),
     )
 }
 
-const TEST_ICON: runtime_core::primitives::icon::IconData =
-    runtime_core::primitives::icon::IconData {
+const TEST_ICON: runtime_shared::primitives::icon::IconData =
+    runtime_shared::primitives::icon::IconData {
         view_box: (24, 24),
         paths: &["M0 0h24v24H0z"],
-        fill_rule: runtime_core::primitives::icon::FillRule::NonZero,
+        fill_rule: runtime_shared::primitives::icon::FillRule::NonZero,
         filled: false,
     };
 
 // ===========================================================================
 // 1. Static kitchen sink — every core primitive, static props
 // ===========================================================================
-
-fn kitchen_old() -> runtime_core::Element {
-    use runtime_core::primitives::activity_indicator::activity_indicator;
-    use runtime_core::primitives::slider::slider;
-    use runtime_core::{
-        button, external_link, icon, image, pressable, scroll_view, signal, styled_text, text,
-        text_area, text_input, toggle, view, IntoElement,
-    };
-    let toggle_on = signal(true);
-    let slider_val = signal(2.5f32);
-    let input_val = signal(String::from("hi"));
-    let area_val = signal(String::from("hello\nworld"));
-    view(vec![
-        text("hello").into_element(),
-        styled_text(vec![TextRun::plain("styled"), TextRun::plain(" runs")]).into_element(),
-        text("leaf")
-            .with_style(static_style(80.0, "#445566"))
-            .into_element(),
-        button("Go", || {}).into_element(),
-        pressable(vec![text("press me").into_element()], || {}).into_element(),
-        image("logo.png").alt("Logo".to_string()).into_element(),
-        icon(TEST_ICON).into_element(),
-        toggle(toggle_on, |_| {}).into_element(),
-        slider(slider_val, |_| {})
-            .range(0.0, 10.0)
-            .step(0.5)
-            .into_element(),
-        activity_indicator().into_element(),
-        external_link("https://example.com", vec![text("docs").into_element()]).into_element(),
-        scroll_view(vec![text("scrollable").into_element()])
-            .safe_area(SafeAreaSides::TOP)
-            .into_element(),
-        text_input(input_val, |_| {})
-            .placeholder("Type here".to_string())
-            .into_element(),
-        text_area(area_val, |_| {})
-            .placeholder("notes".to_string())
-            .min_rows(2)
-            .max_rows(6)
-            .into_element(),
-    ])
-    .with_style(static_style(120.0, "#112233"))
-    .into_element()
-}
 
 fn kitchen_new() -> runtime_scene::Element {
     use runtime_vocabulary::builders::{
@@ -263,11 +191,10 @@ fn kitchen_new() -> runtime_scene::Element {
 
 #[test]
 fn corpus_static_kitchen_sink() {
-    let old = render_old("/", kitchen_old);
     let new = render_new("/", kitchen_new);
-    assert_pages_identical("static_kitchen_sink", &old, &new);
+    assert_matches_frozen("static_kitchen_sink", &new);
     // Sanity: the corpus item actually rendered something substantial.
-    assert!(old.html.contains("<button>Go</button>"), "corpus is live: {}", old.html);
+    assert!(new.html.contains("<button>Go</button>"), "corpus is live: {}", new.html);
 }
 
 // ===========================================================================
@@ -277,23 +204,6 @@ fn corpus_static_kitchen_sink() {
 
 #[test]
 fn corpus_styled_sheet_tokens_and_state_overlay() {
-    let old = render_old("/", || {
-        use runtime_core::{text, view, IntoElement};
-        runtime_core::install_tokens(&[surface_token("#101010")]);
-        view(vec![
-            view(vec![])
-                .with_style(StyleApplication::new(themed_sheet()))
-                .into_element(),
-            view(vec![])
-                .with_style(StyleApplication::new(themed_sheet()).with("size", "large"))
-                .into_element(),
-            view(vec![])
-                .with_style(StyleApplication::new(hover_sheet()))
-                .into_element(),
-            text("themed").into_element(),
-        ])
-        .into_element()
-    });
     let new = render_new("/", || {
         use runtime_vocabulary::builders::{text, view};
         runtime_vocabulary::theme::install_tokens(&[surface_token("#101010")]);
@@ -304,34 +214,15 @@ fn corpus_styled_sheet_tokens_and_state_overlay() {
             .child(text().content("themed"))
             .build()
     });
-    assert_pages_identical("styled_sheet_tokens", &old, &new);
+    assert_matches_frozen("styled_sheet_tokens", &new);
     // The token block and the hover overlay actually made it to <head>.
-    assert!(old.head_css.contains("--color-surface:#101010;"), "tokens: {}", old.head_css);
-    assert!(old.head_css.contains(":hover{"), "hover overlay: {}", old.head_css);
+    assert!(new.head_css.contains("--color-surface:#101010;"), "tokens: {}", new.head_css);
+    assert!(new.head_css.contains(":hover{"), "hover overlay: {}", new.head_css);
 }
 
 // ===========================================================================
 // 3. Dyn branch — committed initial state, both branches
 // ===========================================================================
-
-fn dyn_old(initial: bool) -> runtime_core::Element {
-    use runtime_core::{signal, text, view, when, IntoElement};
-    let show = signal(initial);
-    view(vec![
-        text("before").into_element(),
-        when(
-            move || show.get(),
-            || {
-                view(vec![text("shown").into_element()])
-                    .with_style(static_style(60.0, "#606060"))
-                    .into_element()
-            },
-            || text("hidden").into_element(),
-        ),
-        text("after").into_element(),
-    ])
-    .into_element()
-}
 
 fn dyn_new(initial: bool) -> runtime_scene::Element {
     use runtime_scene::dyn_keyed;
@@ -360,15 +251,13 @@ fn dyn_new(initial: bool) -> runtime_scene::Element {
 #[test]
 fn corpus_dyn_branch_both_initial_states() {
     for initial in [true, false] {
-        let old = render_old("/", move || dyn_old(initial));
         let new = render_new("/", move || dyn_new(initial));
-        assert_pages_identical(
+        assert_matches_frozen(
             if initial { "dyn_branch_then" } else { "dyn_branch_else" },
-            &old,
             &new,
         );
         let want = if initial { "shown" } else { "hidden" };
-        assert!(old.html.contains(want), "committed initial branch rendered: {}", old.html);
+        assert!(new.html.contains(want), "committed initial branch rendered: {}", new.html);
     }
 }
 
@@ -378,26 +267,6 @@ fn corpus_dyn_branch_both_initial_states() {
 
 #[test]
 fn corpus_keyed_list() {
-    let old = render_old("/", || {
-        use runtime_core::{each_keyed, signal, text, view, EachKey, EachRowBuild, IntoElement};
-        let items = signal(vec![1u32, 2, 3]);
-        view(vec![
-            text("header").into_element(),
-            each_keyed(move || {
-                items
-                    .get()
-                    .into_iter()
-                    .map(|n| {
-                        let build: EachRowBuild =
-                            Box::new(move || vec![text(format!("row-{n}")).into_element()]);
-                        (EachKey::new(n), build)
-                    })
-                    .collect()
-            }),
-            text("footer").into_element(),
-        ])
-        .into_element()
-    });
     let new = render_new("/", || {
         use runtime_scene::keyed;
         use runtime_vocabulary::builders::{text, view};
@@ -413,8 +282,8 @@ fn corpus_keyed_list() {
             .child(text().content("footer"))
             .build()
     });
-    assert_pages_identical("keyed_list", &old, &new);
-    assert!(old.html.contains("row-1") && old.html.contains("row-3"), "rows: {}", old.html);
+    assert_matches_frozen("keyed_list", &new);
+    assert!(new.html.contains("row-1") && new.html.contains("row-3"), "rows: {}", new.html);
 }
 
 // ===========================================================================
@@ -424,13 +293,13 @@ fn corpus_keyed_list() {
 #[test]
 fn corpus_styled_text_runs() {
     fn runs() -> Vec<TextRun> {
-        use runtime_core::TextRunStyle;
+        use runtime_shared::TextRunStyle;
         vec![
             TextRun::plain("the "),
             TextRun::styled(
                 "ui!",
                 TextRunStyle {
-                    font_family: Some(runtime_core::FontFamily::System(
+                    font_family: Some(runtime_shared::FontFamily::System(
                         "ui-monospace, monospace".into(),
                     )),
                     background: Some(Tokenized::token("color-surface-alt", Color("#eee".into()))),
@@ -440,19 +309,15 @@ fn corpus_styled_text_runs() {
             TextRun::plain(" macro"),
         ]
     }
-    let old = render_old("/", || {
-        use runtime_core::{styled_text, view, IntoElement};
-        view(vec![styled_text(runs()).into_element()]).into_element()
-    });
     let new = render_new("/", || {
         use runtime_vocabulary::builders::{text, view};
         view().child(text().runs(runs())).build()
     });
-    assert_pages_identical("styled_text_runs", &old, &new);
+    assert_matches_frozen("styled_text_runs", &new);
     assert!(
-        old.html.contains("var(--color-surface-alt, #eee)"),
+        new.html.contains("var(--color-surface-alt, #eee)"),
         "token-colored run style inlined: {}",
-        old.html
+        new.html
     );
 }
 
@@ -460,30 +325,10 @@ fn corpus_styled_text_runs() {
 // 6. Swap navigator with author chrome, rendered at two paths
 // ===========================================================================
 
-use runtime_core::primitives::navigator::Route;
+use runtime_shared::primitives::navigator::Route;
 
 const NAV_HOME: Route<()> = Route::new("home", "/");
 const NAV_ABOUT: Route<()> = Route::new("about", "/about");
-
-fn nav_old() -> runtime_core::Element {
-    use runtime_core::{text, view, IntoElement};
-    use swap_navigator::{SwapBuilder, SwapNavigator};
-    SwapNavigator::new(&NAV_HOME)
-        .screen(NAV_HOME, |_| {
-            view(vec![text("home").into_element()])
-                .with_style(static_style(10.0, "#111111"))
-                .into_element()
-        })
-        .screen(NAV_ABOUT, |_| {
-            view(vec![text("about").into_element()])
-                .with_style(static_style(20.0, "#222222"))
-                .into_element()
-        })
-        .layout(|ctx| {
-            view(vec![text("chrome").into_element(), ctx.outlet]).into_element()
-        })
-        .into_element()
-}
 
 fn nav_new() -> runtime_scene::Element {
     use runtime_vocabulary::builders::{navigator_outlet, swap_navigator, text, view};
@@ -512,20 +357,12 @@ fn nav_new() -> runtime_scene::Element {
 #[test]
 fn corpus_swap_navigator_at_path() {
     for (path, want) in [("/", "home"), ("/about", "about")] {
-        let old = backend_ssr::render_path_with(
-            path,
-            |b| {
-                runtime_core::reset_for_ssg_render();
-                swap_navigator::register_generic(b);
-            },
-            nav_old,
-        );
         let new = render_new(path, nav_new);
-        assert_pages_identical(&format!("swap_navigator@{path}"), &old, &new);
+        assert_matches_frozen(&format!("swap_navigator@{path}"), &new);
         assert!(
-            old.html.contains(want) && old.html.contains("chrome"),
+            new.html.contains(want) && new.html.contains("chrome"),
             "path-matched screen + chrome rendered at {path}: {}",
-            old.html
+            new.html
         );
     }
 }
@@ -539,26 +376,6 @@ const NAV_DOCS: Route<()> = Route::new("docs", "/docs");
 /// Parameterized pattern — the crawl must SKIP it (no param values),
 /// reporting it in `skipped_parameterized` on both cores.
 const NAV_ITEM: Route<()> = Route::new("item", "/item/:id");
-
-fn crawl_old() -> runtime_core::Element {
-    use runtime_core::{text, view, IntoElement};
-    use swap_navigator::{SwapBuilder, SwapNavigator};
-    SwapNavigator::new(&NAV_HOME)
-        .screen(NAV_HOME, |_| {
-            view(vec![text("home").into_element()]).into_element()
-        })
-        .screen(NAV_ABOUT, |_| {
-            view(vec![text("about").into_element()]).into_element()
-        })
-        .screen(NAV_DOCS, |_| {
-            view(vec![text("docs").into_element()]).into_element()
-        })
-        .screen(NAV_ITEM, |_| {
-            view(vec![text("item").into_element()]).into_element()
-        })
-        .layout(|ctx| view(vec![text("chrome").into_element(), ctx.outlet]).into_element())
-        .into_element()
-}
 
 fn crawl_new() -> runtime_scene::Element {
     use runtime_vocabulary::builders::{navigator_outlet, swap_navigator, text, view};
@@ -582,32 +399,25 @@ fn crawl_new() -> runtime_scene::Element {
 /// parameterized-skip behavior, and byte-identical rendered pages.
 #[test]
 fn corpus_render_all_crawl_discovers_and_matches() {
-    let old = backend_ssr::render_all(
-        |b| {
-            runtime_core::reset_for_ssg_render();
-            swap_navigator::register_generic(b);
-        },
-        crawl_old,
-    );
     let new = backend_ssr::newcore::render_all(|_| {}, crawl_new);
 
-    let mut old_routes: Vec<&str> = old.pages.keys().map(|s| s.as_str()).collect();
     let mut new_routes: Vec<&str> = new.pages.keys().map(|s| s.as_str()).collect();
-    old_routes.sort_unstable();
     new_routes.sort_unstable();
-    assert_eq!(old_routes, vec!["/", "/about", "/docs"], "old crawl discovers the literals");
-    assert_eq!(new_routes, old_routes, "new crawl discovers the same routes");
     assert_eq!(
-        old.skipped_parameterized, new.skipped_parameterized,
-        "both crawls skip the same parameterized patterns"
+        new_routes,
+        vec!["/", "/about", "/docs"],
+        "the crawl discovers exactly the literal routes"
     );
-    assert_eq!(old.skipped_parameterized, vec!["/item/:id"]);
+    assert_eq!(
+        new.skipped_parameterized,
+        vec!["/item/:id"],
+        "parameterized patterns are skipped, not rendered"
+    );
 
-    for route in old_routes {
-        let old_page = &old.pages[route];
+    for route in new_routes {
         let new_page = &new.pages[route];
-        assert_pages_identical(&format!("render_all@{route}"), old_page, new_page);
-        assert!(!old_page.html.is_empty(), "crawled page {route} rendered");
+        assert_matches_frozen(&format!("render_all@{route}"), new_page);
+        assert!(!new_page.html.is_empty(), "crawled page {route} rendered");
     }
 }
 
@@ -627,28 +437,7 @@ fn corpus_render_all_crawl_discovers_and_matches() {
 /// font installed is the regression net for that whole class of drift.
 #[test]
 fn corpus_default_font_fill_static_folds_dynamic_does_not() {
-    let test_font = || runtime_core::FontFamily::System("TestFont, serif".to_string());
-
-    let old = render_old("/", move || {
-        use runtime_core::{view, IntoElement};
-        runtime_core::set_default_text_font(Some(test_font()));
-        let sheet = themed_sheet();
-        view(vec![
-            // Static rules + static sheet: both fold the default font.
-            view(vec![]).with_style(static_style(40.0, "#123123")).into_element(),
-            view(vec![])
-                .with_style(StyleApplication::new(sheet.clone()))
-                .into_element(),
-            // Reactive sheet closure: must NOT fold.
-            view(vec![])
-                .with_style(move || StyleApplication::new(sheet.clone()))
-                .into_element(),
-        ])
-        .into_element()
-    });
-    // Thread-local hygiene: later corpus tests on this thread must not
-    // inherit the default font.
-    runtime_core::set_default_text_font(None);
+    let test_font = || runtime_shared::FontFamily::System("TestFont, serif".to_string());
 
     let new = render_new("/", move || {
         use runtime_vocabulary::builders::view;
@@ -662,14 +451,14 @@ fn corpus_default_font_fill_static_folds_dynamic_does_not() {
             .build()
     });
 
-    assert_pages_identical("default_font_fill", &old, &new);
+    assert_matches_frozen("default_font_fill", &new);
     // Sanity on the contract itself (not just old==new): the static
     // nodes' rules carry the folded font, the dynamic node's rule
     // doesn't.
-    let folds = old.head_css.matches("TestFont, serif").count();
+    let folds = new.head_css.matches("TestFont, serif").count();
     assert_eq!(
         folds, 2,
         "exactly the two STATIC applications fold the default font: {}",
-        old.head_css
+        new.head_css
     );
 }

@@ -28,11 +28,11 @@
 //! browser handles like any same-origin resource. That blob URL is
 //! revoked on `unregister_asset` to free the underlying allocation.
 //!
-//! [`AssetId`]: runtime_core::AssetId
-//! [`Typeface`]: runtime_core::Typeface
+//! [`AssetId`]: runtime_shared::AssetId
+//! [`Typeface`]: runtime_shared::Typeface
 //! [`@font-face`]: https://developer.mozilla.org/en-US/docs/Web/CSS/@font-face
 
-use runtime_core::{AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId};
+use runtime_shared::{AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId};
 use js_sys::{Array, Uint8Array};
 use wasm_bindgen::JsValue;
 

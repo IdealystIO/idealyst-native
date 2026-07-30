@@ -237,7 +237,7 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr) -> TokenS
             // purpose and documented (glue docs): OMITTING a required
             // signal prop reads a fresh default-valued signal here,
             // where the old core panicked on first read.
-            None if cfg!(feature = "new-core") && is_signal_handle_type(&f.ty) => {
+            None if is_signal_handle_type(&f.ty) => {
                 quote! { #name: ::runtime_core::__default_signal_prop(), }
             }
             None => quote! { #name: ::core::default::Default::default(), },
@@ -475,10 +475,9 @@ mod tests {
         assert!(!sig.contains("prop"), "the #[prop] attr must be stripped: {sig}");
     }
 
-    /// Signal-typed props can't use `Default::default()` on the new
-    /// core (`runtime_world::Signal` has no Default); the glue helper
-    /// mints the struct-update base instead.
-    #[cfg(feature = "new-core")]
+    /// Signal-typed props can't use `Default::default()`
+    /// (`runtime_world::Signal` has no Default); the glue helper mints
+    /// the struct-update base instead.
     #[test]
     fn new_core_signal_props_default_via_glue_helper() {
         let (_, glue) = expand(quote! {
@@ -487,19 +486,6 @@ mod tests {
         let glue = glue.unwrap();
         assert_eq!(glue.matches("__default_signal_prop").count(), 2, "{glue}");
         assert!(!glue.contains("value:::core::default::Default::default()"), "{glue}");
-    }
-
-    /// …and on the OLD core the plain `Default::default()` base is
-    /// unchanged (the old `Signal` has the detached-sentinel Default).
-    #[cfg(not(feature = "new-core"))]
-    #[test]
-    fn old_core_signal_props_default_via_default_impl() {
-        let (_, glue) = expand(quote! {
-            fn Foo(value: Signal<i32>) -> Element { body() }
-        });
-        let glue = glue.unwrap();
-        assert!(glue.contains("value:::core::default::Default::default()"), "{glue}");
-        assert!(!glue.contains("__default_signal_prop"), "{glue}");
     }
 
     #[test]
@@ -638,32 +624,11 @@ mod tests {
         assert!(glue.contains("publoading"), "{glue}");
     }
 
-    /// DEFAULT-leg byte stability: the old core's chunk fn constructs the
-    /// component's `Element` inside the loader future — the pre-new-core
-    /// emission, byte-for-byte.
-    #[cfg(not(feature = "new-core"))]
-    #[test]
-    fn lazy_default_leg_chunk_fn_builds_element() {
-        let glue = expand_lazy(
-            quote! { lazy },
-            quote! { fn Panel(id: u32) -> Element { body() } },
-        );
-        assert!(
-            glue.contains(
-                "asyncfn__lazy_body(props:PanelProps)->::runtime_core::Element{\
-                 ::runtime_core::IntoElement::into_element(Panel(props.id))}"
-            ),
-            "{glue}"
-        );
-        assert!(!glue.contains("LazyBodyThunk"), "{glue}");
-    }
-
-    /// NEW-core leg: the chunk fn returns a body THUNK — construction is
-    /// deferred to the vocabulary lazy handler's swap effect, which runs
-    /// with the world entered inside `component_scope` (a naked executor
-    /// poll has no ambient world; building there would panic). See
+    /// The chunk fn returns a body THUNK — construction is deferred to
+    /// the vocabulary lazy handler's swap effect, which runs with the
+    /// world entered inside `component_scope` (a naked executor poll has
+    /// no ambient world; building there would panic). See
     /// lazy_component.rs + runtime-vocabulary's `prims::lazy` docs.
-    #[cfg(feature = "new-core")]
     #[test]
     fn lazy_new_core_leg_chunk_fn_returns_body_thunk() {
         let glue = expand_lazy(

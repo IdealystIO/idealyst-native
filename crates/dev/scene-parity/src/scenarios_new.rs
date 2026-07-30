@@ -30,15 +30,16 @@ use runtime_world::{effect, signal, Signal};
 use crate::new_core::{NcText, NcView, NewCx};
 use crate::{Mode, Recorder};
 
-/// A new-core parity scenario. Names/modes mirror `crate::scenarios()`
-/// exactly (asserted by `new_core_registry_matches_old`).
+/// A parity scenario. Names/modes are pinned against the frozen
+/// inventory (asserted by
+/// `scenario_registry_matches_the_frozen_inventory`).
 pub struct NewScenario {
     pub name: &'static str,
     pub modes: &'static [Mode],
     pub run: fn(&mut NewCx),
 }
 
-/// The re-targeted registry — one entry per old-core scenario.
+/// The scenario registry — one entry per frozen golden pair.
 pub fn new_scenarios() -> Vec<NewScenario> {
     vec![
         NewScenario { name: "when_toggle", modes: &[Mode::Anchored, Mode::Spliced], run: when_toggle },

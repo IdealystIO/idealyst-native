@@ -19,9 +19,9 @@ use runtime_core::primitives::presence::PresenceAnim;
 use runtime_core::{
     component, signal, ui, Color, Easing, Element, FontFamily, Ref, Tokenized, ViewHandle,
 };
-// `styled_text` + run types resolve on BOTH cores: old-core root
-// re-exports, or the glue facade's mirror (same old-core `TextRun`
-// type either way).
+// `styled_text(runs)` + the run types come through the facade's mirror
+// over the vocabulary text builder (`TextRun`/`TextRunStyle` are
+// runtime-shared types).
 use runtime_core::{styled_text, TextRun, TextRunStyle};
 use idea_ui::{Stack, StackGap, Typography};
 

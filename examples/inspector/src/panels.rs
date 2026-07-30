@@ -34,8 +34,8 @@ use idea_ui::{
     SurfaceColor, Typography,
 };
 use runtime_core::{
-    component, memo, pressable, text, text_input, ui, view, Color, Element, IntoElement, Length,
-    Signal, StyleApplication, StyleRules, StyleSheet, Tokenized, VariantSet,
+    component, memo, pressable, text, ui, view, Color, Element, IntoElement, Length, Signal,
+    StyleApplication, StyleRules, StyleSheet, Tokenized, VariantSet,
 };
 use serde_json::{json, Value};
 
@@ -55,18 +55,6 @@ const CHEVRON_PX: f32 = 13.0;
 // =============================================================================
 // Elements — master/detail (collapsible tree + detail pane)
 // =============================================================================
-
-#[derive(Default)]
-pub struct ElementsPanelProps {
-    pub snapshot: Signal<Snapshot>,
-    /// Currently-selected element id (drives the detail pane).
-    pub selected: Signal<Option<u64>>,
-    /// Set of expanded branch ids. Lives outside the row build so it
-    /// survives poll-driven rebuilds.
-    pub expanded: Signal<HashSet<u64>>,
-    /// JSON args buffer shared by the detail pane's method-invoke controls.
-    pub invoke_arg: Signal<String>,
-}
 
 /// Walk the tree depth-first, emitting one flat row per *visible* node — a
 /// node is visible if every ancestor is expanded. Each row is a shallow
@@ -237,11 +225,14 @@ fn tree_row(row: Value, selected: Signal<Option<u64>>, expanded: Signal<HashSet<
     pressable(vec![inner], move || {
         selected.set(Some(id));
         if has_children {
-            // Toggle membership: `insert` returns false when already present.
+            // Toggle membership. `update` composes on the STAGED value and
+            // returns the new one (runtime v2 takes `&T`, not `&mut T`).
             expanded.update(|s| {
-                if !s.insert(id) {
-                    s.remove(&id);
+                let mut next = s.clone();
+                if !next.insert(id) {
+                    next.remove(&id);
                 }
+                next
             });
         }
     })
@@ -320,61 +311,87 @@ fn method_invoke_section(
             .cloned()
     });
 
-    let mut kids: Vec<Element> = Vec::new();
-    if let Some(c) = comp {
-        let id = c["instance_id"].as_u64().unwrap_or(0);
-        let name = c["name"].as_str().unwrap_or("?").to_string();
-        kids.push(ui! { Typography(content = format!("Methods · {name}"), kind = typography_kind::Overline) });
+    // Flattened once here (not pushed into a Vec of Elements): the component
+    // id/name plus its method list drive the tree below.
+    let id = comp
+        .as_ref()
+        .map(|c| c["instance_id"].as_u64().unwrap_or(0))
+        .unwrap_or(0);
+    let name = comp
+        .as_ref()
+        .map(|c| c["name"].as_str().unwrap_or("?").to_string())
+        .unwrap_or_default();
+    let methods: Vec<Value> = comp
+        .as_ref()
+        .and_then(|c| c["methods"].as_array().cloned())
+        .unwrap_or_default();
+    let present = comp.is_some();
+    let no_methods = methods.is_empty();
+    let any_args = methods
+        .iter()
+        .any(|m| m["args"].as_array().map(|a| !a.is_empty()).unwrap_or(false));
 
-        let methods = c["methods"].as_array().cloned().unwrap_or_default();
-        if methods.is_empty() {
-            kids.push(text("(this component exposes no methods)").into_element());
-        }
-        let mut any_args = false;
-        for m in &methods {
-            let mname = m["name"].as_str().unwrap_or("?").to_string();
-            let has_args = m["args"].as_array().map(|a| !a.is_empty()).unwrap_or(false);
-            any_args |= has_args;
-            let sig = method_signature(m);
-            let on_invoke: Rc<dyn Fn()> = Rc::new(move || {
-                let args: Value = if has_args {
-                    serde_json::from_str(arg_json.get().trim()).unwrap_or_else(|_| json!({}))
-                } else {
-                    json!({})
-                };
-                client_action(
-                    "invoke_method",
-                    json!({ "instance_id": id, "method": mname, "args": args }),
-                );
-            });
-            kids.push(ui! {
+    ui! {
+        Stack(gap = StackGap::Xs) {
+            if present {
+                Typography(content = format!("Methods · {name}"), kind = typography_kind::Overline)
+            }
+            if present && no_methods {
+                text { "(this component exposes no methods)" }
+            }
+            for m in methods {
                 Stack(axis = StackAxis::Row, align = StackAlign::Center, gap = StackGap::Sm) {
-                    Button(label = "Invoke".to_string(), on_click = on_invoke)
-                    text(sig).into_element()
+                    Button(
+                        label = "Invoke".to_string(),
+                        on_click = {
+                            let mname = m["name"].as_str().unwrap_or("?").to_string();
+                            let has_args =
+                                m["args"].as_array().map(|a| !a.is_empty()).unwrap_or(false);
+                            Rc::new(move || {
+                                let args: Value = if has_args {
+                                    serde_json::from_str(arg_json.get().trim())
+                                        .unwrap_or_else(|_| json!({}))
+                                } else {
+                                    json!({})
+                                };
+                                client_action(
+                                    "invoke_method",
+                                    json!({ "instance_id": id, "method": mname, "args": args }),
+                                );
+                            }) as Rc<dyn Fn()>
+                        },
+                    )
+                    text { method_signature(&m) }
                 }
-            });
-        }
-        if any_args {
-            kids.push(
-                text_input(arg_json, move |v| arg_json.set(v))
-                    .placeholder("args JSON, e.g. {\"n\": 5}".to_string())
-                    .into_element(),
-            );
+            }
+            if any_args {
+                text_input(
+                    value = arg_json,
+                    on_change = move |v| arg_json.set(v),
+                    placeholder = "args JSON, e.g. {\"n\": 5}",
+                )
+            }
         }
     }
-
-    ui! { Stack(gap = StackGap::Xs) { kids } }
 }
 
 /// Master/detail element inspector. Left: a collapsible, selectable tree.
 /// Right: the selected element's details and, when it's a `#[component]`
 /// root, its invokable methods.
 #[component]
-pub fn ElementsPanel(props: ElementsPanelProps) -> Element {
-    let ElementsPanelProps { snapshot, selected, expanded, invoke_arg } = props;
+pub fn ElementsPanel(
+    snapshot: Signal<Snapshot>,
+    /// Currently-selected element id (drives the detail pane).
+    selected: Signal<Option<u64>>,
+    /// Set of expanded branch ids. Lives outside the row build so it
+    /// survives poll-driven rebuilds.
+    expanded: Signal<HashSet<u64>>,
+    /// JSON args buffer shared by the detail pane's method-invoke controls.
+    invoke_arg: Signal<String>,
+) -> Element {
 
     // Visible rows — recompute on tree / expand change.
-    let rows: runtime_core::ReadSignal<Vec<Value>> = memo(move || {
+    let rows: runtime_core::Memo<Vec<Value>> = memo(move || {
         let snap = snapshot.get();
         let exp = expanded.get();
         // element_id → component name, so a component root gets a synthetic
@@ -390,13 +407,6 @@ pub fn ElementsPanel(props: ElementsPanelProps) -> Element {
         out
     });
 
-    // Detail body — a reactive closure (rebuilds when `selected`/`snapshot` change).
-    let detail = text(move || match selected.get() {
-        Some(id) => element_detail(&snapshot.get(), real_element_id(id)),
-        None => "Select an element on the left to inspect it.".to_string(),
-    })
-    .into_element();
-
     // Master/detail: a recessed (gray) tree pane beside a raised (white)
     // detail panel. `align = Stretch` makes the two panes equal height.
     ui! {
@@ -409,7 +419,13 @@ pub fn ElementsPanel(props: ElementsPanelProps) -> Element {
             Surface(background = SurfaceColor::Surface, grow = 3.0, padding = StackPadding::Md) {
                 Stack(gap = StackGap::Sm) {
                     Typography(content = "Element", kind = typography_kind::H3)
-                    detail
+                    // Reactive detail body — re-reads on `selected`/`snapshot`.
+                    text {
+                        move || match selected.get() {
+                            Some(id) => element_detail(&snapshot.get(), real_element_id(id)),
+                            None => "Select an element on the left to inspect it.".to_string(),
+                        }
+                    }
                     // Methods appear only when the selected element is a
                     // `#[component]` root the framework linked to an instance.
                     if linked_component_present(&snapshot.get(), selected.get()) {
@@ -424,12 +440,6 @@ pub fn ElementsPanel(props: ElementsPanelProps) -> Element {
 // =============================================================================
 // Logs — filterable stream
 // =============================================================================
-
-#[derive(Default)]
-pub struct LogsPanelProps {
-    pub snapshot: Signal<Snapshot>,
-    pub filter: Signal<String>,
-}
 
 fn log_matches(e: &Value, needle: &str) -> bool {
     if needle.is_empty() {
@@ -472,26 +482,21 @@ fn log_body(snap: &Snapshot, needle: &str) -> String {
 /// The captured log stream with a live substring filter (matches source or
 /// text, case-insensitive) and a Clear button.
 #[component]
-pub fn LogsPanel(props: LogsPanelProps) -> Element {
-    let LogsPanelProps { snapshot, filter } = props;
-    let filter_input = text_input(filter, move |v| filter.set(v))
-        .placeholder("filter (substring of source or text)…".to_string())
-        .into_element();
+pub fn LogsPanel(snapshot: Signal<Snapshot>, filter: Signal<String>) -> Element {
     let clear: Rc<dyn Fn()> = Rc::new(|| client_action("clear_logs", json!({})));
-    let clear_btn = ui! { Button(label = "Clear".to_string(), on_click = clear) };
-
-    // Reactive (exprs read `.get()` → the macro reactive-wraps them).
-    let count = text(move || log_count_line(&snapshot.get(), &filter.get().to_lowercase())).into_element();
-    let body = text(move || log_body(&snapshot.get(), &filter.get().to_lowercase())).into_element();
 
     ui! {
         Stack(gap = StackGap::Sm) {
             Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
-                filter_input
-                clear_btn
+                text_input(
+                    value = filter,
+                    on_change = move |v| filter.set(v),
+                    placeholder = "filter (substring of source or text)…",
+                )
+                Button(label = "Clear".to_string(), on_click = clear)
             }
-            count
-            body
+            text { move || log_count_line(&snapshot.get(), &filter.get().to_lowercase()) }
+            text { move || log_body(&snapshot.get(), &filter.get().to_lowercase()) }
         }
     }
 }
@@ -499,11 +504,6 @@ pub fn LogsPanel(props: LogsPanelProps) -> Element {
 // =============================================================================
 // Stats — read-only runtime internals
 // =============================================================================
-
-#[derive(Default)]
-pub struct StatsPanelProps {
-    pub snapshot: Signal<Snapshot>,
-}
 
 /// A compact one-line-per-navigator summary (the dedicated navigator UI was
 /// dropped from the tab bar; this keeps the introspection visible).
@@ -532,26 +532,20 @@ fn navigators_text(snap: &Snapshot) -> String {
 /// Read-only diagnostics: navigators, arena stats, perf phase counters,
 /// watched signals, and the flat `find_all` element list.
 #[component]
-pub fn StatsPanel(props: StatsPanelProps) -> Element {
-    let StatsPanelProps { snapshot } = props;
-    // `text(<expr with .get()>)` → reactive-wrapped, refreshes each poll.
-    let navigators = text(move || navigators_text(&snapshot.get())).into_element();
-    let perf = text(move || format::perf(&snapshot.get())).into_element();
-    let reactive = text(move || format::reactive_profile(&snapshot.get())).into_element();
-    let signals = text(move || format::signals(&snapshot.get())).into_element();
-    let raw = text(move || format::raw_elements(&snapshot.get())).into_element();
+pub fn StatsPanel(snapshot: Signal<Snapshot>) -> Element {
+    // Each `text` body is a reactive closure, so it refreshes each poll.
     ui! {
         Stack(gap = StackGap::Md, padding = StackPadding::Sm) {
             Typography(content = "NAVIGATORS", kind = typography_kind::Overline)
-            navigators
+            text { move || navigators_text(&snapshot.get()) }
             Typography(content = "ARENA / PERF", kind = typography_kind::Overline)
-            perf
+            text { move || format::perf(&snapshot.get()) }
             Typography(content = "REACTIVE PROFILE (which signal caused a long render)", kind = typography_kind::Overline)
-            reactive
+            text { move || format::reactive_profile(&snapshot.get()) }
             Typography(content = "WATCHED SIGNALS", kind = typography_kind::Overline)
-            signals
+            text { move || format::signals(&snapshot.get()) }
             Typography(content = "RAW ELEMENTS (find_all)", kind = typography_kind::Overline)
-            raw
+            text { move || format::raw_elements(&snapshot.get()) }
         }
     }
 }

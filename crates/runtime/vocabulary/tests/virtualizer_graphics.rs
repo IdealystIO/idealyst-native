@@ -10,16 +10,16 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use host_mock::harness;
-use runtime_core::primitives::graphics::OnResizeEvent;
-use runtime_core::primitives::virtualizer::{Axis, ItemSize, Lanes, VirtualLayout};
-use runtime_core::{StyleRules, Tokenized};
+use runtime_shared::primitives::graphics::OnResizeEvent;
+use runtime_shared::primitives::virtualizer::{Axis, ItemSize, Lanes, VirtualLayout};
+use runtime_shared::{StyleRules, Tokenized};
 use runtime_scene::realize;
 use runtime_vocabulary::builders::{graphics, text, virtualizer};
 use runtime_world::signal;
 
 fn px(w: f32) -> StyleRules {
     StyleRules {
-        width: Some(Tokenized::Literal(runtime_core::Length::Px(w))),
+        width: Some(Tokenized::Literal(runtime_shared::Length::Px(w))),
         ..Default::default()
     }
 }

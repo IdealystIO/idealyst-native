@@ -28,33 +28,16 @@ license.workspace = true
 crate-type = ["rlib"]
 
 [features]
-# New-core (idea-lite) adoption: `newcore::start` mounts a scene-element
-# tree on a `runtime_world::World` through the vocabulary's builtin
-# handlers, with `WindowsBackend` implementing `runtime_scene::Host` +
-# all 30 capability traits directly, and a dispatch-hook flush driver
-# (WM_COMMAND / WM_MOUSEWHEEL dispatch -> staged writes -> one deduped
-# flush). Additive — the old-core mount path is untouched with or
-# without this feature (same convention as backend-terminal).
-new-core = [
-    "dep:runtime-world",
-    "dep:runtime-scene",
-    "dep:runtime-vocabulary",
-    # `create_navigator` (old-Element-typed NavigatorHost) is behind the
-    # vocabulary's `legacy-bridge` gate; this backend's newcore.rs
-    # implements it by delegating to the old Backend impl.
-    "runtime-vocabulary/legacy-bridge",
-]
 
 [dependencies]
-runtime-core = { workspace = true }
+# The permanent substrate both cores compiled against (style engine,
+# tokens, prop/handle structs, scheduling, viewport). `runtime-core` is
+# NOT a dependency: this backend has no `Element`/`Backend` surface left.
+runtime-shared = { workspace = true }
 runtime-layout = { workspace = true }
-# New-core migration crates — pure Rust, so declared ungated here (the
-# newcore module itself lives inside the target-gated lib body, so the
-# impls only compile on Windows targets); optional so default builds
-# stay byte-identical.
-runtime-world = { workspace = true, optional = true }
-runtime-scene = { workspace = true, optional = true }
-runtime-vocabulary = { workspace = true, optional = true }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
 
 # The `windows` crate ships pre-generated Win32 bindings. Feature
 # flags are per-namespace; we only need the minimum surface to host

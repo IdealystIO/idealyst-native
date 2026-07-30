@@ -11,7 +11,7 @@ license.workspace = true
 # iOS backend's `IosSurfaceProvider`), runs the wgpu init against the
 # Metal backend, constructs the `render_wgpu::Host` + `Renderer`,
 # mounts the caller's UI, and drives per-frame paint through
-# `runtime_core::driver::render_loop` — which the iOS backend already
+# `runtime_shared::driver::render_loop` — which the iOS backend already
 # installs as an NSTimer at ~60 Hz.
 #
 # Used to embed a live preview of an idealyst app (the welcome
@@ -27,41 +27,20 @@ license.workspace = true
 # interaction, the `UIView`'s `touchesBegan:moved:ended:` overrides
 # would translate to `render_api::PointerEvent`s.
 
-# idea-lite core migration: `mount_newcore` — the new-core sibling of
-# `mount`. Same wgpu init / render loop / visibility gate, but the
-# embedded tree realizes through `render_wgpu::newcore::start_in_world`
-# into the embedding APP's own world
-# (`backend_ios_mobile::newcore::mounted_world`), so the app's flush
-# driver commits the embedded app's staged writes. The
-# `backend-ios-mobile` dep is legitimate here (not in author code):
-# this crate IS the iOS-specific host shell, and on iOS the embedding
-# app host is backend-ios-mobile by definition. Mirrors `host-web`'s
-# feature block.
-[features]
-new-core = [
-    "render-wgpu/new-core",
-    "dep:runtime-scene",
-    "dep:backend-ios-mobile",
-    # The app-host surfaces `mount_newcore` reaches: the mounted-world
-    # accessor (backend-ios-mobile's own new-core boot) and the NSTimer
-    # render-loop driver install (gated behind backend-ios-mobile's
-    # async-driver).
-    "backend-ios-mobile/new-core",
-    "backend-ios-mobile/async-driver",
-]
-
 [dependencies]
 render-api = { workspace = true }
 render-wgpu = { workspace = true }
-runtime-core = { workspace = true, features = ["async-driver"] }
-runtime-scene = { workspace = true, optional = true }
+# `async-driver`: the crate's `spawn_async` executor, used by the
+# async wgpu init.
+runtime-shared = { workspace = true, features = ["async-driver"] }
+# The scene-element vocabulary `mount`'s build closure returns.
+runtime-scene = { workspace = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]
-# The embedding app host — `mount_newcore` reads its mounted world +
-# installs its render-loop driver. Optional: only the `new-core`
-# feature pulls it (the old-core mount has no backend-ios-mobile
-# coupling).
-backend-ios-mobile = { workspace = true, optional = true }
+# The embedding app host — `mount` reads its mounted world (the
+# `newcore` boot's accessor) and installs its render-loop driver
+# (behind the backend's `async-driver`).
+backend-ios-mobile = { workspace = true, features = ["async-driver"] }
 # Match host-web's wgpu major (29). Different feature set: Metal
 # instead of WebGL2. wgpu 29 ships the Metal backend behind the
 # `metal` feature flag.

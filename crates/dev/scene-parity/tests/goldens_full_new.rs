@@ -1,10 +1,9 @@
-//! FULL-OP golden tests, NEW core (the P2b gate): the SAME pairs against
-//! the SAME `goldens_full/` files (modulo the README's sanctioned
-//! divergences), plus registry-mirror and override-set sync checks.
+//! FULL-OP golden tests: every pair against the frozen `goldens_full/`
+//! files (modulo the README's sanctioned divergences), plus
+//! frozen-registry and override-set sync checks.
 
 use scene_parity::full::full_newcore_golden_path;
 use scene_parity::full_new::{check_full_new, FULL_NEWCORE_OVERRIDES};
-use scene_parity::scenarios_full::full_scenarios;
 use scene_parity::scenarios_full_new::full_new_scenarios;
 use scene_parity::Mode;
 
@@ -47,16 +46,51 @@ full_golden_new!(nav_swap_select_spliced, "nav_swap_select", Mode::Spliced);
 full_golden_new!(nav_swap_dispose_evict_spliced, "nav_swap_dispose_evict", Mode::Spliced);
 full_golden_new!(nav_stack_push_pop_spliced, "nav_stack_push_pop", Mode::Spliced);
 
-/// The new-core registry mirrors the old one exactly: same names, same
-/// mode sets, same order.
+/// The full-op scenario registry is FROZEN: this literal is the
+/// (name, modes) inventory the old walker's `src/scenarios_full.rs`
+/// registry carried when `goldens_full/` was generated. It replaces the
+/// live `full_new_registry_matches_old` mirror, which needed the deleted
+/// walker-side registry to compare against, and preserves the same
+/// guarantee: no scenario silently disappears or loses a mode.
+const FROZEN_FULL_SCENARIO_REGISTRY: &[(&str, &[Mode])] = &[
+    ("full_static_kitchen_sink", &[Mode::Spliced]),
+    ("full_reactive_text", &[Mode::Spliced]),
+    ("full_reactive_style", &[Mode::Spliced]),
+    ("full_prop_updates", &[Mode::Spliced]),
+    ("full_dyn_swap_primitives", &[Mode::Anchored, Mode::Spliced]),
+    ("full_release_on_swap", &[Mode::Anchored, Mode::Spliced]),
+    ("full_repeat_fallback", &[Mode::Anchored, Mode::Spliced]),
+    ("full_style_sheet_cohort", &[Mode::Spliced]),
+    ("full_style_state_overlay", &[Mode::Spliced]),
+    ("full_style_signal_class", &[Mode::Spliced]),
+    ("full_style_preminted", &[Mode::Spliced]),
+    ("full_virtualizer_lifecycle", &[Mode::Spliced]),
+    ("full_virtualizer_lane_swap", &[Mode::Anchored, Mode::Spliced]),
+    ("full_graphics_lifecycle", &[Mode::Anchored, Mode::Spliced]),
+    ("full_portal_toggle", &[Mode::Anchored, Mode::Spliced]),
+    ("full_overlay_static", &[Mode::Spliced]),
+    ("full_overlay_toggle", &[Mode::Spliced]),
+    ("full_presence_cycle", &[Mode::Anchored, Mode::Spliced]),
+    ("full_presence_bare", &[Mode::Spliced]),
+    ("nav_swap_select", &[Mode::Spliced]),
+    ("nav_swap_dispose_evict", &[Mode::Spliced]),
+    ("nav_stack_push_pop", &[Mode::Spliced]),
+];
+
 #[test]
-fn full_new_registry_matches_old() {
-    let old = full_scenarios();
-    let new = full_new_scenarios();
-    assert_eq!(old.len(), new.len(), "scenario count mismatch");
-    for (o, n) in old.iter().zip(new.iter()) {
-        assert_eq!(o.name, n.name, "scenario name/order mismatch");
-        assert_eq!(o.modes, n.modes, "mode set mismatch for `{}`", o.name);
+fn full_scenario_registry_matches_the_frozen_inventory() {
+    let live: Vec<(&str, &[Mode])> = full_new_scenarios()
+        .iter()
+        .map(|s| (s.name, s.modes))
+        .collect();
+    assert_eq!(
+        FROZEN_FULL_SCENARIO_REGISTRY.len(),
+        live.len(),
+        "full-op scenario count drifted from the frozen inventory"
+    );
+    for (frozen, actual) in FROZEN_FULL_SCENARIO_REGISTRY.iter().zip(live.iter()) {
+        assert_eq!(frozen.0, actual.0, "scenario name/order drift");
+        assert_eq!(frozen.1, actual.1, "mode set drift for `{}`", frozen.0);
     }
 }
 

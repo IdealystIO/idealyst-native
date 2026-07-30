@@ -41,6 +41,17 @@ debug-stats = ["runtime-shared/debug-stats"]
 # (the website's embedded-simulator new-core build is the consumer).
 async-driver = ["runtime-shared/async-driver"]
 
+# Forward runtime-shared's `style-dump` gate so glue can re-export the
+# `premint` linkme registry at `glue::premint`. This is where the
+# `stylesheet!` expansion's `cfg(idealyst_premint_dump)` registration
+# lands after the macro's retarget rewrites `::runtime_core::premint::…`
+# → `::runtime_vocabulary::glue::premint::…` (runtime-macros/src/lib.rs
+# flagged this as the one retarget path with no glue home; a premint
+# dump build is now necessarily a runtime-v2 build, so it needs one).
+# Only the CLI's ephemeral dump build and `premint-dump`'s own tests
+# enable it — shipped graphs carry zero registry code.
+style-dump = ["runtime-shared/style-dump"]
+
 # MCP catalog anchor for new-core graphs (idea-lite wave 2b): links
 # `mcp-catalog` and re-exports it at `glue::__mcp`, where the
 # retargeted `#[component]` / `doc_scope!` emissions land
@@ -50,35 +61,21 @@ async-driver = ["runtime-shared/async-driver"]
 # recipes ride along — one switch gives a new-core session the full
 # catalog. Off by default (production carries zero catalog code);
 # the emission gate itself is `runtime-macros/catalog`, enabled by
-# whichever wrapper/app wants capture (see runtime-facade/catalog).
+# whichever wrapper/app wants capture (see runtime-core/catalog).
 catalog = ["dep:mcp-catalog", "runtime-shared/catalog"]
 
-# The ONLY remaining runtime-core coupling: `bridge::LegacyBridge`, the
-# migration-transitional adapter that wraps an old `Backend` impl in the
-# new capability surface. Off by default so this crate's default
-# dependency graph is runtime-core-free (P7 gate: `cargo tree -p
-# runtime-vocabulary` shows no runtime-core); the transitional consumers
-# (backend-ssr new-core boot, scene-parity, SDK test harnesses) enable
-# it on their dep line. Deleted together with the old core.
-legacy-bridge = ["dep:runtime-core"]
-
 [dependencies]
-# P7 landed: the shared prop/data types (StyleRules, AccessibilityProps,
-# handler aliases, primitives::* payloads, robot bridge, host slots)
-# live in runtime-shared — the permanent substrate. runtime-core remains
-# ONLY as an optional dep behind `legacy-bridge` (above).
+# The shared prop/data types (StyleRules, AccessibilityProps, handler
+# aliases, primitives::* payloads, robot bridge, host slots) live in
+# runtime-shared — the permanent substrate. This crate has NO dependency
+# on the author-surface `runtime-core` root (which depends on it).
 runtime-shared = { workspace = true }
-runtime-core = { workspace = true, optional = true }
 runtime-scene = { workspace = true }
 runtime-world = { workspace = true }
 # Catalog anchor (see the `catalog` feature above).
 mcp-catalog = { workspace = true, optional = true }
 
 [dev-dependencies]
-# The test suites drive mounts through `bridge::LegacyBridge` over the
-# mock backend, so they need the feature on (and runtime-core as a
-# direct dev-dep for its author surface).
-runtime-core = { workspace = true }
 # Self-dev-dep so the test targets compile the lib WITH `async-driver`
 # (feature unification): the lazy chunk driver (handlers/lazy.rs,
 # tests/lazy.rs) and the resource/mutation mirrors
@@ -86,7 +83,7 @@ runtime-core = { workspace = true }
 # exactly like the old core's same-named gate, and a plain
 # `cargo test -p runtime-vocabulary` must exercise both instead of
 # silently vanishing behind a --features flag nobody passes in CI.
-runtime-vocabulary = { path = ".", features = ["async-driver", "legacy-bridge", "robot"] }
+runtime-vocabulary = { path = ".", features = ["async-driver", "robot"] }
 # The new-core test substrate: scene Host + all-30-caps recording mock.
 # Dev-dep cycle (host-mock depends on this crate's lib) is fine — Cargo
 # permits dev-dependency cycles, and it keeps the suites off the old

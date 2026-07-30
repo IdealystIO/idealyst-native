@@ -1,11 +1,11 @@
-//! End-to-end proof of the P3a macro lowering: the `ui!` +
-//! `#[component]` authored app (src/app.rs) mounted against the
-//! scene-parity mock host (`LegacyBridge<FullRecorder>`), driven by
-//! recorded BUTTON HANDLERS (the real event path: macro → builders →
-//! prims → registry handlers → backend calls) plus `world.flush()`,
-//! asserting the recorded full-op log — structure at mount, in-place
-//! updates, keyed reconcile behavior, and row-local state survival.
-#![cfg(feature = "new-core")]
+//! End-to-end proof of the `ui!` / `#[component]` lowering: the authored
+//! app (src/app.rs) mounted against the scene-parity mock host (the bare
+//! `FullRecorder`, which implements `runtime_scene::Host` + all 30 caps
+//! traits directly), driven by recorded BUTTON HANDLERS (the real event
+//! path: macro → builders → prims → registry handlers → backend calls)
+//! plus `world.flush()`, asserting the recorded full-op log — structure
+//! at mount, in-place updates, keyed reconcile behavior, and row-local
+//! state survival.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -13,7 +13,6 @@ use std::rc::Rc;
 use newcore_app::app::{build_app, build_demo, AppHandle, DemoHandle, Todo};
 use runtime_vocabulary::glue::scheduling::{install_scheduler, ScheduleHandle, Scheduler};
 use runtime_scene::{realize, Realized, Registry};
-use runtime_vocabulary::LegacyBridge;
 use runtime_world::World;
 use scene_parity::full::FullRecorder;
 use scene_parity::{Mode, PNode, Recorder};
@@ -94,7 +93,11 @@ fn pump_timers() {
     pump(&TIMER_QUEUE);
 }
 
-type Bridged = LegacyBridge<FullRecorder>;
+// The scene-parity recorder implements `runtime_scene::Host` + all 30
+// caps traits DIRECTLY — no `Backend` trait anywhere in this harness.
+// (The alias name is historical: it used to wrap the recorder in
+// `LegacyBridge`.)
+type Bridged = FullRecorder;
 
 struct Harness {
     rec: Recorder,
@@ -109,10 +112,7 @@ impl Harness {
     /// Mount the app; returns the harness plus the mount-time op log.
     fn mount() -> (Harness, Vec<String>) {
         let rec = Recorder::default();
-        let backend = Rc::new(RefCell::new(LegacyBridge(FullRecorder::new(
-            rec.clone(),
-            Mode::Spliced,
-        ))));
+        let backend = Rc::new(RefCell::new(FullRecorder::new(rec.clone(), Mode::Spliced)));
         let mut registry: Registry<Bridged> = Registry::new();
         runtime_vocabulary::register_builtins(&mut registry);
         let registry = Rc::new(registry);
@@ -130,7 +130,7 @@ impl Harness {
     /// label was `label`, then flush the world; returns the ops the
     /// flush produced.
     fn press(&self, label: &str) -> Vec<String> {
-        let fire = self.backend.borrow().0.button_action(label);
+        let fire = self.backend.borrow().button_action(label);
         fire();
         self.flush()
     }
@@ -187,17 +187,14 @@ fn mount_realizes_full_authored_structure() {
     assert!(!log.contains("nothing to do"), "empty state absent:\n{log}");
 }
 
-/// Regression (glue `StaticCond` FnOnce — the new-core E0507 class): a
-/// `String` local moved into a STATIC `if` branch compiles (that's the
-/// core of the regression — the fixture is same-source and the old-core
-/// leg checks it too) and the taken branch mounts its moved text.
+/// Regression (glue `StaticCond` FnOnce — the E0507 class): a `String`
+/// local moved into a STATIC `if` branch compiles (that IS the core of
+/// the regression — see the fixture's docs) and the taken branch mounts
+/// its moved text.
 #[test]
 fn regression_static_if_branch_moves_string_capture() {
     let rec = Recorder::default();
-    let backend = Rc::new(RefCell::new(LegacyBridge(FullRecorder::new(
-        rec.clone(),
-        Mode::Spliced,
-    ))));
+    let backend = Rc::new(RefCell::new(FullRecorder::new(rec.clone(), Mode::Spliced)));
     let mut registry: Registry<Bridged> = Registry::new();
     runtime_vocabulary::register_builtins(&mut registry);
     let registry = Rc::new(registry);
@@ -274,7 +271,7 @@ fn row_local_state_survives_keyed_reconcile() {
     // Bump row 1's local counter twice (via its real handler).
     let ops = h.press("bump1:0");
     assert!(joined(&ops).contains("\"bump1:1\""), "label re-bound:\n{:?}", ops);
-    let fire = h.backend.borrow().0.button_action("bump1:0"); // creation-time label
+    let fire = h.backend.borrow().button_action("bump1:0"); // creation-time label
     fire();
     h.world.flush();
 
@@ -291,7 +288,7 @@ fn row_local_state_survives_keyed_reconcile() {
 
     // And the live label is still the bumped one: bump again and check
     // the next update goes 2 -> 3.
-    let fire = h.backend.borrow().0.button_action("bump1:0");
+    let fire = h.backend.borrow().button_action("bump1:0");
     fire();
     let ops = h.flush();
     assert!(joined(&ops).contains("\"bump1:3\""), "state persisted:\n{:?}", ops);
@@ -428,10 +425,7 @@ impl DemoHarness {
     fn mount() -> (DemoHarness, Vec<String>) {
         ensure_scheduler();
         let rec = Recorder::default();
-        let backend = Rc::new(RefCell::new(LegacyBridge(FullRecorder::new(
-            rec.clone(),
-            Mode::Spliced,
-        ))));
+        let backend = Rc::new(RefCell::new(FullRecorder::new(rec.clone(), Mode::Spliced)));
         let mut registry: Registry<Bridged> = Registry::new();
         runtime_vocabulary::register_builtins(&mut registry);
         let registry = Rc::new(registry);
@@ -446,7 +440,7 @@ impl DemoHarness {
     }
 
     fn press(&self, label: &str) -> Vec<String> {
-        let fire = self.backend.borrow().0.button_action(label);
+        let fire = self.backend.borrow().button_action(label);
         fire();
         self.flush()
     }
@@ -555,7 +549,7 @@ fn presence_toggle_enter_exit_cycle() {
 #[test]
 fn flat_list_window_mounts_rows_and_data_edits_notify() {
     let (h, _) = DemoHarness::mount();
-    let sim = h.backend.borrow().0.virt_sim(0);
+    let sim = h.backend.borrow().virt_sim(0);
 
     // Rows realize with the world ambient — the documented host-driver
     // contract for virtualizer callback invocation.
@@ -593,7 +587,7 @@ fn flat_list_window_mounts_rows_and_data_edits_notify() {
 #[test]
 fn hover_flip_applies_the_state_overlay() {
     let (h, _) = Harness::mount();
-    let setter = h.backend.borrow().0.state_setter(0);
+    let setter = h.backend.borrow().state_setter(0);
     setter(runtime_vocabulary::glue::StateBits::HOVERED, true);
     let log = joined(&h.flush());
     assert!(

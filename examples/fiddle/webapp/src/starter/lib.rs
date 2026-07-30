@@ -2,15 +2,10 @@
 // the template's `snippet/` directory, so siblings declared with
 // `mod foo;` resolve to `widgets.rs`, `helpers/<name>.rs`, etc.
 //
-// `#[macro_use]` lifts the `#[component]`-generated invocation
-// macro (e.g. `title!`) from `widgets.rs` into this module so
-// the `ui!` DSL below can spell `Title(label = ...)`. The
-// macro expands to `title(&TitleProps { ... })`, so the matching
-// `use` line below brings BOTH the function and the Props type
-// into the call-site scope where the expansion lands.
-#[macro_use]
+// `#[component]` generates a `Title` tag alias next to the component fn, so
+// importing that one name is all a `ui!` call site needs.
 mod widgets;
-use widgets::{title, TitleProps};
+use widgets::Title;
 
 #[component]
 pub fn app() -> Element {
@@ -22,6 +17,10 @@ pub fn app() -> Element {
             text { "Tapped {count} times" }
             button(
                 label = "Tap me",
+                // One `set` per turn composes fine. Two increments in one
+                // handler need `count.update(|n| n + 1)`: writes stage until
+                // the flush, so a second `get()` would still read the old
+                // value.
                 on_click = move || count.set(count.get() + 1),
             )
         }

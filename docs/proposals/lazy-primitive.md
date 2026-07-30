@@ -61,7 +61,66 @@ The framework currently has no answer for any of these.
 
 ---
 
-## Lazy registration of `External` handlers (implemented)
+## Lazy registration of `External` handlers (superseded — the API moved, the capability is back)
+
+> **Status: the capability described below exists, under a different
+> API.** Runtime v2 deleted `Element::External`, the per-backend
+> `ExternalRegistry`, and `runtime_core::defer_external_registration` /
+> `has_pending_external_registrations` /
+> `drain_external_registrations`; for one wave there was no post-boot
+> registration seam at all. `runtime-scene` has since grown one, designed
+> around the scene `Registry` rather than transliterated from the old
+> queue.
+>
+> **The successor, in three calls:**
+>
+> ```rust
+> // 1. Boot seam (register_scene_extensions / the boot entry's `register`):
+> //    declare the payload kind late-bound. Costs main a TypeId, nothing else.
+> registry.defer::<HeavyProps>();
+>
+> // 2. Inside the `#[component(lazy)]` body — no registry in hand, so queue:
+> runtime_scene::defer_registration::<backend_web::WebBackend, _>(|registry| {
+>     // 3. …which lands here, installing the handler and realizing every
+>     //    item of this kind that realize already parked.
+>     registry.register_deferred::<HeavyProps, _>(mount_heavy);
+> });
+> ```
+>
+> Realize drains the mailbox at the top of every realization, so the
+> chunk's own element realizing is what applies the registration.
+>
+> **What changed from the design below, deliberately:**
+>
+> - **Parking is opt-in per kind.** The old seam degraded an unknown
+>   payload to a "not supported" placeholder box. The scene panics
+>   instead — and keeps panicking for any kind the app did not declare
+>   with `defer::<T>()`. Panicking on a genuine missing registration is
+>   the feature; deferral must not weaken it into a silent blank.
+> - **A payload that realizes BEFORE its handler arrives is completed,
+>   not abandoned.** The old drain ran at dispatch time, so an
+>   `Element::External` rendered before its chunk loaded stayed a
+>   placeholder forever. A parked scene item holds a layout-transparent
+>   placeholder at a known parent + index, and the drain splices the real
+>   node in and removes the placeholder — one node out, one node in, so
+>   no sibling index moves and nothing else remounts.
+> - **A deferred payload may not be a subtree ROOT** (a `when`/`switch`
+>   branch, a keyed row, a navigator screen, portal content). The drain
+>   needs a parent and an index; a root has neither, and the enclosing
+>   region caches its root node handles. Wrap it in a view — the same
+>   rule `Element::Many` already has, for the same reason.
+> - **Keyed by scene `Host`, not by `Backend`.** Otherwise the mailbox is
+>   the old queue's shape, for the old queue's reason: a process hosting
+>   two backends at once must never cross-apply.
+>
+> `tests/lazy-payload-split` measures the bundle win;
+> `crates/runtime/scene/src/tests.rs` pins the semantics;
+> `docs/migrating-to-runtime-v2.md` (third-party SDK section) is the
+> migration note.
+>
+> Everything below is the pre-runtime-v2 design, preserved verbatim as the
+> record of the original mechanism and its measured numbers.
+
 
 Splitting the *render* isn't enough when the heavy code is a third-party
 `Element::External` extension. An external handler is installed eagerly —
@@ -134,7 +193,8 @@ inventory self-registration for native targets, where bundle size is a
 non-issue, and opts web into the lazy path. This is per-SDK opt-in for heavy
 libraries — the default eager path is unchanged.
 
-**Measured.** `tests/lazy-external-split/` is a pair of identical apps
+**Measured** (on the pre-runtime-v2 tree; the fixtures have since been
+retargeted, see `tests/README.md`). `tests/lazy-external-split/` was a pair of identical apps
 (`eager/`, `lazy/`) sharing a `heavy/` fake External SDK whose handler reaches
 512 KiB of static data. They differ only in where the handler registers. Built
 at `--web --release` (data-prune on), the `prune-regression` runner reports:

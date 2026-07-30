@@ -1,6 +1,6 @@
 //! Cooperative main-thread async executor for the Android backend.
 //!
-//! `runtime_core::driver::spawn_async` falls back to `pollster::block_on`
+//! `runtime_shared::driver::spawn_async` falls back to `pollster::block_on`
 //! when no executor is installed — it drives a future *to completion on the
 //! calling thread*. On Android that calling thread is the JVM main
 //! (`Looper`) thread, so `block_on` FREEZES it until the future finishes.
@@ -35,7 +35,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use jni::objects::{JObject, JValue};
 use jni::sys::jlong;
 use jni::JNIEnv;
-use runtime_core::driver::AsyncExecutor;
+use runtime_shared::driver::AsyncExecutor;
 
 use super::with_env;
 use crate::imp::scheduler::post_async_poll_to_main;
@@ -53,7 +53,7 @@ thread_local! {
 /// Register the Android cooperative executor with `runtime-core`. Idempotent
 /// (first install wins). Called from [`crate::imp::scheduler::install_scheduler`].
 pub fn install_async_executor() {
-    runtime_core::driver::install_async_executor(Box::new(AndroidAsyncExecutor));
+    runtime_shared::driver::install_async_executor(Box::new(AndroidAsyncExecutor));
 }
 
 struct AndroidAsyncExecutor;

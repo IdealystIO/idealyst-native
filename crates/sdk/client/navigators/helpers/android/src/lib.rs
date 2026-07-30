@@ -54,8 +54,8 @@
 //! into for JNI glue.
 
 use jni::objects::GlobalRef;
-use runtime_core::primitives::navigator::{MountResult, NavState, NavigatorControl, NavigatorHandle};
-use runtime_core::Signal;
+use runtime_shared::primitives::navigator::{MountResult, NavState, NavigatorControl, NavigatorHandle};
+use runtime_shared::Signal;
 use std::any::Any;
 use std::rc::Rc;
 
@@ -114,7 +114,7 @@ pub struct BarButton {
 }
 
 /// Per-screen options the SDK handler hands to [`attach_initial`].
-/// Mirrors the legacy `runtime_core::ScreenOptions` shape — title,
+/// Mirrors the legacy old-core `ScreenOptions` shape — title,
 /// header_left/right buttons, color closures — but lives in the
 /// helpers crate so each SDK can translate from its own typed options
 /// (`StackScreenOptions`, `DrawerScreenOptions`, …) into a shared
@@ -125,9 +125,9 @@ pub struct AndroidScreenOptions {
     pub header_shown: Option<bool>,
     pub header_left: Option<BarButton>,
     pub header_right: Option<BarButton>,
-    pub header_background: Option<Rc<dyn Fn() -> runtime_core::Color>>,
-    pub header_tint: Option<Rc<dyn Fn() -> runtime_core::Color>>,
-    pub title_color: Option<Rc<dyn Fn() -> runtime_core::Color>>,
+    pub header_background: Option<Rc<dyn Fn() -> runtime_shared::Color>>,
+    pub header_tint: Option<Rc<dyn Fn() -> runtime_shared::Color>>,
+    pub title_color: Option<Rc<dyn Fn() -> runtime_shared::Color>>,
     /// Per-screen override of the navigator's global mount policy
     /// (`AndroidDrawerCallbacks::mount_policy` / `AndroidTabCallbacks`).
     /// `None` defers to the navigator-global default. Mirrors
@@ -213,7 +213,7 @@ pub fn make_handle(node: &GlobalRef) -> NavigatorHandle {
 // =============================================================================
 
 struct NoopOps;
-impl runtime_core::primitives::navigator::NavigatorOps for NoopOps {}
+impl runtime_shared::primitives::navigator::NavigatorOps for NoopOps {}
 static NOOP_OPS: NoopOps = NoopOps;
 
 /// Stable key for an `instance` table — JObject* pointer. Mirrors the

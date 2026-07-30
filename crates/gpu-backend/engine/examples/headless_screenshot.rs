@@ -13,73 +13,54 @@ fn main() {
 
 #[cfg(feature = "headless")]
 fn main() {
-    use std::rc::Rc;
     use render_wgpu::headless::Screenshotter;
-    use runtime_core::{
-        Color, Element, IntoStyleSource, Length, SafeAreaSides, StyleApplication, StyleRules,
-        StyleSheet, TextSource, Tokenized,
-    };
+    use runtime_shared::{Color, Length, StyleRules, Tokenized};
+    use runtime_vocabulary::builders::IntoSceneElement;
+    use runtime_vocabulary::{text, view};
 
-    fn styled_view(children: Vec<Element>, build: impl FnOnce(&mut StyleRules)) -> Element {
-        let sheet = Rc::new(StyleSheet::r#static({
-            let mut r = StyleRules::default();
-            build(&mut r);
-            r
-        }));
-        Element::View {
-            children,
-            style: Some(StyleApplication::new(sheet).into_style_source()),
-            ref_fill: None,
-            safe_area_sides: SafeAreaSides::NONE,
-            on_touch: None,
-            on_wheel: None,
-            on_file_drop: None,
-            on_hover: None,
-            is_container: false,
-            preserves_focus: false,
-            accessibility: Default::default(),
-        }
+    fn rules(build: impl FnOnce(&mut StyleRules)) -> StyleRules {
+        let mut r = StyleRules::default();
+        build(&mut r);
+        r
     }
 
-    fn label(text: &str, hex: &'static str, size: f32) -> Element {
-        let sheet = Rc::new(StyleSheet::r#static({
-            let mut r = StyleRules::default();
-            r.font_size = Some(Tokenized::Literal(Length::Px(size)));
-            r
-        }));
-        let style = StyleApplication::new(sheet).override_color(Color(hex.to_string()));
-        Element::Text {
-            source: TextSource::Static(text.to_string()),
-            style: Some(style.into_style_source()),
-            ref_fill: None,
-            accessibility: Default::default(),
-        }
-    }
-
+    // Dark full-bleed background with a lighter card containing text.
     let app = || {
-        // Dark full-bleed background with a lighter card containing text.
-        styled_view(
-            vec![styled_view(
-                vec![
-                    label("Idealyst — headless render", "#e8ecf4", 22.0),
-                    label("rasterized with no window", "#8a93a6", 15.0),
-                ],
-                |r| {
-                    r.background = Some(Tokenized::Literal(Color("#1b2030".into())));
-                    r.padding_top = Some(Tokenized::Literal(Length::Px(28.0)));
-                    r.padding_bottom = Some(Tokenized::Literal(Length::Px(28.0)));
-                    r.padding_left = Some(Tokenized::Literal(Length::Px(32.0)));
-                    r.padding_right = Some(Tokenized::Literal(Length::Px(32.0)));
-                    r.margin_top = Some(Tokenized::Literal(Length::Px(48.0)));
-                    r.margin_left = Some(Tokenized::Literal(Length::Px(40.0)));
-                },
-            )],
-            |r| {
+        view()
+            .child(
+                view()
+                    .child(
+                        text()
+                            .content("Idealyst — headless render")
+                            .style(rules(|r| {
+                                r.font_size = Some(Tokenized::Literal(Length::Px(22.0)));
+                                r.color = Some(Tokenized::Literal(Color("#e8ecf4".into())));
+                            })),
+                    )
+                    .child(
+                        text()
+                            .content("rasterized with no window")
+                            .style(rules(|r| {
+                                r.font_size = Some(Tokenized::Literal(Length::Px(15.0)));
+                                r.color = Some(Tokenized::Literal(Color("#8a93a6".into())));
+                            })),
+                    )
+                    .style(rules(|r| {
+                        r.background = Some(Tokenized::Literal(Color("#1b2030".into())));
+                        r.padding_top = Some(Tokenized::Literal(Length::Px(28.0)));
+                        r.padding_bottom = Some(Tokenized::Literal(Length::Px(28.0)));
+                        r.padding_left = Some(Tokenized::Literal(Length::Px(32.0)));
+                        r.padding_right = Some(Tokenized::Literal(Length::Px(32.0)));
+                        r.margin_top = Some(Tokenized::Literal(Length::Px(48.0)));
+                        r.margin_left = Some(Tokenized::Literal(Length::Px(40.0)));
+                    })),
+            )
+            .style(rules(|r| {
                 r.width = Some(Tokenized::Literal(Length::Percent(100.0)));
                 r.height = Some(Tokenized::Literal(Length::Percent(100.0)));
                 r.background = Some(Tokenized::Literal(Color("#0c0e15".into())));
-            },
-        )
+            }))
+            .into_scene_element()
     };
 
     let mut shot = match Screenshotter::new(560, 240) {
@@ -92,7 +73,8 @@ fn main() {
     if shot.software {
         eprintln!("(using software adapter)");
     }
-    shot.mount(app);
+    // `_app` must outlive the capture — dropping it unmounts the tree.
+    let _app = render_wgpu::newcore::start(shot.backend(), |_| {}, app);
     let png = shot.capture_png().expect("capture");
     std::fs::write("headless-demo.png", &png).expect("write png");
     println!(

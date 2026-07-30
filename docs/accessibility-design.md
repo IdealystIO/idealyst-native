@@ -1,5 +1,21 @@
 # Accessibility Design — idealyst-native
 
+
+> **Status note (2026-07-29, runtime-v2).** The a11y *model* in this
+> document shipped and is current: `Role`, `AccessibilityTraits`,
+> `AccessibilityProps`, `AccessibilityAction`, `LiveRegionPriority`, the
+> per-platform mapping tables, and the GPU semantics tree all describe
+> today's behavior. The *implementation plan* does not: it is written
+> against the pre-runtime-v2 `Backend` mega-trait, the `Element` enum, and
+> the render walker, none of which exist. Today the a11y capability is
+> `runtime_vocabulary::caps::A11yOps` (`update_accessibility`,
+> `announce_for_accessibility`, `dump_accessibility_tree`), every primitive
+> payload in `crates/runtime/vocabulary/src/prims/` carries an
+> `a11y: AccessibilityProps` field, and each primitive's mount handler
+> passes it to the backend's `create_*` call. Read §§ on roles, traits, and
+> platform mappings; read the phase table as history. Author-facing guide:
+> [`accessibility.md`](accessibility.md).
+
 Status: **shipped** — phases 1-6 + wire-protocol plumbing landed.
 Owner: framework team. Reviewers: every backend maintainer + idea-ui.
 

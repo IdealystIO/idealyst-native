@@ -17,26 +17,6 @@
 //! the comparison is apples-to-apples with the other arena
 //! variants (which mirror those same dimensions).
 
-// ---------------------------------------------------------------------------
-// Core selection (idea-lite migration): the SAME bench source builds
-// against either core. `old-core` (default) = the shipping walker path,
-// byte-identical to the pre-migration bench. `new-core` = staged-commit
-// kernel + scene drivers via backend_web::newcore. The authored tree
-// (`app()` and every suite arm) is IDENTICAL between the two — only the
-// boot glue, the signal constructors, and the theme plumbing differ.
-// See Cargo.toml for the build commands.
-// ---------------------------------------------------------------------------
-
-#[cfg(all(feature = "new-core", feature = "old-core"))]
-compile_error!(
-    "benchmark-idealyst-native: enable exactly one of `old-core` / `new-core` \
-     (use --no-default-features with --features new-core)."
-);
-#[cfg(not(any(feature = "new-core", feature = "old-core")))]
-compile_error!(
-    "benchmark-idealyst-native: enable one of `old-core` (default) / `new-core`."
-);
-
 use runtime_core::{
     stylesheet, ui, AlignItems, Color, FlexDirection, JustifyContent, Length, Overflow,
     TokenEntry, TokenValue, Tokenized,
@@ -45,87 +25,56 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 
-#[cfg(feature = "old-core")]
-use backend_web::WebBackend;
-#[cfg(feature = "old-core")]
-use idea_ui::{install_theme, set_theme, ThemeTokens};
-#[cfg(feature = "old-core")]
-use runtime_core::{signal, signal_class, Element, Signal};
-
-#[cfg(feature = "new-core")]
 use runtime_vocabulary::glue::{signal, signal_class, Element, Signal};
 
 // ---------------------------------------------------------------------------
-// Core-glue helpers — the ONLY per-core behavioral seams outside boot.
+// Reactive-boundary helpers.
 // ---------------------------------------------------------------------------
 
 /// A page-lifetime signal created from a JS export (outside any render
-/// scope). Old core: `Signal::new` (arena-global). New core: creation
-/// needs the ambient world, so route through the mounted app's world.
-#[cfg(feature = "old-core")]
-fn make_signal<T: Clone + PartialEq + 'static>(v: T) -> Signal<T> {
-    Signal::new(v)
-}
-#[cfg(feature = "new-core")]
+/// scope). Signal creation needs the ambient world, so route through
+/// the mounted app's world.
 fn make_signal<T: PartialEq + 'static>(v: T) -> Signal<T> {
     backend_web::newcore::with_world_entered(|| signal(v))
         .expect("bench export called before start() mounted the app")
 }
 
-/// Coalesce multiple signal writes into one subscriber fan-out. Old
-/// core: `runtime_core::batch`. New core: every write stages until the
-/// driver flush, so batching is implicit — run the closure plain and
-/// let the export's [`commit`] deliver one flush.
-fn batched(f: impl FnOnce()) {
-    #[cfg(feature = "old-core")]
-    runtime_core::batch(f);
-    #[cfg(feature = "new-core")]
-    f();
-}
-
-/// Commit staged writes before the export returns. Old core applies
-/// writes synchronously — no-op. New core: one synchronous
-/// `World::flush`, so both variants' exports return with the reactive
-/// work done (the measurement contract in ../README.md; DOM text
-/// updates additionally ride the batched-text microtask on BOTH cores).
+/// Commit staged writes before the export returns, so an export returns
+/// with the reactive work done (the measurement contract in
+/// ../README.md; DOM text updates additionally ride the batched-text
+/// microtask).
+///
+/// Every write stages until a flush, which makes each export an
+/// implicit batch: a `MODE` write and a `COUNT` write in the same export
+/// rebuild the switch arm exactly once.
 fn commit() {
-    #[cfg(feature = "new-core")]
     backend_web::newcore::flush_sync();
 }
 
-/// Install the boot theme. Old core: idea-ui's `install_theme` (typed
-/// slot + tokens + host surface). New core: token install + host
-/// surface via `runtime_vocabulary::theme` (must run inside the app
-/// world — `app()` qualifies), and capture the `ThemeCtx` for the
-/// handler-safe swap surface the exports use.
+/// Install the boot theme: token install + host surface via
+/// `runtime_vocabulary::theme` (must run inside the app world — `app()`
+/// qualifies), capturing the `ThemeCtx` for the handler-safe swap
+/// surface the exports use.
 fn theme_install(theme: &Theme) {
-    #[cfg(feature = "old-core")]
-    install_theme(theme.clone());
-    #[cfg(feature = "new-core")]
-    {
-        runtime_vocabulary::theme::install_tokens(&theme.tokens_vec());
-        runtime_vocabulary::theme::set_app_background(theme.background.clone());
-        THEME_CTX.with(|c| {
-            *c.borrow_mut() = Some(runtime_vocabulary::theme::theme_ctx());
-        });
-    }
+    runtime_vocabulary::theme::install_tokens(&theme.tokens_vec());
+    runtime_vocabulary::theme::set_app_background(theme.background.clone());
+    THEME_CTX.with(|c| {
+        *c.borrow_mut() = Some(runtime_vocabulary::theme::theme_ctx());
+    });
 }
 
-/// Swap the active theme (the toggle suite's op). Old core: idea-ui
-/// `set_theme` → `update_tokens` → cohort/cascade. New core:
+/// Swap the active theme (the toggle suite's op):
 /// `ThemeCtx::update_tokens` (stages + version bump) + one flush.
+/// `ThemeCtx` methods are the handler-safe surface — the exports run
+/// outside `World::enter`, where the free `theme::update_tokens` would
+/// have no ambient world.
 fn theme_swap(theme: Theme) {
-    #[cfg(feature = "old-core")]
-    set_theme(theme);
-    #[cfg(feature = "new-core")]
-    {
-        THEME_CTX.with(|c| {
-            if let Some(ctx) = c.borrow().as_ref() {
-                ctx.update_tokens(&theme.tokens_vec());
-            }
-        });
-        commit();
-    }
+    THEME_CTX.with(|c| {
+        if let Some(ctx) = c.borrow().as_ref() {
+            ctx.update_tokens(&theme.tokens_vec());
+        }
+    });
+    commit();
 }
 
 // Default dlmalloc allocator (was: lol_alloc::FreeListAllocator).
@@ -201,9 +150,7 @@ impl Theme {
     /// Enumerate every theme color as a `TokenEntry { name, value }` so
     /// the backend can install them on `:root`. The names here are
     /// exactly the names embedded in the `Tokenized::Token { name, .. }`
-    /// references — keep these two lists in sync. Core-agnostic (the
-    /// old-core `ThemeTokens` impl and the new-core
-    /// `runtime_vocabulary::theme` install both consume it).
+    /// references — keep these two lists in sync.
     pub fn tokens_vec(&self) -> Vec<TokenEntry> {
         fn entry(t: &Tokenized<Color>) -> Option<TokenEntry> {
             // Tokenized::Token always — we never construct literals for
@@ -230,14 +177,6 @@ impl Theme {
         .into_iter()
         .filter_map(entry)
         .collect()
-    }
-}
-
-/// `ThemeTokens` is idea-ui's (old-core) install surface.
-#[cfg(feature = "old-core")]
-impl ThemeTokens for Theme {
-    fn tokens(&self) -> Vec<TokenEntry> {
-        self.tokens_vec()
     }
 }
 
@@ -371,24 +310,6 @@ stylesheet! {
 const DEFAULT_ROWS: usize = 1000;
 const ROW_MAX: usize = 100_000;
 
-#[cfg(feature = "old-core")]
-thread_local! {
-    /// Holds the render's `Owner` so the framework's signals / effects
-    /// stay alive for the page's lifetime. Without this, the Owner
-    /// would drop at the end of `start()` and the framework would
-    /// tear down everything immediately. (New-core retention lives in
-    /// `backend_web::newcore`'s own APP slot.)
-    static OWNER: RefCell<Option<runtime_core::Owner>> = const { RefCell::new(None) };
-
-    /// Diagnostic-only: a second handle to the backend so we can
-    /// inspect its per-node HashMaps from the arena_stats accessor.
-    /// The framework's render path owns the primary reference; this
-    /// is just an `Rc::clone` so we can peek without going through
-    /// the framework.
-    static BACKEND: RefCell<Option<Rc<RefCell<WebBackend>>>> = const { RefCell::new(None) };
-}
-
-#[cfg(feature = "new-core")]
 thread_local! {
     /// The per-world theme context, captured during `app()` (inside
     /// `World::enter`). Theme swaps from the JS exports go through this
@@ -629,8 +550,7 @@ fn build_tree_primitive(
                 .iter()
                 .map(|c| build_tree_primitive(c, target_id, global, branch))
                 .collect();
-            // Bare-ident child splat (core-agnostic; the old direct
-            // `view(kids).into_element()` was old-core API).
+            // Bare-ident child splat.
             ui! { view { kids } }
         }
     }
@@ -667,43 +587,15 @@ fn app(initial_rows: usize) -> Element {
     let sclass_count = signal(0usize);
     SCLASS_COUNT.with(|c| *c.borrow_mut() = Some(sclass_count));
 
-    // Register the two hierarchy-bench signals with the web
-    // backend's JS-side reactive layer so signal writes flow into
-    // JS for per-binding fan-out (instead of firing N Rust
-    // Effects, one per leaf). Done once at startup; the leaves
-    // themselves only need to declare the binding (no per-leaf
-    // Effect setup). Wrapped in `untrack` so the stringifier
-    // can't accidentally pick up a subscription if it fires
-    // inside some outer effect's run.
-    //
-    // OLD CORE ONLY: the JS dispatcher is fired from the old arena's
-    // `Signal::set`; world signals have no JS write-notifier channel
-    // yet (see runtime_vocabulary::style_attach's signal_class note).
-    // Under new-core the same author shapes fall back to per-binding
-    // world effects — that fallback is exactly what the bench gate
-    // measures.
-    #[cfg(feature = "old-core")]
-    BACKEND.with(|s| {
-        if let Some(b_rc) = s.borrow().as_ref() {
-            let mut b = b_rc.borrow_mut();
-            b.register_signal_for_js(global_counter.id(), move || {
-                runtime_core::untrack(|| global_counter.get()).to_string()
-            });
-            b.register_signal_for_js(branch_counter.id(), move || {
-                runtime_core::untrack(|| branch_counter.get()).to_string()
-            });
-            // Wire `shared_color` to the JS-side signal-change
-            // dispatcher so the signal-class suite's bindings (which
-            // tap `__idealystOnSignalChanged`) hear updates. The
-            // existing reactive-style suite drives this signal via
-            // a per-row Rust Effect — those Effects continue to
-            // fire (no harm), but the binding's JS dispatcher is
-            // what makes the SHARED bumps fast at scale.
-            b.register_signal_for_js(shared_color.id(), move || {
-                runtime_core::untrack(|| shared_color.get()).to_string()
-            });
-        }
-    });
+    // NOTE: no JS-side signal-write notifier is wired here. The old
+    // walker registered `global_counter` / `branch_counter` /
+    // `shared_color` with the web backend's JS reactive layer
+    // (`register_signal_for_js`), so a write fanned out per BINDING in
+    // JS instead of firing one Rust effect per leaf. World signals have
+    // no JS write-notifier channel (see `runtime_vocabulary::
+    // style_attach`'s `signal_class` note), so the same author shapes
+    // fall back to per-binding world effects — which is exactly what
+    // the hierarchy + signal-class suites measure.
 
     ui! {
         view(style = page_style()) {
@@ -712,7 +604,9 @@ fn app(initial_rows: usize) -> Element {
             // atomically. Branches (by mode): 0 = row list
             // (rebuild/toggle), 1 = hierarchy tree, 2-4 = suites.
             // The generation component is what lets a same-mode
-            // re-setup rebuild on BOTH cores (see REBUILD_GEN).
+            // re-setup rebuild at all: a reactive `match` is keyed on
+            // the scrutinee VALUE, so an equal tuple keeps the mounted
+            // arm (see REBUILD_GEN).
             match (mode.get(), gen.get()) {
                 m => {
                     {
@@ -899,43 +793,13 @@ fn app(initial_rows: usize) -> Element {
 /// Boot the wasm side: mount the screen under `#app` with
 /// `initial_rows` rows. Called once from the arena variant's
 /// `<script type="module">` after the wasm is loaded.
-#[cfg(feature = "old-core")]
-#[wasm_bindgen]
-pub fn start(initial_rows: usize) {
-    console_error_panic_hook::set_once();
-    // Register the web backend's wasm-bindgen-backed scheduler so the
-    // framework can defer work to microtasks / rAF. Without this, the
-    // first render panics the moment it hits a Switch primitive (or any
-    // other path that calls `schedule_microtask`).
-    backend_web::install_scheduler();
-    // Register a TimeSource so `runtime_core::debug::now_micros`
-    // (used by `PhaseTimer` and the rest of the debug-stats
-    // aggregator) reads `performance.now()` instead of returning 0.
-    // Without this, every phase counter records duration 0 and the
-    // profiling output is useless.
-    backend_web::install_time_source();
-    // Route effect-closure + scope-guard drops through the web
-    // backend's rAF-sliced drain so wasm-bindgen Closure teardown
-    // cost lands outside the synchronous `apply` window. Without
-    // this, drops are synchronous (correct, but slower on big
-    // `set_rows(...)` transitions).
-    backend_web::install_drop_deferral();
-    let rows = initial_rows.clamp(1, ROW_MAX);
-    let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
-    backend_web::install_text_batcher(&backend);
-    BACKEND.with(|slot| *slot.borrow_mut() = Some(backend.clone()));
-    let owner = runtime_core::render(backend, app(rows));
-    OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
-}
-
-/// New-core boot: `backend_web::newcore::start` owns the backend, the
-/// registry, the world, and the flush driver (dispatch-site glue — no
-/// window listener, no rAF poll). `install_time_source` /
-/// `install_scheduler` / the global self-handle (which carries the
-/// batched-text microtask, the old `install_text_batcher` role) all
-/// happen inside `newcore::start`. `install_drop_deferral` is old-core
-/// scope machinery — new-core teardown is `Owned` drops.
-#[cfg(feature = "new-core")]
+///
+/// `backend_web::newcore::start` owns the backend, the registry, the
+/// world, and the flush driver (dispatch-site glue — no window
+/// listener, no rAF poll). `install_time_source` (so `PhaseTimer` reads
+/// `performance.now()` rather than recording 0 under `debug-stats`),
+/// `install_scheduler`, and the global self-handle that carries the
+/// batched-text microtask all happen inside it.
 #[wasm_bindgen]
 pub fn start(initial_rows: usize) {
     console_error_panic_hook::set_once();
@@ -1023,9 +887,7 @@ pub fn set_rows(n: usize) {
     // the scrutinee tuple, not `touch()`: the new core's switch
     // dedupes equal scrutinee values, so notify-without-write would
     // silently skip the rebuild there (see REBUILD_GEN).
-    batched(|| {
-        bump_gen();
-    });
+    bump_gen();
     commit();
 }
 
@@ -1041,33 +903,30 @@ pub fn setup_hierarchy(seed: u32, nodes: u32, max_depth: u32) {
     let tree = gen_tree_shape(seed, nodes as usize, md);
     TARGET_LEAF_ID.with(|t| t.set(tree.target_leaf_id));
     TREE_ROOT.with(|r| *r.borrow_mut() = Some(tree.root));
-    // Coalesce the mode flip + tree_version bump into one fan-out.
-    // Without `batch`, MODE.set(1) and TREE_VERSION.update(...) each
-    // re-fire the Switch arm's effect — so the tree builds TWICE
+    // The mode flip + tree_version bump coalesce into ONE fan-out
+    // because writes stage until this export's `commit()`. That matters:
+    // if each write fanned out on its own, the tree would build TWICE
     // (once on mode flip, again on version bump), with the first
-    // build's 100k+ Effects torn down before the second builds the
-    // same tree fresh. Batching collapses to a single rebuild.
-    // (New core: writes stage, so the coalescing is inherent.)
-    batched(|| {
-        MODE.with(|c| {
-            if let Some(sig) = c.borrow().as_ref() {
-                // Plain guarded `set`: a same-mode re-setup leaves this
-                // a no-op — the `bump_gen()` below is what forces the
-                // rebuild (a scrutinee-tuple VALUE change, honored by
-                // both cores; the old `set_always` force-notify is a
-                // no-op under the new switch's value dedup).
-                sig.set(1);
-            }
-        });
-        TREE_VERSION.with(|c| {
-            if let Some(sig) = c.borrow().as_ref() {
-                // get+set instead of `update`: the two cores' `update`
-                // closures differ in shape (`&mut T` vs `&T -> T`);
-                // this spelling is core-agnostic.
-                let v = sig.get();
-                sig.set(v + 1);
-            }
-        });
+    // build's 100k+ effects torn down before the second built the same
+    // tree fresh.
+    MODE.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            // Plain guarded `set`: a same-mode re-setup leaves this
+            // a no-op — the `bump_gen()` below is what forces the
+            // rebuild (a scrutinee-tuple VALUE change; a force-notify
+            // `set_always` would NOT work, because the reactive `match`
+            // dedupes equal scrutinee values).
+            sig.set(1);
+        }
+    });
+    TREE_VERSION.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            // get+set instead of `update`: the two cores' `update`
+            // closures differ in shape (`&mut T` vs `&T -> T`);
+            // this spelling is core-agnostic.
+            let v = sig.get();
+            sig.set(v + 1);
+        }
     });
     commit();
 }
@@ -1102,55 +961,36 @@ pub fn global_update(n: u32) {
 // Granular suite hooks (mode = 2)
 // ----------------------------------------------------------------
 
-/// Mount `n` counter rows. Each row binds its own signal via the
-/// JS-side text-binding registry, so a `bump_counter(i, v)` is one
-/// JS notifier call (not a Rust Effect per row). Tearing down a
+/// Mount `n` counter rows, each bound to its own signal. Tearing down a
 /// previous mount: we drop the existing signal Vec and re-create.
 ///
-/// The mode + count writes are batched so the Switch arm rebuilds
-/// exactly once. Without the batch, `MODE.set(2)` and
-/// `COUNTER_COUNT.set(n)` would each re-fire the Switch effect and
-/// the row list would build twice.
+/// The mode + count writes stage until this export's `commit()`, so the
+/// switch arm rebuilds exactly once. If each write fanned out on its
+/// own, `MODE.set(2)` and `COUNTER_COUNT.set(n)` would each re-fire the
+/// switch effect and the row list would build twice.
 #[wasm_bindgen]
 pub fn setup_counters(n: u32) {
     let n = n.clamp(1, ROW_MAX as u32) as usize;
     // Fresh signals each setup — old ones drop with the previous
     // scope when the Switch arm rebuilds.
     let sigs: Vec<Signal<u32>> = (0..n).map(|_| make_signal(0u32)).collect();
-    // Register each counter signal as a JS-side notifier so
-    // `bump_counter` updates flow through the batched text bridge
-    // instead of firing per-row Rust Effects. OLD CORE ONLY — world
-    // signals have no JS write-notifier; the new core's per-binding
-    // world effects are the measured fallback (see app()'s note).
-    #[cfg(feature = "old-core")]
-    BACKEND.with(|s| {
-        if let Some(b_rc) = s.borrow().as_ref() {
-            let mut b = b_rc.borrow_mut();
-            for sig in &sigs {
-                let sig_for_notify = *sig;
-                b.register_signal_for_js(sig.id(), move || {
-                    runtime_core::untrack(|| sig_for_notify.get()).to_string()
-                });
-            }
+    // NOTE: no JS-side notifier per counter signal — see `app()`'s note.
+    // Each row's binding is a world effect.
+    COUNTERS.with(|c| *c.borrow_mut() = sigs);
+    MODE.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            // Plain guarded `set`: a same-mode re-setup leaves this
+            // a no-op — the `bump_gen()` below is what forces the
+            // rebuild (a scrutinee-tuple VALUE change; a force-notify
+            // `set_always` would NOT work, because the reactive `match`
+            // dedupes equal scrutinee values).
+            sig.set(2);
         }
     });
-    COUNTERS.with(|c| *c.borrow_mut() = sigs);
-    batched(|| {
-        MODE.with(|c| {
-            if let Some(sig) = c.borrow().as_ref() {
-                // Plain guarded `set`: a same-mode re-setup leaves this
-                // a no-op — the `bump_gen()` below is what forces the
-                // rebuild (a scrutinee-tuple VALUE change, honored by
-                // both cores; the old `set_always` force-notify is a
-                // no-op under the new switch's value dedup).
-                sig.set(2);
-            }
-        });
-        COUNTER_COUNT.with(|c| {
-            if let Some(sig) = c.borrow().as_ref() {
-                sig.set(n);
-            }
-        });
+    COUNTER_COUNT.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            sig.set(n);
+        }
     });
     commit();
 }
@@ -1178,13 +1018,11 @@ pub fn bump_range(start: u32, end: u32, v: u32) {
     if s >= e {
         return;
     }
-    batched(|| {
-        COUNTERS.with(|c| {
-            let c = c.borrow();
-            for sig in c.iter().skip(s).take(e - s) {
-                sig.set(v);
-            }
-        });
+    COUNTERS.with(|c| {
+        let c = c.borrow();
+        for sig in c.iter().skip(s).take(e - s) {
+            sig.set(v);
+        }
     });
     commit();
 }
@@ -1208,22 +1046,20 @@ pub fn setup_reactive_styles(n: u32) {
             sig.set(0);
         }
     });
-    batched(|| {
-        MODE.with(|c| {
-            if let Some(sig) = c.borrow().as_ref() {
-                // Plain guarded `set`: a same-mode re-setup leaves this
-                // a no-op — the `bump_gen()` below is what forces the
-                // rebuild (a scrutinee-tuple VALUE change, honored by
-                // both cores; the old `set_always` force-notify is a
-                // no-op under the new switch's value dedup).
-                sig.set(3);
-            }
-        });
-        RSTYLE_COUNT.with(|c| {
-            if let Some(sig) = c.borrow().as_ref() {
-                sig.set(n);
-            }
-        });
+    MODE.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            // Plain guarded `set`: a same-mode re-setup leaves this
+            // a no-op — the `bump_gen()` below is what forces the
+            // rebuild (a scrutinee-tuple VALUE change; a force-notify
+            // `set_always` would NOT work, because the reactive `match`
+            // dedupes equal scrutinee values).
+            sig.set(3);
+        }
+    });
+    RSTYLE_COUNT.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            sig.set(n);
+        }
     });
     commit();
 }
@@ -1241,22 +1077,20 @@ pub fn setup_signal_class_rows(n: u32) {
             sig.set(0);
         }
     });
-    batched(|| {
-        MODE.with(|c| {
-            if let Some(sig) = c.borrow().as_ref() {
-                // Plain guarded `set`: a same-mode re-setup leaves this
-                // a no-op — the `bump_gen()` below is what forces the
-                // rebuild (a scrutinee-tuple VALUE change, honored by
-                // both cores; the old `set_always` force-notify is a
-                // no-op under the new switch's value dedup).
-                sig.set(4);
-            }
-        });
-        SCLASS_COUNT.with(|c| {
-            if let Some(sig) = c.borrow().as_ref() {
-                sig.set(n);
-            }
-        });
+    MODE.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            // Plain guarded `set`: a same-mode re-setup leaves this
+            // a no-op — the `bump_gen()` below is what forces the
+            // rebuild (a scrutinee-tuple VALUE change; a force-notify
+            // `set_always` would NOT work, because the reactive `match`
+            // dedupes equal scrutinee values).
+            sig.set(4);
+        }
+    });
+    SCLASS_COUNT.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            sig.set(n);
+        }
     });
     commit();
 }
@@ -1299,50 +1133,18 @@ pub fn row_count() -> usize {
         .unwrap_or(DEFAULT_ROWS)
 }
 
-/// Diagnostic: return arena slot counts so JS can detect when the
-/// rebuild loop is leaving state behind. Each field returns
-/// `in_use` × 1_000_000 + `total` so we can shove the full snapshot
-/// over the wasm boundary as a small struct of plain numbers without
-/// inventing a wrapper type. Tooling-only — call `bench_stats_json`
-/// for human-readable output.
-#[cfg(feature = "old-core")]
+/// Diagnostic JSON for the variant's index.html. Phase counters report
+/// when `debug-stats` is on — that is the profiling surface CLAUDE.md §6
+/// describes and the ±5 % gate work used.
+///
+/// The historical arena/backend slot census (`signals_in_use`,
+/// `effects_total`, the backend's per-node HashMap counts) is gone with
+/// the old walker: world slots replaced the reactive arena and the
+/// backend handle is owned by `newcore::start`, so there is no
+/// process-global census to read.
 #[wasm_bindgen]
 pub fn bench_stats_json() -> String {
-    let s = runtime_core::arena_stats();
-    let backend_json = {
-        let b = BACKEND.with(|slot| slot.borrow().as_ref().map(|rc| rc.borrow().debug_counts()));
-        match b {
-            // Node-id allocation moved to a JS-side WeakMap (see
-            // `WebBackend::node_id`); there's no Rust-side counter
-            // or cache to report anymore.
-            Some(b) => format!(
-                "{{\"dynamic\":{},\"state_listeners\":{},\"pregen\":{},\"pregen_by_ptr\":{},\"free_rule_indices\":{}}}",
-                b.dynamic, b.state_listeners, b.pregen, b.pregen_by_ptr, b.free_rule_indices,
-            ),
-            None => "null".into(),
-        }
-    };
-    let phases_json = phase_counters_json();
-    format!(
-        "{{\"signals_in_use\":{},\"signals_total\":{},\"effects_in_use\":{},\"effects_total\":{},\"refs_in_use\":{},\"refs_total\":{},\"total_subscribers\":{},\"total_deps\":{},\"backend\":{},\"phases\":{}}}",
-        s.signals_in_use, s.signals_total,
-        s.effects_in_use, s.effects_total,
-        s.refs_in_use, s.refs_total,
-        s.total_subscribers, s.total_deps,
-        backend_json,
-        phases_json,
-    )
-}
-
-/// New-core variant: the old-core arena/backend diagnostics don't
-/// exist (world slots replace the arena; the backend handle is owned
-/// by `newcore::start`). Phase counters still report when
-/// `debug-stats` is on — that's the profiling surface CLAUDE.md §6
-/// describes and the ±5% gate work uses.
-#[cfg(feature = "new-core")]
-#[wasm_bindgen]
-pub fn bench_stats_json() -> String {
-    format!("{{\"core\":\"new\",\"phases\":{}}}", phase_counters_json())
+    format!("{{\"phases\":{}}}", phase_counters_json())
 }
 
 /// Drain + serialize `runtime_core::debug` phase counters as a

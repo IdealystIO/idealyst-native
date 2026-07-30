@@ -1,8 +1,8 @@
 //! Advanced track — scaffolded outlines for the deeper topics. Each will
 //! grow into a full walkthrough.
 
-use runtime_core::{ui, Element};
 use idea_ui::{typography_kind, Typography};
+use runtime_core::{ui, Element};
 
 use crate::common::{Callout, DocsLink, LessonPage};
 use crate::routes::{ADV_BACKENDS_ROUTE, ADV_CLI_ROUTE, ADV_EMBEDDED_ROUTE};
@@ -13,21 +13,27 @@ pub fn custom_backends() -> Element {
         LessonPage(
             current = ADV_BACKENDS_ROUTE.name(),
             title = "Custom backends".to_string(),
-            lead = "Implement the Backend trait to bring idealyst to a new platform.".to_string(),
+            lead = "Satisfy the backend traits to bring idealyst to a new platform.".to_string(),
         ) {
             Typography(
-                content = "The Backend trait is the framework's only seam to a platform. \
-                    Implement it once and the entire existing app surface runs on your target. \
-                    This walkthrough will go function-by-function through the key methods a \
-                    backend provides.".to_string()
+                content = "The backend traits are the framework's only seam to a platform, and \
+                    they split along one clean line: the scene Host carries the handful of \
+                    structural operations (create an anchor, insert, insert at an index, remove a \
+                    child, clear children), and a family of capability traits carries the rest, \
+                    one family per primitive. Satisfy them and the entire existing app surface \
+                    runs on your target. Splitting by capability also means a partial backend is \
+                    a compiler-visible state rather than a pile of unimplemented!() bodies. This \
+                    walkthrough will go trait-by-trait through the ones every backend needs.".to_string()
             )
             Typography(content = "What we'll cover".to_string(), kind = typography_kind::H2)
             Typography(
                 content = "Node creation (create_view / create_text / create_button), the \
-                    property-update path (update_text and friends), tree mutation (insert / \
-                    remove / clear), and apply_style \u{2014} how StyleRules become native \
-                    style. Plus the optional hooks: interaction states, stylesheet \
-                    pre-generation, and teardown cleanup.".to_string()
+                    property-update path (update_text and friends), the Host's tree mutation \
+                    (insert / remove / clear), and apply_style \u{2014} how StyleRules become \
+                    native style. Then the piece unique to a platform: the flush driver, which \
+                    wraps every author callback the platform can dispatch so a staged write \
+                    commits as soon as the callback returns. Plus the optional hooks: interaction \
+                    states, stylesheet pre-generation, and teardown cleanup.".to_string()
             )
 
             Callout(label = "Outline".to_string()) {
@@ -40,7 +46,7 @@ pub fn custom_backends() -> Element {
             }
 
             DocsLink(
-                summary = "The full Backend trait surface and per-method contract.".to_string(),
+                summary = "The full backend surface and the per-method contract.".to_string(),
                 link_label = "Backend reference".to_string(),
                 doc_file = "backend.md".to_string(),
             )
@@ -72,7 +78,8 @@ pub fn interactive_cli() -> Element {
             }
 
             DocsLink(
-                summary = "Backend trait + how the terminal backend maps primitives to cells.".to_string(),
+                summary = "The backend surface + how the terminal backend maps primitives to \
+                    cells.".to_string(),
                 link_label = "Backend reference".to_string(),
                 doc_file = "backend.md".to_string(),
             )
@@ -105,7 +112,7 @@ pub fn embedded() -> Element {
             }
 
             DocsLink(
-                summary = "Backend reference \u{2014} the seam the CPU renderer implements.".to_string(),
+                summary = "Backend reference \u{2014} the seam the CPU renderer satisfies.".to_string(),
                 link_label = "Backend reference".to_string(),
                 doc_file = "backend.md".to_string(),
             )

@@ -1,17 +1,13 @@
-//! Core-agnostic BUILD-TREE introspection for idea-ui's (and
-//! idea-ui-nav's) unit tests.
+//! BUILD-TREE introspection for idea-ui's (and idea-ui-nav's) unit
+//! tests.
 //!
-//! The old core's `Element` is a public enum the tests pattern-matched
-//! directly (`Element::View { children, style, .. }`). The new core's
-//! `Element::Item { data: Box<dyn Any>, .. }` erases the payload, so
-//! direct matching is impossible — and the two shapes can't be unified
-//! by the `runtime_facade` alias (pattern syntax binds to the concrete
-//! enum). This module is the shared assertion surface instead:
-//! [`classify`] maps ONE element to the normalized [`P`] mirror, with a
-//! per-core backend (the sanctioned fork location — everything else in
-//! the tests stays same-source).
+//! `Element::Item { data: Box<dyn Any>, .. }` erases the primitive
+//! payload, so a test can't pattern-match a built tree directly. This
+//! module is the assertion surface instead: [`classify`] downcasts ONE
+//! element's payload against each modeled primitive and maps it to the
+//! normalized [`P`] mirror.
 //!
-//! Normalizations (identical on both cores):
+//! Normalizations:
 //! - reactive props are EVALUATED to their current value (`disabled`,
 //!   icon `color`, text-input `secure`) — assertions compare values,
 //!   not reactive wrappers;
@@ -169,100 +165,6 @@ impl P {
 
 pub use imp::classify;
 
-#[cfg(not(feature = "new-core"))]
-mod imp {
-    use super::*;
-    use runtime_core::StyleSource;
-
-    fn style(src: Option<StyleSource>) -> Option<TStyle> {
-        src.map(|s| match s {
-            StyleSource::Static(app) => TStyle::App(app),
-            StyleSource::Reactive(f) => TStyle::AppFn(f),
-            _ => panic!("test_support: style source kind not modeled by the test mirror"),
-        })
-    }
-
-    /// Old-core backend: a thin field mapping off the public enum.
-    pub fn classify(el: Element) -> P {
-        match el {
-            Element::View {
-                children,
-                style: st,
-                ref_fill,
-                on_touch,
-                on_hover,
-                preserves_focus,
-                accessibility,
-                ..
-            } => P::View {
-                children,
-                style: style(st),
-                preserves_focus,
-                on_touch: on_touch.is_some(),
-                on_hover: on_hover.is_some(),
-                ref_fill: ref_fill.is_some(),
-                accessibility,
-            },
-            Element::Text { source, style: st, accessibility, .. } => P::Text {
-                text: match source {
-                    runtime_core::TextSource::Static(s) => Some(s),
-                    _ => None,
-                },
-                style: style(st),
-                accessibility,
-            },
-            Element::Pressable {
-                children,
-                on_click,
-                style: st,
-                ref_fill,
-                disabled,
-                preserves_focus,
-                accessibility,
-                ..
-            } => P::Pressable {
-                children,
-                on_click,
-                style: style(st),
-                disabled: disabled.map(|f| f()),
-                preserves_focus,
-                ref_fill: ref_fill.is_some(),
-                accessibility,
-            },
-            Element::Icon { data, color, style: st, .. } => P::Icon {
-                data,
-                color: color.map(|f| f()),
-                style: style(st),
-            },
-            Element::TextInput {
-                value, on_change, on_focus, secure, style: st, ..
-            } => P::TextInput {
-                value: value.get(),
-                on_change,
-                on_focus: on_focus.is_some(),
-                secure: secure.get(),
-                style: style(st),
-            },
-            Element::TextArea { min_rows, max_rows, style: st, .. } => {
-                P::TextArea { min_rows, max_rows, style: style(st) }
-            }
-            Element::ScrollView { children, style: st, .. } => {
-                P::ScrollView { children, style: style(st) }
-            }
-            Element::ActivityIndicator { .. } => P::ActivityIndicator,
-            Element::Portal { children, target, style: st, .. } => {
-                P::Portal { children, target, style: style(st) }
-            }
-            Element::Fragment { children } => P::Fragment { children },
-            Element::When { .. } => P::Other("when"),
-            Element::Each { .. } => P::Other("each"),
-            Element::External { .. } => P::Other("external"),
-            _ => P::Other("unmodeled"),
-        }
-    }
-}
-
-#[cfg(feature = "new-core")]
 mod imp {
     use super::*;
     use runtime_core::{Owned, __Value as Value};
@@ -296,8 +198,8 @@ mod imp {
         }
     }
 
-    /// New-core backend: peel `Owned`/single-`Fragment` wrappers, then
-    /// downcast the erased `Item` payload against each modeled prim.
+    /// Peel `Owned`/single-`Fragment` wrappers, then downcast the erased
+    /// `Item` payload against each modeled prim.
     pub fn classify(el: Element) -> P {
         match el {
             Element::Owned { element, owned } => {

@@ -9,7 +9,9 @@
 use runtime_core::{
     component, switch, ui, Color, Element, IntoElement, Route, StyleApplication, Tokenized,
 };
-use idea_ui::{Stack, StackGap, Typography};
+// `IdeaTheme as _` brings the theme trait into scope so `theme_is_dark`
+// below can call `colors()` on the downcast `IdeaThemeRef` carrier.
+use idea_ui::{IdeaTheme as _, Stack, StackGap, Typography};
 
 use crate::routes;
 use crate::styles::{
@@ -57,7 +59,23 @@ const DARK_PALETTE: Palette = Palette {
     accent: "#c4b5fd",
 };
 
+/// Read the active theme's background and decide whether we're in a dark
+/// theme. idea-ui's light themes start with near-white backgrounds; dark
+/// themes with near-black, so a luminance check survives palette tweaks on
+/// either side.
+///
+/// Reads via [`idea_ui::active_theme`] (a tracked signal read) rather than
+/// `Tokenized::resolve()`: the Tokenized registry read neither updates on
+/// `set_idea_theme` nor subscribes the `switch` scrutinee below (Tokenized
+/// freshness is a documented runtime-v2 deferral), which would leave dark
+/// code panels wearing the light palette's ink.
 fn theme_is_dark() -> bool {
+    if idea_ui::theme_installed() {
+        let theme = idea_ui::active_theme();
+        if let Some(t) = theme.downcast_ref::<idea_ui::IdeaThemeRef>() {
+            return is_dark_color(&t.colors().background.value().0);
+        }
+    }
     let bg: Color =
         Tokenized::<Color>::token("color-background", Color("#ffffff".into())).resolve();
     is_dark_color(&bg.0)
@@ -243,6 +261,11 @@ fn step_link(route: &'static Route<()>, label: String) -> Element {
 pub fn StepNav(props: &StepNavProps) -> Element {
     let (prev, next) = routes::neighbors(props.current);
     let row = StepNavRow();
+    // Each side resolves to a link OR an empty view — deliberately not an
+    // in-macro `if`, whose empty branch is laid out `position: absolute`.
+    // The row is `justify-content: space-between`, so an absolute (i.e.
+    // out-of-flow) placeholder would let a lone "next →" drift to the left
+    // edge on the first and last steps. The empty view keeps the slot.
     let prev_el = match prev {
         Some((r, l)) => step_link(r, format!("\u{2190} {l}")),
         None => runtime_core::view(Vec::<Element>::new()).into_element(),

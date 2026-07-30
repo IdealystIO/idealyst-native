@@ -6,8 +6,8 @@ example targets it first.
 
 ## Bootstrap: every web host must do this
 
-Before constructing a `WebBackend` or calling `runtime_core::mount(...)`,
-the host **must** call:
+Before constructing a `WebBackend` or booting a tree, the host **must**
+call:
 
 ```rust
 backend_web::install_scheduler();
@@ -26,20 +26,23 @@ backend_web::install_time_source();
 
 Both are documented as project-memory entries (`project_web_bootstrap_scheduler`)
 because the failure mode (animations and `debug-stats` silently no-oping)
-is non-obvious.
+is non-obvious. `newcore::start_in(...)` — the standard web boot entry —
+performs both installs itself (they are idempotent); a host that wires
+the backend up by hand must call them.
 
 ## File layout
 
 - **`style.rs`**: CSS converters (`rules_to_css` + per-enum helpers),
   stylesheet rule-index bookkeeping (`insert_rule` / `delete_rule` on
-  `WebBackend`), and the register/apply `Backend` methods that live next to
-  the data they mutate.
+  `WebBackend`), and the register/apply inherent methods that live next to
+  the data they mutate (the `caps::StyleOps` impl delegates to them).
 - **`defaults.rs`**: global baselines, including the `.ui-default` class,
   spinner keyframes, virtualizer JS shim, and dynamic-slot teardown.
-- **`primitives/`**: one module per `Element` kind. Each owns its
+- **`primitives/`**: one module per primitive. Each owns its
   create/update functions, any `Ops` impl, and the `make_*_handle` builder.
-  The `impl Backend for WebBackend` block at the bottom of `lib.rs` is a
-  thin delegation layer.
+- **`newcore.rs`**: the `impl Host for WebBackend` block plus all ~30
+  `impl caps::*Ops for WebBackend` blocks. A thin delegation layer over
+  the inherent `*_impl` methods and the `primitives/` modules.
 - **`batch_queue.rs`** + **`animated.rs`**: the JS-side dispatcher pattern
   for reactive bindings. A single FFI call ships a batch of property writes
   rather than one call per property; the JS dispatcher reads capability

@@ -103,12 +103,6 @@ impl Default for SwitchProps {
 /// Renders a controlled slide-toggle: a tone-colored pill track with a
 /// thumb that animates between off (left) and on (right), with an
 /// optional inline label.
-///
-/// **Cargo features:** requires `prim-icon` (in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without it compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Switch(props: &SwitchProps) -> Element {
     let value = props.value;
@@ -178,10 +172,9 @@ pub fn Switch(props: &SwitchProps) -> Element {
     let toggle = move || (on_change)(!value.get());
     let track = runtime_core::pressable(vec![thumb], toggle).with_style(track_style);
     // Forward the test id to the interactive track so a robot suite can
-    // locate + click it — set on the BUILDER (`.test_id` exists on both
-    // cores' pressable wrappers; the old Element-level `with_test_id`
-    // has no new-core counterpart). Gated: the id slot only registers
-    // under `robot`, and the prop only exists there.
+    // locate + click it — set on the BUILDER (`.test_id` on the pressable
+    // wrapper). Gated: the id slot only registers under `robot`, and the
+    // prop only exists there.
     #[cfg(feature = "robot")]
     let track = match props.test_id {
         Some(tid) => track.test_id(tid),

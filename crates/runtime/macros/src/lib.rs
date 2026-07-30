@@ -47,7 +47,6 @@ mod recipe_emit;
 #[cfg(feature = "catalog")]
 mod scope_emit;
 mod methods_block;
-#[cfg(feature = "new-core")]
 mod new_core;
 mod path_analysis;
 mod primitives;
@@ -66,9 +65,7 @@ use syn::ItemFn;
 /// `::runtime_vocabulary::glue` (see [`new_core`]); otherwise it passes
 /// through byte-identical.
 fn finish(out: proc_macro2::TokenStream) -> TokenStream {
-    #[cfg(feature = "new-core")]
-    let out = new_core::retarget(out);
-    out.into()
+    new_core::retarget(out).into()
 }
 
 /// `#[derive(IdealystSchema)]` — registers a props struct's per-field
@@ -253,16 +250,21 @@ pub fn stylesheet(input: TokenStream) -> TokenStream {
     // fresh binary). See `stylesheet::content_hash`.
     let content_hash = stylesheet::content_hash(&input.to_string());
     let parsed = parse_macro_input!(input as stylesheet::StyleSheetDecl);
-    // Through `finish`: under `new-core` the emission's absolute
-    // `::runtime_core::…` paths retarget to `::runtime_vocabulary::glue::…`
-    // (which re-exports the whole sheet vocabulary — StyleSheet,
-    // cached_stylesheet, VariantSet, IntoVariantSource, … — plus the
-    // new-core-only `IntoStyleProp`/`StyleProp` the builder's conversion
-    // impl targets). Old builds pass through byte-identical. The
-    // premint-dump linkme registration (`cfg(idealyst_premint_dump)`)
-    // would retarget to a nonexistent `glue::premint`, but dump builds
-    // are CLI-driven old-core builds — the combination cannot occur; if
-    // it ever does, the loud unresolved-path error names glue.
+    // Through `finish`: the emission's absolute `::runtime_core::…` paths
+    // retarget to `::runtime_vocabulary::glue::…` (which re-exports the
+    // whole sheet vocabulary — StyleSheet, cached_stylesheet, VariantSet,
+    // IntoVariantSource, … — plus `IntoStyleProp`/`StyleProp`, which the
+    // builder's conversion impl targets).
+    //
+    // That includes the premint-dump linkme registration
+    // (`cfg(idealyst_premint_dump)`), whose `::runtime_core::premint::…`
+    // becomes `::runtime_vocabulary::glue::premint::…`. This comment used
+    // to say the combination "cannot occur" because dump builds were
+    // CLI-driven OLD-core builds — true only while two cores existed.
+    // With one core it always occurs, so `glue::premint` is a real
+    // re-export behind the vocabulary's `style-dump` feature (which the
+    // facade forwards); without it `idealyst build --web --premint` does
+    // not compile.
     finish(stylesheet::emit(parsed, content_hash))
 }
 
@@ -350,47 +352,33 @@ pub fn lazy_component(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> TokenStream {
     let mut item_fn = parse_macro_input!(item as ItemFn);
-    // `new-core` deferrals — loud, named, never silent (repo rule: an
-    // unmigrated feature must fail with its migration status).
-    #[cfg(feature = "new-core")]
+    // Unmigrated-shape rejection — loud, named, never silent (repo
+    // rule: an unmigrated feature must fail with its migration status).
+    //
+    // `#[method]` lowers for the inline-props component shape: the
+    // retarget maps `::runtime_core::robot::…` /
+    // `::runtime_core::__component_root` /
+    // `::runtime_core::__component_keepalive_effect` onto their
+    // `runtime_vocabulary::glue` mirrors. Only the LEGACY explicit-props
+    // form stays rejected: its handle escaped through a `Bindable<H>`
+    // return over the deleted `Element` — un-portable by type. Generic
+    // components can't take the injected `bind_to` prop either
+    // (monomorphic props glue), so they get the same pointer.
+    if methods_block::has_method_fns(&item_fn)
+        && (inline_props::is_legacy_props_sig(&item_fn.sig)
+            || !item_fn.sig.generics.params.is_empty())
     {
-        // `#[component(lazy)]` / `#[lazy]` LOWERS on the new core: the
-        // emission (lazy_component.rs) swaps `__lazy_body` onto the
-        // thunk-returning shape and the retarget maps the
-        // `::runtime_core::primitives::lazy::…` / `::runtime_core::
-        // __wasm_split` paths to their `runtime_vocabulary::glue`
-        // mirrors (`glue::primitives::lazy`), mounted by the
-        // vocabulary's `lazy` handler. Same `#[wasm_split]` boundary +
-        // module naming on both cores, so wasm-split-cli's chunk
-        // classification is unchanged.
-        //
-        // `#[method]` lowers on the new core (P5 robot remainder) for the
-        // inline-props shape: the SAME emission as the old core, with the
-        // retarget mapping `::runtime_core::robot::…` /
-        // `::runtime_core::__component_root` /
-        // `::runtime_core::__component_keepalive_effect` to their
-        // `runtime_vocabulary::glue` mirrors. Only the LEGACY
-        // explicit-props form stays rejected: its handle escapes through
-        // a `Bindable<H>` return, and `runtime_core::Bindable` wraps the
-        // OLD `Element` — un-portable by type, not by phase. Generic
-        // components can't inject `bind_to` on either core (monomorphic
-        // props glue), so they get the same pointer.
-        if methods_block::has_method_fns(&item_fn)
-            && (inline_props::is_legacy_props_sig(&item_fn.sig)
-                || !item_fn.sig.generics.params.is_empty())
-        {
-            return syn::Error::new_spanned(
-                &item_fn.sig.ident,
-                "#[method] fns on the new core require the inline-props component \
-                 shape (props as fn parameters; zero parameters is fine) so the \
-                 handle binds through the auto-injected `bind_to` prop. The legacy \
-                 explicit-props form returns `Bindable<H>` over the OLD core's \
-                 `Element` and cannot lower here; generic components can't take \
-                 the injected prop on either core.",
-            )
-            .to_compile_error()
-            .into();
-        }
+        return syn::Error::new_spanned(
+            &item_fn.sig.ident,
+            "#[method] fns require the inline-props component shape (props \
+             as fn parameters; zero parameters is fine) so the handle binds \
+             through the auto-injected `bind_to` prop. The legacy \
+             explicit-props form returns `Bindable<H>` over the deleted \
+             pre-v2 `Element` and cannot lower; generic components can't \
+             take the injected prop either.",
+        )
+        .to_compile_error()
+        .into();
     }
     // `strict-docs`: require a doc comment on the component fn. Computed
     // from the original attrs before any rewrite; emitted alongside the
@@ -496,7 +484,6 @@ fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> Tok
     // `runtime_vocabulary::glue::component_scope`. Only bodies returning
     // bare `Element` are wrapped — richer return types (`Bindable<H>`,
     // …) can't flow through the `FnOnce() -> Element` collector.
-    #[cfg(feature = "new-core")]
     wrap_component_body_new_core(&mut item_fn);
 
     // Bracket the body with a build probe so the runtime knows "a
@@ -582,10 +569,9 @@ fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> Tok
 }
 
 /// Wrap a component fn's body in `component_scope(move || { … })` — the
-/// new-core run-once/untracked/collected contract. Applies only when the
-/// declared return type is bare `Element` (same token-level check as
+/// run-once/untracked/collected contract. Applies only when the declared
+/// return type is bare `Element` (same token-level check as
 /// `reactivity::returns_primitive`).
-#[cfg(feature = "new-core")]
 fn wrap_component_body_new_core(item_fn: &mut ItemFn) {
     let ty = match &item_fn.sig.output {
         syn::ReturnType::Type(_, ty) => ty,

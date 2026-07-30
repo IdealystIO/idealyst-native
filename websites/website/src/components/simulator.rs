@@ -39,14 +39,10 @@ use runtime_core::{
 // keeps that behind the same lazy chunk as before because the
 // `mount`/`DeviceProfile` reachability surface is unchanged.
 //
-// Dual-core: the SAME component source mounts the `welcome` app on
-// either core. `welcome/new-core` retargets its `ui!` emissions with
-// the rest of the graph, `Element` resolves to the right core's tree
-// type through the facade alias, and the only per-core divergence is
-// which umbrella mount runs — `host_wgpu::mount` (old walker) vs
-// `host_wgpu::mount_newcore` (`render_wgpu::newcore::start_in_world`
-// into the page's own world). That one cfg lives inside `Simulator`'s
-// on_ready closure below.
+// The embedded `welcome` app mounts through
+// `host_wgpu::mount_newcore`, i.e. `render_wgpu::newcore::start_in_world`
+// into the PAGE's own world — so the page's flush driver commits the
+// embedded app's staged writes. See `Simulator`'s on_ready closure below.
 use host_wgpu::{DeviceProfile, Painter};
 use runtime_core::driver::spawn_async;
 
@@ -338,16 +334,10 @@ pub fn Simulator(props: SimulatorProps) -> Element {
         // Either way the `request_adapter` / `request_device`
         // futures resolve on the main thread without blocking.
         spawn_async(async move {
-            // The one per-core divergence in this component: which
-            // umbrella mount runs. Same shape on both arms — surface +
-            // size + profile + painter + build closure in, HostHandle
-            // out — only the tree's realization path differs (old
-            // walker vs `render_wgpu::newcore::start_in_world`).
-            #[cfg(feature = "old-core")]
-            let mounted = host_wgpu::mount(surface, size, profile, painter, build_ui)
-                .await
-                .map_err(|e| e.to_string());
-            #[cfg(feature = "new-core")]
+            // Surface + size + profile + painter + build closure in,
+            // HostHandle out. `mount_newcore` realizes the embedded
+            // tree via `render_wgpu::newcore::start_in_world` against
+            // the hosting page's world.
             let mounted = host_wgpu::mount_newcore(surface, size, profile, painter, build_ui)
                 .await
                 .map_err(|e| e.to_string());

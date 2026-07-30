@@ -10,8 +10,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use host_mock::Harness;
-use runtime_core::primitives::navigator::Route;
-use runtime_core::{StyleRules, Tokenized};
+use runtime_shared::primitives::navigator::Route;
+use runtime_shared::{StyleRules, Tokenized};
 use runtime_scene::{realize, Realized};
 use runtime_vocabulary::builders::{navigator_outlet, stack_navigator, swap_navigator, text, view};
 use runtime_vocabulary::on_teardown;
@@ -56,11 +56,11 @@ fn harness() -> Harness {
 
 fn px(w: f32) -> StyleRules {
     StyleRules {
-        width: Some(Tokenized::Literal(runtime_core::Length::Px(w))),
+        width: Some(Tokenized::Literal(runtime_shared::Length::Px(w))),
         // A field the stack's flow-fill overlay does NOT set — proves
         // the overlay fold MERGES with the screen's own style rather
         // than replacing it.
-        height: Some(Tokenized::Literal(runtime_core::Length::Px(20.0))),
+        height: Some(Tokenized::Literal(runtime_shared::Length::Px(20.0))),
         ..Default::default()
     }
 }
@@ -789,7 +789,7 @@ fn robot_nav_snapshot_carries_the_sdk_presentation_label() {
 /// ever emit `/` for a new-core app.
 #[test]
 fn navigator_mounts_publish_routes_to_the_ssg_collector() {
-    use runtime_core::primitives::navigator::{enable_route_collector, take_route_collector};
+    use runtime_shared::primitives::navigator::{enable_route_collector, take_route_collector};
 
     // Swap.
     let h = harness();

@@ -74,21 +74,10 @@ pub struct BuildOptions {
     /// must come out of the framework workspace's `target/`.
     pub source: FrameworkSource,
     /// Cargo features to enable on the cargo invocation. Forwarded
-    /// as `--features <list>`. Used by `idealyst dev` to pass
-    /// `runtime-core/dev` so the Robot bridge auto-starts.
+    /// as `--features <list>`. Used by `idealyst dev` to pass `dev`
+    /// (→ `runtime-core/dev` + `runtime-shared/robot`) so the Robot
+    /// bridge auto-starts.
     pub user_features: Vec<String>,
-    /// Local mode only: build against the NEW core (runtime v2, the
-    /// default since the defaults flip). Enables the wrapper's own
-    /// `new-core` feature (attach mounts `{lib}::scene_app()` through
-    /// `backend_android::newcore::start`) and compiles the user crate
-    /// single-core (`default-features = false, features = ["new-core"]`).
-    /// Requires the dual-core app convention: a `new-core` feature plus
-    /// `pub fn scene_app() -> runtime_scene::Element` (the
-    /// scaffold/welcome shape). `false` = old-core wrapper (plus the
-    /// `old-core` single-core pin for apps declaring that feature).
-    /// RuntimeServer mode ignores this — the wire client is
-    /// core-agnostic; the sidecar owns the core.
-    pub new_core: bool,
 }
 
 /// Which kind of cdylib wrapper to generate.
@@ -174,7 +163,6 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         .wrapper_root(&project_dir)
         .join(&manifest.name)
         .join(wrapper_subdir);
-    let new_core = opts.new_core && matches!(opts.mode, BuildMode::Local);
     generate_wrapper(
         &wrapper_dir,
         &project_dir,
@@ -185,17 +173,9 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         target_triple,
         opts.api_level,
         opts.mode,
-        new_core,
     )?;
 
-    // New-core builds activate the wrapper's own `new-core` feature
-    // (the cfg'd `newcore::start(.., scene_app)` attach branch) via the
-    // same `--features` plumbing the dev feature rides.
-    let mut cargo_features = opts.user_features.clone();
-    if new_core && !cargo_features.iter().any(|f| f == "new-core") {
-        cargo_features.push("new-core".to_string());
-    }
-    cargo_build(&wrapper_dir, target_triple, opts.release, &cargo_features)?;
+    cargo_build(&wrapper_dir, target_triple, opts.release, &opts.user_features)?;
 
     let profile = if opts.release { "release" } else { "debug" };
     let dylib_name = match opts.mode {
@@ -321,7 +301,6 @@ fn generate_wrapper(
     target_triple: &str,
     api_level: u32,
     mode: BuildMode,
-    new_core: bool,
 ) -> Result<()> {
     fs::create_dir_all(wrapper_dir.join("src"))
         .with_context(|| format!("create {}", wrapper_dir.display()))?;
@@ -340,7 +319,13 @@ fn generate_wrapper(
         // it `-android-aas-wrapper` here matches the expected `.so`.
         BuildMode::RuntimeServer => format!("{}-android-aas-wrapper", manifest.name),
     };
-    let fcore_dep = source.dep("crates/runtime/core", &[]);
+    // `runtime-core` + `runtime-shared` as DIRECT deps so the wrapper's
+    // own `dev` feature can map onto them (cargo resolves `<dep>/<feat>`
+    // only for direct dependencies): the facade carries the catalog
+    // anchor + emission gate, runtime-shared the substrate names the JNI
+    // bridge spells directly (`robot::bridge`, `set_initial_path`).
+    let runtime_core_dep = source.dep("crates/runtime/core", &[]);
+    let shared_dep = source.dep("crates/runtime/shared", &[]);
     // `async-driver` brings in `spawn_async` + the executor wiring
     // backend-android installs through `install_render_loop`. Without
     // it the framework's `spawn_async` is a no-op and any async path
@@ -349,6 +334,12 @@ fn generate_wrapper(
     // simulator's wgpu surface stays blank. Mirrors the iOS wrapper,
     // whose backend-ios-mobile dep enables `async-driver` for the same
     // reason.
+    //
+    // `new-core` compiles the backend's boot path
+    // (`newcore::start`/`stop` + the Host/caps impls and flush driver)
+    // that `attach` below calls into. The feature is vacuous once
+    // backend-android-mobile makes its contents unconditional; drop it
+    // from this list at that point.
     let bandroid_local_dep =
         source.dep("crates/backend/android/mobile", &["async-driver"]);
     let bandroid_aas_dep = source.dep(
@@ -394,18 +385,15 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [features]
-# idea-lite new-core boot (P5). Enabled by passing `new-core` through
-# `BuildOptions.user_features` / `RunOptions.user_features` (the CLI's
-# `--features` plumbing): the attach body below then mounts
-# `{user_name}::scene_app()` through `backend_android::newcore::start`
-# instead of `runtime_core::mount(backend, app)`. Projects that opt in
-# must export `pub fn scene_app() -> runtime_scene::Element` (see
-# `crates/dev/newcore-android-smoke`). Off by default — ordinary
-# projects never compile the new-core branch.
-new-core = ["backend-android-mobile/new-core"]
+# `idealyst dev` builds with `--features dev`: the catalog + automation
+# surface (`runtime-core/dev`) plus the bridge TRANSPORT
+# (`runtime-shared/robot`), which is what makes
+# `robot::bridge::set_app_identity` in the JNI bridge resolve.
+dev = ["runtime-core/dev", "runtime-shared/robot"]
 
 [dependencies]
-runtime-core = {fcore_dep}
+runtime-core = {runtime_core_dep}
+runtime-shared = {shared_dep}
 {user_name} = {user_dep}
 
 [target.'cfg(target_os = "android")'.dependencies]
@@ -413,22 +401,13 @@ backend-android-mobile = {bandroid_dep}
 jni = "0.21"
 log = "0.4"
 "#,
-            fcore_dep = fcore_dep,
+            runtime_core_dep = runtime_core_dep,
+            shared_dep = shared_dep,
             bandroid_dep = bandroid_local_dep,
             user_name = manifest.name,
-            // One core per build graph: new-core pins the dual-core
-            // app convention's feature; old-core pins `old-core` when
-            // the app declares it (dual-core apps default to new-core
-            // since the runtime-v2 defaults flip) and keeps the
-            // historical plain path dep otherwise.
-            user_dep = if new_core {
-                format!(
-                    "{{ path = \"{}\", default-features = false, features = [\"new-core\"] }}",
-                    project_dir.display(),
-                )
-            } else {
-                build_ios::old_core_user_dep(project_dir)
-            },
+            // Plain path dep on the user crate: the app's own defaults
+            // select its feature set, and there is one core.
+            user_dep = format!("{{ path = \"{}\" }}", project_dir.display()),
         ),
         BuildMode::RuntimeServer => format!(
             r#"# GENERATED by `idealyst build android` (runtime-server mode). Do not edit —
@@ -446,8 +425,13 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+# Same dev surface as the local wrapper (see its `[features]` block).
+dev = ["runtime-core/dev", "runtime-shared/robot"]
+
 [dependencies]
-runtime-core = {fcore_dep}
+runtime-core = {runtime_core_dep}
+runtime-shared = {shared_dep}
 
 [target.'cfg(target_os = "android")'.dependencies]
 # `runtime-server` feature on backend-android compiles in the cross-platform
@@ -465,7 +449,8 @@ table = {table_dep}
 jni = "0.21"
 log = "0.4"
 "#,
-            fcore_dep = fcore_dep,
+            runtime_core_dep = runtime_core_dep,
+            shared_dep = shared_dep,
             bandroid_dep = bandroid_aas_dep,
             drawer_navigator_dep = drawer_navigator_dep,
             codeblock_dep = codeblock_dep,
@@ -490,12 +475,6 @@ use jni::JNIEnv;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-thread_local! {{
-    /// `render` returns an `Owner` that must outlive the mounted UI.
-    /// Stashed here so it survives `attach` returning.
-    static OWNER: RefCell<Option<runtime_core::Owner>> = const {{ RefCell::new(None) }};
-}}
-
 /// Attach the framework to an Android `Context` + a parent
 /// `ViewGroup`. Idempotent: re-calling tears the previous tree down
 /// before building a new one.
@@ -510,15 +489,13 @@ pub extern "system" fn Java_{jni}_NativeBridge_attach<'local>(
         let context_global = env.new_global_ref(&context).expect("new_global_ref context");
         let root_global = env.new_global_ref(&root).expect("new_global_ref root");
 
-        OWNER.with(|slot| slot.borrow_mut().take());
-
         // Register the project's identity for the Robot bridge mDNS
         // advertisement. Bridge thread (started inside `mount`) reads
         // from here when binding + advertising. No-op without `dev`.
         #[cfg(feature = "dev")]
         {{
-            ::runtime_core::robot::bridge::set_app_identity(
-                ::runtime_core::robot::bridge::AppIdentity {{
+            ::runtime_shared::robot::bridge::set_app_identity(
+                ::runtime_shared::robot::bridge::AppIdentity {{
                     name: "{app_name}".to_string(),
                     bundle_id: Some("{bundle_id}".to_string()),
                     project_root: ::std::option::Option::None,
@@ -554,41 +531,26 @@ pub extern "system" fn Java_{jni}_NativeBridge_attach<'local>(
         // embedded wgpu preview stays blank because draw_frame is
         // never invoked.
         backend_android::install_render_loop();
-        // Register third-party extensions (navigator SDKs, custom
-        // primitives) into the backend before any `app()` code runs.
-        // The user crate exposes `register_extensions` either generic
-        // (`<B: Backend>(&mut B)`, the SDK-less scaffold default) or
-        // concrete (`&mut AndroidBackend`, for crates that call a
-        // per-backend SDK `register`). `&mut *b` derefs the `RefMut` to
-        // `&mut AndroidBackend` so BOTH forms resolve — a plain `&mut b`
-        // would infer `B = RefMut<…>` for the generic and fail to compile.
-        {{
-            let mut b = backend.borrow_mut();
-            {lib}::register_extensions(&mut *b);
-        }}
-        // `mount` runs `app()` inside the root reactive scope so
-        // top-level `effect!` / `signal!` / `Ref::new` calls in
-        // `app()` adopt the scope. See `runtime_core::mount` docs.
-        #[cfg(not(feature = "new-core"))]
-        {{
-            let owner = runtime_core::mount(backend, {lib}::app);
-            OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
-        }}
-
-        // New-core boot (idea-lite migration): mount the project's
-        // `scene_app()` scene tree through the vocabulary registry.
-        // The backend/scheduler/self-handle preamble above is shared —
-        // `newcore::start` owns everything from "backend is wired to
-        // the host ViewGroup" onward and retains the mounted app in
-        // its own slot (torn down by `newcore::stop` in `detach`).
-        #[cfg(feature = "new-core")]
-        backend_android::newcore::start(backend, |_| {{}}, {lib}::scene_app);
+        // Mount the project's `scene_app()` scene tree through the
+        // vocabulary registry. `newcore::start` owns everything from
+        // "backend is wired to the host ViewGroup" onward and retains
+        // the mounted app in its own slot (torn down by `newcore::stop`
+        // in `detach`). The user crate's registry-generic
+        // `register_scene_extensions` seam runs after
+        // `register_builtins` — this is how SDK payload handlers
+        // register their per-backend implementations, and an
+        // unregistered payload panics at realize.
+        backend_android::newcore::start(
+            backend,
+            {lib}::register_scene_extensions,
+            {lib}::scene_app,
+        );
 
         log::info!("idealyst: attach complete");
     }}));
     // A swallowed panic here means "app launches to a blank screen
     // with NO log line" — the worst debugging surface there is (a
-    // silent no-mount hid a real boot bug during the new-core smoke
+    // silent no-mount hid a real boot bug during the scene-boot
     // bring-up). Log the payload; the process stays alive (unwinding
     // across the JNI boundary is UB, so we cannot rethrow).
     if let Err(payload) = attach_result {{
@@ -601,17 +563,14 @@ pub extern "system" fn Java_{jni}_NativeBridge_attach<'local>(
     }}
 }}
 
-/// Detach the active mount. Drops every signal/effect and releases
-/// the per-element click callbacks. (Under `new-core` the OWNER slot
-/// is never populated; `newcore::stop` drops the realized tree, the
-/// flush driver, and the world instead.)
+/// Detach the active mount. `newcore::stop` drops the realized tree,
+/// the flush driver, and the world — releasing every signal/effect and
+/// the per-element click callbacks with them.
 #[no_mangle]
 pub extern "system" fn Java_{jni}_NativeBridge_detach<'local>(
     _env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) {{
-    OWNER.with(|slot| slot.borrow_mut().take());
-    #[cfg(feature = "new-core")]
     backend_android::newcore::stop();
 }}
 
@@ -647,7 +606,7 @@ pub extern "system" fn Java_{jni}_NativeBridge_setLaunchPath<'local>(
         if let Ok(js) = env.get_string(&path) {{
             let s = js.to_str().unwrap_or("").to_string();
             if !s.is_empty() {{
-                runtime_core::set_initial_path(Some(s));
+                runtime_shared::set_initial_path(Some(s));
             }}
         }}
     }}));
@@ -657,9 +616,9 @@ pub extern "system" fn Java_{jni}_NativeBridge_setLaunchPath<'local>(
 /// `idealyst dev` + reached via `adb reverse`) so the Robot bridge's walker
 /// DIALS the host relay instead of self-hosting a device-local TCP listener.
 /// Called from MainActivity BEFORE `attach`, so it's set before `mount` runs
-/// the walker. NOT gated on the wrapper's `dev` feature (dev mode enables
-/// `runtime-core/dev`, not the wrapper feature) — it just sets an env var, a
-/// no-op in release where the meta-data is absent so Java never calls it.
+/// the walker. NOT gated on the wrapper's `dev` feature — it just sets an
+/// env var, a no-op in release where the meta-data is absent so Java
+/// never calls it.
 #[no_mangle]
 pub extern "system" fn Java_{jni}_NativeBridge_setRobotRelayUrl<'local>(
     mut env: JNIEnv<'local>,
@@ -714,23 +673,28 @@ pub extern "system" fn Java_{jni}_NativeBridge_attachRuntimeServerUrl<'local>(
                 return;
             }}
         }};
-        // Register the compiled-in first-party SDK handlers on the RS
-        // client backend so their native chrome (Drawer navigator, code
-        // block, table) renders over the wire. The backend staticlib is
-        // SDK-free (the SDKs depend on it), so the SDK set is bundled +
-        // registered here — the Android analogue of the per-app web
-        // wrapper's `register_extensions`.
-        fn register_first_party_sdks(backend: &mut backend_android::AndroidBackend) {{
-            drawer_navigator::register(backend);
-            codeblock::register(backend);
-            table::register(backend);
-        }}
+        // No client-side SDK registration. Under runtime v2 an SDK
+        // primitive is a scene payload whose handler installs on a
+        // `runtime_scene::Registry<H>`, and in runtime-server mode the
+        // scene is realized on the HOST against
+        // `Registry<WireRecordingBackend>` (the dev-server sidecar's
+        // `register_scene_extensions_recorder` seam). So the handler
+        // already ran server-side and what arrives here is ordinary
+        // primitive commands — there is nothing for the client to
+        // register. The old body called each SDK's
+        // `register(&mut AndroidBackend)`, which was the old-core
+        // `Element::External` client registry; that registry is gone.
+        // (Delta, hot-reload only: an SDK that type-dispatches to a
+        // backend-CONCRETE handler — e.g. `codeblock`'s native Android
+        // mount — renders its portable variant here, because the
+        // registry it sees is the recorder's. Local device builds go
+        // through `register_scene_extensions` and are unaffected.)
         backend_android::runtime_server::attach_with_url_with_register(
             &mut env,
             context,
             root,
             &url_str,
-            register_first_party_sdks,
+            |_backend| {{}},
         );
     }}));
 }}
@@ -813,7 +777,7 @@ pub extern "system" fn Java_{jni}_NativeBridge_reportViewport<'local>(
     let ar = toolchain_bin.join("llvm-ar");
     // Share `target/` with whatever the source resolved to (the
     // framework workspace's `target/` in-tree, the project's own
-    // `target/` for external consumers). Common deps (runtime-core,
+    // `target/` for external consumers). Common deps (the runtime,
     // dev-client, backend-android) don't recompile from scratch for
     // the wrapper that way. Cross-target artifacts live under
     // `<target>/aarch64-linux-android/...` so they coexist
@@ -950,16 +914,18 @@ mod tests {
 mod regression_tests {
     //! Wrapper-shape regression for `build-android`.
     //!
-    //! Both modes' wrappers must declare `runtime-core` as a direct
-    //! dep so the launcher's `--features runtime-core/dev` cargo
-    //! invocation resolves. Additionally:
+    //! Both modes' wrappers must declare `runtime-core` +
+    //! `runtime-shared` as direct deps and map them through a
+    //! wrapper-local `dev` feature, so the launcher's dev `--features`
+    //! invocation resolves (cargo only accepts `<dep>/<feat>` for a
+    //! direct dependency). Additionally:
     //!  - Local mode must path-dep the user crate (the cdylib's
     //!    JNI bridge calls `<user>::app()` in-process).
     //!  - Runtime-server mode must NOT depend on the user crate —
     //!    that ownership belongs to the sidecar; if the wrapper
     //!    accidentally re-acquired the dep, the Android binary
     //!    would link two copies of the user code with diverging
-    //!    runtime-core instances and `Element` type mismatches
+    //!    reactive kernels and `Element` type mismatches
     //!    would surface at the cdylib's boundary.
     //!
     //! These tests run only the generation step (sub-ms) — no
@@ -1023,7 +989,6 @@ mod regression_tests {
             "aarch64-linux-android",
             21,
             mode,
-            false,
         )
         .expect("generate wrapper");
         (wrapper_dir, tmp)
@@ -1033,55 +998,36 @@ mod regression_tests {
         toml::from_str(toml_text).expect("valid TOML")
     }
 
-    /// Runtime-v2 defaults flip: a new-core Local build pins the user
-    /// crate single-core. (The wrapper's `new-core` feature itself is
-    /// activated on the cargo invocation, covered by `build()`.)
-    #[test]
-    fn new_core_local_wrapper_pins_user_crate_single_core() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let project_dir = tmp.path().join("project");
-        let wrapper_dir = tmp.path().join("wrapper");
-        let workspace_root = tmp.path().join("workspace");
-        let toolchain_bin = tmp.path().join("ndk_bin");
-        std::fs::create_dir_all(&project_dir).unwrap();
-        std::fs::create_dir_all(&workspace_root).unwrap();
-        std::fs::create_dir_all(&toolchain_bin).unwrap();
-        std::fs::write(toolchain_bin.join("aarch64-linux-android21-clang"), b"").unwrap();
-        let manifest = fake_manifest();
-        let source = FrameworkSource::Workspace { root: workspace_root };
-        generate_wrapper(
-            &wrapper_dir,
-            &project_dir,
-            &source,
-            &manifest,
-            "ai_example_demo",
-            &toolchain_bin,
-            "aarch64-linux-android",
-            21,
-            BuildMode::Local,
-            true,
-        )
-        .expect("generate wrapper");
-        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+    /// Both wrappers must carry the dev-surface deps + the `dev`
+    /// feature that maps onto them; without it the launcher's dev
+    /// `--features` spec fails at cargo time and the MCP catalog is
+    /// empty.
+    fn assert_dev_surface(cargo: &str) {
+        let parsed = parse(cargo);
+        let deps = parsed.get("dependencies").expect("deps table");
         assert!(
-            cargo.contains("default-features = false, features = [\"new-core\"]"),
-            "new-core wrapper must compile the user crate single-core:\n{cargo}",
+            deps.get("runtime-core").is_some() && deps.get("runtime-shared").is_some(),
+            "Android wrapper missing the dev-surface direct deps. Got:\n{cargo}",
+        );
+        let dev: Vec<&str> = parsed
+            .get("features")
+            .and_then(|f| f.get("dev"))
+            .and_then(|d| d.as_array())
+            .expect("Android wrapper must declare a `dev` feature")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            dev.contains(&"runtime-core/dev") && dev.contains(&"runtime-shared/robot"),
+            "`dev` must switch on the catalog anchor AND the bridge \
+             transport; got {dev:?}",
         );
     }
 
     #[test]
-    fn local_wrapper_has_runtime_core_dep() {
+    fn local_wrapper_has_dev_surface() {
         let (wrapper_dir, _tmp) = run_generator(BuildMode::Local);
-        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
-        let parsed = parse(&cargo);
-        assert!(
-            parsed
-                .get("dependencies")
-                .and_then(|d| d.get("runtime-core"))
-                .is_some(),
-            "local Android wrapper missing runtime-core dep — launcher's \
-             `--features runtime-core/dev` will fail. Got:\n{cargo}",
-        );
+        assert_dev_surface(&std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap());
     }
 
     #[test]
@@ -1100,58 +1046,47 @@ mod regression_tests {
         );
     }
 
-    /// The Local wrapper must carry the (default-off) `new-core`
-    /// feature: forwarding to `backend-android-mobile/new-core`, a
-    /// cfg'd `newcore::start(.., scene_app)` attach branch, and a
-    /// `newcore::stop()` in detach. `RunOptions.user_features =
-    /// ["new-core"]` is how `newcore-android-smoke` boots the new
-    /// core through this exact generated wrapper.
+    /// The Local wrapper boots the scene core: `backend-android-mobile`
+    /// carries the boot feature, `attach` mounts `scene_app()` through
+    /// `newcore::start` with the app's registry-generic
+    /// `register_scene_extensions` seam, and `detach` calls
+    /// `newcore::stop()`. The user-crate dep pins no core feature.
     #[test]
-    fn local_wrapper_declares_new_core_boot() {
+    fn local_wrapper_boots_scene_core_with_registration_seam() {
         let (wrapper_dir, _tmp) = run_generator(BuildMode::Local);
         let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
-        let parsed = parse(&cargo);
-        let feature = parsed
-            .get("features")
-            .and_then(|f| f.get("new-core"))
-            .and_then(|v| v.as_array())
-            .expect("local Android wrapper must declare a `new-core` feature");
         assert!(
-            feature
-                .iter()
-                .any(|v| v.as_str() == Some("backend-android-mobile/new-core")),
-            "wrapper new-core feature must forward to backend-android-mobile/new-core; got {feature:?}",
+            !cargo.contains("old-core") && !cargo.contains("default-features = false"),
+            "user-crate dep must be a plain path dep:\n{cargo}",
         );
         let lib_rs = std::fs::read_to_string(wrapper_dir.join("src/lib.rs")).unwrap();
         assert!(
-            lib_rs.contains("backend_android::newcore::start(backend, |_| {}, demo::scene_app)"),
-            "attach must have the cfg'd new-core mount branch:
-{lib_rs}",
+            lib_rs.contains("backend_android::newcore::start("),
+            "attach must mount through newcore::start:\n{lib_rs}",
+        );
+        assert!(
+            lib_rs.contains("demo::register_scene_extensions"),
+            "attach must pass the app's scene-registration seam:\n{lib_rs}",
+        );
+        assert!(
+            lib_rs.contains("demo::scene_app"),
+            "attach must mount the app's scene_app():\n{lib_rs}",
         );
         assert!(
             lib_rs.contains("backend_android::newcore::stop()"),
-            "detach must tear the new-core app down:
-{lib_rs}",
+            "detach must tear the mounted app down:\n{lib_rs}",
         );
         assert!(
-            lib_rs.contains("runtime_core::mount(backend, demo::app)"),
-            "the old-core mount branch must remain the default:
-{lib_rs}",
+            !lib_rs.contains("#[cfg(feature = \"new-core\")]")
+                && !lib_rs.contains("runtime_core::mount("),
+            "there is one boot path — no cfg'd core branches:\n{lib_rs}",
         );
     }
 
     #[test]
-    fn runtime_server_wrapper_has_runtime_core_dep() {
+    fn runtime_server_wrapper_has_dev_surface() {
         let (wrapper_dir, _tmp) = run_generator(BuildMode::RuntimeServer);
-        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
-        let parsed = parse(&cargo);
-        assert!(
-            parsed
-                .get("dependencies")
-                .and_then(|d| d.get("runtime-core"))
-                .is_some(),
-            "runtime-server Android wrapper missing runtime-core dep. Got:\n{cargo}",
-        );
+        assert_dev_surface(&std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap());
     }
 
     #[test]
@@ -1165,7 +1100,7 @@ mod regression_tests {
                 .and_then(|d| d.get("demo"))
                 .is_none(),
             "runtime-server Android wrapper must NOT depend on the user crate \
-             (the sidecar owns it); leaks two runtime-core instances. Got:\n{cargo}",
+             (the sidecar owns it); leaks two reactive kernels. Got:\n{cargo}",
         );
     }
 }

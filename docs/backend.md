@@ -1,749 +1,568 @@
 # The backend layer
 
-A backend is the platform-specific renderer. It implements the
-`Backend` trait, the framework calls it through that trait, and the
-framework knows nothing else about it. This is the seam that makes
-the same application code run on the DOM, on `android.view.View`s,
-on UIKit, or on anything else you can drive from Rust.
+A backend is the platform-specific renderer. It implements one small
+structural trait plus the capability traits for the primitives it
+supports, and the framework knows nothing else about it. This is the
+seam that makes the same application code run on the DOM, on
+`android.view.View`s, on UIKit, on AppKit, on a wgpu pipeline, or on
+anything else you can drive from Rust.
 
-This doc covers the contract a backend implements, the framework
-guarantees a backend can rely on, and the lifecycle rules that
-keep things from blowing up at teardown.
+This doc covers the contract a backend implements, the guarantees it can
+rely on, and the lifecycle rules that keep things from blowing up at
+teardown.
 
-Implementation: `runtime_core::backend` (the trait + default
-ops), plus the render walker in `runtime_core::lib`.
+Implementation:
+
+- `runtime_scene::Host` — the structural seam
+  (`crates/runtime/scene/src/host.rs`).
+- `runtime_vocabulary::caps::*` — 30 per-primitive capability traits
+  (`crates/runtime/vocabulary/src/caps/`), with
+  `crates/runtime/vocabulary/COVERAGE.md` as the trait-by-trait map.
+- `runtime_scene::Registry` + `realize` — the mount path
+  (`crates/runtime/scene/src/{registry,realize}.rs`).
+- The backend's own `newcore` module — boot entry + flush driver (e.g.
+  `crates/backend/web/src/newcore.rs`).
 
 ---
 
-## The trait at a glance
+## The seam, in three parts
+
+### 1. `Host` — seven structural operations
 
 ```rust
-pub trait Backend {
-    type Node: Clone;
+pub trait Host: 'static {
+    type Node: Clone + 'static;
 
-    // — Construction
-    fn create_view(&mut self) -> Self::Node;
-    fn create_text(&mut self, content: &str) -> Self::Node;
-    fn create_button(&mut self, label: &str, on_click: Rc<dyn Fn()>) -> Self::Node;
-    fn create_image(&mut self, src: &str, alt: Option<&str>) -> Self::Node { unimplemented!() }
-    fn create_text_input(&mut self, …) -> Self::Node { unimplemented!() }
-    fn create_toggle(&mut self, …) -> Self::Node { unimplemented!() }
-    fn create_scroll_view(&mut self, horizontal: bool) -> Self::Node { unimplemented!() }
-    fn create_slider(&mut self, …) -> Self::Node { unimplemented!() }
-    fn create_activity_indicator(&mut self, …) -> Self::Node { unimplemented!() }
-    fn create_virtualizer(&mut self, callbacks: VirtualizerCallbacks<Self::Node>, …) -> Self::Node { unimplemented!() }
-    fn create_graphics(&mut self, …) -> Self::Node { unimplemented!() }
-    fn create_navigator(&mut self, …) -> Self::Node { unimplemented!() }
-
-    // — Tree manipulation
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node);
+    fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) { /* per-child default */ }
+    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize);
+    fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node);
     fn clear_children(&mut self, node: &Self::Node);
-
-    // — Reactive update
-    fn update_text(&mut self, node: &Self::Node, content: &str);
-    fn update_button_label(&mut self, node: &Self::Node, label: &str) { self.update_text(node, label); }
-    fn update_image_src(&mut self, node: &Self::Node, src: &str) { /* default no-op */ }
-    fn update_text_input_value(&mut self, …) { /* default no-op */ }
-    fn update_toggle_value(&mut self, …) { /* default no-op */ }
-    fn update_slider_value(&mut self, …) { /* default no-op */ }
-    fn update_web_view_url(&mut self, …) { /* default no-op */ }
-    fn update_video_src(&mut self, …) { /* default no-op */ }
-    fn virtualizer_data_changed(&mut self, node: &Self::Node) { /* default no-op */ }
-    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) { /* default no-op */ }
-
-    // — Styling
-    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>);
-    fn apply_styled_states(&mut self, node, base, overlays) { self.apply_style(node, base); }
-    fn handles_states_natively(&self) -> bool { false }
-    fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) { /* default no-op */ }
-    fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) { /* default no-op */ }
-    fn on_node_unstyled(&mut self, node: &Self::Node) { /* default no-op */ }
-    fn attach_states(&mut self, node, setter) { /* default no-op */ }
-
-    // — Lifecycle cleanup
-    fn release_virtualizer(&mut self, node: &Self::Node) { /* default no-op */ }
-    fn release_graphics(&mut self, node: &Self::Node) { /* default no-op */ }
-    fn release_navigator(&mut self, node: &Self::Node) { /* default no-op */ }
-
-    // — Imperative handle factories (one per primitive)
-    fn make_button_handle(&self, node: &Self::Node) -> ButtonHandle { /* no-op default */ }
-    fn make_text_input_handle(&self, node: &Self::Node) -> TextInputHandle { /* no-op default */ }
-    fn make_scroll_view_handle(&self, …) -> ScrollViewHandle { /* no-op default */ }
-    // …one per primitive…
-
-    // — Initial mount
-    fn navigator_attach_initial(&mut self, navigator, screen, scope_id) { /* default no-op */ }
-    fn finish(&mut self, root: Self::Node);
+    fn create_anchor(&mut self) -> Self::Node;
+    fn supports_splice(&self) -> bool;
 }
 ```
 
-The shape: **one method per "thing the framework wants to do,"
-defaulted as `unimplemented!()` or no-op so a backend can ship
-incrementally.** A backend that only implements `View`, `Text`,
-`Button`, `insert`, `update_text`, `apply_style`, and `finish` is
-sufficient for a non-trivial app.
+That is the *entire* structural interface. The scene's drivers — reactive
+holes, keyed lists, fragments — emit nothing else. Two of the seven are
+worth calling out:
 
-`Self::Node: Clone` is the only constraint on the node type. The
-framework holds and clones `Self::Node` values freely; backends
-typically use a cheap-to-clone wrapper (`web_sys::Node` on web is
-already a refcount; `GlobalRef` on Android wraps a JVM ref-counted
-handle).
+- **`create_anchor`** returns a layout-transparent container the anchored
+  drivers swap subtrees under (`display: contents` on web; a plain view
+  elsewhere).
+- **`supports_splice`** answers "can this host splice children directly
+  into a real parent (`remove_child` + `insert_at`)?" `true` → style-less
+  reactive regions go anchorless; `false` → every reactive region nests
+  under a `create_anchor` node. SSR, web hydration, and splice-incapable
+  native hosts return `false`.
 
----
+`Self::Node: Clone` is the only constraint on the node type, and `Clone`
+is required because structural regions retain node handles across effect
+fires — a spliced region must `remove_child` the exact nodes it inserted.
+Backends use a cheap-to-clone wrapper (`web_sys::Node` is already a
+refcount; `GlobalRef` wraps a JVM ref-counted handle).
 
-## The render walker
+### 2. Capability traits — one per primitive family
 
-`runtime_core::render(backend, primitive)` is the entry point.
-The walker visits each `Element` and emits calls into the
-backend trait.
+Everything else a platform does — creating primitives, setting props,
+styling, wiring events, minting imperative handles — lives in the
+`runtime_vocabulary::caps` traits. Each is a subtrait of `Host`, so they
+share the `Node` type and the structural ops:
 
-```text
-render(backend, tree)
-   │
-   ▼
-with_scope(&mut owner.scope, || build(backend, tree))
-   │
-   ▼
-build(backend, Element::View { children, style, ref_fill })
-   ├─ backend.create_view()                          → node
-   ├─ for child in children:
-   │     child_node = build(backend, child)          (recurse)
-   │     backend.insert(&mut node, child_node)
-   ├─ attach_style(backend, &node, style)            // installs apply-style Effect
-   ├─ if ref_fill is Some: fill the Ref<H> with backend.make_view_handle(&node)
-   └─ return node
-   │
-   ▼
-backend.finish(root_node)
-```
+| Trait group | Traits |
+|---|---|
+| Environment / lifecycle | `AppEnvOps`, `LifecycleOps` |
+| Containers + input | `ViewOps`, `InputOps`, `PressableOps`, `ScrollOps`, `SafeAreaOps` |
+| Text | `TextOps`, `ButtonOps` |
+| Media | `ImageOps`, `IconOps`, `LinkOps` |
+| Widgets | `TextInputOps`, `ToggleOps`, `SliderOps`, `ActivityIndicatorOps` |
+| Structure-bearing prims | `VirtualizerOps`, `GraphicsOps`, `PortalOps`, `PresenceOps`, `NavigatorOps` |
+| Styling + assets | `StyleOps`, `AssetOps`, `DocumentOps` |
+| Cross-cutting | `A11yOps`, `AnimationOps`, `IntrospectionOps`, `BatchOps`, `WireBindingOps`, `ExternalOps` |
 
-Two crucial properties of the walker:
+`caps::AllCaps` is the umbrella: a blanket impl makes any type
+implementing all 30 traits `AllCaps` automatically, and
+`register_builtins::<H: AllCaps>()` bounds on it
+(`crates/runtime/vocabulary/src/caps/mod.rs`).
 
-### Effects are created inside the scope
+**A backend can ship incrementally**, because the traits carry the same
+frozen defaults the old mega-trait did, and the default target is
+declared as a supertrait so the delegation is visible in the type system
+(`COVERAGE.md` § "Judgment calls on defaults"):
 
-Every `Effect::new(...)` inside `build` registers with the active
-scope. That includes the reactive-text effect, the apply-style
-effect, the reactive-disabled effect, the per-primitive cleanup
-effects (which hold `release_virtualizer` / `release_graphics`
-hooks). When the scope drops — owner teardown, `when`/`switch`
-rebuild — every effect inside it is freed together.
+- **Placeholder defaults** — `create_image`, `create_icon`,
+  `create_text_input`, `create_text_area`, `create_toggle`,
+  `create_slider`, `create_activity_indicator`, `create_virtualizer`,
+  `create_graphics`, `create_portal`, `create_navigator` all default to
+  `ExternalOps::missing_primitive_placeholder`, which is why those traits
+  declare `: ExternalOps`.
+- **Container degradation** — `create_pressable`, `create_link`,
+  `create_presence_placeholder`, `create_element` default to a plain
+  container, hence `: ViewOps`.
+- **Lowering defaults** — `create_styled_text` / `update_styled_text`
+  concatenate runs into plain text; `update_button_label` lowers to
+  `update_text` (hence `ButtonOps: TextOps`);
+  `apply_styled_variants` → `apply_styled_states` → `apply_style`;
+  `apply_scroll_view_safe_area_inset` → `apply_safe_area_padding`;
+  `execute_batch_with_attach` → `execute_batch` + `Host::insert_many`.
+- **Opt-in fast paths** report `false` / `None` by default:
+  `create_text_with_id`, `supports_js_text_bindings`,
+  `supports_js_class_bindings`, `supports_preminted_styles`,
+  `supports_batched_repeat`, `supports_native_introspection`,
+  `supports_screenshot`, `handles_states_natively`.
 
-This is the [`reactivity.md` § effects-first-signals-second](./reactivity.md#drop-order-effects-first-signals-second)
-invariant in action: backend cleanup hooks ride along with the
-scope drop, and they fire while signals are still live.
+So a backend that implements `Host`, `create_view`, `create_text`,
+`update_text`, `create_button`, `apply_style`, and `finish` runs a
+non-trivial app; every other primitive degrades to a placeholder or a
+container rather than failing to compile.
 
-### Updates flow through Effects, not re-render
+### 3. `Registry` — the mount path
 
-When the walker sees a reactive prop, it doesn't store the closure
-on the primitive for later. It wraps the closure in an `Effect`:
+The scene never interprets a primitive. It carries type-erased payloads
+and dispatches each one to a handler registered by `TypeId`
+(`crates/runtime/scene/src/registry.rs`):
 
 ```rust
-// Inside build_reactive_text:
-let _e = Effect::new(move || {
-    let value = compute();
-    backend.borrow_mut().update_text(&node, &value);
+registry.register::<MyPayload, _>(|cx, payload: &Rc<MyPayload>, children| -> H::Node {
+    // create → bind props → realize children → attach handlers
 });
 ```
 
-The effect runs immediately (initial value), then re-runs whenever
-signals inside `compute()` change. Each re-run is one
-`Backend::update_text` call. **The native widget exists once and is
-mutated in place.** There's no diff, no virtual DOM, no re-render
-pass.
+Three consequences:
 
-This is true of every "reactive prop" across every primitive:
-labels, image src, input value, toggle value, slider value, video
-src, web-view url, disabled flag, style. Each gets its own
-dedicated `Effect`, so changes to one don't invalidate the others.
+- **First-party and third-party primitives use the same contract.** The
+  old core's `Element::External` concept is gone; a "third-party
+  primitive" is just a payload type whose handler ships outside the
+  framework. See [`external-export.md`](external-export.md).
+- **TypeId keying is collision-free by construction** — two crates' own
+  `MapViewProps` types have distinct TypeIds, where a string-keyed
+  registry would conflict.
+- **An unregistered payload panics at realize**:
+  `"runtime-scene: no handler registered for item payload (…) — register
+  one on this backend's Registry before realizing"`
+  (`crates/runtime/scene/src/realize.rs::mount_item`). A missed
+  registration fails loud; the old core rendered a placeholder box.
+
+The framework's own handlers install through one call —
+`runtime_vocabulary::handlers::register_builtins(&mut registry)`: the
+leaf primitives (`view`, `text`, `button`, `pressable`, `image`, `icon`,
+`toggle`, `slider`, `activity_indicator`, `link`, `scroll_view`,
+`text_input`, `text_area`) plus `virtualizer`, `graphics`, `portal`
+(which also serves `overlay` / `anchored_overlay`), `presence`, the
+navigators, `repeat`, and `lazy`
+(`crates/runtime/vocabulary/src/handlers/mod.rs`).
+
+---
+
+## The mount walk
+
+`runtime_scene::realize(backend, registry, element)` is the entry point.
+It walks the `Element` tree once, delegates every `Item` to its handler,
+and spawns one driver effect per structural hole. It must run with the
+owning `World` ambient, and the walk itself runs **untracked** — a mount
+is a snapshot; reactive regions subscribe through their own driver
+effects.
+
+A handler receives a `MountCx` and drives the sequence itself
+(`crates/runtime/vocabulary/src/handlers/view.rs::mount_view` is the
+reference shape):
+
+```rust
+let backend = cx.backend().clone();                    // Rc<RefCell<H>>
+let mut node = backend.borrow_mut().create_view(&prim.a11y);
+if prim.is_container { backend.borrow_mut().mark_container(&node); }
+cx.realize_children_into(&mut node, children);          // recurse
+if let Some(style) = prim.style { attach_style(&backend, &node, style); }
+if let Some(h) = prim.on_touch { backend.borrow_mut().install_touch_handler(&node, h); }
+// …ref-fill…
+node
+```
+
+`MountCx` exposes exactly what a handler needs: `backend()`,
+`registry()`, `realize_children_into(parent, children)` (children land in
+this handler's frame and become the item's live children),
+`realized_children()`, `realize_detached(element)` (a navigator screen or
+a keyed row root), and `realize_in_place(element)`.
+
+Two structural properties carry over from the old walker:
+
+### Everything created during a realize is owned by that subtree
+
+Every realization — initial mount, driver rebuild, keyed row — runs
+inside one `collect_owned` scope, and the element **producer** (a branch
+builder, a row `render`) runs inside it too
+(`crates/runtime/scene/src/realize.rs::build_realized`). Dropping the
+resulting `Realized` IS unmount: cleanups fire, effects retire, slots
+free. There is no separate dispose call, and no way for a driver rebuild
+to leak an effect into the world root.
+
+### Updates flow through binding effects, not re-render
+
+A reactive prop becomes a binding effect that calls the matching
+capability method:
+
+```rust
+// The shape of `bind_value` / `bind_dyn` (crate-internal helpers in
+// crates/runtime/vocabulary/src/handlers/mod.rs):
+match value {
+    Value::Const(v) => apply(&v),                    // no effect at all
+    Value::Dyn(f)   => { let _ = effect(move || apply(&f())); }
+}
+```
+
+The effect runs once for the initial value, then re-runs when the
+signals it read commit a change. Each re-run is one capability call.
+**The native widget exists once and is mutated in place** — no diff, no
+virtual DOM, no re-render pass. A *constant* prop creates no effect at
+all (`runtime_world`'s `Value::Const` arm;
+`tests.rs::const_values_bind_once_with_no_effect`).
+
+---
+
+## Booting a backend
+
+Each backend ships a `newcore` module whose entry has the shape
+*(register, build)*: `register` runs after `register_builtins` and lets
+the app add its own primitive handlers; `build` is the root component
+call. Variants without `register` exist for the common case. The full
+per-platform table lives in
+[`migrating-to-runtime-v2.md` § Booting](migrating-to-runtime-v2.md#booting);
+web is the reference:
+
+```rust
+fn main() {
+    backend_web::newcore::start(|| app());
+}
+```
+
+Under the hood `start_in` creates the backend and `Registry`, calls
+`register_builtins` + the app seam, creates a `World`, realizes inside
+`world.enter(…)`, hands the root node to `finish`, installs the flush
+driver and the viewport source, and retains all of it in a thread-local
+for the page's lifetime (`crates/backend/web/src/newcore.rs`). The
+retained struct's field order is its drop order: the `Realized` unmounts
+before the `World` that owns its slots dies.
+
+### The flush driver is part of the backend's job
+
+The kernel stages writes; nothing is observable until someone calls
+`World::flush`. Every backend installs a **flush driver** made of two
+pieces:
+
+1. **Author-callback wrapping** in the capability impls: call the author
+   callback, then `schedule_flush()`. Covers press/click, input/change,
+   toggle, slider, scroll, hover, wheel, touch, key, focus/blur,
+   file-drop, image load/error, link activation, portal dismiss,
+   graphics lifecycle, virtualizer row mount/release, and the app-level
+   key handler.
+2. **A post-dispatch hook** for author code that runs from non-event
+   surfaces — `after_ms` timers, `after_animation_frame` one-shots,
+   `raf_loop` iterations, executor future polls. The scheduler and async
+   executor fire `dispatch_hook` after each; the boot entry installs
+   `schedule_flush` into it.
+
+Web schedules one deduped microtask; the native backends mirror the
+design (`crates/backend/{macos,ios/mobile,android/mobile,terminal,cpu,linux,windows}/src/newcore.rs`
+each expose `schedule_flush` + a `dispatch_hook`). Hosts that own the
+cadence also expose `flush_sync()` for synchronous settle; Roku spells
+the same contract `settle()`. Full model:
+[`automatic-batching.md`](automatic-batching.md).
+
+**If a backend forgets the driver, author writes never commit** — the UI
+appears frozen with no error. That is the single most important thing to
+get right in a new backend after `Host`.
 
 ---
 
 ## The contract: what the framework guarantees a backend
 
-A backend can assume:
-
-1. **`create_*` is called exactly once per primitive in a tree, in
-   construction order.** Children are constructed before their
-   parent's `insert(parent, child)` call. The backend's
-   `Self::Node` returned from a `create_*` call is a fresh node;
-   it has no parent yet (and on most platforms, no children).
-
-2. **`insert(parent, child)` happens after both nodes are
-   constructed.** The walker holds a `&mut Self::Node` to the
-   parent; backends can rely on the parent existing.
-
+1. **`create_*` is called once per primitive, in construction order.**
+   Children are constructed before their parent's `insert` call. A
+   freshly returned node has no parent.
+2. **`insert(parent, child)` happens after both nodes exist.**
 3. **`update_*` is only called for nodes the backend created via the
-   matching `create_*`, while those nodes are still alive.** No
-   "update a node we already tore down" race — that's prevented by
-   the scope lifecycle.
-
-4. **`apply_style(node, rules)` may be called multiple times.** Each
-   call is a fresh authoritative style application; the backend
-   should overwrite, not accumulate. The same node may move through
-   many `apply_style` calls as variants and overrides change.
-
-5. **`clear_children(node)` may leave the node itself in place.**
-   Used by reactive conditionals when a `Switch`/`When` branch flips
-   — the placeholder `View` survives, only its children change.
-
-6. **`release_*` hooks fire while the corresponding `Self::Node` is
-   still alive** (the framework hasn't dropped its handle yet).
-   Backends can call back into platform code via the still-live
-   node. After `release_*` returns, the framework drops its handle.
-
-7. **`on_node_unstyled(node)` fires when a styled node is going
-   away.** A backend can drop per-node bookkeeping (CSS class
-   slots, animator state) here.
-
-8. **`finish(root)` is called once, at the end of the initial
-   render.** Most backends attach the root to their mount point
-   here. After `finish`, updates only flow through `update_*` /
-   `apply_style` / lifecycle hooks.
-
-The framework does **not** call backend methods in parallel — it's
-all on one thread, and the `Rc<RefCell<B>>` it holds means
-re-entrant calls panic at the borrow check (see "Re-entrancy
-hazards" below).
-
----
+   matching `create_*`, while those nodes are alive.** The
+   subtree-ownership rule above is what prevents "update a node we tore
+   down."
+4. **`apply_style(node, rules)` may be called many times.** Each call is
+   a fresh authoritative application — overwrite, don't accumulate.
+5. **`clear_children(node)` leaves the node itself in place.**
+6. **`release_*` hooks fire while the node is still alive.** The backend
+   can call into platform code through it; the framework drops its handle
+   afterwards.
+7. **`on_node_unstyled(node)` fires when a styled node goes away**, so
+   per-node bookkeeping (class slots, animator state) can be dropped.
+8. **`finish(root)` is called once, at the end of the initial mount.**
+9. **Calls are single-threaded and never re-entrant by the framework's
+   own choice** — the mount path holds `Rc<RefCell<H>>` and borrows it
+   per call.
 
 ## The contract: what a backend must hold up
 
-In return, a backend must:
-
-1. **Make `Self::Node` cheap to clone.** Cloning a node should not
-   deep-copy underlying widget state — typically just bump a refcount.
-
-2. **Run `on_click` / `on_change` callbacks on the framework's
-   thread.** Platform events that arrive on background threads must
-   be posted back to the main thread before invoking the callback;
-   reactivity isn't `Send`.
-
-3. **For controlled widgets, no-op when set to the current value.**
-   `update_text_input_value(node, "abc")` when the input already
-   shows "abc" must not re-fire `on_change`. Otherwise the
-   round-trip (signal → `update` → native event → `on_change` →
-   signal) becomes a cycle. Most platform APIs already no-op on
-   identical input — the requirement is to not get clever.
-
-4. **Honor the `release_*` lifecycle for primitives with
-   listeners.** If the backend creates a `Element::Virtualizer`,
-   `Element::Graphics`, or `Element::Navigator`, it almost
-   certainly registers native event listeners that capture
-   wasm-bindgen / JNI closures that hold framework state. When the
-   primitive's enclosing scope drops, those listeners need to be
-   detached and the closures dropped before the captured framework
-   state is freed. See "Release lifecycle" below.
-
-5. **Don't synchronously call framework code from `create_*`/`apply_*`
-   if it would re-enter `Backend`.** The walker holds `borrow_mut`
-   on the backend's `RefCell` during the call; re-entry panics.
-   See "Re-entrancy hazards."
+1. **Make `Self::Node` cheap to clone.** Bump a refcount; don't deep-copy
+   widget state.
+2. **Invoke author callbacks on the framework's thread.** Reactivity
+   isn't `Send`; platform events arriving on other threads must be posted
+   back first.
+3. **Install the flush driver** (above), including wrapping any callback
+   the backend hands to the platform itself.
+4. **For controlled widgets, no-op when set to the current value.**
+   `update_text_input_value(node, "abc")` on an input already showing
+   "abc" must not re-fire `on_change`, or the round trip
+   (signal → update → native event → `on_change` → signal) becomes a
+   cycle.
+5. **Honor the `release_*` lifecycle** for primitives that register
+   native listeners capturing framework state — virtualizer, graphics,
+   navigator, portal.
+6. **Don't synchronously re-enter a capability method** from inside one.
+   See below.
 
 ---
 
-## The walker holds `Rc<RefCell<B>>`
+## `Rc<RefCell<H>>` and re-entrancy
 
-The walker passes `&Rc<RefCell<B>>` to `build` recursively. Each
-backend call does:
-
-```rust
-backend.borrow_mut().create_view()
-```
-
-This is a runtime-checked borrow, single-threaded. The backend's
-methods take `&mut self`, so re-entry through `borrow_mut` panics
+Handlers and binding effects reach the backend through
+`Rc<RefCell<H>>` and call `borrow_mut()` per operation. Re-entry panics
 with "RefCell already borrowed."
 
-This is intentional. It surfaces "I called back into the framework
-synchronously from a backend method" as a hard error instead of
-silent state corruption. The backend impls are expected to be
-linear: do the platform work, return.
+That is intentional: it surfaces "I called back into the framework
+synchronously from inside a backend method" as a hard error instead of
+silent corruption. Backend methods are expected to be linear — do the
+platform work, return.
 
-But — primitives like `Navigator`, `Graphics`, and `Virtualizer`
-fundamentally need to call back into the framework (mount a screen,
-mount a list item, fire `on_resize`). Those callbacks can run
-**after** the synchronous backend call returns, when the borrow
-has released. The framework provides the [`Backend::navigator_attach_initial`](#navigator)
-seam exactly so the backend doesn't have to call `mount_screen`
-inside `create_navigator`.
+Two shapes that need care:
 
-For callbacks that arrive **synchronously** from inside platform
-code (a JS callback fired during `release()`, an Android listener
-that re-enters during `removeAllViews`), the backend is responsible
-for deferring the work — typically with `runtime_core::schedule_microtask`
-— so the re-entrant call lands after the outer borrow has been
-released.
-
----
-
-## Lifecycle cleanup hooks
-
-Three lifecycle hooks tear down platform-held resources before the
-captured framework state is freed:
-
-```rust
-fn release_virtualizer(&mut self, node: &Self::Node) { /* default no-op */ }
-fn release_graphics(&mut self, node: &Self::Node) { /* default no-op */ }
-fn release_navigator(&mut self, node: &Self::Node) { /* default no-op */ }
-```
-
-For each of these primitives, the walker installs a cleanup
-`Effect` whose drop captures the node and calls the corresponding
-release method. When the surrounding scope drops, the effect drops,
-the release method fires, the backend detaches listeners and drops
-its retained closures.
-
-The [`reactivity.md` § drop order](./reactivity.md#drop-order-effects-first-signals-second)
-invariant guarantees signals are still alive at this point —
-crucial because the release method may invoke platform code that
-synchronously fires queued events, and those events may reach Rust
-callbacks that read user signals.
+- **Backend → platform → synchronous platform callback → Rust →
+  backend.** The common case for release hooks. Fix by deferring with
+  `runtime_core::scheduling::schedule_microtask`.
+- **A capability method that would mount a subtree.** The framework
+  splits those instead: `create_navigator` builds the container only, and
+  `navigator_attach_initial(node, screen, scope_id)` mounts the initial
+  screen from outside the borrow window.
 
 ### The two-phase teardown pattern
 
-Sometimes the platform's release call **synchronously re-enters**
-Rust before it can return. E.g. the web `Virtualizer`'s
-`release()` call unmounts every visible cell, each unmount calls
-the framework's `release_item(scope_id)`, which drops a per-item
-`Scope`, which fires `StyleHandle::drop`, which calls
-`backend.borrow_mut().on_node_unstyled(...)` — and panics, because
-the outer `release_virtualizer` already holds `borrow_mut`.
-
-The pattern that resolves this:
+When the platform's release call synchronously re-enters Rust — the web
+virtualizer's `release()` unmounts every visible cell, each unmount drops
+a per-row scope, which fires `on_node_unstyled` back into the backend —
+split it:
 
 ```rust
 fn release_virtualizer(b: &mut WebBackend, node: &Node) {
-    let id = virtualizer_id_of(node).unwrap();
-    let instance = b.virtualizer_instances.remove(&id).unwrap();
+    let instance = b.virtualizer_instances.remove(&id_of(node)).unwrap();
 
-    // Step 1: synchronously flip the JS `_released` flag so no further
-    // platform callbacks try to enter Rust.
+    // 1. Synchronously flip the JS `_released` flag: no further platform
+    //    callbacks enter Rust.
     set_released_now(&instance.js);
 
-    // Step 2: defer the heavy release call to a microtask, so the
-    // outer borrow_mut() has been released by the time we re-enter.
-    runtime_core::schedule_microtask(move || {
-        let release_fn: js_sys::Function = /* … */;
-        let _ = release_fn.call0(&instance.js);
-        drop(instance);                       // drops the closures JS held
+    // 2. Defer the heavy release, so the outer borrow_mut has been
+    //    released by the time we re-enter.
+    runtime_core::scheduling::schedule_microtask(move || {
+        call_release(&instance.js);
+        drop(instance);                 // drops the closures JS held
     });
 }
 ```
 
-The synchronous step prevents further re-entry; the deferred step
-does the actual platform teardown after the borrow has been
-released. **If you find yourself adding a release hook that calls
-back into platform code that may synchronously invoke Rust, this
-pattern is your default.**
+**If you add a release hook that calls platform code which may
+synchronously invoke Rust, this pattern is the default.**
 
 ---
 
-## Virtualizer
+## Structure-bearing primitives
 
-The framework handles **what** to mount; the backend handles
-**when** and **where**. The framework hands the backend a callback
-bundle:
+Four primitives hand the backend framework callbacks instead of just
+props. Their capability traits are where a new backend's real work is.
 
-```rust
-pub struct VirtualizerCallbacks<N: Clone + 'static> {
-    pub item_count:        Rc<dyn Fn() -> usize>,
-    pub item_key:          Rc<dyn Fn(usize) -> ItemKey>,
-    pub item_size:         Rc<dyn Fn(usize) -> f32>,
-    pub measure_sizes:     bool,
-    pub mount_item:        Rc<dyn Fn(usize) -> (N, u64)>,         // returns (node, scope_id)
-    pub release_item:      Rc<dyn Fn(u64)>,
-    pub set_measured_size: Rc<dyn Fn(u64, f32)>,
-}
-```
+### Virtualizer
 
-The backend owns the visible-window math, the scroll handler, and
-(on native) cell recycling. It calls:
+The framework decides **what** to mount; the backend decides **when** and
+**where**. It receives a callback bundle
+(`VirtualizerCallbacks<Self::Node>`) with `item_count`, `item_key`,
+`item_size`, `measure_sizes`, `mount_item`, `release_item`,
+`set_measured_size`, and owns the visible-window math, the scroll
+handler, and (on native) cell recycling. `virtualizer_data_changed(node)`
+fires from a binding effect on the data signal so the backend can
+re-query and diff. `release_virtualizer` tears down listeners.
 
-- `item_count()` to size the scroll content.
-- `item_key(idx)` for stable identity (so keyed diffs work across
-  data changes).
-- `item_size(idx)` for an initial size (used for layout before any
-  measurement happens). `measure_sizes == true` means this is an
-  estimate the backend should refine by measuring the mounted
-  node.
-- `mount_item(idx)` when an index needs to become visible. Returns
-  the freshly-built subtree node plus the per-item scope id.
-- `release_item(scope_id)` when an index leaves the visible window
-  (web: scrolled out; native: cell recycled). The framework drops
-  the matching scope, freeing every signal/effect/ref inside the
-  item's subtree.
-- `set_measured_size(scope_id, size)` to push a measured size back
-  to the framework for layout.
+Rows mount through `MountCx::realize_detached`, so each row's scope is
+freed when the backend calls `release_item`.
 
-The framework also fires `virtualizer_data_changed(node)` from an
-`Effect` that reads the data signal, so the backend can re-query
-counts/keys/sizes and diff against its mounted set.
+### Navigator
 
-Authors write `runtime_core::primitives::flat_list::flat_list(...)`
-or `ui! { FlatList(...) }` — both produce this primitive with the
-data-side closures pre-wired.
+The backend owns the platform stack (`UINavigationController`,
+`FragmentManager`, an inline subtree on web); the framework owns the
+route table and per-screen scope bookkeeping. `create_navigator` builds
+the container and installs the command dispatcher —
+**not** the initial screen; `navigator_attach_initial` does that from
+outside the borrow. Author-facing navigation is already flush-safe:
+`on_select` / `pop` / `NavHandle` stage a command that a driver effect
+commits on the flush, so one navigation is one logical update
+(`crates/runtime/vocabulary/src/handlers/navigator.rs`).
 
----
+### Graphics
 
-## Navigator
+An authored GPU surface. The framework provides the platform drawable
+(`<canvas>`, `SurfaceView`, `UIView` + `CAMetalLayer`) and the
+`on_ready` / `on_resize` / `on_lost` lifecycle callbacks; the author owns
+the rendering. No GPU crate is linked by the framework itself.
 
-A `Element::Navigator` is the framework's screen-stack container.
-The backend owns the platform-native stack
-(`UINavigationController`, `FragmentManager`, an inline subtree on
-web). The framework owns the route table, the imperative
-`NavigatorHandle`, and per-screen scope bookkeeping.
+### Presence / Portal
 
-```rust
-fn create_navigator(
-    &mut self,
-    callbacks: NavigatorCallbacks<Self::Node>,
-    control: Rc<NavigatorControl>,
-) -> Self::Node;
-
-fn navigator_attach_initial(&mut self, navigator: &Self::Node, screen: Self::Node, scope_id: u64);
-
-fn release_navigator(&mut self, node: &Self::Node);
-```
-
-The backend's `create_navigator` should:
-
-1. Build the native stack container and return its node.
-2. Call `control.install(Box::new(|cmd| { /* execute cmd */ }))` —
-   this is the dispatcher the user-facing `NavigatorHandle` invokes.
-3. **Not** call `callbacks.mount_screen` inside this method.
-   `create_navigator` is invoked while the walker holds the
-   backend's `borrow_mut`; `mount_screen` re-enters the build
-   walker (which itself `borrow_mut`s) → double-borrow panic.
-
-The framework then calls `navigator_attach_initial(node, screen,
-scope_id)` from outside the borrow window. The backend mounts the
-initial screen there.
-
-For subsequent navigations:
-
-- The user calls `nav.push(...)` / `nav.pop()` / `nav.replace(...)` /
-  `nav.reset(...)` on the handle.
-- The handle dispatches a `NavCommand` through `NavigatorControl`.
-- The dispatcher closure (installed in step 2 above) runs. It calls
-  `callbacks.mount_screen(name, params)` to get the new screen's
-  subtree, then commits the native transaction.
-- After each commit, the backend calls `callbacks.depth_changed(d)`
-  so `handle.depth()` stays in sync.
-- When a screen leaves the stack, the backend calls
-  `callbacks.release_screen(scope_id)` — drops the per-screen
-  scope.
-
----
-
-## Graphics
-
-`Element::Graphics` is an authored GPU surface. The author owns
-the rendering — the framework just provides the platform-native
-drawable widget (`<canvas>` on web, `SurfaceView` on Android,
-`UIView` + `CAMetalLayer` on iOS) and the lifecycle callbacks.
-
-```rust
-fn create_graphics(
-    &mut self,
-    on_ready: OnReady,
-    on_resize: OnResize,
-    on_lost: OnLost,
-) -> Self::Node;
-
-fn release_graphics(&mut self, node: &Self::Node);
-```
-
-The backend exposes the drawable as a `raw_window_handle`-compatible
-object. The author's GPU library of choice (wgpu, glow, …) wires up
-its own pipeline against that. The framework doesn't link any GPU
-crate — wgpu types appear only in `runtime_core::primitives::graphics`'s
-*author-facing* API, behind a feature flag in downstream code.
+`create_presence_placeholder` + `apply_presence` drive
+enter/exit animation for a mounting/unmounting child;
+`create_portal` / `set_portal_hidden` / `release_portal` back
+`overlay` and `anchored_overlay`. Both degrade to containers by default.
 
 ---
 
 ## Imperative handles
 
-Each primitive has a typed handle: `ButtonHandle`, `TextInputHandle`,
-`ScrollViewHandle`, etc. Backends produce handles via the
-`make_*_handle` trait methods. The handle wraps a `Rc<dyn Any>`
-that the backend owns; an `Ops` trait per primitive defines what
-methods can be invoked.
+Each primitive has a typed handle (`ButtonHandle`, `TextInputHandle`,
+`ScrollViewHandle`, …). Backends mint them in the `make_*_handle`
+methods; the handle wraps an `Rc<dyn Any>` the backend owns, and a
+per-primitive `Ops` trait defines the callable methods.
 
 ```rust
-// Web backend's text-input handle:
 fn make_text_input_handle(&self, node: &Node) -> TextInputHandle {
     TextInputHandle::new(Rc::new(node.clone()), &WebTextInputOps)
 }
-
-struct WebTextInputOps;
-impl TextInputOps for WebTextInputOps {
-    fn focus(&self, node: &dyn Any) {
-        let node = node.downcast_ref::<Node>().unwrap();
-        // …call .focus() on the DOM element…
-    }
-    fn blur(&self, node: &dyn Any) { /* … */ }
-    fn select_all(&self, node: &dyn Any) { /* … */ }
-}
 ```
 
-Backends that don't implement an imperative API for a given
-primitive leave the trait default — which returns a no-op handle
-(backed by `Rc::new(())`). The author's `handle.focus()` call
-silently does nothing on that platform.
-
-User components declared with `#[component]` + `#[method]` fns get a
-parallel system: the macro generates a handle struct and the
-component's parent can drive it through `Ref<MyHandle>` the same way.
+Backends that don't implement an imperative API for a primitive leave the
+default, which returns a no-op handle (`caps::noop`). The author's
+`handle.focus()` silently does nothing there. The handler fills the
+author's `Ref<H>` through the payload's `ref_fill` slot — see
+[`reactivity.md` § `Ref<H>`](./reactivity.md#refh--the-imperative-handle-slot)
+for the lifetime caveat.
 
 ---
 
-## Stylesheet pre-generation
+## Styling hooks
 
-Some backends (notably web) want to **mint platform style state
-ahead of time** rather than per-`apply_style`-call. The framework
-exposes this through two hooks:
+### Stylesheet pre-generation
 
 ```rust
 fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]);
 fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]);
 ```
 
-`rules` is the result of `runtime_core::style::pregenerate_for_theme`
-— one entry for base, one per single-axis variant, one per declared
-compound variant. The backend can mint a CSS class per entry, or
-build a `Drawable` per entry, or whatever its caching strategy is.
-
-The framework calls `register_stylesheet` exactly once per
-`(sheet, theme)` pair (the first time a stylesheet is resolved
-against a theme it hasn't seen). On `set_theme`, every active
-registration is queued for `unregister_stylesheet` — the backend
-hears about them on the next style-effect run, when it's in scope.
-
-Backends without ahead-of-time caching needs (most native backends)
-leave both default no-ops and just handle each `apply_style` call
+`rules` is the pregenerated set — one entry for base, one per single-axis
+variant, one per declared compound variant. A backend can mint a CSS
+class per entry, a `Drawable` per entry, or nothing. Registration happens
+once per `(sheet, theme)` pair; on a theme install every active
+registration is queued for unregistration. Backends without
+ahead-of-time caching leave both as no-ops and handle each `apply_style`
 directly.
+
+### Interaction states — two paths
+
+Picked by `handles_states_natively()`:
+
+- **`true`** — the backend receives `apply_styled_states(base, overlays)`
+  and emits its own state tracking. Web mints CSS pseudo-class rules
+  (`:hover`, `:active`, `:focus`, `[disabled]`) and lets the browser
+  activate them; no Rust-side bookkeeping.
+- **`false`** — the framework calls `attach_states(node, setter)` with a
+  closure that flips per-node state bits. The backend installs native
+  touch/focus/press listeners that call the setter; the state signal
+  flips, the style binding effect re-runs with the new bits merged into
+  the variant set, and the backend gets an ordinary `apply_style`.
+
+Mobile backends use the second path. Both produce the same observable
+behavior.
 
 ---
 
-## Batched `Repeat` fast path
+## Batched repeat fast path
 
-When the walker expands a `Element::Repeat`, it inspects the row
-shape and — if every row is a static `View`/`Text` tree with static
-styles — accumulates the whole expansion into a `BackendBatch`
-instead of issuing per-row backend calls. The batch ships in one
-FFI round-trip via `execute_batch`.
+A static `for i in 0..n` lowering becomes `Element::Many`: one payload
+that mounts N sibling nodes directly into the enclosing parent through a
+`Registry::register_many` handler, which receives parent access so a
+batching backend can collapse the whole expansion into one FFI round
+trip (`crates/runtime/scene/src/element.rs`, the `Many` variant).
 
-Backends opt in by overriding two trait methods:
+Backends opt in through `BatchOps`:
 
 ```rust
 fn supports_batched_repeat(&self) -> bool { true }
 fn execute_batch(&mut self, batch: BackendBatch) -> Vec<Self::Node>;
+fn execute_batch_with_attach(&mut self, batch, parent, attach_locals) -> Vec<Self::Node>;
 ```
 
-The default `supports_batched_repeat` is `false` — the walker then
-expands the Repeat the slow way (per-row `create_*` + `apply_style`
-+ `insert`). Backends that have a cheap batched path (the web
-backend ships the whole op stream as a single `Uint32Array`
-through one wasm→JS call) flip the flag on and implement
-`execute_batch`.
+`attach_locals` is the list of batch-local ids (the row tops) to parent
+under `parent` once the batch's structural ops have run, so creation and
+attachment share one round trip. The default lowers to `execute_batch` +
+`Host::insert_many`, so a backend that doesn't override gets the
+two-step behavior. Web ships the op stream as a single `Uint32Array`
+through one wasm→JS call and does the `appendChild`es inside a
+`DocumentFragment`.
 
-### One call to rule them all: `execute_batch_with_attach`
-
-`Repeat` doesn't just create its rows — it parents them under the
-surrounding container. Originally that was a separate
-`insert_many(parent, rows)` follow-up call to the backend; for the
-web backend that meant N additional `appendChild` FFI hops, which
-dominated at large N.
-
-The walker now calls a single combined method:
-
-```rust
-fn execute_batch_with_attach(
-    &mut self,
-    batch: BackendBatch,
-    parent: &mut Self::Node,
-    attach_locals: &[u32],
-) -> Vec<Self::Node>;
-```
-
-`attach_locals` is the list of batch-local ids (typically the
-row-top ids) the backend should parent under `parent` once the
-batch's structural ops have executed. The default impl is
-literally:
-
-```rust
-let nodes = self.execute_batch(batch);
-if !attach_locals.is_empty() {
-    let rows: Vec<_> = attach_locals.iter()
-        .map(|&id| nodes[id as usize].clone()).collect();
-    self.insert_many(parent, rows);
-}
-nodes
-```
-
-so backends that don't override get the old two-step behaviour.
-Backends that DO override can fold the attach into the same
-round-trip — on web that's a `Uint32Array` of the row-top
-`local_id`s passed alongside the existing batch buffers, and the
-JS shim does N pure-JS `appendChild` calls inside a single
-`DocumentFragment`. Measured savings: ~10 ms per 100 k-row
-rebuild transition.
-
-### What's batchable
-
-The walker bails on the batched path (and falls back to per-call
-expansion of the whole Repeat) the moment a row contains anything
-the batch shape doesn't model:
-
-- non-`View`/`Text` primitives
-- reactive styles (`StyleSource::Reactive`, `SignalClass`)
-- state overlays (per-node dynamic CSS class per row)
-- `ref_fill`, `on_touch`, `safe_area_sides`, reactive text sources
-
-Backends don't need to know about any of this — the walker only
-invokes `execute_batch_with_attach` when the entire row shape is
-batchable. If your backend opts in, you can assume the incoming
-`BackendBatch` is consistent with `BatchOp::{CreateView,
-CreateText, ApplyStyleStatic, Insert}`.
-
----
-
-## Interaction states
-
-Two paths, picked by the backend's `handles_states_natively()` flag.
-
-### Native (`true`)
-
-The backend receives `apply_styled_states(base, overlays)` and
-emits its own state-tracking. The web backend mints CSS pseudo-class
-rules (`:hover`, `:active`, `:focus`, `[disabled]`) — the browser
-handles state activation natively. No Rust-side bookkeeping.
-
-### Event-driven (`false`)
-
-The framework calls `attach_states(node, setter)` with a closure
-that flips per-node state bits. The backend installs native event
-listeners (touch / focus / press) that call the setter. When the
-setter fires, the framework's state signal flips, the apply-style
-effect re-runs with the new bits merged into the variant set, and
-the backend receives a regular `apply_style(node, &resolved)` call.
-
-Mobile backends use this path. The two paths produce the same
-observable behavior; the choice is just about where state tracking
-lives.
-
----
-
-## Re-entrancy hazards
-
-The framework holds the backend behind `Rc<RefCell<B>>`. Inside a
-trait method, the backend already has `borrow_mut`. Any synchronous
-path that re-enters a trait method will panic:
-
-- **Walker → backend → user closure → user code → walker.** If a
-  primitive's `on_click` is invoked from inside `create_button`
-  (it's not, but consider it as an example), the user's closure
-  could call `signal.set` → effect re-runs → effect calls
-  `backend.borrow_mut().update_text` → panic.
-- **Backend → platform → platform callback (sync) → Rust closure
-  → backend.** This is the common case for `release_virtualizer`,
-  `release_navigator`, etc. — the platform call invokes a callback
-  the backend handed it earlier, which lands in framework Rust,
-  which tries to `borrow_mut` the backend.
-
-Two tools to handle this:
-
-1. **`runtime_core::schedule_microtask(f)`** — defers `f` to run
-   after the current synchronous chain returns. Use this in
-   release hooks that synchronously trigger platform teardown
-   which fires callbacks. Web `release_virtualizer` and `build_switch`'s
-   teardown both use this pattern.
-
-2. **Split methods to avoid re-entry.** `create_navigator` +
-   `navigator_attach_initial` is the canonical example: the
-   framework splits "make the container" from "mount the initial
-   screen" so the first runs under the borrow and the second runs
-   after.
-
-If you see "RefCell already borrowed" in a new backend, the
-question to ask is "what synchronous chain re-entered the backend
-inside a trait method." Either the chain shouldn't be synchronous
-(microtask-defer) or the trait method should be split.
+`Many` is a children-list-only variant: it stands for N siblings, never a
+subtree root, so realizing one as a detached root (navigator screen,
+keyed row root, spliced hole root) panics.
 
 ---
 
 ## A minimal new backend
 
-If you wanted to add a backend for some new target — say, a TUI —
-here's the smallest set of methods to implement and the order to
-add them:
+The order to build it in:
+
+1. **`Host`** — the seven structural ops and `type Node`. Decide
+   `supports_splice` honestly; `false` is always correct and costs an
+   anchor node per reactive region.
+2. **`ViewOps` + `TextOps` + `StyleOps` + `LifecycleOps::finish`** — enough
+   for a real tree.
+3. **A `newcore::start(backend, register, build)` entry** that creates the
+   `Registry`, calls `register_builtins`, creates the `World`, realizes
+   under `enter`, and calls `finish`.
+4. **The flush driver** — wrap author callbacks, install the
+   `dispatch_hook`, expose `schedule_flush` (and `flush_sync` if the host
+   owns the cadence).
+5. **The remaining caps traits**, in the order your app needs them. Every
+   one you skip degrades to a placeholder or a container.
 
 ```rust
-struct TuiBackend { /* widget tree state */ }
-
-impl Backend for TuiBackend {
+impl Host for TuiBackend {
     type Node = TuiNodeRef;
-
-    // Required (no defaults):
-    fn create_view(&mut self)   -> TuiNodeRef { /* … */ }
-    fn create_text(&mut self, content: &str) -> TuiNodeRef { /* … */ }
-    fn create_button(&mut self, label: &str, on_click: Rc<dyn Fn()>) -> TuiNodeRef { /* … */ }
     fn insert(&mut self, parent: &mut TuiNodeRef, child: TuiNodeRef) { /* … */ }
-    fn update_text(&mut self, node: &TuiNodeRef, content: &str) { /* … */ }
+    fn insert_at(&mut self, parent: &mut TuiNodeRef, child: TuiNodeRef, index: usize) { /* … */ }
+    fn remove_child(&mut self, parent: &TuiNodeRef, child: &TuiNodeRef) { /* … */ }
     fn clear_children(&mut self, node: &TuiNodeRef) { /* … */ }
-    fn apply_style(&mut self, node: &TuiNodeRef, style: &Rc<StyleRules>) { /* … */ }
-    fn finish(&mut self, root: TuiNodeRef) { /* attach to screen */ }
+    fn create_anchor(&mut self) -> TuiNodeRef { /* a plain container */ }
+    fn supports_splice(&self) -> bool { false }
 }
+
+impl caps::ViewOps for TuiBackend { /* create_view, make_view_handle */ }
+impl caps::TextOps for TuiBackend { /* create_text, update_text, make_text_handle */ }
+// …
 ```
 
-That's enough for any application that uses only `View`, `Text`,
-`Button`, and `When`/`Switch` conditionals. Every other primitive
-returns `unimplemented!()` from its default, and the framework will
-panic *only if the user actually constructs that primitive* — so
-the surface area you owe the application is exactly what it uses.
-
-You can then incrementally add:
-
-- `create_text_input` / `update_text_input_value` for forms.
-- `create_scroll_view` for scrolling.
-- `make_*_handle` overrides for imperative APIs your platform
-  supports.
-- Pre-generation hooks if your platform benefits.
-- `release_virtualizer` / `release_graphics` / `release_navigator`
-  for the primitives that need cleanup hooks.
-
-Each is independent. No backend is required to implement everything.
+`crates/backend/terminal/src/newcore.rs` and
+`crates/backend/cpu/src/newcore.rs` are the smallest complete worked
+examples; `crates/backend/web/src/newcore.rs` is the reference with every
+fast path turned on.
 
 ---
 
 ## What the framework deliberately doesn't do
 
-Worth knowing because it shapes the contract.
+- **No layout system in the seam.** The framework hands `StyleRules` to
+  the backend; the backend lays out. Web uses CSS flex; the native
+  backends drive Taffy through `runtime-layout`; the GPU backend does its
+  own pass. There is a flex-like style vocabulary every backend
+  interprets in its native idiom.
+- **No diff pass.** Updates flow through binding effects into capability
+  calls. The framework never compares old to new tree shapes; the
+  reactive kernel invalidates exactly what changed.
+- **No synthetic event system.** Events are callbacks handed to
+  `create_*` / `install_*`. There is no synthetic bubbling, capturing, or
+  normalization layer.
+- **No render scheduler above the flush.** The flush is the only
+  coalescing boundary the framework imposes; a backend that wants
+  additional batching (web's rapid-`apply_style` coalescing) does it
+  internally.
 
-- **No layout system.** The framework hands `StyleRules` to the
-  backend; the backend lays out. Web uses CSS flex; Android uses
-  `LinearLayout`; iOS uses Auto Layout or whatever you wire up.
-  There's a flex-like style vocabulary (`flex`, `align_items`,
-  `justify_content`, `padding`, `margin`, `width`, `height`) that
-  every backend interprets in its native idiom.
-
-- **No diff pass.** Updates flow through dedicated `Effect`s into
-  `update_*` methods. The framework doesn't compare old to new;
-  the reactive system invalidates exactly what changed.
-
-- **No event-system.** Events are `Rc<dyn Fn()>` callbacks passed
-  to `create_*`. The backend wires them to platform events and
-  invokes them. There's no synthetic event bubbling, capturing,
-  or normalization — the framework gets out of the way.
-
-- **No render scheduler.** Effects run synchronously on signal
-  change. Backends that need batching (web's CSS `apply_style`
-  rapid succession) do their own coalescing internally; the
-  framework doesn't try to be clever about when updates land.
-
-These omissions are deliberate. Each one is a place where building
-a generic abstraction would have constrained backends to a model
-that doesn't fit their platform. By staying out of these concerns,
-the framework can target genuinely different rendering substrates
-without forcing one to pretend to be another.
+These omissions are deliberate. Each is a place where a generic
+abstraction would have constrained backends to a model that doesn't fit
+their platform.

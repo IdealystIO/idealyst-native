@@ -4,19 +4,20 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Third-party `Form` SDK — one crate, cfg-gated per-backend impl
-# modules (same single-crate shape as the `webview` SDK).
+# Third-party `Form` SDK — one crate, cfg-gated per-backend glue (same
+# single-crate shape as the `webview` SDK).
 #
 # # Why this is an SDK and not a core primitive
 #
 # A form has no convergent cross-platform behavior to put behind the
-# Backend trait: on web `<form>` is a real element (submit-on-enter,
+# host capability set: on web `<form>` is a real element (submit-on-enter,
 # autofill grouping, FormData), while iOS/Android have NO form
 # construct at all — their form affordances (autofill, return-key
 # submit) live per-field on the inputs, not on a container. A core
 # primitive that's inert on every backend except web would be a
 # web-only capability wearing a primitive's clothes. So `Form` is an
-# opinionated SDK built on `Element::External` (with children):
+# opinionated SDK built on the scene registry's external-element
+# contract (with children):
 #   * web    → a real `<form>` wrapping the inputs as DOM descendants,
 #              with the native `submit` event wired to `on_submit`
 #              after `preventDefault()`.
@@ -28,54 +29,26 @@ license.workspace = true
 # `<form>` element only contributes web UX/integration (Enter-to-submit,
 # autofill, preventDefault), never the source of truth for data.
 
-[features]
-# Runtime-v2 defaults flip: the new-core leg is the default surface;
-# the old-core leg is the opt-in (`--no-default-features` — in-repo
-# consumers ride the workspace dep spec, which pins defaults off and
-# selects a core explicitly per graph).
-default = ["new-core"]
-# Old-core marker for uniform `--no-default-features --features
-# old-core` invocations (the old-core deps are unconditional).
-old-core = []
-# Idea-lite migration: re-express the SAME authored surface (`FormProps`
-# / `form(props)` / the `Form` ui! tag / `FormHandle` + `.bind(r)` + a
-# bootstrap `register`) over the scene registry — the new core's unified
-# primitive==external contract. Default-off and MUTUALLY EXCLUSIVE with
-# the old-core surface (the two define the same public names — one core
-# per build, mirroring the runtime-macros/new-core build-graph-wide
-# switch; a consuming app crate forwards this from its own new-core
-# feature). The old-core modules are byte-untouched under the default
-# build. `backend-web/new-core` is needed because the wasm32 handler is
-# `WebBackend`-concrete (the real `<form>` + submit listener has no
-# caps-trait expression, and the listener must call
-# `backend_web::newcore::schedule_flush`) and `Registry<WebBackend>`
-# needs the backend's new-core `Host` impl.
-new-core = [
-    "dep:runtime-vocabulary",
-    "dep:runtime-scene",
-    "backend-web/new-core",
-]
-
 [dependencies]
-runtime-core = { workspace = true }
-# New-core surface (feature `new-core`): the scene registry + the
-# vocabulary caps the handlers drive (`ExternalOps::create_external`
-# placeholder path) + `style_attach` for the author-style channel. No
-# `runtime-world` — the form handler runs no effects (the submit
-# listener is a plain DOM callback).
-runtime-scene = { workspace = true, optional = true }
-runtime-vocabulary = { workspace = true, optional = true }
-# Self-registration of the per-backend external handler at construction
-# (old core only — the new core registers explicitly at the boot seam).
-inventory = "0.3"
+# The scene registry + the vocabulary caps the handlers drive
+# (`ExternalOps::create_external` placeholder path) + `style_attach` for
+# the author-style channel. No `runtime-world` — the form handler runs
+# no effects (the submit listener is a plain DOM callback).
+# `runtime-shared` supplies `Ref` and `accessibility::AccessibilityProps`.
+runtime-scene = { workspace = true }
+runtime-shared = { workspace = true }
+runtime-vocabulary = { workspace = true }
 
 [dev-dependencies]
-# tests/newcore.rs (`--features new-core`) mounts `Form { .. }` through
-# the scene registry end-to-end on the shared host-mock recording
-# substrate; the old-core unit tests live inside src/oldcore.rs.
+# tests/form.rs mounts `Form { .. }` through the scene registry
+# end-to-end on the shared host-mock recording substrate.
 host-mock = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# The wasm32 handler is `WebBackend`-concrete (the real `<form>` +
+# submit listener has no caps-trait expression, and the listener must
+# call `backend_web::newcore::schedule_flush`), so `Registry<WebBackend>`
+# needs the backend's `Host` impl.
 backend-web = { workspace = true }
 web-sys = { version = "0.3", features = [
     "Document",
@@ -88,16 +61,3 @@ web-sys = { version = "0.3", features = [
 ] }
 wasm-bindgen = "0.2"
 js-sys = "0.3"
-
-[target.'cfg(target_os = "android")'.dependencies]
-backend-android-mobile = { workspace = true }
-backend-android-core = { workspace = true }
-jni = "0.21"
-
-[target.'cfg(target_os = "ios")'.dependencies]
-backend-ios-mobile = { workspace = true }
-objc2 = "0.5"
-objc2-ui-kit = { version = "0.2", features = [
-    "UIView",
-    "UIResponder",
-] }

@@ -28,8 +28,8 @@ trick, generalized to every backend).
 - [`Source`] — `ThisApp`, `UserChoice`, `FullScreen`, or `Window(WindowSelector)`.
 - [`AudioSource`] — reserved enum (`None` / `App` / `System` / `Microphone` /
   `AppAndMic`) for when audio capture lands; the frame callback is video-only today.
-- [`PrivateLayer(children)`] + [`register(&mut backend)`] — the capture-excluded
-  overlay (`Element::External`) and its per-backend bootstrap.
+- [`PrivateLayer(children)`] + [`register_scene(&mut registry)`] — the
+  capture-excluded overlay and its boot-seam registration.
 - [`RecorderError`] — `Unsupported`, `PermissionDenied`, `UnsupportedSource(&str)`,
   `Platform(String)`.
 - Re-exported from `media-stream`: [`MediaStream`], [`VideoFrame`],
@@ -70,8 +70,9 @@ controls, watermarks, or chrome you don't want in the captured output. Bootstrap
 once at startup, then wrap children:
 
 ```rust
-// bootstrap (native builds the capture-excluded window):
-// screen_recorder::register(&mut backend);
+// bootstrap — pass `register_scene` to the boot entry's registry seam
+// (native then builds the capture-excluded window):
+// backend_web::newcore::start_in("#app", screen_recorder::register_scene, app);
 
 // in your tree:
 // ui! {
@@ -118,7 +119,7 @@ at build time and injects the right per-platform artifacts:
 
 ## Tests
 
-- `tests/portable.rs` — config builders + the private-layer `Element::External`
+- `tests/portable.rs` — config builders + the private-layer
   lowering contract + the skeleton's `Unsupported` contract; runs anywhere.
 
 ## Testing checklist
@@ -128,7 +129,7 @@ compiles for that target but isn't confirmed on real hardware yet. Tick each
 item as you exercise it.
 
 **Automated**
-- [ ] `cargo test -p screen-recorder` — config builders, private-layer `Element::External` lowering, the `Unsupported` skeleton contract
+- [ ] `cargo test -p screen-recorder` — config builders, the private-layer mount shape (`tests/private_layer.rs`), the `Unsupported` skeleton contract
 - [ ] `cargo build -p screen-recorder --target wasm32-unknown-unknown` — web target
 
 **Behavior**
@@ -151,5 +152,5 @@ item as you exercise it.
 [`Source`]: src/config.rs
 [`AudioSource`]: src/config.rs
 [`PrivateLayer(children)`]: src/private_layer.rs
-[`register(&mut backend)`]: src/lib.rs
+[`register_scene(&mut registry)`]: src/private_layer.rs
 [`RecorderError`]: src/error.rs

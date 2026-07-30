@@ -734,10 +734,10 @@ pub struct ThemeToggleProps {
     pub is_dark: Signal<bool>,
 }
 
-// Manual `Default` (not derived): the new core's world-backed
-// `Signal<T>` has no `Default` — a fresh default signal comes from the
-// free `signal(…)` constructor, which works identically on both cores
-// (call sites always pass `is_dark`, so this is struct-literal glue).
+// Manual `Default` (not derived): the world-backed `Signal<T>` has no
+// `Default` — a fresh default signal comes from the free `signal(…)`
+// constructor. Call sites always pass `is_dark`, so this exists only to
+// satisfy the struct-literal dispatch `#[component]` relies on.
 impl Default for ThemeToggleProps {
     fn default() -> Self {
         Self {
@@ -787,8 +787,8 @@ pub struct SidebarLinkProps {
     pub active_route: Signal<&'static str>,
 }
 
-// Manual `Default` — same rationale as `ThemeToggleProps` above (the
-// new core's `Signal<T>` has no `Default`).
+// Manual `Default` — same rationale as `ThemeToggleProps` above
+// (`Signal<T>` has no `Default`).
 impl Default for SidebarLinkProps {
     fn default() -> Self {
         Self {

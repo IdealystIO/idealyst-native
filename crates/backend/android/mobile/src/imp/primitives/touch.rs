@@ -18,7 +18,7 @@ use jni::objects::{GlobalRef, JValue};
 use jni::sys::jlong;
 use std::cell::RefCell;
 
-pub(crate) fn install(_b: &AndroidBackend, node: &GlobalRef, handler: runtime_core::TouchHandler) {
+pub(crate) fn install(_b: &AndroidBackend, node: &GlobalRef, handler: runtime_shared::TouchHandler) {
     with_env(|env| {
         let ptr: jlong = leak(TouchCallback {
             inner: RefCell::new(Some(handler)),
@@ -61,7 +61,7 @@ pub(crate) fn claim(_b: &AndroidBackend, node: &GlobalRef) {
 
 /// The backend-independent body of [`claim`]: cancel ancestor scroll
 /// interception for `node`. Split out so a `'static` claim closure (published
-/// for the off-stream commit path via `runtime_core::set_active_touch_claim`)
+/// for the off-stream commit path via `runtime_shared::set_active_touch_claim`)
 /// can run it without holding the backend.
 pub(crate) fn claim_node(node: &GlobalRef) {
     with_env(|env| {

@@ -448,7 +448,7 @@ pub enum RokuCommand {
     Finish { root: NodeId },
 }
 
-/// Wire representation of `runtime_core::primitives::portal::PortalTarget`.
+/// Wire representation of `runtime_shared::primitives::portal::PortalTarget`.
 /// `Viewport` carries a placement enum; `Anchor` carries a signal id
 /// the device-side runtime subscribes to so it can re-query the
 /// anchor's bounding rect when it changes. `Named` is reserved for

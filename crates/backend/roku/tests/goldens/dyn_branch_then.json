@@ -1,0 +1,103 @@
+[
+  {
+    "id": 1,
+    "op": "CreateView"
+  },
+  {
+    "content": "before",
+    "id": 2,
+    "op": "CreateText"
+  },
+  {
+    "child": 2,
+    "op": "Insert",
+    "parent": 1
+  },
+  {
+    "id": 3,
+    "op": "CreateReactiveAnchor"
+  },
+  {
+    "id": 4,
+    "op": "CreateView"
+  },
+  {
+    "content": "shown",
+    "id": 5,
+    "op": "CreateText"
+  },
+  {
+    "child": 5,
+    "op": "Insert",
+    "parent": 4
+  },
+  {
+    "base": {
+      "align_items": null,
+      "aspect_ratio": null,
+      "background": {
+        "kind": "Literal",
+        "value": "#606060"
+      },
+      "border_bottom_left_radius": null,
+      "border_bottom_right_radius": null,
+      "border_top_left_radius": null,
+      "border_top_right_radius": null,
+      "color": null,
+      "flex_direction": null,
+      "font_size": null,
+      "font_weight": null,
+      "gap": null,
+      "height": null,
+      "justify_content": null,
+      "margin_bottom": null,
+      "margin_left": null,
+      "margin_right": null,
+      "margin_top": null,
+      "max_height": null,
+      "max_width": null,
+      "min_height": null,
+      "min_width": null,
+      "opacity": null,
+      "padding_bottom": null,
+      "padding_left": null,
+      "padding_right": null,
+      "padding_top": null,
+      "text_align": null,
+      "width": {
+        "kind": "Px",
+        "value": 60.0
+      }
+    },
+    "disabled": null,
+    "focused": null,
+    "hovered": null,
+    "id": 4,
+    "op": "ApplyStyleStates",
+    "pressed": null
+  },
+  {
+    "child": 4,
+    "op": "Insert",
+    "parent": 3
+  },
+  {
+    "child": 3,
+    "op": "Insert",
+    "parent": 1
+  },
+  {
+    "content": "after",
+    "id": 6,
+    "op": "CreateText"
+  },
+  {
+    "child": 6,
+    "op": "Insert",
+    "parent": 1
+  },
+  {
+    "op": "Finish",
+    "root": 1
+  }
+]

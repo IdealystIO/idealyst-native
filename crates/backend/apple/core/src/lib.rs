@@ -8,7 +8,7 @@
 //! - [`font`] — CoreText/CoreGraphics font registration + face
 //!   matching. Returns PostScript names; UIFont/NSFont construction
 //!   stays in the leaf crates.
-//! - [`color`] — `runtime_core::Color` → `(CGFloat, CGFloat,
+//! - [`color`] — `runtime_shared::Color` → `(CGFloat, CGFloat,
 //!   CGFloat, CGFloat)` parsing wrapper. UIColor/NSColor adapters
 //!   stay in the leaf crates.
 //!
@@ -33,7 +33,7 @@ pub mod scheduler;
 /// on the main run loop instead of `runtime-core`'s blocking `pollster`
 /// fallback, so long-running futures (SSE / WebSocket `recv` loops) don't
 /// freeze the UI. Installed by [`scheduler::install_scheduler`]. Gated on
-/// `async-driver` since it needs `runtime_core::driver`.
+/// `async-driver` since it needs `runtime_shared::driver`.
 #[cfg(all(
     any(target_os = "ios", target_os = "tvos", target_os = "macos"),
     feature = "async-driver"
@@ -62,18 +62,18 @@ pub use log::apple_log;
 pub mod styled_text;
 
 /// Pure style decisions for native editable text controls (UITextField /
-/// UITextView, NSTextField / NSTextView). NOT OS-gated — it's `runtime_core`
+/// UITextView, NSTextField / NSTextView). NOT OS-gated — it's `runtime_shared`
 /// only, so it builds AND unit-tests on the host while iOS + macOS share one
 /// source of truth for "what background/color does an editable control get".
 pub mod text_control_style;
 
 /// The uniform-vs-per-side border routing decision shared by the iOS and
-/// macOS backends. NOT OS-gated — pure `runtime_core` logic, host-testable,
+/// macOS backends. NOT OS-gated — pure `runtime_shared` logic, host-testable,
 /// so both backends collapse the four CSS sides identically (Rule #7).
 pub mod border;
 
 /// CSS `pointer-events` hit-test verdict shared by the UIKit + AppKit
-/// hit-test overrides. NOT OS-gated — pure `runtime_core` logic,
+/// hit-test overrides. NOT OS-gated — pure `runtime_shared` logic,
 /// host-testable, so both backends decline/allow hits identically
 /// (Rule #7).
 pub mod pointer_events_policy;

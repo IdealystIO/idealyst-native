@@ -80,7 +80,7 @@
 //! `new-core` feature) for the canonical caller, and
 //! `crates/dev/newcore-android-smoke` for a full app.
 //!
-//! Sequence (mirrors `runtime_core::mount`'s ordering where they
+//! Sequence (mirrors `runtime_shared::mount`'s ordering where they
 //! overlap):
 //!
 //! 1. Install the default monotonic time source (the Android analogue
@@ -92,7 +92,7 @@
 //!    public seam for them is a later-phase migration item.
 //! 2. `Registry` (`register_builtins` + the `register` seam) + `World`
 //!    + `world.enter(realize)`.
-//! 3. `runtime_core::scheduling::drain_buffered_microtasks()` — a
+//! 3. `runtime_shared::scheduling::drain_buffered_microtasks()` — a
 //!    no-op on this backend today (the Android scheduler posts
 //!    microtasks straight to the main looper and never buffers; only
 //!    web's hydration window and macOS's mount-buffering window do),
@@ -134,7 +134,7 @@
 //!    lifecycle, virtualizer row mount/release, state setters, and the
 //!    app-level key handler. The wrapper calls the author fn, then
 //!    [`schedule_flush`] — one deduped
-//!    `runtime_core::scheduling::schedule_microtask`, which on this
+//!    `runtime_shared::scheduling::schedule_microtask`, which on this
 //!    platform is `Handler.post` to the main looper: it runs on a
 //!    LATER looper message, strictly after the current JNI event
 //!    dispatch returns to Java. Net effect: stage during dispatch,
@@ -203,7 +203,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use runtime_core::primitives;
+use runtime_shared::primitives;
 use runtime_world::World;
 
 // ===========================================================================
@@ -245,7 +245,7 @@ pub fn schedule_flush() {
     if FLUSH.with(|f| f.queued.replace(true)) {
         return;
     }
-    runtime_core::scheduling::schedule_microtask(|| {
+    runtime_shared::scheduling::schedule_microtask(|| {
         FLUSH.with(|f| f.queued.set(false));
         flush_now();
     });
@@ -285,7 +285,7 @@ pub fn flush_sync() {
 // schedules one mirror microtask; configuration changes and rotations
 // route through it because they re-measure the host). The seam keeps
 // writing the shared old-core TLS value
-// (`runtime_core::set_viewport_size`) — the old core subscribes to it,
+// (`runtime_shared::set_viewport_size`) — the old core subscribes to it,
 // and the world ctx SEEDS from it — and additionally calls
 // [`forward_viewport`] so breakpoint-dependent author reactivity
 // re-fires on rotation/resize instead of freezing at its seed.
@@ -311,19 +311,19 @@ thread_local! {
     /// The mounted world's viewport signal (`Copy` handle). `None`
     /// outside a new-core boot, so the shared old-core seam costs one
     /// TLS read and nothing else when the old core is driving.
-    static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_core::ViewportSize>>> =
+    static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_shared::ViewportSize>>> =
         const { Cell::new(None) };
 }
 
-fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_core::ViewportSize>>) {
+fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_shared::ViewportSize>>) {
     VIEWPORT_SINK.with(|s| s.set(sig));
 }
 
 /// Forward one platform viewport mirror into the mounted world's
 /// viewport ctx (no-op before [`start`] / after [`stop`]). Called by
-/// the same Android seams that write `runtime_core::set_viewport_size`,
+/// the same Android seams that write `runtime_shared::set_viewport_size`,
 /// with the same dp values — the two sinks never diverge.
-pub(crate) fn forward_viewport(size: runtime_core::ViewportSize) {
+pub(crate) fn forward_viewport(size: runtime_shared::ViewportSize) {
     let Some(sig) = VIEWPORT_SINK.with(|s| s.get()) else {
         return;
     };
@@ -450,20 +450,20 @@ mod native {
     use std::rc::Rc;
 
     use jni::objects::{GlobalRef, JObject, JValue};
-    use runtime_core::accessibility::{
+    use runtime_shared::accessibility::{
         AccessibilityProps, AccessibilityTree, LiveRegionPriority, Role,
     };
-    use runtime_core::animation::AnimProp;
-    use runtime_core::assets::{
+    use runtime_shared::animation::AnimProp;
+    use runtime_shared::assets::{
         AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
     };
-    use runtime_core::breakpoint::Breakpoint;
-    use runtime_core::introspect::NativeNode;
-    use runtime_core::primitives;
-    use runtime_core::primitives::portal::ViewportRect;
-    use runtime_core::styled_text::TextRun;
-    use runtime_core::{
-        Action, Backend, BackendBatch, Color, ColorScheme, Easing, FileDropHandler, FontFamily,
+    use runtime_shared::breakpoint::Breakpoint;
+    use runtime_shared::introspect::NativeNode;
+    use runtime_shared::primitives;
+    use runtime_shared::primitives::portal::ViewportRect;
+    use runtime_shared::styled_text::TextRun;
+    use runtime_shared::{
+        Action, BackendBatch, Color, ColorScheme, Easing, FileDropHandler, FontFamily,
         HoverHandler, ImageErrorHandler, ImageLoadHandler, PageMetadata, Platform, SafeAreaSides,
         Screenshot, StateBits, StyleApplication, StyleRules, TokenEntry, Tokenized, TouchHandler,
         TouchId, VirtualizerCallbacks, WheelHandler,
@@ -479,7 +479,7 @@ mod native {
 
     // Re-exported so JNI wrappers and app crates can name the boot-path
     // types without a direct runtime-scene dependency — mirrors how
-    // consumers reach the old core's `Element` through `runtime_core`.
+    // consumers reach the old core's `Element` through `runtime_shared`.
     pub use runtime_scene::Element as SceneElement;
     pub use runtime_scene::Registry as SceneRegistry;
 
@@ -545,8 +545,8 @@ mod native {
         // other ambient installs live in a runtime-core-private module
         // and are NOT reachable from a backend crate — same situation
         // as the web/macOS new-core boots (later-phase seam).
-        let platform = backend.borrow().platform();
-        runtime_core::time::install_default_time_source(platform);
+        let platform = backend.borrow().platform_impl();
+        runtime_shared::time::install_default_time_source(platform);
 
         let mut registry: Registry<AndroidBackend> = Registry::new();
         runtime_vocabulary::register_builtins(&mut registry);
@@ -569,7 +569,7 @@ mod native {
         // Step 3: no-op on this backend (the Android scheduler never
         // buffers microtasks) — kept for boot-sequence symmetry with
         // web/macOS. Must run with NO backend borrow held.
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
 
         // Single-root contract, matching the old-core mount: `finish`
         // appends the root view into the host ViewGroup and schedules
@@ -582,7 +582,7 @@ mod native {
                  top-level node (got {n}) — wrap fragment/multi-root trees in a view"
             ),
         };
-        Backend::finish(&mut *backend.borrow_mut(), root);
+        AndroidBackend::finish_impl(&mut *backend.borrow_mut(), root);
 
         // Commit anything staged during mount before the first paint.
         world.flush();
@@ -696,31 +696,34 @@ mod native {
         type Node = GlobalRef;
 
         fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
-            <AndroidBackend as Backend>::insert(self, parent, child)
-        }
-
-        fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
-            <AndroidBackend as Backend>::insert_many(self, parent, children)
+            AndroidBackend::insert_impl(self, parent, child)
         }
 
         fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
-            <AndroidBackend as Backend>::insert_at(self, parent, child, index)
+            AndroidBackend::insert_at_impl(self, parent, child, index)
         }
 
         fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
-            <AndroidBackend as Backend>::remove_child(self, parent, child)
+            AndroidBackend::remove_child_impl(self, parent, child)
         }
 
         fn clear_children(&mut self, node: &Self::Node) {
-            <AndroidBackend as Backend>::clear_children(self, node)
+            AndroidBackend::clear_children_impl(self, node)
         }
 
         fn create_anchor(&mut self) -> Self::Node {
-            <AndroidBackend as Backend>::create_reactive_anchor(self)
+            // Runtime v2: `Host::create_anchor` is REQUIRED, and this backend
+            // never overrode the old `Backend::create_reactive_anchor`, whose
+            // default was exactly this. Reproduced verbatim: a plain view is a
+            // correct anchor on this backend (only web needs the
+            // `display: contents` variant so the branch's children keep the
+            // surrounding flex context). See
+            // docs/runtime-v2-deletion-baseline.md §2.2.
+            AndroidBackend::create_view_impl(self, &AccessibilityProps::default())
         }
 
         fn supports_splice(&self) -> bool {
-            <AndroidBackend as Backend>::supports_child_splice(self)
+            AndroidBackend::supports_child_splice_impl(self)
         }
     }
 
@@ -730,59 +733,43 @@ mod native {
 
     impl caps::AppEnvOps for AndroidBackend {
         fn color_scheme(&self) -> ColorScheme {
-            <AndroidBackend as Backend>::color_scheme(self)
+            AndroidBackend::color_scheme_impl(self)
         }
 
         fn platform(&self) -> Platform {
-            <AndroidBackend as Backend>::platform(self)
+            AndroidBackend::platform_impl(self)
         }
 
         fn url_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
-            <AndroidBackend as Backend>::url_opener(self)
+            AndroidBackend::url_opener_impl(self)
         }
 
         fn fullscreen_setter(&self) -> Option<Rc<dyn Fn(bool)>> {
-            <AndroidBackend as Backend>::fullscreen_setter(self)
-        }
-
-        fn set_page_metadata(&mut self, meta: &PageMetadata) {
-            <AndroidBackend as Backend>::set_page_metadata(self, meta)
+            AndroidBackend::fullscreen_setter_impl(self)
         }
 
         fn set_app_background(&mut self, color: &Tokenized<Color>) {
-            <AndroidBackend as Backend>::set_app_background(self, color)
-        }
-
-        fn set_scrollbar_theme(&mut self, thumb: &Tokenized<Color>, track: &Tokenized<Color>) {
-            <AndroidBackend as Backend>::set_scrollbar_theme(self, thumb, track)
+            AndroidBackend::set_app_background_impl(self, color)
         }
 
         fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
             // Dispatch-site glue: app-level key handlers run author code.
             let handler = handler.map(flushing_key);
-            <AndroidBackend as Backend>::set_app_key_handler(self, handler)
+            AndroidBackend::set_app_key_handler_impl(self, handler)
         }
     }
 
     impl caps::LifecycleOps for AndroidBackend {
         fn finish(&mut self, root: Self::Node) {
-            <AndroidBackend as Backend>::finish(self, root)
+            AndroidBackend::finish_impl(self, root)
         }
 
         fn run_layout(&mut self) {
-            <AndroidBackend as Backend>::run_layout(self)
+            AndroidBackend::run_layout_impl(self)
         }
 
         fn schedule_layout_pass() {
-            <AndroidBackend as Backend>::schedule_layout_pass()
-        }
-
-        fn is_hydrating(&self) -> bool {
-            <AndroidBackend as Backend>::is_hydrating(self)
-        }
-
-        fn renders_lazy_chunks(&self) -> bool {
-            <AndroidBackend as Backend>::renders_lazy_chunks(self)
+            AndroidBackend::schedule_layout_pass_impl()
         }
     }
 
@@ -792,11 +779,11 @@ mod native {
 
     impl caps::ViewOps for AndroidBackend {
         fn create_view(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-            <AndroidBackend as Backend>::create_view(self, a11y)
+            AndroidBackend::create_view_impl(self, a11y)
         }
 
-        fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
-            <AndroidBackend as Backend>::make_view_handle(self, node)
+        fn make_view_handle(&self, node: &Self::Node) -> runtime_shared::ViewHandle {
+            AndroidBackend::make_view_handle_impl(self, node)
         }
     }
 
@@ -811,43 +798,11 @@ mod native {
                     response
                 })
             };
-            <AndroidBackend as Backend>::install_touch_handler(self, node, handler)
+            AndroidBackend::install_touch_handler_impl(self, node, handler)
         }
 
         fn claim_touch(&mut self, node: &Self::Node, touch_id: TouchId) {
-            <AndroidBackend as Backend>::claim_touch(self, node, touch_id)
-        }
-
-        fn install_wheel_handler(&mut self, node: &Self::Node, handler: WheelHandler) {
-            let handler: WheelHandler = {
-                let f = handler;
-                Rc::new(move |ev| {
-                    let response = f(ev);
-                    schedule_flush();
-                    response
-                })
-            };
-            <AndroidBackend as Backend>::install_wheel_handler(self, node, handler)
-        }
-
-        fn install_hover_handler(&mut self, node: &Self::Node, handler: HoverHandler) {
-            <AndroidBackend as Backend>::install_hover_handler(self, node, flushing1(handler))
-        }
-
-        fn mark_preserves_focus(&mut self, node: &Self::Node) {
-            <AndroidBackend as Backend>::mark_preserves_focus(self, node)
-        }
-
-        fn install_file_drop_handler(&mut self, node: &Self::Node, handler: FileDropHandler) {
-            let handler: FileDropHandler = {
-                let f = handler;
-                Rc::new(move |ev| {
-                    let response = f(ev);
-                    schedule_flush();
-                    response
-                })
-            };
-            <AndroidBackend as Backend>::install_file_drop_handler(self, node, handler)
+            AndroidBackend::claim_touch_impl(self, node, touch_id)
         }
     }
 
@@ -857,11 +812,7 @@ mod native {
             on_click: Rc<dyn Fn()>,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
-            <AndroidBackend as Backend>::create_pressable(self, flushing0(on_click), a11y)
-        }
-
-        fn make_pressable_handle(&self, node: &Self::Node) -> runtime_core::PressableHandle {
-            <AndroidBackend as Backend>::make_pressable_handle(self, node)
+            AndroidBackend::create_pressable_impl(self, flushing0(on_click), a11y)
         }
     }
 
@@ -871,65 +822,23 @@ mod native {
 
     impl caps::TextOps for AndroidBackend {
         fn create_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
-            <AndroidBackend as Backend>::create_text(self, content, a11y)
+            AndroidBackend::create_text_impl(self, content, a11y)
         }
 
         fn create_styled_text(&mut self, runs: &[TextRun], a11y: &AccessibilityProps) -> Self::Node {
-            <AndroidBackend as Backend>::create_styled_text(self, runs, a11y)
+            AndroidBackend::create_styled_text_impl(self, runs, a11y)
         }
 
         fn update_styled_text(&mut self, node: &Self::Node, runs: &[TextRun]) {
-            <AndroidBackend as Backend>::update_styled_text(self, node, runs)
+            AndroidBackend::update_styled_text_impl(self, node, runs)
         }
 
         fn update_text(&mut self, node: &Self::Node, content: &str) {
-            <AndroidBackend as Backend>::update_text(self, node, content)
+            AndroidBackend::update_text_impl(self, node, content)
         }
 
-        fn create_text_with_id(
-            &mut self,
-            content: &str,
-            a11y: &AccessibilityProps,
-        ) -> Option<(Self::Node, u32)> {
-            <AndroidBackend as Backend>::create_text_with_id(self, content, a11y)
-        }
-
-        fn update_text_by_id(&mut self, id: u32, content: String) {
-            <AndroidBackend as Backend>::update_text_by_id(self, id, content)
-        }
-
-        fn release_text_id(&mut self, id: u32) {
-            <AndroidBackend as Backend>::release_text_id(self, id)
-        }
-
-        fn supports_js_text_bindings(&self) -> bool {
-            <AndroidBackend as Backend>::supports_js_text_bindings(self)
-        }
-
-        fn register_reactive_text_binding(
-            &mut self,
-            text_id: u32,
-            signal_ids: &[u64],
-            template_parts: &[&str],
-            initial_values: &[&str],
-            stringifiers: &[Rc<dyn Fn() -> String>],
-        ) {
-            <AndroidBackend as Backend>::register_reactive_text_binding(
-                self,
-                text_id,
-                signal_ids,
-                template_parts,
-                initial_values,
-                stringifiers,
-            )
-        }
-
-        fn release_reactive_text_binding(&mut self, text_id: u32) {
-            <AndroidBackend as Backend>::release_reactive_text_binding(self, text_id)
-        }
-
-        fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
-            <AndroidBackend as Backend>::make_text_handle(self, node)
+        fn make_text_handle(&self, node: &Self::Node) -> runtime_shared::TextHandle {
+            AndroidBackend::make_text_handle_impl(self, node)
         }
     }
 
@@ -951,7 +860,7 @@ mod native {
                 output: on_click.output,
                 fire: flushing0(on_click.fire.clone()),
             };
-            <AndroidBackend as Backend>::create_button(
+            AndroidBackend::create_button_impl(
                 self,
                 label,
                 &on_click,
@@ -961,12 +870,8 @@ mod native {
             )
         }
 
-        fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-            <AndroidBackend as Backend>::update_button_label(self, node, label)
-        }
-
-        fn make_button_handle(&self, node: &Self::Node) -> runtime_core::ButtonHandle {
-            <AndroidBackend as Backend>::make_button_handle(self, node)
+        fn make_button_handle(&self, node: &Self::Node) -> runtime_shared::ButtonHandle {
+            AndroidBackend::make_button_handle_impl(self, node)
         }
     }
 
@@ -981,34 +886,7 @@ mod native {
             alt: Option<&str>,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
-            <AndroidBackend as Backend>::create_image(self, src, alt, a11y)
-        }
-
-        fn update_image_src(&mut self, node: &Self::Node, src: &str) {
-            <AndroidBackend as Backend>::update_image_src(self, node, src)
-        }
-
-        fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
-            <AndroidBackend as Backend>::update_image_alt(self, node, alt)
-        }
-
-        fn install_image_load_handler(&mut self, node: &Self::Node, handler: ImageLoadHandler) {
-            let handler: ImageLoadHandler = {
-                let f = handler;
-                Rc::new(move |ev| {
-                    f(ev);
-                    schedule_flush();
-                })
-            };
-            <AndroidBackend as Backend>::install_image_load_handler(self, node, handler)
-        }
-
-        fn install_image_error_handler(&mut self, node: &Self::Node, handler: ImageErrorHandler) {
-            <AndroidBackend as Backend>::install_image_error_handler(self, node, flushing0(handler))
-        }
-
-        fn make_image_handle(&self, node: &Self::Node) -> primitives::image::ImageHandle {
-            <AndroidBackend as Backend>::make_image_handle(self, node)
+            AndroidBackend::create_image_impl(self, src, alt, a11y)
         }
     }
 
@@ -1019,19 +897,15 @@ mod native {
             color: Option<&Color>,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
-            <AndroidBackend as Backend>::create_icon(self, data, color, a11y)
+            AndroidBackend::create_icon_impl(self, data, color, a11y)
         }
 
         fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
-            <AndroidBackend as Backend>::update_icon_color(self, node, color)
-        }
-
-        fn update_icon_data(&mut self, node: &Self::Node, data: &primitives::icon::IconData) {
-            <AndroidBackend as Backend>::update_icon_data(self, node, data)
+            AndroidBackend::update_icon_color_impl(self, node, color)
         }
 
         fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
-            <AndroidBackend as Backend>::update_icon_stroke(self, node, progress)
+            AndroidBackend::update_icon_stroke_impl(self, node, progress)
         }
 
         fn animate_icon_stroke(
@@ -1044,7 +918,7 @@ mod native {
             infinite: bool,
             autoreverses: bool,
         ) {
-            <AndroidBackend as Backend>::animate_icon_stroke(
+            AndroidBackend::animate_icon_stroke_impl(
                 self,
                 node,
                 from,
@@ -1054,10 +928,6 @@ mod native {
                 infinite,
                 autoreverses,
             )
-        }
-
-        fn make_icon_handle(&self, node: &Self::Node) -> primitives::icon::IconHandle {
-            <AndroidBackend as Backend>::make_icon_handle(self, node)
         }
     }
 
@@ -1071,15 +941,7 @@ mod native {
             // (stages nav-queue tick signals on the new core).
             let mut config = config;
             config.on_activate = flushing0(config.on_activate.clone());
-            <AndroidBackend as Backend>::create_link(self, config, a11y)
-        }
-
-        fn update_link_url(&mut self, node: &Self::Node, url: &str) {
-            <AndroidBackend as Backend>::update_link_url(self, node, url)
-        }
-
-        fn make_link_handle(&self, node: &Self::Node) -> primitives::link::LinkHandle {
-            <AndroidBackend as Backend>::make_link_handle(self, node)
+            AndroidBackend::create_link_impl(self, config, a11y)
         }
     }
 
@@ -1098,7 +960,7 @@ mod native {
             secure: bool,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
-            <AndroidBackend as Backend>::create_text_input(
+            AndroidBackend::create_text_input_impl(
                 self,
                 initial_value,
                 placeholder,
@@ -1117,19 +979,7 @@ mod native {
         }
 
         fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
-            <AndroidBackend as Backend>::update_text_input_value(self, node, value)
-        }
-
-        fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
-            <AndroidBackend as Backend>::update_text_input_secure(self, node, secure)
-        }
-
-        fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
-            <AndroidBackend as Backend>::set_text_input_focus_handler(self, node, flushing1(handler))
-        }
-
-        fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
-            <AndroidBackend as Backend>::update_text_input_placeholder(self, node, placeholder)
+            AndroidBackend::update_text_input_value_impl(self, node, value)
         }
 
         fn create_text_area(
@@ -1143,7 +993,7 @@ mod native {
             on_key_down: Option<primitives::key::KeyDownHandler>,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
-            <AndroidBackend as Backend>::create_text_area(
+            AndroidBackend::create_text_area_impl(
                 self,
                 initial_value,
                 placeholder,
@@ -1157,18 +1007,18 @@ mod native {
         }
 
         fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
-            <AndroidBackend as Backend>::update_text_area_value(self, node, value)
+            AndroidBackend::update_text_area_value_impl(self, node, value)
         }
 
         fn make_text_input_handle(
             &self,
             node: &Self::Node,
         ) -> primitives::text_input::TextInputHandle {
-            <AndroidBackend as Backend>::make_text_input_handle(self, node)
+            AndroidBackend::make_text_input_handle_impl(self, node)
         }
 
         fn make_text_area_handle(&self, node: &Self::Node) -> primitives::text_area::TextAreaHandle {
-            <AndroidBackend as Backend>::make_text_area_handle(self, node)
+            AndroidBackend::make_text_area_handle_impl(self, node)
         }
     }
 
@@ -1179,15 +1029,11 @@ mod native {
             on_change: Rc<dyn Fn(bool)>,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
-            <AndroidBackend as Backend>::create_toggle(self, initial_value, flushing1(on_change), a11y)
+            AndroidBackend::create_toggle_impl(self, initial_value, flushing1(on_change), a11y)
         }
 
         fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
-            <AndroidBackend as Backend>::update_toggle_value(self, node, value)
-        }
-
-        fn make_toggle_handle(&self, node: &Self::Node) -> primitives::toggle::ToggleHandle {
-            <AndroidBackend as Backend>::make_toggle_handle(self, node)
+            AndroidBackend::update_toggle_value_impl(self, node, value)
         }
     }
 
@@ -1201,7 +1047,7 @@ mod native {
             on_change: Rc<dyn Fn(f32)>,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
-            <AndroidBackend as Backend>::create_slider(
+            AndroidBackend::create_slider_impl(
                 self,
                 initial_value,
                 min,
@@ -1213,11 +1059,7 @@ mod native {
         }
 
         fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
-            <AndroidBackend as Backend>::update_slider_value(self, node, value)
-        }
-
-        fn make_slider_handle(&self, node: &Self::Node) -> primitives::slider::SliderHandle {
-            <AndroidBackend as Backend>::make_slider_handle(self, node)
+            AndroidBackend::update_slider_value_impl(self, node, value)
         }
     }
 
@@ -1228,22 +1070,7 @@ mod native {
             color: Option<&Color>,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
-            <AndroidBackend as Backend>::create_activity_indicator(self, size, color, a11y)
-        }
-
-        fn update_activity_indicator_size(
-            &mut self,
-            node: &Self::Node,
-            size: primitives::activity_indicator::ActivityIndicatorSize,
-        ) {
-            <AndroidBackend as Backend>::update_activity_indicator_size(self, node, size)
-        }
-
-        fn make_activity_indicator_handle(
-            &self,
-            node: &Self::Node,
-        ) -> primitives::activity_indicator::ActivityIndicatorHandle {
-            <AndroidBackend as Backend>::make_activity_indicator_handle(self, node)
+            AndroidBackend::create_activity_indicator_impl(self, size, color, a11y)
         }
     }
 
@@ -1266,32 +1093,24 @@ mod native {
                     schedule_flush();
                 })
             });
-            <AndroidBackend as Backend>::create_scroll_view(self, horizontal, on_scroll, a11y)
-        }
-
-        fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
-            <AndroidBackend as Backend>::node_scroll(self, node)
-        }
-
-        fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
-            <AndroidBackend as Backend>::set_node_scroll(self, node, x, y)
+            AndroidBackend::create_scroll_view_impl(self, horizontal, on_scroll, a11y)
         }
 
         fn make_scroll_view_handle(
             &self,
             node: &Self::Node,
         ) -> primitives::scroll_view::ScrollViewHandle {
-            <AndroidBackend as Backend>::make_scroll_view_handle(self, node)
+            AndroidBackend::make_scroll_view_handle_impl(self, node)
         }
     }
 
     impl caps::SafeAreaOps for AndroidBackend {
         fn apply_safe_area_padding(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-            <AndroidBackend as Backend>::apply_safe_area_padding(self, node, sides)
+            AndroidBackend::apply_safe_area_padding_impl(self, node, sides)
         }
 
         fn apply_scroll_view_safe_area_inset(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-            <AndroidBackend as Backend>::apply_scroll_view_safe_area_inset(self, node, sides)
+            AndroidBackend::apply_scroll_view_safe_area_inset_impl(self, node, sides)
         }
     }
 
@@ -1354,22 +1173,11 @@ mod native {
                     })
                 },
             };
-            <AndroidBackend as Backend>::create_virtualizer(self, callbacks, overscan, layout, a11y)
+            AndroidBackend::create_virtualizer_impl(self, callbacks, overscan, layout, a11y)
         }
 
         fn virtualizer_data_changed(&mut self, node: &Self::Node) {
-            <AndroidBackend as Backend>::virtualizer_data_changed(self, node)
-        }
-
-        fn release_virtualizer(&mut self, node: &Self::Node) {
-            <AndroidBackend as Backend>::release_virtualizer(self, node)
-        }
-
-        fn make_virtualizer_handle(
-            &self,
-            node: &Self::Node,
-        ) -> primitives::virtualizer::VirtualizerHandle {
-            <AndroidBackend as Backend>::make_virtualizer_handle(self, node)
+            AndroidBackend::virtualizer_data_changed_impl(self, node)
         }
     }
 
@@ -1408,15 +1216,15 @@ mod native {
                     schedule_flush();
                 })
             };
-            <AndroidBackend as Backend>::create_graphics(self, on_ready, on_resize, on_lost, a11y)
+            AndroidBackend::create_graphics_impl(self, on_ready, on_resize, on_lost, a11y)
         }
 
         fn release_graphics(&mut self, node: &Self::Node) {
-            <AndroidBackend as Backend>::release_graphics(self, node)
+            AndroidBackend::release_graphics_impl(self, node)
         }
 
         fn make_graphics_handle(&self, node: &Self::Node) -> primitives::graphics::GraphicsHandle {
-            <AndroidBackend as Backend>::make_graphics_handle(self, node)
+            AndroidBackend::make_graphics_handle_impl(self, node)
         }
     }
 
@@ -1431,26 +1239,15 @@ mod native {
             // Dispatch-site glue: back-press / outside-tap dismissal
             // runs the author's on_dismiss.
             let on_dismiss = on_dismiss.map(flushing0);
-            <AndroidBackend as Backend>::create_portal(self, target, on_dismiss, trap_focus, a11y)
+            AndroidBackend::create_portal_impl(self, target, on_dismiss, trap_focus, a11y)
         }
 
         fn release_portal(&mut self, node: &Self::Node) {
-            <AndroidBackend as Backend>::release_portal(self, node)
-        }
-
-        fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
-            <AndroidBackend as Backend>::set_portal_hidden(self, node, hidden)
-        }
-
-        fn make_portal_handle(&self, node: &Self::Node) -> primitives::portal::PortalHandle {
-            <AndroidBackend as Backend>::make_portal_handle(self, node)
+            AndroidBackend::release_portal_impl(self, node)
         }
     }
 
     impl caps::PresenceOps for AndroidBackend {
-        fn create_presence_placeholder(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-            <AndroidBackend as Backend>::create_presence_placeholder(self, a11y)
-        }
 
         fn apply_presence(
             &mut self,
@@ -1458,70 +1255,23 @@ mod native {
             state: primitives::presence::PresenceState,
             transition: Option<(u32, Easing)>,
         ) {
-            <AndroidBackend as Backend>::apply_presence(self, node, state, transition)
-        }
-
-        fn make_presence_handle(&self, node: &Self::Node) -> primitives::presence::PresenceHandle {
-            <AndroidBackend as Backend>::make_presence_handle(self, node)
+            AndroidBackend::apply_presence_impl(self, node, state, transition)
         }
     }
 
     impl caps::NavigatorOps for AndroidBackend {
-        fn create_navigator(
-            &mut self,
-            type_id: TypeId,
-            type_name: &'static str,
-            presentation: Rc<dyn Any>,
-            host: primitives::navigator::NavigatorHost<Self::Node>,
-            a11y: &AccessibilityProps,
-        ) -> Self::Node {
-            // NOT wrapped: NavigatorHost's callbacks (mount_screen etc.)
-            // belong to the OLD-core navigator path, which the new core
-            // does not route through (the vocabulary navigator handlers
-            // own screens; dispatch stages commands + a tick signal and
-            // the driver effect commits inside the flush). Author-
-            // initiated navigation stages via handlers already wrapped
-            // above. Android's system back (native push surfaces) is a
-            // named P5 residual in the vocabulary navigator module docs.
-            <AndroidBackend as Backend>::create_navigator(
-                self,
-                type_id,
-                type_name,
-                presentation,
-                host,
-                a11y,
-            )
-        }
-
-        fn release_navigator(&mut self, node: &Self::Node) {
-            <AndroidBackend as Backend>::release_navigator(self, node)
-        }
-
-        fn apply_navigator_slot_style(
-            &mut self,
-            node: &Self::Node,
-            slot: &'static str,
-            style: &Rc<StyleRules>,
-        ) {
-            <AndroidBackend as Backend>::apply_navigator_slot_style(self, node, slot, style)
-        }
-
-        fn make_navigator_handle(&self, node: &Self::Node) -> primitives::navigator::NavigatorHandle {
-            <AndroidBackend as Backend>::make_navigator_handle(self, node)
-        }
-
-        fn navigator_attach_initial(
-            &mut self,
-            navigator: &Self::Node,
-            screen: Self::Node,
-            scope_id: u64,
-            options: Box<dyn Any>,
-        ) {
-            <AndroidBackend as Backend>::navigator_attach_initial(
-                self, navigator, screen, scope_id, options,
-            )
-        }
-    }
+    // Every method of this capability is now the caps trait's default.
+    // The old-core `create_navigator` (which registered the per-instance
+    // `NavigatorHandler` these four methods dispatched to) was DELETED
+    // with the old core — it does not fall back to a default
+    // (docs/runtime-v2-deletion-baseline.md §2.3), so no handler is ever
+    // registered and the vocabulary's navigator handler never calls
+    // them — it mounts navigators over `ViewOps`/`LifecycleOps` and
+    // folds screen chrome itself. Native push / header chrome on this
+    // backend is the documented native-nav seam, tracked in the module
+    // docs; it must be re-entered through the scene registry, not
+    // through a resurrected mega-trait cap.
+}
 
     // -----------------------------------------------------------------------
     // External + document
@@ -1535,38 +1285,15 @@ mod native {
             payload: &Rc<dyn Any>,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
-            <AndroidBackend as Backend>::create_external(self, type_id, type_name, payload, a11y)
+            AndroidBackend::create_external_impl(self, type_id, type_name, payload, a11y)
         }
 
         fn release_external(&mut self, node: &Self::Node) {
-            <AndroidBackend as Backend>::release_external(self, node)
-        }
-
-        fn missing_primitive_placeholder(&mut self, label: &'static str) -> Self::Node {
-            <AndroidBackend as Backend>::missing_primitive_placeholder(self, label)
+            AndroidBackend::release_external_impl(self, node)
         }
     }
 
     impl caps::DocumentOps for AndroidBackend {
-        fn create_element(&mut self, tag: &str) -> Self::Node {
-            <AndroidBackend as Backend>::create_element(self, tag)
-        }
-
-        fn attach_html_id(&self, node: &Self::Node, id: &str) {
-            <AndroidBackend as Backend>::attach_html_id(self, node, id)
-        }
-
-        fn attach_html_class(&self, node: &Self::Node, class: &str) {
-            <AndroidBackend as Backend>::attach_html_class(self, node, class)
-        }
-
-        fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
-            <AndroidBackend as Backend>::attach_html_style(self, node, prop, value)
-        }
-
-        fn register_raw_css(&mut self, css: &str) {
-            <AndroidBackend as Backend>::register_raw_css(self, css)
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -1575,74 +1302,11 @@ mod native {
 
     impl caps::StyleOps for AndroidBackend {
         fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
-            <AndroidBackend as Backend>::apply_style(self, node, style)
-        }
-
-        fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
-            <AndroidBackend as Backend>::mint_style_class(self, style)
-        }
-
-        fn mint_class_for_app(&mut self, app: &StyleApplication) -> Option<String> {
-            <AndroidBackend as Backend>::mint_class_for_app(self, app)
-        }
-
-        fn apply_styled_states(
-            &mut self,
-            node: &Self::Node,
-            base: &Rc<StyleRules>,
-            overlays: &[(StateBits, Rc<StyleRules>)],
-        ) {
-            <AndroidBackend as Backend>::apply_styled_states(self, node, base, overlays)
-        }
-
-        fn apply_styled_variants(
-            &mut self,
-            node: &Self::Node,
-            base: &Rc<StyleRules>,
-            state_overlays: &[(StateBits, Rc<StyleRules>)],
-            breakpoint_overlays: &[(Breakpoint, Rc<StyleRules>)],
-            container_overlays: &[(f32, Rc<StyleRules>)],
-        ) {
-            <AndroidBackend as Backend>::apply_styled_variants(
-                self,
-                node,
-                base,
-                state_overlays,
-                breakpoint_overlays,
-                container_overlays,
-            )
-        }
-
-        fn mark_container(&mut self, node: &Self::Node) {
-            <AndroidBackend as Backend>::mark_container(self, node)
-        }
-
-        fn handles_states_natively(&self) -> bool {
-            <AndroidBackend as Backend>::handles_states_natively(self)
-        }
-
-        fn token_updates_propagate_via_cascade(&self) -> bool {
-            <AndroidBackend as Backend>::token_updates_propagate_via_cascade(self)
-        }
-
-        fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-            <AndroidBackend as Backend>::register_stylesheet(self, rules)
-        }
-
-        fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-            <AndroidBackend as Backend>::unregister_stylesheet(self, rules)
-        }
-
-        fn install_tokens(&mut self, tokens: &[TokenEntry]) {
-            <AndroidBackend as Backend>::install_tokens(self, tokens)
-        }
-
-        fn update_tokens(&mut self, tokens: &[TokenEntry]) {
-            <AndroidBackend as Backend>::update_tokens(self, tokens)
+            AndroidBackend::apply_style_impl(self, node, style)
         }
 
         fn on_node_unstyled(&mut self, node: &Self::Node) {
-            <AndroidBackend as Backend>::on_node_unstyled(self, node)
+            AndroidBackend::on_node_unstyled_impl(self, node)
         }
 
         fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
@@ -1659,55 +1323,21 @@ mod native {
                     schedule_flush();
                 })
             };
-            <AndroidBackend as Backend>::attach_states(self, node, setter)
+            AndroidBackend::attach_states_impl(self, node, setter)
         }
 
         fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
-            <AndroidBackend as Backend>::set_disabled(self, node, disabled)
-        }
-
-        fn supports_preminted_styles(&self) -> bool {
-            <AndroidBackend as Backend>::supports_preminted_styles(self)
-        }
-
-        fn apply_default_text_font(&mut self, font: Option<&FontFamily>) {
-            <AndroidBackend as Backend>::apply_default_text_font(self, font)
-        }
-
-        fn supports_js_class_bindings(&self) -> bool {
-            <AndroidBackend as Backend>::supports_js_class_bindings(self)
-        }
-
-        fn register_reactive_class_binding(
-            &mut self,
-            node: &Self::Node,
-            signal_id: u64,
-            values: &[u32],
-            classes: &[&str],
-            value_reader: Rc<dyn Fn() -> u32>,
-        ) -> u32 {
-            <AndroidBackend as Backend>::register_reactive_class_binding(
-                self,
-                node,
-                signal_id,
-                values,
-                classes,
-                value_reader,
-            )
-        }
-
-        fn release_reactive_class_binding(&mut self, binding_id: u32) {
-            <AndroidBackend as Backend>::release_reactive_class_binding(self, binding_id)
+            AndroidBackend::set_disabled_impl(self, node, disabled)
         }
     }
 
     impl caps::AssetOps for AndroidBackend {
         fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
-            <AndroidBackend as Backend>::register_asset(self, id, kind, source)
+            AndroidBackend::register_asset_impl(self, id, kind, source)
         }
 
         fn unregister_asset(&mut self, id: AssetId, kind: AssetTag) {
-            <AndroidBackend as Backend>::unregister_asset(self, id, kind)
+            AndroidBackend::unregister_asset_impl(self, id, kind)
         }
 
         fn register_typeface(
@@ -1717,11 +1347,11 @@ mod native {
             faces: &[TypefaceFace],
             fallback: SystemFallback,
         ) {
-            <AndroidBackend as Backend>::register_typeface(self, id, family_name, faces, fallback)
+            AndroidBackend::register_typeface_impl(self, id, family_name, faces, fallback)
         }
 
         fn unregister_typeface(&mut self, id: TypefaceId) {
-            <AndroidBackend as Backend>::unregister_typeface(self, id)
+            AndroidBackend::unregister_typeface_impl(self, id)
         }
     }
 
@@ -1736,59 +1366,39 @@ mod native {
             a11y: &AccessibilityProps,
             inferred_role: Option<Role>,
         ) {
-            <AndroidBackend as Backend>::update_accessibility(self, node, a11y, inferred_role)
+            AndroidBackend::update_accessibility_impl(self, node, a11y, inferred_role)
         }
 
         fn announce_for_accessibility(&mut self, msg: &str, priority: LiveRegionPriority) {
-            <AndroidBackend as Backend>::announce_for_accessibility(self, msg, priority)
-        }
-
-        fn dump_accessibility_tree(&self) -> Option<AccessibilityTree> {
-            <AndroidBackend as Backend>::dump_accessibility_tree(self)
+            AndroidBackend::announce_for_accessibility_impl(self, msg, priority)
         }
     }
 
     impl caps::AnimationOps for AndroidBackend {
         fn set_animated_f32(&mut self, node: &Self::Node, prop: AnimProp, value: f32) {
-            <AndroidBackend as Backend>::set_animated_f32(self, node, prop, value)
+            AndroidBackend::set_animated_f32_impl(self, node, prop, value)
         }
 
         fn set_animated_color(&mut self, node: &Self::Node, prop: AnimProp, value: [f32; 4]) {
-            <AndroidBackend as Backend>::set_animated_color(self, node, prop, value)
+            AndroidBackend::set_animated_color_impl(self, node, prop, value)
         }
     }
 
     impl caps::IntrospectionOps for AndroidBackend {
         fn frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-            <AndroidBackend as Backend>::frame(self, node)
-        }
-
-        fn absolute_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-            <AndroidBackend as Backend>::absolute_frame(self, node)
+            AndroidBackend::frame_impl(self, node)
         }
 
         fn device_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-            <AndroidBackend as Backend>::device_frame(self, node)
-        }
-
-        fn supports_native_introspection(&self) -> bool {
-            <AndroidBackend as Backend>::supports_native_introspection(self)
-        }
-
-        fn introspect_native(&self, node: &Self::Node) -> Option<NativeNode> {
-            <AndroidBackend as Backend>::introspect_native(self, node)
-        }
-
-        fn note_introspection_root(&self, node: &Self::Node) {
-            <AndroidBackend as Backend>::note_introspection_root(self, node)
+            AndroidBackend::device_frame_impl(self, node)
         }
 
         fn supports_screenshot(&self) -> bool {
-            <AndroidBackend as Backend>::supports_screenshot(self)
+            AndroidBackend::supports_screenshot_impl(self)
         }
 
         fn capture_screenshot(&self, done: Box<dyn FnOnce(Result<Screenshot, String>)>) {
-            <AndroidBackend as Backend>::capture_screenshot(self, done)
+            AndroidBackend::capture_screenshot_impl(self, done)
         }
     }
 
@@ -1797,118 +1407,9 @@ mod native {
     // -----------------------------------------------------------------------
 
     impl caps::BatchOps for AndroidBackend {
-        fn supports_batched_repeat(&self) -> bool {
-            <AndroidBackend as Backend>::supports_batched_repeat(self)
-        }
-
-        fn execute_batch(&mut self, batch: BackendBatch) -> Vec<Self::Node> {
-            <AndroidBackend as Backend>::execute_batch(self, batch)
-        }
-
-        fn execute_batch_with_attach(
-            &mut self,
-            batch: BackendBatch,
-            parent: &mut Self::Node,
-            attach_locals: &[u32],
-        ) -> Vec<Self::Node> {
-            <AndroidBackend as Backend>::execute_batch_with_attach(self, batch, parent, attach_locals)
-        }
     }
 
     impl caps::WireBindingOps for AndroidBackend {
-        fn note_text_binding(&mut self, node: &Self::Node, signal_ids: &[u64], method: &'static str) {
-            <AndroidBackend as Backend>::note_text_binding(self, node, signal_ids, method)
-        }
-
-        fn note_signal_initial(&mut self, signal_id: u64, value: &runtime_core::__serde_json::Value) {
-            <AndroidBackend as Backend>::note_signal_initial(self, signal_id, value)
-        }
-
-        fn note_when_binding(
-            &mut self,
-            anchor: &Self::Node,
-            signal_ids: &[u64],
-            cond_method: &'static str,
-            then_node: &Self::Node,
-            otherwise_node: &Self::Node,
-        ) {
-            <AndroidBackend as Backend>::note_when_binding(
-                self,
-                anchor,
-                signal_ids,
-                cond_method,
-                then_node,
-                otherwise_node,
-            )
-        }
-
-        fn note_switch_binding(
-            &mut self,
-            anchor: &Self::Node,
-            signal_ids: &[u64],
-            cond_method: &'static str,
-            arms: &[(runtime_core::__serde_json::Value, Self::Node)],
-            default_node: &Self::Node,
-        ) {
-            <AndroidBackend as Backend>::note_switch_binding(
-                self,
-                anchor,
-                signal_ids,
-                cond_method,
-                arms,
-                default_node,
-            )
-        }
-
-        fn note_repeat_binding(
-            &mut self,
-            anchor: &Self::Node,
-            signal_ids: &[u64],
-            count_method: &'static str,
-            row_template: &Self::Node,
-            row_index_signal_id: Option<u64>,
-        ) {
-            <AndroidBackend as Backend>::note_repeat_binding(
-                self,
-                anchor,
-                signal_ids,
-                count_method,
-                row_template,
-                row_index_signal_id,
-            )
-        }
-
-        fn note_virtualizer_binding(
-            &mut self,
-            anchor: &Self::Node,
-            signal_ids: &[u64],
-            count_method: &'static str,
-            row_template: &Self::Node,
-            row_index_signal_id: Option<u64>,
-            horizontal: bool,
-        ) {
-            <AndroidBackend as Backend>::note_virtualizer_binding(
-                self,
-                anchor,
-                signal_ids,
-                count_method,
-                row_template,
-                row_index_signal_id,
-                horizontal,
-            )
-        }
-
-        fn supports_lazy_slot_capture(&self) -> bool {
-            <AndroidBackend as Backend>::supports_lazy_slot_capture(self)
-        }
-
-        fn begin_slot_capture(&mut self) {
-            <AndroidBackend as Backend>::begin_slot_capture(self)
-        }
-
-        fn end_slot_capture(&mut self, slot_root: &Self::Node) {
-            <AndroidBackend as Backend>::end_slot_capture(self, slot_root)
-        }
     }
 }
 
@@ -1932,7 +1433,7 @@ pub use native::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::scheduling::{ScheduleHandle, Scheduler};
+    use runtime_shared::scheduling::{ScheduleHandle, Scheduler};
     use runtime_world::{effect, signal};
     use std::collections::VecDeque;
 
@@ -1977,7 +1478,7 @@ mod tests {
     }
 
     fn install_test_scheduler() {
-        runtime_core::scheduling::install_scheduler(Box::new(LooperStandIn));
+        runtime_shared::scheduling::install_scheduler(Box::new(LooperStandIn));
     }
 
     /// Drain the fake looper queue (including tasks queued by drained
@@ -2125,14 +1626,14 @@ mod tests {
         set_flush_world(Some(world.clone()));
         let hits = world.enter(|| signal(0i32));
 
-        let handler: runtime_core::primitives::key::KeyDownHandler = {
+        let handler: runtime_shared::primitives::key::KeyDownHandler = {
             Rc::new(move |_ev| {
                 hits.update(|n| n + 1);
-                runtime_core::primitives::key::KeyOutcome::PreventDefault
+                runtime_shared::primitives::key::KeyOutcome::PreventDefault
             })
         };
         let wrapped = flushing_key(handler);
-        let ev = runtime_core::primitives::key::KeyEvent {
+        let ev = runtime_shared::primitives::key::KeyEvent {
             key: "a".to_string(),
             shift: false,
             ctrl: false,
@@ -2145,7 +1646,7 @@ mod tests {
         assert!(
             matches!(
                 outcome,
-                runtime_core::primitives::key::KeyOutcome::PreventDefault
+                runtime_shared::primitives::key::KeyOutcome::PreventDefault
             ),
             "outcome must pass through the glue unchanged"
         );
@@ -2217,7 +1718,7 @@ mod tests {
             let ctx = runtime_vocabulary::viewport::viewport_ctx();
             let bp = ctx.breakpoint();
             let runs = Rc::new(Cell::new(0usize));
-            let last = Rc::new(Cell::new(runtime_core::Breakpoint::Xs));
+            let last = Rc::new(Cell::new(runtime_shared::Breakpoint::Xs));
             let runs_c = runs.clone();
             let last_c = last.clone();
             // Stand-in for the shell's `when(!sidebar_pinned(Lg))`.
@@ -2233,7 +1734,7 @@ mod tests {
 
         // The seam: fires outside `enter` (a posted looper microtask),
         // stages, flush commits on the next looper turn.
-        forward_viewport(runtime_core::ViewportSize {
+        forward_viewport(runtime_shared::ViewportSize {
             width: 1280.0,
             height: 800.0,
         });
@@ -2241,14 +1742,14 @@ mod tests {
         pump();
         assert_eq!(
             last.get(),
-            runtime_core::Breakpoint::Xl,
+            runtime_shared::Breakpoint::Xl,
             "bucket followed the resize"
         );
         assert_eq!(runs.get(), 2);
 
         // Same-bucket resize: per-pixel change, no bucket flip, no
         // re-fire (memo equality cut).
-        forward_viewport(runtime_core::ViewportSize {
+        forward_viewport(runtime_shared::ViewportSize {
             width: 1290.0,
             height: 800.0,
         });
@@ -2256,19 +1757,19 @@ mod tests {
         assert_eq!(runs.get(), 2, "per-pixel resizes inside a bucket stay silent");
 
         // Rotation-shaped crossing below the threshold.
-        forward_viewport(runtime_core::ViewportSize {
+        forward_viewport(runtime_shared::ViewportSize {
             width: 700.0,
             height: 800.0,
         });
         pump();
-        assert_eq!(last.get(), runtime_core::Breakpoint::Sm);
+        assert_eq!(last.get(), runtime_shared::Breakpoint::Sm);
         assert_eq!(runs.get(), 3);
 
         // Teardown severs the route (what `stop` does — the Activity-
         // recreation race): a late mirror microtask forwards into a
         // cleared sink and nothing is staged or scheduled.
         set_viewport_sink(None);
-        forward_viewport(runtime_core::ViewportSize {
+        forward_viewport(runtime_shared::ViewportSize {
             width: 1280.0,
             height: 800.0,
         });

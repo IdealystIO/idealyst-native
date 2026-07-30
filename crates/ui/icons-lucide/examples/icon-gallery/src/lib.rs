@@ -37,14 +37,27 @@ const CELL_H: f32 = 104.0;
 /// Rendered glyph size in px.
 const ICON_PX: f32 = 30.0;
 
-// SDK-registration hook the CLI-generated wrappers call before mount. No
-// third-party SDKs here, so it's an empty generic over `Backend`.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam the CLI-generated wrappers invoke after
+/// `runtime_vocabulary::register_builtins`. The virtualizer this gallery
+/// renders through IS a builtin on the scene registry, so there is nothing
+/// extra to register — the seam is kept because every wrapper calls it.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
-// Recorder-side registration for the runtime-server sidecar. Gated by
-// `sidecar` so device/web builds never pull `dev-server`.
+/// Runtime-server (sidecar) recorder seam — the recorder's scene registry
+/// gets the virtualizer from `register_builtins` too, so there is nothing
+/// to register host-side either. Gated by `sidecar` so device/web builds
+/// never pull `dev-server`.
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {}
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
+}
 
 /// One grid cell: an icon + its name, plus a stable `key` (the icon's
 /// index in `ALL`) so its mounted subtree survives across search-filter
@@ -176,7 +189,7 @@ pub fn app() -> Element {
     // A responsive grid: one cell per icon, lanes derived from the viewport
     // width (≈4 columns on a phone, many more on desktop). Built directly
     // (not via `ui!`) so we can attach the bounding `list_style()` to the
-    // virtualizer element itself — the web backend forwards it onto the
+    // virtualizer builder itself — the web handler forwards it onto the
     // scroll container.
     let grid = responsive_grid(
         cells,
@@ -186,8 +199,8 @@ pub fn app() -> Element {
         MIN_CELL_W,
     )
     .gap(8.0)
-    .into_element()
-    .with_style(list_style());
+    .with_style(list_style())
+    .into_element();
 
     ui! {
         view(style = root_fill()) {

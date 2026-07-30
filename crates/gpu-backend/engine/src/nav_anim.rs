@@ -120,8 +120,14 @@ impl ScreenTransition for SlideFromRight {
             }
         };
         TransitionFrame {
-            under: ScreenXform { translate_x: under_x, translate_y: 0.0 },
-            top: ScreenXform { translate_x: top_x, translate_y: 0.0 },
+            under: ScreenXform {
+                translate_x: under_x,
+                translate_y: 0.0,
+            },
+            top: ScreenXform {
+                translate_x: top_x,
+                translate_y: 0.0,
+            },
         }
     }
 }
@@ -135,7 +141,9 @@ pub struct SlideFromBottom {
 
 impl SlideFromBottom {
     pub fn new() -> Self {
-        Self { duration_ms: SLIDE_FROM_RIGHT_MS }
+        Self {
+            duration_ms: SLIDE_FROM_RIGHT_MS,
+        }
     }
 }
 
@@ -164,7 +172,10 @@ impl ScreenTransition for SlideFromBottom {
         };
         TransitionFrame {
             under: ScreenXform::default(),
-            top: ScreenXform { translate_x: 0.0, translate_y: top_y },
+            top: ScreenXform {
+                translate_x: 0.0,
+                translate_y: top_y,
+            },
         }
     }
 }
@@ -262,6 +273,13 @@ pub fn clear_transition_override() {
 /// Take and clear the current transition override. The wgpu
 /// backend's `create_stack_navigator` calls this once per navigator;
 /// `None` means use [`default_transition`].
+// Unreachable under runtime v2 until the native-nav seam re-lands: the
+// old core drove this chrome from `Backend::create_navigator`, a cap that
+// was deleted with the old core
+// (docs/runtime-v2-deletion-baseline.md §2.3). Kept — the geometry and
+// animation work is the substrate a scene-registry navigator handler will
+// drive — but nothing calls it today.
+#[allow(dead_code)]
 pub(crate) fn take_transition_override() -> Option<Rc<dyn ScreenTransition>> {
     TRANSITION_OVERRIDE.with(|cell| cell.borrow_mut().take())
 }

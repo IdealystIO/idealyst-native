@@ -1,11 +1,11 @@
-//! FULL-OP harness, NEW-core side: the vocabulary's builders + generic
-//! handlers realized against `LegacyBridge<FullRecorder>` — the recorder
-//! implements `runtime_core::Backend`, the bridge supplies `Host` + the
-//! capability traits, and `register_builtins` installs the 13 handlers.
-//! Compared against the SAME `goldens_full/` files the old walker owns,
+//! FULL-OP harness: the vocabulary's builders + generic handlers
+//! realized against the [`FullRecorder`], which implements
+//! `runtime_scene::Host` plus all 30 `runtime_vocabulary::caps::*Ops`
+//! traits directly (see `full.rs`), with `register_builtins` installing
+//! the 13 handlers. Compared against the frozen `goldens_full/` files
 //! through the established normalization, plus the closed
-//! [`FULL_NEWCORE_OVERRIDES`] set for the one sanctioned full-op
-//! divergence:
+//! [`FULL_NEWCORE_OVERRIDES`] set for the sanctioned full-op
+//! divergences:
 //!
 //! - **Teardown release order (LIFO vs creation order).** On a subtree
 //!   swap-out the old core fires scope-level cleanups LIFO (`Scope::drop`
@@ -22,7 +22,6 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use runtime_scene::{realize, Element, Realized, Registry};
-use runtime_vocabulary::LegacyBridge;
 use runtime_world::World;
 
 use crate::full::{full_golden_path, full_newcore_golden_path, FullRecorder};
@@ -30,11 +29,13 @@ use crate::new_core::normalize;
 use crate::scenarios_full_new::full_new_scenarios;
 use crate::{serialize_steps, Mode, PNode, Recorder, Step};
 
-/// The backend the new side realizes against.
-pub type Bridged = LegacyBridge<FullRecorder>;
+/// The backend the new side realizes against: the recorder itself, with
+/// no adapter layer (it implements `Host` + every caps trait directly).
+pub type Bridged = FullRecorder;
 
-/// A new-core full-op scenario (same names/modes/labels/mutations as
-/// `scenarios_full`, asserted by the registry-mirror test).
+/// A full-op scenario. Names/modes/labels/mutations are pinned against
+/// the frozen inventory the walker-era registry carried
+/// (`full_scenario_registry_matches_the_frozen_inventory`).
 pub struct FullNewScenario {
     pub name: &'static str,
     pub modes: &'static [Mode],
@@ -59,20 +60,20 @@ impl FullNewCx {
 
     /// The `nth` captured interaction-state setter — mirror of
     /// `FullCx::state_setter` (P3c overlay-flip scenarios).
-    pub fn state_setter(&self, nth: usize) -> Rc<dyn Fn(runtime_core::StateBits, bool)> {
-        self.backend.borrow().0.state_setter(nth)
+    pub fn state_setter(&self, nth: usize) -> Rc<dyn Fn(runtime_shared::StateBits, bool)> {
+        self.backend.borrow().state_setter(nth)
     }
 
     /// The `nth` virtualizer's platform sim — mirror of
     /// `FullCx::virt_sim`.
     pub fn virt_sim(&self, nth: usize) -> Rc<crate::full::VirtSim> {
-        self.backend.borrow().0.virt_sim(nth)
+        self.backend.borrow().virt_sim(nth)
     }
 
     /// The `nth` graphics surface's platform sim — mirror of
     /// `FullCx::gfx_sim`.
     pub fn gfx_sim(&self, nth: usize) -> Rc<crate::full::GfxSim> {
-        self.backend.borrow().0.gfx_sim(nth)
+        self.backend.borrow().gfx_sim(nth)
     }
 
     pub fn mount(&mut self, root: Element) {
@@ -101,10 +102,7 @@ impl FullNewCx {
 pub fn run_full_scenario_new(scenario: &FullNewScenario, mode: Mode) -> String {
     crate::full::ensure_parity_scheduler();
     let rec = Recorder::default();
-    let backend = Rc::new(RefCell::new(LegacyBridge(FullRecorder::new(
-        rec.clone(),
-        mode,
-    ))));
+    let backend = Rc::new(RefCell::new(FullRecorder::new(rec.clone(), mode)));
     let mut registry: Registry<Bridged> = Registry::new();
     runtime_vocabulary::register_builtins(&mut registry);
     let world = World::new();
@@ -181,7 +179,7 @@ pub fn check_full_new(name: &str, mode: Mode) {
     let scenario = all
         .iter()
         .find(|s| s.name == name)
-        .unwrap_or_else(|| panic!("no new-core full-op scenario named `{name}`"));
+        .unwrap_or_else(|| panic!("no full-op scenario named `{name}`"));
     assert!(
         scenario.modes.contains(&mode),
         "full-op scenario `{name}` is not registered for mode {mode:?}",
@@ -215,7 +213,7 @@ pub fn check_full_new(name: &str, mode: Mode) {
         let path = override_path(name, mode);
         let text = std::fs::read_to_string(&path).unwrap_or_else(|_| {
             panic!(
-                "missing full-op new-core override golden {}\nGenerate it with: \
+                "missing full-op override golden {}\nGenerate it with: \
                  UPDATE_NEWCORE_GOLDENS=1 cargo test -p scene-parity",
                 path.display()
             )

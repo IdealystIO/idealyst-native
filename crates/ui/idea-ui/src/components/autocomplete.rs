@@ -174,12 +174,6 @@ pub(crate) fn initial_highlight(
 /// Renders a searchable combobox: a `text_input` that filters an anchored
 /// dropdown of [`SelectOption`] rows, with keyboard navigation and
 /// constrained (id-only) selection.
-///
-/// **Cargo features:** requires `prim-text-input` + `prim-portal` (both in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without them compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let value = props.value;
@@ -216,8 +210,8 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
 
     // Filtered option indices, recomputed when the query, the committed
     // value, or any option label changes.
-    // (No type annotation: `memo` yields `ReadSignal` on the old core
-    // and `Memo` on the new one — both `Copy` handles with `.get()`.)
+    // (No type annotation: `memo` yields a `Memo` — a `Copy` handle with
+    // `.get()`.)
     let filtered = {
         let options = options.clone();
         memo(move || {
@@ -488,9 +482,9 @@ fn row(
     o: SelectOption,
     oi: usize,
     commit: Rc<dyn Fn(usize)>,
-    // A tracked getter rather than a `ReadSignal` handle: `memo` yields
-    // `ReadSignal` on the old core and `Memo` on the new one, and the
-    // row only ever `.get()`s — the closure form is the shared shape.
+    // A tracked getter rather than the `Memo` handle itself: the row only
+    // ever `.get()`s, so the closure form keeps the signature open to any
+    // tracked source.
     filtered: impl Fn() -> Vec<usize> + 'static,
     highlight: Signal<usize>,
     value: Signal<String>,
@@ -580,111 +574,7 @@ mod tests {
     });
     }
 
-    /// Destructure a built Autocomplete into the pieces the behavioral
-    /// regressions poke at: the input's `value` signal + `on_change` +
-    /// `on_focus` notifier, the chevron pressable, and the dropdown
-    /// `when`'s live `open` condition.
-    ///
-    /// Old-core only: the mirror collapses `on_focus` to presence (`bool`)
-    /// and the dropdown `when`'s live condition is an opaque `Dyn` hole on
-    /// the new core, so the invoke-the-handlers behavioral tests below
-    /// can't be expressed through the build tree there.
-    #[cfg(not(feature = "new-core"))]
-    #[allow(clippy::type_complexity)]
-    fn dissect(
-        tree: Element,
-    ) -> (
-        Signal<String>,
-        Rc<dyn Fn(String)>,
-        Rc<dyn Fn(bool)>,
-        Element,
-        Rc<dyn Fn() -> bool>,
-    ) {
-        let Element::View { children, .. } = tree else {
-            panic!("Autocomplete renders a view wrapper");
-        };
-        let mut children = children.into_iter();
-        let wrapper = children.next().expect("wrapper view");
-        let panel = children.next().expect("dropdown panel");
-        let Element::View { children: wrapper_children, .. } = wrapper else {
-            panic!("first child is the input+chevron wrapper view");
-        };
-        let mut wrapper_children = wrapper_children.into_iter();
-        let input = wrapper_children.next().expect("text input");
-        let chevron = wrapper_children.next().expect("chevron pressable");
-        let Element::TextInput { value, on_change, on_focus, .. } = input else {
-            panic!("wrapper's first child is the text_input");
-        };
-        let on_focus = on_focus.expect("Autocomplete must install an on_focus notifier");
-        let Element::When { cond, .. } = panel else {
-            panic!("dropdown panel is a `when`");
-        };
-        (value, on_change, on_focus, chevron, cond.compute)
-    }
-
-    // REGRESSION: focusing the input did nothing — the menu only opened on
-    // typing / ArrowDown / the chevron. A combobox must invite browsing the
-    // moment the field activates.
-    // Old-core only: drives the on_focus handler + reads the `when` cond —
-    // both opaque through the new-core build tree (see `dissect`).
-    #[cfg(not(feature = "new-core"))]
-    #[test]
-    fn regression_focusing_the_input_opens_the_menu() {
-        with_test_world(|| {
-            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
-            let props = AutocompleteProps {
-                value: runtime_core::signal("pear".to_string()),
-                options: vec![
-                    SelectOption::new("apple", "Apple"),
-                    SelectOption::new("pear", "Pear"),
-                ],
-                ..Default::default()
-            };
-            let (_query, _on_change, on_focus, _chevron, open) = dissect(Autocomplete(props));
-
-            assert!(!open(), "menu starts closed");
-            (on_focus)(true);
-            assert!(open(), "focusing the input must open the menu");
-    });
-    }
-
-    // REGRESSION: blurring the input left the menu dangling open (only
-    // Escape / a committed row closed it), and the typed filter text
-    // lingered. Losing focus must dismiss AND revert unmatched typing to
-    // the committed selection's label — same contract as Escape.
-    // Old-core only: drives the on_focus handler + reads the `when` cond —
-    // both opaque through the new-core build tree (see `dissect`).
-    #[cfg(not(feature = "new-core"))]
-    #[test]
-    fn regression_blurring_the_input_closes_the_menu_and_reverts() {
-        with_test_world(|| {
-            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
-            let props = AutocompleteProps {
-                value: runtime_core::signal("pear".to_string()),
-                options: vec![
-                    SelectOption::new("apple", "Apple"),
-                    SelectOption::new("pear", "Pear"),
-                ],
-                ..Default::default()
-            };
-            let (query, on_change, on_focus, _chevron, open) = dissect(Autocomplete(props));
-
-            (on_focus)(true);
-            (on_change)("zzz".to_string()); // user types an unmatched filter
-            assert!(open());
-            assert_eq!(query.get(), "zzz");
-
-            (on_focus)(false);
-            assert!(!open(), "blurring the input must close the menu");
-            assert_eq!(
-                query.get(),
-                "Pear",
-                "blur must revert unmatched typing to the committed selection's label"
-            );
-    });
-    }
-
-    // The close-on-blur above is only safe because the widget's press
+    // Close-on-blur is only safe because the widget's press
     // surfaces never blur the input: the chevron must carry the
     // `preserves_focus` mark (the menu panel's mark is pinned by
     // `menu_panel::tests`). Without it, pressing the chevron blurs →

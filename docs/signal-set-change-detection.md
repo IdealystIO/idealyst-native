@@ -1,5 +1,18 @@
 # Change-detection (dedup) on `Signal::set`
 
+
+> **Status note (2026-07-29, runtime-v2).** This is the design record for
+> the guarded-write decision, not a current spec. What survived: `set` is
+> equality-guarded, and `set_always` / `touch` / `set_untracked` are the
+> orthogonal spellings — all four still behave as described, now evaluated
+> at **commit** time rather than at write time. What did not: the
+> `DirtyWindow` / `batch()` machinery this doc reasons about was
+> `runtime-core`'s and is gone, `update` now takes `&T` and returns the new
+> value (and is guarded like `set`), and `update_if_changed` /
+> `set_if_changed` no longer exist. For the current write surface see
+> [`reactivity.md`](reactivity.md#the-write-surface); for the commit model
+> see [`automatic-batching.md`](automatic-batching.md).
+
 **Status:** IMPLEMENTED, then PROMOTED TO THE DEFAULT —
 `crates/runtime/core/src/reactive.rs`. The equality guard originally
 shipped as opt-in `set_if_changed` / `update_if_changed` (Option 1

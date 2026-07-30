@@ -1,13 +1,12 @@
-//! Pure wasm32 DOM helpers shared by BOTH cores' web legs (no core
-//! types, no feature gates): `<video>` element construction, media
-//! population (URL / live-stream / clear), and the imperative playback
-//! ops over the type-erased node. Extracted from the old-core `web.rs`
-//! when the `new-core` leg landed so the two legs can't drift.
+//! Pure wasm32 DOM helpers for the web leg: `<video>` element
+//! construction, media population (URL / live-stream / clear), and the
+//! imperative playback ops over the type-erased node. Kept as its own
+//! module so this half stays framework-free (pure `web_sys` +
+//! `media_stream`, no scene/world types).
 //!
-//! `media_stream::MediaStream` appears here deliberately — the
-//! media-stream crate is core-agnostic data (no runtime-core dep), so
-//! it is shareable exactly like web-sys. The per-core `MediaContent`
-//! enums stay in each leg; both match into these free fns.
+//! `object_fit_css` and the `MediaStream` argument are already-lowered
+//! values: the caller matches its `ObjectFit` / `MediaContent` before
+//! calling, so nothing here needs the SDK's own enums.
 
 use std::any::Any;
 use wasm_bindgen::JsCast;
@@ -55,7 +54,7 @@ pub(crate) fn create_video_element(
     if loop_playback {
         let _ = video.set_attribute("loop", "");
     }
-    // Same literal on both cores — introspection/devtools key on it.
+    // Stable literal — introspection/devtools key on it.
     let _ = video.set_attribute("data-external-kind", "video::VideoProps");
 
     // object-fit: contain (letterbox) vs cover (fill + crop). Set the single
@@ -115,7 +114,7 @@ pub(crate) fn apply_none(video: &web_sys::Element) {
 
 // ============================================================================
 // Imperative ops over the type-erased node — the whole body of the web
-// `VideoOps` impl, shared by both cores' ops structs.
+// `VideoOps` impl.
 // ============================================================================
 
 /// The framework hands us a `Rc<dyn Any>` whose concrete type is

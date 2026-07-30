@@ -1,10 +1,25 @@
 # Bug: inventory self-registration is empty at runtime on `dev --web --local` (wasm-split)
 
-**Severity:** high — every app that uses a navigator or an `Element::External`
-extension fails to boot on the local web dev path.
+> **Status note (2026-07-29, runtime-v2).** This is the pre-runtime-v2 record
+> of the bug, kept for the wasm-split root-cause analysis, which is the part
+> still worth reading. The *mechanism it breaks* no longer exists: navigator
+> and extension SDKs no longer self-register with the web backend through
+> `inventory` (`WebNavigatorRegistrar` / `WebBackend::drain_self_registrars`
+> are gone, along with the `Backend` trait and the per-backend `External`
+> table). Primitive handlers are installed explicitly on the scene
+> `runtime_scene::Registry`, from the app's `register_scene_extensions`, so
+> there is no link-time registration for wasm-split to lose. Nothing below is
+> actionable on a current build; the underlying question — whether a `#[used]`
+> static's `__wasm_call_ctors` entry survives
+> `neutralize_command_export_wrappers` + `run_wasm_split` — is still open for
+> any *other* inventory user on the dev path (the MCP catalog's
+> `inventory::submit!` registrations are host-only, so they are unaffected).
 
-**Status:** open. Root-caused; not yet fixed. A per-app workaround exists
-(see below).
+**Severity (as filed):** high — every app that used a navigator or an
+`Element::External` extension failed to boot on the local web dev path.
+
+**Status (as filed):** open. Root-caused; not fixed. A per-app workaround
+existed (see below).
 
 ## Symptom
 

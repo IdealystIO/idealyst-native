@@ -46,7 +46,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use runtime_core::{
+use runtime_shared::{
     AssetId, AssetSource, AssetTag, ImageErrorHandler, ImageLoadEvent, ImageLoadHandler, ObjectFit,
 };
 use block2::RcBlock;

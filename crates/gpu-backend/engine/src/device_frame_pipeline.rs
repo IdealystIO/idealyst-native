@@ -33,9 +33,7 @@ impl DeviceFramePipeline {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("device-frame-shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("shaders/device_frame.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/device_frame.wgsl").into()),
         });
 
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -46,9 +44,7 @@ impl DeviceFramePipeline {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: NonZeroU64::new(
-                        std::mem::size_of::<Globals>() as u64,
-                    ),
+                    min_binding_size: NonZeroU64::new(std::mem::size_of::<Globals>() as u64),
                 },
                 count: None,
             }],
@@ -102,7 +98,11 @@ impl DeviceFramePipeline {
             }],
         });
 
-        Self { pipeline, globals, bind_group }
+        Self {
+            pipeline,
+            globals,
+            bind_group,
+        }
     }
 
     /// Paint the device frame for one frame. Call inside an

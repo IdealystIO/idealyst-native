@@ -24,12 +24,11 @@ license.workspace = true
 #   - Linux:               xdg-desktop-portal ScreenCast + PipeWire
 #   - web (wasm32):        getDisplayMedia + MediaStreamTrackProcessor / canvas pump
 #
-# A second, optional feature — the `private_layer` `Element::External` —
-# designates an overlay subtree that screen recordings DON'T capture
-# (the iOS "overlay on a separate UIWindow" trick, generalized to every
-# backend). It rides the framework's existing third-party-extension
-# mechanism (`Element::External` + per-backend `ExternalRegistry`), so
-# it needs zero framework-core changes.
+# A second, independent piece — the `private_layer` — designates an
+# overlay subtree that screen recordings DON'T capture (the iOS "overlay
+# on a separate UIWindow" trick, generalized to macOS + Android). It
+# rides the scene registry's third-party-extension mechanism, so it needs
+# zero runtime changes.
 #
 # # Required platform permissions (the app declares these — see README):
 #   - iOS:     RPScreenRecorder prompts; broadcast extension for system-wide
@@ -52,41 +51,16 @@ capabilities = ["screen_capture"]
 [package.metadata.idealyst.ios]
 frameworks = ["ReplayKit", "CoreMedia", "CoreVideo"]
 
-[features]
-# Runtime-v2 defaults flip: the new-core leg is the default surface;
-# the old-core leg is the opt-in (`--no-default-features` — in-repo
-# consumers ride the workspace dep spec, which pins defaults off and
-# selects a core explicitly per graph).
-default = ["new-core"]
-# Old-core marker for uniform `--no-default-features --features
-# old-core` invocations (the old-core deps are unconditional).
-old-core = []
-# Idea-lite migration — External surface only (the capture capability is
-# core-agnostic): swaps the `private_layer` module for the
-# scene-registry re-expression (same module path + public names,
-# `register_scene` boot seam). Default-off and MUTUALLY EXCLUSIVE with
-# the old-core External surface, mirroring the svg/form SDK precedents.
-# The new-core leg is a passthrough container on every target — the
-# per-platform capture-EXCLUDED windows (iOS/Android/macOS) remain
-# old-core-only until the new-core native boots grow an external-window
-# story (see src/private_layer_newcore.rs).
-new-core = [
-    "dep:runtime-vocabulary",
-    "dep:runtime-scene",
-]
-
 [dependencies]
-# Only needed for the `private_layer` Element::External component + its
-# `register()`. The capture capability itself is framework-agnostic.
-runtime-core = { workspace = true }
-# New-core surface (feature `new-core`): the scene registry + the
-# vocabulary caps the passthrough handler drives
-# (`ExternalOps::create_external` + scope-tied teardown).
-runtime-scene = { workspace = true, optional = true }
-runtime-vocabulary = { workspace = true, optional = true }
+# Only needed for the `private_layer` surface: the scene registry + the
+# vocabulary caps its handlers drive (`ExternalOps::create_external` +
+# scope-tied teardown) + `runtime-shared` for
+# `accessibility::AccessibilityProps`. The capture capability itself is
+# framework-agnostic.
+runtime-scene = { workspace = true }
+runtime-shared = { workspace = true }
+runtime-vocabulary = { workspace = true }
 thiserror = { workspace = true }
-# Self-registration of the per-backend PrivateLayer external at construction.
-inventory = "0.3"
 # The live-source currency every capture backend writes into and the public
 # API hands back — shared with `camera` (a sibling producer) and `video` (a
 # consumer). Keeps the per-platform transport hidden from app code.
@@ -101,9 +75,10 @@ objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSString"] }
 block2 = "0.5"
 futures-channel = "0.3"
-# The private-layer `register` handler builds a ReplayKit-excluded
-# `UIWindow` through `IosBackend::create_private_layer_window`, so it
-# names the concrete backend type (same shape as the `video` SDK).
+# The private-layer handler builds a ReplayKit-excluded `UIWindow`
+# through `IosBackend::create_private_layer_window`, so it names the
+# concrete backend type and needs its `Host` impl for
+# `Registry<IosBackend>`.
 backend-ios-mobile = { workspace = true }
 
 # Web capture: getDisplayMedia → a hidden <video> → <canvas> pixel pump.
@@ -128,9 +103,9 @@ web-sys = { version = "0.3", features = [
     "Performance",
     "DomException",
 ] }
-# The private-layer `register` handler installs the inline-no-op
-# external against the concrete `WebBackend` (documented: web has no
-# separate-window exclusion yet — TODO Element Capture `restrictTo`).
+# Web has no separate-window exclusion yet (TODO: Element Capture
+# `restrictTo`), so the private layer takes the generic passthrough
+# handler there and this backend dep is only the capture path's host.
 backend-web = { workspace = true }
 
 # Android capture: MediaProjection + VirtualDisplay + ImageReader, driven by a
@@ -145,9 +120,10 @@ backend-web = { workspace = true }
 jni = "0.21"
 ndk-context = "0.1"
 futures-channel = "0.3"
-# The private-layer `register` handler builds a PixelCopy-excluded
-# `WindowManager` window through
-# `AndroidBackend::create_private_layer_window` (lib name `backend_android`).
+# The private-layer handler builds a PixelCopy-excluded `WindowManager`
+# window through `AndroidBackend::create_private_layer_window` (lib name
+# `backend_android`) and needs its `Host` impl for
+# `Registry<AndroidBackend>`.
 backend-android-mobile = { workspace = true }
 
 # macOS: capture via ScreenCaptureKit (`SCStream` + `SCContentFilter`),
@@ -158,10 +134,12 @@ backend-android-mobile = { workspace = true }
 # for the CVPixelBuffer bytes. `block2`/`futures-channel` bridge the
 # `getShareableContent`/`startCapture` completion handlers to async.
 #
-# The private-layer `register` handler builds a capture-excludable borderless
-# overlay window through `MacosBackend::create_private_layer_window`, and the
-# capture path reads the overlay window ids back via
-# `backend_macos::private_layer_window_ids` for the SCContentFilter exclusion.
+# The private-layer handler builds a capture-excludable borderless overlay
+# window through `MacosBackend::create_private_layer_window` (so it needs
+# the backend's `Host` impl for `Registry<MacosBackend>`), and the capture
+# path reads the overlay window ids back via
+# `backend_macos::private_layer_window_ids` for the SCContentFilter
+# exclusion.
 [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSString", "NSArray"] }
@@ -195,7 +173,6 @@ runtime_kotlin = [
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
-# tests/newcore_private_layer.rs (`--features new-core`) mounts
-# `PrivateLayer(children)` through the scene registry on the shared
-# host-mock recording substrate.
+# tests/private_layer.rs mounts `PrivateLayer(children)` through the
+# scene registry on the shared host-mock recording substrate.
 host-mock = { workspace = true }

@@ -42,6 +42,7 @@
 
 #![deny(missing_docs)]
 
+
 pub mod recipes;
 
 use std::collections::HashMap;

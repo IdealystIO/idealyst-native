@@ -579,31 +579,6 @@ inventory::submit! {
 
 inventory::submit! {
     PrimitiveEntry {
-        name: "external",
-        pascal_name: "External",
-        docs: "Third-party extension escape hatch. Use the per-backend `ExternalRegistry` to register a renderer keyed by the payload type; the runtime resolves the registered impl at mount time. Reference impls: maps, webview (see [[third_party_extension]]). Heavy SDK used in only one corner of a web app? Register the handler LAZILY from inside a lazy component's body (`#[component(lazy)]`) via [[defer_external_registration]] instead of eagerly at boot — eager registration anchors the whole SDK in `main.wasm`, defeating code-splitting.",
-        props: &[
-            PropFieldSpec {
-                name: "kind",
-                type_str: "&str",
-                doc: "Registry key — must match a `register_external` call on each backend.",
-                constraint: "Must be a registered external name",
-            },
-            PropFieldSpec {
-                name: "props",
-                type_str: "Box<dyn Any>",
-                doc: "Opaque payload handed to the registered renderer.",
-                constraint: "",
-            },
-        ],
-        category: PrimitiveCategory::Advanced,
-        backends: ALL_BACKENDS,
-        _seal: (),
-    }
-}
-
-inventory::submit! {
-    PrimitiveEntry {
         name: "portal",
         pascal_name: "Portal",
         docs: "Renders children at the root of the view tree regardless of where the `Portal` appears. Used for modals, tooltips, and any UI that should escape layout / overflow clipping. CAVEAT: `portal` is NOT an author `ui!`/`jsx!` tag — there is no `portal` primitive in the macro's tag table, so `ui! { portal() { … } }` will NOT compile. It's the low-level `Element` variant that the `overlay` / `anchored_overlay` compositions lower to. For modals/drawers/sheets use `overlay` (viewport-anchored, with backdrop + focus-trap wiring); for popovers/tooltips/dropdowns/menus use `anchored_overlay`. Reach for the bare `Element::Portal` only when hand-assembling a backdrop-less teleport that the compositions can't express.",

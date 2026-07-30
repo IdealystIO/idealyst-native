@@ -7,8 +7,9 @@ via JNI from Rust.
 
 Two pieces ship together, both inside this crate's directory:
 
-- **`src/`** — the Rust crate. Implements the `Backend` trait by
-  calling into the Android Java view system through JNI.
+- **`src/`** — the Rust crate. Implements `runtime_scene::Host` plus the
+  `runtime_vocabulary::caps` traits (in `src/newcore.rs`) by calling into
+  the Android Java view system through JNI.
 - **`runtime/kotlin/`** — JVM-side glue the Rust crate calls into.
   Two small classes:
   - `io.idealyst.runtime.RustClickListener` — `View.OnClickListener`

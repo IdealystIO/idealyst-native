@@ -3,7 +3,7 @@
 //!
 //! Own integration test (own process) because it installs a buffering
 //! test executor through the global first-install-wins
-//! `runtime_core::driver::install_async_executor` slot — the same
+//! `runtime_shared::driver::install_async_executor` slot — the same
 //! isolation rationale as `tests/scoped_scheduling.rs` and its
 //! scheduler slot. The executor queues spawned futures in a
 //! thread-local and only makes progress when a test pumps it, which is
@@ -19,7 +19,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
 
-use runtime_core::driver::{install_async_executor, AsyncExecutor};
+use runtime_shared::driver::{install_async_executor, AsyncExecutor};
 use runtime_vocabulary::glue::{self, NetworkState};
 use runtime_world::{collect_owned, effect, signal, World};
 

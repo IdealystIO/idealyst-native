@@ -21,6 +21,7 @@ mod framework_source;
 mod headless_client;
 mod memory_limit;
 mod platform;
+mod removed_flags;
 
 pub use platform::Platform;
 

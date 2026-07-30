@@ -18,7 +18,7 @@
 //! the platform-specific handle type changes but the call surface
 //! is identical.
 
-use runtime_core::primitives::graphics::{
+use runtime_shared::primitives::graphics::{
     GraphicsSurface, OnLost, OnReady, OnReadyEvent, OnResize, OnResizeEvent,
 };
 use objc2::msg_send;

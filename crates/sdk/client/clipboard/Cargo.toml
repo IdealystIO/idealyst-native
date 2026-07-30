@@ -31,7 +31,12 @@ license.workspace = true
 
 [dependencies]
 # Recipes (compile-checked usage examples) compile only under `catalog`.
+# The author surface, aliased to `runtime_core` at the crate root (see
+# src/lib.rs). `runtime-vocabulary` is a direct dep because the `ui!`
+# emission inside the recipes spells absolute `::runtime_vocabulary::glue::…`
+# paths.
 runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
 
 # Web (wasm): navigator.clipboard via web-sys; JsFuture bridges the Promises.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

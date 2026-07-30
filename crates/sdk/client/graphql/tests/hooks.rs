@@ -1,25 +1,15 @@
-//! `use_query` / `use_mutation` — the reactive hooks, same source on
-//! BOTH cores.
+//! `use_query` / `use_mutation` — the reactive hooks.
 //!
-//! Old core (default): reactive state is ambient thread-local; the
-//! hooks run bare and `spawn_async`'s native pollster fallback settles
-//! the canned transport synchronously.
-//!
-//! New core (`--features new-core`): the crate-root alias in this test
-//! file mirrors the lib's (`extern crate runtime_facade as
-//! runtime_core;`), so the SAME assertions drive the glue
-//! `resource`/`mutation` mirrors. Reactive state then needs a `World`:
-//! the per-core shim below enters a fresh test world
-//! (`__with_fresh_world`) and commits staged writes (`__flush_test_world`)
-//! before asserting — the standard aliased-SDK dual-core test pattern
-//! (idea-theme precedent).
+//! The crate-root alias here mirrors the lib's (`extern crate
+//! runtime_core as runtime_core;`), so the assertions drive the glue
+//! `resource`/`mutation` mirrors. Reactive state needs a `World`: the
+//! shims below enter a fresh test world (`__with_fresh_world`) and commit
+//! staged writes (`__flush_test_world`) before asserting — the standard
+//! aliased-SDK test pattern (idea-theme precedent).
 //!
 //! No `server` feature: a canned in-process `Transport` returns spec-
 //! shaped JSON, so the suite exercises exactly the hook layer (request
 //! build → transport → typed decode → reactive state transitions).
-
-#[cfg(feature = "new-core")]
-extern crate runtime_facade as runtime_core;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -33,31 +23,19 @@ use serde_json::json;
 
 // --- Per-core reactive-scope shim ------------------------------------------
 
-/// Run `f` where hook creation is legal on the active core. Old core:
-/// identity (state is ambient). New core: inside a fresh entered
-/// `World`, flushed before it drops.
+/// Run `f` inside a fresh entered `World` (where hook creation is legal),
+/// flushed before it drops.
 fn with_reactive_scope<R>(f: impl FnOnce() -> R) -> R {
-    #[cfg(feature = "new-core")]
-    {
-        runtime_core::__with_fresh_world(f)
-    }
-    #[cfg(not(feature = "new-core"))]
-    {
-        f()
-    }
+    runtime_core::__with_fresh_world(f)
 }
 
-/// Commit pending reactive work before asserting. Old core applies
-/// writes synchronously → no-op. New core: flush the ambient test
-/// world (twice is deliberate — a flush-triggered effect re-run spawns
-/// a fetch whose pollster-synchronous completion stages writes that the
-/// second flush commits).
+/// Commit pending reactive work before asserting. Flushing twice is
+/// deliberate — a flush-triggered effect re-run spawns a fetch whose
+/// pollster-synchronous completion stages writes that the second flush
+/// commits.
 fn settle() {
-    #[cfg(feature = "new-core")]
-    {
-        assert!(runtime_core::__flush_test_world(), "test world must be live");
-        let _ = runtime_core::__flush_test_world();
-    }
+    assert!(runtime_core::__flush_test_world(), "test world must be live");
+    let _ = runtime_core::__flush_test_world();
 }
 
 // --- Typed operations (same schema/operations as tests/roundtrip.rs) -------

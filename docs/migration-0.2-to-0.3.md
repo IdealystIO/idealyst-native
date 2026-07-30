@@ -1,5 +1,16 @@
 # Migrating from 0.2.x to 0.3
 
+
+> **Status note (2026-07-29, runtime-v2).** Version-history record for the
+> 0.2 → 0.3 reactive-surface unification. Everything it describes as *new*
+> in 0.3 still holds — plain `signal(v)` / `memo(move || …)` fns, `memo`
+> returning a read-only handle, the `ReadSignal` / `WriteSignal` capability
+> halves, inline component props — with one spelling change since: the
+> untracked read on a signal is now `peek()`, not `get_untracked()`
+> (`get_untracked` survives only on the `Reactive<T>` prop wrapper). Read
+> [`migrating-to-runtime-v2.md`](migrating-to-runtime-v2.md) for the
+> changes that landed after this one.
+
 0.3 unifies the reactive authoring surface on **plain functions and
 capability-typed handles**. The `signal!` and `memo!` macros are gone
 (`signal(value)` / `memo(move || …)` are the canonical — and only — forms),

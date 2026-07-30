@@ -1,16 +1,15 @@
-# newcore-android-smoke — P5 smoke app for the Android backend's
-# NEW-core boot path (`backend_android::newcore::start`). Builds the
-# same small vocabulary-builder tree as `newcore-macos-smoke` /
-# `newcore-web-smoke` (text + button + toggle + a dyn hole + a keyed
-# list + one literal StyleRules) with DIRECT builder calls — no
-# `ui!`/`jsx!` — so it exercises the registry-dispatch render path
-# against real Android Views independent of the macro-lowering work.
+# newcore-android-smoke — smoke app for the Android backend's boot path
+# (`backend_android::newcore::start`). Builds the same small
+# vocabulary-builder tree as `newcore-macos-smoke` / `newcore-web-smoke`
+# (text + button + toggle + a dyn hole + a keyed list + one literal
+# StyleRules) with DIRECT builder calls — no `ui!`/`jsx!` — so it
+# exercises the registry-dispatch render path against real Android Views
+# with the macro-lowering layer out of the picture.
 #
-# This is a normal idealyst PROJECT: the CLI-generated JNI wrapper
-# hosts it, and the wrapper's (default-off) `new-core` feature routes
-# `attach` through `newcore::start(backend, |_| {}, scene_app)` instead
-# of `runtime_core::mount(backend, app)`. Build + install + launch on
-# an emulator/device with the checked-in driver (needs ANDROID_HOME +
+# This is a normal idealyst PROJECT: the CLI-generated JNI wrapper hosts
+# it, routing `attach` through `newcore::start(backend,
+# register_scene_extensions, scene_app)`. Build + install + launch on an
+# emulator/device with the checked-in driver (needs ANDROID_HOME +
 # ANDROID_NDK_HOME):
 #
 #   cargo run -p newcore-android-smoke --features launcher --bin launch
@@ -26,7 +25,7 @@ name = "newcore-android-smoke"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Smoke app for backend-android-mobile's new-core (Host + caps) boot path — idea-lite migration P5."
+description = "Smoke app for backend-android-mobile's Host + caps boot path."
 
 [lib]
 crate-type = ["rlib"]
@@ -43,7 +42,9 @@ path = "src/bin/launch.rs"
 required-features = ["launcher"]
 
 [dependencies]
-runtime-core = { workspace = true }
+# The shared substrate: the style data model + the scheduler the
+# self-test's scope-owned timers come from.
+runtime-shared = { workspace = true }
 runtime-world = { workspace = true }
 runtime-scene = { workspace = true }
 runtime-vocabulary = { workspace = true }
@@ -53,10 +54,10 @@ build-ios = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
-# `new-core` here (not just on the wrapper) so this lib's self-test can
-# call `backend_android::newcore::live_view_count()`; the generated
-# wrapper's own `--features new-core` unifies with it.
-backend-android-mobile = { workspace = true, features = ["new-core"] }
+# The lib's self-test calls `backend_android::newcore::live_view_count()`
+# directly, so this crate names the backend itself rather than reaching it
+# only through the generated wrapper.
+backend-android-mobile = { workspace = true }
 log = "0.4"
 
 [package.metadata.idealyst.app]

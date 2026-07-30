@@ -14,7 +14,7 @@
 //!    when the registered fonts aren't bytes-backed. The result is
 //!    visually close enough for a preview embed; if pixel-perfect
 //!    typography matters in a future use case, plumb the bytes from
-//!    `runtime_core::assets::*` here.
+//!    `runtime_shared::assets::*` here.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -24,9 +24,8 @@ use objc2_foundation::NSObject;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use render_api::DeviceProfile;
 use render_wgpu::{Host, Painter, Renderer};
-use runtime_core::driver::{render_loop, RenderLoop};
-use runtime_core::primitives::graphics::GraphicsSurface;
-use runtime_core::Element;
+use runtime_shared::driver::{render_loop, RenderLoop};
+use runtime_shared::primitives::graphics::GraphicsSurface;
 
 // ---------------------------------------------------------------------------
 // Public surface
@@ -47,11 +46,11 @@ pub enum MountError {
     NoAdapter,
     /// `Adapter::request_device` rejected the limits we asked for.
     RequestDevice,
-    /// `mount_newcore` was called before the embedding app booted a
-    /// new-core tree (`backend_ios::newcore::mounted_world()`
+    /// [`mount`] was called before the embedding app booted its
+    /// tree (`backend_ios::newcore::mounted_world()`
     /// returned `None`). The embedded tree realizes into the app's
     /// world — no app world, no embed. Only reachable from
-    /// `mount_newcore` (mirrors `host-web`'s variant).
+    /// [`mount`] (mirrors `host-web`'s variant).
     NoHostWorld,
 }
 
@@ -68,7 +67,7 @@ impl std::fmt::Display for MountError {
             MountError::RequestDevice => write!(f, "host-ios-mobile: wgpu request_device failed"),
             MountError::NoHostWorld => write!(
                 f,
-                "host-ios-mobile: mount_newcore before the app's new-core boot \
+                "host-ios-mobile: mount() before the app host's boot \
                  (backend_ios::newcore::mounted_world() is None)"
             ),
         }
@@ -82,14 +81,12 @@ impl std::error::Error for MountError {}
 /// !Sync` because the interior state is single-threaded (Rc, wgpu
 /// objects, the render-loop guard).
 pub struct IosHostHandle {
-    /// New-core embeds only ([`mount_newcore`]): the mounted
-    /// `render_wgpu::newcore` app. Declared FIRST so the scene
+    /// The mounted `render_wgpu::newcore` app. Declared FIRST so the scene
     /// unrealizes (author cleanups, node detach) while the wgpu host
-    /// in `inner` is still fully alive; `NewCoreGuard::drop` routes
+    /// in `inner` is still fully alive; `EmbeddedApp::drop` routes
     /// through `NewCoreApp::stop`, whose embedded path leaves the
     /// app-host flush driver alone.
-    #[cfg(feature = "new-core")]
-    _newcore: Option<NewCoreGuard>,
+    _app: EmbeddedApp,
     inner: Rc<RefCell<HostInner>>,
     /// Holding the handle keeps the per-frame closure alive; drop =
     /// cancel the NSTimer. Declared LAST so the loop survives long
@@ -112,163 +109,38 @@ impl IosHostHandle {
         inner.surface.configure(&inner.device, &inner.config);
     }
 
-    /// Pause the embedded app: drop its reactive scope AND clear
-    /// the thread's `session::REGISTRY`. Pair with [`resume`] for
-    /// React Navigation-style `unmountOnBlur` semantics — the
-    /// next `resume` rebuilds the embedded tree from initial
-    /// state, with no leftover AV ticks running invisibly.
+    /// Pause the embedded app.
     ///
-    /// Call this from a user-land effect bound to whatever
-    /// "screen is no longer focused" signal you have (e.g. a
-    /// `nav_state.active_route` comparison). The wgpu device,
-    /// surface, and renderer stay alive — only the embedded
-    /// `build_ui` tree drops — so a subsequent `resume()` re-mounts
-    /// fresh without paying the wgpu init cost.
-    ///
-    /// The host does NOT pause itself based on `UIView.isHidden`;
-    /// that would be a policy decision the host shouldn't make
-    /// (some embedded apps legitimately want to keep running in
-    /// the background — a live monitor preview, a benchmark
-    /// visualiser, a game loop). The per-frame GPU encode IS
-    /// skipped when the MetalView is off-screen, but that's an
-    /// invisible-no-op optimization, not a behavior change.
-    ///
-    /// Note: `session::clear` is global to the calling thread —
-    /// if anything outside the embedded app uses
-    /// `session::animated`, those entries are wiped too. In
-    /// practice `session::animated` is a primarily embedded-app
-    /// pattern (hot-patch state survival); the outer iOS backend
-    /// drives its state via plain `Signal`/`Effect`, so the wipe
-    /// is safe.
-    ///
-    /// Old-core mounts only: a [`mount_newcore`] handle's app is owned
-    /// by the handle itself (drop = full teardown), and `Host::unmount`
-    /// only knows the old walker's `Owner` — pause/resume on a new-core
-    /// embed is a documented no-op until a new-core visibility gate
-    /// lands (same gap as `host-web`'s `WebHostHandle::pause`).
+    /// **Documented gap: this is a no-op.** The handle owns its
+    /// mounted app for its entire lifetime — drop is the only teardown
+    /// — so suspending would need a visibility gate on `render_wgpu`'s
+    /// `Host`/`Renderer` (stop ticking + drawing without unrealizing
+    /// the scene), which does not exist. Same gap as `host-web`'s
+    /// `WebHostHandle::pause`. Note this host DOES skip GPU encodes for
+    /// a hidden view (the per-frame visibility check), so the "hidden
+    /// screen keeps burning GPU" case pause() targeted is already
+    /// covered.
     pub fn pause(&self) {
-        let mut inner = self.inner.borrow_mut();
-        if inner.build_ui.is_none() {
-            log::warn!("host-ios-mobile: pause() is a no-op on a new-core embed");
-            return;
-        }
-        inner.host.unmount();
-        // NOTE: skipping the renderer cache reset (graphics_cache,
-        // image_cache) and the session::clear — those were causing
-        // the renderer to produce no draws after remount even
-        // though Taffy compute showed valid frames. Hypothesis:
-        // they were dropping state the renderer relies on to track
-        // which nodes have been seen.
-        drop(inner);
+        log::warn!("{}: pause() is a no-op (no host visibility gate)", env!("CARGO_PKG_NAME"));
     }
 
-    /// Re-mount the embedded app from its cached `build_ui`. Idempotent
-    /// (no-op if already mounted). Pair with [`pause`]. Old-core mounts
-    /// only, exactly like [`pause`].
+    /// Resume the embedded app. No-op — see [`IosHostHandle::pause`].
     pub fn resume(&self) {
-        let mut inner = self.inner.borrow_mut();
-        if inner.host.is_mounted() {
-            return;
-        }
-        let Some(build_ui) = inner.build_ui.clone() else {
-            return;
-        };
-        inner.host.mount(move || (&*build_ui)());
-        // After remount, the wgpu surface's swapchain may have been
-        // invalidated during the hidden period (CAMetalLayer's
-        // bounds drift, drawableSize stale, etc.). Reconfigure to
-        // force a fresh swapchain. Without this, `get_current_texture`
-        // returns `Outdated`/`Lost` for several frames, the renderer
-        // returns early before running Taffy layout compute, and the
-        // tree's frames stay at (0,0,0,0) — net effect is a
-        // permanently white canvas.
-        inner.surface.configure(&inner.device, &inner.config);
+        log::warn!("{}: resume() is a no-op (no host visibility gate)", env!("CARGO_PKG_NAME"));
     }
 
-    /// True iff the embedded app is currently mounted.
+    /// True iff an embedded app is mounted. The handle owns its app
+    /// for its whole lifetime, so this is `true` while alive.
     pub fn is_running(&self) -> bool {
-        self.inner.borrow().host.is_mounted()
+        true
     }
 }
 
-/// Mount the wgpu render backend behind a framework `Graphics`
-/// surface on iOS. Call from inside the surface's `on_ready`, stash
-/// the returned handle so `on_resize` / `on_lost` can reconfigure or
-/// drop it.
-///
-/// `build_ui` is an `Rc<dyn Fn>` because the visibility gate may
-/// unmount the embedded reactive scope when the MetalView is hidden
-/// (planet animations stop ticking the global animation clock) and
-/// remount it on the next visible frame.
+/// Mount a wgpu render backend behind a `Graphics`-primitive surface
+/// and realize `build_ui`'s scene tree into the embedding app's world
+/// (`backend_ios::newcore::mounted_world`), so the app-host's flush
+/// driver commits the embedded app's staged writes.
 pub async fn mount(
-    surface_handle: GraphicsSurface,
-    size: (u32, u32),
-    profile: DeviceProfile,
-    skin: Rc<dyn Painter>,
-    build_ui: Rc<dyn Fn() -> Element + 'static>,
-) -> Result<IosHostHandle, MountError> {
-    let init = init_wgpu(surface_handle, size).await?;
-
-    // 3. Build the render-side stack + mount the user app.
-    //
-    // Before mounting, push a fresh `session::REGISTRY` scope so the
-    // embedded app's `session::animated(…)` / `session::epoch_micros()`
-    // calls land in a per-host registry that disappears when this
-    // host's `IosHostHandle` drops. Lets `MountPolicy::LazyDisposing`
-    // navigators truly reset the embedded app on remount — the new
-    // host pushes its own scope, the old scope's AVs and epoch are
-    // gone, `keyed(…, default)` builds fresh AVs at default values,
-    // and the embedded animation timeline replays from time=0.
-    //
-    // Hot-patch rerenders happen INSIDE the existing host (no new
-    // `mount(…)` call), so the scope persists and the session-keyed
-    // state survives — preserving the existing
-    // `[[project_session_animated]]` "skip re-running acts on save"
-    // property for the dev edit loop.
-    let session_scope = runtime_core::session::push_scope();
-    let renderer = Renderer::new(&init.device, &init.queue, init.config.format);
-    let mut host = Host::new(skin, profile.color_scheme);
-    let logical = (
-        profile.logical_size.0 as f32,
-        profile.logical_size.1 as f32,
-    );
-    host.set_viewport(logical.0, logical.1);
-    {
-        let build_ui = build_ui.clone();
-        host.mount(move || (&*build_ui)());
-    }
-
-    let (inner, render_loop_handle) =
-        finish_mount(init, renderer, host, logical, Some(build_ui), session_scope);
-
-    Ok(IosHostHandle {
-        #[cfg(feature = "new-core")]
-        _newcore: None,
-        inner,
-        _render_loop: render_loop_handle,
-    })
-}
-
-/// New-core sibling of [`mount`]: identical wgpu init, render loop, and
-/// per-frame visibility gate, but the embedded tree realizes through
-/// `render_wgpu::newcore::start_in_world` into the embedding APP's own
-/// world (`backend_ios::newcore::mounted_world()`), so the app's
-/// flush driver (backend-ios-mobile's dispatch-site wrappers + the
-/// apple-core scheduler/executor post-dispatch hook) commits writes the
-/// embedded app stages from timers, raf loops, and future polls — one
-/// thread, one world, one logical update stream. The one-world-per-
-/// thread argument from the web embed carries over verbatim:
-/// `start_in_world` installs NO second dispatch hook and NO viewport
-/// sink (an embedded sim must never clobber the app viewport —
-/// regression-tested in `render-wgpu`'s newcore suite); the app host's
-/// existing driver is the only committer.
-///
-/// Dropping the returned handle unrealizes the embedded scene (its
-/// build-level effects, AV bind keepalives, and scoped timers die with
-/// it — the `collect_owned` harvest inside `start_in_world`), then
-/// tears the wgpu host down exactly like the old-core handle.
-#[cfg(feature = "new-core")]
-pub async fn mount_newcore(
     surface_handle: GraphicsSurface,
     size: (u32, u32),
     profile: DeviceProfile,
@@ -278,21 +150,19 @@ pub async fn mount_newcore(
     // The app's world must exist BEFORE the async wgpu init runs —
     // fail fast on a mis-sequenced boot.
     let world = backend_ios::newcore::mounted_world().ok_or(MountError::NoHostWorld)?;
-    // The per-frame loop below rides `runtime_core::driver::render_loop`.
-    // The old-core CLI wrapper installs the NSTimer driver at init; the
-    // new-core boot (`backend_ios::newcore::run_in_view`) does
-    // not, so install it here (idempotent, first install wins) — same
-    // delta `host_web::mount_newcore` covers with
+    // The per-frame loop below rides `runtime_shared::driver::render_loop`.
+    // The boot (`backend_ios::newcore::run_in_view`) does not install
+    // the NSTimer driver, so install it here (idempotent, first install
+    // wins) — same delta `host_web::mount` covers with
     // `backend_web::install_render_loop`.
     backend_ios::install_render_loop();
 
     let init = init_wgpu(surface_handle, size).await?;
 
-    // Same per-host session scope as the old mount (see the comment
-    // there): the embedded app's `session::animated` AVs and epoch die
-    // with this handle, so a remount replays from initial state instead
-    // of resuming mid-animation.
-    let session_scope = runtime_core::session::push_scope();
+    // Per-host session scope: the embedded app's `session::animated`
+    // AVs and epoch die with this handle, so a remount replays from
+    // initial state instead of resuming mid-animation.
+    let session_scope = runtime_shared::session::push_scope();
     let renderer = Renderer::new(&init.device, &init.queue, init.config.format);
     let mut host = Host::new(skin, profile.color_scheme);
     let logical = (
@@ -308,12 +178,10 @@ pub async fn mount_newcore(
     );
 
     let (inner, render_loop_handle) =
-        // No re-callable builder: pause/resume are old-core-only (see
-        // `IosHostHandle::pause`); teardown goes through `_newcore`.
-        finish_mount(init, renderer, host, logical, None, session_scope);
+        finish_mount(init, renderer, host, logical, session_scope);
 
     Ok(IosHostHandle {
-        _newcore: Some(NewCoreGuard(Some(app))),
+        _app: EmbeddedApp(Some(app)),
         inner,
         _render_loop: render_loop_handle,
     })
@@ -323,8 +191,7 @@ pub async fn mount_newcore(
 // Internals
 // ---------------------------------------------------------------------------
 
-/// Everything the async wgpu init produces — shared by [`mount`] and
-/// [`mount_newcore`] (the host-web `WgpuInit` shape, plus the raw
+/// Everything the async wgpu init produces (the host-web `WgpuInit` shape, plus the raw
 /// `UIView*` the per-frame visibility walk needs).
 struct WgpuInit {
     ui_view: *const NSObject,
@@ -435,8 +302,8 @@ fn finish_mount(
     renderer: Renderer,
     host: Host,
     logical: (f32, f32),
-    build_ui: Option<Rc<dyn Fn() -> Element + 'static>>,
-    session_scope: runtime_core::session::ScopeGuard,
+
+    session_scope: runtime_shared::session::ScopeGuard,
 ) -> (Rc<RefCell<HostInner>>, RenderLoop) {
     // 3a. Drain any pending font URLs the host accumulated during
     //     mount. iOS doesn't fetch them; logging the count helps
@@ -460,7 +327,6 @@ fn finish_mount(
         host,
         logical,
         ui_view: init.ui_view,
-        build_ui,
         was_visible: true,
         _session_scope: session_scope,
     }));
@@ -477,16 +343,14 @@ fn finish_mount(
     (inner, render_loop_handle)
 }
 
-/// Owns the embedded new-core app for a [`mount_newcore`] handle.
+/// Owns the embedded app for a [`mount`] handle.
 /// Drop routes through `render_wgpu::newcore::NewCoreApp::stop`
 /// (the embedded path: unrealize + guarded diagnostic clear, app-host
 /// flush driver untouched — a replacement embed may already have
 /// mounted).
-#[cfg(feature = "new-core")]
-struct NewCoreGuard(Option<render_wgpu::newcore::NewCoreApp>);
+struct EmbeddedApp(Option<render_wgpu::newcore::NewCoreApp>);
 
-#[cfg(feature = "new-core")]
-impl Drop for NewCoreGuard {
+impl Drop for EmbeddedApp {
     fn drop(&mut self) {
         if let Some(app) = self.0.take() {
             app.stop();
@@ -502,7 +366,7 @@ impl Drop for NewCoreGuard {
 /// `is_frame_active()` stays frozen app-wide.
 impl Drop for HostInner {
     fn drop(&mut self) {
-        runtime_core::set_frame_active(true);
+        runtime_shared::set_frame_active(true);
     }
 }
 
@@ -527,12 +391,7 @@ struct HostInner {
     /// Therefore the raw pointer is safe to dereference for the
     /// lifetime of the Host.
     ui_view: *const NSObject,
-    /// Re-callable embedded-app builder. Cached so a hidden→visible
-    /// transition can remount the welcome (or any other) subtree
-    /// without bouncing the wgpu device/surface. `None` on a
-    /// [`mount_newcore`] handle (pause/resume are old-core-only — see
-    /// those methods).
-    build_ui: Option<Rc<dyn Fn() -> Element + 'static>>,
+
     /// Visibility state on the previous frame. Used to detect
     /// transitions: visible→hidden triggers `host.unmount()`,
     /// hidden→visible triggers `host.mount(build_ui.clone())`.
@@ -544,7 +403,7 @@ struct HostInner {
     /// renderer, host (welcome `Owner` + reactive cleanups), wgpu
     /// surface, etc. drop — those cleanups may dispatch through
     /// scope-anchored timers whose bodies read session state.
-    _session_scope: runtime_core::session::ScopeGuard,
+    _session_scope: runtime_shared::session::ScopeGuard,
 }
 
 /// Walk the UIView chain checking `window != nil` and that no
@@ -601,11 +460,11 @@ fn draw_frame(inner: &mut HostInner) {
     let visible = unsafe { is_view_visible(inner.ui_view) };
     // Publish to the per-thread frame-active flag so author-side
     // animation tickers (any `raf_loop_scoped` consumer that reads
-    // `runtime_core::is_frame_active()`) can short-circuit when
+    // `runtime_shared::is_frame_active()`) can short-circuit when
     // nothing's painting. Without this hook the welcome app's
     // planets keep advancing while off-home — the visibility check
     // stops the GPU encode but not the CPU-side AV updates.
-    runtime_core::set_frame_active(visible);
+    runtime_shared::set_frame_active(visible);
     if !visible {
         return;
     }

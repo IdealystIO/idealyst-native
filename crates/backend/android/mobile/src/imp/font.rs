@@ -22,10 +22,10 @@
 
 use std::collections::HashMap;
 
-use runtime_core::assets::{
+use runtime_shared::assets::{
     AssetId, AssetSource, AssetTag, SystemFallback, Typeface, TypefaceFace, TypefaceId,
 };
-use runtime_core::{FontFamily, FontStyle, FontWeight};
+use runtime_shared::{FontFamily, FontStyle, FontWeight};
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::JNIEnv;
 

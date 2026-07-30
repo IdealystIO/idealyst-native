@@ -3,8 +3,8 @@
 //! defaults, the `AccessibilityProps` model, and the `a11y_*` / `ui!`
 //! setters authors use to override them.
 
-use runtime_core::{ui, Element};
 use idea_ui::{typography_kind, Typography};
+use runtime_core::{ui, Element};
 
 use crate::common::{CodePanel, DocsLink, LessonPage};
 use crate::routes::{A11Y_DEFAULTS_ROUTE, A11Y_MODEL_ROUTE};
@@ -66,14 +66,7 @@ pub fn model() -> Element {
                     actions (custom assistive-tech actions), and identifier (a stable id for \
                     external AX tooling).".to_string()
             )
-            CodePanel(src = r##"use runtime_core::accessibility::{AccessibilityProps, Role, AccessibilityTraits};
-
-let props = AccessibilityProps {
-    label: Some("Close dialog".to_string()),
-    role: Some(Role::Button),
-    traits: AccessibilityTraits::DISABLED,
-    ..Default::default()
-};"##.to_string())
+            CodePanel(src = include_str!("../samples/a11y_props.rs").to_string())
 
             Typography(content = "Roles and traits".to_string(), kind = typography_kind::H2)
             Typography(
@@ -83,7 +76,6 @@ let props = AccessibilityProps {
                     SELECTED, DISABLED, EXPANDED, CHECKED, BUSY, REQUIRED, INVALID, and others. \
                     Each maps to the platform's matching AX attribute.".to_string()
             )
-            CodePanel(src = r##"let traits = AccessibilityTraits::SELECTED | AccessibilityTraits::EXPANDED;"##.to_string())
 
             Typography(
                 content = "Live regions and actions".to_string(),
@@ -95,8 +87,8 @@ let props = AccessibilityProps {
                     label \u{2014} Polite queues behind current speech, Assertive interrupts. \
                     An AccessibilityAction { name, handler } exposes an action to assistive \
                     tech with no visible control (a rotor entry on VoiceOver, a TalkBack menu \
-                    action); the handler runs on the reactive thread and can update \
-                    signals.".to_string()
+                    action); the handler runs like any other event handler, so it can write \
+                    signals it captured at build time and the flush commits them.".to_string()
             )
 
             Typography(content = "Setting props".to_string(), kind = typography_kind::H2)
@@ -108,24 +100,13 @@ let props = AccessibilityProps {
                     AccessibilityProps at once. Each maps to one field of the model \
                     above.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::{ui, Role};
-
-ui! {
-    button(
-        label = "Save",
-        on_click = on_save,
-        a11y_label = "Save document",
-        a11y_role = Role::Button,
-    )
-}"##.to_string())
+            CodePanel(src = include_str!("../samples/a11y_setters.rs").to_string())
             Typography(
                 content = "For transient feedback with no focus target \u{2014} \"Saved\", \
-                    \"Form submitted\" \u{2014} call runtime_core::announce(msg, priority) from \
-                    any event handler; it routes to the active backend's AX announcer.".to_string()
+                    \"Form submitted\" \u{2014} call announce(msg, priority) from any event \
+                    handler; it routes to the active backend's AX announcer. It lives in the \
+                    shared substrate as runtime_shared::announce.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::{announce, LiveRegionPriority};
-
-announce("Saved", LiveRegionPriority::Polite);"##.to_string())
 
             DocsLink(
                 summary = "The full model reference and the per-platform mapping.".to_string(),

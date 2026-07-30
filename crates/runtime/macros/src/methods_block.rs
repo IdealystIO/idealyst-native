@@ -731,7 +731,6 @@ mod tests {
     /// `glue::__serde_json`, and the `bind_to` fill's `glue::Ref` (via
     /// the injected prop type). A rename on either side breaks this
     /// pin, not a downstream app build.
-    #[cfg(feature = "new-core")]
     #[test]
     fn new_core_retarget_lands_method_emission_on_glue_names() {
         let mut item_fn: ItemFn = syn::parse2(quote! {

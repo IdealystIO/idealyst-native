@@ -4,68 +4,55 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Third-party `Video` SDK — one crate, cfg-gated per-backend impl
+# Third-party `Video` SDK — one crate, cfg-gated per-platform player
 # modules. Mirrors the `webview` SDK's single-crate layout (see
-# `crates/sdk/webview/Cargo.toml` for the same rationale).
+# `crates/sdk/client/webview/Cargo.toml` for the same rationale).
 #
-# # Backend coverage
+# # Platform coverage
 #
 # - Web: `<video>` element.
-# - iOS: `AVPlayerLayer` over a `UIView` host.
-# - Android: `android.widget.VideoView`.
-# - Other targets (wgpu desktop, terminal, etc.): the framework's
-#   `External` placeholder. Apps that want video on those targets ship
-#   their own SDK module — the `register_external` surface is open.
-
-[features]
-# Runtime-v2 defaults flip: the new-core leg is the default surface;
-# the old-core leg is the opt-in (`--no-default-features` — in-repo
-# consumers ride the workspace dep spec, which pins defaults off and
-# selects a core explicitly per graph).
-default = ["new-core"]
-# Old-core marker for uniform `--no-default-features --features
-# old-core` invocations (the old-core deps are unconditional).
-old-core = []
-# Idea-lite migration: re-express the SAME authored surface
-# (`Video(VideoProps { .. }).bind(v)` + a bootstrap `register`) over the
-# scene registry — the new core's unified primitive==external contract.
-# Default-off and MUTUALLY EXCLUSIVE with the old-core surface (the two
-# define the same public names — one core per build, mirroring the
-# runtime-macros/new-core build-graph-wide switch; a consuming app crate
-# forwards this from its own new-core feature). The old-core modules are
-# byte-untouched under the default build. `backend-web/new-core` is
-# needed because the wasm32 handler is `WebBackend`-concrete (`<video>`
-# DOM has no caps-trait expression) and `Registry<WebBackend>` needs the
-# backend's new-core `Host` impl. The native players (iOS/macOS/Android)
-# are old-core-only for now — see `src/newcore.rs`.
-new-core = [
-    "dep:runtime-vocabulary",
-    "dep:runtime-scene",
-    "dep:runtime-world",
-    "backend-web/new-core",
-]
+# - macOS / iOS: layer-backed host view — `AVPlayerLayer` sublayer for
+#   the URL path, per-frame CGImage/IOSurface `contents` for the live
+#   `MediaStream` path.
+# - Android: `FrameLayout` host filled by the Kotlin shim with a
+#   `VideoView` (URL) or an `ImageView` fed RGBA frames (stream).
+# - Other targets (SSR, wgpu desktop, terminal, …): the framework's
+#   External placeholder.
+#
+# `register` type-dispatches ONCE, by registry type (the toolbar SDK's
+# pattern) — a cfg split cannot express it, because `target_os = "macos"`
+# is also true for a macOS SSG build.
+description = "Third-party Video SDK — <video> on web, AVPlayer on Apple, VideoView on Android."
 
 [dependencies]
-runtime-core = { workspace = true }
 # A `Video` can display a live `MediaStream` (from `camera` /
 # `screen-recorder`), not just a URL `src`.
 media-stream = { workspace = true }
-# New-core surface (feature `new-core`): the scene registry + the
-# vocabulary caps the handlers drive (`ExternalOps::create_external`
-# placeholder path) + `style_attach` for the author-style channel +
-# `runtime_world::effect` for the reactive-source binding.
-runtime-scene = { workspace = true, optional = true }
-runtime-vocabulary = { workspace = true, optional = true }
-runtime-world = { workspace = true, optional = true }
-# Self-registration of the per-backend Video external at construction.
-inventory = "0.3"
+# The scene registry + the vocabulary caps the handlers drive
+# (`ExternalOps::create_external` placeholder path) + `style_attach` for
+# the author-style channel + `runtime_world::effect` for the
+# reactive-source binding (and `scoped_scheduling::raf_loop_scoped` for
+# the native frame pumps).
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-world = { workspace = true }
+# The permanent shared substrate: `Ref` (the handle slot `.bind` fills),
+# `accessibility`, the style data model.
+runtime-shared = { workspace = true }
 
 [dev-dependencies]
-# tests/newcore.rs (`--features new-core`) mounts `Video(...)` through
-# the scene registry end-to-end on the shared host-mock recording
-# substrate; tests/oldcore.rs runs on the default (old-core) surface.
+# tests/scene.rs mounts `Video(...)` through the scene registry
+# end-to-end on the shared host-mock recording substrate.
 host-mock = { workspace = true }
 
+# The wasm32 handler is `WebBackend`-concrete (`<video>` DOM has no
+# caps-trait expression), so `Registry<WebBackend>` needs the backend's
+# `Host` impl.
+#
+# COORDINATION (runtime-v2 deletion wave): `` is
+# still required because the backends' `Host` + caps impls are behind
+# that feature. Drop the forward once the backend crates make them
+# unconditional.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
 web-sys = { version = "0.3", features = [

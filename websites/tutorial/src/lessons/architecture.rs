@@ -6,8 +6,8 @@
 //! The diagrams are assembled from the native chart primitives in
 //! `crate::chart`; the prose is the substance.
 
-use runtime_core::{ui, Element};
 use idea_ui::{typography_kind, Stack, StackGap, Typography};
+use runtime_core::{ui, Element};
 
 use crate::chart::{ChartArrow, ChartBox, ChartLabel, ChartRow};
 use crate::common::{Callout, CodePanel, DocsLink, LessonPage};
@@ -23,14 +23,14 @@ pub fn overview() -> Element {
         LessonPage(
             current = ARCH_OVERVIEW_ROUTE.name(),
             title = "The layered model".to_string(),
-            lead = "One reactive core, a single Backend interface to every platform, and the \
+            lead = "One reactive core, one capability interface to every platform, and the \
                 tooling built around it.".to_string(),
         ) {
             Typography(
                 content = "Read the diagram top-down. You author your app once against the Core. \
-                    The Core never touches a platform directly \u{2014} it only ever speaks to a \
-                    Backend. Everything below the Core is a different way of satisfying that one \
-                    interface, and everything beside it is tooling built on top.".to_string()
+                    The Core never touches a platform directly \u{2014} it only ever calls the \
+                    backend interface. Everything below the Core is a different way of satisfying \
+                    that interface, and everything beside it is tooling built on top.".to_string()
             )
 
             Stack(gap = StackGap::Sm) {
@@ -42,7 +42,7 @@ pub fn overview() -> Element {
                 ChartBox(
                     eyebrow = "The heart".to_string(),
                     title = "Framework Core".to_string(),
-                    body = "Reactivity · scene model · defines the Backend interface".to_string(),
+                    body = "Reactive kernel · scene model · defines the backend interface".to_string(),
                     accent = true,
                 )
                 ChartArrow()
@@ -79,18 +79,21 @@ pub fn overview() -> Element {
 
             Typography(content = "Why it's shaped this way".to_string(), kind = typography_kind::H2)
             Typography(
-                content = "The Core is deliberately minimal: the reactive system and the scene \
-                    model, and the Backend interface that makes the whole thing cross-platform. \
-                    Anything composable from primitives lives outside it \u{2014} that's what keeps \
-                    the heart small and the boundaries clean. The next three steps walk each layer.".to_string()
+                content = "The Core is deliberately minimal, and it comes apart into three \
+                    pieces: the reactive kernel (worlds, signals, the flush), the scene model (a \
+                    five-variant structural element plus the mount drivers), and the vocabulary \
+                    \u{2014} every primitive expressed as a registry handler over the backend's \
+                    capability traits. Anything composable from primitives lives outside the Core, \
+                    registered on the same scene registry a primitive uses. The next three steps \
+                    walk each layer.".to_string()
             )
 
             Callout(label = "The Backend is the only boundary".to_string()) {
                 Typography(
                     content = "Cross-platform ubiquity is the framework's reason to exist: one \
                         author tree, every backend, native output that behaves the same. The \
-                        Backend trait absorbs the toolkit differences (UIKit vs AppKit vs DOM vs \
-                        wgpu) so the observable behavior is identical.".to_string(),
+                        backend interface absorbs the toolkit differences (UIKit vs AppKit vs DOM \
+                        vs wgpu) so the observable behavior is identical.".to_string(),
                     muted = true,
                 )
             }
@@ -107,14 +110,17 @@ pub fn backends() -> Element {
         LessonPage(
             current = ARCH_BACKENDS_ROUTE.name(),
             title = "Direct vs hosted runtime".to_string(),
-            lead = "The Backend is one interface satisfied two ways — and the second way is where \
+            lead = "One backend interface, satisfied two ways — and the second way is where \
                 hot reload and cross-device state come from.".to_string(),
         ) {
             Typography(
-                content = "A Backend implements the framework's single point of contact with the platform: it \
-                    creates native nodes, updates their properties, mutates the tree, and applies \
-                    style. Implement it once and the entire app surface runs on that target. There \
-                    are two ways to put a Backend behind the Core.".to_string()
+                content = "A backend is the framework's single point of contact with the \
+                    platform. It comes in two halves: a small structural trait (the scene Host \
+                    \u{2014} create an anchor, insert, insert at an index, remove, clear) and a \
+                    set of per-capability traits, one family per primitive, carrying the calls \
+                    that create native nodes, update their properties, and apply style. Satisfy \
+                    them once and the entire app surface runs on that target. There are two ways \
+                    to put a backend behind the Core.".to_string()
             )
 
             Typography(content = "The direct path".to_string(), kind = typography_kind::H2)
@@ -132,7 +138,7 @@ pub fn backends() -> Element {
                 )
                 ChartArrow()
                 ChartBox(
-                    title = "Direct Backend".to_string(),
+                    title = "Direct backend".to_string(),
                     body = "UIKit · AppKit · DOM · wgpu · Android".to_string(),
                 )
                 ChartArrow()
@@ -144,11 +150,11 @@ pub fn backends() -> Element {
 
             Typography(content = "The hosted-runtime path".to_string(), kind = typography_kind::H2)
             Typography(
-                content = "In dev mode, three layers slot in between the Core and the device's real \
-                    Backend: the Runtime Server Backend, the Wire, and the Dev Client. Together \
+                content = "In dev mode, three layers slot in between the Core and the device's \
+                    real backend: the recording backend, the Wire, and the Dev Client. Together \
                     they host the Core on a server and connect it to any platform over websockets \
-                    — possible precisely because the Backend is an abstraction the wire can speak \
-                    on the Core's behalf.".to_string()
+                    — possible precisely because the backend interface is an abstraction the wire \
+                    can speak on the Core's behalf.".to_string()
             )
             Stack(gap = StackGap::Sm) {
                 ChartBox(
@@ -159,8 +165,8 @@ pub fn backends() -> Element {
                 )
                 ChartArrow()
                 ChartBox(
-                    title = "Runtime Server Backend".to_string(),
-                    body = "A Backend impl that serializes calls instead of rendering".to_string(),
+                    title = "Recording backend".to_string(),
+                    body = "Satisfies the same capability traits by serializing the calls".to_string(),
                 )
                 ChartArrow()
                 ChartBox(
@@ -170,37 +176,39 @@ pub fn backends() -> Element {
                 ChartArrow()
                 ChartBox(
                     title = "Dev Client (on the device)".to_string(),
-                    body = "Receives the calls and drives the device's real Backend → native platform".to_string(),
+                    body = "Receives the calls and drives the device's real backend → native platform".to_string(),
                 )
             }
 
             Typography(content = "Why bother".to_string(), kind = typography_kind::H2)
             Typography(
-                content = "Two payoffs, both falling out of the same split. First, hot reload \
-                    without shipping an updated binary: the device never changes, only the \
+                content = "Two payoffs, both falling out of the same split. First, iteration \
+                    without shipping an updated binary: the device app never changes, only the \
                     server-side Core does — and hot-linking native code on a device is often \
-                    impossible, so this is the practical way to get fast iteration on hardware.".to_string()
+                    impossible, so this is the practical way to get a fast loop on hardware. A \
+                    save rebuilds the server-side session and respawns it; the device reconnects \
+                    and receives the new tree.".to_string()
             )
             Typography(
                 content = "Second, the session state lives on the runtime server. So you can say \
                     \"I want to see what this looks like on Android instead of iPhone\", connect to \
-                    the same server from Android, and get the exact same state and render on the \
-                    new device. It isn't a perfect system, but it's a powerful one for many \
-                    applications.".to_string()
+                    the same server from Android, and get the same state and render on the new \
+                    device — the state crosses the device switch because the device was never \
+                    holding it.".to_string()
             )
 
             Callout(label = "Same interface, transparent proxy".to_string()) {
                 Typography(
-                    content = "The Wire just messages the Backend API over websockets; the client's \
-                        real Backend builds its own native chrome from those calls. There's nothing \
-                        iOS- or web-specific in the wire path itself — it's solved generically, once, \
-                        at the Backend boundary.".to_string(),
+                    content = "The Wire messages the same capability calls over websockets; the \
+                        client's real backend builds its own native chrome from them. There's \
+                        nothing iOS- or web-specific in the wire path itself — it's solved \
+                        generically, once, at the backend boundary.".to_string(),
                     muted = true,
                 )
             }
 
             DocsLink(
-                summary = "The full Backend trait surface and per-method contract.".to_string(),
+                summary = "The full backend surface and the per-method contract.".to_string(),
                 link_label = "Backend reference".to_string(),
                 doc_file = "backend.md".to_string(),
             )

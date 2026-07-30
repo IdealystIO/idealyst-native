@@ -7,10 +7,11 @@ platform" actually means.
 The ecosystem ships backends for **web** (WASM + DOM), **Android** (JNI + native
 View hierarchy), **iOS** (UIKit via objc2), **macOS** (AppKit via objc2), and
 **Roku** (BrightScript / SceneGraph transpile), plus an in-progress
-custom-renderer family on top of [wgpu](https://wgpu.rs/). The `Backend` trait
-is the only seam: writing a new backend means implementing a handful of
-methods. You can target anything you can drive from Rust (a custom renderer,
-a TUI, an embedded display) without touching app code.
+custom-renderer family on top of [wgpu](https://wgpu.rs/). The backend seam is
+two traits deep: `runtime_scene::Host` (seven structural operations) plus the
+per-primitive capability traits a backend chooses to implement, every one of
+which has a documented default. You can target anything you can drive from Rust
+(a custom renderer, a TUI, an embedded display) without touching app code.
 
 > **Status: under construction.** APIs are still under development and may change, use at your own risk.
 > See the [Roadmap](#roadmap) for what's implemented per backend.
@@ -41,8 +42,10 @@ registry, three consumers:
 
 The same model gets you Detox-style E2E, dev tools, and agentic control
 from one architectural seam. See
-[`crates/framework/core/src/robot/`](crates/framework/core/src/robot/) for
-the registry + bridge protocol, and
+[`crates/runtime/shared/src/robot/`](crates/runtime/shared/src/robot/) for
+the registry + bridge protocol,
+[`crates/runtime/vocabulary/src/robot.rs`](crates/runtime/vocabulary/src/robot.rs)
+for the per-primitive registration, and
 [`crates/mcp/server/`](crates/mcp/server/) (the `idealyst mcp` command) for
 the MCP entry point. Gated on the `robot` Cargo feature; production builds
 leave it off.
@@ -102,7 +105,7 @@ of fetching from GitHub:
 ```bash
 git clone https://github.com/IdealystIO/idealyst-native
 cd idealyst-native
-cargo install --path crates/cli --force
+cargo install --path crates/tools/cli --force
 ```
 
 The `--force` is needed once you already have `idealyst` installed; cargo
@@ -146,7 +149,7 @@ summarised in the matrix further down.
 
 | Area | Status |
 | --- | --- |
-| `framework-core`: primitives, reactivity, render walker | Working |
+| Runtime core: primitives (`runtime-vocabulary`), scene + mount (`runtime-scene`), reactive kernel (`runtime-world`) | Working |
 | `ui!` / `jsx!` / `#[component]` macros | Working |
 | `stylesheet!` macro (themes, variants, overrides) | Working |
 | `Ref<H>`: primitive handles + user-component handles via `#[method]` | Working |
@@ -158,9 +161,9 @@ summarised in the matrix further down.
 | Server-driven UI: wire protocol + `SceneModel` snapshot | Working |
 | Custom rendering: `render-wgpu` (core, phone, tablet, tv skins) | In progress |
 | Native backend: interactions / media / OS integration | In progress |
-| Async data / `Resource<T>` | Planned |
-| Accessibility: first-class `AccessibilityProps` on every primitive, per-backend `set_accessibility_*` hooks | Planned |
-| SSR + Hydration | Planned |
+| Async data: `resource` / `mutation` (`runtime_vocabulary::async_reactive`) | Working |
+| Accessibility: `AccessibilityProps` on every primitive + `caps::A11yOps` per backend | Working |
+| SSR / SSG + hydration (`backend-ssr`, byte-identical goldens) | Working |
 
 ### Backends
 
@@ -171,13 +174,15 @@ summarised in the matrix further down.
 | `backend-ios-mobile` (UIKit via objc2) | Working | Phone form factor. `tv` variant is a stub. |
 | `backend-macos` (AppKit via objc2) | Early | Window shell + basics. Many primitives unimplemented (see matrix). |
 | `backend-roku` (BrightScript / SceneGraph transpile) | Working | Theme switching temporarily disabled (token refactor); panics on theme update. |
-| `render-wgpu` (custom renderer, embeddable) | In progress | Drives the same `Backend` trait through a GPU pipeline; `host-winit` / `host-web` wire it to OS windows. |
+| `render-wgpu` (custom renderer, embeddable) | In progress | Implements the same `Host` + capability traits over a GPU pipeline; `host-winit` / `host-web` wire it to OS windows. |
 
 ### Per-backend primitive coverage
 
-A blank cell means the trait default panics with `unimplemented!()`. Author
-code that reaches for that primitive on that backend will crash, not
-silently no-op.
+A blank cell means the backend inherits the capability trait's default. Those
+defaults degrade rather than crash: a missing widget renders the
+`ExternalOps::missing_primitive_placeholder` box, and a missing container
+lowers to a plain view. What *does* panic is an unregistered third-party
+payload — see the registration seam below.
 
 | Element | web | iOS-mobile | Android-mobile | macOS | Roku | wgpu |
 |---|---|---|---|---|---|---|
@@ -193,38 +198,54 @@ silently no-op.
 | Link | ✓ | ✓ | ✓ |  |  | ✓ |
 | Video | ✓ |  | ✓ |  |  | ✓ |
 | Virtualizer / FlatList | ✓ |  | ✓ |  |  | ✓ |
-| `Element::External` (third-party SDKs: Maps, WebView) | ✓ | ✓ | ✓ |  |  | partial |
+| Third-party primitives (SDK payload + registered handler) | ✓ | partial | partial | partial | partial | partial |
 
 Web and Android-mobile are the most complete. iOS-mobile is catching up but
 missing `Video` and `Virtualizer`. macOS is a structural skeleton that
 needs the same UIKit-style primitive work iOS already has. Roku is locked
-behind the theme-refactor regression noted above. The wgpu renderer is
-implemented at the `Backend` trait level but is still in active development
-on the rendering side.
+behind the theme-refactor regression noted above. The wgpu renderer implements
+the full capability surface but is still in active development on the
+rendering side. Per-SDK host coverage — which third-party primitives have a
+real handler on which backend, and which fall back to the placeholder — is
+tabulated in
+[`docs/migrating-to-runtime-v2.md`](docs/migrating-to-runtime-v2.md#external-sdks-the-third-party-primitive-layer).
+The short version: the caps-generic SDKs (`markdown`, `table`, `codeblock`)
+work on every host from one handler, the DOM-shaped ones (`maps`, `webview`,
+`canvas`, `svg`, `video`, `form`) are web-first with a placeholder elsewhere,
+and `toolbar` has a real macOS `NSToolbar` leg.
 
 ## The shape of an app
 
-Application code is one crate that depends only on `framework-core`. It declares
+Application code is one crate that depends on the author surface
+(`runtime-core`, plus `runtime-vocabulary` and `runtime-scene`). It declares
 components, styles, and a root tree, and knows nothing about the platform it
-will run on.
+will run on. `examples/welcome` is the scaffold's source of truth for the dep
+set.
 
 ```rust
-use framework_core::{ui, component, signal, Element};
+use runtime_core::{component, signal, ui, Element};
 
 #[component]
-pub fn app() -> Element {
+pub fn App() -> Element {
     let count = signal(0);
 
     ui! {
-        Text { "Hello from idealyst-native" }
-        Button(
+        text { "Hello from idealyst-native" }
+        button(
             label = "Increment",
-            on_click = move || count.update(|n| *n += 1),
+            on_click = move || count.update(|n| n + 1),
         )
-        Text { format!("Count: {}", count.get()) }
+        text { move || format!("Count: {}", count.get()) }
     }
 }
 ```
+
+Two things the snippet is showing on purpose: primitives are **snake_case**
+(PascalCase always means a `#[component]`), and `update` takes `&T` and returns
+the new value — writes stage and commit at the driver's flush, so
+`set(count.get() + 1)` twice in one handler would net `+1` while two `update`s
+net `+2`. See
+[`docs/automatic-batching.md`](docs/automatic-batching.md).
 
 A **platform host** is a tiny separate crate per target. It wires the shared
 app to a backend and a mount point. The host is the only place that knows
@@ -246,12 +267,13 @@ backend contract live alongside it under [`docs/`](docs/).
                             │
                             ▼
 ┌──────────────────────────────────────────────────────────┐
-│                     framework-core                        │
-│  reactivity (signals, effects)  · primitives (View/Text/  │
-│  Button/When/...)  ·  styles + theming  ·  render walker  │
+│              runtime-world / scene / vocabulary           │
+│  reactive kernel (staged-commit signals, effects, memos)  │
+│  · Element + realize + Registry · primitives (view/text/  │
+│  button/when/...) as handlers · styles + theming          │
 └──────────────────────────────────────────────────────────┘
                             │
-                            ▼  (Backend trait)
+                            ▼  (Host + caps::*Ops)
         ┌───────┬───────┬───────┬───────┬───────┬───────┐
         ▼       ▼       ▼       ▼       ▼       ▼       ▼
        web   Android   iOS    macOS   Roku   wgpu     (yours)
@@ -263,38 +285,44 @@ controls **how** that happens on the target platform. The seam is small enough
 that a new backend is on the order of "implement a trait" rather than "fork
 the framework."
 
-For the long version (render walker, per-primitive lifecycle, the rules a
-backend must follow), see **[`docs/backend.md`](docs/backend.md)**.
+For the long version (the `Host` trait, the capability traits, the mount path,
+the flush driver, and the rules a backend must follow), see
+**[`docs/backend.md`](docs/backend.md)**.
 
 ## Subsystem status
 
 Beyond per-primitive parity (the matrix above), a few cross-cutting subsystems
 are worth calling out:
 
-- **Animation.** The `Backend` trait carries `set_animated_f32` /
-  `set_animated_color` / `animate_icon_stroke` hooks, and `framework-core`
-  exposes `AnimatedValue<T>` with spring + decay drivers and a per-thread
-  clock. The full author-facing model (value handles, animator factories,
-  declarative `Transition` on style props vs. imperative interruptible
-  motion) is documented in **[`docs/animation.md`](docs/animation.md)**.
-  Style transitions and gesture-driven animations both flow through the
-  same per-frame write path.
-- **Accessibility.** **Currently minimal; this is a known gap.** Image
-  carries an `accessibilityLabel` that maps to `alt` / `accessibilityLabel`
-  / `contentDescription`. Link carries an accessibility role on native. The
-  identity layer exposes stable string IDs intended for `aria-labelledby` /
-  `aria-controls`. What's not yet in the trait: a generalised
-  `AccessibilityProps` struct on every primitive, `set_accessibility_label` /
-  `set_role` / `announce_for_accessibility`, focus-order plumbing.
-  Production apps will need this; it's on the roadmap above.
-- **Cross-backend test parity.** The reactive + walker test suite uses a
-  `MockBackend` that records every call into an event log. 98 tests
-  exercise diamond invalidation, fan-out ordering, dynamic-dependency
-  drift, ref minting, control flow, and rebuild scenarios. The web backend
-  adds its own suite. A multi-backend conformance suite that runs the same
-  scenarios against every backend (and against the three reactive-binding
-  paths: Rust `Effect`, native-side dispatcher, wire-serialized metadata)
-  is the natural next step for keeping "Working" mechanically defensible.
+- **Reactivity.** Writes **stage** and commit at the backend's flush driver,
+  so every event handler, timer, animation frame, and async completion is one
+  logical update with one deduped effect pass — and memos settle before user
+  effects, which makes the diamond case glitch-free. The kernel is
+  `crates/runtime/world`; the model and the per-backend drivers are in
+  **[`docs/automatic-batching.md`](docs/automatic-batching.md)** and
+  **[`docs/reactivity.md`](docs/reactivity.md)**.
+- **Animation.** `caps::AnimationOps` carries `set_animated_f32` /
+  `set_animated_color`, `IconOps` carries `animate_icon_stroke`, and the
+  shared substrate exposes `AnimatedValue<T>` with spring + decay drivers and
+  a per-thread clock. The full author-facing model (value handles, animator
+  factories, declarative `Transition` on style props vs. imperative
+  interruptible motion) is documented in
+  **[`docs/animation.md`](docs/animation.md)**. Style transitions and
+  gesture-driven animations flow through the same per-frame write path.
+- **Accessibility.** Every primitive payload carries an `AccessibilityProps`;
+  every builder exposes granular `a11y_*` setters and a whole-struct
+  `accessibility` setter; `caps::A11yOps` (`update_accessibility`,
+  `announce_for_accessibility`, `dump_accessibility_tree`) is what each
+  backend maps to UIAccessibility / NSAccessibility /
+  `AccessibilityNodeInfo` / ARIA. See
+  **[`docs/accessibility.md`](docs/accessibility.md)**.
+- **Cross-backend parity, mechanically pinned.** The op sequences the runtime
+  emits are frozen as goldens and checked on every run: backend op-log
+  streams (`crates/dev/scene-parity`), pixel-exact CPU framebuffers,
+  cell-exact terminal grids, byte-exact Roku command streams, byte-exact SSR
+  html + head CSS, byte-exact email output, and the whole website's SSG
+  output. On top of that, `crates/dev/robot-e2e/examples/conformance` drives
+  the same scenarios against real backends through the robot bridge.
 
 ## Repository layout
 
@@ -303,70 +331,60 @@ Cargo crate.
 
 ```
 crates/
-  framework/            # The framework itself
-    core/               # Primitives, Backend trait, render walker, reactivity, styles
+  runtime/              # The framework itself
+    world/              # Reactive kernel: per-world arenas, Copy handles, staged-commit flush
+    scene/              # Element, Host, Registry, realize + structural drivers
+    vocabulary/         # Primitives (payloads + handlers), caps::*Ops traits, glue (author surface)
+    shared/             # Permanent substrate: styles, colors, assets/fonts, animation, events,
+                        #   scheduling, robot registry, introspection, per-primitive handles
+    facade/             # The `runtime_core::…` spelling — re-exports glue::* + the macro set
     macros/             # #[component], ui!, jsx!, stylesheet! proc-macros
-    reactive/
-      arena/            # Arena allocator backing the reactive system
-      refs/             # Ref<H> machinery
-    wire/               # Dev-mode hot-reload + server-driven UI wire protocol
-    hot/                # Hot-reload runtime facade over subsecond
-    dev-client/         # App-side replay engine; wraps a real Backend and applies an incoming stream
-    native-layout/      # Taffy-based flex layout helper for native backends (iOS/Android/macOS)
-    mcp/                # Framework MCP component catalog (component metadata for tooling)
+    layout/             # Taffy-based flex layout helper for native backends
+    core/               # The pre-runtime-v2 walker half — being deleted
+    reactive/           # arena/ + refs/ allocators used by the shared substrate
 
-  backend/              # Backend implementations of the framework Backend trait
-    web/                # WASM + DOM backend
-    ios/
-      core/             # iOS shared layer (used by mobile + tv)
-      mobile/           # iOS UIKit backend, phone form factor
-      tv/               # iOS tvOS variant (stub)
-    ios-stack/          # Alternative iOS backend (research / experiment)
-    android/
-      core/             # Android shared layer
-      mobile/           # Android JNI + View backend, phone form factor
-      tv/               # Android TV variant (stub)
-    apple/core/         # AppKit/UIKit shared helpers (objc2)
-    macos/              # macOS AppKit backend
-    roku/               # Roku BrightScript / SceneGraph generator backend
-    aas-shell-native/   # Native runtime-server-shell (sync WebSocket transport, mDNS discovery)
+  css/                  # StyleRules → CSS, shared by the web and SSR backends
+
+  backend/              # Host implementations (Host + caps::*Ops + a newcore boot entry)
+    web/                # WASM + DOM (the reference backend)
+    ssr/                # Server-side render / SSG / SSR server
+    ios/{core,mobile,tv}        android/{core,mobile,tv}
+    macos/  apple/core/         # AppKit + shared objc2 helpers
+    terminal/  cpu/  roku/  email/  linux/  windows/
     posix-log-capture/  # Robot log-buffer LogCapture impl
-    [README.md per backend describes its quirks]
 
-  render/               # Custom rendering; implements Backend on top of a GPU pipeline
-    api/                # Platform-agnostic preview-backend API
-    wgpu/               # wgpu render backend
-
-  host/                 # Per-OS shells that host render-wgpu
-    appkit/             # AppKit host for macOS
-    winit/              # Winit host for cross-platform native windows
-    web/                # Browser host for the wgpu backend running on WebGPU
-
-  native/               # Pre-wired render-wgpu shells per form factor
-    phone/ tablet/ tv/  # Each crate just picks defaults + skin
-
-  skin/                 # Visual "skins" that fake a native look in the wgpu renderer
-    ios-sim/ android-sim/
+  gpu-backend/          # Custom rendering on a GPU pipeline
+    engine/             # render-wgpu
+    api/  painter/
+    host/               # Per-OS shells (appkit, winit, web, macos-desktop, ios-mobile, …)
+    variant/            # phone/ tablet/ tv — pre-wired form factors
 
   ui/                   # User-facing component libraries
     idea-ui/            # Cross-platform component library (Card, Modal, Popover, Field, …)
-    icons-lucide/       # Lucide icon pack; tree-shakeable, only referenced icons ship
+    idea-theme/         # Token/theme model idea-ui builds on
+    idea-ui-nav/        # Navigation chrome (TabBar, Drawer, StackHeader)
+    idea-ui-mail/       # Email-safe component set for backend-email
+    icons-lucide/       # Lucide icon pack; tree-shakeable
     idea-ui-docs-derive/# #[derive(DocControls)] proc macro powering the docs site
 
-  sdk/                  # Third-party-style extensions wired through Element::External
-    maps/               # MapView primitive (umbrella + nested core/ ios/ web/ leaves)
-    webview/            # WebView primitive (cfg-gated single-crate pattern)
-    codeblock/          # Read-only colored-text panel primitive
-    navigators/         # stack/ tab/ drawer/ SDKs + shared helpers/ (android, ios, web)
-    i18n/               # i18n SDK + nested macros/ proc-macro crate
+  sdk/                  # Third-party-style extensions: a payload type + a registered handler
+    client/             # maps, webview, canvas, svg, video, markdown, table, codeblock, form,
+                        #   navigators, storage, net, i18n, gesture/pan/dnd, media, … (~40 crates)
+    server/             # jobs, pubsub, email, config
 
-  cli/                  # idealyst CLI: scaffold, dev-serve, build, run, doctor
-  build/                # Per-target build orchestration (web, ios, android, macos, roku, aas, sim)
-  run/                  # Per-target run helpers (ios sim, android device, macos, roku)
-  dev/                  # Hot-reload dev server pieces
-    server/ http/ reload/ web-host/
+  api/                  # Full-stack server layer: #[server] fns, server-kit, AWS adapter
 
-  port/                 # Source porters (React/Vue/Svelte/Solid → idealyst Rust); see ./port/README.md
+  dev/                  # Dev-mode + test infrastructure
+    server/ client/ http/ reload/ web-host/ wire/   # hot reload + wire protocol
+    scene-parity/ parity-goldens/ mock-backend/     # golden op-sequence parity harness
+    robot-e2e/ robot-test/ robot-relay/             # cross-platform robot suites
+    newcore-app/ newcore-*-smoke/                   # per-platform runtime smoke apps
+
+  tools/
+    cli/                # idealyst CLI: new, dev, build, run, test, doctor, configure, export
+    build/  run/        # Per-target build + run orchestration
+    lint/ configure/ port/ premint-dump/ wasm-split/ icon-gen/ dev-tui/ docs-app/
+
   mcp/                  # Stdio MCP server (`idealyst mcp`): component catalog + Robot tools
     catalog/ server/
 ```
@@ -374,15 +392,16 @@ crates/
 Where a crate has non-obvious wiring, runtime requirements, or behavioural
 quirks, it has its own `README.md`. The most useful entry points:
 
-- [`crates/framework/core/README.md`](crates/framework/core/README.md):
-  the `Backend` trait, primitive vocabulary, render walker, reactivity
-  internals.
-- [`crates/framework/macros/README.md`](crates/framework/macros/README.md):
-  `#[component]`, `ui!`, `jsx!`, `stylesheet!`. The author-facing macros.
-- [`crates/framework/wire/README.md`](crates/framework/wire/README.md):
+- [`crates/runtime/README.md`](crates/runtime/README.md): how the runtime
+  crates fit together — kernel, scene, vocabulary, shared substrate, facade.
+- [`crates/runtime/vocabulary/COVERAGE.md`](crates/runtime/vocabulary/COVERAGE.md):
+  every capability trait, its methods, and its defaults.
+- [`crates/dev/scene-parity/README.md`](crates/dev/scene-parity/README.md):
+  the golden op-sequence corpus and the enumerated divergence list.
+- [`crates/dev/wire/README.md`](crates/dev/wire/README.md):
   wire protocol shared by hot-reload + server-driven UI.
-- [`crates/framework/native-layout/README.md`](crates/framework/native-layout/README.md):
-  how iOS/Android backends drive flex layout through Taffy.
+- [`crates/runtime/layout/README.md`](crates/runtime/layout/README.md):
+  how the native backends drive flex layout through Taffy.
 - [`crates/backend/web/README.md`](crates/backend/web/README.md):
   scheduler / time-source bootstrap requirements, animated-value capabilities.
 - [`crates/backend/ios/mobile/README.md`](crates/backend/ios/mobile/README.md):
@@ -394,10 +413,10 @@ quirks, it has its own `README.md`. The most useful entry points:
   what's implemented vs. still missing on the AppKit backend.
 - [`crates/backend/roku/README.md`](crates/backend/roku/README.md):
   theme-switching regression status, generator backend caveats.
-- [`crates/render/wgpu/README.md`](crates/render/wgpu/README.md):
+- [`crates/gpu-backend/README.md`](crates/gpu-backend/README.md):
   the GPU rendering pipeline, host requirements, debug-stats feature.
-- [`crates/port/README.md`](crates/port/README.md): source-porter design
-  (compiler skeleton + AI hole-filling).
+- [`crates/tools/port/README.md`](crates/tools/port/README.md): source-porter
+  design (compiler skeleton + AI hole-filling).
 
 For framework design docs (UI layer, reactivity, styling, animation, fonts,
 primitives, backend contract) see **[`docs/`](docs/)**.
@@ -426,6 +445,9 @@ Other examples worth knowing about:
 - [`crates/backend/roku/examples/hello-roku`](crates/backend/roku/examples/hello-roku): minimal Roku target.
 - [`crates/mcp/examples/mcp-demo`](crates/mcp/examples/mcp-demo): exercises the framework MCP
   catalog.
+- [`websites/tutorial`](websites/tutorial): the interactive tutorial app.
+- [`crates/dev/newcore-app`](crates/dev/newcore-app): the runtime proof crate —
+  one source tree compiled and e2e-tested on every backend.
 
 ## Build profile
 

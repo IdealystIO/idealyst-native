@@ -163,7 +163,7 @@ Note that **theme swaps never need a reactive style**: a static sheet whose valu
 
 ## Preminted styles (web bundle size)
 
-`idealyst build --web --premint` emits every static `stylesheet!`'s CSS at build time (a content-addressed `pkg/premint.<hash>.css`) and ships class references instead of running the style engine for them. Reactive inputs, `.override_*` values, shadow sheets, and `Typeface` fonts silently stay on the live engine. For the full size win, a fully-preminted app disables the `style-dynamic` cargo feature (`default-features = false` on runtime-core AND backend-web, re-adding needed `prim-*` features) — the runtime style engine then compiles out of the wasm (~40 KB gzipped on the floor app). Theming still works: tokens are CSS variables, and a premint host driver delivers theme state without sheet registrations. Not yet combinable with `--ssg`/`--ssr`. Details: `docs/styling.md`, "Preminted styles".
+`idealyst build --web --premint` emits every static `stylesheet!`'s CSS at build time (a content-addressed `pkg/premint.<hash>.css`) and ships class references instead of running the style engine for them. Reactive inputs, `.override_*` values, shadow sheets, and `Typeface` fonts silently stay on the live engine. For the full size win, a fully-preminted app disables the `style-dynamic` cargo feature (`default-features = false` on backend-web) — the runtime style engine then compiles out of the wasm (~40 KB gzipped on the floor app). Theming still works: tokens are CSS variables, and a premint host driver delivers theme state without sheet registrations. Not yet combinable with `--ssg`/`--ssr`. Details: `docs/styling.md`, "Preminted styles".
 
 ## Appendix: StyleRules properties
 

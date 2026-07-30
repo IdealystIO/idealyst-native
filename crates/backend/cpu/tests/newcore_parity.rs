@@ -1,30 +1,32 @@
-//! New-core adoption tests for the CPU-rasterizer backend: cross-core
-//! render parity (rule-7 gate — the same scene must paint the same
-//! PIXELS on both cores, byte-for-byte on `MemSurface`) plus op-level
-//! coverage of the caps adoption's flush discipline (click → staged
-//! writes → flush → paint).
+//! Render-parity tests for the CPU-rasterizer backend: the rule-7 gate
+//! (a scene must paint the exact PIXELS the OLD core painted,
+//! byte-for-byte on `MemSurface`) plus op-level coverage of the caps
+//! adoption's flush discipline (click → staged writes → flush → paint).
 //!
-//! The pixel-parity suite on the real rasterizer is the live evidence
-//! for this backend — there is no windowed host to screenshot; the
-//! framebuffer IS the output surface, and `MemSurface::pixels()` is
-//! compared byte-identical between `runtime_core::mount` (old walker)
-//! and `newcore::start` (world + vocabulary handlers) for every scene.
+//! The pixel-parity suite on the real rasterizer is the live evidence for
+//! this backend — there is no windowed host to screenshot; the
+//! framebuffer IS the output surface.
 //!
 //! Harness notes: the tests install a queue-only scheduler (the same
 //! drain-until-empty microtask semantics a real host loop provides).
-//! `install_scheduler` is process-global/first-wins, but the queue
-//! state is thread-local, so each test thread drains only its own
-//! tasks.
-
-#![cfg(feature = "new-core")]
+//! `install_scheduler` is process-global/first-wins, but the queue state
+//! is thread-local, so each test thread drains only its own tasks.
+//!
+//! # The frozen corpus is the contract
+//!
+//! Every scene below compares against a **frozen old-core framebuffer**
+//! committed under `tests/goldens/` (lossless RGBA8 PNG), written by the
+//! old walker before it was deleted. A mismatch is a real rendering
+//! change, NOT a stale artifact: `IDEALYST_FREEZE_GOLDENS=1` can now only
+//! RE-BASELINE against the current renderer, permanently discarding the
+//! old core's testimony — see `tests/goldens/README.md`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use backend_cpu::{ClickOutcome, CpuBackend, MemSurface};
-use runtime_core::{
-    Color, Gradient, GradientKind, GradientStop, Length, StyleApplication, StyleRules, StyleSheet,
-    Tokenized, Transform,
+use runtime_shared::{
+    Color, Gradient, GradientKind, GradientStop, Length, StyleRules, Tokenized, Transform,
 };
 
 // ===========================================================================
@@ -32,7 +34,7 @@ use runtime_core::{
 // ===========================================================================
 
 mod test_scheduler {
-    use runtime_core::scheduling::{ScheduleHandle, Scheduler};
+    use runtime_shared::scheduling::{ScheduleHandle, Scheduler};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -63,8 +65,8 @@ mod test_scheduler {
     }
 
     pub fn ensure_installed() {
-        if !runtime_core::scheduling::is_scheduler_installed() {
-            runtime_core::scheduling::install_scheduler(Box::new(QueueScheduler));
+        if !runtime_shared::scheduling::is_scheduler_installed() {
+            runtime_shared::scheduling::install_scheduler(Box::new(QueueScheduler));
         }
     }
 
@@ -118,6 +120,20 @@ fn assert_pixels_identical(name: &str, old: &[u8], new: &[u8]) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Frozen-artifact gate
+// ---------------------------------------------------------------------------
+
+fn goldens() -> parity_goldens::Goldens {
+    parity_goldens::Goldens::new(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// The gate: the rendered framebuffer must match the frozen old-core PNG
+/// pixel-for-pixel.
+fn check_new_frame(name: &str, new: &[u8]) {
+    goldens().check_rgba(name, W, H, new);
+}
+
 /// Liveness guard: at least one pixel must differ from the clear color,
 /// proving the scene actually painted (blank-vs-blank parity is vacuous).
 fn assert_painted(name: &str, pixels: &[u8]) {
@@ -125,15 +141,6 @@ fn assert_painted(name: &str, pixels: &[u8]) {
         pixels.chunks_exact(4).any(|p| p != CLEAR),
         "{name}: scene painted nothing — every pixel is the clear color"
     );
-}
-
-fn render_old(app: impl Fn() -> runtime_core::Element + 'static) -> Vec<u8> {
-    let backend = fresh_backend();
-    let owner = runtime_core::mount(backend.clone(), app);
-    test_scheduler::drain();
-    let pixels = render(&backend);
-    drop(owner);
-    pixels
 }
 
 fn render_new(build: impl FnOnce() -> runtime_scene::Element) -> Vec<u8> {
@@ -146,17 +153,11 @@ fn render_new(build: impl FnOnce() -> runtime_scene::Element) -> Vec<u8> {
 }
 
 /// Build `StyleRules` with a few fields set (`StyleRules` has 40+
-/// optional fields; the closure shape keeps scenes readable). The SAME
-/// rules value feeds both cores — old via a static `StyleSheet`, new
-/// via the builder's `.style(rules)`.
+/// optional fields; the closure shape keeps scenes readable).
 fn rules(f: impl FnOnce(&mut StyleRules)) -> StyleRules {
     let mut s = StyleRules::default();
     f(&mut s);
     s
-}
-
-fn sheet(r: StyleRules) -> StyleApplication {
-    StyleApplication::new(Rc::new(StyleSheet::r#static(r)))
 }
 
 fn sized(width: f32, height: f32, background: &str) -> StyleRules {
@@ -220,16 +221,6 @@ fn newcore_styled_view_tree_pixel_parity() {
         })
     }
 
-    let old = render_old(|| {
-        use runtime_core::{view, IntoElement};
-        view(vec![
-            view(vec![]).with_style(sheet(bordered_rules())).into_element(),
-            view(vec![]).with_style(sheet(gradient_rules())).into_element(),
-            view(vec![]).with_style(sheet(translated_rules())).into_element(),
-        ])
-        .with_style(sheet(root_rules()))
-        .into_element()
-    });
     let new = render_new(|| {
         use runtime_vocabulary::builders::view;
         view()
@@ -239,8 +230,8 @@ fn newcore_styled_view_tree_pixel_parity() {
             .child(view().style(translated_rules()))
             .build()
     });
-    assert_painted("styled_view_tree", &old);
-    assert_pixels_identical("styled_view_tree", &old, &new);
+    assert_painted("styled_view_tree", &new);
+    check_new_frame("styled_view_tree.png", &new);
 }
 
 // ===========================================================================
@@ -271,15 +262,6 @@ fn newcore_text_color_and_font_scale_pixel_parity() {
         })
     }
 
-    let old = render_old(|| {
-        use runtime_core::{text, view, IntoElement};
-        view(vec![
-            text("hello cpu").with_style(sheet(small_rules())).into_element(),
-            text("BIG").with_style(sheet(big_rules())).into_element(),
-        ])
-        .with_style(sheet(root_rules()))
-        .into_element()
-    });
     let new = render_new(|| {
         use runtime_vocabulary::builders::{text, view};
         view()
@@ -288,8 +270,8 @@ fn newcore_text_color_and_font_scale_pixel_parity() {
             .child(text().content("BIG").style(big_rules()))
             .build()
     });
-    assert_painted("text_scale", &old);
-    assert_pixels_identical("text_scale", &old, &new);
+    assert_painted("text_scale", &new);
+    check_new_frame("text_scale.png", &new);
 }
 
 // ===========================================================================
@@ -326,25 +308,6 @@ fn newcore_button_pressable_scrollview_pixel_parity() {
         sized(90.0, 40.0, "rgb(80, 200, 120)")
     }
 
-    let old = render_old(|| {
-        use runtime_core::{button, pressable, scroll_view, view, IntoElement};
-        view(vec![
-            button("Go", || {}).with_style(sheet(button_rules())).into_element(),
-            pressable(
-                vec![view(vec![]).with_style(sheet(press_child_rules())).into_element()],
-                || {},
-            )
-            .with_style(sheet(press_rules()))
-            .into_element(),
-            scroll_view(vec![
-                view(vec![]).with_style(sheet(scroll_child_rules())).into_element(),
-            ])
-            .with_style(sheet(scroll_rules()))
-            .into_element(),
-        ])
-        .with_style(sheet(root_rules()))
-        .into_element()
-    });
     let new = render_new(|| {
         use runtime_vocabulary::builders::{button, pressable, scroll_view, view};
         view()
@@ -362,19 +325,19 @@ fn newcore_button_pressable_scrollview_pixel_parity() {
             )
             .build()
     });
-    assert_painted("button_pressable_scroll", &old);
-    assert_pixels_identical("button_pressable_scroll", &old, &new);
+    assert_painted("button_pressable_scroll", &new);
+    check_new_frame("button_pressable_scroll.png", &new);
 }
 
 // ===========================================================================
 // 4. Reactive control flow: Dyn branch (both initial states) + keyed list
 // ===========================================================================
 
-/// A conditional branch between static siblings — old-core `when` vs
-/// new-core `dyn_keyed` — must paint identically for BOTH initial
-/// states. Both cores are anchorless-incapable here (no splice, see the
-/// splice-contract test), so both mount the branch under a reactive
-/// anchor view; the anchor participates in flex layout on both sides.
+/// A conditional branch between static siblings (`dyn_keyed`) must paint
+/// the old core's frozen pixels for BOTH initial states. This backend is
+/// anchorless-incapable (no splice, see the splice-contract test), so the
+/// branch mounts under a reactive anchor view that participates in flex
+/// layout — exactly as the old walker's `when` did.
 #[test]
 fn newcore_dyn_branch_pixel_parity_both_initial_states() {
     fn root_rules() -> StyleRules {
@@ -393,23 +356,6 @@ fn newcore_dyn_branch_pixel_parity_both_initial_states() {
         sized(24.0, 6.0, "rgb(0, 0, 255)")
     }
 
-    fn old_scene(initial: bool) -> Vec<u8> {
-        render_old(move || {
-            use runtime_core::{signal, view, when, IntoElement};
-            let show = signal(initial);
-            view(vec![
-                view(vec![]).with_style(sheet(header_rules())).into_element(),
-                when(
-                    move || show.get(),
-                    || view(vec![]).with_style(sheet(on_rules())).into_element(),
-                    || view(vec![]).with_style(sheet(off_rules())).into_element(),
-                ),
-                view(vec![]).with_style(sheet(footer_rules())).into_element(),
-            ])
-            .with_style(sheet(root_rules()))
-            .into_element()
-        })
-    }
     fn new_scene(initial: bool) -> Vec<u8> {
         render_new(move || {
             use runtime_scene::dyn_keyed;
@@ -434,14 +380,14 @@ fn newcore_dyn_branch_pixel_parity_both_initial_states() {
         })
     }
 
-    let old_on = old_scene(true);
-    let old_off = old_scene(false);
-    assert_painted("dyn_branch(on)", &old_on);
-    // The two states must actually render differently, or the parity
+    let new_on = new_scene(true);
+    let new_off = new_scene(false);
+    assert_painted("dyn_branch(on)", &new_on);
+    // The two states must actually render differently, or the gate
     // below proves nothing about the branch.
-    assert!(old_on != old_off, "dyn branch states must differ visually");
-    assert_pixels_identical("dyn_branch(on)", &old_on, &new_scene(true));
-    assert_pixels_identical("dyn_branch(off)", &old_off, &new_scene(false));
+    assert!(new_on != new_off, "dyn branch states must differ visually");
+    check_new_frame("dyn_branch_on.png", &new_on);
+    check_new_frame("dyn_branch_off.png", &new_off);
 }
 
 /// A keyed list ([1, 2, 3], key = the number) between static header and
@@ -466,28 +412,6 @@ fn newcore_keyed_list_pixel_parity() {
         )
     }
 
-    let old = render_old(|| {
-        use runtime_core::{each_keyed, signal, view, EachKey, EachRowBuild, IntoElement};
-        let items = signal(vec![1u32, 2, 3]);
-        view(vec![
-            view(vec![]).with_style(sheet(header_rules())).into_element(),
-            each_keyed(move || {
-                items
-                    .get()
-                    .into_iter()
-                    .map(|n| {
-                        let build: EachRowBuild = Box::new(move || {
-                            vec![view(vec![]).with_style(sheet(row_rules(n))).into_element()]
-                        });
-                        (EachKey::new(n), build)
-                    })
-                    .collect()
-            }),
-            view(vec![]).with_style(sheet(footer_rules())).into_element(),
-        ])
-        .with_style(sheet(root_rules()))
-        .into_element()
-    });
     let new = render_new(|| {
         use runtime_scene::keyed;
         use runtime_vocabulary::builders::view;
@@ -504,8 +428,98 @@ fn newcore_keyed_list_pixel_parity() {
             .child(view().style(footer_rules()))
             .build()
     });
-    assert_painted("keyed_list", &old);
-    assert_pixels_identical("keyed_list", &old, &new);
+    assert_painted("keyed_list", &new);
+    check_new_frame("keyed_list.png", &new);
+}
+
+// ===========================================================================
+// 4b. Caps-breadth scene (guards the de-trait pass's default resolution)
+// ===========================================================================
+
+/// COVERAGE BREADTH: every remaining leaf primitive this backend has a
+/// `create_*` for, in one frame — image, icon, activity indicator,
+/// controlled text input, text area, toggle, slider — plus a `link`,
+/// which the CPU backend does NOT implement and therefore resolves to a
+/// **trait default** (`create_link` → `create_view`).
+///
+/// Why this scene exists: the deletion wave converts each backend's
+/// caps impls off the `Backend` trait, at which point every
+/// default-resolved method stops resolving to a `Backend` default and
+/// starts resolving to a **caps** default. A silently-differing default
+/// would change behavior invisibly. Freezing a frame that actually
+/// paints these primitives makes such a change fail loudly here.
+///
+/// The CPU rasterizer renders each unsupported leaf as its diagnostic
+/// placeholder string through the same bitmap-font path, so the frame
+/// distinguishes all eight kinds by glyphs, and the `link` shows up as a
+/// styled box (the default's `create_view`).
+#[test]
+fn newcore_caps_breadth_leaf_primitives_pixel_parity() {
+    fn root_rules() -> StyleRules {
+        rules(|s| {
+            *s = sized(W as f32, H as f32, "#181818");
+            s.gap = Some(Tokenized::Literal(Length::Px(1.0)));
+        })
+    }
+    /// One row per leaf: a fixed box with a readable fg color so each
+    /// placeholder string rasterizes distinctly.
+    fn leaf_rules(color: &str) -> StyleRules {
+        rules(|s| {
+            s.width = Some(Tokenized::Literal(Length::Px(116.0)));
+            s.height = Some(Tokenized::Literal(Length::Px(8.0)));
+            s.color = Some(Tokenized::Literal(Color(color.into())));
+        })
+    }
+    fn link_rules() -> StyleRules {
+        sized(24.0, 6.0, "rgb(90, 160, 255)")
+    }
+    fn test_icon() -> runtime_shared::IconData {
+        runtime_shared::IconData {
+            view_box: (24, 24),
+            paths: &["M4 4 L20 20"],
+            fill_rule: runtime_shared::FillRule::NonZero,
+            filled: false,
+        }
+    }
+
+    let new = render_new(|| {
+        use runtime_vocabulary::builders::{
+            activity_indicator, icon, image, link, slider, text_area, text_input, toggle, view,
+        };
+        use runtime_world::signal;
+        let input = signal(String::from("typed"));
+        let area = signal(String::from("multi\nline"));
+        let flag = signal(true);
+        let amount = signal(0.5f32);
+        view()
+            .style(root_rules())
+            .child(
+                image()
+                    .src("https://example.test/a.png")
+                    .alt("alt text")
+                    .style(leaf_rules("rgb(255, 255, 255)")),
+            )
+            .child(icon().data(test_icon()).style(leaf_rules("rgb(255, 200, 0)")))
+            .child(activity_indicator().style(leaf_rules("rgb(0, 220, 220)")))
+            .child(
+                text_input()
+                    .value(input)
+                    .placeholder("hint")
+                    .style(leaf_rules("rgb(220, 220, 120)")),
+            )
+            .child(text_area().value(area).style(leaf_rules("rgb(180, 140, 255)")))
+            .child(toggle().value(flag).style(leaf_rules("rgb(120, 255, 140)")))
+            .child(slider().value(amount).style(leaf_rules("rgb(255, 140, 140)")))
+            .child(
+                link()
+                    .url("https://example.test/")
+                    .external(true)
+                    .style(link_rules()),
+            )
+            .build()
+    });
+    assert_painted("caps_breadth_leaves", &new);
+    check_new_frame("caps_breadth_leaves.png", &new);
 }
 
 // ===========================================================================
@@ -530,7 +544,7 @@ fn count_rules() -> StyleRules {
 fn press_target_rules() -> StyleRules {
     rules(|s| {
         *s = sized(40.0, 20.0, "rgb(160, 40, 40)");
-        s.position = Some(runtime_core::Position::Absolute);
+        s.position = Some(runtime_shared::Position::Absolute);
         s.left = Some(Tokenized::Literal(Length::Px(10.0)));
         s.top = Some(Tokenized::Literal(Length::Px(40.0)));
     })
@@ -587,64 +601,31 @@ fn newcore_click_commits_via_flush_before_next_paint() {
     assert!(after != before, "flush must commit the click before the next paint");
     app.stop();
 
-    // --- old-core reference leg: same scene, same click, same pixels ---
-    let old_backend = fresh_backend();
-    let owner = runtime_core::mount(old_backend.clone(), move || {
-        use runtime_core::{pressable, signal, text, view, IntoElement};
-        let count = signal(0i32);
-        view(vec![
-            text(move || format!("count: {}", count.get()))
-                .with_style(sheet(count_rules()))
-                .into_element(),
-            pressable(vec![], move || count.set(count.get() + 1))
-                .with_style(sheet(press_target_rules()))
-                .into_element(),
-        ])
-        .with_style(sheet(sized(W as f32, H as f32, "#101020")))
-        .into_element()
-    });
-    test_scheduler::drain();
-    let old_before = render(&old_backend);
-    assert_pixels_identical("click_flush(initial parity)", &old_before, &before);
-    // Bind the outcome FIRST: a `match` on `borrow_mut().dispatch_click(..)`
-    // keeps the scrutinee's borrow alive through the arms, and the old
-    // core's text effect re-borrows the backend synchronously inside
-    // `h()` — the exact "fire after releasing the borrow" host contract
-    // the `ClickOutcome` docs spell out.
-    let outcome = old_backend.borrow_mut().dispatch_click(PRESS_X, PRESS_Y);
-    match outcome {
-        ClickOutcome::HandlerFired(h) => h(),
-        other => panic!("old-core click must land on the pressable, got {other:?}"),
-    }
-    test_scheduler::drain();
-    let old_after = render(&old_backend);
-    assert_pixels_identical("click_flush(post-click parity)", &old_after, &after);
-    drop(owner);
+    // Both frames of the click cycle against the frozen old-core
+    // reference — the pre-click paint AND the post-flush paint — so a
+    // regression in either the initial render or the commit path fails.
+    check_new_frame("click_before.png", &before);
+    check_new_frame("click_after.png", &after);
 }
 
 // ===========================================================================
 // 6. Op-level caps adoption
 // ===========================================================================
 
-/// Host's structural seam must track the Backend splice contract, and
-/// that contract is pinned at `false` (the CPU backend never overrides
-/// the trait default): reactive regions mount ANCHORED on both cores.
-/// If either half flips independently — or the default silently changes
-/// — anchor placement (and therefore layout) diverges between cores.
+/// The structural seam must stay ANCHORED. `supports_child_splice` used
+/// to be a `Backend` trait DEFAULT here (the CPU backend never overrode
+/// it); `Host` makes it REQUIRED, so `newcore.rs` now carries an explicit
+/// body reproducing that default — see
+/// docs/runtime-v2-deletion-baseline.md §2.2. A silent flip to spliced
+/// would move reactive regions out from under their anchor view and
+/// change layout in every frozen PNG, so pin the literal here.
 #[test]
-fn newcore_host_splice_matches_backend_and_stays_anchored() {
-    use runtime_core::Backend;
+fn newcore_host_splice_is_anchored() {
     use runtime_scene::Host;
     let b = CpuBackend::new(W, H);
-    assert_eq!(
-        Host::supports_splice(&b),
-        Backend::supports_child_splice(&b),
-        "Host::supports_splice must delegate to the Backend contract"
-    );
     assert!(
         !Host::supports_splice(&b),
-        "the CPU backend rides the anchored default; a silent flip to spliced \
-         would change reactive-region mounting on the new core only"
+        "the CPU backend renders ANCHORED (the frozen framebuffers pin it)"
     );
 }
 

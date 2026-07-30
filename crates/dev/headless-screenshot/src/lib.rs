@@ -63,13 +63,13 @@ pub fn screenshot_commands(
 /// (JSON): `{"png_base64": "...", "width": W, "height": H}`.
 ///
 /// Must run on the thread that polls the bridge (the registry is
-/// thread-local — see [`runtime_core::robot::bridge::register_command`]).
+/// thread-local — see [`runtime_shared::robot::bridge::register_command`]).
 pub fn register_screenshot_command<F>(default_size: (u32, u32), snapshot: F)
 where
     F: Fn() -> Vec<Command> + 'static,
 {
     use base64::Engine as _;
-    runtime_core::robot::bridge::register_command("screenshot", move |args| {
+    runtime_shared::robot::bridge::register_command("screenshot", move |args| {
         let w = args
             .get("width")
             .and_then(|v| v.as_u64())

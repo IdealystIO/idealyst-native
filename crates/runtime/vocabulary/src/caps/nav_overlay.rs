@@ -79,29 +79,11 @@ pub trait PresenceOps: ViewOps {
 /// Navigator extensions — the unified registry-dispatched entry for
 /// stack/swap/drawer/tab navigator kinds. Serves `walker/navigator.rs`.
 pub trait NavigatorOps: ExternalOps {
-    /// Create a navigator extension; `host` carries every
-    /// framework-owned affordance (mount/release screens, nav-state
-    /// signals, `NavigatorControl`).
-    ///
-    /// Gated on `legacy-bridge`: `NavigatorHost` closes over the
-    /// OLD-core `Element` (build_node / build_layout_with_outlet), so
-    /// this method exists only for old-Backend interop — the
-    /// `LegacyBridge` and the backends' direct old-walker delegations.
-    /// The NEW core mounts navigators through `handlers::navigator`
-    /// (SwapNav/StackNav over Lifecycle/View caps) and never calls it.
-    #[cfg(feature = "legacy-bridge")]
-    #[allow(unused_variables)]
-    fn create_navigator(
-        &mut self,
-        type_id: std::any::TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn std::any::Any>,
-        host: runtime_core::primitives::navigator::NavigatorHost<Self::Node>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        let _ = type_name;
-        self.missing_primitive_placeholder("navigator (backend compiled without `prim-navigator`)")
-    }
+    // `create_navigator` was DELETED with the old core, not re-defaulted.
+    // Its `NavigatorHost` closed over the pre-v2 `Element` (build_node /
+    // build_layout_with_outlet), so it only ever served old-`Backend`
+    // interop. Navigators mount through `handlers::navigator`
+    // (SwapNav/StackNav over the Lifecycle/View caps); nothing calls it.
 
     /// Tear down a navigator extension.
     #[allow(unused_variables)]

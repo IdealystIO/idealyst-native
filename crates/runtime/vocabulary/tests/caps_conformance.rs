@@ -13,13 +13,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use host_mock::{Harness, HostMock, Node, Shared};
-use runtime_core::accessibility::{AccessibilityProps, LiveRegionPriority};
-use runtime_core::animation::AnimProp;
-use runtime_core::assets::TypefaceId;
-use runtime_core::primitives;
-use runtime_core::primitives::link::LinkConfig;
-use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement, ViewportRect};
-use runtime_core::{Action, BackendBatch, BatchOp, Platform, SafeAreaSides, StyleRules};
+use runtime_shared::accessibility::{AccessibilityProps, LiveRegionPriority};
+use runtime_shared::animation::AnimProp;
+use runtime_shared::assets::TypefaceId;
+use runtime_shared::primitives;
+use runtime_shared::primitives::link::LinkConfig;
+use runtime_shared::primitives::portal::{PortalTarget, ViewportPlacement, ViewportRect};
+use runtime_shared::{Action, BackendBatch, BatchOp, Platform, SafeAreaSides, StyleRules};
 use runtime_scene::Host;
 use runtime_vocabulary::{caps, AllCaps};
 

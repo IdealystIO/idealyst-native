@@ -1,6 +1,6 @@
 //! Hover (pointer-over) delivery for the web backend.
 //!
-//! Implements [`runtime_core::Backend::install_hover_handler`] with the
+//! Implements [`runtime_shared::Backend::install_hover_handler`] with the
 //! Pointer Events API. The element gets two listeners — `pointerenter`
 //! and `pointerleave` — which fire the framework's handler with `true`
 //! and `false` respectively.
@@ -17,7 +17,7 @@
 //! lifetime — same pattern as touch/wheel.
 
 use crate::WebBackend;
-use runtime_core::HoverHandler;
+use runtime_shared::HoverHandler;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{Element, Node, PointerEvent};

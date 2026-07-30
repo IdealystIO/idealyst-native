@@ -67,12 +67,6 @@ impl Default for AvatarProps {
 
 /// Circular user-identity element. Renders the `src` image when set,
 /// otherwise the `initials` on a `color`-tinted placeholder background.
-///
-/// **Cargo features:** requires `prim-image` (in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without it compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Avatar(props: &AvatarProps) -> Element {
     // Style-driving props route into the style sinks below, read `.get()`

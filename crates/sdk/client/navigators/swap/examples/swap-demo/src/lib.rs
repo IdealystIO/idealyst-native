@@ -16,14 +16,27 @@ use runtime_core::{AlignItems, FlexDirection, Length};
 use std::rc::Rc;
 use swap_navigator::{SwapBuilder, SwapHandle, SwapNavigator};
 
-/// Navigators self-register at backend construction via `inventory::submit!`
-/// (the SDK force-links its web module so this works in dev + release). The app
-/// just uses them; this hook stays for the CLI bootstrap.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam the CLI-generated wrappers invoke after
+/// `runtime_vocabulary::register_builtins`. The swap navigator's runtime IS
+/// a vocabulary built-in (one backend-neutral handler installed on every
+/// host), so this demo has nothing extra to register — the seam is kept
+/// because every wrapper calls it, and an unregistered payload panics at
+/// realize.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
+/// Runtime-server (sidecar) recorder seam — the recorder's scene registry
+/// gets the navigator from `register_builtins` too, so there is nothing to
+/// register host-side either.
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {
-    swap_navigator::recording::register(backend);
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
 }
 
 const HOME: Route<()> = Route::<()>::new("home", "/");
@@ -42,28 +55,20 @@ pub fn app() -> Element {
         .screen(PROFILE, |_| Screen::new(page("Profile", "The third tab.")))
         .layout(|nav| {
             // Fill-height column: the outlet grows, the bar sits at the bottom.
-            let outlet = ui! {
-                view(style = grow_style) {
-                    { nav.outlet }
-                }
-            };
-            let bar: Element = ui! {
-                TabBar(
-                    items = vec![
-                        TabItem::new("home", "Home"),
-                        TabItem::new("search", "Search"),
-                        TabItem::new("profile", "Profile"),
-                    ],
-                    active_route = nav.active_route,
-                    on_select = nav.on_select,
-                )
-            };
-            let mut children: Vec<Element> = Vec::with_capacity(2);
-            children.push(outlet);
-            children.push(bar);
             ui! {
                 view(style = column_style) {
-                    children
+                    view(style = grow_style) {
+                        nav.outlet
+                    }
+                    TabBar(
+                        items = vec![
+                            TabItem::new("home", "Home"),
+                            TabItem::new("search", "Search"),
+                            TabItem::new("profile", "Profile"),
+                        ],
+                        active_route = nav.active_route,
+                        on_select = nav.on_select,
+                    )
                 }
             }
         });
@@ -72,13 +77,10 @@ pub fn app() -> Element {
 }
 
 fn page(title: &str, body: &str) -> Element {
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = title.to_string(), kind = idea_ui::typography_kind::H1) },
-        ui! { Typography(content = body.to_string(), muted = true) },
-    ];
     ui! {
         view(style = page_style) {
-            children
+            Typography(content = title.to_string(), kind = idea_ui::typography_kind::H1)
+            Typography(content = body.to_string(), muted = true)
         }
     }
 }

@@ -47,16 +47,21 @@ pub mod t {
     }
 }
 
-/// Backend extension registration hook the CLI's per-target wrapper calls
-/// before mount. i18n is pure string replacement — it registers no SDK
-/// externals — so this is a generic no-op valid for every backend.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam, invoked by the CLI-generated wrappers
+/// after `runtime_vocabulary::register_builtins`. i18n is pure string
+/// replacement — it renders no payload of its own — so this is a
+/// registry-generic no-op valid for every backend.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
-/// Recorder-side registration for the runtime-server sidecar. Gated by
-/// `sidecar` (set only by the generated sidecar wrapper) so device/web
-/// builds never pull `dev-server`. No SDK externals to register here.
+/// Recorder-side seam for the runtime-server sidecar
+/// (`dev_server::sidecar::run_newcore`). Gated by `sidecar` (set only by
+/// the generated sidecar wrapper) so device/web builds never pull
+/// `dev-server`.
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {}
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}
 
 /// The app the web client mounts (and the SSG example renders per locale).
 pub fn app() -> Element {

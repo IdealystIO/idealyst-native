@@ -2,7 +2,7 @@
 //! implementation of `runtime_vocabulary::handlers::nav_url_sync`.
 //!
 //! This is the port of the old substrate's
-//! `runtime_core::primitives::navigator::url_sync` onto the new-core
+//! `runtime_shared::primitives::navigator::url_sync` onto the new-core
 //! seam. The *semantics* are carried over invariant-for-invariant
 //! (owned-slice comparison, pending-self-pop swallowing, reconciling
 //! echo suppression, per-entry scroll memory, cold-start history seed);
@@ -23,7 +23,7 @@
 //!   handler's initial mount was deferred); the new handlers mount
 //!   synchronously, so the seed runs inline at registration.
 //! - Deep-link boot needs nothing here: `install_scheduler` already
-//!   seeds `runtime_core`'s initial-path slot from
+//!   seeds `runtime_shared`'s initial-path slot from
 //!   `window.location.pathname` (url_provider.rs), and the new-core
 //!   navigator handlers peek it during `resolve_initial`.
 //! - Popstate dispatch only STAGES commands, so the listener calls
@@ -40,7 +40,7 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use runtime_core::primitives::navigator::NavCommand;
+use runtime_shared::primitives::navigator::NavCommand;
 use runtime_vocabulary::handlers::nav_url_sync::{
     CommittedKind, NavSyncKind, NavSyncRegistration, UrlSyncService,
 };
@@ -50,14 +50,56 @@ use wasm_bindgen::JsCast;
 // ---------------------------------------------------------------------------
 // Browser History surface (same calls url_provider.rs makes)
 // ---------------------------------------------------------------------------
+//
+// Routed through a swappable port so the browser-history CONTRACT is
+// testable: the op sequence (`push:/x`, `replace:/x`, `back`) is the
+// observable, and a real `window.history` cannot report it — nor can a
+// test let a root pop actually leave the page. The old core made the
+// same surface injectable (`UrlProvider` +
+// `runtime_shared::…::install_url_provider`), and its `SimHistory` fake
+// is what the dying `mock-backend/tests/navigator_url_sync.rs` drove;
+// [`HistoryPort`] is that seam re-homed on this module, so the fake and
+// the nine invariants it pinned survive the old core's deletion.
+//
+// Production installs nothing: the `None` slot means the real calls
+// below, unchanged (one thread-local read per history op, and history
+// ops happen once per navigation).
+
+/// The platform History API surface. `None` (production) ⇒ the real
+/// `window.history` calls.
+pub(crate) struct HistoryPort {
+    pub(crate) current_path: Box<dyn Fn() -> String>,
+    pub(crate) push_state: Box<dyn Fn(&str)>,
+    pub(crate) replace_state: Box<dyn Fn(&str)>,
+    pub(crate) history_back: Box<dyn Fn()>,
+}
+
+thread_local! {
+    static HISTORY_PORT: RefCell<Option<HistoryPort>> = const { RefCell::new(None) };
+}
+
+/// Install a fake history surface (tests). Cleared by [`reset`].
+///
+/// Test-only: production leaves the slot `None` (see the module note
+/// above), so this is gated rather than left to trip `dead_code`.
+#[cfg(test)]
+pub(crate) fn install_history_port(port: HistoryPort) {
+    HISTORY_PORT.with(|p| *p.borrow_mut() = Some(port));
+}
 
 fn pathname() -> String {
+    if let Some(p) = HISTORY_PORT.with(|p| p.borrow().as_ref().map(|p| (p.current_path)())) {
+        return p;
+    }
     web_sys::window()
         .and_then(|w| w.location().pathname().ok())
         .unwrap_or_else(|| "/".to_string())
 }
 
 fn push_state(url: &str) {
+    if HISTORY_PORT.with(|p| p.borrow().as_ref().map(|p| (p.push_state)(url))).is_some() {
+        return;
+    }
     if let Some(w) = web_sys::window() {
         if let Ok(h) = w.history() {
             let _ = h.push_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(url));
@@ -66,6 +108,9 @@ fn push_state(url: &str) {
 }
 
 fn replace_state(url: &str) {
+    if HISTORY_PORT.with(|p| p.borrow().as_ref().map(|p| (p.replace_state)(url))).is_some() {
+        return;
+    }
     if let Some(w) = web_sys::window() {
         if let Ok(h) = w.history() {
             let _ = h.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(url));
@@ -74,6 +119,9 @@ fn replace_state(url: &str) {
 }
 
 fn history_back() {
+    if HISTORY_PORT.with(|p| p.borrow().as_ref().map(|p| (p.history_back)())).is_some() {
+        return;
+    }
     if let Some(w) = web_sys::window() {
         if let Ok(h) = w.history() {
             let _ = h.back();
@@ -187,6 +235,7 @@ pub(crate) fn reset() {
     REGISTRY.with(|r| r.borrow_mut().clear());
     PENDING_SELF_POPS.with(|c| c.set(0));
     RECONCILING.with(|c| c.set(false));
+    HISTORY_PORT.with(|p| *p.borrow_mut() = None);
 }
 
 // ---------------------------------------------------------------------------
@@ -461,7 +510,7 @@ pub(crate) fn handle_popstate(new_path: &str) {
 mod tests {
     use super::*;
     use crate::newcore::{start, stop};
-    use runtime_core::Route;
+    use runtime_shared::Route;
     use runtime_vocabulary::builders::{navigator_outlet, stack_navigator};
     use runtime_vocabulary::prims::NavHandle;
     use wasm_bindgen_test::*;
@@ -493,6 +542,120 @@ mod tests {
                 .unwrap();
         });
         let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    }
+
+    // -----------------------------------------------------------------
+    // Simulated browser history (port of the fake in the deleted
+    // `mock-backend/tests/navigator_url_sync.rs`, which was the ONLY
+    // place it existed). Drives this module through [`HistoryPort`], so
+    // the op LOG is observable and a root pop can't navigate the test
+    // page away. Same shape, same assertions.
+    // -----------------------------------------------------------------
+
+    /// A fake History API: entry list + index + an op log. `history_back`
+    /// only moves the index and logs — the popstate the real browser
+    /// would fire is delivered by the TEST calling [`handle_popstate`],
+    /// mirroring the async delivery order.
+    #[derive(Default)]
+    struct SimHistory {
+        entries: Vec<String>,
+        index: usize,
+        log: Vec<String>,
+    }
+
+    impl SimHistory {
+        fn current(&self) -> String {
+            self.entries
+                .get(self.index)
+                .cloned()
+                .unwrap_or_else(|| "/".to_string())
+        }
+        fn pushes(&self) -> usize {
+            self.log.iter().filter(|l| l.starts_with("push:")).count()
+        }
+        fn backs(&self) -> usize {
+            self.log.iter().filter(|l| *l == "back").count()
+        }
+    }
+
+    /// Install the fake seeded at `initial`; returns the shared history
+    /// for assertions. Call BEFORE `start` so the registration's
+    /// cold-start history claim lands in the fake.
+    fn install_sim_history(initial: &str) -> Rc<RefCell<SimHistory>> {
+        let sim = Rc::new(RefCell::new(SimHistory {
+            entries: vec![initial.to_string()],
+            index: 0,
+            log: Vec::new(),
+        }));
+        let (s1, s2, s3, s4) = (sim.clone(), sim.clone(), sim.clone(), sim.clone());
+        install_history_port(HistoryPort {
+            current_path: Box::new(move || s1.borrow().current()),
+            push_state: Box::new(move |url| {
+                let mut h = s2.borrow_mut();
+                let idx = h.index;
+                h.entries.truncate(idx + 1);
+                h.entries.push(url.to_string());
+                h.index += 1;
+                h.log.push(format!("push:{url}"));
+            }),
+            replace_state: Box::new(move |url| {
+                let mut h = s3.borrow_mut();
+                let idx = h.index;
+                h.entries[idx] = url.to_string();
+                h.log.push(format!("replace:{url}"));
+            }),
+            history_back: Box::new(move || {
+                let mut h = s4.borrow_mut();
+                if h.index > 0 {
+                    h.index -= 1;
+                }
+                h.log.push("back".to_string());
+            }),
+        });
+        sim
+    }
+
+    /// Fresh mount + fake history + cleared initial-path slot. The slot
+    /// is per-thread and this binary shares one page, so a deep-link
+    /// test would otherwise leak into its neighbours.
+    fn setup_sim(initial: &str) -> (web_sys::Element, Rc<RefCell<SimHistory>>) {
+        let mount = setup_mount();
+        runtime_shared::primitives::navigator::set_initial_path(None);
+        let sim = install_sim_history(initial);
+        (mount, sim)
+    }
+
+    /// Simulate the user pressing browser Back: move the fake's index
+    /// and deliver the popstate the browser would. The reconciler stages
+    /// commands; `flush_sync` is the driver turn that commits them.
+    fn browser_back(sim: &Rc<RefCell<SimHistory>>) {
+        {
+            let mut h = sim.borrow_mut();
+            assert!(h.index > 0, "browser_back below the first entry");
+            h.index -= 1;
+        }
+        let path = sim.borrow().current();
+        handle_popstate(&path);
+        crate::newcore::flush_sync();
+    }
+
+    /// Simulate browser Forward.
+    fn browser_forward(sim: &Rc<RefCell<SimHistory>>) {
+        {
+            let mut h = sim.borrow_mut();
+            assert!(
+                h.index + 1 < h.entries.len(),
+                "browser_forward past the last entry"
+            );
+            h.index += 1;
+        }
+        let path = sim.borrow().current();
+        handle_popstate(&path);
+        crate::newcore::flush_sync();
+    }
+
+    fn text_of(mount: &web_sys::Element) -> String {
+        mount.text_content().unwrap_or_default()
     }
 
     /// A two-screen stack app; the captured `NavHandle` drives it.
@@ -583,7 +746,7 @@ mod tests {
     async fn regression_deep_link_boot_resolves_and_seeds_history() {
         let mount = setup_mount();
         replace_state("/detail");
-        runtime_core::primitives::navigator::set_initial_path(Some("/detail".to_string()));
+        runtime_shared::primitives::navigator::set_initial_path(Some("/detail".to_string()));
         let _nav = boot_stack_app(&mount);
         sleep_ms(10).await;
         assert!(
@@ -600,6 +763,492 @@ mod tests {
             mount.text_content().unwrap().contains("root-screen"),
             "back from a deep link reveals the synthesized index screen"
         );
+        stop();
+    }
+
+    // =================================================================
+    // Ported suite: the nine invariants the deleted
+    // `mock-backend/tests/navigator_url_sync.rs` pinned on the old core,
+    // re-expressed against THIS module through the `SimHistory` fake.
+    // Each test names the invariant it carries over.
+    // =================================================================
+
+    const SETTINGS: Route<()> = Route::<()>::new("settings", "/settings");
+    const DOCS: Route<()> = Route::<()>::new("docs", "/docs");
+    const DEEP: Route<()> = Route::<()>::new("deep", "/deep");
+    const NESTED_INDEX: Route<()> = Route::<()>::new("nindex", "");
+    const NESTED_DETAIL: Route<()> = Route::<()>::new("ndetail", "/detail");
+
+    /// Two-screen swap app (`/` + `/settings`) with a chrome bar, so the
+    /// layout is a real author tree around the outlet.
+    fn boot_swap_app() -> NavHandle {
+        let handle: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let fill = handle.clone();
+        start(move || {
+            runtime_vocabulary::builders::swap_navigator(&ROOT)
+                .screen(ROOT, |_| {
+                    runtime_vocabulary::text().content("HOME CONTENT").build()
+                })
+                .screen(SETTINGS, |_| {
+                    runtime_vocabulary::text().content("SETTINGS CONTENT").build()
+                })
+                .layout(|| {
+                    runtime_vocabulary::view()
+                        .child(navigator_outlet())
+                        .child(runtime_vocabulary::text().content("BAR"))
+                        .build()
+                })
+                .on_handle(move |h| *fill.borrow_mut() = Some(h))
+                .build()
+        });
+        let h = handle.borrow_mut().take();
+        h.expect("NavHandle filled at mount")
+    }
+
+    /// `Select` mirrors into pushState; browser Back reconciles into a
+    /// `Select` of the previous route and writes NO history of its own
+    /// (the staged-dispatch suppress bit — `before_command` returns
+    /// `true` while RECONCILING, so nothing is pushed for the echo).
+    #[wasm_bindgen_test]
+    fn swap_select_pushes_url_and_browser_back_selects_previous() {
+        let (mount, sim) = setup_sim("/");
+        let nav = boot_swap_app();
+
+        nav.select(&SETTINGS, ());
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("SETTINGS CONTENT"));
+        assert!(
+            sim.borrow().log.contains(&"push:/settings".to_string()),
+            "Select pushed the URL, log: {:?}",
+            sim.borrow().log
+        );
+        assert_eq!(sim.borrow().current(), "/settings");
+
+        let log_len_before = sim.borrow().log.len();
+        browser_back(&sim);
+        let t = text_of(&mount);
+        assert!(t.contains("HOME CONTENT"), "back re-selects home: {t}");
+        assert!(!t.contains("SETTINGS CONTENT"), "settings swapped out: {t}");
+        assert_eq!(
+            sim.borrow().log.len(),
+            log_len_before,
+            "reconciling a popstate must not write history again, log: {:?}",
+            sim.borrow().log
+        );
+        stop();
+    }
+
+    /// Browser Forward after Back re-selects the forward route.
+    #[wasm_bindgen_test]
+    fn swap_browser_forward_reselects() {
+        let (mount, sim) = setup_sim("/");
+        let nav = boot_swap_app();
+
+        nav.select(&SETTINGS, ());
+        crate::newcore::flush_sync();
+        browser_back(&sim);
+        assert!(text_of(&mount).contains("HOME CONTENT"));
+
+        browser_forward(&sim);
+        let t = text_of(&mount);
+        assert!(t.contains("SETTINGS CONTENT"), "forward re-selects settings: {t}");
+        stop();
+    }
+
+    /// `Push` mirrors into pushState; browser Back pops the stack.
+    #[wasm_bindgen_test]
+    fn stack_push_pushes_url_and_browser_back_pops() {
+        let (mount, sim) = setup_sim("/");
+        let nav = boot_stack_app(&mount);
+
+        nav.push(&DETAIL, ());
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("detail-screen"));
+        assert!(
+            sim.borrow().log.contains(&"push:/detail".to_string()),
+            "Push pushed the URL, log: {:?}",
+            sim.borrow().log
+        );
+
+        browser_back(&sim);
+        let t = text_of(&mount);
+        assert!(t.contains("root-screen"), "back popped to root: {t}");
+        assert!(!t.contains("detail-screen"), "detail released: {t}");
+        stop();
+    }
+
+    /// Regression: a programmatic `pop()` moves the browser back exactly
+    /// once and the echoed popstate must NOT pop again (pending-self-pop
+    /// swallow — double-popping past the root was the failure mode); and
+    /// a ROOT pop is a handler no-op that must never `history.back()`
+    /// out of the app. The second half is only testable against a fake
+    /// history: a real `back()` here would unload the test page.
+    #[wasm_bindgen_test]
+    fn regression_programmatic_pop_swallows_echo_and_root_pop_never_leaves_the_app() {
+        let (mount, sim) = setup_sim("/");
+        let nav = boot_stack_app(&mount);
+
+        nav.push(&DETAIL, ());
+        crate::newcore::flush_sync();
+
+        nav.pop();
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("root-screen"), "pop committed");
+        assert_eq!(sim.borrow().backs(), 1, "one history.back(), log: {:?}", sim.borrow().log);
+
+        // The browser delivers the popstate for OUR back — must be inert.
+        let path = sim.borrow().current();
+        handle_popstate(&path);
+        crate::newcore::flush_sync();
+        assert!(
+            text_of(&mount).contains("root-screen"),
+            "echo did not pop again: {}",
+            text_of(&mount)
+        );
+
+        // A root pop is a handler no-op and must not move the browser.
+        let backs_before = sim.borrow().backs();
+        nav.pop();
+        crate::newcore::flush_sync();
+        assert_eq!(
+            sim.borrow().backs(),
+            backs_before,
+            "root pop must not history.back() out of the app, log: {:?}",
+            sim.borrow().log
+        );
+        stop();
+    }
+
+    /// The suppress bit's second half: a reconciled Pop must not ALSO
+    /// run `after_commit`'s reveal bookkeeping — that would drop a
+    /// second entry from the recorded history and the NEXT browser back
+    /// would land on the wrong screen. Two forward pushes, two backs.
+    #[wasm_bindgen_test]
+    fn regression_reconciled_pop_bookkeeping_is_not_applied_twice() {
+        let (mount, sim) = setup_sim("/");
+        let handle: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let fill = handle.clone();
+        start(move || {
+            stack_navigator(&ROOT)
+                .screen(ROOT, |_| runtime_vocabulary::text().content("S-root").build())
+                .screen(DETAIL, |_| runtime_vocabulary::text().content("S-detail").build())
+                .screen(DEEP, |_| runtime_vocabulary::text().content("S-deep").build())
+                .layout(|| navigator_outlet().build())
+                .on_handle(move |h| *fill.borrow_mut() = Some(h))
+                .build()
+        });
+        let nav = { let h = handle.borrow_mut().take(); h.expect("handle") };
+
+        nav.push(&DETAIL, ());
+        crate::newcore::flush_sync();
+        nav.push(&DEEP, ());
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("S-deep"));
+        assert_eq!(sim.borrow().pushes(), 2);
+
+        browser_back(&sim);
+        assert_eq!(sim.borrow().current(), "/detail");
+        assert!(
+            text_of(&mount).contains("S-detail"),
+            "first back landed on /detail: {}",
+            text_of(&mount)
+        );
+
+        browser_back(&sim);
+        assert_eq!(sim.borrow().current(), "/");
+        assert!(
+            text_of(&mount).contains("S-root"),
+            "second back landed on the root — the first reconcile popped \
+             exactly one recorded entry: {}",
+            text_of(&mount)
+        );
+        stop();
+    }
+
+    /// Regression (owned-slice guard): a popstate whose URL change lives
+    /// in a NESTED navigator's slice must not remount the parent's
+    /// screen — remounting would tear the nested navigator down
+    /// mid-transition. Also pins nested base-path composition
+    /// (`/docs` + `/detail`).
+    #[wasm_bindgen_test]
+    fn regression_nested_stack_popstate_does_not_remount_parent_swap_screen() {
+        let (mount, sim) = setup_sim("/");
+        let outer: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let inner: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let docs_builds = Rc::new(Cell::new(0u32));
+
+        let (o, i, dbuilds) = (outer.clone(), inner.clone(), docs_builds.clone());
+        start(move || {
+            let i = i.clone();
+            let dbuilds = dbuilds.clone();
+            runtime_vocabulary::builders::swap_navigator(&ROOT)
+                .screen(ROOT, |_| {
+                    runtime_vocabulary::text().content("HOME CONTENT").build()
+                })
+                .screen(DOCS, move |_| {
+                    dbuilds.set(dbuilds.get() + 1);
+                    let i = i.clone();
+                    stack_navigator(&NESTED_INDEX)
+                        .screen(NESTED_INDEX, |_| {
+                            runtime_vocabulary::text().content("DOCS INDEX").build()
+                        })
+                        .screen(NESTED_DETAIL, |_| {
+                            runtime_vocabulary::text().content("NESTED DETAIL").build()
+                        })
+                        .layout(|| navigator_outlet().build())
+                        .on_handle(move |h| *i.borrow_mut() = Some(h))
+                        .build()
+                })
+                .layout(|| navigator_outlet().build())
+                .on_handle(move |h| *o.borrow_mut() = Some(h))
+                .build()
+        });
+        let onav = { let h = outer.borrow_mut().take(); h.expect("outer handle") };
+
+        onav.select(&DOCS, ());
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("DOCS INDEX"));
+        assert_eq!(docs_builds.get(), 1);
+        let inav = { let h = inner.borrow_mut().take(); h.expect("nested handle at screen build") };
+
+        inav.push(&NESTED_DETAIL, ());
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("NESTED DETAIL"));
+        assert_eq!(
+            sim.borrow().current(),
+            "/docs/detail",
+            "nested push composed its base, log: {:?}",
+            sim.borrow().log
+        );
+
+        // Browser back to /docs: the NESTED stack pops; the parent swap's
+        // owned slice (/docs) is unchanged and must not remount.
+        browser_back(&sim);
+        let t = text_of(&mount);
+        assert!(t.contains("DOCS INDEX"), "nested stack popped to index: {t}");
+        assert!(!t.contains("NESTED DETAIL"), "nested detail released: {t}");
+        assert_eq!(
+            docs_builds.get(),
+            1,
+            "parent swap screen must NOT rebuild when only the nested slice changed"
+        );
+        stop();
+    }
+
+    /// Scroll is snapshotted on push and restored on browser back;
+    /// forward navigations land at the top. The outlet is styled as a
+    /// real scroll box (bounded height + `overflow: hidden`, which is
+    /// still programmatically scrollable) over tall screens, so this
+    /// asserts against actual DOM `scrollTop`.
+    #[wasm_bindgen_test]
+    fn stack_scroll_snapshot_restores_on_browser_back() {
+        use runtime_shared::{Length, StyleRules, Tokenized};
+
+        fn tall(label: &'static str) -> runtime_scene::Element {
+            runtime_vocabulary::view()
+                .style(StyleRules {
+                    height: Some(Tokenized::Literal(Length::Px(600.0))),
+                    ..Default::default()
+                })
+                .child(runtime_vocabulary::text().content(label))
+                .build()
+        }
+
+        let (mount, sim) = setup_sim("/");
+        let handle: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let fill = handle.clone();
+        start(move || {
+            stack_navigator(&ROOT)
+                .screen(ROOT, |_| tall("SCROLL-ROOT"))
+                .screen(DETAIL, |_| tall("SCROLL-DETAIL"))
+                .layout(|| {
+                    navigator_outlet()
+                        .style(StyleRules {
+                            height: Some(Tokenized::Literal(Length::Px(40.0))),
+                            overflow: Some(runtime_shared::Overflow::Hidden),
+                            ..Default::default()
+                        })
+                        .build()
+                })
+                .on_handle(move |h| *fill.borrow_mut() = Some(h))
+                .build()
+        });
+        let nav = { let h = handle.borrow_mut().take(); h.expect("handle") };
+        assert!(text_of(&mount).contains("SCROLL-ROOT"));
+
+        // The outlet is the element whose scroll the sync records.
+        let outlet = outlet_element(&mount);
+        assert!(
+            outlet.scroll_height() > outlet.client_height(),
+            "outlet must actually overflow for scroll to be observable \
+             (scroll_height {} vs client_height {})",
+            outlet.scroll_height(),
+            outlet.client_height()
+        );
+
+        // The user scrolled the root screen before navigating away.
+        outlet.set_scroll_top(120);
+        assert_eq!(outlet.scroll_top(), 120, "browser accepted the scroll");
+
+        nav.push(&DETAIL, ());
+        crate::newcore::flush_sync();
+        assert_eq!(
+            outlet_element(&mount).scroll_top(),
+            0,
+            "a fresh screen starts at the top"
+        );
+
+        browser_back(&sim);
+        assert_eq!(
+            outlet_element(&mount).scroll_top(),
+            120,
+            "back restores the scroll the user left the root at"
+        );
+        stop();
+    }
+
+    /// The outlet element: the mount's nav root's first element child
+    /// (the layout here is a bare `navigator_outlet`).
+    fn outlet_element(mount: &web_sys::Element) -> web_sys::Element {
+        mount
+            .first_element_child()
+            .expect("nav root")
+            .first_element_child()
+            .expect("outlet")
+    }
+
+    /// Regression: a cold start at a URL whose tail belongs to a NESTED
+    /// navigator (`/docs/detail`) must mount the nested screen AND leave
+    /// the full URL intact. The root's history claim originally replaced
+    /// the entry with its OWN owned slice, clobbering the nested
+    /// remainder — a cold `/alerts` load was rewritten to `/`.
+    #[wasm_bindgen_test]
+    fn regression_cold_start_nested_deep_link_preserves_full_url() {
+        let (mount, sim) = setup_sim("/docs/detail");
+        runtime_shared::primitives::navigator::set_initial_path(Some("/docs/detail".to_string()));
+
+        start(move || {
+            runtime_vocabulary::builders::swap_navigator(&ROOT)
+                .screen(ROOT, |_| {
+                    runtime_vocabulary::text().content("HOME CONTENT").build()
+                })
+                .screen(DOCS, move |_| {
+                    stack_navigator(&NESTED_INDEX)
+                        .screen(NESTED_INDEX, |_| {
+                            runtime_vocabulary::text().content("DOCS INDEX").build()
+                        })
+                        .screen(NESTED_DETAIL, |_| {
+                            runtime_vocabulary::text().content("NESTED DETAIL").build()
+                        })
+                        .layout(|| navigator_outlet().build())
+                        .build()
+                })
+                .layout(|| navigator_outlet().build())
+                .build()
+        });
+
+        let t = text_of(&mount);
+        assert!(t.contains("NESTED DETAIL"), "cold deep link mounted the nested screen: {t}");
+        assert_eq!(
+            sim.borrow().current(),
+            "/docs/detail",
+            "root history-claim must not clobber the nested URL slice, log: {:?}",
+            sim.borrow().log
+        );
+        runtime_shared::primitives::navigator::set_initial_path(None);
+        stop();
+    }
+
+    /// Regression (docs-app catalog bug): selecting a DIFFERENT URL of
+    /// the SAME parameterized route must swap the screen (the cache and
+    /// no-op guard are URL-keyed, not name-keyed), and re-selecting the
+    /// ACTIVE url must NOT push a duplicate history entry.
+    #[wasm_bindgen_test]
+    fn regression_swap_parameterized_route_selects_by_url_not_name() {
+        use runtime_shared::primitives::navigator::RouteParams;
+        use std::collections::HashMap as Map;
+
+        #[derive(Clone)]
+        struct EntryParams {
+            name: String,
+        }
+        impl RouteParams for EntryParams {
+            fn to_path(&self, pattern: &str) -> String {
+                pattern.replace(":name", &self.name)
+            }
+            fn from_segments(segs: &Map<String, String>) -> Option<Self> {
+                segs.get("name").map(|n| EntryParams { name: n.clone() })
+            }
+        }
+        const ENTRY: Route<EntryParams> = Route::<EntryParams>::new("entry", "/entry/:name");
+
+        let (mount, sim) = setup_sim("/");
+        let handle: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let fill = handle.clone();
+        start(move || {
+            runtime_vocabulary::builders::swap_navigator(&ROOT)
+                .screen(ROOT, |_| runtime_vocabulary::text().content("OVERVIEW").build())
+                .screen(ENTRY, |p: EntryParams| {
+                    runtime_vocabulary::text()
+                        .content(format!("ENTRY {}", p.name))
+                        .build()
+                })
+                .layout(|| navigator_outlet().build())
+                .on_handle(move |h| *fill.borrow_mut() = Some(h))
+                .build()
+        });
+        let nav = { let h = handle.borrow_mut().take(); h.expect("handle") };
+
+        nav.select(&ENTRY, EntryParams { name: "button".into() });
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("ENTRY button"));
+        assert_eq!(sim.borrow().current(), "/entry/button");
+
+        nav.select(&ENTRY, EntryParams { name: "card".into() });
+        crate::newcore::flush_sync();
+        let t = text_of(&mount);
+        assert!(t.contains("ENTRY card"), "same-route select swapped: {t}");
+        assert!(!t.contains("ENTRY button"), "stale entry swapped out: {t}");
+        assert_eq!(sim.borrow().current(), "/entry/card");
+
+        let pushes_before = sim.borrow().pushes();
+        nav.select(&ENTRY, EntryParams { name: "card".into() });
+        crate::newcore::flush_sync();
+        assert_eq!(
+            sim.borrow().pushes(),
+            pushes_before,
+            "re-selecting the active URL must not push history, log: {:?}",
+            sim.borrow().log
+        );
+
+        browser_back(&sim);
+        assert!(
+            text_of(&mount).contains("ENTRY button"),
+            "back re-selects the previous entry: {}",
+            text_of(&mount)
+        );
+        stop();
+    }
+
+    /// Cold start at a deep-link URL mounts that screen and the root
+    /// seed CLAIMS the history entry via replaceState (stray hash/state
+    /// cleared) without rewriting the path.
+    #[wasm_bindgen_test]
+    fn cold_start_deep_link_mounts_url_screen_and_claims_the_entry() {
+        let (mount, sim) = setup_sim("/settings");
+        runtime_shared::primitives::navigator::set_initial_path(Some("/settings".to_string()));
+
+        let _nav = boot_swap_app();
+
+        let t = text_of(&mount);
+        assert!(t.contains("SETTINGS CONTENT"), "deep link mounted the URL's screen: {t}");
+        assert!(!t.contains("HOME CONTENT"), "home not mounted: {t}");
+        assert!(
+            sim.borrow().log.iter().any(|l| l == "replace:/settings"),
+            "root seed claimed the history entry, log: {:?}",
+            sim.borrow().log
+        );
+        runtime_shared::primitives::navigator::set_initial_path(None);
         stop();
     }
 }

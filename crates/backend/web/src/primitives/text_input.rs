@@ -2,8 +2,8 @@
 //! value signal and a per-keystroke `on_change` callback.
 
 use crate::WebBackend;
-use runtime_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
-use runtime_core::primitives::text_input::{
+use runtime_shared::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
+use runtime_shared::primitives::text_input::{
     BlurHandler, BlurOutcome, TextInputHandle, TextInputOps,
 };
 use std::any::Any;

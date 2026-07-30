@@ -30,12 +30,12 @@ use crate::WebBackend;
 // `css_num`, not `f32: Display` — a bare `{}` on an f32 reinstates core's
 // ~12-15 KB flt2dec float formatter in every bundle (see css::css_num).
 use css::css_num;
-use runtime_core::primitives::portal::{
+use runtime_shared::primitives::portal::{
     AnchorTarget, ElementAlign, ElementSide, PortalHandle, PortalOps, PortalTarget,
     ViewportPlacement, ViewportRect,
 };
 use std::cell::RefCell;
-use runtime_core::FxHashMap;
+use runtime_shared::FxHashMap;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -83,7 +83,7 @@ pub(crate) struct PortalInstance {
     /// `requestAnimationFrame` here that fires once the children
     /// have mounted and a paint has measured them.
     #[allow(dead_code)]
-    initial_measure_task: Option<runtime_core::ScheduledTask>,
+    initial_measure_task: Option<runtime_shared::ScheduledTask>,
     /// Focus-trap `focusin` handler attached to the window. Only
     /// populated when `trap_focus = true`. Routes focus back to the
     /// first focusable child of the portal when it tries to leave
@@ -445,7 +445,7 @@ fn install_anchor_reposition(
 ) -> (
     Option<Closure<dyn FnMut(web_sys::Event)>>,
     Option<Closure<dyn FnMut(web_sys::Event)>>,
-    Option<runtime_core::ScheduledTask>,
+    Option<runtime_shared::ScheduledTask>,
 ) {
     let window = match web_sys::window() {
         Some(w) => w,
@@ -466,9 +466,9 @@ fn install_anchor_reposition(
         let viewport = viewport_size();
         let portal_size = measure_portal_size(&portal_html);
         // Shared, host-tested placement resolver (side-flip + measured
-        // position + viewport clamp). Lives in runtime_core so web/iOS/
+        // position + viewport clamp). Lives in runtime_shared so web/iOS/
         // Android can't drift (CLAUDE.md §7).
-        let placement = runtime_core::primitives::portal::resolve_anchored_placement(
+        let placement = runtime_shared::primitives::portal::resolve_anchored_placement(
             trigger, portal_size, viewport, side, align, offset, EDGE_GAP,
         );
         let style = portal_html.style();
@@ -504,7 +504,7 @@ fn install_anchor_reposition(
     // `insert_children` call completes and the browser has laid the
     // children out.
     let reposition_initial = reposition.clone();
-    let initial_measure_task = runtime_core::after_animation_frame(move || {
+    let initial_measure_task = runtime_shared::after_animation_frame(move || {
         (reposition_initial)();
     });
 

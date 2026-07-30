@@ -22,7 +22,7 @@ use std::time::Instant;
 
 use objc2::rc::Retained;
 use objc2_foundation::NSObject;
-use runtime_core::driver::{install_render_loop_driver, RenderLoopDriver, RenderLoopHandle};
+use runtime_shared::driver::{install_render_loop_driver, RenderLoopDriver, RenderLoopHandle};
 
 /// Register this backend's driver with `runtime-core`. Idempotent —
 /// first install wins. Called by `host-appkit` during app boot so

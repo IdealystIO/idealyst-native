@@ -216,5 +216,80 @@ pub trait VirtualizerOps {
     fn scroll_to_index(&self, node: &dyn Any, index: usize);
 }
 
+#[cfg(test)]
+mod tests {
+    //! `VirtualLayout` / `Lanes` lane resolution — the gap-aware autofit
+    //! algebra, narrow-container degradation, and the always-report-grid
+    //! rule.
+    //!
+    //! RELOCATED from `runtime-core/src/primitives/virtualizer.rs`
+    //! (deletion baseline §4.2, SV-R — flagged there as the
+    //! highest-value relocate in the group). The 4 lane-math cases below
+    //! are byte-for-byte the old assertions against the same
+    //! `Lanes::resolve` / `VirtualLayout::is_grid`, which live HERE.
+    //!
+    //! The old file also held 3 cases driving the dead
+    //! `Bound<VirtualizerHandle>` builder (`.axis` / `.lanes` /
+    //! `.spacing` / `.gap` writing into `Element::Virtualizer`). Those
+    //! are NOT relocated as-is — the builder they exercise is being
+    //! deleted. Their successor on the surviving core is
+    //! `runtime-vocabulary/tests/virtualizer_graphics.rs`, which drives
+    //! the vocabulary's `VirtualizerPrim` builder and asserts the same
+    //! resulting `VirtualLayout`. What DOES belong here is the default
+    //! the builder starts from, so it is pinned as data below.
 
+    use super::*;
+
+    /// The resting layout a virtualizer starts from: a vertical,
+    /// single-lane, gapless list — i.e. NOT a grid.
+    #[test]
+    fn default_layout_is_a_vertical_single_lane_list() {
+        let l = VirtualLayout::default();
+        assert_eq!(l.axis, Axis::Vertical);
+        assert_eq!(l.lanes, Lanes::Fixed(1));
+        assert_eq!(l.main_spacing, 0.0);
+        assert_eq!(l.cross_spacing, 0.0);
+        assert!(!l.is_grid());
+    }
+
+    #[test]
+    fn fixed_lanes_ignore_container_extent() {
+        // Fixed always returns its count (>=1), regardless of cross size.
+        assert_eq!(Lanes::Fixed(3).resolve(1000.0, 8.0), 3);
+        assert_eq!(Lanes::Fixed(3).resolve(0.0, 8.0), 3);
+        // Zero clamps up to one — never a divide-by-zero grid.
+        assert_eq!(Lanes::Fixed(0).resolve(1000.0, 0.0), 1);
+    }
+
+    #[test]
+    fn autofit_resolves_gap_aware_lane_count() {
+        // 5 lanes of 100 + 4 gaps of 10 = 540 <= 540: exactly 5.
+        assert_eq!(Lanes::AutoFit { min_cross: 100.0 }.resolve(540.0, 10.0), 5);
+        // One pixel short of fitting a 5th lane → 4.
+        assert_eq!(Lanes::AutoFit { min_cross: 100.0 }.resolve(539.0, 10.0), 4);
+        // No gaps: floor(cross / min).
+        assert_eq!(Lanes::AutoFit { min_cross: 160.0 }.resolve(500.0, 0.0), 3);
+    }
+
+    #[test]
+    fn autofit_degrades_to_one_lane_on_unknown_or_narrow_container() {
+        // Container narrower than one min lane → 1 (a list), never 0.
+        assert_eq!(Lanes::AutoFit { min_cross: 200.0 }.resolve(150.0, 0.0), 1);
+        // Zero/unknown container extent → 1.
+        assert_eq!(Lanes::AutoFit { min_cross: 200.0 }.resolve(0.0, 0.0), 1);
+        // Nonsense min → 1.
+        assert_eq!(Lanes::AutoFit { min_cross: 0.0 }.resolve(500.0, 0.0), 1);
+    }
+
+    /// Even though AutoFit can resolve to one lane at runtime, the author
+    /// asked for grid behavior, so `is_grid()` is true.
+    #[test]
+    fn autofit_is_always_reported_as_grid() {
+        let l = VirtualLayout {
+            lanes: Lanes::AutoFit { min_cross: 120.0 },
+            ..VirtualLayout::default()
+        };
+        assert!(l.is_grid());
+    }
+}
 

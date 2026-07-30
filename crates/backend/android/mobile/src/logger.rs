@@ -2,14 +2,14 @@
 //! crate facade, which `android_logger` (initialized in `JNI_OnLoad`)
 //! routes to **logcat** under the `idealyst` tag.
 //!
-//! Without this, `runtime_core::log` / `log_info!` fall back to
+//! Without this, `runtime_shared::log` / `log_info!` fall back to
 //! `StderrLogger` — and Android discards a native library's stdout/stderr
 //! by default, so every app-level log line silently vanishes. Installing
 //! this forwarder is what makes `log_info!("…")` from author code (and
 //! the E2E demo's console output) actually show up under
 //! `adb logcat -s idealyst`.
 
-use runtime_core::logging::{LogLevel, Logger};
+use runtime_shared::logging::{LogLevel, Logger};
 
 struct AndroidLogger;
 
@@ -34,5 +34,5 @@ impl Logger for AndroidLogger {
 /// `JNI_OnLoad`, right after `android_logger::init_once`, so it's in
 /// place before any app code runs.
 pub(crate) fn install_logger() {
-    runtime_core::logging::install_logger(Box::new(AndroidLogger));
+    runtime_shared::logging::install_logger(Box::new(AndroidLogger));
 }

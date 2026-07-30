@@ -19,12 +19,12 @@ name = "backend_ios_tv"
 crate-type = ["staticlib", "rlib"]
 
 [features]
-debug-stats = ["runtime-core/debug-stats"]
+debug-stats = ["runtime-shared/debug-stats"]
 runtime-server = ["dep:runtime-server-shell-native", "runtime-server-shell-native/runtime-server"]
-async-driver = ["runtime-core/async-driver"]
+async-driver = ["runtime-shared/async-driver"]
 
 [dependencies]
-runtime-core = { workspace = true }
+runtime-shared = { workspace = true }
 runtime-layout = { workspace = true }
 backend-ios-core = { workspace = true }
 runtime-server-shell-native = { workspace = true, optional = true }

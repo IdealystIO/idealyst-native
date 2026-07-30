@@ -7,7 +7,7 @@ use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::JNIEnv;
-use runtime_core::ObjectFit;
+use runtime_shared::ObjectFit;
 
 pub(crate) fn create(b: &AndroidBackend, _src: &str, _alt: Option<&str>) -> GlobalRef {
     with_env(|env| {

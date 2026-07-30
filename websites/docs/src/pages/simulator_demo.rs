@@ -35,7 +35,7 @@ use crate::shell::{PageBody, PageHeader, PageTypographyProps, PageHeaderProps};
 /// Notes / gotchas:
 ///
 /// - `app()` is invoked here a SECOND time inside its own host. Each
-///   call is independent reactive state — the outer's `Owner` tracks
+///   call is independent reactive state — the outer world tracks
 ///   the outer scopes, the inner's tracks the inner ones; signals,
 ///   refs, and theme installation are all per-tree.
 /// - `install_idea_theme` is idempotent (first installer wins), so

@@ -5,21 +5,24 @@
 //! (built from a winit `Window`), and drives
 //! `render_wgpu::Renderer` per frame.
 //!
-//! Variant crates (`variant-phone`, `-tablet`, `-tv`) call
-//! [`run`] with a [`DeviceProfile`].
+//! Variant crates (`variant-phone`, `-tablet`, `-tv`) call [`run`] /
+//! [`run_with`] with a [`DeviceProfile`].
 
 mod app;
 mod gpu;
 mod scheduler;
 
-// idea-lite core migration (P5): `newcore::run`/`run_with` — the
-// new-core windowed boot (World + Registry + realize + flush driver via
-// `render_wgpu::newcore`). Off by default so the local-render build
-// path is unchanged.
-#[cfg(feature = "new-core")]
-pub mod newcore;
-
 pub use app::{run, run_with, RunError};
+
+/// Compatibility path. The windowed boot used to live behind a
+/// `newcore` module while the framework carried two cores; callers and
+/// docs spell it `host_winit::newcore::run` / `::run_with`. There is
+/// one core now and the entries live at the crate root ([`crate::run`],
+/// [`crate::run_with`]) — this re-export keeps the historical paths
+/// resolving.
+pub mod newcore {
+    pub use crate::{run, run_with};
+}
 
 #[cfg(feature = "runtime-server")]
 pub use app::run_runtime_server;

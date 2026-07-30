@@ -19,7 +19,7 @@
 //! compiled) and makes the retarget a single reviewable seam. The
 //! emission DIFFERENCES that are more than a path change (structured
 //! generator-backend bindings, deferred primitives) are explicit
-//! `cfg(feature = "new-core")` decision points at the sites themselves.
+//! decision points at the emission sites themselves.
 //!
 //! ## Scope of the rewrite — and its documented edge
 //!

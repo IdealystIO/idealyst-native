@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# POSIX implementation of `runtime_core::robot::logs::LogCapture`.
+# POSIX implementation of `runtime_shared::robot::logs::LogCapture`.
 # Splices stdout/stderr through pipes via `libc::dup`/`pipe`/`dup2`,
 # reads each line on a worker thread, pushes it into the framework's
 # robot log buffer, and mirrors bytes back to the original fd so the
@@ -21,14 +21,17 @@ path = "src/lib.rs"
 
 [features]
 default = []
-# Opt-in compile of the impl. Forwards to `runtime-core/robot` so
+# Opt-in compile of the impl. Forwards to `runtime-shared/robot` so
 # the `LogCapture` trait + `install_log_capture` registry resolve.
 # Backends activate this via their own `robot` feature, or hosts
 # pull it in directly.
-log-capture = ["dep:libc", "runtime-core/robot"]
+log-capture = ["dep:libc", "runtime-shared/robot"]
 
 [dependencies]
-runtime-core = { workspace = true }
+# Substrate only: this crate names nothing but the robot log registry
+# (`runtime_shared::robot::logs`), which is permanent substrate — no
+# author surface, no scene types, so no facade alias.
+runtime-shared = { workspace = true }
 
 # Optional: only pulled in when this crate's `log-capture` feature
 # is on, AND only used on unix targets. Non-unix builds get a no-op

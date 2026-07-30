@@ -81,7 +81,7 @@ use std::time::Duration;
 
 use runtime_core::after_ms_detached;
 use runtime_core::driver::spawn_async;
-use runtime_core::Signal;
+use runtime_core::{signal, Signal};
 
 pub mod manifest;
 mod error;
@@ -280,9 +280,14 @@ pub struct Updater {
 impl Updater {
     /// Create an updater for the given configuration. Starts in
     /// [`UpdateState::Idle`]; nothing happens until you [`check`](Self::check).
+    ///
+    /// Creates a signal, so it must run where signal creation is legal — a
+    /// component body, an effect, or any world-entered build scope. Calling it
+    /// from an event handler panics; build the updater once (or use
+    /// [`install`]) and capture the handle.
     pub fn new(config: UpdateConfig) -> Self {
         Self {
-            state: Signal::new(UpdateState::Idle),
+            state: signal(UpdateState::Idle),
             config: Rc::new(config),
             pending: Rc::new(RefCell::new(None)),
         }
@@ -465,6 +470,9 @@ thread_local! {
 /// );
 /// // Bind `updater.state()` in your UI; call `updater.relaunch()` when ready.
 /// ```
+///
+/// Like [`Updater::new`], this creates a signal and must therefore run inside
+/// the world (app boot / a component body), not from an event handler.
 pub fn install(config: UpdateConfig) -> Updater {
     let check_on_launch = config.check_on_launch;
     let interval = config.check_interval;
@@ -514,32 +522,41 @@ mod tests {
         assert!(!InstallKind::Unknown.can_self_update());
     }
 
+    /// `Updater::new` mints a signal, which requires the ambient world.
+    fn world<R>(f: impl FnOnce() -> R) -> R {
+        runtime_core::__with_fresh_world(f)
+    }
+
     #[test]
     fn updater_starts_idle() {
-        let updater = Updater::new(UpdateConfig::new(
-            "https://example.com/stable.json",
-            "stable",
-            [0u8; 32],
-            "1.0.0",
-            1,
-        ));
-        assert_eq!(updater.state().get(), UpdateState::Idle);
+        world(|| {
+            let updater = Updater::new(UpdateConfig::new(
+                "https://example.com/stable.json",
+                "stable",
+                [0u8; 32],
+                "1.0.0",
+                1,
+            ));
+            assert_eq!(updater.state().get(), UpdateState::Idle);
+        });
     }
 
     #[test]
     fn install_before_check_is_nothing_to_install() {
-        let updater = Updater::new(UpdateConfig::new(
-            "https://example.com/stable.json",
-            "stable",
-            [0u8; 32],
-            "1.0.0",
-            1,
-        ));
-        // Drive the future to completion synchronously — it never awaits before
-        // the early return.
-        let fut = updater.download_and_install();
-        let result = futures_lite_block(fut);
-        assert!(matches!(result, Err(UpdateError::NothingToInstall)));
+        world(|| {
+            let updater = Updater::new(UpdateConfig::new(
+                "https://example.com/stable.json",
+                "stable",
+                [0u8; 32],
+                "1.0.0",
+                1,
+            ));
+            // Drive the future to completion synchronously — it never awaits
+            // before the early return.
+            let fut = updater.download_and_install();
+            let result = futures_lite_block(fut);
+            assert!(matches!(result, Err(UpdateError::NothingToInstall)));
+        });
     }
 
     /// Minimal executor for a future that completes without ever yielding

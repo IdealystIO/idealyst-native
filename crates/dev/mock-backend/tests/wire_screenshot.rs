@@ -1,7 +1,7 @@
 //! The headline: a *mocked* wire command stream → a rasterized PNG, no
 //! device, no window. Proves the full chain
 //!
-//!   real walker → WireRecordingBackend → wire::codec → WireBackend →
+//!   real realize → WireRecordingBackend → wire::codec → WireBackend →
 //!     WgpuBackend → offscreen GPU render → PNG
 //!
 //! works end-to-end — i.e. Robot / MCP can screenshot the app even when
@@ -17,10 +17,9 @@
 use std::rc::Rc;
 
 use mock_backend::{screenshot_app, screenshot_commands};
-use runtime_core::{
-    Color, Element, IntoStyleSource, Length, SafeAreaSides, StyleApplication, StyleRules,
-    StyleSheet, Tokenized,
-};
+use runtime_scene::Element;
+use runtime_shared::{Color, Length, StyleApplication, StyleRules, StyleSheet, Tokenized};
+use runtime_vocabulary::builders::view;
 use wire::{Command, NodeId};
 
 fn colored_fill(hex: &'static str) -> Element {
@@ -31,20 +30,7 @@ fn colored_fill(hex: &'static str) -> Element {
         r
     }));
     let style = StyleApplication::new(sheet).override_background(Color(hex.to_string()));
-    Element::View {
-        children: vec![],
-        style: Some(style.into_style_source()),
-        ref_fill: None,
-        safe_area_sides: SafeAreaSides::NONE,
-        on_touch: None,
-        on_wheel: None,
-        on_file_drop: None,
-        on_hover: None,
-        is_container: false,
-        accessibility: Default::default(),
-        // `test_id` is present: this crate pins runtime-core/robot.
-        test_id: None,
-    }
+    view().style(style).build()
 }
 
 fn png_center_is_bluish(png: &[u8], w: u32, h: u32) -> bool {
@@ -88,27 +74,25 @@ fn mocked_app_renders_to_png() {
 /// screenshot the mocked app" hookup.
 #[test]
 fn screenshot_verb_over_robot_bridge_returns_png() {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
     if !adapter_available() {
         return;
     }
 
-    // A "mocked session": an app rendered into a recorder. (The
+    // A "mocked session": an app realized into a recorder. (The
     // dev-server holds exactly this in runtime-server mode.) Hold the
-    // owner so the scene stays mounted.
+    // session so the scene stays mounted.
     let (w, h) = (80u32, 56u32);
     let recorder = dev_server::WireRecordingBackend::new();
-    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-    let _owner = runtime_core::mount(backend_rc, || colored_fill("#2244dd"));
+    let _session = dev_server::newcore::SceneSession::mount(&recorder, |_r| {}, || {
+        colored_fill("#2244dd")
+    });
 
     // Hook up the verb (the dev-server/host does this once).
     mock_backend::register_screenshot_command(recorder, (w, h));
 
     // Drive it the way the MCP server's `robot_call("screenshot", ...)`
     // does — through the bridge dispatch.
-    let resp = runtime_core::robot::bridge::invoke_command(
+    let resp = runtime_shared::robot::bridge::invoke_command(
         "screenshot",
         &serde_json::json!({ "width": w, "height": h }),
     )
@@ -129,7 +113,7 @@ fn screenshot_verb_over_robot_bridge_returns_png() {
         "the mocked app's blue fill must rasterize blue-dominant through the bridge"
     );
 
-    runtime_core::robot::bridge::unregister_command("screenshot");
+    runtime_shared::robot::bridge::unregister_command("screenshot");
 }
 
 #[test]

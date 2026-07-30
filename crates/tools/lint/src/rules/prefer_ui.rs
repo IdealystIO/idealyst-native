@@ -11,7 +11,8 @@
 //! - `Element::View { … }`, `Element::Text { … }`, … — a struct literal of
 //!   a primitive `Element` variant.
 //!
-//! `Element::External { … }` and `Element::Component { … }` are
+//! The old core's `Element::External { … }` / `Element::Component { … }`
+//! literals (which the lint still recognises in legacy sources) are
 //! deliberately **not** flagged: per the framework's core rules, `External`
 //! is the blessed third-party-extension construction path and `Component`
 //! is the macro's own wrapper — both are legitimate hand-written forms.

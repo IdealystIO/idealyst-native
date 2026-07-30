@@ -28,7 +28,7 @@ use crate::{MediaContent, VideoOps, VideoProps};
 // keeps working).
 use backend_android::{with_jni_env, AndroidBackend};
 use jni::objects::{GlobalRef, JObject, JValue};
-use runtime_core::effect;
+use runtime_world::effect;
 use std::any::Any;
 use std::rc::Rc;
 
@@ -36,19 +36,9 @@ const SINK: &str = "io/idealyst/video/RustVideoFrameSink";
 
 pub(crate) static OPS: &dyn VideoOps = &AndroidVideoOps;
 
-/// Register the Video handler against an `AndroidBackend`. One-line call
-/// from the app's bootstrap.
-pub fn register(backend: &mut AndroidBackend) {
-    backend.register_external::<VideoProps, _>(|props, b| build_video(props, b));
-}
-
-// Self-register at backend construction (no app-side `register` call needed).
-// See [[project_inventory_self_registration]].
-inventory::submit! {
-    backend_android::AndroidExternalRegistrar(register)
-}
-
-fn build_video(props: &Rc<VideoProps>, b: &mut AndroidBackend) -> GlobalRef {
+/// Build the native Android video host view for `props`. Called by the
+/// `Registry<AndroidBackend>` mount handler in lib.rs.
+pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut AndroidBackend) -> GlobalRef {
     // The host is a FrameLayout; the Kotlin shim adds a VideoView (URL) or
     // ImageView (stream) child as needed.
     let host = b.with_jni(|env, ctx| {
@@ -73,7 +63,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut AndroidBackend) -> GlobalRef {
     let host_for_url = host.clone();
     let props_for_url = props.clone();
     let first_run = std::cell::Cell::new(true);
-    effect!({
+    effect(move || {
         let url = match props_for_url.source.resolve() {
             MediaContent::Url(u) => u,
             MediaContent::Stream(_) | MediaContent::None => return,
@@ -93,7 +83,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut AndroidBackend) -> GlobalRef {
     let cover = matches!(props.object_fit, crate::ObjectFit::Cover);
     let mut last_gen: u64 = u64::MAX;
     let mut scratch: Vec<u8> = Vec::new();
-    runtime_core::raf_loop_scoped(move || {
+    runtime_vocabulary::scoped_scheduling::raf_loop_scoped(move || {
         let MediaContent::Stream(stream) = props_for_stream.source.resolve() else {
             return;
         };

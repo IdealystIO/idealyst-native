@@ -4,7 +4,7 @@ The dev-mode wire protocol that connects a Rust dev process to a running app
 on a device, simulator, or browser. Used by:
 
 - **Hot reload.** The dev process re-runs the user's component tree on each
-  edit and ships the resulting `Backend` calls as `Command`s to the app.
+  edit and ships the resulting capability calls as `Command`s to the app.
 - **Server-driven UI (runtime-server, "Application-as-a-Service").** The same protocol
   drives apps where the *production* UI runs on a dev-controlled server
   and the device is a thin replayer.
@@ -15,13 +15,13 @@ elsewhere (see "Where transport / replay live" below).
 ## Design
 
 The dev side runs the user's components in a normal Rust process. A
-`WireRecordingBackend` (in `dev-server`) translates every `Backend` trait
-call the render walker makes into a serializable [`Command`]. The app side
+`WireRecordingBackend` (in `dev-server`) translates every capability
+call the realize pass makes into a serializable [`Command`]. The app side
 receives the command stream and a [`WireBackend<B>`] (in
 [`../dev-client`](../dev-client)) replays each command against the real
 platform backend (`WebBackend`, `IosBackend`, `AndroidBackend`, …).
 
-The protocol is **pure data**. This crate has no `runtime-core`
+The protocol is **data**. This crate has no runtime
 dependency. Conversion to/from in-memory framework types is the caller's
 job (`dev-server` for the dev side, `dev-client` for the app side).
 
@@ -50,7 +50,7 @@ not pay for backward compatibility. Mismatched versions fail loudly at the
 
 ## Adding a new wire command
 
-A new `Backend` trait method that needs to traverse the wire requires:
+A new capability method that needs to traverse the wire requires:
 
 1. A new variant in `Command` (or the relevant child enum).
 2. A matching encode on the dev side in `dev-server`'s `WireRecordingBackend`.
@@ -66,7 +66,8 @@ A new `Backend` trait method that needs to traverse the wire requires:
 This crate is data-only. The pieces that move bytes:
 
 - **App-side replay engine**: [`../dev-client`](../dev-client). Wraps any
-  `runtime_core::Backend` and feeds it `Command`s.
+  the platform's `runtime_vocabulary::caps` surface and feeds it
+  `Command`s.
 - **App-side native transport**: [`../runtime-server-shell`](../runtime-server-shell).
   Sync WebSocket + mDNS discovery. Used on iOS / Android / desktop.
 - **App-side web transport**: `backend-web`'s `dev_transport` module.

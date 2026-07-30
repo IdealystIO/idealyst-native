@@ -994,6 +994,208 @@ fn fill_default_text_font(
 }
 
 // ===========================================================================
+// Tests — breakpoint + container overlay folding.
+//
+// Ports of the old walker's inline `walker/style.rs::{breakpoint_tests,
+// container_tests}` (8). `runtime-shared` tests the style-engine
+// PRIMITIVES (sheet resolution, variant axes, `StyleRules::merge`); what
+// dies with the walker is the *fold policy* built on top of them —
+// sort-by-rank-not-declaration-order, mobile-first cumulative layering,
+// the same-`Rc` fast path when nothing is active, zero-width ⇒ base, and
+// the convergence property the native container-query feedback loop
+// depends on. Nothing else covers those: the scene-parity goldens record
+// only the FINAL applied rules for the widths their fixtures happen to
+// run at.
+// ===========================================================================
+
+#[cfg(test)]
+mod overlay_merge_tests {
+    use super::*;
+    use runtime_shared::container_query::container_axis_name;
+    use runtime_shared::{set_viewport_size, Breakpoint, Length, StyleSheet, Tokenized, ViewportSize};
+
+    fn px(p: f32) -> Option<Tokenized<Length>> {
+        Some(Tokenized::Literal(Length::Px(p)))
+    }
+
+    fn width_of(rules: &StyleRules) -> Length {
+        *rules
+            .width
+            .as_ref()
+            .expect("width is set in these fixtures")
+            .value()
+    }
+
+    /// Base `width: 100`, `breakpoint md { width: 500 }`,
+    /// `breakpoint lg { width: 900 }` — `lg` declared FIRST on purpose,
+    /// so a resolver that merely preserved declaration order would fail.
+    fn responsive_app() -> StyleApplication {
+        let sheet = Rc::new(
+            StyleSheet::new(|_vs| StyleRules {
+                width: px(100.0),
+                ..Default::default()
+            })
+            .variant("__bp_lg", "on", |_vs| StyleRules {
+                width: px(900.0),
+                ..Default::default()
+            })
+            .variant("__bp_md", "on", |_vs| StyleRules {
+                width: px(500.0),
+                ..Default::default()
+            }),
+        );
+        StyleApplication::new(sheet)
+    }
+
+    #[test]
+    fn resolve_breakpoint_overlays_sorts_ascending_and_resolves_each() {
+        let app = responsive_app();
+        let overlays = resolve_breakpoint_overlays(&app);
+        assert_eq!(overlays.len(), 2, "two breakpoint overlays declared");
+        assert_eq!(overlays[0].0, Breakpoint::Md, "sorted by rank, not declaration");
+        assert_eq!(overlays[1].0, Breakpoint::Lg);
+        // Each entry is the FULLY resolved rules for that bucket (base
+        // merged with the overlay), so consumers can stack them.
+        assert_eq!(width_of(&overlays[0].1), Length::Px(500.0));
+        assert_eq!(width_of(&overlays[1].1), Length::Px(900.0));
+    }
+
+    #[test]
+    fn resolve_breakpoint_overlays_empty_without_breakpoint_blocks() {
+        let sheet = Rc::new(StyleSheet::new(|_vs| StyleRules {
+            width: px(100.0),
+            ..Default::default()
+        }));
+        let app = StyleApplication::new(sheet);
+        assert!(resolve_breakpoint_overlays(&app).is_empty());
+    }
+
+    #[test]
+    fn merge_active_breakpoints_layers_mobile_first_by_viewport_width() {
+        let app = responsive_app();
+        let base = resolve_style(&app);
+        let overlays = resolve_breakpoint_overlays(&app);
+
+        // Below sm: nothing active → base width, and the SAME Rc back
+        // (no allocation on the common mobile path).
+        set_viewport_size(ViewportSize::new(390.0, 800.0));
+        let merged = merge_active_breakpoints(base.clone(), &overlays);
+        assert_eq!(width_of(&merged), Length::Px(100.0));
+        assert!(
+            Rc::ptr_eq(&merged, &base),
+            "no active overlay must reuse the base Rc"
+        );
+
+        // Md bucket: only md is active (lg is above).
+        set_viewport_size(ViewportSize::new(800.0, 800.0));
+        let merged = merge_active_breakpoints(base.clone(), &overlays);
+        assert_eq!(width_of(&merged), Length::Px(500.0));
+
+        // Lg bucket: md AND lg both active (min-width is cumulative);
+        // lg wins the conflicting `width`.
+        set_viewport_size(ViewportSize::new(1100.0, 800.0));
+        let merged = merge_active_breakpoints(base.clone(), &overlays);
+        assert_eq!(width_of(&merged), Length::Px(900.0));
+    }
+
+    /// Base `width: 100`, `container (min_width: 600) { width: 900 }`,
+    /// `container (min_width: 300) { width: 500 }` — larger threshold
+    /// declared FIRST, again to prove sorting.
+    fn container_app() -> StyleApplication {
+        let sheet = Rc::new(
+            StyleSheet::new(|_vs| StyleRules {
+                width: px(100.0),
+                ..Default::default()
+            })
+            .variant(container_axis_name(600.0), "on", |_vs| StyleRules {
+                width: px(900.0),
+                ..Default::default()
+            })
+            .variant(container_axis_name(300.0), "on", |_vs| StyleRules {
+                width: px(500.0),
+                ..Default::default()
+            }),
+        );
+        StyleApplication::new(sheet)
+    }
+
+    #[test]
+    fn resolve_container_overlays_sorts_ascending_and_resolves_each() {
+        let app = container_app();
+        let overlays = resolve_container_overlays(&app);
+        assert_eq!(overlays.len(), 2, "two container overlays declared");
+        assert_eq!(overlays[0].0, 300.0, "ascending by threshold");
+        assert_eq!(overlays[1].0, 600.0);
+        assert_eq!(width_of(&overlays[0].1), Length::Px(500.0));
+        assert_eq!(width_of(&overlays[1].1), Length::Px(900.0));
+    }
+
+    #[test]
+    fn resolve_container_overlays_empty_without_container_blocks() {
+        let sheet = Rc::new(StyleSheet::new(|_vs| StyleRules {
+            width: px(100.0),
+            ..Default::default()
+        }));
+        let app = StyleApplication::new(sheet);
+        assert!(resolve_container_overlays(&app).is_empty());
+    }
+
+    #[test]
+    fn merge_active_containers_layers_mobile_first_by_container_width() {
+        let app = container_app();
+        let base = resolve_style(&app);
+        let overlays = resolve_container_overlays(&app);
+
+        let merged = merge_active_containers(base.clone(), &overlays, 200.0);
+        assert_eq!(width_of(&merged), Length::Px(100.0));
+        assert!(
+            Rc::ptr_eq(&merged, &base),
+            "no active overlay must reuse the base Rc"
+        );
+
+        let merged = merge_active_containers(base.clone(), &overlays, 450.0);
+        assert_eq!(width_of(&merged), Length::Px(500.0));
+
+        let merged = merge_active_containers(base.clone(), &overlays, 700.0);
+        assert_eq!(width_of(&merged), Length::Px(900.0));
+
+        // Exactly at a threshold is inclusive (min-width semantics).
+        let merged = merge_active_containers(base.clone(), &overlays, 300.0);
+        assert_eq!(width_of(&merged), Length::Px(500.0));
+    }
+
+    /// Container width 0 — which is what every non-web backend reports on
+    /// the new core until the container-signal port (module docs) —
+    /// activates nothing, so the node renders at its mobile-first base.
+    /// This is the assertion that makes the documented deferral SAFE
+    /// rather than merely stated.
+    #[test]
+    fn merge_active_containers_zero_width_is_base() {
+        let app = container_app();
+        let base = resolve_style(&app);
+        let overlays = resolve_container_overlays(&app);
+        let merged = merge_active_containers(base.clone(), &overlays, 0.0);
+        assert!(Rc::ptr_eq(&merged, &base));
+    }
+
+    /// Convergence: merging at the SAME width twice yields identical
+    /// rules. The native container-query feedback loop depends on it —
+    /// after a restyle the container's width is unchanged (inline-size
+    /// containment), so re-resolving must produce the same result and the
+    /// change-guarded signal must not re-fire. Without this the loop
+    /// oscillates forever.
+    #[test]
+    fn merge_active_containers_is_idempotent_at_fixed_width() {
+        let app = container_app();
+        let base = resolve_style(&app);
+        let overlays = resolve_container_overlays(&app);
+        let a = merge_active_containers(base.clone(), &overlays, 700.0);
+        let b = merge_active_containers(base.clone(), &overlays, 700.0);
+        assert_eq!(width_of(&a), width_of(&b));
+    }
+}
+
+// ===========================================================================
 // Tests — the SignalClass JS fast path (the fallback path is covered by
 // the scene-parity goldens; recorders report no JS-binding support).
 // ===========================================================================

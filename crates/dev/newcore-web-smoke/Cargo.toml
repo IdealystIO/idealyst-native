@@ -1,8 +1,9 @@
-# newcore-web-smoke — P3b smoke app for the web backend's NEW-core boot
-# path (`backend_web::newcore::start`). Builds a small vocabulary-builder
-# tree (text + button + toggle + a dyn hole + a keyed list) with DIRECT
-# builder calls — no `ui!`/`jsx!` — so it exercises the registry-dispatch
-# render path without depending on the parallel P3a macro-lowering work.
+# newcore-web-smoke — smoke app for the web backend's boot path
+# (`backend_web::newcore::start` / `newcore::hydrate`). Builds a small
+# vocabulary-builder tree (text + button + toggle + a dyn hole + a keyed
+# list + a sheet-styled section) with DIRECT builder calls — no
+# `ui!`/`jsx!` — so it exercises the registry-dispatch render path with
+# the macro lowering out of the picture.
 #
 # Build + serve (from the repo root):
 #   wasm-pack build --target web --dev crates/dev/newcore-web-smoke
@@ -16,7 +17,7 @@ name = "newcore-web-smoke"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Smoke app for backend-web's new-core (Host + caps) boot path — idea-lite migration P3b."
+description = "Smoke app for backend-web's Host + caps boot path."
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -24,11 +25,13 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # `hydrate` compiles the adoption machinery so `newcore::hydrate` can
 # adopt the pre-rendered DOM in hydrate.html (index.html stays CSR).
-backend-web = { workspace = true, features = ["new-core", "hydrate"] }
+backend-web = { workspace = true, features = ["hydrate"] }
 runtime-world = { workspace = true }
 runtime-scene = { workspace = true }
 runtime-vocabulary = { workspace = true }
-runtime-core = { workspace = true }
+# The shared substrate for the style data model this tree builds by hand
+# (`StyleRules`, `StyleSheet`, `StyleApplication`, tokens, colors, lengths).
+runtime-shared = { workspace = true }
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = ["Window"] }
 console_error_panic_hook = "0.1"

@@ -104,12 +104,6 @@ fn nav_button(glyph: &str, target: Option<usize>, on_change: Rc<dyn Fn(usize)>) 
 /// window never slid — only the fine-grained active-highlight updated).
 /// `switch` re-runs the builder with the live page on every change, so the
 /// targets, the sliding window, and the highlight all stay correct.
-///
-/// **Cargo features:** requires `prim-icon` (in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without it compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Pagination(props: PaginationProps) -> Element {
     let page = props.page;
@@ -181,10 +175,9 @@ mod tests {
     /// built the row once in the component body, freezing the nav targets —
     /// `›` advanced one page then stuck. A reactive `switch` fixes it, so
     /// `Pagination` must build a reactive node, not a static `View` row.
-    /// (The switch root is opaque to build-tree introspection on both cores —
-    /// old core `Element::Switch`, new core a Dyn hole — so `classify` maps it
-    /// to `P::Other`, which is exactly what distinguishes it from the buggy
-    /// static `P::View`.)
+    /// (The switch root is opaque to build-tree introspection — a `Dyn`
+    /// hole — so `classify` maps it to `P::Other`, which is exactly what
+    /// distinguishes it from the buggy static `P::View`.)
     #[test]
     fn pagination_is_reactive_switch_not_static_row() {
         with_test_world(|| {

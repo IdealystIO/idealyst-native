@@ -97,7 +97,7 @@ on a phone. Dropping app content *out* to Finder (a native drag **source**) is a
 separate, not-yet-built feature.
 
 `FileDropZone` lives behind the default-on `drop` cargo feature (it pulls in
-`runtime-core` for the view handler + reactive signal); disable it if you only
+the framework for the view handler + reactive signal); disable it if you only
 want the imperative `pick()`.
 
 See [`examples/file-drop-demo`](./examples/file-drop-demo) for a runnable

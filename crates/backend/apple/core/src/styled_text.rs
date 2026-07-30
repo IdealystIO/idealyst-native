@@ -1,5 +1,5 @@
 //! Shared attributed-string assembly for styled text runs
-//! (`runtime_core::styled_text`).
+//! (`runtime_shared::styled_text`).
 //!
 //! Both Apple leaf backends realize a styled text node as ONE
 //! `NSAttributedString` on the platform label (UILabel's
@@ -110,16 +110,16 @@ fn attrs_dict(attrs: &RunAttrs) -> Retained<NSMutableDictionary<NSString, NSObje
 /// Pick a concrete font size for a run: the run's own `font_size`
 /// (resolved) when present, else the paragraph's. Shared so iOS and
 /// macOS can't drift on the precedence.
-pub fn run_font_size(style: &runtime_core::TextRunStyle, base_size: f64) -> f64 {
+pub fn run_font_size(style: &runtime_shared::TextRunStyle, base_size: f64) -> f64 {
     match style.font_size.as_ref().map(|t| t.resolve()) {
-        Some(runtime_core::Length::Px(px)) if px > 0.0 => px as f64,
+        Some(runtime_shared::Length::Px(px)) if px > 0.0 => px as f64,
         _ => base_size,
     }
 }
 
 /// Does this run style need a font object at all? (Any of family /
 /// weight / size set — a color-only run inherits the label font.)
-pub fn run_needs_font(style: &runtime_core::TextRunStyle) -> bool {
+pub fn run_needs_font(style: &runtime_shared::TextRunStyle) -> bool {
     style.font_family.is_some() || style.font_weight.is_some() || style.font_size.is_some()
 }
 
@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn run_font_size_prefers_run_size_over_base() {
-        use runtime_core::{Length, Tokenized, TextRunStyle};
+        use runtime_shared::{Length, Tokenized, TextRunStyle};
         let mut s = TextRunStyle::default();
         assert_eq!(run_font_size(&s, 17.0), 17.0);
         s.font_size = Some(Tokenized::Literal(Length::Px(13.0)));

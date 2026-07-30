@@ -5,65 +5,31 @@ edition.workspace = true
 license.workspace = true
 
 # Third-party `Toolbar` SDK — native window-chrome toolbars on desktop
-# hosts (macOS today; Windows/Linux scaffolds that no-op until their
-# backends grow `register_external`). Other platforms (iOS, Android,
-# web, terminal, wgpu, ESP) `register` to a no-op and the framework's
-# `External` placeholder is invisible since the Toolbar primitive's
-# in-tree footprint is always zero-size — matches the design where
-# toolbars are window chrome, not view content.
+# hosts: NSToolbar on macOS, the Common-Controls toolbar on Windows,
+# GtkHeaderBar on GTK4. Other platforms (iOS, Android, web, terminal,
+# wgpu, ESP) get the External-placeholder handler, which is invisible
+# since the Toolbar primitive's in-tree footprint is always zero-size —
+# matches the design where toolbars are window chrome, not view content.
 #
 # Single-crate cfg-gated impl, matching the `webview` SDK pattern
 # (the canonical shape future SDKs should follow per the comment in
 # `crates/sdk/webview/Cargo.toml`).
 
-[features]
-# Runtime-v2 defaults flip: the new-core leg is the default surface;
-# the old-core leg is the opt-in (`--no-default-features` — in-repo
-# consumers ride the workspace dep spec, which pins defaults off and
-# selects a core explicitly per graph).
-default = ["new-core"]
-# Old-core marker for uniform `--no-default-features --features
-# old-core` invocations (the old-core deps are unconditional).
-old-core = []
-# Idea-lite migration: re-express the SAME authored surface
-# (`Toolbar(ToolbarProps { .. }).bind(r)` + a bootstrap `register`) over
-# the scene registry — the new core's unified primitive==external
-# contract. Default-off and MUTUALLY EXCLUSIVE with the old-core surface
-# (the two define the same public names — one core per build, mirroring
-# the runtime-macros/new-core build-graph-wide switch; a consuming app
-# crate forwards this from its own new-core feature). The old-core
-# modules are byte-untouched under the default build.
-# `backend-macos/new-core` is needed because the macOS leg is
-# `MacosBackend`-concrete (NSToolbar attaches to the host NSWindow;
-# there is no caps-trait expression for window chrome) and
-# `Registry<MacosBackend>` needs the backend's new-core `Host` impl +
-# `newcore::schedule_flush`. backend-macos is a target-gated
-# NON-optional dep, so this entry only takes effect when compiling for
-# macOS — the same shape as svg's `backend-web/new-core` (wasm-gated).
-new-core = [
-    "dep:runtime-vocabulary",
-    "dep:runtime-scene",
-    "dep:runtime-world",
-    "backend-macos/new-core",
-]
-
 [dependencies]
-runtime-core = { workspace = true }
-# New-core surface (feature `new-core`): the scene registry + the
-# vocabulary caps the generic placeholder handler drives
-# (`ExternalOps::create_external`) + `style_attach` for the author-style
-# channel + `runtime_world::effect` for the reactive-items binding on
-# the macOS-concrete leg.
-runtime-scene = { workspace = true, optional = true }
-runtime-vocabulary = { workspace = true, optional = true }
-runtime-world = { workspace = true, optional = true }
+# The scene registry + the vocabulary caps the generic placeholder
+# handler drives (`ExternalOps::create_external`) + `style_attach` for
+# the author-style channel + `runtime_world::effect` for the
+# reactive-items binding on each desktop-concrete leg. `runtime-shared`
+# supplies `Ref` and `accessibility::AccessibilityProps`.
+runtime-scene = { workspace = true }
+runtime-shared = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-world = { workspace = true }
 
 [dev-dependencies]
-# tests/newcore.rs (`--features new-core`) mounts `Toolbar(...)` through
-# the scene registry end-to-end on the shared host-mock recording
-# substrate (the generic placeholder arm — HostMock is not
-# MacosBackend); tests/oldcore.rs runs on the default (old-core)
-# surface.
+# tests/toolbar.rs mounts `Toolbar(...)` through the scene registry
+# end-to-end on the shared host-mock recording substrate (the generic
+# placeholder arm — HostMock is not a desktop backend).
 host-mock = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -77,6 +43,10 @@ windows = { version = "0.58", features = [
 backend-linux = { workspace = true }
 gtk4 = "0.9"
 
+# The macOS leg is `MacosBackend`-concrete (NSToolbar attaches to the
+# host NSWindow; window chrome has no caps-trait expression), so
+# `Registry<MacosBackend>` needs the backend's `Host` impl +
+# `newcore::schedule_flush`.
 [target.'cfg(target_os = "macos")'.dependencies]
 backend-macos = { workspace = true }
 objc2 = "0.5"

@@ -1,7 +1,8 @@
 # render-wgpu
 
-Custom rendering: a [`wgpu`](https://wgpu.rs/)-backed `runtime_core::Backend`
-implementation that paints the entire UI through a GPU pipeline.
+Custom rendering: a [`wgpu`](https://wgpu.rs/)-backed backend
+(`runtime_scene::Host` + the `runtime_vocabulary::caps` traits) that paints
+the entire UI through a GPU pipeline.
 
 **No `winit`. No browser deps.** Any native shell that translates its
 platform events into the [`render-api`](../api) event vocabulary and provides
@@ -11,9 +12,10 @@ implementations; new platforms slot in next to them.
 
 ## Architecture
 
-- **`backend_impl::WgpuBackend`**: the `runtime_core::Backend` trait
-  impl. Builds and mutates the node tree + Taffy layout tree. Owns the
-  animator and the shared text + font-system stores.
+- **`backend_impl::WgpuBackend`**: the mechanism code. Builds and mutates
+  the node tree + Taffy layout tree. Owns the animator and the shared
+  text + font-system stores. `newcore.rs` carries the `impl Host` +
+  `impl caps::*Ops` blocks over it.
 - **`Host`**: interaction state (focus, press, drag, momentum, keyboard
   slide) + the `EventSink` impl. The native shell talks to the render side
   only through this trait.
@@ -43,8 +45,9 @@ implementations; new platforms slot in next to them.
 
 ## Per-frame pipeline (rough)
 
-1. Render walker has populated the node tree + Taffy layout tree via the
-   `Backend` impl on `WgpuBackend`.
+1. The realize pass has populated the node tree + Taffy layout tree via
+   the `Host` + `caps::*Ops` impls on `WgpuBackend` (`src/newcore.rs`,
+   over the mechanism code in `src/backend_impl.rs`).
 2. Animator advances tween values for the current frame's timestamp.
 3. Tree walker classifies each node, hands paint off to the active `Skin`,
    builds vertex buffers per pipeline (rect, image, text, gradient,
@@ -73,8 +76,8 @@ durations come back as 0.
 
 ## Status
 
-Listed as "In progress" in the root README's roadmap. The `Backend` trait
-implementation covers all the primitives the trait can name, but the GPU
+Listed as "In progress" in the root README's roadmap. The `Host` +
+capability-trait implementation covers all 30 caps, but the GPU
 side (skins, pipelines, text shaping) is still under active development.
 Expect rough edges on advanced primitives until the rendering side
 catches up to the structural side.

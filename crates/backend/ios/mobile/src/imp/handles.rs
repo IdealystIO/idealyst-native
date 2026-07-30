@@ -12,10 +12,10 @@ use objc2_foundation::{CGPoint, CGRect, NSObject, NSString};
 use objc2_ui_kit::{UITextField, UITextView, UIView};
 use std::any::Any;
 
-use runtime_core::primitives::portal::ViewportRect;
-use runtime_core::primitives::text_area::TextAreaOps;
-use runtime_core::primitives::text_input::TextInputOps;
-use runtime_core::{ButtonOps, LayoutSubscription, PressableOps, ViewOps};
+use runtime_shared::primitives::portal::ViewportRect;
+use runtime_shared::primitives::text_area::TextAreaOps;
+use runtime_shared::primitives::text_input::TextInputOps;
+use runtime_shared::{ButtonOps, LayoutSubscription, PressableOps, ViewOps};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -183,7 +183,7 @@ impl ViewOps for IosViewOps {
     fn set_animated_f32(
         &self,
         node: &dyn Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         value: f32,
     ) {
         if let Some(n) = node.downcast_ref::<IosNode>() {
@@ -195,7 +195,7 @@ impl ViewOps for IosViewOps {
     fn set_animated_color(
         &self,
         node: &dyn Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
         if let Some(n) = node.downcast_ref::<IosNode>() {
@@ -210,7 +210,7 @@ pub(crate) static IOS_VIEW_OPS: IosViewOps = IosViewOps;
 /// `ScrollViewHandle::scroll_to` dispatches through the no-op default and
 /// silently does nothing (e.g. drag-to-edge autoscroll never moves).
 pub(crate) struct IosScrollViewOps;
-impl runtime_core::primitives::scroll_view::ScrollViewOps for IosScrollViewOps {
+impl runtime_shared::primitives::scroll_view::ScrollViewOps for IosScrollViewOps {
     fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
         if let Some(IosNode::ScrollView(sv)) = node.downcast_ref::<IosNode>() {
             let offset = CGPoint { x: x as f64, y: y as f64 };
@@ -227,11 +227,11 @@ pub(crate) static IOS_SCROLL_OPS: IosScrollViewOps = IosScrollViewOps;
 // routes to `set_animated_color` on the backend, which (in turn)
 // dispatches to `UILabel.textColor` for label nodes.
 pub(crate) struct IosTextOps;
-impl runtime_core::TextOps for IosTextOps {
+impl runtime_shared::TextOps for IosTextOps {
     fn set_animated_color(
         &self,
         node: &dyn Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
         if let Some(n) = node.downcast_ref::<IosNode>() {

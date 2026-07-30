@@ -1,5 +1,6 @@
-//! Smoke app for the iOS backend's new-core boot path (idea-lite
-//! migration — iOS mirror of P4a's `newcore-macos-smoke`).
+//! Smoke app for the iOS backend's boot path
+//! (`backend_ios::newcore::run_in_view` → `newcore::start`) — the iOS
+//! mirror of `newcore-macos-smoke`.
 //!
 //! Everything here is DIRECT vocabulary-builder calls — no `ui!`, no
 //! `jsx!` — deliberately, so this crate proves the `runtime_scene`
@@ -15,11 +16,11 @@
 //! (the `StyleOps` delegation on the native apply-style path).
 //!
 //! The Swift shell lives in `host/` (AppDelegate + ViewController +
-//! bridging header, mirroring the CLI-generated old-core wrapper's
+//! bridging header, mirroring the CLI-generated wrapper's
 //! templates); `host/run-sim.sh` builds the staticlib, links the .app,
 //! and launches it on the simulator with the self-test armed.
 
-use runtime_core::{Length, StyleRules, Tokenized};
+use runtime_shared::{Length, StyleRules, Tokenized};
 use runtime_scene::{keyed, Element};
 use runtime_vocabulary::builders::IntoSceneElement;
 use runtime_vocabulary::{button, text, toggle, view};
@@ -64,16 +65,16 @@ pub fn app() -> Element {
     // commits, the hook → schedule_flush → flush route works live.
     #[cfg(target_os = "ios")]
     if std::env::var("NEWCORE_SMOKE_SELFTEST").as_deref() == Ok("1") {
-        runtime_core::scheduling::after_ms_detached(1500, move || {
+        runtime_shared::scheduling::after_ms_detached(1500, move || {
             count.set(41); // stages — the driver must commit it
-            runtime_core::scheduling::after_ms_detached(700, move || {
+            runtime_shared::scheduling::after_ms_detached(700, move || {
                 let committed = count.get() == 41;
                 let views = selftest::live_view_count();
                 // println! goes to stdout, which `simctl launch
                 // --console-pty` captures; also NSLog via the installed
                 // logger so `log show` has it.
                 println!("[SMOKE-SELFTEST] committed={committed} views={views}");
-                runtime_core::log_info!("[SMOKE-SELFTEST] committed={committed} views={views}");
+                runtime_shared::log_info!("[SMOKE-SELFTEST] committed={committed} views={views}");
                 // The static tree alone mounts well over 10 views
                 // (column + 3 texts + 3 buttons + toggle + dyn hole +
                 // 3 keyed rows); a low count means realize/finish
@@ -168,8 +169,8 @@ mod selftest {
 }
 
 // ===========================================================================
-// C entry points for the Swift shell (host/), new-core edition. Same
-// ABI as the CLI-generated old-core wrapper (`crates/tools/build/ios`)
+// C entry points for the Swift shell (host/). Same ABI as the
+// CLI-generated wrapper (`crates/tools/build/ios`)
 // so the checked-in Swift sources mirror the shipped templates.
 // ===========================================================================
 
@@ -181,7 +182,7 @@ mod entry {
     use backend_ios::newcore::NewCoreApp;
 
     thread_local! {
-        /// The mounted new-core app must outlive `ios_main` returning —
+        /// The mounted app must outlive `ios_main` returning —
         /// same retention convention as the old wrapper's `OWNER` slot.
         static APP: RefCell<Option<NewCoreApp>> = const { RefCell::new(None) };
     }

@@ -1,15 +1,14 @@
-//! # runtime-vocabulary — capability traits, legacy bridge, and the
-//! built-in primitive vocabulary (P2a + P2b)
+//! # runtime-vocabulary — capability traits and the built-in primitive
+//! vocabulary
 //!
-//! The capability-trait split of runtime-core's `Backend` mega-trait
-//! (idea-lite core migration, design §5). One Ops trait per primitive
-//! family lives in [`caps`], with **signatures frozen** — method names,
-//! parameter types, return types, and data-only defaults are copied
-//! verbatim from `runtime_shared::backend::Backend`. [`bridge::LegacyBridge`]
-//! wraps any existing `Backend` impl and implements
-//! [`runtime_scene::Host`] plus every Ops trait by delegation, proving
-//! the freeze compiles and giving every existing backend the full
-//! capability surface with zero edits to backend crates.
+//! The capability-trait split of the deleted `Backend` mega-trait. One
+//! Ops trait per primitive family lives in [`caps`]; every backend
+//! implements [`runtime_scene::Host`] plus the thirty Ops traits
+//! directly. (During the migration a `LegacyBridge<B>` adapter wrapped
+//! an old `Backend` impl in this surface to prove the signature freeze
+//! compiled; it was deleted with the trait it adapted. Its delegation
+//! proof lives on in `tests/caps_conformance.rs`, which drives the same
+//! thirty caps + seven `Host` ops over `host-mock`.)
 //!
 //! ## P2b — the built-in primitive vocabulary
 //!
@@ -140,11 +139,8 @@
 //! `Backend::Node`. A generic handler bounds on what it needs
 //! (`fn mount_text<B: TextOps + StyleOps>(…) -> B::Node`) and the node
 //! types unify through the common supertrait. Host additionally requires
-//! `Node: Clone + 'static` and `Self: 'static` (structural regions retain
-//! node handles across effect fires), which is why
-//! [`bridge::LegacyBridge`]'s impls carry `B: 'static` bounds the plain
-//! `Backend` trait never stated — every real backend already satisfies
-//! them.
+//! `Node: Clone + 'static` and `Self: 'static` — structural regions
+//! retain node handles across effect fires.
 //!
 //! ## Cross-trait defaults
 //!
@@ -170,30 +166,18 @@
 //!   → `apply_safe_area_padding`, `missing_primitive_placeholder` →
 //!   `create_external`) keep their bodies in place unchanged.
 //!
-//! ## Migration-transitional dependency on runtime-core
+//! ## Where the frozen signatures' types live
 //!
-//! SANCTIONED for P2a–P6: the frozen signatures reference runtime-core's
-//! prop/data types (`StyleRules`, `AccessibilityProps`, `TouchHandler`,
-//! handler aliases, `primitives::*` payload types, handle types, …).
-//! Those types migrate out of runtime-core into vocabulary-owned payload
-//! modules at P7 (when the walker, the `Element` enum, and the Backend
-//! mega-trait are deleted); the `runtime-core` dependency is removed in
-//! the same change. Nothing in this crate depends on the walker, the
-//! reactive arena, or `Element` — only on the type vocabulary.
+//! The prop/data types the caps signatures reference (`StyleRules`,
+//! `AccessibilityProps`, `TouchHandler`, the handler aliases, the
+//! `primitives::*` payloads, the handle types, …) all live in
+//! `runtime-shared`, the permanent substrate. This crate has no
+//! dependency on the author-surface `runtime-core` root at all.
 
 // `resource()` / `mutation()` new-core mirrors (feature `async-driver`,
 // matching the old root's gate on the same names).
 #[cfg(feature = "async-driver")]
 pub mod async_reactive;
-/// `LegacyBridge` — adapts an OLD-core `runtime_core::Backend` impl to
-/// the new capability surface. Behind the non-default `legacy-bridge`
-/// feature because it is the ONLY part of this crate that still touches
-/// runtime-core (an optional dep); the default build's dependency graph
-/// is runtime-core-free. Enabled by the transitional consumers that
-/// still mount through an old Backend (backend-ssr's new-core boot,
-/// scene-parity, the SDK/e2e test harnesses).
-#[cfg(feature = "legacy-bridge")]
-pub mod bridge;
 pub mod builders;
 pub mod caps;
 pub mod glue;
@@ -220,8 +204,6 @@ pub mod style_attach;
 pub mod theme;
 pub mod viewport;
 
-#[cfg(feature = "legacy-bridge")]
-pub use bridge::LegacyBridge;
 pub use builders::{
     activity_indicator, anchored_overlay, button, graphics, icon, image, link, navigator_outlet,
     overlay, portal, presence, pressable, scroll_view, slider, stack_navigator, swap_navigator,
@@ -235,7 +217,7 @@ pub use style_attach::{
 
 /// New-core mirror of `runtime_shared::rx!` — wraps an expression as a
 /// reactive prop value ([`glue::Reactive::derive`]). Defined here (not in
-/// `runtime-facade`) so the `$crate::…` expansion resolves against the
+/// `runtime-core`) so the `$crate::…` expansion resolves against the
 /// vocabulary, keeping the facade paper-thin; the facade re-exports it
 /// under the old `runtime_shared::rx` name for aliased SDK crates.
 #[macro_export]
@@ -259,13 +241,34 @@ macro_rules! effect {
     };
 }
 
+/// New-core mirror of `runtime_core::animated!` — constructs an
+/// [`glue::animation::AnimatedValue`], the per-frame motion handle
+/// `subscribe_and_apply(..)` / `.animate(..)` / [`timeline!`] drive.
+///
+/// The old macro expands to `$crate::animation::AnimatedValue::new($v)`
+/// with `$crate` = runtime-core, i.e. the SHARED `AnimatedValue`
+/// whose inherent `bind*` methods anchor via the old-core `on_cleanup`
+/// — inert (silently dropped) on a new-core mount. This mirror lands on
+/// the glue wrapper instead, whose `bind*` keeps the subscription alive
+/// through a world effect (see [`glue::animation`]). Defined here rather
+/// than in `runtime-core` for the same reason as [`rx!`]/[`effect!`]:
+/// the `$crate::…` expansion has to resolve against the vocabulary; the
+/// facade re-exports it under the old `runtime_core::animated` name so
+/// aliased crates keep compiling `animated!(0.0_f32)` unchanged.
+#[macro_export]
+macro_rules! animated {
+    ($value:expr) => {
+        $crate::glue::animation::AnimatedValue::new($value)
+    };
+}
+
 /// New-core mirror of `runtime_shared::timeline!` — same grammar, same
 /// session-epoch-relative act schedule, but routed through
 /// [`glue::session::after_ms`] so the tasks anchor to the NEW core's
 /// scope (the old macro's `$crate::session::after_ms` resolves against
 /// the real runtime-core, whose scope anchoring is old-core-only and
 /// inert on a new-core mount — see [`scoped_scheduling`]). Defined here
-/// (not in `runtime-facade`) for the same reason as [`rx!`]/[`effect!`]:
+/// (not in `runtime-core`) for the same reason as [`rx!`]/[`effect!`]:
 /// the `$crate::…` expansion must resolve against the vocabulary; the
 /// facade re-exports it under the old `runtime_shared::timeline` name.
 #[macro_export]

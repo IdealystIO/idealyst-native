@@ -37,7 +37,7 @@ impl PickedFile {
 /// This target has no file-drop source, so the `on_file_drop` view slot never
 /// fires — kept only so the cross-platform `FileDropZone` compiles.
 #[cfg(feature = "drop")]
-pub(crate) fn picked_from_dropped(_f: &runtime_core::DroppedFile) -> Option<PickedFile> {
+pub(crate) fn picked_from_dropped(_f: &runtime_shared::DroppedFile) -> Option<PickedFile> {
     None
 }
 

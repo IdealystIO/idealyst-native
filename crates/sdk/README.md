@@ -9,19 +9,34 @@ SDKs are organized by **tier**:
   binary, building on the `server` RPC layer (`crates/api/server`) the way
   client SDKs build on `runtime-core`. See **[Server SDKs](#server-sdks)**.
 
-## Client SDKs (`Element::External` + capabilities)
+## Client SDKs (scene-`Registry` primitives + capabilities)
 
-The Runtime ships a fixed list of primitives — View, Text, Button,
-ScrollView, Pressable, TextInput, … — that every Backend has to
-know. But runtime-core also ships **`Element::External`**, an
-escape hatch: a tagged primitive variant + per-Backend registry
-that lets a third party define their own primitive plus the
-Backend impls that render it.
+The Runtime ships a vocabulary of builtin primitives — view, text,
+button, scroll_view, text_input, … — whose mount handlers
+`runtime_vocabulary::register_builtins` installs at boot. Those handlers
+live on the scene **`Registry`** (`runtime_scene::Registry`), a
+`TypeId`-keyed map from a primitive's *payload type* to the closure that
+mounts it. There is no privileged builtin path: a third party registers
+its own payload type on the same registry and gets a first-class
+primitive.
 
 That's what the crates under `client/` are. None of them is part of
-runtime-core. Each is a self-contained crate that an app opts
-into; the framework registers the external handler at backend init
-and routes draw / update / event calls through it.
+runtime-core. Each is a self-contained crate that an app opts into by
+passing its `register` fn to the boot entry — e.g.
+`backend_web::newcore::start_in("#app", webview::register, app)` — which
+runs right after `register_builtins`, on the same registry, before the
+tree realizes. A payload with no registered handler panics at realize,
+so a missed registration fails loud rather than rendering blank.
+
+Two registration windows exist: **boot** (`registry.register::<T, _>(…)`,
+`&mut self`, statically reachable from the entry point) and **late**
+(`registry.defer::<T>()` at boot + `registry.register_deferred::<T, _>(…)`
+from inside a lazily loaded wasm chunk, or through the
+`runtime_scene::defer_registration` mailbox). Late registration exists
+for bundle size: a handler main never names can be split out of
+`main.wasm`. Items of a deferred kind are *parked* — a
+layout-transparent placeholder holds their slot — until the handler
+arrives.
 
 | Crate | Path | What it adds |
 | --- | --- | --- |
@@ -34,10 +49,10 @@ and routes draw / update / event calls through it.
 | `toolbar` | [`toolbar/`](./client/toolbar) | A `Toolbar` window-chrome primitive — `NSToolbar` on macOS, zero-size no-op elsewhere. |
 | `codeblock` | [`codeblock/`](./client/codeblock) | Syntax-highlighted code rendering. Used by the docs site. |
 
-## Utility SDKs (not `Element::External`)
+## Utility SDKs (no registered primitive)
 
 Some crates here add a cross-platform *capability* rather than a
-rendered primitive — they have no `*Props` and register no external
+rendered primitive — they have no `*Props` and register no mount
 handler. They follow the same single-crate `cfg`-gated shape, but the
 public surface is a plain Rust API (a trait or a handle), not a tag you
 drop into `ui!`.
@@ -52,7 +67,7 @@ drop into `ui!`.
 | `microphone` | [`microphone/`](./client/microphone) | Live microphone capture — a raw f32 PCM stream via cpal (desktop/iOS), `getUserMedia`+Web Audio (web), and `AudioRecord`/JNI (Android). |
 | `camera` | [`camera/`](./client/camera) | Live camera capture — yields a `MediaStream` (see `media-stream`). `AVCaptureSession` (iOS/macOS), `getUserMedia`+`<canvas>` (web), `Camera2`+`ImageReader` via a Kotlin shim (Android). No preview widget. |
 | `media-stream` | [`media-stream/`](./client/media-stream) | The platform-agnostic live-video-source abstraction — the common currency between capture SDKs (`camera`, `screen-recorder`) and display/compositing consumers. Thin + GPU-free: a CPU frame tap (`subscribe`/`latest`) plus an opaque zero-copy `native_source` handle. |
-| `screen-recorder` | [`screen-recorder/`](./client/screen-recorder) | Screen / window frame capture as a raw frame stream. Capability API plus a private-layer `Element::External` overlay. |
+| `screen-recorder` | [`screen-recorder/`](./client/screen-recorder) | Screen / window frame capture as a raw frame stream. Capability API plus a private-layer overlay primitive (`register_scene`). |
 | `menu` | [`menu/`](./client/menu) | OS menu-bar definitions — `NSMenu` / native app menus. A capability API (no rendered primitive); reactivity is full on macOS, one-shot elsewhere. |
 
 ## Device / platform-integration SDKs
@@ -76,32 +91,32 @@ an OS grant flow.
 
 ## Navigator SDKs
 
-Navigators are extension SDKs too — they ride `Element::Navigator` and
-the per-Backend `NavigatorHandler` registry, rendering as native chrome
-per platform (a `UINavigationController`-style stack, a tab bar, a
-responsive drawer). An app composes one as its root and registers
-screens against it.
+Navigators are extension SDKs too. They lower to the vocabulary's own
+navigator builders + handlers, which `register_builtins` installs on
+**every** host — there are no per-backend twins to drift apart, and no
+registration call for an app to forget (each crate's `register` exists
+only so historical bootstrap code keeps compiling). An app composes one
+as its root, registers screens against it, and wraps its own chrome
+around the navigator's `{nav.outlet}`.
 
 | Crate | Path | What it adds |
 | --- | --- | --- |
-| `stack-navigator` | [`navigators/stack/`](./client/navigators/stack) | Push/pop stack navigation with a native header bar + typed `StackHandle` (`push`/`pop`/`replace`/`reset`). |
-| `tab-navigator` | [`navigators/tab/`](./client/navigators/tab) | Flat tab switching across sibling screens; the tab bar itself is author chrome. |
-| `drawer-navigator` | [`navigators/drawer/`](./client/navigators/drawer) | Responsive hamburger drawer — modal on narrow viewports, pinned-sidebar on wide (CSS `@media` collapse on web). |
+| `swap-navigator` | [`navigators/swap/`](./client/navigators/swap) | A flat set of co-equal screens switched by `Select` — no push/pop depth. Replaces the deleted `tab` and `drawer` navigators: a tab bar or a drawer panel is now ordinary author layout wrapped around the outlet. |
+| `stack-navigator` | [`navigators/stack/`](./client/navigators/stack) | Push/pop stack navigation with a header bar + typed `StackHandle` (`push`/`pop`/`replace`/`reset`). |
 
 The per-platform glue lives in internal helper crates under
 [`navigators/helpers/`](./client/navigators/helpers) —
 [`helpers/android/`](./client/navigators/helpers/android),
-[`helpers/ios/`](./client/navigators/helpers/ios),
-[`helpers/web/`](./client/navigators/helpers/web) — which are **not**
-author-facing; the three navigator crates above consume them.
+[`helpers/ios/`](./client/navigators/helpers/ios) — which are **not**
+author-facing; the navigator crates above consume them.
 
 ## Server SDKs
 
 Server-tier capabilities live under [`server/`](./server). They run in the
 server / worker binary and build on the `server` RPC layer
 (`crates/api/server`) — reusing its `State<T>` / `#[ctx]` / `install_state`
-dependency injection — the way client SDKs build on `runtime-core`. They ship no
-`Element::External` primitive and never compile into the wasm client.
+dependency injection — the way client SDKs build on `runtime-core`. They register
+no scene primitive and never compile into the wasm client.
 
 | Crate | Path | What it adds |
 | --- | --- | --- |
@@ -142,7 +157,7 @@ JNI/Obj-C symbol resolution that the compiler can't check. So a green
   - 🟢 *compiles, run-exercised in examples* — built into a demo/app and seen working, though not in an automated test.
   - ⚠️ *compile-checked only* — builds for the target, but the native path is **not** yet device-verified (JNI/Obj-C symbols resolve only at runtime).
 
-### Rendered-primitive SDKs (`Element::External`)
+### Rendered-primitive SDKs (scene-`Registry` handlers)
 
 | Crate | Tests | Native verification |
 | --- | --- | --- |
@@ -153,7 +168,7 @@ JNI/Obj-C symbol resolution that the compiler can't check. So a green
 | `table` | — none | 🟢 web (real `<table>`) + native flex |
 | `form` | 🧪 unit (macro/builder lowering) | 🟢 web (`<form>`) + native passthrough |
 | `toolbar` | — none | 🟢 macOS (`NSToolbar`); no-op elsewhere |
-| `idea-codeblock` | — none | 🟢 runs in the docs site |
+| `codeblock` | — none | 🟢 runs in the docs site |
 
 ### Utility / capability SDKs
 
@@ -189,10 +204,9 @@ JNI/Obj-C symbol resolution that the compiler can't check. So a green
 
 | Crate | Tests | Native verification |
 | --- | --- | --- |
+| `swap-navigator` | 🧪 unit · 🔌 recording + SSR snapshot | 🟢 run across the website + examples |
 | `stack-navigator` | 🧪 unit · 🔌 recording + SSR snapshot | 🟢 iOS/macOS/Android/web run in `stack-demo-v2` + the docs site |
-| `tab-navigator` | 🧪 unit · 🔌 recording + SSR snapshot | 🟢 run in examples |
-| `drawer-navigator` | 🧪 unit · 🔌 recording + SSR snapshot | 🟢 run across the website + examples |
-| `navigators/helpers/{android,ios,web}` | — none (internal) | exercised transitively via the three navigators |
+| `navigators/helpers/{android,ios}` | — none (internal) | exercised transitively via the navigators |
 
 > **The compile-checked-only backends** (`camera` Android, `credentials`
 > Android, `biometrics` Android + Windows) all follow the same JNI/WinRT
@@ -233,20 +247,23 @@ new one.
 Both shapes are valid; pick by ownership model.
 
 **Single crate with `cfg` gates** (the `webview` pattern). One crate
-declares the primitive + per-target `[target.'cfg(...)'.dependencies]`
-and ships every Backend impl from the same release. Simpler when
-one team owns the SDK and ships all backends in lockstep.
+declares the payload type + per-target `[target.'cfg(...)'.dependencies]`
+and ships every backend's mount handler from the same release — a
+generic `register<H>` for the placeholder path plus `cfg`-gated
+backend-concrete `register` overloads. Simpler when one team owns the
+SDK and ships all backends in lockstep.
 
 **Umbrella + per-platform leaves** (the `maps` pattern). A core
-crate defines the primitive; per-backend crates implement the
-per-Backend handler. Justified when backends have independent
-maintainers or genuinely heavy disjoint transitive deps.
+crate defines the payload type; per-backend crates supply the mount
+handler. Justified when backends have independent maintainers or
+genuinely heavy disjoint transitive deps.
 
 ## Writing your own
 
-`cargo new` a crate that defines a `*Props` struct, registers an
-external handler per Backend you support, and exposes a builder
-function. The Runtime side is pure data — the substrate-specific
-work lives in the per-Backend impls. See
+`cargo new` a crate that defines a `*Props` struct plus its payload
+type, exposes a `register(registry: &mut Registry<H>)` that calls
+`registry.register::<MyPrim, _>(mount_fn)` for each backend you
+support, and exposes a builder function. The Runtime side is pure data
+— the substrate-specific work lives in the mount handlers. See
 [the third-party primitives doc page](../../websites/docs/src/pages/third_party_primitives.rs)
 for the full pattern.

@@ -8,9 +8,9 @@ license.workspace = true
 # same `canvas_core::Scene` with `vello` (GPU compute 2D) onto the
 # framework's `graphics` primitive surface via `wgpu`.
 #
-# The app selects this renderer over `canvas-native` by calling
-# `canvas_vello::register` at bootstrap (registers an `Element::External`
-# handler for `CanvasProps`, last-registration-wins).
+# The app selects this renderer over `canvas-native` by passing
+# `canvas_vello::register` to the boot entry's registry seam (it installs a
+# scene handler for `canvas_core::CanvasPrim`; last registration wins).
 #
 # vello requires compute shaders (Metal / Vulkan / DX12 / WebGPU). On native
 # backends that's always available. On WEB it renders over wgpu's WebGPU backend
@@ -31,7 +31,14 @@ default = ["glyphs"]
 glyphs = []
 
 [dependencies]
-runtime-core = { workspace = true }
+# The scene registry the renderer installs into, the graphics + style caps
+# it drives, `runtime_world::effect` for the reactive repaint, and
+# `runtime-shared` for the graphics event/surface vocabulary + the detached
+# retry timer.
+runtime-scene = { workspace = true }
+runtime-shared = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-world = { workspace = true }
 canvas-core = { workspace = true }
 # Self-capture: read rendered frames back into the app's `MediaStream` via the
 # `CanvasProps.capture` `FrameWriter`. Thin, GPU-free currency crate.
@@ -62,13 +69,8 @@ pollster = "0.4"
 # build flag. No `pollster` — blocking is illegal on the browser main thread;
 # adapter/device acquisition is awaited via `wasm-bindgen-futures::spawn_local`.
 # `canvas-native` is the Canvas2D fallback delegate (its `make_2d_rasterizer`),
-# reached on the same `<canvas>` when WebGPU is unavailable.
-# `default-features = false` drops its `self-register` inventory ctor: we only
-# want the rasterizer as a delegate, and the ctor is a link-time anchor that
-# would pin the whole rasterizer + glyph stack in `main.wasm` even when this
-# renderer registers lazily from a wasm-split chunk. Path dep (not workspace)
-# so `default-features = false` actually takes effect — Cargo ignores it on an
-# inherited workspace dep unless the workspace sets it too.
+# reached on the same `<canvas>` when WebGPU is unavailable. Path dep (not
+# workspace) so this stays a delegate-only edge.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 vello = "0.9"
 wgpu = { version = "29", default-features = false, features = ["webgpu", "wgsl"] }

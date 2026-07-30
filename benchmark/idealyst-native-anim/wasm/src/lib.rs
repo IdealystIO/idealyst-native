@@ -21,10 +21,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use backend_web::WebBackend;
 use runtime_core::animation::{AnimProp, AnimatedValue, SpringTo};
 use runtime_core::{
-    node_ref, render, signal, ui, Color, Length, Owner, Position, Element, RafLoop, Ref, Signal,
+    node_ref, signal, ui, Color, Length, Position, Element, RafLoop, Ref, Signal,
     StyleRules, StyleSheet, TokenEntry, Tokenized, ViewHandle,
 };
 use idea_ui::{install_theme, ThemeTokens};
@@ -358,7 +357,6 @@ fn nbody_step(state: &mut [f32], dt: f64) {
 
 thread_local! {
     static STORE: RefCell<AnimStore> = RefCell::new(AnimStore::empty());
-    static OWNER: RefCell<Option<Owner>> = const { RefCell::new(None) };
 }
 
 // =============================================================================
@@ -440,25 +438,25 @@ fn app(count_sig: Signal<u64>) -> Element {
 #[wasm_bindgen]
 pub fn start() {
     console_error_panic_hook::set_once();
-    // Both required before render — install_scheduler so rAF + microtask
-    // dispatch land on real callbacks, install_time_source so the
-    // framework's clock has a non-zero now_micros (per
-    // [[project_web_bootstrap_scheduler]]).
-    backend_web::install_scheduler();
-    backend_web::install_time_source();
+    // `newcore::start` performs the boot installs itself — the scheduler
+    // (rAF + microtask dispatch), the time source (non-zero
+    // `now_micros`, per [[project_web_bootstrap_scheduler]]) and the
+    // global weak self-handle that `ViewHandle::set_animated_f32` routes
+    // through (without it every `AnimatedValue::bind` write silently
+    // no-ops — [[project_web_install_global_self_for_animation]]). Only
+    // the drop-deferral install is boot-path-independent.
     backend_web::install_drop_deferral();
 
-    let count_sig: Signal<u64> = signal(0u64);
-    STORE.with(|s| s.borrow_mut().count_sig = Some(count_sig));
-
-    let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
-    // Required so `ViewHandle::set_animated_f32` (called from every
-    // `AnimatedValue::bind` listener) can route through to the
-    // backend. Without it, `WEB_BACKEND_HANDLE` stays None and every
-    // animation write silently no-ops — see [[project_web_install_global_self_for_animation]].
-    backend_web::install_global_self(&backend);
-    let owner = render(backend, app(count_sig));
-    OWNER.with(|s| *s.borrow_mut() = Some(owner));
+    // The rebuild counter is minted INSIDE the build closure: signal
+    // creation requires the app world entered, and `newcore::start`
+    // enters it only around the build. `setup_anim` reads the handle
+    // back out of STORE (signal handles are Copy and route to their own
+    // world, so writing one from a JS entry point is fine).
+    backend_web::newcore::start(|| {
+        let count_sig: Signal<u64> = signal(0u64);
+        STORE.with(|s| s.borrow_mut().count_sig = Some(count_sig));
+        app(count_sig)
+    });
 }
 
 #[wasm_bindgen]
@@ -547,7 +545,12 @@ pub fn setup_anim(test: &str, n: u32, seed: u32) {
         store.rekick_state = seed;
         store.count_sig.expect("start() must run before setup_anim()")
     });
-    count_sig.update(|v| *v = v.wrapping_add(1));
+    // Writes STAGE on runtime v2 — `setup_anim` is a JS entry point,
+    // outside the framework's wrapped dispatch sites, so nothing would
+    // commit it before the harness calls `step_to`. Flush explicitly so
+    // the reactive `match` in `app()` rebuilds the ball set NOW.
+    count_sig.update(|v| v.wrapping_add(1));
+    backend_web::newcore::flush_sync();
 }
 
 #[wasm_bindgen]

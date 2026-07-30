@@ -1703,22 +1703,6 @@ pub struct CompoundVariant {
     pub rules: RulesFn,
 }
 
-/// A stylesheet declaration. Authors construct one of these once and
-/// wrap it in `Rc` to pass around.
-///
-/// Each entry — `base`, every variant overlay, every compound variant —
-/// is a closure that takes the effective `VariantSet` and returns
-/// concrete `StyleRules`. Stylesheets emit `Tokenized<T>` references by
-/// name; token values are managed separately via [`install_tokens`].
-///
-/// # Resolution order
-/// 1. `base`
-/// 2. For each declared axis, layer the closure for the value selected
-///    in the `VariantSet` (or the axis's default if unselected).
-/// 3. For each declared compound variant, layer its closure iff every
-///    `(axis, value)` in `when` matches the *effective* variant set
-///    (defaults included).
-/// 4. Any `StyleApplication::overrides` field.
 thread_local! {
     /// Single shared per-sheet cache backing every `stylesheet!`-generated
     /// `*_style()` constructor. Each generated fn passes a process-unique
@@ -1763,6 +1747,22 @@ pub fn cached_stylesheet(
     rc
 }
 
+/// A stylesheet declaration. Authors construct one of these once and
+/// wrap it in `Rc` to pass around.
+///
+/// Each entry — `base`, every variant overlay, every compound variant —
+/// is a closure that takes the effective `VariantSet` and returns
+/// concrete `StyleRules`. Stylesheets emit `Tokenized<T>` references by
+/// name; token values are managed separately via [`install_tokens`].
+///
+/// # Resolution order
+/// 1. `base`
+/// 2. For each declared axis, layer the closure for the value selected
+///    in the `VariantSet` (or the axis's default if unselected).
+/// 3. For each declared compound variant, layer its closure iff every
+///    `(axis, value)` in `when` matches the *effective* variant set
+///    (defaults included).
+/// 4. Any `StyleApplication::overrides` field.
 pub struct StyleSheet {
     base: RulesFn,
     /// axis → axis definition (default + per-value closures)

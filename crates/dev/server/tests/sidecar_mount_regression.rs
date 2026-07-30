@@ -1,111 +1,135 @@
-//! Regression: the runtime-server sidecar's session thread MUST use
-//! `runtime_core::mount(backend, app_fn)` rather than
-//! `render(backend, app_fn())`.
+//! Regression: a scope-anchored timer scheduled from INSIDE the app
+//! constructor must survive to fire in a dev session.
 //!
-//! The bug this guards against: when the welcome example's
-//! `coordinator::use_welcome()` (called from inside the user's `app()`)
-//! schedules `after_ms_scoped(...)` for the Act-1 timeline, the
-//! scope-anchored helper's `on_cleanup(move || drop(task))` needs an
-//! active reactive scope to attach to. With `render(backend, app())`
-//! the user's `app()` runs *before* the root scope exists, so the
-//! cleanup gets silently dropped and the task is cancelled
-//! immediately — every planet stayed at `opacity: 0` and the welcome
-//! text never faded in.
+//! # The bug this guards against
 //!
-//! See also: [walker.rs:91-111][1] for the framework's own description
-//! of the `render` vs `mount` distinction, and the
-//! `project_mount_vs_render` memory for the macOS-host occurrence of
-//! the same bug.
+//! The welcome example's `coordinator::use_welcome()` — called from
+//! inside the user's `app()` — schedules `after_ms_scoped(...)` for its
+//! Act-1 timeline. That helper anchors its task to the ambient reactive
+//! lifetime and is documented-inert when there is none: the captured
+//! task drops immediately and the timer is cancelled before it can fire.
+//! Symptom when it regresses: every planet stays at `opacity: 0` and the
+//! welcome text never fades in.
 //!
-//! [1]: ../../framework/core/src/walker.rs
+//! On the old core this was the `mount(backend, app_fn)` vs
+//! `render(backend, app())` distinction — `render` invoked `app()`
+//! BEFORE the root scope existed, so the anchor was missing and the
+//! timer died. The sidecar had shipped the broken spelling.
+//!
+//! # Why this file changed shape
+//!
+//! The surviving core has exactly ONE boot entry
+//! ([`dev_server::newcore::SceneSession::mount`]), so the two-spelling
+//! trap it guarded is structurally gone — the deletion baseline files
+//! the old pair under DIES-legit for that reason (§4.3). What is NOT
+//! gone is the underlying requirement: `SceneSession::mount` must invoke
+//! `app()` somewhere that `after_ms_scoped` can anchor to, or the
+//! welcome bug comes straight back in a new spelling.
+//!
+//! `SceneSession::mount` runs `app()` inside `World::enter` but OUTSIDE
+//! the `collect_owned` that `realize` opens. That still resolves an
+//! anchor — `scoped_scheduling::current_anchor`'s `is_entered()` branch
+//! mints one owned by the world root — but the distinction is one line
+//! of ordering away from being wrong again, which is precisely why it
+//! needs a test rather than a comment. The second test below pins the
+//! inert half so the first one cannot pass vacuously.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use dev_server::newcore::SceneSession;
 use dev_server::{scheduler, WireRecordingBackend};
-use runtime_core::{
-    after_ms_scoped, mount, render, Element, SafeAreaSides,
-};
+use runtime_vocabulary::builders::view;
+use runtime_vocabulary::scoped_scheduling::after_ms_scoped;
 
-/// An "app" constructor that schedules a 0-ms scope-anchored timer
-/// while building its tree. When invoked inside an active reactive
-/// scope, the timer fires on the next `drive_pending`; outside a
-/// scope, `on_cleanup` drops the cleanup closure (which owns the
-/// `ScheduledTask`), cancelling the timer before it can fire.
-fn make_app(fired: Rc<Cell<bool>>) -> impl FnOnce() -> Element + 'static {
+/// An "app" constructor that schedules a 0-ms scope-anchored timer while
+/// building its tree. Invoked where an anchor is resolvable, the timer
+/// fires on the next `drive_pending`; invoked with no ambient reactive
+/// lifetime, `after_ms_scoped` is inert by contract and it never fires.
+fn make_app(fired: Rc<Cell<bool>>) -> impl FnOnce() -> runtime_scene::Element + 'static {
     move || {
         after_ms_scoped(0, move || fired.set(true));
-        Element::View {
-            children: vec![],
-            style: None,
-            ref_fill: None,
-            safe_area_sides: SafeAreaSides::NONE,
-            on_touch: None,
-            on_wheel: None,
-            preserves_focus: false,
-            on_file_drop: None,
-            on_hover: None,
-            is_container: false,
-            accessibility: Default::default(),
-            test_id: None,
-        }
+        view().build()
     }
 }
 
-/// **The fix.** `mount(backend, app_fn)` runs the closure inside the
-/// root reactive scope, so the `after_ms_scoped` inside it adopts
-/// that scope. The timer survives `drive_pending` and fires.
+/// **The contract.** `SceneSession::mount` invokes the app constructor
+/// with a resolvable anchor, so a timer scheduled during the build
+/// survives and fires.
 #[test]
-fn regression_mount_runs_after_ms_scoped_from_app_constructor() {
+fn regression_scene_session_mount_runs_after_ms_scoped_from_app_constructor() {
     scheduler::install();
 
     let recorder = WireRecordingBackend::new();
-    let backend_rc = Rc::new(RefCell::new(recorder));
     let fired = Rc::new(Cell::new(false));
     let app = make_app(fired.clone());
 
-    let _owner = mount(backend_rc, app);
+    let _session = SceneSession::mount(&recorder, |_r| {}, app);
 
-    // Sleep is unnecessary — `after_ms_scoped(0, ...)` deadlines at
-    // "now" and `drive_pending` checks `now >= deadline`. By the
-    // time the next line runs, the deadline is in the past.
+    // No sleep needed — `after_ms_scoped(0, ...)` deadlines at "now" and
+    // `drive_pending` fires anything whose deadline has passed.
     scheduler::drive_pending();
 
     assert!(
         fired.get(),
-        "after_ms_scoped scheduled from inside mount's closure must fire — \
-         if this fails, the sidecar/host swallowed the timer (likely \
-         reverted to `render(_, app())`)"
+        "after_ms_scoped scheduled from inside the app constructor must fire — \
+         if this fails, SceneSession::mount stopped invoking `app()` under a \
+         resolvable reactive anchor and the welcome-timeline bug is back"
     );
 }
 
-/// **The bug.** `render(backend, app())` calls `app()` *before* the
-/// root scope is established, so the `on_cleanup` inside
-/// `after_ms_scoped` has no scope to attach to. The cleanup is
-/// dropped immediately, which drops the `ScheduledTask`, which
-/// cancels the registered deadline. `drive_pending` finds nothing
-/// to fire.
+/// **The inert half**, so the test above cannot pass vacuously.
+///
+/// Called with NO ambient world, `after_ms_scoped` drops its task
+/// immediately — the documented old-core posture, carried over
+/// unchanged. This is the shape the old `render(backend, app())` spelling
+/// produced, reproduced here directly now that the spelling itself is
+/// gone.
 #[test]
-fn render_pre_built_tree_silently_cancels_scoped_timer() {
+fn after_ms_scoped_outside_any_reactive_lifetime_is_inert() {
     scheduler::install();
 
-    let recorder = WireRecordingBackend::new();
-    let backend_rc = Rc::new(RefCell::new(recorder));
     let fired = Rc::new(Cell::new(false));
     let app = make_app(fired.clone());
 
-    // `app()` runs *outside* any scope here — capture happens before
-    // `render` builds the root scope.
-    let _owner = render(backend_rc, app());
+    // Run the constructor with no world entered and no collector open.
+    let element = app();
+    drop(element);
 
     scheduler::drive_pending();
 
     assert!(
         !fired.get(),
-        "this assertion documents the bug: when `app()` is invoked \
-         outside the root scope, `after_ms_scoped` cancels itself. \
-         If this starts failing, `render(backend, app())` has been \
-         made scope-aware — collapse this test into the mount-only \
-         variant above."
+        "this assertion documents the contract: with no ambient reactive \
+         lifetime, `after_ms_scoped` cancels itself. If it starts failing, \
+         the helper became world-independent — fold this into the test above."
     );
+}
+
+/// The mounted session records the app's tree as wire commands and ends
+/// the initial batch with `Finish`, so a replay client knows the mount is
+/// complete. (The old file asserted this implicitly by constructing a
+/// `WireRecordingBackend`; making it explicit keeps the target honest
+/// about what it drives.)
+#[test]
+fn scene_session_mount_emits_a_finished_command_stream() {
+    scheduler::install();
+
+    let recorder = WireRecordingBackend::new();
+    let fired = Rc::new(Cell::new(false));
+    let session = SceneSession::mount(&recorder, |_r| {}, make_app(fired));
+
+    assert_eq!(session.root_count(), 1, "single-root mount contract");
+
+    let cmds = recorder.drain_commands();
+    assert!(
+        matches!(cmds.last(), Some(wire::Command::Finish { .. })),
+        "the mount batch must end in Finish, got {:?}",
+        cmds.last()
+    );
+
+    // Keep the RefCell import honest about the session's teardown order
+    // (realized before world) by dropping explicitly.
+    let boxed = RefCell::new(Some(session));
+    drop(boxed.borrow_mut().take());
 }

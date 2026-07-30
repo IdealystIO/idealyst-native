@@ -1,16 +1,22 @@
 # framework/reactive
 
-The reactivity substrate, split across two sibling crates so the arena can be
-reused by other systems without dragging in the public `Ref<H>` surface.
+The pre-v2 reactivity substrate, split across two sibling crates so the arena
+could be reused by other systems without dragging in the public `Ref<H>`
+surface.
 
 | Crate | Path | Role |
 | --- | --- | --- |
 | `reactive-arena` | [`arena/`](./arena) | Arena allocator backing the scope graph. Holds nodes for signals, effects, and scopes; reclaims them in bulk when a scope is dropped. |
 | `reactive-refs` | [`refs/`](./refs) | The `Ref<H>` machinery: typed handles that let a parent component call methods on a child primitive or user component imperatively. |
 
-Application code rarely depends on these directly. `runtime-core`
-re-exports the bits authors need (`Signal<T>`, `Effect`, `Scope`, `Ref<H>`).
-These crates exist as separate compilation units because:
+**Status after the runtime-v2 deletion: nothing in the workspace depends
+on either crate.** The reactive kernel authors reach through
+`runtime_core::…` (`Signal<T>`, `Effect`, `Memo`, `ReadSignal`,
+`WriteSignal`) is now `runtime-world`, re-exported via
+`runtime_vocabulary::glue`; `Ref<H>` comes from `runtime-shared`. These
+two crates remain as standalone workspace members with no consumers.
+
+They were originally split into separate compilation units because:
 
 - **`reactive-arena`** has no `runtime-core` dependency; it's pure data
   structure. That makes it cheap to depend on from helpers that don't want

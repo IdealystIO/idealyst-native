@@ -195,8 +195,8 @@ pub fn Typography(props: &TypographyProps) -> Element {
     };
 
     // Both branches produce the same wrapper type, so the role is folded
-    // in after the style split (spelled without the old `Bound<_>` type
-    // annotation, which has no single new-core counterpart).
+    // in after the style split (no `Bound<_>` type annotation — the
+    // builder's own type carries it).
     let styled = if style_is_reactive {
         text(content).with_style(make_style)
     } else {

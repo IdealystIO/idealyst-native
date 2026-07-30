@@ -26,15 +26,16 @@ docs! {
     section(heading = "Two halves") {
         p("Idealyst is two concepts with a contract between them."),
         p("The ", code("Runtime"), " is the upper half — primitives, the \
-           reactive graph, the render walker, the macros you author against. \
+           reactive graph, scene realization, the macros you author against. \
            It is platform-agnostic. It knows nothing about UIKit, the DOM, \
            Android views, or wgpu pipelines."),
         p("The ", code("Backend"), " is the lower half — a concrete \
            implementation that turns runtime intent into something you can \
            see on a particular substrate. It is platform-specific by \
            definition."),
-        p("The two halves meet at the ", code("Backend"), " trait — the \
-           Backend Interface. It is the entire surface across which the \
+        p("The two halves meet at the ", code("Host"), " trait plus a set of \
+           capability traits — the Backend Interface. Together they are the \
+           entire surface across which the \
            Runtime drives a Backend, and the only API a Backend has to \
            implement. Everything Idealyst can render to is something that \
            satisfies this contract."),
@@ -70,14 +71,18 @@ docs! {
     },
 
     section(heading = "The Backend Interface") {
-        p("The Backend Interface is a Rust trait — ", code("Backend"),
-          " in ", code("runtime_core::backend"), ". It defines the complete \
-           set of operations sufficient to materialize every primitive: \
-           creating each kind of node, inserting one inside another, removing \
-           one, applying a style, updating a text node's contents, attaching \
-           an event handler."),
-        p("It has no behavior of its own. It is purely a specification of \
-           what a Backend must be able to do."),
+        p("The Backend Interface is a family of Rust traits. ",
+          code("runtime_scene::Host"),
+          " is the structural half — the node type plus inserting one node \
+           inside another, removing one, clearing children. On top of it sit \
+           the ", code("runtime_vocabulary::caps"),
+          " capability traits, one per primitive family: creating each kind \
+           of node, applying a style, updating a text node's contents, \
+           attaching an event handler."),
+        p("None of them has behavior of its own. They are purely a \
+           specification of what a Backend must be able to do — and because \
+           the specification is SPLIT, a backend supports exactly the \
+           primitives whose traits it implements, checked at compile time."),
         p("Above the seam: platform-agnostic. Below the seam: \
            platform-specific. Everything Idealyst swaps to retarget a new \
            substrate is satisfied here. See ",
@@ -184,15 +189,15 @@ docs! {
     },
 
     section(heading = "Extension primitives") {
-        p("The Runtime ships a fixed list of primitives, but ",
-          code("Element::External"), " is an escape hatch: a tagged \
-           variant that lets a third-party crate define its own primitive \
-           plus per-Backend implementations, then register them through the \
-           Backend's external registry."),
+        p("The Runtime's own primitives are handlers on a registry, and so \
+           are third-party ones. A crate defines a payload type plus one \
+           mount handler per host it supports, and the app registers it at \
+           boot — the same mechanism, no separate escape hatch."),
         p("WebView and Maps ship today as reference implementations in ",
-          code("crates/sdk/client/"), ". Each defines one primitive plus a per-Backend \
-           impl (iOS / Android / web). Nothing in ", code("runtime-core"),
-          " has to know about them — the registry slot is enough."),
+          code("crates/sdk/client/"),
+          ". Each defines one payload plus per-host handlers (iOS / Android \
+           / web). Nothing in the runtime has to know about them — the \
+           registration is enough."),
         p("This is how the framework grows without bloating the core: a \
            team can ", code("cargo new"), " an Idealyst extension crate and \
            ship coverage across every platform their Backend impls reach. \

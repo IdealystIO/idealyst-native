@@ -21,7 +21,8 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use backend_ssr::{serve, ServeConfig};
+use backend_ssr::newcore::serve;
+use backend_ssr::ServeConfig;
 use std::path::PathBuf;
 
 fn main() {
@@ -69,13 +70,12 @@ fn main() {
             // slot; the example serves without one.
             extra_head: None,
         },
-        // The same registration the CLI's SSR wrapper calls: navigator
-        // chrome, so SSR renders the sidebar and the bundle hydrates by
-        // adoption. The codeblock SDK registers no host-side SSR
-        // handler (its DOM handler is wasm32-only), so code panels
-        // render the standard External placeholder — identical to
-        // `idealyst dev --ssr`.
-        |b| website::register_ssr_extensions(b),
+        // The same registration the CLI's SSR wrapper calls: the
+        // codeblock scene handler, so code panels server-render their
+        // real `<pre>`/span DOM and the bundle hydrates by adoption
+        // (navigators are vocabulary built-ins — nothing to register).
+        // Identical to `idealyst dev --ssr`.
+        website::register_ssr_scene_handlers,
         website::app,
     )
     .expect("SSR server failed to start");

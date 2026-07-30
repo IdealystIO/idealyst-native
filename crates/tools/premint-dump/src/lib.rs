@@ -1,6 +1,6 @@
 //! Premint style-dump assembly — the CSS-emission side of build-time
 //! styles (see `runtime_core::premint` for the collection side and
-//! `StyleSource::Preminted` for the runtime side).
+//! `StyleProp::Preminted` for the runtime side).
 //!
 //! # The delta model
 //!
@@ -131,7 +131,7 @@ fn dump_sheet(entry: &PremintSheet, out: &mut String, fonts: &mut FontCollector)
     //    beats.)
     push_rule(out, css::class_rule(base_class, &emit_base(&base)));
 
-    // 2. Breakpoint deltas, rank ascending (the walker's resolver sorts
+    // 2. Breakpoint deltas, rank ascending (the style engine's resolver sorts
     //    the same way; higher buckets win by stacking).
     let mut bps: Vec<_> = sheet.premint_breakpoint_axes().to_vec();
     bps.sort_by_key(|(bp, _)| bp.rank());
@@ -528,9 +528,9 @@ mod tests {
     /// Regression for the website Tag crash: a component that COMPOSES a
     /// builder's styles (merge an inherited color, layer a hover) must use
     /// `into_style_application()`, which returns the live application even
-    /// under `--cfg idealyst_premint` — where `into_style_source()` (both
+    /// under `--cfg idealyst_premint` — where `into_style_prop()` (both
     /// cfgs are on in this crate, see build.rs) returns an opaque
-    /// `Preminted` class that the old `match Static → unreachable!` sites
+    /// `Preminted` class that the old `match Sheet → unreachable!` sites
     /// panicked on (idea-ui `tag.rs`/`alert.rs`; `table.rs` silently lost
     /// row hover). The tighter test — building idea-ui's `Tag` under the
     /// cfg — would need this tools crate to dev-depend on idea-ui +
@@ -538,11 +538,11 @@ mod tests {
     /// the exact property those fixes rely on.
     #[test]
     fn regression_into_style_application_bypasses_premint() {
-        use runtime_core::{resolve_style, IntoStyleSource, StyleSource};
-        // The source path premints…
+        use runtime_core::{resolve_style, IntoStyleProp, StyleProp};
+        // The style-prop path premints…
         assert!(matches!(
-            Chip().tone(ChipTone::Danger).into_style_source(),
-            StyleSource::Preminted { .. }
+            Chip().tone(ChipTone::Danger).into_style_prop(),
+            StyleProp::Preminted { .. }
         ));
         // …while the application path stays live and resolvable.
         let app = Chip().tone(ChipTone::Danger).into_style_application();
@@ -561,14 +561,14 @@ mod tests {
     /// shipped-build/dump-build pair the CLI produces.
     #[test]
     fn regression_dump_and_runtime_agree_on_class_names() {
-        use runtime_core::{IntoStyleSource, StyleSource};
+        use runtime_core::{IntoStyleProp, StyleProp};
         let css = dump_all_css();
         for src in [
-            Chip().into_style_source(),
-            Chip().tone(ChipTone::Danger).into_style_source(),
+            Chip().into_style_prop(),
+            Chip().tone(ChipTone::Danger).into_style_prop(),
         ] {
             match src {
-                StyleSource::Preminted { class, overrides } => {
+                StyleProp::Preminted { class, overrides } => {
                     assert!(overrides.is_none());
                     let classes: Vec<&str> = class.split_whitespace().collect();
                     assert!(classes.len() >= 2, "base + one class per axis; got {class}");

@@ -26,11 +26,11 @@ use objc2::rc::Retained;
 use objc2_app_kit::NSView;
 use objc2_foundation::{CGPoint, CGRect};
 
-use runtime_core::primitives::portal::{
+use runtime_shared::primitives::portal::{
     AnchorTarget, ElementAlign, ElementSide, ViewportRect,
 };
-use runtime_core::scheduling::RafLoop;
-use runtime_core::{
+use runtime_shared::scheduling::RafLoop;
+use runtime_shared::{
     AlignItems, FlexDirection, JustifyContent, Length, Position, StyleRules, Tokenized,
 };
 
@@ -199,7 +199,7 @@ pub(crate) fn start_anchor_tracker(
     let mut revealed = false;
     let mut frames: u32 = 0;
 
-    runtime_core::scheduling::raf_loop(move || {
+    runtime_shared::scheduling::raf_loop(move || {
         frames = frames.saturating_add(1);
         let reveal = |p: &NSView| {
             let _: () = unsafe { msg_send![p, setHidden: false] };
@@ -232,11 +232,11 @@ pub(crate) fn start_anchor_tracker(
             return;
         }
 
-        // Shared measured align/side geometry (runtime_core) — one
+        // Shared measured align/side geometry (runtime_shared) — one
         // definition across web / iOS / Android / macOS (CLAUDE.md §7).
         // The tracker re-pins to the requested side without flip/clamp,
         // matching the iOS tracker; web layers flip+clamp on top.
-        let (top, left) = runtime_core::primitives::portal::anchor_top_left(
+        let (top, left) = runtime_shared::primitives::portal::anchor_top_left(
             trigger, side, align, offset, (pop_w, pop_h),
         );
 

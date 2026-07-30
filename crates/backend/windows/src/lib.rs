@@ -1,6 +1,6 @@
 //! Native Win32 backend — scaffold.
 //!
-//! Implements `runtime_core::Backend` over raw HWND child controls.
+//! Implements `runtime_shared::Backend` over raw HWND child controls.
 //! Author code that mounts on Windows gets real `View` containers
 //! (parent HWNDs) plus `Text` (`STATIC` class) and `Button` (`BUTTON`
 //! class) controls; every other primitive renders a placeholder text
@@ -34,32 +34,24 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::{
-    Action, Backend, Color, ColorScheme, Platform, StyleRules,
-};
 use runtime_layout::LayoutTree;
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetWindowLongPtrW,
-    RegisterClassExW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-    BS_DEFPUSHBUTTON, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HMENU, SWP_NOACTIVATE,
-    SWP_NOZORDER, SW_SHOW, WINDOW_EX_STYLE, WM_MOUSEWHEEL, WM_NCDESTROY, WNDCLASSEXW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW,
+    RegisterClassExW, SetWindowLongPtrW, ShowWindow, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HMENU, SW_SHOW, WINDOW_EX_STYLE, WM_MOUSEWHEEL, WM_NCDESTROY, WNDCLASSEXW,
     WS_CHILD, WS_VISIBLE,
 };
-use windows::Win32::Foundation::RECT;
 
 // Post-dispatch flush-hook slot (new-core flush driver). Unconditional
 // — the fire sites live in the out-of-repo host shell, which cannot
 // see this crate's features; no-op default so the old core never pays.
 pub mod dispatch_hook;
 
-// New-core (idea-lite) adoption: Host + all 30 caps traits on
-// `WindowsBackend`, UFCS-delegating to the `Backend` impl below.
-#[cfg(feature = "new-core")]
+/// `runtime_scene::Host` + the 30 capability traits on
+/// [`WindowsBackend`], plus the boot entry and flush driver.
 pub mod newcore;
 
 // STATIC control style constants. The `windows` crate dropped these
@@ -144,13 +136,6 @@ pub struct WindowsBackend {
     /// `NodeMeta`'s `on_click` slot for diagnostics + future
     /// keyboard-activation routing.
     command_handlers: HashMap<u16, Rc<dyn Fn()>>,
-    /// Third-party `Element::External` registry. Populated by
-    /// `register_external::<T>(...)` calls from per-platform leaf
-    /// crates (e.g. `toolbar::register_windows`). `create_external`
-    /// looks up the handler by payload TypeId; unregistered kinds
-    /// fall through to a "not supported" placeholder. Mirrors the
-    /// iOS / macOS pattern.
-    pub(crate) external_handlers: runtime_core::ExternalRegistry<WindowsBackend>,
 }
 
 struct NodeMeta {
@@ -184,7 +169,6 @@ impl WindowsBackend {
             layout_for_id: HashMap::new(),
             next_control_id: 100,
             command_handlers: HashMap::new(),
-            external_handlers: runtime_core::ExternalRegistry::new(),
         }
     }
 
@@ -193,26 +177,6 @@ impl WindowsBackend {
     /// child-window parent) reach the host window through this.
     pub fn host_hwnd(&self) -> HWND {
         self.host_hwnd
-    }
-
-    /// Register a handler for the third-party external primitive whose
-    /// payload type is `T`. Called by per-platform leaf crates during
-    /// app bootstrap (`toolbar::register(&mut backend)`). The handler
-    /// receives the typed payload + a mutable borrow of the backend
-    /// and produces the `WindowsNode` to mount. Mirrors the iOS /
-    /// macOS pattern.
-    pub fn register_external<T, F>(&mut self, handler: F)
-    where
-        T: 'static,
-        F: Fn(&Rc<T>, &mut WindowsBackend) -> WindowsNode + 'static,
-    {
-        self.external_handlers.register::<T, _>(handler);
-    }
-
-    /// `true` if a handler for payload type `T` has been registered.
-    /// Useful for opt-in graceful degradation in user code.
-    pub fn has_external<T: 'static>(&self) -> bool {
-        self.external_handlers.has::<T>()
     }
 
     /// SDK extension helper: allocate a fresh Win32 control id +
@@ -554,390 +518,6 @@ fn ensure_scroll_class_registered() {
 // Backend trait
 // =========================================================================
 
-impl Backend for WindowsBackend {
-    type Node = WindowsNode;
-
-    fn color_scheme(&self) -> ColorScheme {
-        // Win32 doesn't expose a single "dark mode" toggle until very
-        // recent builds (UISettings::Background via WinRT). For the
-        // scaffold we return Auto and let the framework's theme APIs
-        // own the decision. A future revision can read
-        // `AppsUseLightTheme` from the registry under
-        // `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`.
-        ColorScheme::Auto
-    }
-
-    fn platform(&self) -> Platform {
-        Platform::Custom("windows")
-    }
-
-    fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
-        // STATIC class with no text — acts as a transparent
-        // container. Real Win32 apps typically use a custom WNDCLASS
-        // for layout containers; STATIC is fine as a scaffold.
-        self.create_child(class_static(), "", SS_LEFT as u32, None)
-    }
-
-    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
-        self.create_child(class_static(), content, SS_LEFT as u32, None)
-    }
-
-    fn create_button(
-        &mut self,
-        label: &str,
-        on_click: &Action,
-        _leading_icon: Option<&runtime_core::primitives::icon::IconData>,
-        _trailing_icon: Option<&runtime_core::primitives::icon::IconData>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Allocate a control id, install the handler in the
-        // dispatch table, and pass the id to `create_child` so
-        // CreateWindowExW records it on the HWND. The host's
-        // WndProc routes `WM_COMMAND` with `LOWORD(wParam)` ==
-        // this id back through `dispatch_command`.
-        let control_id = self.alloc_control_id();
-        let handler = on_click.fire.clone();
-        self.command_handlers.insert(control_id, handler.clone());
-        let node = self.create_child(
-            class_button(),
-            label,
-            BS_DEFPUSHBUTTON as u32,
-            Some(control_id),
-        );
-        if let Some(meta) = self.nodes.get_mut(&node.id) {
-            meta.on_click = Some(handler);
-        }
-        node
-    }
-
-    fn create_pressable(
-        &mut self,
-        on_click: Rc<dyn Fn()>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // STATIC controls don't fire WM_COMMAND natively, so the
-        // control-id approach doesn't help for Pressable as it
-        // does for BUTTON. A proper Pressable needs an `STN_*`
-        // notification (via `SS_NOTIFY` style + `WM_COMMAND`
-        // with `STN_CLICKED`) or a `WM_LBUTTONDOWN`-subclassed
-        // wndproc on the static. For the scaffold we allocate a
-        // control id and install `SS_NOTIFY` so the host's
-        // dispatcher path treats it like Button; the actual
-        // subclassing is a follow-up the host owns.
-        let control_id = self.alloc_control_id();
-        self.command_handlers.insert(control_id, on_click.clone());
-        let node = self.create_child(
-            class_static(),
-            "",
-            (SS_LEFT | SS_NOTIFY) as u32,
-            Some(control_id),
-        );
-        if let Some(meta) = self.nodes.get_mut(&node.id) {
-            meta.on_click = Some(on_click);
-        }
-        node
-    }
-
-    fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
-        let Some(parent_layout) = self.layout_for_id.get(&parent.id).copied() else {
-            return;
-        };
-        let Some(child_layout) = self.layout_for_id.get(&child.id).copied() else {
-            return;
-        };
-        self.layout.add_child(parent_layout, child_layout);
-        // SetParent: re-parent the HWND so the host's WM_PAINT
-        // walks reach this node. Without it, the framework's
-        // logical parent/child differs from Win32's HWND tree.
-        unsafe {
-            // windows 0.58 dropped the `Option<HWND>` parent param;
-            // it's now `Param<HWND>`. Pass the bare HWND.
-            let _ = windows::Win32::UI::WindowsAndMessaging::SetParent(
-                child.hwnd,
-                parent.hwnd,
-            );
-        }
-    }
-
-    fn clear_children(&mut self, _node: &Self::Node) {
-        // Placeholder: walk children HWNDs and DestroyWindow each.
-        // The full implementation needs a parent → children map so
-        // we can iterate efficiently. Skipped here so author code
-        // doesn't panic on a clear pass.
-    }
-
-    fn update_text(&mut self, node: &Self::Node, content: &str) {
-        let wide = to_pcwstr(content);
-        let _ = unsafe { SetWindowTextW(node.hwnd, wide.as_pcwstr()) };
-    }
-
-    fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-        let wide = to_pcwstr(label);
-        let _ = unsafe { SetWindowTextW(node.hwnd, wide.as_pcwstr()) };
-    }
-
-    fn finish(&mut self, root: Self::Node) {
-        // Run Taffy against the host window's client rect, then
-        // walk every registered HWND and call SetWindowPos with
-        // its computed frame. Frames in Taffy are relative to the
-        // immediate parent; SetWindowPos takes coordinates
-        // relative to the parent HWND, and our `insert` reparents
-        // each child to its framework parent via `SetParent`, so
-        // the two coordinate systems line up directly.
-        let Some(root_layout) = self.layout_for_id.get(&root.id).copied() else {
-            return;
-        };
-
-        // Host client rect in pixels. GetClientRect can fail if the
-        // window has been destroyed; bail rather than feed garbage
-        // dimensions to the layout pass.
-        let mut rect = RECT::default();
-        if unsafe { GetClientRect(self.host_hwnd, &mut rect) }.is_err() {
-            return;
-        }
-        let width = (rect.right - rect.left).max(0) as f32;
-        let height = (rect.bottom - rect.top).max(0) as f32;
-        if width <= 0.0 || height <= 0.0 {
-            return;
-        }
-
-        self.layout.compute(root_layout, width, height);
-
-        // Collect (hwnd, frame) pairs first so we can release the
-        // borrow on `self.nodes` before issuing the Win32 calls.
-        // SetWindowPos is documented as safe to call from the
-        // owning thread; we issue them serially so the HWND tree
-        // doesn't see partial-state intermediate frames.
-        let mut updates: Vec<(HWND, i32, i32, i32, i32)> =
-            Vec::with_capacity(self.nodes.len());
-        for (id, meta) in &self.nodes {
-            let Some(layout) = self.layout_for_id.get(id).copied() else {
-                continue;
-            };
-            let frame = self.layout.frame_of(layout);
-            updates.push((
-                meta.hwnd,
-                frame.x.round() as i32,
-                frame.y.round() as i32,
-                frame.width.round() as i32,
-                frame.height.round() as i32,
-            ));
-        }
-        for (hwnd, x, y, w, h) in updates {
-            if hwnd.is_invalid() {
-                continue;
-            }
-            // `HWND_TOP` here would force every child to the top of
-            // the z-order on every layout pass — wasteful and
-            // visually disruptive. `SWP_NOZORDER` preserves whatever
-            // z-order the HWND already has. `SWP_NOACTIVATE` keeps
-            // input focus from jumping to whatever child we
-            // happen to move first.
-            let _ = unsafe {
-                SetWindowPos(
-                    hwnd,
-                    None,
-                    x,
-                    y,
-                    w,
-                    h,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                )
-            };
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // Placeholders. See `backend-cpu`'s analogous block — the same
-    // posture applies: visible "X not supported on Windows" text
-    // beats a silent unimplemented panic.
-    // ---------------------------------------------------------------------
-
-    fn create_image(
-        &mut self,
-        _src: &str,
-        _alt: Option<&str>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.placeholder("Image not yet implemented on Windows backend")
-    }
-
-    fn create_icon(
-        &mut self,
-        _data: &runtime_core::primitives::icon::IconData,
-        _color: Option<&Color>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.placeholder("Icon not yet implemented on Windows backend")
-    }
-
-    fn create_text_input(
-        &mut self,
-        initial_value: &str,
-        _placeholder: Option<&str>,
-        _on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        _on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
-        // STATIC stub renders no editable text, so password masking is
-        // N/A here. When this grows into a real EDIT control, apply the
-        // ES_PASSWORD (0x20) style when secure.
-        _secure: bool,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Real Win32 EDIT control would land here. For the scaffold,
-        // use a STATIC with the initial value so the field is at
-        // least visible.
-        self.create_child(class_static(), initial_value, SS_LEFT as u32, None)
-    }
-
-    fn create_text_area(
-        &mut self,
-        initial_value: &str,
-        _placeholder: Option<&str>,
-        _wrap: bool,
-        _min_rows: Option<u32>,
-        _max_rows: Option<u32>,
-        _on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.create_child(class_static(), initial_value, SS_LEFT as u32, None)
-    }
-
-    fn create_toggle(
-        &mut self,
-        _initial_value: bool,
-        _on_change: Rc<dyn Fn(bool)>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.placeholder("Toggle not yet implemented on Windows backend")
-    }
-
-    fn create_slider(
-        &mut self,
-        _initial_value: f32,
-        _min: f32,
-        _max: f32,
-        _step: Option<f32>,
-        _on_change: Rc<dyn Fn(f32)>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.placeholder("Slider not yet implemented on Windows backend")
-    }
-
-    fn create_scroll_view(
-        &mut self,
-        horizontal: bool,
-        on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Register the `IdealystScroll` WNDCLASS on first use; the
-        // call is idempotent across multiple backend instances in
-        // the same process.
-        ensure_scroll_class_registered();
-        let node = self.create_child(SCROLL_CLASS_NAME, "", 0, None);
-
-        // Stash per-window scroll state (callback + offsets) in
-        // `GWLP_USERDATA`. The WndProc reads it on every
-        // `WM_MOUSEWHEEL`, advances the offset, calls
-        // `ScrollWindowEx` to move children, and fires the user
-        // callback. `WM_NCDESTROY` releases the box.
-        let state = Box::new(ScrollState {
-            horizontal,
-            offset_x: 0.0,
-            offset_y: 0.0,
-            on_scroll,
-        });
-        let raw = Box::into_raw(state) as isize;
-        unsafe {
-            SetWindowLongPtrW(node.hwnd, GWLP_USERDATA, raw);
-        }
-        node
-    }
-
-    fn create_activity_indicator(
-        &mut self,
-        _size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
-        _color: Option<&Color>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.placeholder("ActivityIndicator not yet implemented on Windows backend")
-    }
-
-    fn create_virtualizer(
-        &mut self,
-        _callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
-        _overscan: f32,
-        _layout: runtime_core::VirtualLayout,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.placeholder("Virtualizer not yet implemented on Windows backend")
-    }
-
-    fn create_graphics(
-        &mut self,
-        _on_ready: runtime_core::primitives::graphics::OnReady,
-        _on_resize: runtime_core::primitives::graphics::OnResize,
-        _on_lost: runtime_core::primitives::graphics::OnLost,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.placeholder("Graphics not yet implemented on Windows backend")
-    }
-
-    fn create_external(
-        &mut self,
-        type_id: std::any::TypeId,
-        type_name: &'static str,
-        payload: &Rc<dyn std::any::Any>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Look up the registered handler for `type_id`. If found,
-        // invoke it with the typed payload + `&mut self`; if not,
-        // fall through to the labeled placeholder so the missing
-        // SDK is visible at runtime (matches the iOS / macOS posture
-        // for unregistered externals).
-        //
-        // Clone the registry slot out before mutably borrowing
-        // `self` for the handler call — `ExternalRegistry` stores
-        // its handlers as `Rc<dyn ErasedHandler<_>>`, so the clone
-        // is cheap and breaks the borrow conflict.
-        if let Some(handler) = self.external_handlers.get(type_id) {
-            return handler(payload, self);
-        }
-        self.placeholder(&format!(
-            "External \"{type_name}\" not registered on Windows backend"
-        ))
-    }
-
-    fn create_portal(
-        &mut self,
-        _target: runtime_core::primitives::portal::PortalTarget,
-        _on_dismiss: Option<Rc<dyn Fn()>>,
-        _trap_focus: bool,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.placeholder("Portal not yet implemented on Windows backend")
-    }
-
-    fn create_navigator(
-        &mut self,
-        _type_id: std::any::TypeId,
-        type_name: &'static str,
-        _presentation: Rc<dyn std::any::Any>,
-        _host: runtime_core::primitives::navigator::NavigatorHost<Self::Node>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.placeholder(&format!(
-            "Navigator \"{type_name}\" not yet implemented on Windows backend"
-        ))
-    }
-
-    fn apply_style(&mut self, _node: &Self::Node, _style: &Rc<StyleRules>) {
-        // No-op until we wire Taffy-driven SetWindowPos in finish().
-        // Author code calling apply_style today shouldn't crash; the
-        // style is silently dropped.
-    }
-}
 
 // `RefCell` import kept for the eventual wm_command_dispatch state.
 #[allow(dead_code)]

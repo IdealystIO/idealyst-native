@@ -12,8 +12,6 @@
 //! later enhancement, not needed to demonstrate the renderer.
 
 use canvas::prelude::*;
-// link the chosen canvas renderer so its inventory self-registration survives DCE
-use canvas_native as _;
 use idea_ui::{install_idea_theme, light_theme, Stack, StackGap, StackPadding, Typography};
 use runtime_core::{
     raf_loop_scoped, signal, ui, view, Element, IntoElement, Length, StyleRules, StyleSheet,
@@ -22,11 +20,30 @@ use runtime_core::{
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-/// No per-platform registration needed: the canvas renderer external
-/// self-registers via `inventory::submit!` at backend construction (see
-/// [[project_inventory_self_registration]]). The `use canvas_native as _;`
-/// above keeps the renderer crate linked so its inventory entry survives DCE.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam, invoked by the CLI-generated wrappers
+/// after `runtime_vocabulary::register_builtins`. There is no inventory
+/// self-registration on the scene registry — an UNREGISTERED `CanvasPrim`
+/// panics at realize — so the renderer MUST be composed in here.
+///
+/// `canvas_native::register` is generic on every target and dispatches on
+/// the registry TYPE once, at registration time: web gets the Canvas2D
+/// handler, iOS/macOS the CoreGraphics painter, Android
+/// `android.graphics.Canvas`, and any other host the External
+/// placeholder. So one seam covers the whole target list.
+pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
+where
+    H: runtime_vocabulary::caps::ExternalOps
+        + runtime_vocabulary::style_attach::StyleServices
+        + 'static,
+{
+    canvas_native::register(registry);
+}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
+}
 
 /// Fixed logical canvas size every card draws into.
 const W: f32 = 320.0;

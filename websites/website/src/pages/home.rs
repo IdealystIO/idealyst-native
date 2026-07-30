@@ -97,19 +97,18 @@ fn hero() -> Element {
 // headline + device read as one visual unit.
 // =============================================================================
 
-// Lazy component — SAME source on both cores (the new-core lazy
-// lowering landed: `glue::primitives::lazy` + the vocabulary `lazy`
-// handler; see docs/migrating-to-runtime-v2.md). On web, wasm-split-cli
+// Lazy component — lowers to the vocabulary `lazy` prim
+// (`glue::primitives::lazy` + `handlers/lazy.rs`). On web, wasm-split-cli
 // post-build hoists the body (and its transitive wgpu / welcome /
 // ios_sim deps) into a separate chunk wasm loaded on demand. On native
 // targets the attribute is transparent: the body compiles inline and
 // runs synchronously.
 //
-// SSR (both cores): the lazy boundary keeps its loading UI — the
-// chunk is never loaded server-side — so the SSG bytes for "/" are the
-// container div + chassis placeholder, byte-identical across cores
-// (tests/ssg_parity.rs pins this; the new-core handler swaps children
-// imperatively, no reactive anchor, precisely to preserve that shape).
+// SSR: the lazy boundary keeps its loading UI — the chunk is never
+// loaded server-side — so the SSG bytes for "/" are the container div +
+// chassis placeholder. The handler swaps children imperatively rather
+// than through a reactive anchor precisely to preserve that shape
+// (tests/ssg_parity.rs pins it against the frozen corpus).
 #[component(lazy)]
 fn HeroSimulator() -> Element {
     let build_ui: Rc<dyn Fn() -> Element> = Rc::new(welcome::app);

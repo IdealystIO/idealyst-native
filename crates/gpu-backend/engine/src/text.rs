@@ -18,13 +18,13 @@
 
 use std::collections::HashMap;
 
-use runtime_core::{FontStyle, FontWeight, TextAlign};
 use glyphon::{
     cosmic_text::Align as GAlign, Attrs, Buffer, Cache, Color as GColor, Family, FontSystem,
     Metrics, Resolution, Shaping, Stretch as GStretch, Style as GStyle, SwashCache, TextArea,
     TextAtlas, TextBounds, TextRenderer as GRenderer, Viewport, Weight as GWeight, Wrap,
 };
 use runtime_layout::LayoutNode;
+use runtime_shared::{FontStyle, FontWeight, TextAlign};
 
 /// Per-text-node state held in [`TextStore`].
 ///
@@ -186,7 +186,9 @@ pub struct TextStore {
 
 impl TextStore {
     pub fn new() -> Self {
-        Self { buffers: HashMap::new() }
+        Self {
+            buffers: HashMap::new(),
+        }
     }
 
     /// Build a new buffer for `id` with `content` at `font_size`,
@@ -246,22 +248,29 @@ impl TextStore {
         let content: String = spans.iter().map(|sp| sp.text.as_str()).collect();
         self.buffers.insert(
             id,
-            BufferEntry { buffer, font_size, content, attrs, rich: Some(spans) },
+            BufferEntry {
+                buffer,
+                font_size,
+                content,
+                attrs,
+                rich: Some(spans),
+            },
         );
     }
 
     /// Replace a rich buffer's spans (theme re-realize / direct
     /// update). No-op for ids that were never rich-created — a plain
     /// text node's content updates route through `set_text`.
-    pub fn set_rich(
-        &mut self,
-        font_system: &mut FontSystem,
-        id: LayoutNode,
-        spans: Vec<RichSpan>,
-    ) {
+    pub fn set_rich(&mut self, font_system: &mut FontSystem, id: LayoutNode, spans: Vec<RichSpan>) {
         if let Some(entry) = self.buffers.get_mut(&id) {
             entry.content = spans.iter().map(|sp| sp.text.as_str()).collect();
-            shape_rich(&mut entry.buffer, font_system, &spans, &entry.attrs, entry.font_size);
+            shape_rich(
+                &mut entry.buffer,
+                font_system,
+                &spans,
+                &entry.attrs,
+                entry.font_size,
+            );
             entry.rich = Some(spans);
             apply_buffer_align(&mut entry.buffer, entry.attrs.align);
             entry.buffer.shape_until_scroll(font_system, false);
@@ -294,17 +303,11 @@ impl TextStore {
 
     /// Reset the metrics on `id`'s buffer. Called when the framework
     /// re-applies a style that changed `font_size`.
-    pub fn set_font_size(
-        &mut self,
-        font_system: &mut FontSystem,
-        id: LayoutNode,
-        font_size: f32,
-    ) {
+    pub fn set_font_size(&mut self, font_system: &mut FontSystem, id: LayoutNode, font_size: f32) {
         if let Some(entry) = self.buffers.get_mut(&id) {
-            entry.buffer.set_metrics(
-                font_system,
-                Metrics::new(font_size, font_size * 1.3),
-            );
+            entry
+                .buffer
+                .set_metrics(font_system, Metrics::new(font_size, font_size * 1.3));
             entry.font_size = font_size;
         }
     }
@@ -315,12 +318,7 @@ impl TextStore {
     /// stylesheet-only changes (theme swap, state overlay flip)
     /// re-shape through this without needing to re-issue the
     /// `create_text` content payload.
-    pub fn set_attrs(
-        &mut self,
-        font_system: &mut FontSystem,
-        id: LayoutNode,
-        attrs: TextAttrs,
-    ) {
+    pub fn set_attrs(&mut self, font_system: &mut FontSystem, id: LayoutNode, attrs: TextAttrs) {
         if let Some(entry) = self.buffers.get_mut(&id) {
             if entry.attrs == attrs {
                 return;
@@ -445,7 +443,7 @@ impl TextStore {
 /// tokenized colors resolve against the CURRENT theme (which is why
 /// theme swaps re-enter here via `Backend::update_styled_text`),
 /// families classify to cosmic-text roles, sizes flatten to px.
-pub fn resolve_rich_spans(runs: &[runtime_core::TextRun]) -> Vec<RichSpan> {
+pub fn resolve_rich_spans(runs: &[runtime_shared::TextRun]) -> Vec<RichSpan> {
     runs.iter()
         .map(|run| {
             let style = run.style.as_ref();
@@ -467,7 +465,7 @@ pub fn resolve_rich_spans(runs: &[runtime_core::TextRun]) -> Vec<RichSpan> {
             let size = style
                 .and_then(|s| s.font_size.as_ref())
                 .and_then(|t| match t.resolve() {
-                    runtime_core::Length::Px(px) if px > 0.0 => Some(px),
+                    runtime_shared::Length::Px(px) if px > 0.0 => Some(px),
                     _ => None,
                 });
             RichSpan {
@@ -487,12 +485,12 @@ impl RichFamily {
     /// fonts pass their family name through — cosmic-text matches it
     /// against faces loaded via `register_asset` and falls back
     /// per-glyph otherwise.
-    pub fn classify(f: &runtime_core::FontFamily) -> Option<RichFamily> {
+    pub fn classify(f: &runtime_shared::FontFamily) -> Option<RichFamily> {
         match f {
-            runtime_core::FontFamily::Typeface(tf) => {
+            runtime_shared::FontFamily::Typeface(tf) => {
                 Some(RichFamily::Named(tf.family_name.to_string()))
             }
-            runtime_core::FontFamily::System(stack) => {
+            runtime_shared::FontFamily::System(stack) => {
                 for entry in stack.split(',') {
                     let entry = entry.trim().trim_matches('"').trim_matches('\'');
                     if entry.is_empty() {
@@ -572,19 +570,20 @@ pub struct TextCtx {
 }
 
 impl TextCtx {
-    pub fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        format: wgpu::TextureFormat,
-    ) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let swash_cache = SwashCache::new();
         let cache = Cache::new(device);
         let mut atlas = TextAtlas::new(device, queue, &cache, format);
         let viewport = Viewport::new(device, &cache);
-        let renderer =
-            GRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
+        let renderer = GRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
 
-        Self { swash_cache, cache, atlas, viewport, renderer }
+        Self {
+            swash_cache,
+            cache,
+            atlas,
+            viewport,
+            renderer,
+        }
     }
 }
 
@@ -607,11 +606,15 @@ pub enum TextRenderError {
 }
 
 impl From<glyphon::PrepareError> for TextRenderError {
-    fn from(e: glyphon::PrepareError) -> Self { TextRenderError::Prepare(e) }
+    fn from(e: glyphon::PrepareError) -> Self {
+        TextRenderError::Prepare(e)
+    }
 }
 
 impl From<glyphon::RenderError> for TextRenderError {
-    fn from(e: glyphon::RenderError) -> Self { TextRenderError::Render(e) }
+    fn from(e: glyphon::RenderError) -> Self {
+        TextRenderError::Render(e)
+    }
 }
 
 pub fn render_text<'a>(
@@ -625,7 +628,10 @@ pub fn render_text<'a>(
 ) -> Result<(), TextRenderError> {
     ctx.viewport.update(
         queue,
-        Resolution { width: viewport_px[0], height: viewport_px[1] },
+        Resolution {
+            width: viewport_px[0],
+            height: viewport_px[1],
+        },
     );
 
     let areas: Vec<TextArea<'_>> = items
@@ -747,7 +753,10 @@ mod tests {
         store.set_attrs(
             &mut fs,
             id,
-            TextAttrs { weight: FontWeight::Bold, ..Default::default() },
+            TextAttrs {
+                weight: FontWeight::Bold,
+                ..Default::default()
+            },
         );
         assert!(store.buffers.get(&id).unwrap().rich.is_some());
         // Plain-text write drops them.
@@ -762,13 +771,13 @@ mod tests {
     /// via its first entry, sizes flatten to px.
     #[test]
     fn resolve_rich_spans_resolves_colors_and_families() {
-        use runtime_core::{Color, Tokenized, TextRun, TextRunStyle};
+        use runtime_shared::{Color, TextRun, TextRunStyle, Tokenized};
         let spans = resolve_rich_spans(&[
             TextRun::plain("a "),
             TextRun::styled(
                 "b",
                 TextRunStyle {
-                    font_family: Some(runtime_core::FontFamily::System(
+                    font_family: Some(runtime_shared::FontFamily::System(
                         "ui-monospace, Menlo, monospace".into(),
                     )),
                     background: Some(Tokenized::Literal(Color("#ff0000".into()))),
@@ -780,6 +789,9 @@ mod tests {
         assert!(spans[0].family.is_none() && spans[0].background.is_none());
         assert!(matches!(spans[1].family, Some(RichFamily::Monospace)));
         let bg = spans[1].background.unwrap();
-        assert!(bg[0] > 0.99 && bg[1] < 0.01 && bg[2] < 0.01, "red bg, got {bg:?}");
+        assert!(
+            bg[0] > 0.99 && bg[1] < 0.01 && bg[2] < 0.01,
+            "red bg, got {bg:?}"
+        );
     }
 }

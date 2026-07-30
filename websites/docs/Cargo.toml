@@ -12,21 +12,33 @@ description = "Idealyst documentation site"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-# Connect to a running `idealyst dev` server on startup instead of
-# rendering the local `app()` tree. Pulls in the `dev-client` crate
-# only when the feature is on, so a release build stays lean.
-dev-hot-reload = ["dep:dev-client", "backend-web/runtime-server"]
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
-# (build-runtime-server). Pulls `dev-server` + the swap SDK's recording
-# handler so `register_extensions_recorder` can register a navigator
-# recording handler on the runtime-server recorder backend.
-sidecar = ["dep:dev-server", "swap-navigator/runtime-server"]
+# (build-runtime-server). Pulls `dev-server` so
+# `register_scene_extensions_recorder` exists; navigators are vocabulary
+# built-ins, so there is no recording handler to wire.
+sidecar = ["dep:dev-server"]
+
+[dev-dependencies]
+# `World::new().enter(…)` in `macro_test.rs`: a page body creates
+# reactive state, which is only legal inside a world.
+runtime-world = { workspace = true }
 
 [dependencies]
+# The author surface: `extern crate runtime_core as runtime_core;` in
+# lib.rs shadows the extern prelude for the whole crate, so every
+# `runtime_core::…` path (including the ones `ui!`, `#[component]`, and
+# the sibling `docs!` macro emit) resolves against
+# `runtime_vocabulary::glue`.
+#
 # `async-driver` exposes `spawn_async` + `render_loop`. The Simulator
 # component delegates wgpu init + per-frame paint through `host-web`,
 # which talks to those drivers under the hood.
 runtime-core = { workspace = true, features = ["async-driver"] }
+# Named directly for the scene `Registry` type in
+# `register_scene_extensions` and the retargeted `ui!` emission's
+# absolute `::runtime_vocabulary::glue::…` paths.
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 docs-macro = { workspace = true }
 swap-navigator = { workspace = true }
@@ -35,7 +47,6 @@ idea-ui-nav = { workspace = true }
 # pulled in only by the `sidecar` feature (host-side sidecar build);
 # never compiled for device/web targets.
 dev-server = { workspace = true, optional = true }
-libc = "0.2"
 
 # Embedded preview stack used by the `Simulator` component:
 # - `host-web` does the actual wgpu init, render-loop drive, and
@@ -83,17 +94,11 @@ backend-terminal = { workspace = true }
 # `spawn_async` and `render_loop`.
 backend-web = { workspace = true, features = ["async-driver"] }
 wasm-bindgen = "0.2"
-# `Reflect` lives in `js-sys`; the dev-client shim reads
-# `window.IDEALYST_RUNTIME_SERVER_URL` through it.
-js-sys = "0.3"
 web-sys = { version = "0.3", features = ["console"] }
 console_error_panic_hook = "0.1"
 # Smaller WASM allocator — same trade-off as `hello-web`: slightly
 # higher per-alloc cost in exchange for a few KB shaved off the bundle.
 lol_alloc = "0.4"
-# Only pulled in under `dev-hot-reload`. Cargo silently drops the
-# activation on non-wasm targets because the dep isn't declared there.
-dev-client = { workspace = true, optional = true }
 
 # wasm-opt's bundled binaryen rejects bulk-memory ops emitted by recent
 # rustc. The bundle is still LTO'd at link time without the post-pass.

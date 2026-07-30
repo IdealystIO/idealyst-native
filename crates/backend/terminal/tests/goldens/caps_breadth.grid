@@ -1,0 +1,31 @@
+cols=48 rows=10
+r00 glyph |link text                                       |
+r00 fg    9*dcdcdcff 39*-
+r00 bg    44*101020ff 4*-
+r01 glyph |                     ⠋                          |
+r01 fg    21*- 7fe8d6ff 26*-
+r01 bg    44*101020ff 4*-
+r02 glyph |typed value                                     |
+r02 fg    11*dcdcdcff 37*-
+r02 bg    44*101020ff 4*-
+r03 glyph |[external "text_area (backend compiled          |
+r03 fg    38*dcdcdcff 10*-
+r03 bg    44*101020ff 4*-
+r04 glyph |without `prim-text-input`)" not supported in    |
+r04 fg    44*dcdcdcff 4*-
+r04 bg    44*101020ff 4*-
+r05 glyph |terminal]                                       |
+r05 fg    9*dcdcdcff 39*-
+r05 bg    44*101020ff 4*-
+r06 glyph |[external "slider (backend compiled without     |
+r06 fg    43*dcdcdcff 5*-
+r06 bg    44*101020ff 4*-
+r07 glyph |`prim-slider`)" not supported in terminal]      |
+r07 fg    42*dcdcdcff 6*-
+r07 bg    44*101020ff 4*-
+r08 glyph |clipped    ┃                                    |
+r08 fg    7*dcdcdcff 4*- c8c8dcff 36*-
+r08 bg    12*112211ff 32*101020ff 4*-
+r09 glyph |overflowing│                                    |
+r09 fg    11*dcdcdcff 5a5a69ff 36*-
+r09 bg    12*112211ff 32*101020ff 4*-

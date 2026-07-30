@@ -12,7 +12,9 @@ license.workspace = true
 # images `Image`.
 
 [dependencies]
-runtime-core = { workspace = true }
+# The style vocabulary the element's sizing sheet is built from
+# (`StyleRules`/`StyleSheet`/`Length`).
+runtime-shared = { workspace = true }
 canvas-core = { workspace = true }
 
 # `embed-fonts` bundles the standard-14 fallback fonts so PDFs that reference
@@ -31,3 +33,7 @@ log = "0.4"
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# The `PdfReactive` doctest drives the element from a reactive source, so it
+# needs the author surface. Dev-only — the lib itself needs only the style
+# substrate above.
+runtime-core = { workspace = true }

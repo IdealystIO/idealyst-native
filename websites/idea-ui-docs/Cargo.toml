@@ -19,79 +19,42 @@ crate-type = ["cdylib", "rlib"]
 # that gates on it). See `cli::cmd::dev` comments.
 runtime-server = []
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
-# (build-runtime-server). Pulls `dev-server` + the swap SDK's
-# recording handler so `register_extensions_recorder` can register a
-# navigator recording handler on the runtime-server recorder backend.
+# (build-runtime-server). Pulls `dev-server` so
+# `register_scene_extensions_recorder` can register the codeblock +
+# table scene handlers on the runtime-server recorder registry
+# (navigators are vocabulary built-ins — no recording handler to wire).
 # Kept separate from `runtime-server` (the web *client* wrapper's
 # feature, which is enabled on wasm builds where dev-server can't
 # compile).
-sidecar = ["dep:dev-server", "swap-navigator/runtime-server"]
+sidecar = ["dep:dev-server"]
 # `terminal`: forces the terminal backend on the host. The terminal target
 # builds for the host triple, so on a macOS host it collides with
 # `backend-macos` and `cfg(target_os)` can't disambiguate — the CLI's
 # terminal wrapper enables this feature to break the tie. (See the
 # tutorial's Cargo.toml for the full rationale.)
 terminal = ["dep:backend-terminal"]
-# Forwards the framework's `debug-stats` instrumentation through to
-# `runtime-core` AND the Android backend's phase_timer module. Per
-# CLAUDE.md section 6, the VARIANT crate must declare its own
-# `debug-stats` (not just put `features = ["debug-stats"]` on a dep
-# line) so that backend-android-mobile's PhaseTimer compiles to the
-# real timing struct. Currently default-on so `idealyst dev --android`
-# bakes in instrumentation without extra flags; flip back to opt-in
-# once a regression hunt is over.
+# Forwards the framework's `debug-stats` instrumentation through to the
+# runtime AND the Android backend's phase_timer module. Per CLAUDE.md
+# section 6, the VARIANT crate must declare its own `debug-stats` (not
+# just put `features = ["debug-stats"]` on a dep line) so that
+# backend-android-mobile's PhaseTimer compiles to the real timing
+# struct. Currently default-on so `idealyst dev --android` bakes in
+# instrumentation without extra flags; flip back to opt-in once a
+# regression hunt is over.
 debug-stats = [
-    "runtime-core/debug-stats",
+    "runtime-vocabulary/debug-stats",
     "backend-android-mobile/debug-stats",
 ]
-default = ["debug-stats", "new-core"]
-
-# The two cores — SAME-SOURCE dual-core app (the newcore-app pattern,
-# see the conformance example): exactly one per build; `old-core` is the
-# default (CLI builds unchanged), `new-core` is the idea-lite migration
-# build, booted on web via `backend_web::newcore::start`:
+default = ["debug-stats"]
+# Standalone web boot (`web_entry` in lib.rs + standalone.html): the
+# plain-wasm-pack vehicle that carries its OWN
+# `#[wasm_bindgen(start)]`. NON-default and NOT enabled by the CLI web
+# wrapper (`idealyst build --web`), whose generated wrapper has its own
+# start fn — two starts in one module is a wasm-bindgen error.
 #
-#   cargo check -p idea-ui-docs                                    # new core (the default
-#                                                                  #   since the runtime-v2 flip)
-#   cargo check -p idea-ui-docs --no-default-features \
-#       --features old-core,debug-stats                            # old core
 #   wasm-pack build --target web --dev websites/idea-ui-docs \
-#       --out-dir pkg-newcore -- --no-default-features \
-#       --features new-core                                        # new-core web
-#
-# `old-core` owns the old-core-only External SDK (swap-navigator) —
-# old-core-authored, cannot join a new-core graph (proc-macro feature
-# unification would retarget ITS `ui!` sites too).
-# `codeblock` and `table` are DUAL-CORE: both features enable the dep,
-# `new-core` flips their scene-registry leg (`codeblock/new-core`,
-# `table/new-core`), so CodePanel renders the SDK's identical
-# `<pre>`/span DOM and PropsTable/the Table pages render the same real
-# `<table>` on either core (the table handlers register through
-# `backend_web::newcore::start_in`'s seam — see `web_entry_newcore`).
-# `idea-ui/docs` is DUAL-CORE too: the DocControls derive emits the free
-# `::runtime_core::signal(…)` (glue-mirrored) and the doc-controls
-# runtime satisfies the world kernel's `T: PartialEq` signal bound
-# (`RefBuiltins: PartialEq`, pointer-identity impls in idea-theme), so
-# both features enable it and the derive compiles on either core.
-old-core = ["dep:swap-navigator", "dep:codeblock", "dep:table", "idea-ui/table", "idea-ui/docs"]
-# `new-core` flips the whole idea-* subtree onto the glue facade
-# (`extern crate runtime_facade as runtime_core;` in lib.rs) and pulls
-# the vocabulary nav surface. `backend-web/new-core` is forwarded to the
-# wasm-target dep (feature forwarding to target-specific deps works).
-new-core = [
-    "idea-ui/new-core",
-    "idea-ui-nav/new-core",
-    "dep:runtime-facade",
-    "dep:runtime-vocabulary",
-    "dep:runtime-world",
-    "dep:codeblock",
-    "codeblock/new-core",
-    "dep:table",
-    "table/new-core",
-    "idea-ui/table",
-    "idea-ui/docs",
-    "backend-web/new-core",
-]
+#       --out-dir pkg-standalone -- --features standalone-web
+standalone-web = []
 
 # Cross-platform render-parity test (`idealyst test --parity web,macos`).
 # `robot-test` drives the running app over the Robot bridge — see
@@ -101,27 +64,21 @@ robot-test = { workspace = true }
 serde_json = "1"
 
 [dependencies]
+# `docs` powers the auto-generated live control panels: the DocControls
+# derive emits the free `::runtime_core::signal(…)` and the doc-controls
+# runtime satisfies the world kernel's `T: PartialEq` signal bound
+# (`RefBuiltins: PartialEq`, pointer-identity impls in idea-theme).
+# `table` (a default) powers PropsTable on every component page.
+idea-ui = { workspace = true, features = ["docs"] }
+# The author-surface alias target (`extern crate runtime_core as
+# runtime_core;` in lib.rs) + the vocabulary nav/scene surface the
+# retargeted `ui!` emission and `app()`'s navigator builder name
+# directly, + the world kernel (`inject`) and the scene `Registry` type
+# named by `register_scene_extensions`.
 runtime-core = { workspace = true }
-# PATH dep with `default-features = false` (the documented cargo gotcha:
-# the flag is ignored on `workspace = true` lines): `docs` and `table`
-# are re-enabled per-core by the feature blocks above (both cores turn
-# them on; `new-core` also flips the table SDK's own new-core leg), so
-# the base dep carries just the full prim family set both cores render.
-idea-ui = { path = "../../crates/ui/idea-ui", default-features = false, features = [
-    "prim-icon", "prim-image", "prim-text-input", "prim-activity",
-    "prim-portal", "prim-presence",
-] }
-# The new-core alias target (`extern crate runtime_facade as
-# runtime_core;`) + the vocabulary nav surface + the world kernel —
-# `new-core` only.
-runtime-facade = { workspace = true, optional = true }
-runtime-vocabulary = { workspace = true, optional = true }
-runtime-world = { workspace = true, optional = true }
-# Outlet-model navigation: one backend-neutral swap handler; the chrome
-# (header + sidebar) is author layout wrapped around `{nav.outlet}`.
-# Old-core only — the new core navigates via the vocabulary
-# `swap_navigator` builder instead.
-swap-navigator = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
 # Themed AppShell — pinned-sidebar ⇄ off-canvas drawer packaged around
 # the one-shot outlet, with a single sidebar build.
 idea-ui-nav = { workspace = true }
@@ -129,16 +86,14 @@ idea-ui-nav = { workspace = true }
 # pulled in only by the `sidecar` feature (host-side sidecar build);
 # never compiled for device/web targets.
 dev-server = { workspace = true, optional = true }
-# Theme-aware syntax-highlighted code panels for the snippet blocks
-# in every component page. Dual-core SDK: External registry on the old
-# core, scene-registry handler (`codeblock::register` at boot) on the
-# new core — identical `<pre>`/span DOM.
-codeblock = { workspace = true, optional = true }
+# Theme-aware syntax-highlighted code panels for the snippet blocks in
+# every component page. `codeblock::register` at boot is the
+# scene-registry seam (see `register_scene_extensions`).
+codeblock = { workspace = true }
 # Real HTML <table> on web; shared-track CSS-grid on native. Powers
-# PropsTable on every component page. Dual-core SDK: External registry
-# on the old core, scene-registry handlers (`table::register_handlers`
-# at boot) on the new core — identical `<table>`/`<tr>`/`<td>` DOM.
-table = { workspace = true, optional = true }
+# PropsTable on every component page. `table::register_handlers` at boot
+# is its scene-registry seam.
+table = { workspace = true }
 # Lucide icon pack — provides the `MENU` glyph for the mobile
 # hamburger that opens the collapsed drawer.
 icons-lucide = { workspace = true }

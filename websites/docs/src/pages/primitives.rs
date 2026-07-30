@@ -21,11 +21,14 @@ docs! {
         p("Primitives are the fixed set of things the framework knows how to put \
            on screen. Every Idealyst app — and every component library built on \
            top of the framework, including idea-ui — reduces to a tree of these."),
-        p("There is no way to add a new primitive without changing the framework \
-           itself, because each primitive corresponds to a method on the ",
-          code("Backend"), " trait that every backend has to implement. The cost \
-           of adding one is high; that's deliberate. What you build out of the \
-           primitives is unbounded."),
+        p("Each primitive is a mount handler on the scene registry, generic \
+           over the capability traits it calls through. Adding one to the \
+           FIRST-PARTY set means adding a capability every backend is then \
+           expected to carry, so the cost is high and deliberately so — but \
+           the registry itself is open: a third-party crate registers its own \
+           payload the same way (see ",
+          link("Third-party primitives", to = "third-party-primitives"),
+          "). What you build out of the primitives is unbounded."),
     },
 
     section(heading = "What every primitive shares") {
@@ -212,7 +215,7 @@ docs! {
             ui! {
                 button(
                     label = "Increment",
-                    on_click = move || count.update(|n| *n += 1),
+                    on_click = move || count.update(|n| n + 1),
                 )
             }
         "##),
@@ -393,7 +396,7 @@ docs! {
     },
 
     section(heading = "Navigator") {
-        p(code("Element::Navigator"), " is the one navigation primitive — a \
+        p(code("navigator"), " is the one navigation primitive — a \
            registry-dispatched extension point the navigator SDKs build on. \
            Two SDK behaviors exist: ", code("swap-navigator"),
           " (a flat set of co-equal screens switched via ", code("Select"),
@@ -435,7 +438,7 @@ docs! {
 
     section(heading = "Portal") {
         p("The one render-elsewhere primitive. ",
-          code("Element::Portal"),
+          code("portal"),
           " renders its children at a different location in the host tree, \
            escaping the parent's layout and clipping. On each backend it \
            mounts at the platform's window-level surface — body portal on \
@@ -456,7 +459,7 @@ docs! {
 
     section(heading = "overlay (composition)") {
         p(code("overlay()"), " is not a primitive — it's a composition \
-           that lowers to ", code("Element::Portal"),
+           that lowers to ", code("portal"),
           " with a viewport target plus a backdrop child. Defaults: ",
           code("Center"), " placement, ", code("Dismiss"),
           " backdrop, focus-trap on. Use for modals, drawers, sheets."),
@@ -469,7 +472,7 @@ docs! {
     section(heading = "anchored_overlay (composition)") {
         p(code("anchored_overlay()"),
           " is also a composition, lowering to ",
-          code("Element::Portal"), " with ",
+          code("portal"), " with ",
           code("PortalTarget::Anchor"),
           ". Use for popovers, tooltips, dropdowns, context menus — \
            anything that follows a trigger element."),
@@ -533,8 +536,8 @@ docs! {
              " / ", code("anchored_overlay()"), " (compositions), and ",
              code("Presence"), "."],
             [link("Third-party primitives", to = "third-party-primitives"),
-             " — ", code("Element::External"),
-             " for primitives that need per-platform FFI."],
+             " — registering your own payload handler for primitives that \
+              need per-platform FFI."],
             ["Graphics — the wgpu canvas primitive."],
             ["Robot — ", code("test_id"), " and the introspection layer."],
         ),

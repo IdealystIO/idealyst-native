@@ -21,46 +21,7 @@
 //! - `pages/*.rs` — one module per design group; each exports body-only
 //!   `pub fn name() -> Element`.
 
-// Dual-core guard: exactly one core per build (the macro lowering is a
-// build-graph-wide switch; see runtime-macros/new-core).
-#[cfg(all(feature = "new-core", feature = "old-core"))]
-compile_error!(
-    "idea-ui-docs: enable exactly one of `new-core` / `old-core` — one core per build."
-);
-#[cfg(not(any(feature = "new-core", feature = "old-core")))]
-compile_error!(
-    "idea-ui-docs: enable one of `old-core` (default) / `new-core` — a coreless build has \
-     no navigator or author surface."
-);
-// (A `new-core`+`debug-stats` guard used to live here: the glue facade
-// once lacked a `debug` module mirror, so the #[component]
-// instrumentation's `::runtime_core::debug::…` emission failed to
-// resolve. glue.rs now re-exports `runtime_shared::debug` — the
-// runtime-shared survivor-split wave closed the gap — so the feature
-// pair builds; the runtime-v2 defaults flip relies on it
-// (default = ["debug-stats", "new-core"]).
-
-// idea-lite core migration (newcore-app pattern): under `new-core` this
-// alias shadows the extern-prelude `runtime-core` for the WHOLE crate,
-// so every `runtime_core::…` path below resolves against the glue
-// facade. The default build has no alias and is byte-identical old-core.
-#[cfg(feature = "new-core")]
-extern crate runtime_facade as runtime_core;
-
-// SEAM(new-core): `Route` is the SAME runtime-core type on both cores
-// (the vocabulary navigator builders consume it), but the glue facade
-// doesn't mirror it — rebind the REAL runtime-core under a second name
-// so `routes.rs`/`shell.rs` can keep their typed route table.
-#[cfg(feature = "new-core")]
-extern crate runtime_core as runtime_core_real;
-
-#[cfg(feature = "old-core")]
-use runtime_core::primitives::navigator::Screen;
 use runtime_core::{effect, signal, ui, Breakpoint, Element, Signal};
-#[cfg(feature = "old-core")]
-use runtime_core::{component, Ref};
-#[cfg(feature = "old-core")]
-use swap_navigator::{MountPolicy, SwapBuilder, SwapHandle, SwapNavigator};
 use idea_ui_nav::AppShell;
 use idea_ui::{install_idea_theme, light_theme};
 
@@ -76,28 +37,37 @@ use routes::{CATALOG, DEFAULT_ROUTE};
 // wrapper before mount.
 // =============================================================================
 
-#[cfg(all(target_arch = "wasm32", feature = "old-core"))]
-pub fn register_extensions(backend: &mut backend_web::WebBackend) {
+#[cfg(target_arch = "wasm32")]
+pub fn register_extensions(_backend: &mut backend_web::WebBackend) {
+    // Push the initial window size + wire a resize listener into the
+    // framework's reactive viewport signal, so the AppShell's
+    // pin/drawer split follows a live resize.
     backend_web::install_viewport_observer();
-    // Register the swap navigator handler on the web backend. The
-    // crate self-registers via `inventory`, but under `--local` (no
-    // runtime-server) the linker can dead-strip that submission since
-    // nothing else pulls in the web module's object; the explicit call
-    // forces linkage + registration so `SwapPresentation` resolves.
-    swap_navigator::register(backend);
-    // Same story for the `table` External SDK (idea-ui's Table / the docs
-    // PropsTable lower to it): it's only referenced indirectly via idea-ui,
-    // so under `--local` its inventory registrar gets stripped and Table
-    // renders the "not supported on web" placeholder. Register it explicitly.
-    // (`codeblock` is fine — `shell::CodePanel` calls `codeblock::code_block`
-    // directly, which keeps its registrar linked.)
-    table::register(backend);
 }
 
-// `codeblock` and `table` self-register via `inventory`; `use table as _`
-// pins the crate in case the only reference is via idea-ui's re-export.
-#[cfg(feature = "old-core")]
-use table as _;
+/// Boot-time scene-registry seam — the CLI-generated wrapper calls this
+/// with the fresh registry after `runtime_vocabulary::register_builtins`.
+///
+/// `codeblock::register` so `shell::CodePanel` renders the SDK's
+/// `<pre>`/span handler, and `table::register_handlers` so PropsTable /
+/// the Table pages render the SDK's real `<table>`/`<tr>`/`<td>`.
+/// Without a registration those items have no registry entry and
+/// realization panics (the scene contract fails loud — the old core
+/// rendered a placeholder box instead).
+///
+/// Registry-generic: the same fn serves the web boot, the native hosts'
+/// `newcore::run_with`, and the GPU desktop host
+/// (`websites/idea-ui-docs-gpu`).
+pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
+where
+    H: runtime_vocabulary::style_attach::StyleServices
+        + runtime_vocabulary::caps::TextOps
+        + runtime_vocabulary::caps::InputOps
+        + 'static,
+{
+    codeblock::register(registry);
+    table::register_handlers(registry);
+}
 
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 pub fn register_extensions(_backend: &mut backend_ios::IosBackend) {}
@@ -111,131 +81,35 @@ pub fn register_extensions(_backend: &mut backend_macos::MacosBackend) {}
 #[cfg(feature = "terminal")]
 pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
 
+/// Recorder-side registration for the runtime-server sidecar
+/// (`dev_server::sidecar::run_newcore`).
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {
-    swap_navigator::recording::register(backend);
+pub fn register_scene_extensions_recorder(registry: &mut dev_server::newcore::SceneRegistry) {
+    register_scene_extensions(registry);
 }
 
-#[cfg(feature = "old-core")]
-#[component]
+// =============================================================================
+// The app — the whole catalog/chrome over the vocabulary swap navigator
+// (`runtime_vocabulary::builders::swap_navigator`). The layout closure
+// takes no context argument: the navigator provides `SwapNav` into the
+// world context (`runtime_world::inject`), and the outlet is
+// `runtime_vocabulary::navigator_outlet()`.
+// =============================================================================
+
+/// Root entry — the symbol every boot path mounts (the CLI-generated
+/// per-platform wrappers, the sidecar, and `standalone.html`'s
+/// `web_entry` below).
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
-    let nav: Ref<SwapHandle> = Ref::new();
-    // App-level state surviving navigation: dark-mode flag for the
-    // header toggle, and the sidebar search query.
-    let is_dark: Signal<bool> = signal(false);
-    let q: Signal<String> = signal(String::new());
-    // Drawer-open state for narrow viewports — author-owned (the
-    // AppShell scrim + the auto-close effect below close it; the header
-    // hamburger opens it). Pinned widths ignore it entirely.
-    let drawer_open: Signal<bool> = signal(false);
-
-    // Align the framework's `Lg` breakpoint with the docs' 900 px
-    // collapse point so `AppShell(pin_at = Lg)`, the header hamburger's
-    // visibility, and the auto-close effect all flip at the SAME width.
-    // First-install wins — must run before any breakpoint-keyed sheet
-    // resolves. (Replaces the legacy `install_navigator_pin_width(900.0)`.)
-    let _ = runtime_core::install_breakpoints(runtime_core::Breakpoints {
-        lg_min: 900.0,
-        ..Default::default()
-    });
-
-    // Fold the catalog into one screen per entry. Each screen wraps the
-    // entry's body in the central page frame — except the Overview
-    // landing, which renders full-bleed via `landing_frame` (no title
-    // block / Usage panel).
-    let mut builder = SwapNavigator::new(DEFAULT_ROUTE);
-    for group in CATALOG {
-        for entry in group.entries {
-            let route = entry.route.clone();
-            let is_landing = entry.route.name() == routes::OVERVIEW_ROUTE.name();
-            builder = builder.screen(route, move |_| {
-                let content = if is_landing {
-                    shell::landing_frame(entry)
-                } else {
-                    shell::page_frame(entry)
-                };
-                Screen::new(content)
-            });
-        }
-    }
-
-    let builder = builder
-        // One screen resident at a time; switching away disposes the
-        // screen's scope and a return rebuilds it fresh — matching the
-        // old drawer-on-web engine (and browser semantics) exactly.
-        .mount_policy(MountPolicy::LazyDisposing)
-        // The shell: AppShell packages pinned-sidebar ⇄ drawer around
-        // the one-shot outlet; the custom header (hamburger + brand +
-        // token hint + Light/Dark toggle) sits above the outlet.
-        .layout(move |nav_ctx| {
-            // Auto-close the drawer when a sidebar link navigates while
-            // unpinned (the legacy web drawer engine did this in its
-            // Select arm; author-owned now). Reading `active_route`
-            // inside the effect subscribes it to every navigation. The
-            // layout closure runs inside the navigator's retained chrome
-            // scope, so the effect is owned by (and freed with) the
-            // navigator.
-            let active_route = nav_ctx.active_route;
-            effect!({
-                let _ = active_route.get();
-                if !idea_ui_nav::sidebar_pinned(Breakpoint::Lg) {
-                    drawer_open.set(false);
-                }
-            });
-
-            let sidebar_el = shell::sidebar(active_route, q);
-            let header = shell::header(active_route, is_dark, drawer_open);
-            let body: Element = ui! {
-                view(style = shell::outlet_grow_style) {
-                    { nav_ctx.outlet }
-                }
-            };
-            let content: Element = ui! {
-                view(style = shell::shell_column_style) {
-                    header
-                    body
-                }
-            };
-            ui! {
-                AppShell(
-                    sidebar = vec![sidebar_el],
-                    is_open = drawer_open,
-                    pin_at = Breakpoint::Lg,
-                    width = 252.0,
-                ) {
-                    { content }
-                }
-            }
-        });
-
-    ui! { builder.bind(nav) }
-}
-
-// =============================================================================
-// NEW-core app — the SAME catalog/chrome against the vocabulary swap
-// navigator (`runtime_vocabulary::builders::swap_navigator`). The layout
-// closure takes no context argument: the navigator provides `SwapNav`
-// into the world context (`runtime_world::inject`), and the outlet is
-// `runtime_vocabulary::navigator_outlet()`. Booted on web via
-// `backend_web::newcore::start` (see `web_entry_newcore` below +
-// `newcore.html`).
-// =============================================================================
-
-#[cfg(feature = "new-core")]
-pub fn app_newcore() -> Element {
-    install_idea_theme(light_theme());
-
     // App-level state surviving navigation — created here because
-    // `app_newcore` runs inside `World::enter` (newcore::start), so these
-    // are world-root-owned. Signals are Copy handles; the layout closure
-    // captures them by value.
+    // `app` runs inside `World::enter` (the boot entry enters the world
+    // around the build), so these are world-root-owned. Signals are Copy
+    // handles; the layout closure captures them by value.
     let is_dark: Signal<bool> = signal(false);
     let q: Signal<String> = signal(String::new());
     let drawer_open: Signal<bool> = signal(false);
 
-    // Same 900 px collapse alignment as the old-core app.
     let _ = runtime_core::install_breakpoints(runtime_core::Breakpoints {
         lg_min: 900.0,
         ..Default::default()
@@ -258,21 +132,24 @@ pub fn app_newcore() -> Element {
     }
 
     builder
-        // One screen resident at a time — mirrors the old-core
-        // `MountPolicy::LazyDisposing` exactly (same variant name in the
-        // vocabulary).
+        // One screen resident at a time: switching away disposes the
+        // screen's scope and a return rebuilds it fresh — browser
+        // semantics.
         .mount_policy(runtime_vocabulary::prims::MountPolicy::LazyDisposing)
         .layout(move || {
             // The navigator provides `SwapNav` for the layout build
-            // window. (Route links no longer need an `on_select` stash —
+            // window. Route links need no `on_select` stash —
             // `link(route=)` resolves the navigator's `LinkActivator`
-            // context on the new core since the P6 nav wave.)
+            // context.
             let nav = runtime_world::inject::<runtime_vocabulary::prims::SwapNav>()
                 .expect("SwapNav provided by the swap navigator mount");
             let active_route = nav.active_route;
 
             // Auto-close the drawer when a sidebar link navigates while
-            // unpinned — same effect as the old-core layout closure.
+            // unpinned. Reading `active_route` inside the effect
+            // subscribes it to every navigation; the layout closure runs
+            // inside the navigator's retained chrome scope, so the
+            // effect is owned by (and freed with) the navigator.
             effect!({
                 let _ = active_route.get();
                 if !idea_ui_nav::sidebar_pinned(Breakpoint::Lg) {
@@ -307,11 +184,13 @@ pub fn app_newcore() -> Element {
         .build()
 }
 
-// New-core web boot: `wasm-pack build --target web` produces a module
-// whose start fn mounts into `#app` — the newcore-app pattern (see
-// newcore.html for the build command).
-#[cfg(all(target_arch = "wasm32", feature = "new-core"))]
-mod web_entry_newcore {
+// Standalone web boot: `wasm-pack build --target web` produces a module
+// whose own start fn mounts into `#app` (see `standalone.html` for the
+// build command). NON-default — the CLI web wrapper generates its own
+// `#[wasm_bindgen(start)]`, and two starts in one module is a
+// wasm-bindgen error.
+#[cfg(all(target_arch = "wasm32", feature = "standalone-web"))]
+mod web_entry {
     use wasm_bindgen::prelude::*;
 
     #[wasm_bindgen(start)]
@@ -320,20 +199,10 @@ mod web_entry_newcore {
         // Console logger so framework log lines reach devtools (the CLI
         // wrapper normally installs this).
         backend_web::install_logger();
-        // Boot-time scene-registry seam (the new core's analogue of the
-        // old `register_extensions` call): `codeblock::register` so
-        // `shell::CodePanel` renders the SDK's `<pre>`/span handler, and
-        // `table::register_handlers` so PropsTable / the Table pages
-        // render the SDK's real `<table>`/`<tr>`/`<td>` handlers —
-        // without a registration the pages' items have no registry
-        // entry and realization panics.
         backend_web::newcore::start_in(
             "#app",
-            |registry| {
-                codeblock::register(registry);
-                table::register_handlers(registry);
-            },
-            crate::app_newcore,
+            crate::register_scene_extensions,
+            crate::app,
         );
     }
 }

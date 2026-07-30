@@ -1,6 +1,6 @@
 //! Cross-platform — the "one codebase, native everywhere" feature page.
 //! Focuses on the developer-facing promise and the mechanism that makes
-//! it true (the Backend trait, real native widgets, convergent
+//! it true (the platform seam, real native widgets, convergent
 //! behavior). The exhaustive platform list lives on `/targets`; the
 //! per-primitive status lives on `/backends` \u{2014} this page links
 //! out to both rather than restating them.
@@ -23,7 +23,7 @@ pub fn page() -> Element {
         TocEntry { handle: one_tree_ref, label: "One component tree" },
         TocEntry { handle: native_ref, label: "Native widgets" },
         TocEntry { handle: converge_ref, label: "Consistent behavior" },
-        TocEntry { handle: seam_ref, label: "The Backend trait" },
+        TocEntry { handle: seam_ref, label: "The platform seam" },
         TocEntry { handle: targets_ref, label: "Targets" },
     ];
 
@@ -33,7 +33,7 @@ pub fn page() -> Element {
                 title = "Cross-platform",
                 blurb = "The same Rust code renders natively on phones, desktops, the \
                  browser, a GPU surface, and the terminal. Each platform is one \
-                 implementation of the Backend trait.",
+                 implementation of the same backend traits.",
             )
             PageSection(handle = one_tree_ref) { one_tree() }
             PageSection(handle = native_ref) { native_widgets() }
@@ -121,26 +121,32 @@ fn convergent_behavior() -> Element {
 }
 
 fn backend_seam() -> Element {
-    let example = "// Adding a new platform = implementing one trait.\n\
-                   impl Backend for MyBackend {\n    \
-                       fn create_view(&mut self, ...) -> NodeId { ... }\n    \
-                       fn create_text(&mut self, ...) -> NodeId { ... }\n    \
-                       fn insert(&mut self, parent: NodeId, child: NodeId, ...) { ... }\n    \
-                       fn apply_style(&mut self, node: NodeId, ...) { ... }\n    \
-                       // ...one method per primitive, plus layout / refs / animated values\n\
-                   }";
+    let example = "// The structural seam \u{2014} seven operations.\n\
+                   impl Host for MyBackend {\n    \
+                       type Node = NodeId;\n    \
+                       fn insert(&mut self, parent: &mut NodeId, child: NodeId) { ... }\n    \
+                       fn remove_child(&mut self, parent: &NodeId, child: &NodeId) { ... }\n    \
+                       // ...clear_children, insert_at, create_anchor, supports_splice\n\
+                   }\n\
+                   \n\
+                   // Primitives, style, events \u{2014} one capability trait each.\n\
+                   impl caps::TextOps for MyBackend { ... }\n\
+                   impl caps::StyleOps for MyBackend { ... }";
     ui! {
         Section(
-            title = "The Backend trait".to_string(),
+            title = "The platform seam".to_string(),
             paragraphs = vec![
-                "The trait covers primitives (create / update / insert / remove), style \
-                 application, layout, refs, and animated values. Routing, theming, \
-                 components, and reactivity sit above it and are backend-independent.".to_string(),
+                "`Host` covers the structural operations \u{2014} how nodes are \
+                 parented, reordered and removed. Primitives (create / update), style \
+                 application, layout, refs, and animated values arrive as separate \
+                 capability traits. Routing, theming, \
+                 components, and reactivity sit above them and are backend-independent.".to_string(),
                 "Adding a target (a proprietary display, a server-side renderer, a games \
-                 console) means implementing this one trait.".to_string(),
+                 console) means implementing that seam and the capabilities the target \
+                 supports.".to_string(),
                 "Platform-specific capabilities like maps, video, and web views register \
-                 as third-party extensions through `Element::External` instead of \
-                 growing the trait. The Extensibility page covers that mechanism.".to_string(),
+                 as third-party extensions on the scene registry instead of \
+                 growing the seam. The Extensibility page covers that mechanism.".to_string(),
             ],
             code = Some(example.to_string()),
         )

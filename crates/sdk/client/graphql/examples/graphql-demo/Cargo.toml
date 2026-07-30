@@ -26,7 +26,16 @@ sidecar = ["dep:dev-server"]
 [dependencies]
 server = { workspace = true }
 graphql = { workspace = true }
+# The author surface. `runtime-core` is aliased to `runtime_core` at the
+# crate root (see src/lib.rs) — one core, no feature switch;
+# `async-driver` because `use_query`/`use_mutation` ride the
+# `resource`/`mutation` mirrors. `runtime-vocabulary` is needed because
+# the `ui!` emission spells absolute `::runtime_vocabulary::glue::…`
+# paths, and `runtime-scene` because `register_scene_extensions` is
+# generic over the scene `Registry` host.
 runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 serde = { workspace = true }
 # The typed-operation derive (`GraphQLQuery`) — same crate the SDK uses.

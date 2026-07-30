@@ -30,7 +30,7 @@
 #[cfg(not(feature = "server"))]
 use idea_ui::{install_idea_theme, light_theme, Stack, StackGap, StackPadding, Typography};
 #[cfg(not(feature = "server"))]
-use runtime_core::{effect, signal, text, ui, Element, IntoElement, Signal};
+use runtime_core::{effect, signal, ui, Element, Signal};
 use serde::{Deserialize, Serialize};
 use server::{server, ServerError};
 
@@ -207,17 +207,9 @@ pub fn app() -> Element {
         });
     };
 
-    let status_line = text(move || status.get()).into_element();
-    let user_line = text(move || match user.get() {
-        Some(name) => format!("Session: logged in as {name}"),
-        None => "Session: not logged in".to_string(),
-    })
-    .into_element();
-    let protected_line = text(move || protected.get()).into_element();
-
-    let body: Vec<Element> = vec![
-        ui! { Typography(content = "Login demo".to_string(), kind = idea_ui::typography_kind::H1) },
-        ui! {
+    ui! {
+        Stack(gap = StackGap::Md, padding = StackPadding::Lg) {
+            Typography(content = "Login demo".to_string(), kind = idea_ui::typography_kind::H1)
             Typography(
                 content = "Server-fn login sets an httpOnly session cookie (BFF). \
                     Try demo / password. Reload the page — the session persists \
@@ -225,19 +217,20 @@ pub fn app() -> Element {
                     .to_string(),
                 muted = true,
             )
-        },
-        ui! { text_input(value = username, on_change = move |s| username.set(s), placeholder = "username") },
-        ui! { text_input(value = password, on_change = move |s| password.set(s), placeholder = "password") },
-        ui! { button(label = "Log in".to_string(), on_click = on_login) },
-        ui! { button(label = "Call protected me()".to_string(), on_click = on_me) },
-        ui! { button(label = "Log out".to_string(), on_click = on_logout) },
-        user_line,
-        status_line,
-        protected_line,
-    ];
-
-    ui! {
-        Stack(gap = StackGap::Md, padding = StackPadding::Lg) { body }
+            text_input(value = username, on_change = move |s| username.set(s), placeholder = "username")
+            text_input(value = password, on_change = move |s| password.set(s), placeholder = "password")
+            button(label = "Log in".to_string(), on_click = on_login)
+            button(label = "Call protected me()".to_string(), on_click = on_me)
+            button(label = "Log out".to_string(), on_click = on_logout)
+            text {
+                move || match user.get() {
+                    Some(name) => format!("Session: logged in as {name}"),
+                    None => "Session: not logged in".to_string(),
+                }
+            }
+            text { move || status.get() }
+            text { move || protected.get() }
+        }
     }
 }
 
@@ -323,7 +316,22 @@ fn clear_session_token() {
     }
 }
 
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam the CLI-generated wrappers invoke after
+/// `runtime_vocabulary::register_builtins`. This app renders only core
+/// primitives + idea-ui components, so there is nothing extra to register.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`. Absent on the server build,
+/// which compiles no client UI.
+#[cfg(not(feature = "server"))]
+pub fn scene_app() -> Element {
+    app()
+}
+
+/// Runtime-server (sidecar) recorder seam — nothing to register, as above.
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {}
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}

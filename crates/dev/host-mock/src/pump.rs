@@ -1,7 +1,7 @@
 //! Deterministic async for host-mock tests: a manually-pumped
-//! [`AsyncExecutor`](runtime_core::driver::AsyncExecutor) (lazy chunk
+//! [`AsyncExecutor`](runtime_shared::driver::AsyncExecutor) (lazy chunk
 //! loads) and a manually-pumped
-//! [`Scheduler`](runtime_core::scheduling::Scheduler) (animation
+//! [`Scheduler`](runtime_shared::scheduling::Scheduler) (animation
 //! frames + timers, for presence timing windows).
 //!
 //! Both registries are process-global `OnceLock`s (first install wins),
@@ -14,7 +14,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::task::Context;
 
-use runtime_core::scheduling::{install_scheduler as core_install_scheduler, ScheduleHandle, Scheduler};
+use runtime_shared::scheduling::{install_scheduler as core_install_scheduler, ScheduleHandle, Scheduler};
 
 // ===========================================================================
 // Async executor (chunk loads)
@@ -27,7 +27,7 @@ thread_local! {
 
 struct QueueExec;
 
-impl runtime_core::driver::AsyncExecutor for QueueExec {
+impl runtime_shared::driver::AsyncExecutor for QueueExec {
     fn spawn(&self, future: Pin<Box<dyn Future<Output = ()> + 'static>>) {
         TASKS.with(|t| t.borrow_mut().push(future));
     }
@@ -37,7 +37,7 @@ impl runtime_core::driver::AsyncExecutor for QueueExec {
 /// every test thread shares the executor but queues into its OWN
 /// thread-local task list).
 pub fn install_executor() {
-    runtime_core::driver::install_async_executor(Box::new(QueueExec));
+    runtime_shared::driver::install_async_executor(Box::new(QueueExec));
 }
 
 /// Poll every queued task once (noop waker — tests re-pump after

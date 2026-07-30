@@ -31,7 +31,7 @@ use crate::tree_walker::{
 };
 use crate::{SvgOps, SvgProps};
 use backend_android::{with_jni_env, AndroidBackend};
-use runtime_core::effect;
+use runtime_world::effect;
 
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::sys::{jfloat, jint};
@@ -72,17 +72,9 @@ fn read_intrinsic_size(view: &GlobalRef) -> Option<(f32, f32)> {
 
 /// Register the SVG handler against an `AndroidBackend`. One-line call from
 /// app bootstrap.
-pub fn register(backend: &mut AndroidBackend) {
-    backend.register_external::<SvgProps, _>(|props, b| build_svg(props, b));
-}
-
-// Self-register at backend construction (no app-side `register` call needed).
-// See [[project_inventory_self_registration]].
-inventory::submit! {
-    backend_android::AndroidExternalRegistrar(register)
-}
-
-fn build_svg(props: &Rc<SvgProps>, b: &mut AndroidBackend) -> GlobalRef {
+/// Build the native Android SVG view for `props`. Called by the
+/// `Registry<AndroidBackend>` mount handler in lib.rs.
+pub(crate) fn build_svg(props: &Rc<SvgProps>, b: &mut AndroidBackend) -> GlobalRef {
     let view = b.with_jni(|env, ctx| {
         let class = env
             .find_class("android/widget/ImageView")
@@ -123,7 +115,7 @@ fn build_svg(props: &Rc<SvgProps>, b: &mut AndroidBackend) -> GlobalRef {
 
     let view_for_effect = view.clone();
     let props_clone = props.clone();
-    effect!({
+    effect(move || {
         let markup = (props_clone.markup)();
         match usvg::Tree::from_str(&markup, &usvg::Options::default()) {
             Ok(tree) => {

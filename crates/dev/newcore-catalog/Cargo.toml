@@ -1,0 +1,44 @@
+# newcore-catalog — host crate for the MCP catalog-emission suite.
+#
+# The suite (41 tests: `tests/registers_component.rs`, whose body is
+# `tests/shared/catalog_emission.rs`) is the whole catalog contract — doc
+# capture, `composes` edges extracted from real `ui!`/`jsx!` bodies,
+# tool/param specs, methods, animations, scopes. It is the surface the
+# `idealyst` MCP server serves.
+#
+# The catalog has TWO `__mcp` inventory anchors and this suite exercises
+# both in one compilation:
+#   * `#[component]`'s submission is emitted as
+#     `::runtime_vocabulary::glue::__mcp` (its emission passes through
+#     `runtime_macros::finish`, which rewrites absolute `::runtime_core::`
+#     path heads);
+#   * the other emissions (`#[derive(IdealystSchema)]`,
+#     `#[idealyst_tool]`, `recipe!`, `doc_scope!`) spell
+#     `::runtime_core::__mcp` and resolve it through the facade root.
+# Both anchors re-export the same `mcp-catalog` instance, so exactly one
+# inventory must result — which is what the suite asserts.
+#
+# Why a separate crate rather than a test target inside mcp-catalog:
+# `runtime-core` depends transitively on `mcp-catalog`, so a normal dep
+# would be a cargo cycle, and dev-dependencies cannot be optional, so an
+# unconditional one would drag the facade into mcp-catalog's own graph.
+# That constraint is structural — it does not go away.
+#
+#   cargo test -p newcore-catalog
+[package]
+name = "newcore-catalog"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Host crate for the MCP catalog emission suite."
+publish = false
+
+[dependencies]
+# The alias target: `extern crate runtime_core as runtime_core;` in the
+# test root. `catalog` turns on the emission gate
+# (`runtime-macros/catalog`) plus the `glue::__mcp` anchor and the static
+# core-primitive recipes (`runtime-shared/catalog`).
+runtime-core = { workspace = true, features = ["catalog"] }
+# `#[component]`'s submission spells `::runtime_vocabulary::glue::__mcp`,
+# so the vocabulary must be nameable from the test crate's extern prelude.
+runtime-vocabulary = { workspace = true, features = ["catalog"] }

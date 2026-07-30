@@ -1,12 +1,11 @@
-//! The authored app — CORE-AGNOSTIC source. Everything here is plain
-//! `ui!` + `#[component]` authoring surface: snake_case primitives,
-//! struct-literal components with named/defaulted props, children
-//! blocks, f-string text, reactive closures, a reactive `if`, a keyed
-//! `for` with row-local state, and handler-driven mutations — plus
-//! `test_id = ...` identity anchors (the P5 seam: registered in the
-//! vocabulary robot registry on the new core, `Bound::test_id` on the
-//! old). The crate feature decides which core it lowers to (see
-//! lib.rs); nothing in this file changes between the two.
+//! The authored app. Everything here is plain `ui!` + `#[component]`
+//! authoring surface: snake_case primitives, struct-literal components
+//! with named/defaulted props, children blocks, f-string text, reactive
+//! closures, a reactive `if`, a keyed `for` with row-local state, and
+//! handler-driven mutations — plus `test_id = ...` identity anchors,
+//! which register in the vocabulary robot registry so `tests/e2e.rs` can
+//! drive the tree the way the robot bridge does. The only imports are
+//! `crate::prelude::*` and the macro set.
 
 use crate::prelude::*;
 use runtime_macros::{component, stylesheet, ui};
@@ -54,13 +53,12 @@ fn StyledCard(
 /// Regression fixture (glue `StaticCond` `FnOnce`): a `String` local
 /// moved into a STATIC `if` branch — the documented 0.4.0 form (a
 /// method-call condition hoisted to a `let bool` so the bare-path
-/// dispatch takes the static arm). The old core always compiled this
-/// (`builder.rs::StaticCond` takes `FnOnce` thunks); the new-core
-/// glue's original `Fn + 'static` bounds made the by-move `String`
-/// capture E0507 ("cannot move out of a captured variable in an `Fn`
-/// closure"), forcing `.clone()` workarounds (website architecture.rs,
-/// tutorial chart.rs). Same-source: COMPILING on both cores is the
-/// regression test; the e2e test additionally pins that the taken
+/// dispatch takes the static arm). The glue's original `Fn + 'static`
+/// bounds on `StaticCond` made the by-move `String` capture E0507
+/// ("cannot move out of a captured variable in an `Fn` closure"),
+/// forcing `.clone()` workarounds (website architecture.rs, tutorial
+/// chart.rs); the bounds are `FnOnce` now. COMPILING this fixture is
+/// the regression test; the e2e test additionally pins that the taken
 /// branch mounts.
 #[component]
 fn StaticIfMovedString(
@@ -215,15 +213,15 @@ pub fn build_demo() -> (Element, DemoHandle) {
     (root, DemoHandle { modal_open, toast_on, rows })
 }
 
-/// Exercises the P3-set tags: a reactive-`if`-gated `overlay` +
-/// `anchored_overlay` pair (modal open/close via authored handlers and
-/// backdrop dismiss), a `presence` with enter/exit fades, and a
-/// `flat_list` over a reactive row signal.
+/// Exercises the portal/animation tag set: a reactive-`if`-gated
+/// `overlay` + `anchored_overlay` pair (modal open/close via authored
+/// handlers and backdrop dismiss), a `presence` with enter/exit fades,
+/// and a `flat_list` over a reactive row signal.
 ///
-/// The anchor target is a DETACHED ref (`Ref::default()` — fills
-/// nothing, resolves `None`): real anchor filling is the P5 identity
-/// port; an unresolved anchor exercises the primitive's structure
-/// without it, identically on both cores.
+/// The anchor target is the sanctioned DETACHED ref (`Ref::default()` —
+/// fills nothing, resolves `None`, documented in the glue's
+/// `AnchorTarget` re-export): an unresolved anchor exercises the
+/// primitive's structure without needing a live anchor fill.
 #[component]
 fn PrimsDemo(
     modal_open: Signal<bool>,
@@ -266,13 +264,10 @@ fn PrimsDemo(
     }
 }
 
-/// A `#[method]`-bearing component (P5 robot remainder, same-source):
-/// the macro lifts the nested fns into a `MethodTallyHandle`, fills the
-/// auto-injected `bind_to` prop, and registers the methods with the
-/// robot component registry — invokable by name + JSON args through
-/// `list_components` / `invoke_method` on EITHER core. Bodies use
-/// `set(get() + n)` (not `update`) because the two cores' `update`
-/// closure shapes differ — the one same-source-visible seam.
+/// A `#[method]`-bearing component: the macro lifts the nested fns into
+/// a `MethodTallyHandle`, fills the auto-injected `bind_to` prop, and
+/// registers the methods with the robot component registry — invokable
+/// by name + JSON args through `list_components` / `invoke_method`.
 #[component]
 fn MethodTally(
     /// Starting value (static — `reset()` returns to it).
@@ -307,10 +302,10 @@ fn TodoApp(
     next_id: Signal<u32>,
 ) -> Element {
     let remaining = memo(move || todos.get().iter().filter(|t| !t.done).count());
-    // Robot watch (P5 remainder): exposes the memo's live value to the
-    // bridge's `read_signal`/`list_watched_signals` verbs (robot-test's
-    // `assert_signal`). New-core prelude routes to the vocabulary
-    // registry; the old-core check leg shims it to a no-op (lib.rs).
+    // Robot watch: exposes the memo's live value to the bridge's
+    // `read_signal`/`list_watched_signals` verbs (robot-test's
+    // `assert_signal`), via the prelude's re-export of the vocabulary
+    // watch registry.
     watch_signal("remaining", remaining);
     ui! {
         Section(title = "Todos", highlighted = true) {

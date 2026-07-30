@@ -1,24 +1,33 @@
-//! New-core adoption for the Win32 backend (idea-lite migration).
+//! Rendering: the `runtime_scene::Host` + capability-trait surface, the
+//! boot entry, and the flush driver.
 //!
-//! Implements [`runtime_scene::Host`] plus **all 30** capability traits
-//! (`runtime_vocabulary::caps`) directly on [`WindowsBackend`] — the
-//! production shape of the migration (no `LegacyBridge` in the render
-//! path). Every trait method delegates via UFCS
-//! (`<WindowsBackend as Backend>::method(self, …)`) to the existing
-//! `Backend` impl, so the scaffold's mechanism code (HWND child
-//! controls, Taffy layout, `SetWindowPos` framing, placeholder
-//! posture) is REUSED verbatim. Where a `Backend` method is not
-//! overridden by `WindowsBackend`, the UFCS call resolves to the same
-//! trait-default the old walker hits — behavior identical by
-//! construction. **30/30 direct, 0 adapted, 0 stubbed.** Generated
-//! from `backend_terminal::newcore` (the settled shape); the AllCaps
-//! bound on `register_builtins` is the compile gate.
+//! [`WindowsBackend`] implements [`runtime_scene::Host`] plus **all 30**
+//! capability traits (`runtime_vocabulary::caps`) — the production shape
+//! of the migration. Every mechanism body in this file was moved here
+//! verbatim from the crate's old `impl runtime_core::Backend for WindowsBackend`
+//! when the 159-method mega-trait was deleted, so the Win32 control mechanism code
+//! is unchanged: the same scene builds the same HWND tree.
+//! Capabilities this backend does not implement are simply absent — the
+//! caps-trait DEFAULT bodies serve them, and those defaults were audited
+//! byte-for-byte against the `Backend` defaults they replace
+//! (`docs/runtime-v2-deletion-baseline.md` S2.1; 129 of this backend's
+//! 152 caps methods resolve to a default).
+//!
+//! **30/30 traits implemented, 0 adapted, 0 stubbed.**
+//!
+//! # Two layers in one file: mechanism + flush policy
+//!
+//! Capability methods that take an author callback wrap it before running
+//! the mechanism (`flushing0`/`flushing1`/`flushing_key` + the inline
+//! wrappers below) so a staged write commits after the callback returns.
+//! That dispatch-site policy is why the mechanism lives here rather than
+//! in an inherent impl: the wrap and the body are one method.
 //!
 //! # Boot sequence ([`start`])
 //!
 //! The host shell (out-of-repo; see the crate docs' test plan) creates
 //! its top-level window, wraps it in [`WindowsBackend::new`], and — if
-//! it has one — installs its `runtime_core::scheduling::Scheduler`
+//! it has one — installs its `runtime_shared::scheduling::Scheduler`
 //! BEFORE calling [`start`]:
 //!
 //! 1. Monotonic time source (idempotent, first install wins).
@@ -27,7 +36,7 @@
 //! 3. Fresh [`World`]; build + [`realize`] inside `world.enter`.
 //! 4. Entered buffered-microtask drain (no-op under a real scheduler;
 //!    load-bearing under a buffering test scheduler).
-//! 5. Single root → `Backend::finish`; `world.flush()` commits
+//! 5. Single root → `caps::LifecycleOps::finish`; `world.flush()` commits
 //!    anything staged during mount before the first paint.
 //! 6. Install the flush driver and retain
 //!    `{Realized, backend, registry, world}` in [`NewCoreApp`].
@@ -61,7 +70,7 @@
 //! day a placeholder becomes a real control.
 //!
 //! **Scheduler contract (honest statement).** The scaffold installs no
-//! `runtime_core::scheduling::Scheduler` and this repo has no Windows
+//! `runtime_shared::scheduling::Scheduler` and this repo has no Windows
 //! host crate. Two regimes:
 //!
 //! - *No scheduler installed* (the scaffold's world today):
@@ -90,7 +99,7 @@
 //!
 //! **No viewport source on this scaffold.** `finish()` reads the host
 //! client rect via `GetClientRect` directly for the Taffy pass, and
-//! nothing writes `runtime_core::set_viewport_size` on EITHER core, so
+//! nothing writes `runtime_shared::set_viewport_size` on EITHER core, so
 //! the world's viewport ctx keeps its default seed and old/new
 //! behavior matches by construction. When a resize seam lands
 //! (`WM_SIZE` forwarding) it must write the old TLS value and a
@@ -112,29 +121,29 @@
 //!   built-ins (swap/stack), so `Element::Navigator` routes through
 //!   `Backend::create_navigator` exactly as before.
 
-use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use runtime_core::accessibility::{AccessibilityProps, AccessibilityTree, LiveRegionPriority, Role};
-use runtime_core::animation::AnimProp;
-use runtime_core::assets::{
-    AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
-};
-use runtime_core::breakpoint::Breakpoint;
-use runtime_core::introspect::NativeNode;
-use runtime_core::primitives;
-use runtime_core::primitives::portal::ViewportRect;
-use runtime_core::styled_text::TextRun;
-use runtime_core::{
-    Action, Backend, BackendBatch, Color, ColorScheme, Easing, FileDropHandler, FontFamily,
-    HoverHandler, ImageErrorHandler, ImageLoadHandler, PageMetadata, Platform, SafeAreaSides,
-    Screenshot, StateBits, StyleApplication, StyleRules, TokenEntry, Tokenized, TouchHandler,
-    TouchId, VirtualizerCallbacks, WheelHandler,
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives;
+use runtime_shared::{
+    Action, Color, ColorScheme, Platform, StyleRules,
+    VirtualizerCallbacks,
 };
 use runtime_scene::{realize, Element, Host, Realized, Registry};
 use runtime_vocabulary::caps;
 use runtime_world::World;
+use runtime_vocabulary::caps::ViewOps as _;
+use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetClientRect, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, BS_DEFPUSHBUTTON,
+    GWLP_USERDATA, SWP_NOACTIVATE, SWP_NOZORDER,
+};
+
+use crate::{
+    class_button, class_static, ensure_scroll_class_registered, to_pcwstr, ScrollState,
+    SCROLL_CLASS_NAME, SS_LEFT, SS_NOTIFY,
+};
 
 use crate::{WindowsBackend, WindowsNode};
 
@@ -214,8 +223,8 @@ pub fn start(
     // Monotonic clock (idempotent, first install wins) — animation and
     // presence timing read it; the old boot relied on the host's lazy
     // default, the new boot installs it explicitly like macOS/wgpu.
-    let platform = Backend::platform(&*backend.borrow());
-    runtime_core::time::install_default_time_source(platform);
+    let platform = caps::AppEnvOps::platform(&*backend.borrow());
+    runtime_shared::time::install_default_time_source(platform);
 
     let mut registry: Registry<WindowsBackend> = Registry::new();
     runtime_vocabulary::register_builtins(&mut registry);
@@ -233,7 +242,7 @@ pub fn start(
     // under a buffering test scheduler. Must run with NO backend
     // borrow held (drained tasks re-borrow); ENTERED because a
     // buffered task may do creation-side work.
-    world.enter(runtime_core::scheduling::drain_buffered_microtasks);
+    world.enter(runtime_shared::scheduling::drain_buffered_microtasks);
 
     // Single-root contract, matching the old-core mount (`find_root`
     // wants exactly one application root — id 1).
@@ -245,7 +254,7 @@ pub fn start(
              top-level node (got {n}) — wrap fragment/multi-root trees in a view"
         ),
     };
-    Backend::finish(&mut *backend.borrow_mut(), root);
+    caps::LifecycleOps::finish(&mut *backend.borrow_mut(), root);
 
     // Commit anything staged during mount before the first paint.
     world.flush();
@@ -293,7 +302,7 @@ pub fn schedule_flush() {
     if FLUSH_QUEUED.with(|q| q.replace(true)) {
         return;
     }
-    runtime_core::scheduling::schedule_microtask(|| {
+    runtime_shared::scheduling::schedule_microtask(|| {
         FLUSH_QUEUED.with(|q| q.set(false));
         flush_now();
     });
@@ -383,31 +392,78 @@ impl Host for WindowsBackend {
     type Node = WindowsNode;
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
-        <WindowsBackend as Backend>::insert(self, parent, child)
+        let Some(parent_layout) = self.layout_for_id.get(&parent.id).copied() else {
+            return;
+        };
+        let Some(child_layout) = self.layout_for_id.get(&child.id).copied() else {
+            return;
+        };
+        self.layout.add_child(parent_layout, child_layout);
+        // SetParent: re-parent the HWND so the host's WM_PAINT
+        // walks reach this node. Without it, the framework's
+        // logical parent/child differs from Win32's HWND tree.
+        unsafe {
+            // windows 0.58 dropped the `Option<HWND>` parent param;
+            // it's now `Param<HWND>`. Pass the bare HWND.
+            let _ = windows::Win32::UI::WindowsAndMessaging::SetParent(
+                child.hwnd,
+                parent.hwnd,
+            );
+        }
     }
 
-    fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
-        <WindowsBackend as Backend>::insert_many(self, parent, children)
+    // `insert_many` is deliberately NOT implemented: `Host`'s default is
+    // the same N-x-`insert` loop the old `Backend` default ran, so the
+    // resulting child order is unchanged (deletion-baseline S2.2 —
+    // "byte-identical on `Host`, safe").
+
+    /// Explicit port of the old `Backend::insert_at` DEFAULT body: append,
+    /// ignoring the index. `Host` makes the method REQUIRED, so the default
+    /// that used to supply this body is gone — reproduced verbatim rather
+    /// than inherited (deletion-baseline S2.2). Never reached in practice:
+    /// [`supports_splice`](Self::supports_splice) is `false`, so reactive
+    /// regions rebuild wholesale under their own anchor and no positional
+    /// splice is ever emitted.
+    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, _index: usize) {
+        self.insert(parent, child)
     }
 
-    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
-        <WindowsBackend as Backend>::insert_at(self, parent, child, index)
+    /// Explicit port of the old `Backend::remove_child` DEFAULT body (a
+    /// no-op). `Host` makes it REQUIRED, so it is stated here rather than
+    /// inherited (deletion-baseline S2.2). Only meaningful for
+    /// splice-capable hosts; this one is anchored, so the framework never
+    /// calls it.
+    fn remove_child(&mut self, _parent: &Self::Node, _child: &Self::Node) {
+        // default: no-op
     }
 
-    fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
-        <WindowsBackend as Backend>::remove_child(self, parent, child)
+    fn clear_children(&mut self, _node: &Self::Node) {
+        // Placeholder: walk children HWNDs and DestroyWindow each.
+        // The full implementation needs a parent → children map so
+        // we can iterate efficiently. Skipped here so author code
+        // doesn't panic on a clear pass.
     }
 
-    fn clear_children(&mut self, node: &Self::Node) {
-        <WindowsBackend as Backend>::clear_children(self, node)
-    }
-
+    /// Explicit port of the old `Backend::create_reactive_anchor` DEFAULT
+    /// body (`create_view` with default a11y). `Host` makes it REQUIRED, so
+    /// it is stated here rather than inherited (deletion-baseline S2.2). A
+    /// plain container view is the right anchor for this backend: an
+    /// unstyled view draws nothing, so the anchor is invisible and
+    /// layout-neutral.
     fn create_anchor(&mut self) -> Self::Node {
-        <WindowsBackend as Backend>::create_reactive_anchor(self)
+        self.create_view(&AccessibilityProps::default())
     }
 
+    /// Explicit `false` — the port of the old
+    /// `Backend::supports_child_splice` DEFAULT this backend relied on.
+    /// `Host` makes it REQUIRED, so the value is stated here instead of
+    /// inherited (deletion-baseline S2.2). ANCHORED mode is what the frozen
+    /// artifacts in `tests/goldens/` recorded from the old core: flipping it
+    /// to `true` would move every reactive region out from under its anchor
+    /// and change the output wholesale. Pinned by a literal assertion in the
+    /// crate's parity suite.
     fn supports_splice(&self) -> bool {
-        <WindowsBackend as Backend>::supports_child_splice(self)
+        false
     }
 }
 
@@ -417,60 +473,90 @@ impl Host for WindowsBackend {
 
 impl caps::AppEnvOps for WindowsBackend {
     fn color_scheme(&self) -> ColorScheme {
-        <WindowsBackend as Backend>::color_scheme(self)
+        // Win32 doesn't expose a single "dark mode" toggle until very
+        // recent builds (UISettings::Background via WinRT). For the
+        // scaffold we return Auto and let the framework's theme APIs
+        // own the decision. A future revision can read
+        // `AppsUseLightTheme` from the registry under
+        // `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`.
+        ColorScheme::Auto
     }
 
     fn platform(&self) -> Platform {
-        <WindowsBackend as Backend>::platform(self)
-    }
-
-    fn url_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
-        <WindowsBackend as Backend>::url_opener(self)
-    }
-
-    fn fullscreen_setter(&self) -> Option<Rc<dyn Fn(bool)>> {
-        <WindowsBackend as Backend>::fullscreen_setter(self)
-    }
-
-    fn set_page_metadata(&mut self, meta: &PageMetadata) {
-        <WindowsBackend as Backend>::set_page_metadata(self, meta)
-    }
-
-    fn set_app_background(&mut self, color: &Tokenized<Color>) {
-        <WindowsBackend as Backend>::set_app_background(self, color)
-    }
-
-    fn set_scrollbar_theme(&mut self, thumb: &Tokenized<Color>, track: &Tokenized<Color>) {
-        <WindowsBackend as Backend>::set_scrollbar_theme(self, thumb, track)
-    }
-
-    fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
-        // Dispatch-site glue: the app-level key handler runs author code
-        // (`dispatch_key` routes here before the focused-input path).
-        let handler = handler.map(flushing_key);
-        <WindowsBackend as Backend>::set_app_key_handler(self, handler)
+        Platform::Custom("windows")
     }
 }
 
 impl caps::LifecycleOps for WindowsBackend {
     fn finish(&mut self, root: Self::Node) {
-        <WindowsBackend as Backend>::finish(self, root)
-    }
+        // Run Taffy against the host window's client rect, then
+        // walk every registered HWND and call SetWindowPos with
+        // its computed frame. Frames in Taffy are relative to the
+        // immediate parent; SetWindowPos takes coordinates
+        // relative to the parent HWND, and our `insert` reparents
+        // each child to its framework parent via `SetParent`, so
+        // the two coordinate systems line up directly.
+        let Some(root_layout) = self.layout_for_id.get(&root.id).copied() else {
+            return;
+        };
 
-    fn run_layout(&mut self) {
-        <WindowsBackend as Backend>::run_layout(self)
-    }
+        // Host client rect in pixels. GetClientRect can fail if the
+        // window has been destroyed; bail rather than feed garbage
+        // dimensions to the layout pass.
+        let mut rect = RECT::default();
+        if unsafe { GetClientRect(self.host_hwnd, &mut rect) }.is_err() {
+            return;
+        }
+        let width = (rect.right - rect.left).max(0) as f32;
+        let height = (rect.bottom - rect.top).max(0) as f32;
+        if width <= 0.0 || height <= 0.0 {
+            return;
+        }
 
-    fn schedule_layout_pass() {
-        <WindowsBackend as Backend>::schedule_layout_pass()
-    }
+        self.layout.compute(root_layout, width, height);
 
-    fn is_hydrating(&self) -> bool {
-        <WindowsBackend as Backend>::is_hydrating(self)
-    }
-
-    fn renders_lazy_chunks(&self) -> bool {
-        <WindowsBackend as Backend>::renders_lazy_chunks(self)
+        // Collect (hwnd, frame) pairs first so we can release the
+        // borrow on `self.nodes` before issuing the Win32 calls.
+        // SetWindowPos is documented as safe to call from the
+        // owning thread; we issue them serially so the HWND tree
+        // doesn't see partial-state intermediate frames.
+        let mut updates: Vec<(HWND, i32, i32, i32, i32)> =
+            Vec::with_capacity(self.nodes.len());
+        for (id, meta) in &self.nodes {
+            let Some(layout) = self.layout_for_id.get(id).copied() else {
+                continue;
+            };
+            let frame = self.layout.frame_of(layout);
+            updates.push((
+                meta.hwnd,
+                frame.x.round() as i32,
+                frame.y.round() as i32,
+                frame.width.round() as i32,
+                frame.height.round() as i32,
+            ));
+        }
+        for (hwnd, x, y, w, h) in updates {
+            if hwnd.is_invalid() {
+                continue;
+            }
+            // `HWND_TOP` here would force every child to the top of
+            // the z-order on every layout pass — wasteful and
+            // visually disruptive. `SWP_NOZORDER` preserves whatever
+            // z-order the HWND already has. `SWP_NOACTIVATE` keeps
+            // input focus from jumping to whatever child we
+            // happen to move first.
+            let _ = unsafe {
+                SetWindowPos(
+                    hwnd,
+                    None,
+                    x,
+                    y,
+                    w,
+                    h,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            };
+        }
     }
 }
 
@@ -479,77 +565,44 @@ impl caps::LifecycleOps for WindowsBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::ViewOps for WindowsBackend {
-    fn create_view(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-        <WindowsBackend as Backend>::create_view(self, a11y)
-    }
-
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
-        <WindowsBackend as Backend>::make_view_handle(self, node)
-    }
-}
-
-impl caps::InputOps for WindowsBackend {
-    fn install_touch_handler(&mut self, node: &Self::Node, handler: TouchHandler) {
-        // Dispatch-site glue (module docs): flush after author code.
-        let handler: TouchHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                let response = f(ev);
-                schedule_flush();
-                response
-            })
-        };
-        <WindowsBackend as Backend>::install_touch_handler(self, node, handler)
-    }
-
-    fn claim_touch(&mut self, node: &Self::Node, touch_id: TouchId) {
-        <WindowsBackend as Backend>::claim_touch(self, node, touch_id)
-    }
-
-    fn install_wheel_handler(&mut self, node: &Self::Node, handler: WheelHandler) {
-        let handler: WheelHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                let response = f(ev);
-                schedule_flush();
-                response
-            })
-        };
-        <WindowsBackend as Backend>::install_wheel_handler(self, node, handler)
-    }
-
-    fn install_hover_handler(&mut self, node: &Self::Node, handler: HoverHandler) {
-        <WindowsBackend as Backend>::install_hover_handler(self, node, flushing1(handler))
-    }
-
-    fn mark_preserves_focus(&mut self, node: &Self::Node) {
-        <WindowsBackend as Backend>::mark_preserves_focus(self, node)
-    }
-
-    fn install_file_drop_handler(&mut self, node: &Self::Node, handler: FileDropHandler) {
-        let handler: FileDropHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                let response = f(ev);
-                schedule_flush();
-                response
-            })
-        };
-        <WindowsBackend as Backend>::install_file_drop_handler(self, node, handler)
+    fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
+        // STATIC class with no text — acts as a transparent
+        // container. Real Win32 apps typically use a custom WNDCLASS
+        // for layout containers; STATIC is fine as a scaffold.
+        self.create_child(class_static(), "", SS_LEFT as u32, None)
     }
 }
+
+impl caps::InputOps for WindowsBackend {}
 
 impl caps::PressableOps for WindowsBackend {
-    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> Self::Node {
+    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Self::Node {
         // Dispatch-site glue: the wrapped closure is what the old
         // `create_pressable` body registers in `command_handlers`,
         // so the host WndProc's `dispatch_command` (WM_COMMAND)
         // call gets the flush for free.
-        <WindowsBackend as Backend>::create_pressable(self, flushing0(on_click), a11y)
-    }
-
-    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_core::PressableHandle {
-        <WindowsBackend as Backend>::make_pressable_handle(self, node)
+        let on_click = flushing0(on_click);
+        // STATIC controls don't fire WM_COMMAND natively, so the
+        // control-id approach doesn't help for Pressable as it
+        // does for BUTTON. A proper Pressable needs an `STN_*`
+        // notification (via `SS_NOTIFY` style + `WM_COMMAND`
+        // with `STN_CLICKED`) or a `WM_LBUTTONDOWN`-subclassed
+        // wndproc on the static. For the scaffold we allocate a
+        // control id and install `SS_NOTIFY` so the host's
+        // dispatcher path treats it like Button; the actual
+        // subclassing is a follow-up the host owns.
+        let control_id = self.alloc_control_id();
+        self.command_handlers.insert(control_id, on_click.clone());
+        let node = self.create_child(
+            class_static(),
+            "",
+            (SS_LEFT | SS_NOTIFY) as u32,
+            Some(control_id),
+        );
+        if let Some(meta) = self.nodes.get_mut(&node.id) {
+            meta.on_click = Some(on_click);
+        }
+        node
     }
 }
 
@@ -558,66 +611,13 @@ impl caps::PressableOps for WindowsBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::TextOps for WindowsBackend {
-    fn create_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
-        <WindowsBackend as Backend>::create_text(self, content, a11y)
-    }
-
-    fn create_styled_text(&mut self, runs: &[TextRun], a11y: &AccessibilityProps) -> Self::Node {
-        <WindowsBackend as Backend>::create_styled_text(self, runs, a11y)
-    }
-
-    fn update_styled_text(&mut self, node: &Self::Node, runs: &[TextRun]) {
-        <WindowsBackend as Backend>::update_styled_text(self, node, runs)
+    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
+        self.create_child(class_static(), content, SS_LEFT as u32, None)
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
-        <WindowsBackend as Backend>::update_text(self, node, content)
-    }
-
-    fn create_text_with_id(
-        &mut self,
-        content: &str,
-        a11y: &AccessibilityProps,
-    ) -> Option<(Self::Node, u32)> {
-        <WindowsBackend as Backend>::create_text_with_id(self, content, a11y)
-    }
-
-    fn update_text_by_id(&mut self, id: u32, content: String) {
-        <WindowsBackend as Backend>::update_text_by_id(self, id, content)
-    }
-
-    fn release_text_id(&mut self, id: u32) {
-        <WindowsBackend as Backend>::release_text_id(self, id)
-    }
-
-    fn supports_js_text_bindings(&self) -> bool {
-        <WindowsBackend as Backend>::supports_js_text_bindings(self)
-    }
-
-    fn register_reactive_text_binding(
-        &mut self,
-        text_id: u32,
-        signal_ids: &[u64],
-        template_parts: &[&str],
-        initial_values: &[&str],
-        stringifiers: &[Rc<dyn Fn() -> String>],
-    ) {
-        <WindowsBackend as Backend>::register_reactive_text_binding(
-            self,
-            text_id,
-            signal_ids,
-            template_parts,
-            initial_values,
-            stringifiers,
-        )
-    }
-
-    fn release_reactive_text_binding(&mut self, text_id: u32) {
-        <WindowsBackend as Backend>::release_reactive_text_binding(self, text_id)
-    }
-
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
-        <WindowsBackend as Backend>::make_text_handle(self, node)
+        let wide = to_pcwstr(content);
+        let _ = unsafe { SetWindowTextW(node.hwnd, wide.as_pcwstr()) };
     }
 }
 
@@ -626,9 +626,9 @@ impl caps::ButtonOps for WindowsBackend {
         &mut self,
         label: &str,
         on_click: &Action,
-        leading_icon: Option<&primitives::icon::IconData>,
-        trailing_icon: Option<&primitives::icon::IconData>,
-        a11y: &AccessibilityProps,
+        _leading_icon: Option<&primitives::icon::IconData>,
+        _trailing_icon: Option<&primitives::icon::IconData>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: wrap the Action's runtime evaluator
         // (the closure the old body stores in `command_handlers`
@@ -641,22 +641,30 @@ impl caps::ButtonOps for WindowsBackend {
             output: on_click.output,
             fire: flushing0(on_click.fire.clone()),
         };
-        <WindowsBackend as Backend>::create_button(
-            self,
+        let on_click = &on_click;
+        // Allocate a control id, install the handler in the
+        // dispatch table, and pass the id to `create_child` so
+        // CreateWindowExW records it on the HWND. The host's
+        // WndProc routes `WM_COMMAND` with `LOWORD(wParam)` ==
+        // this id back through `dispatch_command`.
+        let control_id = self.alloc_control_id();
+        let handler = on_click.fire.clone();
+        self.command_handlers.insert(control_id, handler.clone());
+        let node = self.create_child(
+            class_button(),
             label,
-            &on_click,
-            leading_icon,
-            trailing_icon,
-            a11y,
-        )
+            BS_DEFPUSHBUTTON as u32,
+            Some(control_id),
+        );
+        if let Some(meta) = self.nodes.get_mut(&node.id) {
+            meta.on_click = Some(handler);
+        }
+        node
     }
 
     fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-        <WindowsBackend as Backend>::update_button_label(self, node, label)
-    }
-
-    fn make_button_handle(&self, node: &Self::Node) -> runtime_core::ButtonHandle {
-        <WindowsBackend as Backend>::make_button_handle(self, node)
+        let wide = to_pcwstr(label);
+        let _ = unsafe { SetWindowTextW(node.hwnd, wide.as_pcwstr()) };
     }
 }
 
@@ -665,110 +673,28 @@ impl caps::ButtonOps for WindowsBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::ImageOps for WindowsBackend {
-    fn create_image(&mut self, src: &str, alt: Option<&str>, a11y: &AccessibilityProps) -> Self::Node {
-        <WindowsBackend as Backend>::create_image(self, src, alt, a11y)
-    }
-
-    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
-        <WindowsBackend as Backend>::update_image_src(self, node, src)
-    }
-
-    fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
-        <WindowsBackend as Backend>::update_image_alt(self, node, alt)
-    }
-
-    fn install_image_load_handler(&mut self, node: &Self::Node, handler: ImageLoadHandler) {
-        let handler: ImageLoadHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                f(ev);
-                schedule_flush();
-            })
-        };
-        <WindowsBackend as Backend>::install_image_load_handler(self, node, handler)
-    }
-
-    fn install_image_error_handler(&mut self, node: &Self::Node, handler: ImageErrorHandler) {
-        <WindowsBackend as Backend>::install_image_error_handler(self, node, flushing0(handler))
-    }
-
-    fn make_image_handle(&self, node: &Self::Node) -> primitives::image::ImageHandle {
-        <WindowsBackend as Backend>::make_image_handle(self, node)
+    fn create_image(
+        &mut self,
+        _src: &str,
+        _alt: Option<&str>,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.placeholder("Image not yet implemented on Windows backend")
     }
 }
 
 impl caps::IconOps for WindowsBackend {
     fn create_icon(
         &mut self,
-        data: &primitives::icon::IconData,
-        color: Option<&Color>,
-        a11y: &AccessibilityProps,
+        _data: &runtime_shared::primitives::icon::IconData,
+        _color: Option<&Color>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WindowsBackend as Backend>::create_icon(self, data, color, a11y)
-    }
-
-    fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
-        <WindowsBackend as Backend>::update_icon_color(self, node, color)
-    }
-
-    fn update_icon_data(&mut self, node: &Self::Node, data: &primitives::icon::IconData) {
-        <WindowsBackend as Backend>::update_icon_data(self, node, data)
-    }
-
-    fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
-        <WindowsBackend as Backend>::update_icon_stroke(self, node, progress)
-    }
-
-    fn animate_icon_stroke(
-        &mut self,
-        node: &Self::Node,
-        from: f32,
-        to: f32,
-        duration_ms: u32,
-        easing: Easing,
-        infinite: bool,
-        autoreverses: bool,
-    ) {
-        <WindowsBackend as Backend>::animate_icon_stroke(
-            self,
-            node,
-            from,
-            to,
-            duration_ms,
-            easing,
-            infinite,
-            autoreverses,
-        )
-    }
-
-    fn make_icon_handle(&self, node: &Self::Node) -> primitives::icon::IconHandle {
-        <WindowsBackend as Backend>::make_icon_handle(self, node)
+        self.placeholder("Icon not yet implemented on Windows backend")
     }
 }
 
-impl caps::LinkOps for WindowsBackend {
-    fn create_link(
-        &mut self,
-        config: primitives::link::LinkConfig,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Dispatch-site glue: link activation dispatches navigation
-        // (stages nav-queue tick signals on the new core). The wrapped
-        // closure lands in the node's on_click slot, so nav-link clicks
-        // flush exactly like pressables.
-        let mut config = config;
-        config.on_activate = flushing0(config.on_activate.clone());
-        <WindowsBackend as Backend>::create_link(self, config, a11y)
-    }
-
-    fn update_link_url(&mut self, node: &Self::Node, url: &str) {
-        <WindowsBackend as Backend>::update_link_url(self, node, url)
-    }
-
-    fn make_link_handle(&self, node: &Self::Node) -> primitives::link::LinkHandle {
-        <WindowsBackend as Backend>::make_link_handle(self, node)
-    }
-}
+impl caps::LinkOps for WindowsBackend {}
 
 // ---------------------------------------------------------------------------
 // Form widgets
@@ -778,161 +704,85 @@ impl caps::TextInputOps for WindowsBackend {
     fn create_text_input(
         &mut self,
         initial_value: &str,
-        placeholder: Option<&str>,
+        _placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<primitives::key::KeyDownHandler>,
         on_blur: Option<primitives::text_input::BlurHandler>,
-        secure: bool,
-        a11y: &AccessibilityProps,
+        _secure: bool,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Wrapped uniformly, though the scaffold does not yet wire
         // on_change/on_key_down/on_blur to the native editor (see
         // lib.rs) — when it does, the flush comes with it for free.
-        <WindowsBackend as Backend>::create_text_input(
-            self,
-            initial_value,
-            placeholder,
-            flushing1(on_change),
-            on_key_down.map(flushing_key),
-            on_blur.map(|f| -> primitives::text_input::BlurHandler {
+        let _on_change = flushing1(on_change);
+        let _on_key_down = on_key_down.map(flushing_key);
+        let _on_blur = on_blur.map(|f| -> primitives::text_input::BlurHandler {
                 Rc::new(move || {
                     let outcome = f();
                     schedule_flush();
                     outcome
                 })
-            }),
-            secure,
-            a11y,
-        )
-    }
-
-    fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
-        <WindowsBackend as Backend>::update_text_input_value(self, node, value)
-    }
-
-    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
-        <WindowsBackend as Backend>::update_text_input_secure(self, node, secure)
-    }
-
-    fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
-        <WindowsBackend as Backend>::set_text_input_focus_handler(self, node, flushing1(handler))
-    }
-
-    fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
-        <WindowsBackend as Backend>::update_text_input_placeholder(self, node, placeholder)
+            });
+        // Real Win32 EDIT control would land here. For the scaffold,
+        // use a STATIC with the initial value so the field is at
+        // least visible.
+        self.create_child(class_static(), initial_value, SS_LEFT as u32, None)
     }
 
     fn create_text_area(
         &mut self,
         initial_value: &str,
-        placeholder: Option<&str>,
-        wrap: bool,
-        min_rows: Option<u32>,
-        max_rows: Option<u32>,
+        _placeholder: Option<&str>,
+        _wrap: bool,
+        _min_rows: Option<u32>,
+        _max_rows: Option<u32>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<primitives::key::KeyDownHandler>,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WindowsBackend as Backend>::create_text_area(
-            self,
-            initial_value,
-            placeholder,
-            wrap,
-            min_rows,
-            max_rows,
-            flushing1(on_change),
-            on_key_down.map(flushing_key),
-            a11y,
-        )
-    }
-
-    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
-        <WindowsBackend as Backend>::update_text_area_value(self, node, value)
-    }
-
-    fn make_text_input_handle(&self, node: &Self::Node) -> primitives::text_input::TextInputHandle {
-        <WindowsBackend as Backend>::make_text_input_handle(self, node)
-    }
-
-    fn make_text_area_handle(&self, node: &Self::Node) -> primitives::text_area::TextAreaHandle {
-        <WindowsBackend as Backend>::make_text_area_handle(self, node)
+        let _on_change = flushing1(on_change);
+        let _on_key_down = on_key_down.map(flushing_key);
+        self.create_child(class_static(), initial_value, SS_LEFT as u32, None)
     }
 }
 
 impl caps::ToggleOps for WindowsBackend {
     fn create_toggle(
         &mut self,
-        initial_value: bool,
+        _initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Placeholder today (never fires on_change) — wrapped
         // uniformly anyway, per the GraphicsOps-comment model.
-        <WindowsBackend as Backend>::create_toggle(self, initial_value, flushing1(on_change), a11y)
-    }
-
-    fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
-        <WindowsBackend as Backend>::update_toggle_value(self, node, value)
-    }
-
-    fn make_toggle_handle(&self, node: &Self::Node) -> primitives::toggle::ToggleHandle {
-        <WindowsBackend as Backend>::make_toggle_handle(self, node)
+        let _on_change = flushing1(on_change);
+        self.placeholder("Toggle not yet implemented on Windows backend")
     }
 }
 
 impl caps::SliderOps for WindowsBackend {
     fn create_slider(
         &mut self,
-        initial_value: f32,
-        min: f32,
-        max: f32,
-        step: Option<f32>,
+        _initial_value: f32,
+        _min: f32,
+        _max: f32,
+        _step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WindowsBackend as Backend>::create_slider(
-            self,
-            initial_value,
-            min,
-            max,
-            step,
-            flushing1(on_change),
-            a11y,
-        )
-    }
-
-    fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
-        <WindowsBackend as Backend>::update_slider_value(self, node, value)
-    }
-
-    fn make_slider_handle(&self, node: &Self::Node) -> primitives::slider::SliderHandle {
-        <WindowsBackend as Backend>::make_slider_handle(self, node)
+        let _on_change = flushing1(on_change);
+        self.placeholder("Slider not yet implemented on Windows backend")
     }
 }
 
 impl caps::ActivityIndicatorOps for WindowsBackend {
     fn create_activity_indicator(
         &mut self,
-        size: primitives::activity_indicator::ActivityIndicatorSize,
-        color: Option<&Color>,
-        a11y: &AccessibilityProps,
+        _size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
+        _color: Option<&Color>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WindowsBackend as Backend>::create_activity_indicator(self, size, color, a11y)
-    }
-
-    fn update_activity_indicator_size(
-        &mut self,
-        node: &Self::Node,
-        size: primitives::activity_indicator::ActivityIndicatorSize,
-    ) {
-        <WindowsBackend as Backend>::update_activity_indicator_size(self, node, size)
-    }
-
-    fn make_activity_indicator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> primitives::activity_indicator::ActivityIndicatorHandle {
-        <WindowsBackend as Backend>::make_activity_indicator_handle(self, node)
+        self.placeholder("ActivityIndicator not yet implemented on Windows backend")
     }
 }
 
@@ -945,7 +795,7 @@ impl caps::ScrollOps for WindowsBackend {
         &mut self,
         horizontal: bool,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: the old body stashes on_scroll in the
         // `ScrollState` the `IdealystScroll` WndProc fires per
@@ -957,39 +807,40 @@ impl caps::ScrollOps for WindowsBackend {
                 schedule_flush();
             })
         });
-        <WindowsBackend as Backend>::create_scroll_view(self, horizontal, on_scroll, a11y)
-    }
+        // Register the `IdealystScroll` WNDCLASS on first use; the
+        // call is idempotent across multiple backend instances in
+        // the same process.
+        ensure_scroll_class_registered();
+        let node = self.create_child(SCROLL_CLASS_NAME, "", 0, None);
 
-    fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
-        <WindowsBackend as Backend>::node_scroll(self, node)
-    }
-
-    fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
-        <WindowsBackend as Backend>::set_node_scroll(self, node, x, y)
-    }
-
-    fn make_scroll_view_handle(&self, node: &Self::Node) -> primitives::scroll_view::ScrollViewHandle {
-        <WindowsBackend as Backend>::make_scroll_view_handle(self, node)
+        // Stash per-window scroll state (callback + offsets) in
+        // `GWLP_USERDATA`. The WndProc reads it on every
+        // `WM_MOUSEWHEEL`, advances the offset, calls
+        // `ScrollWindowEx` to move children, and fires the user
+        // callback. `WM_NCDESTROY` releases the box.
+        let state = Box::new(ScrollState {
+            horizontal,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            on_scroll,
+        });
+        let raw = Box::into_raw(state) as isize;
+        unsafe {
+            SetWindowLongPtrW(node.hwnd, GWLP_USERDATA, raw);
+        }
+        node
     }
 }
 
-impl caps::SafeAreaOps for WindowsBackend {
-    fn apply_safe_area_padding(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-        <WindowsBackend as Backend>::apply_safe_area_padding(self, node, sides)
-    }
-
-    fn apply_scroll_view_safe_area_inset(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-        <WindowsBackend as Backend>::apply_scroll_view_safe_area_inset(self, node, sides)
-    }
-}
+impl caps::SafeAreaOps for WindowsBackend {}
 
 impl caps::VirtualizerOps for WindowsBackend {
     fn create_virtualizer(
         &mut self,
         callbacks: VirtualizerCallbacks<Self::Node>,
-        overscan: f32,
-        layout: primitives::virtualizer::VirtualLayout,
-        a11y: &AccessibilityProps,
+        _overscan: f32,
+        _layout: primitives::virtualizer::VirtualLayout,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue + world entry: mount/release run author
         // render closures and scope cleanups; mount_item REALIZES the
@@ -1033,19 +884,8 @@ impl caps::VirtualizerOps for WindowsBackend {
                 })
             },
         };
-        <WindowsBackend as Backend>::create_virtualizer(self, callbacks, overscan, layout, a11y)
-    }
-
-    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
-        <WindowsBackend as Backend>::virtualizer_data_changed(self, node)
-    }
-
-    fn release_virtualizer(&mut self, node: &Self::Node) {
-        <WindowsBackend as Backend>::release_virtualizer(self, node)
-    }
-
-    fn make_virtualizer_handle(&self, node: &Self::Node) -> primitives::virtualizer::VirtualizerHandle {
-        <WindowsBackend as Backend>::make_virtualizer_handle(self, node)
+        let _callbacks = callbacks;
+        self.placeholder("Virtualizer not yet implemented on Windows backend")
     }
 }
 
@@ -1059,7 +899,7 @@ impl caps::GraphicsOps for WindowsBackend {
         on_ready: primitives::graphics::OnReady,
         on_resize: primitives::graphics::OnResize,
         on_lost: primitives::graphics::OnLost,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: surface lifecycle callbacks run author
         // code (this scaffold never fires them — graphics is a
@@ -1086,113 +926,30 @@ impl caps::GraphicsOps for WindowsBackend {
                 schedule_flush();
             })
         };
-        <WindowsBackend as Backend>::create_graphics(self, on_ready, on_resize, on_lost, a11y)
-    }
-
-    fn release_graphics(&mut self, node: &Self::Node) {
-        <WindowsBackend as Backend>::release_graphics(self, node)
-    }
-
-    fn make_graphics_handle(&self, node: &Self::Node) -> primitives::graphics::GraphicsHandle {
-        <WindowsBackend as Backend>::make_graphics_handle(self, node)
+        let _on_ready = on_ready;
+        let _on_resize = on_resize;
+        let _on_lost = on_lost;
+        self.placeholder("Graphics not yet implemented on Windows backend")
     }
 }
 
 impl caps::PortalOps for WindowsBackend {
     fn create_portal(
         &mut self,
-        target: primitives::portal::PortalTarget,
+        _target: primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
-        trap_focus: bool,
-        a11y: &AccessibilityProps,
+        _trap_focus: bool,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let on_dismiss = on_dismiss.map(flushing0);
-        <WindowsBackend as Backend>::create_portal(self, target, on_dismiss, trap_focus, a11y)
-    }
-
-    fn release_portal(&mut self, node: &Self::Node) {
-        <WindowsBackend as Backend>::release_portal(self, node)
-    }
-
-    fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
-        <WindowsBackend as Backend>::set_portal_hidden(self, node, hidden)
-    }
-
-    fn make_portal_handle(&self, node: &Self::Node) -> primitives::portal::PortalHandle {
-        <WindowsBackend as Backend>::make_portal_handle(self, node)
+        let _on_dismiss = on_dismiss;
+        self.placeholder("Portal not yet implemented on Windows backend")
     }
 }
 
-impl caps::PresenceOps for WindowsBackend {
-    fn create_presence_placeholder(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-        <WindowsBackend as Backend>::create_presence_placeholder(self, a11y)
-    }
+impl caps::PresenceOps for WindowsBackend {}
 
-    fn apply_presence(
-        &mut self,
-        node: &Self::Node,
-        state: primitives::presence::PresenceState,
-        transition: Option<(u32, Easing)>,
-    ) {
-        <WindowsBackend as Backend>::apply_presence(self, node, state, transition)
-    }
-
-    fn make_presence_handle(&self, node: &Self::Node) -> primitives::presence::PresenceHandle {
-        <WindowsBackend as Backend>::make_presence_handle(self, node)
-    }
-}
-
-impl caps::NavigatorOps for WindowsBackend {
-    fn create_navigator(
-        &mut self,
-        type_id: TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn Any>,
-        host: primitives::navigator::NavigatorHost<Self::Node>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // NOT wrapped: NavigatorHost's callbacks belong to the OLD-core
-        // navigator path; the vocabulary navigator handlers own screens
-        // on the new core and their dispatch is handler-safe (queue +
-        // tick signal committed by a driver effect on flush). Author
-        // navigation stages via handlers already wrapped above.
-        <WindowsBackend as Backend>::create_navigator(
-            self,
-            type_id,
-            type_name,
-            presentation,
-            host,
-            a11y,
-        )
-    }
-
-    fn release_navigator(&mut self, node: &Self::Node) {
-        <WindowsBackend as Backend>::release_navigator(self, node)
-    }
-
-    fn apply_navigator_slot_style(
-        &mut self,
-        node: &Self::Node,
-        slot: &'static str,
-        style: &Rc<StyleRules>,
-    ) {
-        <WindowsBackend as Backend>::apply_navigator_slot_style(self, node, slot, style)
-    }
-
-    fn make_navigator_handle(&self, node: &Self::Node) -> primitives::navigator::NavigatorHandle {
-        <WindowsBackend as Backend>::make_navigator_handle(self, node)
-    }
-
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn Any>,
-    ) {
-        <WindowsBackend as Backend>::navigator_attach_initial(self, navigator, screen, scope_id, options)
-    }
-}
+impl caps::NavigatorOps for WindowsBackend {}
 
 // ---------------------------------------------------------------------------
 // External + document
@@ -1201,379 +958,53 @@ impl caps::NavigatorOps for WindowsBackend {
 impl caps::ExternalOps for WindowsBackend {
     fn create_external(
         &mut self,
-        type_id: TypeId,
+        _type_id: std::any::TypeId,
         type_name: &'static str,
-        payload: &Rc<dyn Any>,
-        a11y: &AccessibilityProps,
+        _payload: &Rc<dyn std::any::Any>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WindowsBackend as Backend>::create_external(self, type_id, type_name, payload, a11y)
-    }
-
-    fn release_external(&mut self, node: &Self::Node) {
-        <WindowsBackend as Backend>::release_external(self, node)
-    }
-
-    fn missing_primitive_placeholder(&mut self, label: &'static str) -> Self::Node {
-        <WindowsBackend as Backend>::missing_primitive_placeholder(self, label)
-    }
-}
-
-impl caps::DocumentOps for WindowsBackend {
-    fn create_element(&mut self, tag: &str) -> Self::Node {
-        <WindowsBackend as Backend>::create_element(self, tag)
-    }
-
-    fn attach_html_id(&self, node: &Self::Node, id: &str) {
-        <WindowsBackend as Backend>::attach_html_id(self, node, id)
-    }
-
-    fn attach_html_class(&self, node: &Self::Node, class: &str) {
-        <WindowsBackend as Backend>::attach_html_class(self, node, class)
-    }
-
-    fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
-        <WindowsBackend as Backend>::attach_html_style(self, node, prop, value)
-    }
-
-    fn register_raw_css(&mut self, css: &str) {
-        <WindowsBackend as Backend>::register_raw_css(self, css)
+        // Third-party primitives register a scene-`Registry` handler and
+        // never reach this method — `create_external` only serves
+        // `missing_primitive_placeholder`, so the labeled placeholder is
+        // the whole contract. (The old core routed here through a
+        // backend-side `ExternalRegistry`, which died with
+        // `Element::External`; the placeholder shape is unchanged.)
+        self.placeholder(&format!(
+            "External \"{type_name}\" not registered on Windows backend"
+        ))
     }
 }
+
+impl caps::DocumentOps for WindowsBackend {}
 
 // ---------------------------------------------------------------------------
 // Style + assets
 // ---------------------------------------------------------------------------
 
 impl caps::StyleOps for WindowsBackend {
-    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
-        <WindowsBackend as Backend>::apply_style(self, node, style)
-    }
-
-    fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
-        <WindowsBackend as Backend>::mint_style_class(self, style)
-    }
-
-    fn mint_class_for_app(&mut self, app: &StyleApplication) -> Option<String> {
-        <WindowsBackend as Backend>::mint_class_for_app(self, app)
-    }
-
-    fn apply_styled_states(
-        &mut self,
-        node: &Self::Node,
-        base: &Rc<StyleRules>,
-        overlays: &[(StateBits, Rc<StyleRules>)],
-    ) {
-        <WindowsBackend as Backend>::apply_styled_states(self, node, base, overlays)
-    }
-
-    fn apply_styled_variants(
-        &mut self,
-        node: &Self::Node,
-        base: &Rc<StyleRules>,
-        state_overlays: &[(StateBits, Rc<StyleRules>)],
-        breakpoint_overlays: &[(Breakpoint, Rc<StyleRules>)],
-        container_overlays: &[(f32, Rc<StyleRules>)],
-    ) {
-        <WindowsBackend as Backend>::apply_styled_variants(
-            self,
-            node,
-            base,
-            state_overlays,
-            breakpoint_overlays,
-            container_overlays,
-        )
-    }
-
-    fn mark_container(&mut self, node: &Self::Node) {
-        <WindowsBackend as Backend>::mark_container(self, node)
-    }
-
-    fn handles_states_natively(&self) -> bool {
-        <WindowsBackend as Backend>::handles_states_natively(self)
-    }
-
-    fn token_updates_propagate_via_cascade(&self) -> bool {
-        <WindowsBackend as Backend>::token_updates_propagate_via_cascade(self)
-    }
-
-    fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        <WindowsBackend as Backend>::register_stylesheet(self, rules)
-    }
-
-    fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        <WindowsBackend as Backend>::unregister_stylesheet(self, rules)
-    }
-
-    fn install_tokens(&mut self, tokens: &[TokenEntry]) {
-        <WindowsBackend as Backend>::install_tokens(self, tokens)
-    }
-
-    fn update_tokens(&mut self, tokens: &[TokenEntry]) {
-        <WindowsBackend as Backend>::update_tokens(self, tokens)
-    }
-
-    fn on_node_unstyled(&mut self, node: &Self::Node) {
-        <WindowsBackend as Backend>::on_node_unstyled(self, node)
-    }
-
-    fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
-        // Dispatch-site glue: state flips can stage writes when the
-        // style path routes states through signals.
-        let setter: Rc<dyn Fn(StateBits, bool)> = {
-            let f = setter;
-            Rc::new(move |bits, on| {
-                f(bits, on);
-                schedule_flush();
-            })
-        };
-        <WindowsBackend as Backend>::attach_states(self, node, setter)
-    }
-
-    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
-        <WindowsBackend as Backend>::set_disabled(self, node, disabled)
-    }
-
-    fn supports_preminted_styles(&self) -> bool {
-        <WindowsBackend as Backend>::supports_preminted_styles(self)
-    }
-
-    fn apply_default_text_font(&mut self, font: Option<&FontFamily>) {
-        <WindowsBackend as Backend>::apply_default_text_font(self, font)
-    }
-
-    fn supports_js_class_bindings(&self) -> bool {
-        <WindowsBackend as Backend>::supports_js_class_bindings(self)
-    }
-
-    fn register_reactive_class_binding(
-        &mut self,
-        node: &Self::Node,
-        signal_id: u64,
-        values: &[u32],
-        classes: &[&str],
-        value_reader: Rc<dyn Fn() -> u32>,
-    ) -> u32 {
-        <WindowsBackend as Backend>::register_reactive_class_binding(
-            self,
-            node,
-            signal_id,
-            values,
-            classes,
-            value_reader,
-        )
-    }
-
-    fn release_reactive_class_binding(&mut self, binding_id: u32) {
-        <WindowsBackend as Backend>::release_reactive_class_binding(self, binding_id)
+    fn apply_style(&mut self, _node: &Self::Node, _style: &Rc<StyleRules>) {
+        // No-op until we wire Taffy-driven SetWindowPos in finish().
+        // Author code calling apply_style today shouldn't crash; the
+        // style is silently dropped.
     }
 }
 
-impl caps::AssetOps for WindowsBackend {
-    fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
-        <WindowsBackend as Backend>::register_asset(self, id, kind, source)
-    }
-
-    fn unregister_asset(&mut self, id: AssetId, kind: AssetTag) {
-        <WindowsBackend as Backend>::unregister_asset(self, id, kind)
-    }
-
-    fn register_typeface(
-        &mut self,
-        id: TypefaceId,
-        family_name: &str,
-        faces: &[TypefaceFace],
-        fallback: SystemFallback,
-    ) {
-        <WindowsBackend as Backend>::register_typeface(self, id, family_name, faces, fallback)
-    }
-
-    fn unregister_typeface(&mut self, id: TypefaceId) {
-        <WindowsBackend as Backend>::unregister_typeface(self, id)
-    }
-}
+impl caps::AssetOps for WindowsBackend {}
 
 // ---------------------------------------------------------------------------
 // A11y + animation + introspection
 // ---------------------------------------------------------------------------
 
-impl caps::A11yOps for WindowsBackend {
-    fn update_accessibility(
-        &mut self,
-        node: &Self::Node,
-        a11y: &AccessibilityProps,
-        inferred_role: Option<Role>,
-    ) {
-        <WindowsBackend as Backend>::update_accessibility(self, node, a11y, inferred_role)
-    }
+impl caps::A11yOps for WindowsBackend {}
 
-    fn announce_for_accessibility(&mut self, msg: &str, priority: LiveRegionPriority) {
-        <WindowsBackend as Backend>::announce_for_accessibility(self, msg, priority)
-    }
+impl caps::AnimationOps for WindowsBackend {}
 
-    fn dump_accessibility_tree(&self) -> Option<AccessibilityTree> {
-        <WindowsBackend as Backend>::dump_accessibility_tree(self)
-    }
-}
-
-impl caps::AnimationOps for WindowsBackend {
-    fn set_animated_f32(&mut self, node: &Self::Node, prop: AnimProp, value: f32) {
-        <WindowsBackend as Backend>::set_animated_f32(self, node, prop, value)
-    }
-
-    fn set_animated_color(&mut self, node: &Self::Node, prop: AnimProp, value: [f32; 4]) {
-        <WindowsBackend as Backend>::set_animated_color(self, node, prop, value)
-    }
-}
-
-impl caps::IntrospectionOps for WindowsBackend {
-    fn frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <WindowsBackend as Backend>::frame(self, node)
-    }
-
-    fn absolute_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <WindowsBackend as Backend>::absolute_frame(self, node)
-    }
-
-    fn device_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <WindowsBackend as Backend>::device_frame(self, node)
-    }
-
-    fn supports_native_introspection(&self) -> bool {
-        <WindowsBackend as Backend>::supports_native_introspection(self)
-    }
-
-    fn introspect_native(&self, node: &Self::Node) -> Option<NativeNode> {
-        <WindowsBackend as Backend>::introspect_native(self, node)
-    }
-
-    fn note_introspection_root(&self, node: &Self::Node) {
-        <WindowsBackend as Backend>::note_introspection_root(self, node)
-    }
-
-    fn supports_screenshot(&self) -> bool {
-        <WindowsBackend as Backend>::supports_screenshot(self)
-    }
-
-    fn capture_screenshot(&self, done: Box<dyn FnOnce(Result<Screenshot, String>)>) {
-        <WindowsBackend as Backend>::capture_screenshot(self, done)
-    }
-}
+impl caps::IntrospectionOps for WindowsBackend {}
 
 // ---------------------------------------------------------------------------
 // Batch + wire bindings
 // ---------------------------------------------------------------------------
 
-impl caps::BatchOps for WindowsBackend {
-    fn supports_batched_repeat(&self) -> bool {
-        <WindowsBackend as Backend>::supports_batched_repeat(self)
-    }
+impl caps::BatchOps for WindowsBackend {}
 
-    fn execute_batch(&mut self, batch: BackendBatch) -> Vec<Self::Node> {
-        <WindowsBackend as Backend>::execute_batch(self, batch)
-    }
-
-    fn execute_batch_with_attach(
-        &mut self,
-        batch: BackendBatch,
-        parent: &mut Self::Node,
-        attach_locals: &[u32],
-    ) -> Vec<Self::Node> {
-        <WindowsBackend as Backend>::execute_batch_with_attach(self, batch, parent, attach_locals)
-    }
-}
-
-impl caps::WireBindingOps for WindowsBackend {
-    fn note_text_binding(&mut self, node: &Self::Node, signal_ids: &[u64], method: &'static str) {
-        <WindowsBackend as Backend>::note_text_binding(self, node, signal_ids, method)
-    }
-
-    fn note_signal_initial(&mut self, signal_id: u64, value: &runtime_core::__serde_json::Value) {
-        <WindowsBackend as Backend>::note_signal_initial(self, signal_id, value)
-    }
-
-    fn note_when_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        cond_method: &'static str,
-        then_node: &Self::Node,
-        otherwise_node: &Self::Node,
-    ) {
-        <WindowsBackend as Backend>::note_when_binding(
-            self,
-            anchor,
-            signal_ids,
-            cond_method,
-            then_node,
-            otherwise_node,
-        )
-    }
-
-    fn note_switch_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        cond_method: &'static str,
-        arms: &[(runtime_core::__serde_json::Value, Self::Node)],
-        default_node: &Self::Node,
-    ) {
-        <WindowsBackend as Backend>::note_switch_binding(
-            self,
-            anchor,
-            signal_ids,
-            cond_method,
-            arms,
-            default_node,
-        )
-    }
-
-    fn note_repeat_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        count_method: &'static str,
-        row_template: &Self::Node,
-        row_index_signal_id: Option<u64>,
-    ) {
-        <WindowsBackend as Backend>::note_repeat_binding(
-            self,
-            anchor,
-            signal_ids,
-            count_method,
-            row_template,
-            row_index_signal_id,
-        )
-    }
-
-    fn note_virtualizer_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        count_method: &'static str,
-        row_template: &Self::Node,
-        row_index_signal_id: Option<u64>,
-        horizontal: bool,
-    ) {
-        <WindowsBackend as Backend>::note_virtualizer_binding(
-            self,
-            anchor,
-            signal_ids,
-            count_method,
-            row_template,
-            row_index_signal_id,
-            horizontal,
-        )
-    }
-
-    fn supports_lazy_slot_capture(&self) -> bool {
-        <WindowsBackend as Backend>::supports_lazy_slot_capture(self)
-    }
-
-    fn begin_slot_capture(&mut self) {
-        <WindowsBackend as Backend>::begin_slot_capture(self)
-    }
-
-    fn end_slot_capture(&mut self, slot_root: &Self::Node) {
-        <WindowsBackend as Backend>::end_slot_capture(self, slot_root)
-    }
-}
+impl caps::WireBindingOps for WindowsBackend {}

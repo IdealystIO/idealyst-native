@@ -365,7 +365,9 @@ mod tests {
         // The `recognizer()` composition path (for GestureGroup) must wire
         // the same offset as `handler()`. Drive it through the Recognizer
         // trait directly.
-        use runtime_core::{Recognizer, RecognizerCtx};
+        // `Recognizer` / `RecognizerCtx` are substrate traits glue does not
+        // re-export yet (reported gap); the trait is the same item either way.
+        use runtime_shared::{Recognizer, RecognizerCtx};
         let pan = Pan::new();
         let mut rec = pan.recognizer();
         let ctx = RecognizerCtx::UNGATED;

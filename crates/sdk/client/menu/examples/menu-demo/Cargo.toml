@@ -10,8 +10,18 @@ name = "menu-demo"
 path = "src/main.rs"
 
 [dependencies]
+# The author surface. `runtime-core` is aliased to `runtime_core` at the
+# crate root (see src/main.rs) — one core, no feature switch.
+# `runtime-scene` supplies the `Registry` type the boot seam hands us.
 runtime-core = { workspace = true }
+runtime-scene = { workspace = true }
 
+# `host-appkit` for the windowed boot (`run_with`, World + Registry +
+# realize + flush driver) and `backend-macos` for `with_global_backend`
+# — the seam `menu::install` needs, because the menu bar lives on
+# `NSApplication.mainMenu`, entirely outside the view tree, and so has no
+# scene payload to mount through.
 [target.'cfg(target_os = "macos")'.dependencies]
 host-appkit = { workspace = true }
+backend-macos = { workspace = true }
 menu = { workspace = true }

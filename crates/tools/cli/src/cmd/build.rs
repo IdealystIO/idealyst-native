@@ -130,21 +130,6 @@ pub struct Args {
     #[arg(long)]
     pub no_brotli: bool,
 
-    /// Web only: compile in ONLY the named primitive families
-    /// (comma-separated: virtualizer, icon, image, text-input, toggle,
-    /// slider, activity, portal, presence, graphics, navigator, lazy;
-    /// or `none` for a text/view-only bundle). Unused families leave
-    /// the wasm entirely — a text/view-only app drops ~30% of the
-    /// bundle. Two-sided by design: this flag restricts the generated
-    /// wrapper, and the APP crate must set `default-features = false`
-    /// on its own `runtime-core` dependency or cargo feature
-    /// unification re-enables everything (the build warns when it
-    /// detects that). SDKs forward the families they render with, so
-    /// depending on one re-enables exactly what it needs. Omit the
-    /// flag for the default all-families build.
-    #[arg(long, value_delimiter = ',')]
-    pub primitives: Option<Vec<String>>,
-
     /// Web only: override where the bundle is written. Default is
     /// `<project>/dist/web`. Has no effect on non-web targets.
     #[arg(long, value_name = "PATH")]
@@ -164,7 +149,8 @@ pub struct Args {
     /// This is still OFF by default because the classification
     /// **under-approximates what `main` reaches**: it can't trace data reached
     /// via data→data pointers, `call_indirect` / the function table, or the
-    /// deferred `Element::External` registration queue. Data that `main`
+    /// deferred handler-registration queue (removed with the old core;
+    /// see docs/proposals/lazy-primitive.md). Data that `main`
     /// actually reads BEFORE the owning chunk loads gets misclassified
     /// "chunk-only" and zeroed, silently corrupting `main.wasm` (no wasm
     /// trap): fonts fail to register, a `#[component(lazy)]` route renders
@@ -198,17 +184,16 @@ pub struct Args {
     /// `--cfg idealyst_premint` so all-constant style applications ship
     /// as class references instead of invoking the runtime style
     /// engine. The full size win additionally needs the app to disable
-    /// the `style-dynamic` feature (`default-features = false` on
-    /// runtime-core AND backend-web) so the engine drops out of the
-    /// bundle — without that edit the classes premint but the engine
-    /// still ships. Not yet combinable with `--ssg`/`--ssr` (the
+    /// the `style-dynamic` feature on `backend-web` so the engine drops
+    /// out of the bundle — without that edit the classes premint but the
+    /// engine still ships. Not yet combinable with `--ssg`/`--ssr` (the
     /// server-rendered HTML would carry live-minted classes; the build
     /// refuses the pair).
     #[arg(long)]
     pub premint: bool,
 
     /// Web only: enable the Robot bridge in the bundle (`robot` feature →
-    /// `backend-web/robot` → `runtime-core/robot`). A browser app can't host
+    /// `backend-web/robot`). A browser app can't host
     /// the bridge itself, so it dials a `robot-relay` whose URL it reads from
     /// `window.IDEALYST_ROBOT_RELAY_URL`; the relay exposes the ordinary TCP
     /// bridge to the MCP server / an evaluator. Off by default; the MCP Arena
@@ -217,44 +202,48 @@ pub struct Args {
     #[arg(long)]
     pub robot: bool,
 
-    /// DEPRECATED no-op alias: the NEW core (runtime v2) is the
-    /// default since the defaults flip — dual-core projects (any
-    /// project declaring the `new-core` cargo feature; every
-    /// `idealyst new` scaffold does) build on it with no flags.
-    /// Kept so existing invocations don't break; on a project
-    /// WITHOUT the feature it still errors with the migration
-    /// pointer instead of silently building the old core.
+    /// Accepted no-op alias: runtime v2 is the only runtime, so every
+    /// build already runs on it. Kept so existing invocations, scripts,
+    /// and CI files don't break (see `crate::core_mode`).
     #[arg(long)]
     pub new_core: bool,
 
-    /// Opt back onto the OLD core (the pre-runtime-v2 walker).
-    /// Compiles the app `default-features = false, features =
-    /// ["old-core"]` when the project declares an `old-core` feature
-    /// (dual-core apps default to new-core), and with its plain
-    /// defaults otherwise. New-core builds require the dual-core app
-    /// convention: a `new-core` cargo feature plus the per-target
-    /// registration seams
-    /// (`register_ssr_scene_handlers(&mut runtime_scene::Registry<backend_ssr::SsrBackend>)`
-    /// for SSR/SSG, `register_scene_extensions` — registry-generic in
-    /// the scaffold — for web/macos/terminal, `scene_app()` for
-    /// android). Roku and `--serverless-lambda` have no new-core CLI
-    /// leg yet and always build old-core.
+    /// REMOVED: the pre-runtime-v2 walker no longer exists. Passing
+    /// this fails with the migration pointer rather than silently
+    /// building runtime v2 with old-core semantics expected
+    /// (`crate::core_mode`, `docs/migrating-to-runtime-v2.md`).
     #[arg(long)]
     pub old_core: bool,
+
+    /// REMOVED: per-primitive-family bundle gating no longer exists.
+    /// This named the `prim-*` families the web wrapper compiled in;
+    /// runtime v2 registers handlers into a `runtime_scene::Registry`
+    /// instead, so there is nothing to switch off. Still parsed so the
+    /// invocation fails with the migration pointer rather than a silent
+    /// no-op (an unexplained bundle-size regression for a size-tuned
+    /// pipeline) — see `crate::removed_flags` and
+    /// `docs/migrating-to-runtime-v2.md`.
+    #[arg(long, value_delimiter = ',')]
+    pub primitives: Option<Vec<String>>,
 }
 
 pub fn run(args: Args) -> Result<()> {
+    // Removed-flag rejection runs FIRST, before the project is even
+    // resolved: these errors are about the invocation, not the project,
+    // and an operator porting a CI line should read "this flag is gone"
+    // rather than an unrelated manifest error from whatever directory
+    // the command happened to run in.
+    //
+    // One core: `--new-core` is a no-op, `--old-core` is a hard error.
+    crate::core_mode::validate_flags(args.new_core, args.old_core)?;
+    // `--primitives` is likewise a hard error — the size lever it drove
+    // does not exist on runtime v2, and ignoring it silently would build
+    // the all-families bundle a size-tuned pipeline wrote it to avoid.
+    crate::removed_flags::validate_build_flags(args.primitives.as_deref())?;
+
     let dir = std::fs::canonicalize(&args.dir)
         .with_context(|| format!("cannot resolve project dir {}", args.dir.display()))?;
     let manifest = parse_manifest(&dir)?;
-
-    // Runtime-v2 defaults flip: resolve the effective core once
-    // (new core unless `--old-core`, or the project never declared the
-    // dual-core convention) and let every target read the resolved
-    // value through `args.new_core`.
-    let mut args = args;
-    args.new_core = crate::core_mode::resolve(&dir, args.new_core, args.old_core)?;
-    args.old_core = false;
 
     // Resolve which targets to build. Explicit flags win; otherwise
     // fall back to manifest. The `--aas` flag is separate from the
@@ -406,7 +395,6 @@ fn build_terminal_target(dir: &std::path::Path, args: &Args) -> Result<()> {
             mode: build_terminal::BuildMode::Local,
             source,
             user_features: Vec::new(),
-            new_core: args.new_core,
         },
     )?;
     eprintln!(
@@ -465,7 +453,6 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
             // artifact. Debug bundles skip the q11 encode (seconds of
             // build tail for a bundle nobody ships).
             brotli: !args.no_brotli && (args.release || args.strip_panics),
-            primitives: args.primitives.clone(),
             strip_panics: args.strip_panics,
             // Compile in hydration when SSG/SSR is also being built —
             // the emitted HTML expects the wasm to adopt it on boot.
@@ -481,10 +468,6 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
                 args.no_data_prune,
             ),
             premint: args.premint,
-            // `--new-core`: wrapper boots via backend_web::newcore and
-            // compiles the app single-core (dual-core app convention —
-            // same contract as the SSR wrapper's `--new-core` leg).
-            new_core: args.new_core,
         },
     )?;
     let bundle = artifact
@@ -519,7 +502,8 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
 /// `wasm-split-cli` chunk-only classification under-approximates what `main`
 /// reaches: it walks the symbol-level call graph but can't trace data reached
 /// through data→data pointers, `call_indirect` / the function table, or the
-/// deferred `Element::External` registration queue. Data `main` reads through
+/// deferred handler-registration queue (removed with the old core).
+/// Data `main` reads through
 /// those edges gets misclassified "chunk-only" and zeroed — silently corrupting
 /// `main.wasm` with no wasm trap (observed: fonts fail to register via
 /// `typeface!`, and a `#[component(lazy)]` route mounts nothing, not even its
@@ -546,7 +530,6 @@ fn build_ios_target(dir: &std::path::Path, args: &Args) -> Result<()> {
             device: args.device,
             source,
             user_features: Vec::new(),
-            new_core: args.new_core,
         },
     )?;
     eprintln!(
@@ -567,7 +550,6 @@ fn build_android_target(dir: &std::path::Path, args: &Args) -> Result<()> {
             mode: build_android::BuildMode::Local,
             source,
             user_features: Vec::new(),
-            new_core: args.new_core,
         },
     )?;
     eprintln!(
@@ -579,11 +561,6 @@ fn build_android_target(dir: &std::path::Path, args: &Args) -> Result<()> {
 }
 
 fn build_roku_target(dir: &std::path::Path, _args: &Args) -> Result<()> {
-    // Roku has no new-core CLI leg yet — the wrapper always builds the
-    // old core (the generator pins `old-core` for dual-core apps).
-    if _args.new_core {
-        eprintln!("[build roku] no new-core roku leg yet — building the old core");
-    }
     let source = crate::framework_source::resolve(dir)?;
     let artifact = build_roku::build(
         dir,
@@ -623,7 +600,6 @@ fn build_macos_target(dir: &std::path::Path, args: &Args) -> Result<()> {
             // `build --macos` is a host-arch dev artifact; the universal
             // (Intel + Apple Silicon) build is `publish macos`'s job.
             universal: false,
-            new_core: args.new_core,
         },
     )?;
     eprintln!("[build macos] success → {}", artifact.binary.display(),);
@@ -638,7 +614,6 @@ fn build_ssr_binary(dir: &std::path::Path, args: &Args, web_built: bool) -> Resu
             release: args.release,
             source,
             user_features: Vec::new(),
-            new_core: args.new_core,
         },
     )?;
     eprintln!(
@@ -678,7 +653,6 @@ fn build_ssg_export(
             release: args.release,
             source,
             user_features: Vec::new(),
-            new_core: args.new_core,
         },
     )?;
     let out_dir = args
@@ -724,14 +698,6 @@ fn build_ssg_export(
 }
 
 fn build_serverless_lambda_target(dir: &std::path::Path, args: &Args) -> Result<()> {
-    // The lambda wrapper force-links the OLD-core `app()` (no new-core
-    // serverless leg yet); the generator pins `old-core` for dual-core
-    // apps so exactly one core's macro emission is in the graph.
-    if args.new_core {
-        eprintln!(
-            "[build serverless-lambda] no new-core serverless leg yet — building the old core"
-        );
-    }
     let source = crate::framework_source::resolve(dir)?;
     let arch = build_serverless_lambda::Arch::parse(args.arch.as_deref())?;
     let artifact = build_serverless_lambda::build(
@@ -774,7 +740,6 @@ fn build_runtime_server_host(dir: &std::path::Path, args: &Args) -> Result<()> {
         build_runtime_server::BuildOptions {
             release: args.release,
             source,
-            new_core: args.new_core,
         },
     )?;
     eprintln!(

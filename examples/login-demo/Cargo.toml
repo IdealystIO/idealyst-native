@@ -23,7 +23,14 @@ server-kit = { workspace = true }
 cache = { workspace = true, optional = true }
 dev-server = { workspace = true, optional = true }
 net = { workspace = true }
+# The author surface: `runtime-core` is aliased to `runtime_core` at the
+# crate root (see src/lib.rs); `async-driver` gives it `driver::spawn_async`
+# for the server-fn calls. `runtime-vocabulary` because the `ui!` emission
+# spells absolute `::runtime_vocabulary::glue::…` paths; `runtime-scene`
+# because `register_scene_extensions` is generic over the registry host.
 runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 idea-ui = { workspace = true }
 # Native session-token storage (Keychain / AndroidKeyStore). On web it's the

@@ -1,7 +1,8 @@
 # `form`
 
-A cross-platform `Form` container built on the framework's
-`Element::External` extension mechanism (with children). On **web** it
+A cross-platform `Form` container built on the framework's third-party
+primitive contract — a payload type (`FormPrim`) with a mount handler
+installed on the scene `Registry` at the boot seam (with children). On **web** it
 lowers to a real `<form>` element — free Enter-to-submit and browser
 autofill grouping. On **native** it's a plain passthrough container;
 submission is triggered by your submit button.
@@ -10,9 +11,9 @@ submission is triggered by your submit button.
 use form::prelude::*;       // brings in `Form!`, `form`, `FormProps`
 use idea_ui::prelude::*;    // Button, TextInput, …
 
-// App bootstrap (one line per third-party SDK):
-let mut backend = WebBackend::new("#app");
-form::register(&mut backend);
+// App bootstrap (one line per third-party SDK) — `register` IS the boot
+// registration seam, run against the scene registry:
+// backend_web::newcore::start_in("#app", form::register, app);
 
 // The submit action is a plain closure that reads your field signals —
 // it is NOT fed by the DOM's FormData. Build it once and share the `Rc`:
@@ -49,11 +50,12 @@ differs per platform.
 
 ## Why this is an SDK and not a core primitive
 
-A form has no convergent cross-platform behavior to put behind the
-Backend trait: on web `<form>` is a real element (submit-on-enter,
+A form has no convergent cross-platform behavior to put behind a
+capability trait: on web `<form>` is a real element (submit-on-enter,
 autofill, FormData), while iOS/Android have **no** form construct — their
 form affordances live per-field on the inputs, not on a container. So
-`Form` is an opinionated SDK on `Element::External`.
+`Form` is an opinionated SDK primitive: its own payload type plus a
+per-`Registry` mount handler, registered at the boot seam.
 
 ## Imperative submit
 
@@ -81,8 +83,8 @@ compiles for that target but isn't confirmed on real hardware yet. Tick each
 item as you exercise it.
 
 **Automated**
-- [ ] `cargo test -p form` — lowering tests (`Element::External` keyed by
-  `FormProps`, children flow through, `ui!`/`Form!` dispatch)
+- [ ] `cargo test -p form` — lowering tests (the scene payload keyed by
+  its own type, children flow through, `ui!`/`Form!` dispatch)
 - [ ] `cargo build -p form --target wasm32-unknown-unknown` — web target
 
 **Rendering / behavior**

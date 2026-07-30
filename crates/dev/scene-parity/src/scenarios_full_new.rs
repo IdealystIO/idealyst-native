@@ -25,7 +25,7 @@
 //! | `when(cond, a, b)`               | `dyn_keyed(cond, ...)` (guarded hole)   |
 //! | `.with_style(closure)`           | `.style(closure)` (Dynamic StyleProp)   |
 
-use runtime_core::{SafeAreaSides, TextRun};
+use runtime_shared::{SafeAreaSides, TextRun};
 use runtime_scene::dyn_keyed;
 use runtime_vocabulary::builders::{
     activity_indicator, button, icon, image, link, pressable, scroll_view, slider, text,
@@ -353,7 +353,7 @@ fn full_release_on_swap(cx: &mut FullNewCx) {
 
 fn full_repeat_fallback(cx: &mut FullNewCx) {
     use crate::full::themed_sheet;
-    use runtime_core::StyleApplication;
+    use runtime_shared::StyleApplication;
     use runtime_vocabulary::glue::__static_repeat;
     let present: Signal<bool> = signal(true);
     let sheet = themed_sheet();
@@ -394,7 +394,7 @@ fn full_repeat_fallback(cx: &mut FullNewCx) {
 
 fn full_style_sheet_cohort(cx: &mut FullNewCx) {
     use crate::full::{surface_token, themed_sheet};
-    use runtime_core::StyleApplication;
+    use runtime_shared::StyleApplication;
     use runtime_vocabulary::theme;
     theme::install_tokens(&[surface_token("#101010")]);
     let show: Signal<bool> = signal(true);
@@ -432,7 +432,7 @@ fn full_style_sheet_cohort(cx: &mut FullNewCx) {
 
 fn full_style_state_overlay(cx: &mut FullNewCx) {
     use crate::full::hover_sheet;
-    use runtime_core::StyleApplication;
+    use runtime_shared::StyleApplication;
     cx.mount(
         view()
             .child(view().style(StyleApplication::new(hover_sheet())))
@@ -441,10 +441,10 @@ fn full_style_state_overlay(cx: &mut FullNewCx) {
     let setter = cx.state_setter(0);
     let on = setter.clone();
     cx.step("hover on (one apply_style, overlay digest)", move || {
-        on(runtime_core::StateBits::HOVERED, true);
+        on(runtime_shared::StateBits::HOVERED, true);
     });
     cx.step("hover off (base digest restored)", move || {
-        setter(runtime_core::StateBits::HOVERED, false);
+        setter(runtime_shared::StateBits::HOVERED, false);
     });
 }
 
@@ -501,7 +501,7 @@ fn full_style_preminted(cx: &mut FullNewCx) {
 // ===========================================================================
 
 fn full_virtualizer_lifecycle(cx: &mut FullNewCx) {
-    use runtime_core::ItemSize;
+    use runtime_shared::ItemSize;
     use runtime_vocabulary::builders::virtualizer;
     use std::rc::Rc;
 
@@ -578,7 +578,7 @@ fn full_virtualizer_lifecycle(cx: &mut FullNewCx) {
 // ===========================================================================
 
 fn full_virtualizer_lane_swap(cx: &mut FullNewCx) {
-    use runtime_core::{Axis, ItemSize, Lanes};
+    use runtime_shared::{Axis, ItemSize, Lanes};
     use runtime_scene::Element;
     use runtime_vocabulary::builders::virtualizer;
     use std::rc::Rc;
@@ -675,7 +675,7 @@ fn full_graphics_lifecycle(cx: &mut FullNewCx) {
 // ===========================================================================
 
 fn full_portal_toggle(cx: &mut FullNewCx) {
-    use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement};
+    use runtime_shared::primitives::portal::{PortalTarget, ViewportPlacement};
     use runtime_vocabulary::builders::portal;
     let open: Signal<bool> = signal(true);
     cx.mount(
@@ -704,8 +704,8 @@ fn full_portal_toggle(cx: &mut FullNewCx) {
 
 fn full_overlay_static(cx: &mut FullNewCx) {
     use crate::full::test_anchor_target;
-    use runtime_core::primitives::overlay::BackdropMode;
-    use runtime_core::primitives::portal::{ElementAlign, ElementSide, ViewportPlacement};
+    use runtime_shared::primitives::overlay::BackdropMode;
+    use runtime_shared::primitives::portal::{ElementAlign, ElementSide, ViewportPlacement};
     use runtime_vocabulary::builders::{anchored_overlay, overlay};
     cx.mount(
         view()
@@ -810,7 +810,7 @@ fn full_presence_bare(cx: &mut FullNewCx) {
 
 use std::rc::Rc;
 
-use runtime_core::primitives::navigator::Route;
+use runtime_shared::primitives::navigator::Route;
 use runtime_vocabulary::builders::{navigator_outlet, stack_navigator, swap_navigator};
 use runtime_vocabulary::prims::{MountPolicy, NavHandle, StackRetention, SwapNav};
 use runtime_vocabulary::on_teardown;

@@ -104,12 +104,6 @@ fn hidden_sheet() -> Rc<StyleSheet> {
 /// Renders the trigger wrapped in a hover/long-press anchor; shows a hint
 /// bubble (anchored to the trigger) while hovered (desktop) or briefly on
 /// long-press (touch). See the module docs.
-///
-/// **Cargo features:** requires `prim-portal` (in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without it compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component(children)]
 pub fn Tooltip(props: TooltipProps) -> Element {
     let open = signal(false);
@@ -205,8 +199,8 @@ mod tests {
                 }
                 _ => panic!("first fragment child must be the anchor View"),
             }
-            // The bubble is a reactive hole (`when` on the old core, an opaque
-            // `Dyn` on the new) — the mirror reports both as `P::Other`.
+            // The bubble is a reactive hole (an opaque `Dyn`) — the mirror
+            // reports it as `P::Other`.
             assert!(
                 matches!(classify(kids.remove(0)), P::Other(_)),
                 "second child must be the reactive bubble (a `when` gated on hover/press)",

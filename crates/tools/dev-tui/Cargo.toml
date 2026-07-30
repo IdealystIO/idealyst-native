@@ -9,6 +9,10 @@ description = "Interactive terminal panel for `idealyst dev --interactive` — d
 crate-type = ["rlib"]
 
 [dependencies]
+# The author surface. `runtime-core` is the crate this panel aliases to
+# `runtime_core` at its root (see src/lib.rs) — one core, no feature
+# switch. The panel builds its tree from the plain `view()` / `text()`
+# constructors (no `ui!`), so it needs nothing beyond the facade root.
 runtime-core = { workspace = true }
 backend-terminal = { workspace = true }
 host-terminal = { workspace = true }

@@ -25,7 +25,7 @@
 //! and reference from `paint_navigator_header`.
 
 /// A pre-baked chrome glyph. Mirrors the shape of
-/// `runtime_core::primitives::icon::IconData` so the wgpu
+/// `runtime_shared::primitives::icon::IconData` so the wgpu
 /// `paint_icon` helper can consume it directly.
 #[derive(Copy, Clone)]
 pub struct ChromeIcon {

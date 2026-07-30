@@ -1,8 +1,8 @@
 //! AppKit host shell for the `backend-macos` native backend.
 //!
 //! Boots NSApplication, opens a single NSWindow with a flipped
-//! content view, installs the backend, and runs
-//! `runtime_core::render(app)`. The window is the host's
+//! content view, installs the backend, and mounts the author's scene
+//! through `backend_macos::newcore::start`. The window is the host's
 //! responsibility (per the macOS spec — host owns, injects content
 //! view); the backend never touches NSApplication or NSWindow
 //! directly.
@@ -13,18 +13,26 @@
 mod app;
 
 #[cfg(target_os = "macos")]
+mod boot;
+
+#[cfg(target_os = "macos")]
 mod app_delegate;
 
 #[cfg(target_os = "macos")]
-pub use app::{run, run_with, RunError, RunOptions};
+pub use app::{RunError, RunOptions};
 
-// idea-lite core migration (P4a): the new-core windowed boot —
-// identical NSApplication/NSWindow/content-view sequence, mounting via
-// `backend_macos::newcore::start` (World + Registry + realize) instead
-// of `runtime_core::mount`. Off by default; forwarded feature, zero
-// cost when off.
-#[cfg(all(target_os = "macos", feature = "new-core"))]
-pub mod newcore;
+#[cfg(target_os = "macos")]
+pub use boot::{run, run_with};
+
+/// Compatibility path. The windowed boot used to live behind a
+/// `newcore` module while the framework carried two cores; callers and
+/// docs spell it `host_appkit::newcore::run` / `::run_with`. There is
+/// one core now and the entries live at the crate root ([`crate::run`],
+/// [`crate::run_with`]) — this re-export keeps the historical paths
+/// resolving.
+pub mod newcore {
+    pub use crate::{run, run_with};
+}
 
 // runtime-server variant. Mirrors `run` but, instead of mounting the user's
 // app() locally, connects to an runtime-server dev-server and applies the

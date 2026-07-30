@@ -3,7 +3,7 @@
 //! author code (scheduler `after_ms` timers, `after_animation_frame`
 //! one-shots, `raf_loop` iterations — e.g. a host bridging
 //! `glib::timeout_add` / the GTK frame clock into
-//! `runtime_core::scheduling`).
+//! `runtime_shared::scheduling`).
 //!
 //! Mirrors `backend_terminal::dispatch_hook` — the SETTLED new-core
 //! flush-driver shape. The new core ([`crate::newcore`]) stages signal

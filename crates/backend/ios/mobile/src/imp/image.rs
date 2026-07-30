@@ -21,7 +21,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use runtime_core::{
+use runtime_shared::{
     AssetId, AssetSource, AssetTag, ImageErrorHandler, ImageLoadEvent, ImageLoadHandler,
 };
 use block2::RcBlock;
@@ -291,16 +291,16 @@ pub(crate) fn is_image_view(view: &UIView) -> bool {
     unsafe { msg_send![view, isKindOfClass: cls] }
 }
 
-/// Apply an [`ObjectFit`](runtime_core::ObjectFit) to an image view via
+/// Apply an [`ObjectFit`](runtime_shared::ObjectFit) to an image view via
 /// `UIView.contentMode`. No-op on non-image views (the helper guards). For
 /// `Cover` (`scaleAspectFill`) the bitmap overflows the frame, so
 /// `clipsToBounds` is enabled to crop it — mirroring web `object-fit: cover`
 /// + `overflow: hidden`. Called from `apply_style`.
-pub(crate) fn apply_object_fit(view: &UIView, fit: runtime_core::ObjectFit) {
+pub(crate) fn apply_object_fit(view: &UIView, fit: runtime_shared::ObjectFit) {
     if !is_image_view(view) {
         return;
     }
-    use runtime_core::ObjectFit;
+    use runtime_shared::ObjectFit;
     // UIViewContentMode: scaleToFill = 0, scaleAspectFit = 1, scaleAspectFill = 2.
     let mode: i64 = match fit {
         ObjectFit::Fill => 0,

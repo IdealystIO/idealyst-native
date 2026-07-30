@@ -1,0 +1,24 @@
+[package]
+name = "lazy-payload-split-heavy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Deliberately-heavy fake third-party SDK for the handler-registration split measurement. Carries 512 KiB of static data reachable only through its scene mount handler; whether that data lands in main.wasm or the lazy chunk depends solely on where the handler is registered (boot seam vs Registry::register_deferred from inside the chunk)."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# The author surface. `runtime-vocabulary` because the `ui!` emission
+# spells absolute `::runtime_vocabulary::glue::…` paths — and because the
+# mount handler is bound on its `caps::ViewOps`. `runtime-scene` for
+# `item`/`MountCx`/`Registry` and the late-registration mailbox.
+runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+
+# `register_from_chunk` names the concrete web backend to key the
+# late-registration mailbox. Web-only; the handler itself
+# (`mount_heavy`) is caps-generic.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }

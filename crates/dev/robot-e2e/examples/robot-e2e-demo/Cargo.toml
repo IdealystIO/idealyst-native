@@ -13,13 +13,13 @@ crate-type = ["rlib"]
 # `ui!` macro's `#[cfg(feature = "robot")]` gate is evaluated in THIS
 # crate's context, so without `robot` enabled here the lowered primitives
 # omit their `test_id` slots — and the whole demo is about locating by
-# `test_id`. `idealyst dev` additionally turns on `runtime-core/dev`
+# `test_id`. `idealyst dev` additionally turns on the wrapper-local `dev`
 # (which implies `runtime-core/robot`); declaring our own keeps a plain
 # `cargo build`/`cargo test` of the example honest too. The E2E harness
 # module is gated on this feature so `--no-default-features` still builds
 # a plain app with no Robot dependency.
 default = ["robot"]
-robot = ["runtime-core/robot"]
+robot = ["runtime-core/robot", "runtime-shared/robot"]
 
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
 # (build-runtime-server). Pulls `dev-server` so the recorder backend is
@@ -27,7 +27,16 @@ robot = ["runtime-core/robot"]
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The author surface, aliased to `runtime_core` at the crate root.
 runtime-core = { workspace = true }
+# The `ui!`/`#[component]` expansions spell absolute
+# `::runtime_vocabulary::glue::…` paths, so this is a direct dep; the
+# registration seam is generic over `runtime_scene::Registry<H>`.
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+# `robot` forwards the shared half too (runtime-vocabulary/robot does not),
+# which is what gives the bridge transport the Robot assertions ride on.
+runtime-shared = { workspace = true }
 idea-ui = { workspace = true }
 dev-server = { workspace = true, optional = true }
 

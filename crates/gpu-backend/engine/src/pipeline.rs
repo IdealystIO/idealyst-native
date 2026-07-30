@@ -17,7 +17,7 @@ use std::num::NonZeroU64;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct Instance {
-    pub rect: [f32; 4],          // x, y, w, h in px (top-left origin)
+    pub rect: [f32; 4], // x, y, w, h in px (top-left origin)
     pub bg: [f32; 4],
     pub corner_radius: [f32; 4], // tl, tr, br, bl
     pub border_color: [f32; 4],
@@ -196,29 +196,93 @@ impl RectPipeline {
             array_stride: STRIDE,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
-                wgpu::VertexAttribute { offset: 0,   shader_location: 0,  format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 16,  shader_location: 1,  format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 32,  shader_location: 2,  format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 48,  shader_location: 3,  format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 64,  shader_location: 4,  format: wgpu::VertexFormat::Float32 },
-                wgpu::VertexAttribute { offset: 68,  shader_location: 5,  format: wgpu::VertexFormat::Float32 },
-                wgpu::VertexAttribute { offset: 72,  shader_location: 6,  format: wgpu::VertexFormat::Float32 },
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 48,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 64,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32,
+                },
+                wgpu::VertexAttribute {
+                    offset: 68,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32,
+                },
+                wgpu::VertexAttribute {
+                    offset: 72,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Float32,
+                },
                 // _pad (offset 76) — declared in the struct so
                 // existing call sites keep compiling, but the
                 // shader doesn't bind it. No vertex attribute here.
-                wgpu::VertexAttribute { offset: 80,  shader_location: 7,  format: wgpu::VertexFormat::Float32 },
-                wgpu::VertexAttribute { offset: 84,  shader_location: 8,  format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 100, shader_location: 9,  format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute {
+                    offset: 80,
+                    shader_location: 7,
+                    format: wgpu::VertexFormat::Float32,
+                },
+                wgpu::VertexAttribute {
+                    offset: 84,
+                    shader_location: 8,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 100,
+                    shader_location: 9,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
                 // gradient_offset_4 (scalar) — offset 116, then 12
                 // bytes of `_pad_g` padding before the stop-4 vec4
                 // (vec4 alignment isn't required for vertex
                 // attributes but keeps the struct's offsets readable).
-                wgpu::VertexAttribute { offset: 116, shader_location: 10, format: wgpu::VertexFormat::Float32 },
-                wgpu::VertexAttribute { offset: 132, shader_location: 11, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 148, shader_location: 12, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 164, shader_location: 13, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 180, shader_location: 14, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 196, shader_location: 15, format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute {
+                    offset: 116,
+                    shader_location: 10,
+                    format: wgpu::VertexFormat::Float32,
+                },
+                wgpu::VertexAttribute {
+                    offset: 132,
+                    shader_location: 11,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 148,
+                    shader_location: 12,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 164,
+                    shader_location: 13,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 180,
+                    shader_location: 14,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 196,
+                    shader_location: 15,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
             ],
         }
     }
@@ -257,7 +321,10 @@ impl RectPipeline {
         queue.write_buffer(
             &self.globals,
             0,
-            bytemuck::bytes_of(&Globals { viewport, _pad: [0.0; 2] }),
+            bytemuck::bytes_of(&Globals {
+                viewport,
+                _pad: [0.0; 2],
+            }),
         );
         queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
 

@@ -93,7 +93,9 @@ ui! {
 ```
 
 That's the whole loop for bundled languages — no loaders, no setup, works
-offline on every backend.
+offline on every backend. The switch is an ordinary signal write, so it takes
+effect at the end of the handler's turn (the framework's flush), not mid-handler
+— reading a message back on the next line still yields the old language.
 
 ---
 
@@ -239,12 +241,21 @@ for &locale in t::Locale::ALL {
     if locale.is_lazy() {
         i18n::install_pack_json(locale.code(), &read_pack(locale.code()))?;
     }
-    let page = backend_ssr::render_path("/", app);
+    let page = backend_ssr::newcore::render_path("/", app);
     write(format!("dist/{}/index.html", locale.code()), render_document(&page, None, None));
 }
 ```
 
-The strings are baked into the first paint, per locale, tied to a path. See
+The strings are baked into the first paint, per locale, tied to a path.
+
+`set_locale_code` here runs **before** the render creates its world, which is
+fine by design: the locale signal is per-world (so one request can never read
+another's dropped state), and the code you set is recorded as the seed the next
+world's signal starts from. Inside a running app the same call writes the live
+signal instead — and like every signal write it **stages**, so the new strings
+appear at the driver's flush after your handler returns, not on the next line.
+
+See
 [`examples/i18n-demo`](./examples/i18n-demo) for a runnable end-to-end
 demo (bundled switch + opt-in fetch + an SSG build via
 `cargo run -p i18n-demo --example ssg`).

@@ -85,8 +85,7 @@ pub fn overview() -> Element {
 
 fn hero() -> Element {
     // Route-jump CTAs via `shell::route_link` — the framework `link`
-    // primitive on old-core, a `pressable` + swap `on_select` on
-    // new-core (the link-activator seam; see shell.rs).
+    // primitive (see shell.rs).
     let browse_cta = route_link(&BUTTON_ROUTE, ui! {
         view(style = CtaPrimary()) {
             text(style = CtaPrimaryText()) { "Browse components".to_string() }

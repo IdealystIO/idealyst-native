@@ -5,12 +5,12 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use runtime_core::driver::AsyncExecutor;
+use runtime_shared::driver::AsyncExecutor;
 
 /// Register this backend's executor with `runtime-core`. Idempotent —
 /// first install wins.
 pub fn install_async_executor() {
-    runtime_core::driver::install_async_executor(Box::new(WasmAsyncExecutor));
+    runtime_shared::driver::install_async_executor(Box::new(WasmAsyncExecutor));
 }
 
 struct WasmAsyncExecutor;

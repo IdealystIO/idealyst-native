@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use runtime_core::scheduling::{ScheduleHandle, Scheduler};
+use runtime_shared::scheduling::{ScheduleHandle, Scheduler};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
@@ -93,8 +93,7 @@ fn dispatch_via_promise(f: Box<dyn FnOnce() + 'static>) {
 /// `install_scheduler()` at startup, so outlet-model navigators get URL
 /// routing with zero extra host wiring. Idempotent + headless-safe.
 pub fn install_scheduler() {
-    runtime_core::scheduling::install_scheduler(Box::new(WebScheduler));
-    #[cfg(feature = "prim-navigator")]
+    runtime_shared::scheduling::install_scheduler(Box::new(WebScheduler));
     crate::url_provider::install_url_provider();
 }
 

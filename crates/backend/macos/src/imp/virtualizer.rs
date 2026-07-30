@@ -48,7 +48,7 @@ use objc2_app_kit::{
 use objc2_foundation::{
     CGFloat, CGRect, CGSize, MainThreadMarker, NSInteger, NSObject, NSString,
 };
-use runtime_core::{VirtualizerCallbacks, VirtualLayout};
+use runtime_shared::{VirtualizerCallbacks, VirtualLayout};
 
 use super::MacosNode;
 
@@ -829,7 +829,7 @@ mod tests {
     //! tests pin the class-shape and invalidation properties that
     //! caused the actual bugs.
     use super::*;
-    use runtime_core::{Axis, Lanes, VirtualLayout, VirtualizerCallbacks};
+    use runtime_shared::{Axis, Lanes, VirtualLayout, VirtualizerCallbacks};
 
     fn vlist() -> VirtualLayout {
         VirtualLayout { axis: Axis::Vertical, lanes: Lanes::Fixed(1), ..VirtualLayout::default() }

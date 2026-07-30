@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Native macOS backend via AppKit. Implements `runtime_core::Backend`
+# Native macOS backend via AppKit. Implements `runtime_shared::Backend`
 # using real NSView / NSButton / NSScrollView / NSTextField / NSImageView
 # widgets with a Taffy-backed flex layout pass.
 #
@@ -19,18 +19,18 @@ crate-type = ["rlib"]
 
 [features]
 default = []
-# Forward `runtime-core/debug-stats` so PhaseTimer counters exist
+# Forward `runtime-shared/debug-stats` so PhaseTimer counters exist
 # in this crate's hot paths (apply-style, layout, batched insert).
-debug-stats = ["runtime-core/debug-stats"]
+debug-stats = ["runtime-shared/debug-stats"]
 # Install the cooperative, libdispatch-backed async executor (in
-# `backend-apple-core`) so `runtime_core::driver::spawn_async` polls futures on
+# `backend-apple-core`) so `runtime_shared::driver::spawn_async` polls futures on
 # the main queue instead of falling back to `pollster::block_on`, which BLOCKS
 # the main thread/run loop for the whole future. Without this, any
 # run-loop-dependent future (e.g. `media-writer`'s AVAssetWriter
 # `finishWriting` completion) deadlocks the UI on `.await` — the whiteboard
 # "stop recording freezes the app" bug. Mirrors `backend-ios-mobile`'s
 # `async-driver` (ios-mobile → ios-core → apple-core). Enabled by `host-appkit`.
-async-driver = ["runtime-core/async-driver", "backend-apple-core/async-driver"]
+async-driver = ["runtime-shared/async-driver", "backend-apple-core/async-driver"]
 # Optional: compile in the runtime-server-client entry point + main-thread
 # drain helper so the macOS app can run as a thin client of an runtime-server
 # dev-server (instead of mounting the user's tree locally). When
@@ -38,37 +38,17 @@ async-driver = ["runtime-core/async-driver", "backend-apple-core/async-driver"]
 # Mirrors `backend-ios-mobile`'s `runtime-server` feature; pulls in the
 # shared `runtime-server-shell-native` worker.
 runtime-server = ["dep:runtime-server-shell-native", "runtime-server-shell-native/runtime-server"]
-# idea-lite core migration (P4a): the `newcore` module — `runtime_scene::Host`
-# + all 30 `runtime_vocabulary::caps` traits implemented directly on
-# `MacosBackend` (UFCS delegation to the existing Backend impl), plus the
-# new-core mount path (`newcore::start`) and its flush driver (dispatch-site
-# author-callback wrapping + apple-core dispatch hook). OFF by default; with the feature off
-# the build is unchanged (the module and its deps are not compiled). Mirrors
-# `backend-web`'s `new-core`. The module itself is additionally macOS-gated
-# (like `imp`), so enabling this on a non-macOS host only adds the unused
-# deps to the graph.
-new-core = [
-    "dep:runtime-world",
-    "dep:runtime-scene",
-    "dep:runtime-vocabulary",
-    # `create_navigator` (old-Element-typed NavigatorHost) is behind the
-    # vocabulary's `legacy-bridge` gate; this backend's newcore.rs
-    # implements it by delegating to the old Backend impl.
-    "runtime-vocabulary/legacy-bridge",
-]
 
 [dependencies]
-runtime-core = { workspace = true }
+runtime-shared = { workspace = true }
 runtime-layout = { workspace = true }
 inventory = "0.3"
 # Cross-Apple substrate (NSLog, scheduler, CoreText font registry,
 # color parsing). Shared with backend-ios-core; same Phase 0 lift.
 backend-apple-core = { workspace = true }
-# New-core migration crates (P4a) — only compiled under the `new-core`
-# feature; the feature-off dependency graph is unchanged.
-runtime-world = { workspace = true, optional = true }
-runtime-scene = { workspace = true, optional = true }
-runtime-vocabulary = { workspace = true, optional = true }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
 # Only used when `runtime-server` is on. Pulls tungstenite + the
 # worker-thread `RuntimeServerShell` from the shared native-shell crate
 # (also consumed by iOS, Android).

@@ -1,55 +1,20 @@
-//! Web leaf for the `maps` SDK. Registers a `MapViewProps` handler
-//! against `WebBackend` that renders an OpenStreetMap embed iframe.
+//! Web leaf for the `maps` SDK: the OpenStreetMap embed-iframe node
+//! builder the umbrella's `WebBackend`-concrete scene handler mounts.
 //!
 //! This is one per-backend leaf of the multi-crate `maps` split: it
 //! depends on `maps-core` for the shared [`MapViewProps`](maps_core::MapViewProps)
-//! type and on `backend-web` for the concrete backend it registers
-//! against. The author never names this crate — the umbrella `maps`
-//! crate re-exports this leaf's [`register`] under
-//! `[target.'cfg(target_arch = "wasm32")'.dependencies]`, so app code
-//! calls `maps::register(&mut backend)` and Cargo routes it here on
-//! web.
+//! type and nothing else. The author never names this crate — the
+//! umbrella `maps` crate pulls it in under
+//! `[target.'cfg(target_arch = "wasm32")'.dependencies]` and calls
+//! [`build_map_iframe`] from its registered handler, so app code only
+//! ever passes `maps::register` at the boot seam.
 //!
 //! Using an `<iframe>` here is a POC choice — it shows a real map
 //! with zero FFI ceremony. A production version would bind to
 //! Leaflet / MapLibre via wasm-bindgen so the map is interactive at
 //! the Rust API level (markers, animated camera moves, etc.).
-//!
-//! # Two cores, one DOM
-//!
-//! The old-core surface ([`register`] against `WebBackend`'s
-//! `ExternalRegistry` + the inventory self-registration) is gated
-//! `not(feature = "new-core")`. The iframe builder itself
-//! ([`build_map_iframe`]) is pure DOM (web-sys + maps-core only, no
-//! core types), so it is UNGATED and shared by both legs — the
-//! umbrella's new-core scene-registry handler calls it directly, which
-//! is what keeps the two cores' DOM from drifting (the svg SDK's
-//! `web_util` precedent). The `new-core` feature's only other job is
-//! enabling `backend-web/new-core` so the umbrella can name
-//! `Registry<WebBackend>`.
 
 use maps_core::MapViewProps;
-
-/// Install the MapView handler. Called once at app bootstrap:
-///
-/// ```ignore
-/// let mut backend = WebBackend::new("#app");
-/// maps::register(&mut backend);   // routes to this function on web
-/// ```
-#[cfg(not(feature = "new-core"))]
-pub fn register(backend: &mut backend_web::WebBackend) {
-    backend.register_external::<MapViewProps, _>(|props, _backend| {
-        build_map_iframe(props)
-    });
-}
-
-// Self-register at backend construction. See [[project_inventory_self_registration]].
-// Old-core only — the new core has no inventory self-registration; the
-// registry is built explicitly at boot.
-#[cfg(not(feature = "new-core"))]
-inventory::submit! {
-    backend_web::WebExternalRegistrar(register)
-}
 
 /// Build an `<iframe>` embedding OpenStreetMap centered on the
 /// requested lat/lon at the requested zoom. The bounding-box width
@@ -57,9 +22,8 @@ inventory::submit! {
 /// drive Leaflet's `setView` API directly instead of recomputing a
 /// bbox per render).
 ///
-/// `pub` and feature-ungated: this is the whole handler DOM, shared by
-/// the old-core [`register`] closure and the umbrella's new-core
-/// scene-registry handler.
+/// `pub` because this is the whole handler DOM and the umbrella's
+/// scene handler calls it directly.
 pub fn build_map_iframe(props: &std::rc::Rc<MapViewProps>) -> web_sys::Element {
     let document = web_sys::window()
         .expect("no window")

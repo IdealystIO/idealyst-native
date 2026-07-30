@@ -1,7 +1,6 @@
-//! Pure wasm32 DOM helpers shared by BOTH cores' web legs (no core
-//! types, no feature gates): intrinsic-size introspection off the
-//! mounted wrapper. Extracted from the old-core `web.rs` when the
-//! `new-core` leg landed so the two legs can't drift.
+//! Pure wasm32 DOM helpers for the web leg: intrinsic-size
+//! introspection off the mounted wrapper. Kept as its own module so the DOM introspection
+//! stays framework-free (pure `web_sys`, no scene/world types).
 
 use std::any::Any;
 use wasm_bindgen::JsCast;
@@ -9,7 +8,7 @@ use wasm_bindgen::JsCast;
 /// Walk from the type-erased backend node (a `web_sys::Node` wrapper
 /// `<div>`) to the first `<svg>` descendant and read its intrinsic
 /// size. This is the whole body of `SvgOps::intrinsic_size` on web,
-/// shared by both cores' ops impls.
+/// shared by the crate's web ops impls.
 pub(crate) fn intrinsic_size_of_node(node: &dyn Any) -> Option<(f32, f32)> {
     let wrapper = node.downcast_ref::<web_sys::Node>()?;
     let wrapper_el: &web_sys::Element = wrapper.dyn_ref::<web_sys::Element>()?;

@@ -21,9 +21,14 @@ license.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-# Only pulled for the `catalog` feature's compile-checked recipes. The core
-# capability has no framework dependency — it's platform shims.
+# Only pulled for the `reactive` / `catalog` features. The base key-value
+# capability has no framework dependency — it's platform shims — which is why
+# these are optional and why the `runtime_core` alias at the crate root is
+# `reactive`-gated (an optional-dependency gate, not a core selector).
+# `runtime-vocabulary` is direct because the recipes' `ui!` emission spells
+# absolute `::runtime_vocabulary::glue::…` paths.
 runtime-core = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
 
 # Compile-checked usage recipes for the docs/MCP catalog. Off in every
 # production build (the `recipe!` macro then expands to nothing).
@@ -31,7 +36,7 @@ runtime-core = { workspace = true, optional = true }
 # `persisted_signal` — the storage↔signal rail (hydrate + persist-on-change
 # with user-writes-win semantics). Opt-in so the base crate stays a
 # dependency-free platform shim.
-reactive = ["dep:runtime-core", "runtime-core/async-driver"]
+reactive = ["dep:runtime-core", "dep:runtime-vocabulary", "runtime-core/async-driver"]
 catalog = ["reactive", "runtime-core/catalog"]
 
 # Web (wasm): localStorage via web-sys.

@@ -24,8 +24,8 @@ the same way `idea-ui` is built.
 
 - `ui/` — composition over existing primitives. Pure Rust, every
   Backend.
-- `sdk/` — defines *new* primitives that need per-Backend impls
-  (WebView, Maps, etc.) using `Element::External`.
+- `sdk/` — defines *new* primitives that need per-backend mount
+  handlers (WebView, Maps, etc.), installed on the scene `Registry`.
 
 If you only need to compose existing primitives differently, that's
 a component crate — belongs in `ui/` (or in your own app). If you

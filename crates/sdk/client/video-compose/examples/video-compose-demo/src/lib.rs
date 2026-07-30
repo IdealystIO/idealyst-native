@@ -25,9 +25,35 @@ use video_compose::{Corner, VideoPipeline};
 static FONT: &[u8] =
     include_bytes!("../../../../../../../examples/welcome/fonts/Inter-Bold.ttf");
 
-// `camera` and `video` self-register their externals via `inventory` at backend
-// construction; the compositor owns its own GPU device. Nothing to register.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// Web registration seam — registry-CONCRETE: `video::register` takes a
+/// `Registry<WebBackend>` on wasm32. `camera` and the compositor render
+/// nothing of their own (the compositor owns its GPU device), so the two
+/// `Video` previews are the only payloads needing a handler.
+///
+/// Registration is MANDATORY: an unregistered payload panics at realize.
+#[cfg(target_arch = "wasm32")]
+pub fn register_scene_extensions(registry: &mut runtime_scene::Registry<backend_web::WebBackend>) {
+    video::register(registry);
+}
+
+/// Native registration seam. `video::register` is registry-GENERIC off web
+/// and type-dispatches ONCE at registration (macOS / iOS / Android get the
+/// real player; every other host gets the External placeholder).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
+where
+    H: runtime_vocabulary::caps::ExternalOps
+        + runtime_vocabulary::style_attach::StyleServices
+        + 'static,
+{
+    video::register(registry);
+}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
+}
 
 /// A procedurally-built watermark: a soft magenta dot with a translucent core, so
 /// the source-alpha blend (transparent PNG regions reading through) is visible on
@@ -54,8 +80,24 @@ fn make_watermark() -> ImageSource {
     ImageSource::from_rgba8(1, w, h, rgba)
 }
 
+/// Signal payload for a live stream. A `MediaStream` is an IDENTITY, not a
+/// value, and carries no `PartialEq` — but the world kernel's signals are
+/// equality-guarded and require one. This newtype supplies the semantics the
+/// demo wants: two empty slots are equal (a redundant clear stays a no-op),
+/// and any slot holding a stream is treated as distinct, so opening the camera
+/// always notifies. That is the runtime-v2 replacement for the old core's
+/// `set_always` on a payload with no `PartialEq`.
+#[derive(Clone)]
+struct StreamSlot(Option<MediaStream>);
+
+impl PartialEq for StreamSlot {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.is_none() && other.0.is_none()
+    }
+}
+
 /// A sized preview box wrapping a live-stream `Video`, filling its parent.
-fn preview(stream: Signal<Option<MediaStream>>) -> Element {
+fn preview(stream: Signal<StreamSlot>) -> Element {
     let fill = StyleRules {
         width: Some(Length::pct(100.0).into()),
         height: Some(Length::pct(100.0).into()),
@@ -67,7 +109,7 @@ fn preview(stream: Signal<Option<MediaStream>>) -> Element {
         ..Default::default()
     };
     view(vec![video::Video(video::VideoProps {
-        source: video::stream(move || stream.get()),
+        source: video::stream(move || stream.get().0),
         autoplay: true,
         ..Default::default()
     })
@@ -80,14 +122,15 @@ fn preview(stream: Signal<Option<MediaStream>>) -> Element {
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
-    let input_sig: Signal<Option<MediaStream>> = signal(None);
-    let output_sig: Signal<Option<MediaStream>> = signal(None);
+    let input_sig: Signal<StreamSlot> = signal(StreamSlot(None));
+    let output_sig: Signal<StreamSlot> = signal(StreamSlot(None));
     let status: Signal<String> = signal("Idle — press Start camera".to_string());
     let started: Signal<bool> = signal(false);
     // Reactive watermark opacity — the pipeline re-reads it every composited frame.
     let opacity: Signal<f32> = signal(1.0);
 
-    let status_text = text(move || status.get()).into_element();
+    let input_preview = preview(input_sig);
+    let output_preview = preview(output_sig);
 
     let on_start = move || {
         if started.get() {
@@ -120,9 +163,10 @@ pub fn app() -> Element {
                             s.fill(Color::new(232, 46, 150, 220));
                         })
                         .build();
-                    // `set_always`: `MediaStream` has no `PartialEq`.
-                    input_sig.set_always(Some(input));
-                    output_sig.set_always(Some(out));
+                    // `StreamSlot`'s `PartialEq` never reports a present
+                    // stream as equal, so a plain guarded `set` notifies.
+                    input_sig.set(StreamSlot(Some(input)));
+                    output_sig.set(StreamSlot(Some(out)));
                     status.set("Live — left: input (untouched) · right: composited output".to_string());
                 }
                 Err(e) => {
@@ -142,9 +186,12 @@ pub fn app() -> Element {
 
     let on_toggle = move || opacity.set(if opacity.get() > 0.5 { 0.15 } else { 1.0 });
 
-    let body: Vec<Element> = vec![
-        ui! { Typography(content = "Video compositing".to_string(), kind = idea_ui::typography_kind::H1) },
-        ui! {
+    ui! {
+        Stack(gap = StackGap::Md, padding = StackPadding::Lg) {
+            Typography(
+                content = "Video compositing".to_string(),
+                kind = idea_ui::typography_kind::H1,
+            )
             Typography(
                 content = "The camera yields an input stream; `video-compose` overlays a watermark \
                     + drawn label and emits a NEW output stream. The input is never touched — only \
@@ -152,17 +199,13 @@ pub fn app() -> Element {
                     .to_string(),
                 muted = true,
             )
-        },
-        status_text,
-        ui! { Typography(content = "Input (untouched)".to_string(), muted = true) },
-        preview(input_sig),
-        ui! { Typography(content = "Output (watermarked)".to_string(), muted = true) },
-        preview(output_sig),
-        ui! { button(label = "Start camera".to_string(), on_click = on_start) },
-        ui! { button(label = "Toggle watermark opacity".to_string(), on_click = on_toggle) },
-    ];
-
-    ui! {
-        Stack(gap = StackGap::Md, padding = StackPadding::Lg) { body }
+            text { move || status.get() }
+            Typography(content = "Input (untouched)".to_string(), muted = true)
+            input_preview
+            Typography(content = "Output (watermarked)".to_string(), muted = true)
+            output_preview
+            button(label = "Start camera".to_string(), on_click = on_start)
+            button(label = "Toggle watermark opacity".to_string(), on_click = on_toggle)
+        }
     }
 }

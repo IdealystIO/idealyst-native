@@ -1,14 +1,16 @@
 # iOS runtime-server SHELL crate.
 #
 # This is the fixed, app-agnostic staticlib the Swift glue links when
-# you run `idealyst dev --ios` (default = runtime-server). It exists
-# ABOVE `backend-ios-mobile` so it can depend on the first-party SDK
-# crates (swap/stack navigators / codeblock / table) — which themselves
-# depend on `backend-ios-mobile`, so the backend crate can't depend on
-# them (Cargo cycle). The shell bundles the SDK handlers in at build
-# time (like React Native native modules) and registers them on the RS
-# client backend via `ios_main_with_register`, so native SDK chrome
-# renders over the wire on device.
+# you run `idealyst dev --ios` (default = runtime-server).
+#
+# It used to sit above `backend-ios-mobile` so it could bundle the
+# first-party SDK crates and register their handlers on the RS client
+# backend. Runtime v2 removed that need: SDK scene handlers install on
+# the HOST's `Registry<WireRecordingBackend>` (the dev-server sidecar's
+# `register_scene_extensions_recorder` seam) and what crosses the wire is
+# already ordinary primitive commands. The SDK dependencies are gone; see
+# src/lib.rs module docs for the full rationale and the one behavior
+# delta it implies.
 #
 # It re-exports the same `#[no_mangle] ios_main` / `ios_teardown` C
 # symbols the Swift host references, so `run-ios` just repoints
@@ -27,14 +29,5 @@ license.workspace = true
 name = "backend_ios"
 crate-type = ["staticlib", "rlib"]
 
-[dependencies]
-runtime-core = { workspace = true }
-
 [target.'cfg(target_os = "ios")'.dependencies]
 backend-ios-mobile = { workspace = true, features = ["runtime-server"] }
-# First-party SDKs bundled into the RS client. These depend on
-# backend-ios-mobile; this shell sits above both so there's no cycle.
-swap-navigator = { workspace = true }
-stack-navigator = { workspace = true }
-codeblock = { workspace = true }
-table = { workspace = true }

@@ -9,7 +9,7 @@
 //! a wgpu Vulkan (or GLES, where Vulkan isn't available) surface
 //! against it, spin up the `render_wgpu::Host` + `Renderer`, mount
 //! the caller's UI, and drive per-frame paint via
-//! `runtime_core::driver::render_loop` — already installed by
+//! `runtime_shared::driver::render_loop` — already installed by
 //! `backend-android-mobile`'s Choreographer-driven raf loop.
 //!
 //! The returned [`AndroidHostHandle`] owns the wgpu objects and the
@@ -33,10 +33,13 @@
 mod android;
 
 #[cfg(target_os = "android")]
-pub use android::{mount, AndroidHostHandle, MountError};
+pub use android::{AndroidHostHandle, MountError};
 
-// idea-lite core migration: the new-core mount seam. Same handle type,
-// same wgpu path — the tree realizes into the embedding app's world
-// through `render_wgpu::newcore::start_in_world` (see `android.rs`).
-#[cfg(all(target_os = "android", feature = "new-core"))]
-pub use android::mount_newcore;
+#[cfg(target_os = "android")]
+pub use android::mount;
+
+/// Compatibility alias. This entry was `mount_newcore` while the
+/// framework carried two cores; there is one mount now and it is
+/// [`mount`]. Kept so existing call sites keep resolving.
+#[cfg(target_os = "android")]
+pub use android::mount as mount_newcore;

@@ -22,10 +22,11 @@ docs! {
            app on a specific platform's screen. The framework hands it a tree \
            of ", code("Element"), "s and a stream of updates; the backend \
            translates those into native widgets, layout, and input events."),
-        p("The ", code("Backend"), " trait is the seam. Anything that \
+        p("The backend contract — ", code("runtime_scene::Host"),
+          " plus the capability traits — is the seam. Anything that \
            implements it can run an app. This page is the map of the backends \
            Idealyst ships — what each one targets, what makes it interesting, \
-           what it can and can't do. For the trait's full surface and what \
+           what it can and can't do. For the full surface and what \
            writing one looks like, see ",
           link("Writing your own backend", to = "writing-a-backend"), "."),
     },
@@ -205,10 +206,10 @@ docs! {
 
     section(heading = "Writing your own backend") {
         p("The shipped backends cover the major platforms, but there's no \
-           reason to stop there. The ", code("Backend"), " trait is small \
-           (~30 methods), and a working backend lives in one Rust crate that \
-           depends only on ", code("runtime-core"), " and whatever native \
-           bindings it needs."),
+           reason to stop there. The structural contract is six methods, and \
+           you add capability traits only for the primitives you support — so \
+           a working backend lives in one Rust crate that depends on the \
+           runtime and whatever native bindings it needs."),
         p("Things people could plug in:"),
         list(
             ["A terminal renderer for command-line apps"],
@@ -223,10 +224,9 @@ docs! {
         ),
         p("The dedicated ",
           link("Writing your own backend", to = "writing-a-backend"),
-          " page walks through the trait's full surface, the lifecycle of a \
-           backend node, the relationship between the walker and ",
-          code("Backend"), " methods, and what gets called when. This page \
-           is intentionally just the map."),
+          " page walks through both layers, the lifecycle of a backend node, \
+           and the relationship between the mount drivers and the capability \
+           traits. This page is intentionally just the map."),
     },
 
     section(heading = "Where to read more") {

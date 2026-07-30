@@ -104,7 +104,7 @@ where
     /// loop owns the socket (`recv` needs `&mut self`). Powers [`use_socket`].
     pub fn sender(&self) -> SocketSender<Out> {
         SocketSender {
-            inner: self.inner.0.sender(),
+            inner: std::rc::Rc::new(self.inner.0.sender()),
             _marker: PhantomData,
         }
     }
@@ -199,7 +199,14 @@ fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, SocketError
 /// spawned task owns the socket for `recv`.
 #[cfg(not(feature = "server"))]
 pub struct SocketSender<Out> {
-    inner: net::WsSender,
+    // `Rc` for IDENTITY, not for sharing: `WsSender` is already a cheap
+    // cloneable handle. The world kernel bounds every `Signal<T>` on
+    // `T: PartialEq`, and a socket sender has no value equality — so the
+    // `PartialEq` below compares `Rc` pointers, i.e. "are these two
+    // handles the same connection?", which is exactly the question the
+    // guarded `set` would need to answer. (The install site uses
+    // `set_always`, so a re-install notifies regardless.)
+    inner: std::rc::Rc<net::WsSender>,
     _marker: PhantomData<fn(Out)>,
 }
 
@@ -210,6 +217,15 @@ impl<Out> Clone for SocketSender<Out> {
             inner: self.inner.clone(),
             _marker: PhantomData,
         }
+    }
+}
+
+/// Pointer identity — see the `inner` field comment. Deliberately NOT
+/// derived: `net::WsSender` has no value equality on either arm.
+#[cfg(not(feature = "server"))]
+impl<Out> PartialEq for SocketSender<Out> {
+    fn eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.inner, &other.inner)
     }
 }
 
@@ -279,7 +295,7 @@ impl<In, Out> Clone for UseSocket<In, Out> {
 impl<In, Out> Copy for UseSocket<In, Out> {}
 
 #[cfg(not(feature = "server"))]
-impl<In: Clone + 'static, Out: serde::Serialize + 'static> UseSocket<In, Out> {
+impl<In: Clone + PartialEq + 'static, Out: serde::Serialize + 'static> UseSocket<In, Out> {
     /// The latest-message signal — read it in `ui!`/`rx!` to re-render on
     /// each inbound message. `None` until the first arrives.
     pub fn incoming(&self) -> runtime_core::Signal<Option<In>> {
@@ -324,7 +340,11 @@ impl<In: Clone + 'static, Out: serde::Serialize + 'static> UseSocket<In, Out> {
 #[cfg(not(feature = "server"))]
 pub fn use_socket<In, Out>(url: impl Into<String>) -> UseSocket<In, Out>
 where
-    In: serde::de::DeserializeOwned + Clone + 'static,
+    // `PartialEq` on `In` is the world kernel's `Signal<T>` bound — every
+    // reactive slot carries it. Derive it alongside `Deserialize` on your
+    // message enum; `set_always` below still forces a notification per
+    // delivery, so two identical payloads in a row both re-render.
+    In: serde::de::DeserializeOwned + Clone + PartialEq + 'static,
     Out: serde::Serialize + 'static,
 {
     use std::cell::RefCell;
@@ -341,9 +361,20 @@ where
 
     // Teardown on unmount: the scope drop fires this, which closes the
     // socket → the recv loop's `recv()` returns `None` → the task ends.
+    //
+    // The cleanup is RETURNED FROM AN EFFECT rather than registered with a
+    // bare `on_cleanup`. `on_cleanup` requires a running effect and panics
+    // ("on_cleanup called outside an effect") anywhere else — and this hook
+    // is called from a component body, which is not an effect. The effect
+    // body reads nothing, so it runs exactly once; its returned cleanup is
+    // registered through the same mechanism `on_cleanup` uses and fires
+    // when the owning scope drops.
     {
         let coord = coord.clone();
-        runtime_core::on_cleanup(move || coord.borrow_mut().close());
+        let _ = runtime_core::effect(move || {
+            let coord = coord.clone();
+            move || coord.borrow_mut().close()
+        });
     }
 
     let url = url.into();
@@ -361,10 +392,11 @@ where
                     }
                     c.sender = Some(tx.clone());
                 }
-                // `set_always`: `SocketSender`/`In` are unbounded (no
-                // `PartialEq`), and every delivery must notify — the
-                // pre-guarded-`set` contract (each received message
-                // retriggers subscribers even if payloads compare equal).
+                // `set_always`, not `set`: every delivery must notify
+                // even when the payload compares equal to the previous
+                // one (two identical inbound messages are two events).
+                // Plain `set` is equality-guarded and would swallow the
+                // second.
                 sender.set_always(Some(tx));
                 status.set(SocketStatus::Open);
 
@@ -438,7 +470,7 @@ impl<T> Clone for UseSse<T> {
 impl<T> Copy for UseSse<T> {}
 
 #[cfg(not(feature = "server"))]
-impl<T: Clone + 'static> UseSse<T> {
+impl<T: Clone + PartialEq + 'static> UseSse<T> {
     /// The latest-event signal — read it in `ui!`/`rx!` to re-render per
     /// event. `None` until the first arrives.
     pub fn incoming(&self) -> runtime_core::Signal<Option<T>> {
@@ -471,7 +503,9 @@ impl<T: Clone + 'static> UseSse<T> {
 #[cfg(not(feature = "server"))]
 pub fn use_sse<T>(url: impl Into<String>) -> UseSse<T>
 where
-    T: serde::de::DeserializeOwned + Clone + 'static,
+    // See `use_socket` — the world kernel bounds every signal payload on
+    // `PartialEq`; `set_always` still notifies on every event.
+    T: serde::de::DeserializeOwned + Clone + PartialEq + 'static,
 {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -484,9 +518,15 @@ where
         closer: None,
     }));
 
+    // Effect-returned cleanup, not a bare `on_cleanup` — see the
+    // equivalent block in `use_socket` for why (`on_cleanup` panics
+    // outside a running effect, and this hook runs in a component body).
     {
         let coord = coord.clone();
-        runtime_core::on_cleanup(move || coord.borrow_mut().close());
+        let _ = runtime_core::effect(move || {
+            let coord = coord.clone();
+            move || coord.borrow_mut().close()
+        });
     }
 
     let url = url.into();
@@ -509,8 +549,9 @@ where
                     match res {
                         Ok(data) => {
                             if let Ok(value) = serde_json::from_str::<T>(&data) {
-                                // `set_always`: `T` is unbounded; every SSE
-                                // event must notify (see the socket comment).
+                                // `set_always`, not `set`: every SSE event
+                                // must notify even on an equal payload
+                                // (see the socket comment).
                                 incoming.set_always(Some(value));
                             }
                         }

@@ -2,9 +2,9 @@
 
 A `MapView` primitive for the idealyst framework — drop a native map
 centered on a coordinate into your UI tree. Built on the framework's
-`Element::External` extension mechanism, so it's not part of
-runtime-core: an app opts in by depending on this crate and calling
-`maps::register(&mut backend)` once at bootstrap.
+scene-registry extension mechanism, so it's not part of the runtime: an
+app opts in by depending on this crate and passing `maps::register` at
+the boot seam.
 
 This is the **canonical multi-crate split** of the third-party
 primitive pattern (contrast `webview`, which is one `cfg`-gated crate):
@@ -13,11 +13,11 @@ primitive pattern (contrast `webview`, which is one `cfg`-gated crate):
   no backend code, no FFI. Both the umbrella and the leaves depend on
   it without forming a cycle.
 - **`maps`** (this crate) — the author-facing facade: the `MapView`
-  constructor plus a `cfg`-routed `register` that re-exports exactly one
-  leaf per target.
+  constructor plus a `cfg`-routed `register` that installs exactly one
+  scene handler per target.
 - **`maps-web` / `maps-ios`** (future `maps-android`) — per-backend leaf
-  crates that do the actual FFI / native-SDK wiring against a concrete
-  backend type.
+  crates holding the actual FFI / native-SDK node builder against a
+  concrete backend type.
 
 Use this split when backends have independent maintainers or genuinely
 heavy disjoint transitive deps. Otherwise prefer the single-crate
@@ -28,8 +28,7 @@ use maps::{MapView, MapViewProps};
 
 // App bootstrap — one line per third-party SDK. Cargo routes
 // `register` to the right leaf for the build target:
-let mut backend = WebBackend::new("#app");
-maps::register(&mut backend);
+backend_web::newcore::start_in("#app", maps::register, app);
 
 // Inside a `ui!` block. `MapView` is an external primitive, so it's
 // interpolated as an expression:
@@ -53,18 +52,17 @@ leaves). The *mechanism* differs per platform:
 | --- | --- |
 | Web (wasm32) | OpenStreetMap embed `<iframe>` (POC; a production leaf would bind Leaflet/MapLibre via wasm-bindgen) |
 | iOS | native `MKMapView` via raw `msg_send`; `zoom` → camera altitude |
-| Other (Android, wgpu desktop, terminal, …) | umbrella `register` is a no-op; the framework's `External` "not supported" placeholder renders at mount |
+| Other (Android, macOS, wgpu desktop, terminal, …) | umbrella `register` installs the External-placeholder handler; the host's "not supported" box renders at mount |
 
 ## Adding a backend leaf
 
 `cargo new` a `maps-<backend>` crate that depends on `maps-core` and the
-concrete backend crate, then exposes
-`pub fn register(backend: &mut <Backend>)` calling
-`backend.register_external::<MapViewProps, _>(...)`. Add a
-`[target.'cfg(...)'.dependencies]` line in this crate's `Cargo.toml`
-and a matching `#[cfg(...)] pub use maps_<backend>::register;` in
-`src/lib.rs`. App code keeps calling `maps::register(&mut backend)`
-unchanged.
+concrete backend crate, then exposes a node builder
+`pub fn build_map_view(&Rc<MapViewProps>, &mut <Backend>) -> <Node>`.
+Add a `[target.'cfg(...)'.dependencies]` line in this crate's
+`Cargo.toml` and a matching `#[cfg(...)] pub fn register(registry: &mut
+Registry<<Backend>>)` arm in `src/lib.rs` that calls the builder then
+`finish_mount`. App code keeps passing `maps::register` unchanged.
 
 ## Platform notes
 
@@ -80,7 +78,9 @@ compiles for that target but isn't confirmed on real hardware yet. Tick each
 item as you exercise it.
 
 **Automated**
-- [ ] `cargo build -p maps --target wasm32-unknown-unknown` — web target
+- [ ] `cargo test -p maps` — the placeholder-arm op-log suite
+- [ ] `cargo check -p maps --target wasm32-unknown-unknown` — web target
+- [ ] `cargo check -p maps --target aarch64-apple-ios-sim` — iOS target
 
 **Rendering / behavior**
 - [ ] **Web** — `MapView` shows the OpenStreetMap embed `<iframe>` centered on the
@@ -90,5 +90,5 @@ item as you exercise it.
 - [ ] **iOS** — ⚠️ not yet device-confirmed. Native `MKMapView` renders centered on
   the coords with `zoom` mapped to camera altitude; native + web show the same place.
   Requires the host to link `MapKit.framework`.
-- [ ] **Android / macOS / other** — no leaf crate; verify the framework's `External`
+- [ ] **Android / macOS / other** — no leaf crate; verify the External
   "not supported" placeholder renders cleanly (no layout artifact or crash).

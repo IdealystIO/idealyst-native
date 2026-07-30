@@ -1,6 +1,6 @@
-//! Shared wasm32 helpers used by BOTH cores' web legs — pure DOM ops on
-//! the mounted `<form>`, no core types, so the two cores' imperative
-//! behavior can't drift.
+//! wasm32 helpers for the web leg — pure DOM ops on the mounted
+//! `<form>`, no core types, kept separable from the primitive's
+//! core-facing surface.
 
 use std::any::Any;
 use wasm_bindgen::JsCast;

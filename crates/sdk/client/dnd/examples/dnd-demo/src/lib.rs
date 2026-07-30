@@ -25,8 +25,8 @@ use dnd::{Activation, DragContext, Draggable, Droppable};
 use idea_ui::{install_idea_theme, light_theme};
 use runtime_core::animation::{AnimProp, AnimatedValue};
 use runtime_core::{
-    signal, text, view, AlignItems, Bound, Color, Element, FlexDirection, JustifyContent, Length,
-    Ref, Signal, StyleRules, StyleSheet, Tokenized, ViewHandle,
+    signal, text, view, AlignItems, Color, Element, FlexDirection, GlueView, JustifyContent,
+    Length, Ref, Signal, StyleRules, StyleSheet, Tokenized, ViewHandle,
 };
 use std::rc::Rc;
 
@@ -35,10 +35,26 @@ use std::rc::Rc;
 const BIN_BG: (f32, f32, f32, f32) = (0.1176, 0.1608, 0.2314, 1.0);
 const BIN_BG_OVER: (f32, f32, f32, f32) = (0.2, 0.2549, 0.3333, 1.0);
 
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+// SDK-handler registration seam, invoked by the CLI-generated wrappers
+// after `runtime_vocabulary::register_builtins`. Registry-generic over
+// the scene `Host` so ONE seam serves every backend. This app registers
+// no third-party scene handlers.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
+/// Recorder-side seam for the runtime-server sidecar
+/// (`dev_server::sidecar::run_newcore`). Gated by `sidecar` so device/web
+/// builds never pull `dev-server`.
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {}
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
+}
 
 /// The payload that travels from a chip to a bin. `Copy`, so the drag source's
 /// payload closure can hand out fresh copies cheaply.
@@ -117,7 +133,7 @@ fn chip(ctx: &DragContext<ChipData>, data: ChipData) -> Element {
 
 /// The chip's visual, as a reusable builder (shared by the source chip and its
 /// drag ghost). Returns the `view` builder so the source can chain `.on_touch`.
-fn chip_visual_builder(data: ChipData) -> Bound<ViewHandle> {
+fn chip_visual_builder(data: ChipData) -> GlueView {
     view(vec![text(data.label).with_style(chip_label_sheet()).into()]).with_style(chip_sheet(data.color))
 }
 

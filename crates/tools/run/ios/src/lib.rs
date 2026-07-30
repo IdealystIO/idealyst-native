@@ -155,10 +155,6 @@ pub struct RunOptions {
     /// without losing data; `clean` is the bigger hammer for when an
     /// install-over still resurfaces the old build.
     pub clean: bool,
-    /// Local mode: mount on the NEW core (runtime v2 — the default for
-    /// dual-core apps since the defaults flip). See
-    /// `build_ios::BuildOptions::new_core`.
-    pub new_core: bool,
 }
 
 #[derive(Debug)]
@@ -197,7 +193,6 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
                     device: false,
                     source: opts.source.clone(),
                     user_features: opts.user_features.clone(),
-                    new_core: opts.new_core,
                 },
             )?;
             let manifest_path = artifact.wrapper_dir.join("Cargo.toml");

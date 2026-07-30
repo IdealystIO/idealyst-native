@@ -374,3 +374,40 @@ mod client_mode {
         drop(sock); // Drop closes the connection — no hang, no panic.
     }
 }
+
+// ===========================================================================
+// Client-only reactive hooks: scope teardown.
+// ===========================================================================
+
+#[cfg(not(feature = "server"))]
+mod hook_teardown {
+    use super::{ClientMsg, ServerMsg};
+
+    /// Regression: `use_socket` and `use_sse` registered their unmount
+    /// teardown with a bare `on_cleanup`. `on_cleanup` requires a RUNNING
+    /// EFFECT and panics ("on_cleanup called outside an effect") anywhere
+    /// else — and both hooks are called from a component body, which is
+    /// not an effect. Every app calling either hook aborted at build.
+    /// Both now return the cleanup from a one-shot effect instead.
+    ///
+    /// Both hooks connect to loopback port 1, which refuses immediately,
+    /// so the native `spawn_async` fallback (pollster on the calling
+    /// thread) returns without blocking the test.
+    #[test]
+    fn regression_use_socket_teardown_is_not_a_bare_on_cleanup() {
+        runtime_core::__with_fresh_world(|| {
+            let h = server::use_socket::<ServerMsg, ClientMsg>("ws://127.0.0.1:1");
+            // Reading through the handle proves the signals belong to the
+            // live world (a dead-world read panics).
+            let _ = h.status();
+        });
+    }
+
+    #[test]
+    fn regression_use_sse_teardown_is_not_a_bare_on_cleanup() {
+        runtime_core::__with_fresh_world(|| {
+            let h = server::use_sse::<ServerMsg>("http://127.0.0.1:1/events");
+            let _ = h.status();
+        });
+    }
+}

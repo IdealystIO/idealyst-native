@@ -21,11 +21,11 @@
 //!
 //! Wiring these in is **not** pure-SDK work and **not** free:
 //!
-//! 1. It requires new methods on the `Backend` trait — begin a native drag
-//!    session, register a node as a native drop target with its accepted
-//!    types, read/write the platform pasteboard — implemented across all
-//!    backends. That is framework-core surface, not something this crate can
-//!    reach on its own (it depends only on `runtime-core`).
+//! 1. It requires a new per-backend capability — begin a native drag session,
+//!    register a node as a native drop target with its accepted types,
+//!    read/write the platform pasteboard — implemented across all backends.
+//!    That is framework surface, not something this crate can reach on its own
+//!    (it depends only on the portable author API).
 //! 2. The output is, by design, **not** identical across platforms: a native
 //!    drag shows the OS's drag image and follows OS conventions. That is the
 //!    opposite of the "converge in output" rule the in-app engine follows, and

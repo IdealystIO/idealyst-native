@@ -81,6 +81,9 @@ use std::rc::Rc;
 
 use runtime_shared::driver::spawn_async;
 use runtime_shared::NetworkState;
+// `AsyncStatus<E>` is pure DATA (a 3-variant enum) and is reused verbatim
+// — only the reducer's machinery around it needed a world-kernel mirror.
+pub use runtime_shared::AsyncStatus;
 use runtime_world::{collect_owned, in_effect, on_cleanup, signal, Signal};
 
 use crate::glue::Trackable;
@@ -589,5 +592,199 @@ where
         sequence: Rc::new(Cell::new(0u64)),
         live: liveness_sentinel(),
         handler: Rc::new(move |input| Box::pin(handler(input))),
+    })
+}
+
+// =============================================================================
+// async_reducer — the caller-owned-state async primitive
+// =============================================================================
+//
+// Mirror of `runtime_shared::async_reducer` on the world kernel, for the
+// same reason as `resource` / `mutation`: the shared original's status
+// signal is an old-arena `Signal`, so an aliased crate calling it on a
+// world mount would create state no world effect can subscribe to.
+//
+// Divergences from the shared original, all forced by the kernel and all
+// shared with `mutation` (see the module docs):
+//
+// - creation requires `World::enter`; lifetime is the registering scope;
+// - no `cycle(..)` wrap around the apply. On this kernel `state.update`
+//   STAGES and the flush commits, so the state+status writes coalesce
+//   into one fan-out by construction. The old wrap was also load-bearing
+//   for re-entrancy (apply writing a sibling signal while `state`'s box
+//   was moved out of the arena); staging removes that hazard entirely —
+//   there is no moved-out box to re-enter;
+// - `E: PartialEq` is additionally required, because `AsyncStatus<E>`
+//   lives in a world signal and world storage is `PartialEq`-bounded.
+//   The old core needed only `Clone` and used `set_always` throughout;
+//   the mirror keeps the always-notify contract with `set_always`, so
+//   the observable behavior is unchanged for any `E` that can satisfy
+//   the bound.
+
+/// Handle for an [`async_reducer`]. `Clone` so it can be captured into
+/// multiple event handlers; cheap (one `Rc` clone per call).
+pub struct AsyncReducer<I, E> {
+    status: Signal<AsyncStatus<E>>,
+    /// Stale-result guard: each trigger claims a number, and only the
+    /// latest applies its result. Out-of-order completions are dropped.
+    sequence: Rc<Cell<u64>>,
+    /// Scope-teardown flag consulted by in-flight completions before
+    /// they write (module docs).
+    live: Rc<Cell<bool>>,
+    /// All the work — sequence bump, status flip, perform-and-apply —
+    /// in one closure, which type-erases `R` and `S` away from the
+    /// public handle type. Exactly the old core's shape.
+    #[allow(clippy::type_complexity)]
+    run_fn: Rc<dyn Fn(I) -> Pin<Box<dyn Future<Output = Result<(), E>>>>>,
+}
+
+impl<I, E> Clone for AsyncReducer<I, E> {
+    fn clone(&self) -> Self {
+        Self {
+            status: self.status,
+            sequence: self.sequence.clone(),
+            live: self.live.clone(),
+            run_fn: self.run_fn.clone(),
+        }
+    }
+}
+
+impl<I: 'static, E: Clone + PartialEq + 'static> AsyncReducer<I, E> {
+    /// Fire the action and forget the future. Status flips to `Loading`
+    /// immediately; the result (success applied to state, error stored
+    /// in status) lands when the future settles.
+    pub fn trigger(&self, input: I) {
+        let fut = (self.run_fn)(input);
+        spawn_async(async move {
+            // The side effects already happened inside `run_fn`.
+            let _ = fut.await;
+        });
+    }
+
+    /// Fire the action and await the result inline — for callers that
+    /// navigate or commit a follow-up only on success. State and status
+    /// are updated exactly as in [`trigger`](Self::trigger).
+    pub async fn run(&self, input: I) -> Result<(), E> {
+        (self.run_fn)(input).await
+    }
+
+    /// Invalidate any in-flight trigger and clear status to `Idle`. The
+    /// caller's state signal is untouched — `reset` is status-only.
+    pub fn reset(&self) {
+        self.sequence.set(self.sequence.get().wrapping_add(1));
+        self.status.set_always(AsyncStatus::Idle);
+    }
+
+    /// The status signal. Read it from a reactive context to bind UI to
+    /// loading / error transitions.
+    pub fn status(&self) -> Signal<AsyncStatus<E>> {
+        self.status
+    }
+
+    /// Snapshot the current status — for non-reactive reads.
+    pub fn status_now(&self) -> AsyncStatus<E> {
+        self.status.get()
+    }
+
+    pub fn is_loading(&self) -> bool {
+        matches!(self.status.get(), AsyncStatus::Loading)
+    }
+
+    pub fn error(&self) -> Option<E> {
+        match self.status.get() {
+            AsyncStatus::Error(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+/// Construct an async reducer over a caller-owned `Signal<S>` — mirror
+/// of `runtime_shared::async_reducer` (see that fn's docs for the
+/// authoring contract and the design rationale). New-core specifics are
+/// in the section comment above this item.
+pub fn async_reducer<S, I, R, E, F, Fut, A>(
+    state: Signal<S>,
+    perform: F,
+    apply: A,
+) -> AsyncReducer<I, E>
+where
+    S: Clone + PartialEq + 'static,
+    I: 'static,
+    R: 'static,
+    E: Clone + PartialEq + 'static,
+    F: Fn(I) -> Fut + 'static,
+    Fut: Future<Output = Result<R, E>> + 'static,
+    A: Fn(&mut S, R) + 'static,
+{
+    anchor_to_scope(move || {
+        let status: Signal<AsyncStatus<E>> = signal(AsyncStatus::Idle);
+        let sequence = Rc::new(Cell::new(0u64));
+        let live = liveness_sentinel();
+        let perform = Rc::new(perform);
+        let apply = Rc::new(apply);
+
+        #[allow(clippy::type_complexity)]
+        let run_fn: Rc<dyn Fn(I) -> Pin<Box<dyn Future<Output = Result<(), E>>>>> = {
+            let sequence_outer = sequence.clone();
+            let live_outer = live.clone();
+            Rc::new(move |input: I| {
+                // Claim the sequence number BEFORE moving into the async
+                // block: the "this trigger is now the latest" writes must
+                // be observable by the next synchronous trigger even if
+                // the future has not been polled.
+                let my_seq = sequence_outer.get().wrapping_add(1);
+                sequence_outer.set(my_seq);
+                status.set_always(AsyncStatus::Loading);
+
+                let fut = perform(input);
+                let sequence_for_task = sequence_outer.clone();
+                let live_for_task = live_outer.clone();
+                let apply_for_task = apply.clone();
+
+                Box::pin(async move {
+                    let result = fut.await;
+
+                    // Superseded: the newer trigger owns the canonical
+                    // status. Still return the result to an inline
+                    // caller — they asked, they get it.
+                    if sequence_for_task.get() != my_seq {
+                        return result.map(|_| ());
+                    }
+                    // Owning scope tore down mid-flight. A stale-handle
+                    // write panics by kernel design, so bail (module
+                    // docs).
+                    if !live_for_task.get() {
+                        return result.map(|_| ());
+                    }
+
+                    // No `cycle(..)`: staging IS the batch here. Both
+                    // writes commit together at the host's post-dispatch
+                    // flush, one fan-out.
+                    match result {
+                        Ok(r) => {
+                            state.update(|s| {
+                                let mut next = s.clone();
+                                apply_for_task(&mut next, r);
+                                next
+                            });
+                            status.set_always(AsyncStatus::Idle);
+                            Ok(())
+                        }
+                        Err(e) => {
+                            let e_clone = e.clone();
+                            status.set_always(AsyncStatus::Error(e));
+                            Err(e_clone)
+                        }
+                    }
+                }) as Pin<Box<dyn Future<Output = Result<(), E>>>>
+            })
+        };
+
+        AsyncReducer {
+            status,
+            sequence,
+            live,
+            run_fn,
+        }
     })
 }

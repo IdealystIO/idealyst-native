@@ -3,7 +3,7 @@
 //! The non-walker half of what was historically `runtime-core`,
 //! extracted in the final phase of the idea-lite core migration so the
 //! new core (`runtime-world` / `runtime-scene` / `runtime-vocabulary` /
-//! `runtime-facade`) and the style pipeline (`css`, `runtime-layout`)
+//! `runtime-core`) and the style pipeline (`css`, `runtime-layout`)
 //! can share these modules WITHOUT depending on the old walker,
 //! `Element` wire tree, or `Backend` mega-trait.
 //!
@@ -109,11 +109,6 @@ pub mod session;
 pub mod time;
 #[doc(hidden)]
 pub mod sources;
-// With `style-dynamic` off, the live engine's registration/resolution
-// internals become unreachable — DCE drops them from the binary. The
-// items stay compiled so the public API surface is identical in every
-// configuration; silence the dead-code lint rather than cfg-ing the API.
-#[cfg_attr(not(feature = "style-dynamic"), allow(dead_code))]
 #[doc(hidden)]
 pub mod style;
 pub mod styled_text;

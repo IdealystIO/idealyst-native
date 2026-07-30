@@ -1,4 +1,5 @@
-//! Smoke app for the wgpu backend's new-core boot path (P5).
+//! Smoke app for the wgpu backend's boot path
+//! (`host_winit::newcore::run` → `render_wgpu::newcore::start`).
 //!
 //! Everything here is DIRECT vocabulary-builder calls — no `ui!`, no
 //! `jsx!` — deliberately, so this crate proves the `runtime_scene`
@@ -20,14 +21,14 @@
 //!   route end-to-end on the live event loop. Prints
 //!   `[SMOKE-SELFTEST] committed=… views=…` and exits 0/1.
 //! - `NEWCORE_SMOKE_HEADLESS=<prefix>` (offscreen): renders the mounted
-//!   new-core tree on a real wgpu device (Metal on macOS) via the
+//!   mounted tree on a real wgpu device (Metal on macOS) via the
 //!   headless `Screenshotter`, presses the button through the wrapped
 //!   `on_click`, flushes, and captures before/after PNGs — pixel
 //!   evidence that the staged write committed into the rendered tree.
 
 use std::rc::Rc;
 
-use runtime_core::{ColorScheme, Length, Platform, StyleRules, Tokenized};
+use runtime_shared::{ColorScheme, Length, Platform, StyleRules, Tokenized};
 use runtime_scene::{keyed, Element};
 use runtime_vocabulary::builders::IntoSceneElement;
 use runtime_vocabulary::{button, text, toggle, view};
@@ -66,9 +67,9 @@ pub fn app() -> Element {
     // inside the build (the winit scheduler is installed before
     // `resumed` mounts).
     if std::env::var("NEWCORE_SMOKE_SELFTEST").as_deref() == Ok("1") {
-        runtime_core::scheduling::after_ms_detached(1500, move || {
+        runtime_shared::scheduling::after_ms_detached(1500, move || {
             count.set(41); // stages — the driver must commit it
-            runtime_core::scheduling::after_ms_detached(700, move || {
+            runtime_shared::scheduling::after_ms_detached(700, move || {
                 let committed = count.get() == 41;
                 let views = selftest::live_node_count();
                 println!("[SMOKE-SELFTEST] committed={committed} views={views}");
@@ -151,7 +152,7 @@ mod selftest {
 }
 
 /// The real host OS identity for `NativeSkin` (author code reading
-/// `runtime_core::platform()` takes its genuine native branch — the
+/// `runtime_shared::platform()` takes its genuine native branch — the
 /// universal-native contract). No Windows/Linux Platform variants exist
 /// yet; `Custom` self-reports there, same as the trait guidance.
 fn host_platform() -> Platform {
@@ -222,7 +223,7 @@ fn headless_capture(prefix: &str) {
     on_click();
     // The wrapped callback queued a flush microtask; the headless
     // scheduler buffers it — drain commits (same seam `start` uses).
-    runtime_core::scheduling::drain_buffered_microtasks();
+    runtime_shared::scheduling::drain_buffered_microtasks();
 
     let mut t = Vec::new();
     texts(&root, &mut t);

@@ -58,7 +58,7 @@ fn docs_section() -> Element {
         ("docs/reactivity.md", "Signals, effects, derived signals, batched writes. The reactive layer end-to-end."),
         ("docs/styling.md", "Stylesheets, variants, tokens, transitions. How the framework's styling system actually works."),
         ("docs/animation.md", "AnimatedValue<T>, spring + decay drivers, the per-frame write path. Declarative vs imperative motion."),
-        ("docs/backend.md", "The Backend trait contract \u{2014} render walker rules, per-primitive lifecycle, what a backend must guarantee."),
+        ("docs/backend.md", "The platform seam contract \u{2014} the `Host` trait, the capability traits, per-primitive lifecycle, what a backend must guarantee."),
         ("docs/fonts.md", "Typeface registration, fallback chains, per-platform font loading."),
     ];
     let mut rows: Vec<Element> = Vec::with_capacity(entries.len() * 2);
@@ -79,12 +79,12 @@ fn docs_section() -> Element {
 
 fn crate_readmes() -> Element {
     let entries: [(&str, &str); 6] = [
-        ("crates/runtime/core/README.md", "Backend trait, primitive vocabulary, render walker, reactivity internals."),
+        ("crates/runtime/core/README.md", "The author surface, and a map of which runtime crate owns what."),
         ("crates/runtime/macros/README.md", "#[component], ui!, jsx!, stylesheet! \u{2014} the author-facing macros and what they expand to."),
         ("crates/backend/web/README.md", "Scheduler / time-source bootstrap requirements, animated-value capabilities."),
         ("crates/backend/ios/mobile/README.md", "UIKit quirks the iOS backend works around (scroll bounds, intrinsic sizing, corner-radius clamping)."),
         ("crates/backend/android/mobile/README.md", "Kotlin runtime requirements, JNI integration, Android Views translation."),
-        ("crates/sdk/README.md", "How third-party SDKs (Maps, WebView, navigators) plug in via Element::External."),
+        ("crates/sdk/README.md", "How third-party SDKs (Maps, WebView, navigators) plug in via the scene registry."),
     ];
     let mut rows: Vec<Element> = Vec::with_capacity(entries.len() * 2);
     for (path, desc) in entries {

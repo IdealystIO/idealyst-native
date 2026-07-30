@@ -98,8 +98,8 @@ pub struct ToastEntry {
     pub leaving: bool,
 }
 
-/// Equality for the new core's `Signal<Vec<ToastEntry>>` (world signals
-/// carry an equality cut; `T: PartialEq` is required on both cores'
+/// Equality for `Signal<Vec<ToastEntry>>` (world signals carry an
+/// equality cut; `T: PartialEq` is required on the
 /// guarded `set`). `render` is closure identity — pointer equality is
 /// the honest comparison; `id`/`leaving` carry the queue's observable
 /// state, so a `leaving` flip or membership change always notifies.
@@ -122,31 +122,15 @@ impl Default for ToastEntry {
 }
 
 thread_local! {
-    #[cfg(not(feature = "new-core"))]
-    static QUEUE: std::cell::RefCell<Option<Signal<Vec<ToastEntry>>>> =
-        const { std::cell::RefCell::new(None) };
     static NEXT_ID: Cell<u64> = const { Cell::new(0) };
 }
 
-/// The app-lifetime toast queue, lazily created off any render scope.
+/// The toast queue, lazily created off any render scope.
 ///
-/// Storage forks per core (same reason as idea-theme's active-theme
-/// slot): old-core signals live in the thread arena forever, so a TLS
-/// handle is always valid; new-core signals are world-backed and worlds
-/// are transient (one per SSR request), so the handle lives in the
-/// WORLD's typed context and each world lazily creates its own queue.
-#[cfg(not(feature = "new-core"))]
-fn queue() -> Signal<Vec<ToastEntry>> {
-    QUEUE.with(|q| {
-        if q.borrow().is_none() {
-            let sig = unscope(|| runtime_core::signal(Vec::new()));
-            *q.borrow_mut() = Some(sig);
-        }
-        *q.borrow().as_ref().unwrap()
-    })
-}
-
-#[cfg(feature = "new-core")]
+/// Stored the same way idea-theme's active-theme slot is: signals are
+/// world-backed and worlds are transient (one per SSR request), so the
+/// handle lives in the WORLD's typed context and each world lazily
+/// creates its own queue.
 fn queue() -> Signal<Vec<ToastEntry>> {
     #[derive(Clone)]
     struct ToastQueue(Signal<Vec<ToastEntry>>);
@@ -389,12 +373,6 @@ impl Default for ToastCardProps {
 /// [`Alert`](crate::Alert) surface, or caller-supplied content) and
 /// fades/slides itself in and out via `presence`, driven by the entry's
 /// `leaving` flag.
-///
-/// **Cargo features:** requires `prim-icon` + `prim-activity` + `prim-portal` + `prim-presence` (all in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without them compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn ToastCard(props: &ToastCardProps) -> Element {
     let entry = props.entry.clone();
@@ -583,12 +561,6 @@ impl Default for ToastHostProps {
 /// root; the `push_toast*` family (from anywhere) enqueues entries that
 /// appear here as a non-modal, touch-passthrough overlay anchored per
 /// `placement`.
-///
-/// **Cargo features:** requires `prim-icon` + `prim-activity` + `prim-portal` + `prim-presence` (all in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without them compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn ToastHost(props: &ToastHostProps) -> Element {
     let q = queue();
@@ -687,41 +659,6 @@ mod tests {
             P::View { children, .. } => children,
             _ => panic!("a standard toast renders an Alert View"),
         }
-    }
-
-    /// Regression: a standard (Filled) toast must not leak an arena signal
-    /// slot. Previously each toast stored a per-entry `unscope`d
-    /// `Signal<bool>` that was never disposed (no public `Signal::dispose`
-    /// exists), so every toast shown permanently consumed one slot. The
-    /// `leaving` flag now rides as a plain `bool` inside the queue's
-    /// `Signal<Vec<_>>`.
-    ///
-    /// Old-core only: `arena_stats` counts the old reactive arena's signal
-    /// slots — the old arena isn't the allocator on the new core; world-scope
-    /// ownership covers the leak class there.
-    #[cfg(not(feature = "new-core"))]
-    #[test]
-    fn pushing_toasts_does_not_leak_signal_slots() {
-        with_test_world(|| {
-            use runtime_core::arena_stats;
-            // Materialize the one global queue signal so it's part of the
-            // baseline (it persists for the process — that's expected).
-            let _ = queue();
-            let baseline = arena_stats().signals_in_use;
-
-            // With no scheduler installed (unit test), `after_ms` runs its
-            // synchronous fallback, so each push fully cycles inline
-            // (push → begin_leaving → remove). 64 toasts come and go.
-            for i in 0..64 {
-                push_toast_with(format!("toast {i}"), ToneRef::default(), VariantRef::default());
-            }
-
-            assert_eq!(
-                arena_stats().signals_in_use,
-                baseline,
-                "toasts must not leak signal slots"
-            );
-    });
     }
 
     /// Regression: a standard (Filled) toast must render its text in the

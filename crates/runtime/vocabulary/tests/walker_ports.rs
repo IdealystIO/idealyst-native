@@ -70,10 +70,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use host_mock::Harness;
-use runtime_core::primitives::navigator::{
+use runtime_shared::primitives::navigator::{
     peek_initial_path, set_initial_path, NavCommand, Route, RouteParams,
 };
-use runtime_core::{
+use runtime_shared::{
     Color, Length, StyleApplication, StyleRules, StyleSheet, TokenEntry, TokenValue, Tokenized,
 };
 use runtime_scene::Element;

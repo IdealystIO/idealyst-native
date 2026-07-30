@@ -44,10 +44,9 @@ pub use widgets::{ActivityIndicatorOps, SliderOps, TextInputOps, ToggleOps};
 pub use wire::WireBindingOps;
 
 /// Umbrella capability: everything the full built-in vocabulary needs.
-/// `register_builtins::<B: AllCaps>()` (P2b) bounds on this; the blanket
-/// impl means any type implementing every Ops trait — notably
-/// [`LegacyBridge`](crate::bridge::LegacyBridge) around any existing
-/// `Backend` — is `AllCaps` automatically.
+/// `register_builtins::<B: AllCaps>()` bounds on this; the blanket impl
+/// means any type implementing every Ops trait is `AllCaps`
+/// automatically.
 pub trait AllCaps:
     AppEnvOps
     + LifecycleOps

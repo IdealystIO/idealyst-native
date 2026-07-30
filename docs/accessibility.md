@@ -7,9 +7,13 @@ ARIA on web, a parallel semantics tree on the wgpu/GPU backend, no-op on
 Roku.
 
 This page is the author-facing guide: what you get for free, the data
-model, and how to override it. For the per-platform mapping tables, the
-Backend-trait surface, and the design rationale, see
-[`accessibility-design.md`](./accessibility-design.md).
+model, and how to override it. For the per-platform mapping tables and
+the design rationale, see
+[`accessibility-design.md`](./accessibility-design.md) — note that its
+implementation plan predates runtime v2 and describes the old
+`Backend`-trait surface; the capability that carries a11y today is
+`runtime_vocabulary::caps::A11yOps` (`update_accessibility`,
+`announce_for_accessibility`, `dump_accessibility_tree`).
 
 > **Status.** Shipped end-to-end. Every primitive carries an
 > `AccessibilityProps`, every native backend applies it, and the
@@ -21,8 +25,8 @@ Backend-trait surface, and the design rationale, see
 
 ## Accessible by default
 
-Every primitive ships a default semantic role: `Button` → button,
-`Text` → text, `Image` → image, `Slider` → slider, and so on
+Every primitive ships a default semantic role: `button` → button,
+`text` → text, `image` → image, `slider` → slider, and so on
 (`runtime_core::accessibility::default_role`). For standard controls,
 the platform derives the spoken label from the control's visible content
 — a button announces its title, a text node announces its string, an
@@ -197,20 +201,31 @@ ui! {
 }
 ```
 
-The `LazyBuilder` container exposes the same setters (plus its original
-`with_accessibility(props)`).
+The `lazy` container's builder takes the whole-struct form only
+(`with_accessibility(props)` —
+`crates/runtime/vocabulary/src/glue_lazy.rs`); the granular `a11y_*`
+setters are generated for the leaf primitive builders.
 
 ### Announcements — `announce`
 
 For transient feedback with no focus target ("Saved", "Form submitted"),
-call `runtime_core::announce` from any event handler or effect — no
-`Backend` reference needed:
+`announce(msg, priority)` routes a message to the host's announcer from
+any event handler or effect — it reads a thread-local installed at boot,
+so it needs no backend reference and no ambient world:
 
 ```rust
-use runtime_core::{announce, LiveRegionPriority};
-
 announce("Saved", LiveRegionPriority::Polite);
 ```
+
+The function lives in the shared substrate
+(`crates/runtime/shared/src/host.rs::announce`). It is **not currently
+re-exported on the `runtime_core::` author path**:
+`runtime_vocabulary::glue` re-exports its neighbours (`platform`,
+`Platform`, `ColorScheme`) from the same group but not `announce` (nor
+`color_scheme`, `open_url`, `set_fullscreen`), so
+`use runtime_core::announce;` does not resolve. Reaching it today means
+depending on `runtime-shared` directly. The fix belongs in glue's host
+re-export block.
 
 It routes to the active backend's announcer (web `aria-live`, iOS/macOS
 AX post, Android `announceForAccessibility`, GPU pending-announcement
@@ -238,7 +253,8 @@ The exact attribute-by-attribute tables live in
 ## See also
 
 - [`accessibility-design.md`](./accessibility-design.md) — internals:
-  the `Role`/trait mapping tables, Backend-trait signatures, the
-  GPU-backend semantics tree, and open design questions.
+  the `Role`/trait mapping tables, the GPU-backend semantics tree, and
+  open design questions. Its trait signatures and phase plan describe
+  the pre-runtime-v2 `Backend` trait.
 - The **Accessibility** track in the tutorial app — the same material,
   hands-on.

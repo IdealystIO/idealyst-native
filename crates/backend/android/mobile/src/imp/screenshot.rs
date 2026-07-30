@@ -23,7 +23,7 @@
 
 use jni::objects::{GlobalRef, JByteArray, JObject, JValue};
 use jni::JNIEnv;
-use runtime_core::Screenshot;
+use runtime_shared::Screenshot;
 
 fn jni_err(e: jni::errors::Error) -> String {
     format!("android screenshot JNI error: {e}")

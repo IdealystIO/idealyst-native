@@ -4,29 +4,24 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# P1 exit-gate harness for the idea-lite core migration: a recording
-# Backend + scenario suite that pins the EXACT structural-op sequences
-# the current walker emits (see README.md). The future `runtime-scene`
-# core must reproduce these golden files on the same scenarios.
+# Golden-record harness: a recording `runtime_scene::Host` + scenario
+# suite that pins the EXACT structural-op and full-op sequences the
+# runtime emits (see README.md). The goldens were frozen from the
+# pre-runtime-v2 walker before it was deleted and are frozen testimony —
+# they cannot be regenerated from it.
 #
 # Dev/test utility crate — nothing shipped depends on it.
 
 [dependencies]
-runtime-core = { workspace = true }
-# The new-core harness mode: the same scenarios re-targeted at the P1
-# scene core, checked against the SAME goldens (modulo the README's
-# sanctioned divergences).
+# The shared vocabulary of prop/style/handler types the harness and the
+# caps traits speak.
+runtime-shared = { workspace = true }
+# The scene core the harness realizes against, checked against the
+# frozen goldens (modulo the README's sanctioned divergences).
 runtime-scene = { workspace = true }
 runtime-world = { workspace = true }
-# P2b full-op gate: the built-in vocabulary's handlers mounted through
-# LegacyBridge<FullRecorder>, compared against the old walker on the
-# same goldens.
-runtime-vocabulary = { workspace = true, features = ["legacy-bridge"] }
-# GfxSim's dummy surface provider (graphics lifecycle goldens) — same
-# version runtime-core builds its GraphicsSurface contract against.
+# The built-in vocabulary's handlers, mounted directly on `FullRecorder`
+# (which implements `Host` + all 30 caps traits itself).
+runtime-vocabulary = { workspace = true }
+# GfxSim's dummy surface provider (graphics lifecycle goldens).
 raw-window-handle = "0.6"
-# Navigator parity (old side): the outlet-model swap/stack SDK handlers,
-# registered on the FullRecorder via `register_generic` so the walker's
-# navigator path drives the REAL backend-neutral handlers.
-swap-navigator = { workspace = true }
-stack-navigator = { workspace = true }

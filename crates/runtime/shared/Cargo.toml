@@ -3,7 +3,7 @@
 #
 # Extracted in the final phase of the idea-lite core migration so the
 # NEW core (runtime-world / runtime-scene / runtime-vocabulary /
-# runtime-facade) and the style pipeline (crates/css, runtime-layout)
+# runtime-core) and the style pipeline (crates/css, runtime-layout)
 # can depend on the shared type/util modules WITHOUT pulling the old
 # walker / `Element` / `Backend` machinery. `runtime-core` depends on
 # this crate and re-exports everything at its old paths, so every
@@ -39,16 +39,25 @@ description = "Idealyst shared runtime substrate: style engine, assets, animatio
 # Feature set mirrors the runtime-core gates that used to compile these
 # modules; runtime-core forwards each of its same-named features here so
 # the old single-crate feature surface keeps working unchanged.
-default = ["style-dynamic"]
+default = []
 
-# The runtime style engine (see runtime-core's Cargo.toml for the full
-# rationale). Gates the live registration/resolution internals; the
-# data model stays compiled either way.
-style-dynamic = []
+# NOTE: `style-dynamic` was REMOVED (runtime v2). It was the last
+# remnant of the bundle-size gating model (`prim-*` + `style-dynamic`)
+# that stage 2 of the deletion removed by decision, and it had already
+# stopped removing anything: this crate contained ZERO
+# `cfg(feature = "style-dynamic")` blocks (only a dead-code `allow`),
+# the surviving style engine in `runtime-vocabulary/src/style_attach.rs`
+# matches all six `StyleProp` arms unconditionally, and backend-web had
+# already dropped its forward — so the app-side instruction
+# ("`default-features = false` on BOTH runtime-core and your backend
+# crate") was an unknown-feature error. Feature unification made it
+# unturnoffable in practice anyway: the workspace dep spec for this
+# crate does not set `default-features = false`, so any graph containing
+# the vocabulary force-enabled it. See docs/styling.md.
 
 # Premint style-dump registry (`premint` module): only the CLI's
 # ephemeral dump build enables it.
-style-dump = ["style-dynamic", "dep:linkme"]
+style-dump = ["dep:linkme"]
 
 # Phase counters + component timing log (`debug` module). Off by
 # default; zero code when off (a no-op shim keeps macro-emitted calls

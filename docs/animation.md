@@ -4,7 +4,7 @@ The framework's animation system is a value-handle + animator + clock
 trio that drives per-frame updates from a single platform-agnostic
 core. It runs on the UI thread, ticks only when work is in flight,
 and dispatches finished values to the backend via the
-`Backend::set_animated_*` family.
+`AnimationOps::set_animated_*` capability pair.
 
 It's distinct from — and complementary to — the style-level
 [`Transition`](styling.md) system. Transitions are declarative ("when
@@ -15,7 +15,9 @@ hover/focus chrome. Use the animation system for gestures, springs,
 custom motion, and anything that needs interruption with velocity
 preservation.
 
-Implementation: [`runtime_core::animation`](../crates/framework/core/src/animation/).
+Implementation: [`runtime_core::animation`](../crates/runtime/shared/src/animation/)
+(the shared substrate), with the world-aware `bind*` wrapper in
+[`runtime_vocabulary::glue::animation`](../crates/runtime/vocabulary/src/glue.rs).
 
 ---
 
@@ -152,7 +154,7 @@ is that a listener can't invoke *itself* recursively.
 ### `AnimationClock`
 
 Thread-local registry of live tick closures, in
-[`animation::clock`](../crates/framework/core/src/animation/clock.rs).
+[`animation::clock`](../crates/runtime/shared/src/animation/clock.rs).
 Each `AnimatedValue` registers a tick closure on `animate(...)`; the
 clock installs a single `Scheduler::raf_loop` and walks the closures
 once per frame, unregistering each when its animator reports
@@ -302,7 +304,7 @@ pub enum Easing {
 
 Same vocabulary as the style-level transition system — same
 file, in fact. The cubic-Bézier solver
-([`animation::curve`](../crates/framework/core/src/animation/curve.rs))
+([`animation::curve`](../crates/runtime/shared/src/animation/curve.rs))
 is the canonical UI-grade Newton-Raphson approximation, hoisted
 out of the wgpu renderer so every backend and the style system
 agree on what `Easing::Ease` actually looks like.
@@ -344,7 +346,7 @@ but keep momentum alive for the eventual `animate(...)` call.
 ### `AnimProp`
 
 The vocabulary of animatable properties, in
-[`animation::prop`](../crates/framework/core/src/animation/prop.rs):
+[`animation::prop`](../crates/runtime/shared/src/animation/prop.rs):
 
 ```rust
 pub enum AnimProp {
@@ -361,11 +363,11 @@ pub enum AnimProp {
 ```
 
 Split into scalar and color families; `is_scalar()` / `is_color()`
-test which `Backend::set_animated_*` method receives the value.
+test which `AnimationOps::set_animated_*` method receives the value.
 Mis-routing (sending a color prop through the f32 path) is a
 silent no-op — author bug, not a runtime crash.
 
-### `Backend` trait methods
+### The `AnimationOps` capability
 
 ```rust
 fn set_animated_f32(
@@ -414,7 +416,7 @@ registry.
 
 Off-thread animation comes for free from the platform compositors
 (CSS transitions, Core Animation render server, Android
-RenderThread) — and the `Backend::set_animated_*` design leaves
+RenderThread) — and the `AnimationOps::set_animated_*` design leaves
 room for backends to delegate to those paths when the animation
 is non-interruptible. Today no backend does this; the simplest
 path was per-frame writes from the framework clock to native
@@ -427,15 +429,36 @@ release.
 
 ---
 
+## `bind*` and subscription lifetime
+
+`AnimatedValue::bind(ref, prop)` / `bind_color` / `bind_text_color` /
+`bind_gradient_stop` are the ergonomic form of the `subscribe_and_apply`
+plumbing above: they resolve the handle behind a `Ref<H>` and write the
+value through `AnimationOps` every frame.
+
+The subscription's lifetime is anchored to the **component scope**. The
+`animated!` macro and `runtime_core::animation::AnimatedValue` resolve to
+the vocabulary's wrapper (`runtime_vocabulary::glue::animation`), whose
+`bind*` keeps the per-frame subscription alive through a world effect
+collected into the surrounding component scope — so the subscription dies
+exactly at unrealize, and a recycled `Ref` can't be written by a stale
+binding. The raw substrate type's `bind*` anchored through the old core's
+scope machinery, which no longer exists; the wrapper is what restores the
+"subscription dies with the component" contract. The failure mode it
+fixes is visible: a bound value would tick while nobody wrote the
+property, so a bound thumb/height/opacity never moved.
+
+---
+
 ## What's intentionally not in core
 
 - **Per-primitive builder methods** (`view().opacity_animated(&v)`).
-  These would touch the primitive enum and the walker. Best built
+  These would widen every primitive payload and its handler. Best built
   as a peripheral library above core.
-- **Automatic walker subscription lifetime**. Today the
-  `Subscription` returned by `subscribe` / `subscribe_and_apply`
-  is owned by the caller. A walker-integrated wrapper would tie it
-  to the scope's lifetime.
+- **Automatic subscription lifetime for the raw API.** The
+  `Subscription` returned by `subscribe` / `subscribe_and_apply` is
+  owned by the caller. The `bind*` family (below) is the wrapper that
+  ties it to the component scope; a bare `subscribe` does not.
 - **Reanimated-style native-resident shared values** (the design
   in [`motion-value-plan.md`](./motion-value-plan.md)). That's a
   more ambitious tier that would skip the per-frame Rust→backend
@@ -449,16 +472,16 @@ release.
 
 | File | Contents |
 | --- | --- |
-| [`animation/animatable.rs`](../crates/framework/core/src/animation/animatable.rs) | `Animatable` trait + impls for `f32`, tuples, `[f32; N]` |
-| [`animation/curve.rs`](../crates/framework/core/src/animation/curve.rs) | `apply_easing` + cubic-Bézier Newton-Raphson solver |
-| [`animation/animator.rs`](../crates/framework/core/src/animation/animator.rs) | `Animator` trait, `AnimatorFactory` trait, `Sample`, `MAX_FRAME_DT` |
-| [`animation/tween.rs`](../crates/framework/core/src/animation/tween.rs) | `TweenTo` / `Tween` |
-| [`animation/spring.rs`](../crates/framework/core/src/animation/spring.rs) | `SpringTo` / `Spring`, default constants |
-| [`animation/decay.rs`](../crates/framework/core/src/animation/decay.rs) | `DecayFrom` / `Decay` |
-| [`animation/combinators.rs`](../crates/framework/core/src/animation/combinators.rs) | `Wait`, `SnapTo`, `ErasedFactory`, `stagger` |
-| [`animation/sequence.rs`](../crates/framework/core/src/animation/sequence.rs) | `SequenceFactory.then(...)` |
-| [`animation/repeat.rs`](../crates/framework/core/src/animation/repeat.rs) | `LoopFactory` + `Repeat` enum |
-| [`animation/keyframes.rs`](../crates/framework/core/src/animation/keyframes.rs) | `KeyframesTo.stop(offset, value)` |
-| [`animation/prop.rs`](../crates/framework/core/src/animation/prop.rs) | `AnimProp` enum + family helpers |
-| [`animation/clock.rs`](../crates/framework/core/src/animation/clock.rs) | Per-thread tick registry + `tick_for_test` |
-| [`animation/value.rs`](../crates/framework/core/src/animation/value.rs) | `AnimatedValue<T>` + `Subscription<T>` |
+| [`animation/animatable.rs`](../crates/runtime/shared/src/animation/animatable.rs) | `Animatable` trait + impls for `f32`, tuples, `[f32; N]` |
+| [`animation/curve.rs`](../crates/runtime/shared/src/animation/curve.rs) | `apply_easing` + cubic-Bézier Newton-Raphson solver |
+| [`animation/animator.rs`](../crates/runtime/shared/src/animation/animator.rs) | `Animator` trait, `AnimatorFactory` trait, `Sample`, `MAX_FRAME_DT` |
+| [`animation/tween.rs`](../crates/runtime/shared/src/animation/tween.rs) | `TweenTo` / `Tween` |
+| [`animation/spring.rs`](../crates/runtime/shared/src/animation/spring.rs) | `SpringTo` / `Spring`, default constants |
+| [`animation/decay.rs`](../crates/runtime/shared/src/animation/decay.rs) | `DecayFrom` / `Decay` |
+| [`animation/combinators.rs`](../crates/runtime/shared/src/animation/combinators.rs) | `Wait`, `SnapTo`, `ErasedFactory`, `stagger` |
+| [`animation/sequence.rs`](../crates/runtime/shared/src/animation/sequence.rs) | `SequenceFactory.then(...)` |
+| [`animation/repeat.rs`](../crates/runtime/shared/src/animation/repeat.rs) | `LoopFactory` + `Repeat` enum |
+| [`animation/keyframes.rs`](../crates/runtime/shared/src/animation/keyframes.rs) | `KeyframesTo.stop(offset, value)` |
+| [`animation/prop.rs`](../crates/runtime/shared/src/animation/prop.rs) | `AnimProp` enum + family helpers |
+| [`animation/clock.rs`](../crates/runtime/shared/src/animation/clock.rs) | Per-thread tick registry + `tick_for_test` |
+| [`animation/value.rs`](../crates/runtime/shared/src/animation/value.rs) | `AnimatedValue<T>` + `Subscription<T>` |

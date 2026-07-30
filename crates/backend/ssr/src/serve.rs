@@ -1,9 +1,8 @@
 //! Minimal blocking HTTP server for the SSR backend (feature `serve`).
 //!
 //! Each navigation request renders the matching route to HTML via
-//! [`render_path_with`](crate::render_path_with) — on a fresh thread,
-//! because the reactive arena is thread-local and each render needs
-//! clean state. Asset requests (the built wasm bundle, fonts, …) are
+//! [`newcore::render_path_with`](crate::newcore::render_path_with) — on a
+//! fresh thread. Asset requests (the built wasm bundle, fonts, …) are
 //! served from `static_dir`. Sync, single-connection accept loop —
 //! intentionally minimal, for dev / preview, not production.
 //!
@@ -12,8 +11,6 @@
 //! the point of SSR. The served page then boots the real WebBackend
 //! bundle, which replaces the DOM.
 
-use crate::{render_document, render_path_with, SsrBackend};
-use runtime_core::Element;
 use std::path::{Path, PathBuf};
 use tiny_http::{Header, Response, Server};
 
@@ -69,21 +66,6 @@ pub fn resolve_bundle_module(static_dir: &Path, lib_name: &str) -> Option<String
     None
 }
 
-/// Serve `app` over HTTP at `addr` (e.g. `"127.0.0.1:8080"`). Blocks
-/// forever; stop with Ctrl-C. `register` installs navigator chrome
-/// handlers per render (e.g. `|b| drawer_navigator::chrome::register(b)`).
-pub fn serve<A, R>(addr: &str, config: ServeConfig, register: R, app: A) -> std::io::Result<()>
-where
-    A: Fn() -> Element + Send + Sync + Clone + 'static,
-    R: Fn(&mut SsrBackend) + Send + Sync + Clone + 'static,
-{
-    let bundle = config.bundle_module.clone();
-    let extra_head = config.extra_head.clone();
-    serve_loop(addr, config, move |path| {
-        let page = render_path_with(path, register.clone(), app.clone());
-        render_document(&page, bundle.as_deref(), extra_head.as_deref())
-    })
-}
 
 /// The HTTP mechanism both cores' `serve` entries share: accept loop,
 /// static-asset resolution under `static_dir`, and a fresh-thread

@@ -18,10 +18,12 @@ a normal static file via `@font-face { src: url(...) }` — keeping the
 fonts out of the wasm download. See `runtime_core::assets` for the
 `embed-font-bytes` / `__face_source!` mechanism.
 
-Implementation: `runtime_core::assets` (declaration macros + types),
-`runtime_core::style::ensure_typefaces_registered_with` (registration
-walk), `Backend::register_asset` + `Backend::register_typeface`
-(per-platform receivers).
+Implementation: `runtime_core::assets` (declaration macros + types,
+`crates/runtime/shared/src/assets/`),
+`ensure_typefaces_registered_with` (registration walk over
+`StyleRules`, `crates/runtime/shared/src/style.rs`), and
+`caps::AssetOps::register_asset` + `register_typeface` (the
+per-platform receivers).
 
 ---
 
@@ -116,7 +118,7 @@ served from the bundle; on native its bytes are embedded.
 There is no separate "register" call. The framework's
 `ensure_typefaces_registered_with` walks every `StyleRules` it sees,
 finds any `FontFamily::Typeface(tf)`, and calls
-`Backend::register_asset` + `Backend::register_typeface` once per
+`AssetOps::register_asset` + `AssetOps::register_typeface` once per
 unique `TypefaceId`. So the first style-apply that mentions the
 typeface registers it; later applies short-circuit through a
 thread-local seen-set.

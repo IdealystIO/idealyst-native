@@ -12,7 +12,14 @@ crate-type = ["rlib"]
 # Self-contained: mail components build their `StyleRules` directly (no theme
 # lifecycle), so they render identically whether or not a theme is installed —
 # which matters for a headless email render.
+#
+# The framework author surface is reached under the historical `runtime_core`
+# name via the crate-root `extern crate runtime_core as runtime_core;` alias
+# in lib.rs.
 runtime-core = { workspace = true }
+# The `ui!` / `#[component]` emission spells absolute
+# `::runtime_vocabulary::glue::…` paths.
+runtime-vocabulary = { workspace = true }
 
 [dev-dependencies]
 # The email backend, to render mail components end-to-end in tests.

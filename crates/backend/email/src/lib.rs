@@ -1,12 +1,12 @@
 //! Email-rendering backend — "SSG for emails."
 //!
-//! [`EmailBackend`] is a headless [`Backend`](runtime_core::Backend), like
+//! [`EmailBackend`] is a headless renderer like
 //! [`backend-ssr`](https://docs.rs/backend-ssr), but tuned for email clients
-//! instead of the browser. It walks the SAME author `Element` tree every
-//! other backend renders — once, synchronously, on the host (native) target
-//! — and emits a self-contained, email-safe HTML document from a set of
-//! input props. No WASM, no browser, no layout engine: email clients do their
-//! own layout from the HTML + inline CSS.
+//! instead of the browser. It realizes the SAME author scene every other
+//! backend renders — once, synchronously, on the host (native) target — and
+//! emits a self-contained, email-safe HTML document. No WASM, no browser, no
+//! layout engine: email clients do their own layout from the HTML + inline
+//! CSS.
 //!
 //! # Why a separate backend (vs. reusing SSR)
 //!
@@ -20,7 +20,8 @@
 //!   **inline** on its node (`style="…"`), never a class.
 //! * **No CSS custom properties.** So theme tokens are **resolved to literal
 //!   values** at render time (via [`css::rules_to_css_resolved`]) against the
-//!   theme installed through [`Backend::install_tokens`] — never `var(--…)`.
+//!   theme installed through `caps::StyleOps::install_tokens` — never
+//!   `var(--…)`.
 //! * **No interaction, unreliable `@media`.** So state / breakpoint /
 //!   container overlays are **dropped**; only the resolved base style emits.
 //!
@@ -32,27 +33,24 @@
 //! ships (and that's on them in Outlook). Email-safe, bulletproof table
 //! layout belongs in a component layer (`idea-ui-mail`) — the same way the
 //! web backend stays layout-neutral and idea-ui owns the opinions.
-
-//! # New core (`new-core` feature)
 //!
-//! The crate also carries the idea-lite (new-core) render leg:
-//! [`newcore::render_email`] / [`newcore::render_email_with`] mirror the
-//! old entries 1:1 but realize the tree on a fresh `runtime_world::World`
-//! through the vocabulary's builtin handlers, with [`EmailBackend`]
-//! implementing `runtime_scene::Host` + all 30 capability traits
-//! directly. Additive — the old-core render path is untouched with or
-//! without the feature, and `tests/newcore_golden.rs` pins the two legs
-//! to byte-identical output for the same logical template.
+//! # Rendering surface
+//!
+//! [`newcore::render_email`] / [`newcore::render_email_with`] are the
+//! entry points; the backend's capability implementation (the
+//! `runtime_scene::Host` seam plus the 30 `runtime_vocabulary::caps`
+//! traits) lives in [`newcore`]. This crate carried a second,
+//! `Element`-walking `impl runtime_core::Backend` until the old core was
+//! removed; every method body moved into the capability impls verbatim,
+//! so the emitted HTML is unchanged — pinned against the old core's
+//! frozen output by `tests/newcore_golden.rs` + `tests/goldens/`.
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::{Backend, StyleRules};
+use runtime_shared::StyleRules;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-// New-core (idea-lite) adoption: Host + the 30 capability traits on
-// `EmailBackend`, plus the one-shot-world render entries. Additive —
-// see the module docs.
-#[cfg(feature = "new-core")]
+/// `runtime_scene::Host` + the 30 capability traits on [`EmailBackend`],
+/// plus the one-shot-world render entries.
 pub mod newcore;
 
 /// A self-contained node handle — like a DOM node, not an arena index.
@@ -145,7 +143,7 @@ fn add_class(node: &NodeRef, class: &str) {
 
 /// Compose a node's inline `style` value: its primitive default (if any),
 /// then every author style with tokens resolved against `tokens`.
-fn compose_style(n: &HtmlNode, tokens: &[runtime_core::TokenEntry]) -> Option<String> {
+fn compose_style(n: &HtmlNode, tokens: &[runtime_shared::TokenEntry]) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     if let Some(d) = n.default_style {
         if !d.is_empty() {
@@ -165,7 +163,7 @@ fn compose_style(n: &HtmlNode, tokens: &[runtime_core::TokenEntry]) -> Option<St
     }
 }
 
-fn serialize(node: &NodeRef, tokens: &[runtime_core::TokenEntry], out: &mut String) {
+fn serialize(node: &NodeRef, tokens: &[runtime_shared::TokenEntry], out: &mut String) {
     let n = node.borrow();
     out.push('<');
     out.push_str(n.tag);
@@ -262,7 +260,7 @@ fn escape_attr(s: &str, out: &mut String) {
 // dropped: a static email has no animation loop.
 // ---------------------------------------------------------------------------
 mod scheduler {
-    use runtime_core::scheduling::{ScheduleHandle, Scheduler};
+    use runtime_shared::scheduling::{ScheduleHandle, Scheduler};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -293,8 +291,8 @@ mod scheduler {
     }
 
     pub(crate) fn ensure_installed() {
-        if !runtime_core::scheduling::is_scheduler_installed() {
-            runtime_core::scheduling::install_scheduler(Box::new(EmailScheduler));
+        if !runtime_shared::scheduling::is_scheduler_installed() {
+            runtime_shared::scheduling::install_scheduler(Box::new(EmailScheduler));
         }
     }
 
@@ -316,14 +314,14 @@ const LINK_RESET_STYLE: &str = "color: inherit; text-decoration: none";
 #[derive(Default)]
 pub struct EmailBackend {
     root: Option<NodeRef>,
-    metadata: runtime_core::PageMetadata,
+    metadata: runtime_shared::PageMetadata,
     /// The active theme's tokens, captured from `install_tokens` /
     /// `update_tokens`. Every node's inline CSS resolves against this at
     /// serialize time (baked as literals — email has no CSS variables).
-    tokens: Vec<runtime_core::TokenEntry>,
+    tokens: Vec<runtime_shared::TokenEntry>,
     /// Host-surface background captured from `set_app_background`, resolved
     /// and applied to the document `<body>`.
-    app_bg: Option<runtime_core::Tokenized<runtime_core::Color>>,
+    app_bg: Option<runtime_shared::Tokenized<runtime_shared::Color>>,
 }
 
 impl EmailBackend {
@@ -354,13 +352,13 @@ impl EmailBackend {
     /// was called (tokens baked to a literal — no `var(--…)`).
     fn body_bg(&self) -> Option<String> {
         self.app_bg.as_ref().map(|c| match c {
-            runtime_core::Tokenized::Literal(color) => color.0.clone(),
-            runtime_core::Tokenized::Token { name, fallback } => self
+            runtime_shared::Tokenized::Literal(color) => color.0.clone(),
+            runtime_shared::Tokenized::Token { name, fallback } => self
                 .tokens
                 .iter()
                 .find(|e| e.name == *name)
                 .and_then(|e| match &e.value {
-                    runtime_core::TokenValue::Color(c) => Some(c.0.clone()),
+                    runtime_shared::TokenValue::Color(c) => Some(c.0.clone()),
                     _ => None,
                 })
                 .unwrap_or_else(|| fallback.0.clone()),
@@ -368,403 +366,6 @@ impl EmailBackend {
     }
 }
 
-impl Backend for EmailBackend {
-    type Node = NodeRef;
-
-    fn platform(&self) -> runtime_core::Platform {
-        // Email is closest to the web surface (HTML/CSS output); author code
-        // branching on `platform()` treats it like the web target.
-        runtime_core::Platform::Web
-    }
-
-    /// Keep `Element::Lazy` at its placeholder — a static email can't paint
-    /// lazy/GPU content, and there's no client to load the chunk later.
-    fn renders_lazy_chunks(&self) -> bool {
-        false
-    }
-
-    fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
-        nref(HtmlNode::new("div"))
-    }
-
-    fn create_element(&mut self, tag: &str) -> Self::Node {
-        // Intern the structural tags an external/component might emit; unknown
-        // tags fall back to `div`. Mirrors backend-ssr's tag set.
-        let tag: &'static str = match tag {
-            "p" => "p",
-            "ul" => "ul",
-            "ol" => "ol",
-            "li" => "li",
-            "blockquote" => "blockquote",
-            "table" => "table",
-            "thead" => "thead",
-            "tbody" => "tbody",
-            "tr" => "tr",
-            "td" => "td",
-            "th" => "th",
-            "section" => "section",
-            "article" => "article",
-            "header" => "header",
-            "footer" => "footer",
-            "h1" => "h1",
-            "h2" => "h2",
-            "h3" => "h3",
-            "h4" => "h4",
-            "h5" => "h5",
-            "h6" => "h6",
-            "a" => "a",
-            "br" => "br",
-            "hr" => "hr",
-            _ => "div",
-        };
-        nref(HtmlNode::new(tag))
-    }
-
-    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
-        let mut node = HtmlNode::new("span");
-        node.text = Some(content.to_string());
-        nref(node)
-    }
-
-    fn create_button(
-        &mut self,
-        label: &str,
-        _on_click: &runtime_core::Action,
-        _leading_icon: Option<&runtime_core::primitives::icon::IconData>,
-        _trailing_icon: Option<&runtime_core::primitives::icon::IconData>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // No JS in email: a "button" is just a styled inline box. Authors who
-        // want a clickable CTA wrap a `link` (idea-ui-mail's Button does).
-        let mut node = HtmlNode::new("span");
-        node.text = Some(label.to_string());
-        nref(node)
-    }
-
-    fn create_image(
-        &mut self,
-        src: &str,
-        alt: Option<&str>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        let mut node = HtmlNode::new("img");
-        node.attrs.push(("src", src.to_string()));
-        node.attrs.push(("alt", alt.unwrap_or("").to_string()));
-        // Email images should not stretch; keep intrinsic unless styled.
-        node.attrs.push(("border", "0".to_string()));
-        nref(node)
-    }
-
-    fn create_reactive_anchor(&mut self) -> Self::Node {
-        // A reactive `when`/`switch`/`each` placeholder. `display: contents`
-        // keeps it layout-transparent (matching web/SSR) — but email clients
-        // vary on `display: contents`, so we instead emit a plain wrapper
-        // with no box of its own via zero styling; children flow inside it.
-        nref(HtmlNode::new("div"))
-    }
-
-    fn create_pressable(
-        &mut self,
-        _on_click: Rc<dyn Fn()>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // No interaction in email; a pressable is just a container.
-        nref(HtmlNode::new("div"))
-    }
-
-    fn create_icon(
-        &mut self,
-        data: &runtime_core::primitives::icon::IconData,
-        color: Option<&runtime_core::Color>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Inline SVG. Support varies across email clients (Apple Mail yes,
-        // Gmail/Outlook no) — the un-opinionated choice is to emit it and let
-        // idea-ui-mail steer authors toward hosted `<img>` icons where it
-        // matters. Same SVG shape backend-ssr emits.
-        let (vw, vh) = data.view_box;
-        let mut svg = HtmlNode::new("svg");
-        svg.attrs.push(("viewBox", format!("0 0 {} {}", vw, vh)));
-        svg.attrs.push(("xmlns", "http://www.w3.org/2000/svg".to_string()));
-        svg.attrs.push(("width", "1em".to_string()));
-        svg.attrs.push(("height", "1em".to_string()));
-        let icon_color = color
-            .map(|c| c.0.clone())
-            .unwrap_or_else(|| "currentColor".to_string());
-        if data.filled {
-            svg.attrs.push(("fill", icon_color));
-            svg.attrs.push(("stroke", "none".to_string()));
-        } else {
-            svg.attrs.push(("fill", "none".to_string()));
-            svg.attrs.push(("stroke", icon_color));
-            svg.attrs.push(("stroke-width", "2".to_string()));
-            svg.attrs.push(("stroke-linecap", "round".to_string()));
-            svg.attrs.push(("stroke-linejoin", "round".to_string()));
-        }
-        svg.default_style = Some("display:inline-block;vertical-align:middle;");
-        let fill_rule = match data.fill_rule {
-            runtime_core::primitives::icon::FillRule::NonZero => "nonzero",
-            runtime_core::primitives::icon::FillRule::EvenOdd => "evenodd",
-        };
-        for path_d in data.paths {
-            let mut path = HtmlNode::new("path");
-            path.attrs.push(("d", (*path_d).to_string()));
-            path.attrs.push(("fill-rule", fill_rule.to_string()));
-            svg.children.push(nref(path));
-        }
-        nref(svg)
-    }
-
-    fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
-        parent.borrow_mut().children.push(child);
-    }
-
-    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
-        let mut p = parent.borrow_mut();
-        let index = index.min(p.children.len());
-        p.children.insert(index, child);
-    }
-
-    fn update_text(&mut self, node: &Self::Node, content: &str) {
-        node.borrow_mut().text = Some(content.to_string());
-    }
-
-    fn clear_children(&mut self, node: &Self::Node) {
-        node.borrow_mut().children.clear();
-    }
-
-    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
-        // Store the resolved base style; flattened to inline CSS (tokens baked
-        // to literals) at serialize time. NO class, NO head stylesheet.
-        push_style_dedup(node, style);
-    }
-
-    // Email opts into the "native state" model only so the walker hands us the
-    // base + overlays in one call (`apply_styled_states`) — we keep the base
-    // and DROP the overlays. There is no `:hover`/`:active`/`:focus` in email.
-    fn handles_states_natively(&self) -> bool {
-        true
-    }
-
-    fn apply_styled_states(
-        &mut self,
-        node: &Self::Node,
-        base: &Rc<StyleRules>,
-        _overlays: &[(runtime_core::StateBits, Rc<StyleRules>)],
-    ) {
-        push_style_dedup(node, base);
-    }
-
-    fn apply_styled_variants(
-        &mut self,
-        node: &Self::Node,
-        base: &Rc<StyleRules>,
-        _overlays: &[(runtime_core::StateBits, Rc<StyleRules>)],
-        _breakpoint_overlays: &[(runtime_core::Breakpoint, Rc<StyleRules>)],
-        _container_overlays: &[(f32, Rc<StyleRules>)],
-    ) {
-        // Email has no interaction and unreliable `@media`/`@container`
-        // support — emit only the resolved base, drop every overlay.
-        push_style_dedup(node, base);
-    }
-
-    fn create_link(
-        &mut self,
-        config: runtime_core::primitives::link::LinkConfig,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        let mut node = HtmlNode::new("a");
-        node.default_style = Some(LINK_RESET_STYLE);
-        node.attrs.push(("href", config.url.clone()));
-        if config.external {
-            node.attrs.push(("target", "_blank".to_string()));
-            node.attrs.push(("rel", "noopener noreferrer".to_string()));
-        }
-        nref(node)
-    }
-
-    fn create_text_input(
-        &mut self,
-        initial_value: &str,
-        placeholder: Option<&str>,
-        _on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        _on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
-        _secure: bool,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Forms don't work in email; degrade to the current value as text.
-        let mut node = HtmlNode::new("span");
-        let shown = if initial_value.is_empty() {
-            placeholder.unwrap_or("")
-        } else {
-            initial_value
-        };
-        node.text = Some(shown.to_string());
-        nref(node)
-    }
-
-    fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
-        node.borrow_mut().text = Some(value.to_string());
-    }
-
-    fn create_text_area(
-        &mut self,
-        initial_value: &str,
-        placeholder: Option<&str>,
-        _wrap: bool,
-        _min_rows: Option<u32>,
-        _max_rows: Option<u32>,
-        _on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        let mut node = HtmlNode::new("div");
-        let shown = if initial_value.is_empty() {
-            placeholder.unwrap_or("")
-        } else {
-            initial_value
-        };
-        node.text = Some(shown.to_string());
-        nref(node)
-    }
-
-    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
-        node.borrow_mut().text = Some(value.to_string());
-    }
-
-    fn create_toggle(
-        &mut self,
-        initial_value: bool,
-        _on_change: Rc<dyn Fn(bool)>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Render a static indicator glyph — checkboxes don't toggle in email.
-        let mut node = HtmlNode::new("span");
-        node.text = Some(if initial_value { "\u{2611}" } else { "\u{2610}" }.to_string());
-        nref(node)
-    }
-
-    fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
-        node.borrow_mut().text =
-            Some(if value { "\u{2611}" } else { "\u{2610}" }.to_string());
-    }
-
-    fn create_scroll_view(
-        &mut self,
-        _horizontal: bool,
-        _on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // No scroll in email; a scroll_view is just a container.
-        nref(HtmlNode::new("div"))
-    }
-
-    fn create_slider(
-        &mut self,
-        _initial_value: f32,
-        _min: f32,
-        _max: f32,
-        _step: Option<f32>,
-        _on_change: Rc<dyn Fn(f32)>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        nref(HtmlNode::new("div"))
-    }
-
-    fn create_activity_indicator(
-        &mut self,
-        _size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
-        _color: Option<&runtime_core::Color>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        nref(HtmlNode::new("div"))
-    }
-
-    fn create_virtualizer(
-        &mut self,
-        _callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
-        _overscan: f32,
-        _layout: runtime_core::VirtualLayout,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Virtualized lists have no meaning in a static email; emit the
-        // container only (authors render real rows with `for` for email).
-        nref(HtmlNode::new("div"))
-    }
-
-    fn create_graphics(
-        &mut self,
-        _on_ready: runtime_core::primitives::graphics::OnReady,
-        _on_resize: runtime_core::primitives::graphics::OnResize,
-        _on_lost: runtime_core::primitives::graphics::OnLost,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // GPU canvas can't render into an email; emit an empty box.
-        nref(HtmlNode::new("div"))
-    }
-
-    fn create_external(
-        &mut self,
-        _type_id: std::any::TypeId,
-        _type_name: &'static str,
-        _payload: &Rc<dyn std::any::Any>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Third-party externals aren't email-rendered (no registry); emit an
-        // empty host box. An email-specific external registry could be wired
-        // later if a use case appears.
-        nref(HtmlNode::new("div"))
-    }
-
-    fn create_portal(
-        &mut self,
-        _target: runtime_core::primitives::portal::PortalTarget,
-        _on_dismiss: Option<Rc<dyn Fn()>>,
-        _trap_focus: bool,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        nref(HtmlNode::new("div"))
-    }
-
-    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
-        set_attr(node, "src", src.to_string());
-    }
-
-    fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-        node.borrow_mut().text = Some(label.to_string());
-    }
-
-    fn set_page_metadata(&mut self, meta: &runtime_core::PageMetadata) {
-        self.metadata = meta.clone();
-    }
-
-    fn attach_html_class(&self, node: &Self::Node, class: &str) {
-        add_class(node, class);
-    }
-
-    fn set_app_background(&mut self, color: &runtime_core::Tokenized<runtime_core::Color>) {
-        self.app_bg = Some(color.clone());
-    }
-
-    fn install_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
-        self.tokens = tokens.to_vec();
-    }
-
-    fn update_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
-        for incoming in tokens {
-            if let Some(slot) = self.tokens.iter_mut().find(|t| t.name == incoming.name) {
-                slot.value = incoming.value.clone();
-            } else {
-                self.tokens.push(incoming.clone());
-            }
-        }
-    }
-
-    fn finish(&mut self, root: Self::Node) {
-        self.root = Some(root);
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Public render API
@@ -781,7 +382,7 @@ pub struct RenderedEmail {
     /// Best-effort plaintext extracted from the tree — the `text/plain` part.
     pub text: String,
     /// The subject, if the template declared one via
-    /// [`runtime_core::set_page_metadata`] (title). `None` otherwise — the
+    /// [`runtime_shared::set_page_metadata`] (title). `None` otherwise — the
     /// caller supplies the subject when sending.
     pub subject: Option<String>,
 }
@@ -789,47 +390,7 @@ pub struct RenderedEmail {
 /// Viewport email templates are rendered at. Email is a narrow, fixed-width
 /// medium; responsive author code that reads `viewport_size()` gets the
 /// mobile-ish layout, which is the right default for a 600px email column.
-const EMAIL_VIEWPORT: runtime_core::ViewportSize = runtime_core::ViewportSize::new(600.0, 800.0);
-
-/// Render an idealyst template to an email. Runs the author closure once on
-/// the host (native) target against a fresh [`EmailBackend`] and returns the
-/// self-contained HTML document (styles inline, tokens resolved) plus a
-/// plaintext alternative.
-pub fn render_email<F>(app: F) -> RenderedEmail
-where
-    F: FnOnce() -> runtime_core::Element,
-{
-    render_email_with(|_| {}, app)
-}
-
-/// Like [`render_email`] but runs `setup` against the backend before the
-/// build — the hook to install theme tokens / app background for the render
-/// (e.g. `setup(|b| my_theme::install(b))`).
-pub fn render_email_with<S, F>(setup: S, app: F) -> RenderedEmail
-where
-    S: FnOnce(&mut EmailBackend),
-    F: FnOnce() -> runtime_core::Element,
-{
-    scheduler::ensure_installed();
-    let backend = Rc::new(RefCell::new(EmailBackend::new()));
-    setup(&mut backend.borrow_mut());
-    let owner = runtime_core::mount(backend.clone(), move || {
-        runtime_core::set_viewport_size(EMAIL_VIEWPORT);
-        app()
-    });
-    // Run any deferred reactive builds now that the mount borrow is released.
-    scheduler::drain();
-    let rendered = {
-        let b = backend.borrow();
-        RenderedEmail {
-            html: email_document(&b.body_html(), b.metadata.title.as_deref(), b.body_bg()),
-            text: b.plain_text(),
-            subject: b.metadata.title.clone(),
-        }
-    };
-    drop(owner);
-    rendered
-}
+const EMAIL_VIEWPORT: runtime_shared::ViewportSize = runtime_shared::ViewportSize::new(600.0, 800.0);
 
 /// Wrap a rendered body fragment in a complete, email-safe HTML document.
 ///
@@ -880,25 +441,40 @@ fn email_document(body: &str, title: Option<&str>, body_bg: Option<String>) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::accessibility::AccessibilityProps;
-    use runtime_core::{render, text, view, Color, Length, StyleRules, TokenEntry, TokenValue, Tokenized};
+    use runtime_shared::accessibility::AccessibilityProps;
+    use runtime_shared::{Color, Length, StyleRules, TokenEntry, TokenValue, Tokenized};
+    // The mechanism now lives on the capability traits (the `Backend`
+    // mega-trait is gone), so the unit tests call it through them.
+    use runtime_vocabulary::caps::{LifecycleOps, StyleOps, TextOps, ViewOps};
 
-    /// A `view([text])` mounted through the real walker serializes to nested
-    /// `<div><span>` markup — proving headless email rendering of the author
-    /// tree end to end.
+    /// `view { text }` realized through the real vocabulary handlers
+    /// serializes to nested `<div><span>` markup — headless email
+    /// rendering of the author tree end to end.
     #[test]
     fn view_with_text_renders_nested_html() {
-        let backend = Rc::new(RefCell::new(EmailBackend::new()));
-        let _owner = render(backend.clone(), view(vec![text("hi").into()]).into());
-        assert_eq!(backend.borrow().body_html(), "<div><span>hi</span></div>");
+        let out = newcore::render_email(|| {
+            use runtime_vocabulary::builders::{text, view};
+            view().child(text().content("hi")).build()
+        });
+        assert!(
+            out.html.contains("<div><span>hi</span></div>"),
+            "got: {}",
+            out.html
+        );
     }
 
     /// Author text is HTML-escaped so template strings can't inject markup.
     #[test]
     fn text_content_is_escaped() {
-        let backend = Rc::new(RefCell::new(EmailBackend::new()));
-        let _owner = render(backend.clone(), text("a<b>&c").into());
-        assert_eq!(backend.borrow().body_html(), "<span>a&lt;b&gt;&amp;c</span>");
+        let out = newcore::render_email(|| {
+            use runtime_vocabulary::builders::text;
+            text().content("a<b>&c").build()
+        });
+        assert!(
+            out.html.contains("<span>a&lt;b&gt;&amp;c</span>"),
+            "got: {}",
+            out.html
+        );
     }
 
     /// `apply_style` bakes the style INLINE on the node — no class, no head
@@ -957,7 +533,7 @@ mod tests {
     /// the resolved base style survives (email has no hover/media/container).
     #[test]
     fn state_and_breakpoint_overlays_are_dropped() {
-        use runtime_core::{Breakpoint, StateBits};
+        use runtime_shared::{Breakpoint, StateBits};
         let mut b = EmailBackend::new();
         let v = b.create_view(&AccessibilityProps::default());
         let mut base = StyleRules::default();
@@ -982,10 +558,10 @@ mod tests {
     }
 
     /// Regression: re-applying value-identical rules to a node (what a
-    /// reactive style re-delivery does — old-core state re-fires, new-core
-    /// theme-cohort reapply on an in-build token install) must NOT
-    /// duplicate the inline CSS. A genuinely changed style still appends
-    /// (later wins via CSS source order).
+    /// reactive style re-delivery does — the theme-cohort reapply on an
+    /// in-build token install) must NOT duplicate the inline CSS. A
+    /// genuinely changed style still appends (later wins via CSS source
+    /// order).
     #[test]
     fn reapplying_identical_style_does_not_duplicate_inline_css() {
         let mut b = EmailBackend::new();
@@ -1009,10 +585,13 @@ mod tests {
     }
 
     /// `render_email` produces a complete, self-contained document and a
-    /// plaintext alternative. The subject comes from page metadata if set.
+    /// plaintext alternative.
     #[test]
     fn render_email_wraps_full_document() {
-        let out = render_email(|| view(vec![text("Hello world").into()]).into());
+        let out = newcore::render_email(|| {
+            use runtime_vocabulary::builders::{text, view};
+            view().child(text().content("Hello world")).build()
+        });
         assert!(out.html.starts_with("<!DOCTYPE html"), "got: {}", out.html);
         assert!(out.html.contains("<meta charset=\"utf-8\"/>"));
         assert!(out.html.contains("Hello world"));
@@ -1024,7 +603,8 @@ mod tests {
     /// and (for external) `target`/`rel`.
     #[test]
     fn link_renders_anchor_with_reset() {
-        use runtime_core::primitives::link::LinkConfig;
+        use runtime_shared::primitives::link::LinkConfig;
+        use runtime_vocabulary::caps::LinkOps;
         let mut b = EmailBackend::new();
         let node = b.create_link(
             LinkConfig {
@@ -1045,9 +625,13 @@ mod tests {
     /// `set_app_background` resolves onto the document `<body>` as a literal.
     #[test]
     fn app_background_applies_to_body() {
-        let out = render_email_with(
+        use runtime_vocabulary::caps::AppEnvOps;
+        let out = newcore::render_email_with(
             |b| b.set_app_background(&Tokenized::Literal(Color("#0b1020".into()))),
-            || view(vec![text("hi").into()]).into(),
+            || {
+                use runtime_vocabulary::builders::{text, view};
+                view().child(text().content("hi")).build()
+            },
         );
         assert!(
             out.html.contains("background:#0b1020"),

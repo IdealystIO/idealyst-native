@@ -1,11 +1,11 @@
-//! Smoke app for the macOS backend's new-core boot path (P4a).
+//! Smoke app for the macOS backend's boot path
+//! (`host_appkit::newcore::run` → `backend_macos::newcore::start`).
 //!
 //! Everything here is DIRECT vocabulary-builder calls — no `ui!`, no
 //! `jsx!` — deliberately, so this crate proves the `runtime_scene`
 //! registry-dispatch render path against real AppKit independent of the
-//! parallel P3a macro-lowering work (the sanctioned deviation from
-//! CLAUDE.md §9.2: the macro can't target the new core yet, and this
-//! crate exists to gate the layer *under* the macro). The tree mirrors
+//! macro-lowering layer (the sanctioned deviation from CLAUDE.md §9.2:
+//! this crate exists to gate the layer *under* the macro). The tree mirrors
 //! `newcore-web-smoke` — same coverage, second backend.
 //!
 //! Coverage: static + reactive `text`, `button` (event → staged write →
@@ -19,7 +19,7 @@
 //! phase 4 resizes the real NSWindow across the Xl threshold and
 //! asserts the bucket + the on-screen NSTextField followed).
 
-use runtime_core::{Length, StyleRules, Tokenized};
+use runtime_shared::{Length, StyleRules, Tokenized};
 use runtime_scene::{keyed, Element};
 use runtime_vocabulary::builders::IntoSceneElement;
 use runtime_vocabulary::{button, scroll_view, text, toggle, view};
@@ -88,13 +88,13 @@ pub fn app() -> Element {
     //    scroll drag creates) is still running. See
     //    `selftest::run_tracking_loop_scroll_test`.
     // 4. **Live viewport → breakpoint recompute** (regression: native
-    //    new-core breakpoints frozen at their seed) — resize the real
+    //    breakpoints frozen at their seed) — resize the real
     //    NSWindow across the default 1280 pt Xl threshold and assert
     //    both the captured bucket `ReadSignal` AND the on-screen
     //    reactive NSTextField ("breakpoint = Xl") followed: the full
     //    `setFrameSize:` → dual-sink → world-ctx → memo → f-string
     //    chain against live AppKit.
-    // 5. **Embedded new-core wgpu simulator** — the tree carries a
+    // 5. **Embedded wgpu simulator** — the tree carries a
     //    `graphics` surface whose `on_ready` mounts
     //    `host_macos_desktop::mount_newcore` (a tiny wgpu scene
     //    realized into THIS app's world — see `mod embed`). Asserts
@@ -120,24 +120,24 @@ pub fn app() -> Element {
             }
         });
 
-        runtime_core::scheduling::after_ms_detached(1500, move || {
+        runtime_shared::scheduling::after_ms_detached(1500, move || {
             // Presentation prerequisite for phase 5 (see
             // `bring_window_front`'s docs): surface the window so the
             // embedded wgpu host's CAMetalLayer can acquire drawables.
             selftest::bring_window_front();
             count.set(41); // stages — the dispatch hook must commit it
-            runtime_core::scheduling::after_ms_detached(700, move || {
+            runtime_shared::scheduling::after_ms_detached(700, move || {
                 let committed = count.get() == 41;
                 let views = selftest::live_view_count();
                 // Phase 2: real target-action press through the
                 // wrapped Action (stages 41 → 42; the wrapper's
                 // scheduled flush must commit it by the next check).
                 let pressed = selftest::press_button("Increment");
-                runtime_core::scheduling::after_ms_detached(400, move || {
+                runtime_shared::scheduling::after_ms_detached(400, move || {
                     let press_committed = count.get() == 42;
                     let tracking = selftest::run_tracking_loop_scroll_test();
                     // Phase 4: live viewport → breakpoint recompute
-                    // (regression: native new-core breakpoints frozen
+                    // (regression: native breakpoints frozen
                     // at their seed). The 480 pt launch width
                     // classifies Xs on the default table; resize the
                     // REAL window across the 1280 pt Xl threshold and
@@ -147,12 +147,12 @@ pub fn app() -> Element {
                     // → the reactive breakpoint text in the live tree.
                     let bp_before = bp.get();
                     let resized = selftest::resize_window(1300.0, 600.0);
-                    runtime_core::scheduling::after_ms_detached(500, move || {
+                    runtime_shared::scheduling::after_ms_detached(500, move || {
                         let bp_after = bp.get();
-                        let bp_flipped = bp_before == runtime_core::Breakpoint::Xs
-                            && bp_after == runtime_core::Breakpoint::Xl;
+                        let bp_flipped = bp_before == runtime_shared::Breakpoint::Xs
+                            && bp_after == runtime_shared::Breakpoint::Xl;
                         let bp_text_live = selftest::find_text("breakpoint = Xl");
-                        // Phase 5: embedded new-core wgpu simulator
+                        // Phase 5: embedded wgpu simulator
                         // (`host_macos_desktop::mount_newcore` — see
                         // `mod embed`). Sample the embed's tick signal
                         // now and again after a delay: an advancing
@@ -163,7 +163,7 @@ pub fn app() -> Element {
                         // stderr line is the render-side evidence.
                         let embed_mounted = embed::is_mounted();
                         let ticks_before = embed::ticks_now().unwrap_or(0);
-                        runtime_core::scheduling::after_ms_detached(600, move || {
+                        runtime_shared::scheduling::after_ms_detached(600, move || {
                             let ticks_after = embed::ticks_now().unwrap_or(0);
                             let embed_animates =
                                 embed_mounted && ticks_after > ticks_before;
@@ -268,7 +268,7 @@ pub fn app() -> Element {
                 ),
         );
 
-    // Embedded new-core wgpu simulator (the native mirror of the
+    // Embedded wgpu simulator (the native mirror of the
     // website's in-page preview): a `graphics` surface whose `on_ready`
     // mounts `host_macos_desktop::mount_newcore`, realizing a tiny
     // scene into THIS app's world
@@ -284,7 +284,7 @@ pub fn app() -> Element {
     tree.build()
 }
 
-/// Embedded new-core wgpu simulator — the smoke's live proof of the
+/// Embedded wgpu simulator — the smoke's live proof of the
 /// `host_macos_desktop::mount_newcore` seam (self-test phase 5).
 ///
 /// The `graphics` primitive's `on_ready` hands over a CAMetalLayer
@@ -299,8 +299,8 @@ mod embed {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
-    use runtime_core::primitives::graphics::OnReadyEvent;
-    use runtime_core::{Length, StyleRules, Tokenized};
+    use runtime_shared::primitives::graphics::OnReadyEvent;
+    use runtime_shared::{Length, StyleRules, Tokenized};
     use runtime_vocabulary::{text, view};
     use runtime_world::Signal;
 
@@ -347,15 +347,15 @@ mod embed {
     pub fn mount(event: OnReadyEvent) {
         let surface = event.surface;
         let size = event.size;
-        runtime_core::driver::spawn_async(async move {
+        runtime_shared::driver::spawn_async(async move {
             let profile = host_macos_desktop::DeviceProfile {
                 logical_size: (EMBED_W, EMBED_H),
                 position: None,
                 title: String::new(),
-                color_scheme: runtime_core::ColorScheme::Light,
+                color_scheme: runtime_shared::ColorScheme::Light,
             };
             let skin: Rc<dyn host_macos_desktop::Painter> =
-                Rc::new(render_wgpu::NativeSkin::new(runtime_core::Platform::MacOs));
+                Rc::new(render_wgpu::NativeSkin::new(runtime_shared::Platform::MacOs));
             let build = Rc::new(|| {
                 let ticks = runtime_world::signal(0i32);
                 TICKS.with(|t| t.set(Some(ticks)));
@@ -390,7 +390,7 @@ mod selftest {
 
     use objc2_app_kit::{NSApplication, NSView};
     use objc2_foundation::{MainThreadMarker, NSString};
-    use runtime_core::primitives::scroll_view::ScrollViewHandle;
+    use runtime_shared::primitives::scroll_view::ScrollViewHandle;
 
     // ── CoreFoundation run-loop FFI ─────────────────────────────────
     // `CFRunLoopRunInMode` is how AppKit itself runs a control
@@ -512,7 +512,7 @@ mod selftest {
         // — nothing to run); apple-core's `after_ms` NSTimers are added
         // in COMMON modes, so one pending no-op timer keeps the
         // tracking mode alive for the whole window.
-        runtime_core::scheduling::after_ms_detached(600, || {});
+        runtime_shared::scheduling::after_ms_detached(600, || {});
 
         IN_TRACKING_RUN.with(|t| t.set(true));
         let tracking_mode = NSString::from_str("NSEventTrackingRunLoopMode");
@@ -690,7 +690,7 @@ mod selftest {
 
 #[cfg(not(target_os = "macos"))]
 mod selftest {
-    use runtime_core::primitives::scroll_view::ScrollViewHandle;
+    use runtime_shared::primitives::scroll_view::ScrollViewHandle;
 
     /// Cross-host stub (the builder's `on_handle` closure must compile
     /// everywhere; the AppKit self-test only exists on macOS).

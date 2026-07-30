@@ -1,5 +1,19 @@
 # Native touch & gesture system
 
+> **Status note (2026-07-29, runtime-v2).** The design here shipped and the
+> per-platform mechanics are still the reference. One rename: the methods this
+> doc spells `Backend::install_touch_handler` / `claim_touch` /
+> `install_wheel_handler` / `install_file_drop_handler` are no longer on a
+> `Backend` mega-trait — that trait is gone. They live, unchanged in name and
+> signature and still defaulting to no-ops, on the capability trait
+> `runtime_vocabulary::caps::InputOps` (`crates/runtime/vocabulary/src/caps/input.rs`),
+> which a backend implements over the `runtime_scene::Host` seam. Read every
+> "Backend trait" below as "the `InputOps` capability". The core types moved
+> too: `TouchEvent` / `TouchPhase` / `TouchId` / `TouchResponse` and the stock
+> recognizers now live in `runtime_shared::touch` (re-exported flat as
+> `runtime_core::{tap, long_press, pan, pinch, …}`); the `runtime_core::touch`
+> module path no longer resolves.
+
 A raw-touch event pipeline owned by the framework. All gesture recognition
 (tap, long-press, pan, swipe, pinch, custom) runs in Rust against the
 event stream — no `UIGestureRecognizer` / `GestureDetector` integration.

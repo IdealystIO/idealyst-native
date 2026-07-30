@@ -77,6 +77,11 @@ pub enum LiveNode<N> {
     Dyn(DynLive<N>),
     /// A live keyed list (see [`KeyedLive`]).
     Keyed(KeyedLive<N>),
+    /// An item whose handler had not arrived yet (see [`DeferredLive`]):
+    /// a placeholder holds its position until
+    /// [`Registry::register_deferred`](crate::Registry::register_deferred)
+    /// realizes it in place.
+    Deferred(DeferredLive<N>),
 }
 
 impl<N: Clone> LiveNode<N> {
@@ -112,6 +117,18 @@ impl<N: Clone> LiveNode<N> {
                     }
                 }
             },
+            // Parked: the placeholder IS the item's node until the
+            // handler arrives; drained: the real node(s) it produced.
+            // Exactly one of the two is present, so the count this
+            // contributes to an enclosing index is stable across the
+            // drain (see `realize_parked`).
+            LiveNode::Deferred(deferred) => {
+                let slot = deferred.slot.borrow();
+                match &slot.placeholder {
+                    Some(placeholder) => out.push(placeholder.clone()),
+                    None => out.extend(slot.nodes.iter().cloned()),
+                }
+            }
         }
     }
 }
@@ -179,6 +196,105 @@ impl<N: Clone> DynWatch<N> {
 pub(crate) struct DynSlot<N> {
     pub(crate) realized: Option<Realized<N>>,
     pub(crate) nodes: Vec<N>,
+}
+
+// ============================================================================
+// Deferred (late-bound) items
+// ============================================================================
+
+/// A live item whose payload kind was declared late-bound
+/// ([`Registry::defer`](crate::Registry::defer)) and whose handler had not
+/// arrived when realize reached it.
+///
+/// While parked, a layout-transparent placeholder
+/// ([`Host::create_anchor`](crate::Host::create_anchor)) occupies the
+/// item's slot in the parent. When the handler arrives, the item realizes
+/// through the ORDINARY realize path and its node is spliced in at the
+/// placeholder's index, which is then removed — one node out, one node in,
+/// so no sibling's index ever moves and nothing else remounts.
+pub struct DeferredLive<N> {
+    pub(crate) slot: Rc<RefCell<DeferredSlot<N>>>,
+}
+
+impl<N: Clone> DeferredLive<N> {
+    /// `false` while the handler is still missing.
+    pub fn is_realized(&self) -> bool {
+        self.slot.borrow().realized.is_some()
+    }
+
+    /// Borrow the drained subtree (`None` while still parked).
+    pub fn with_current<R>(&self, f: impl FnOnce(Option<&Realized<N>>) -> R) -> R {
+        f(self.slot.borrow().realized.as_ref())
+    }
+}
+
+/// The parked state of a deferred item.
+///
+/// The STRONG handle lives here, in the enclosing tree's [`LiveNode`]; the
+/// registry keeps only a `Weak`. Unmounting the enclosing subtree
+/// therefore drops the parked element, the placeholder handle and — after
+/// a drain — the item's own `Realized`, through the ordinary
+/// drop-as-unmount path, with no registry bookkeeping.
+pub(crate) struct DeferredSlot<N> {
+    /// The item element, held verbatim until the handler arrives. `None`
+    /// once drained.
+    pub(crate) element: Option<Element>,
+    /// The parent to splice into, and the absolute child index the
+    /// placeholder occupies within it.
+    pub(crate) parent: N,
+    pub(crate) index: usize,
+    /// `Some` while parked, `None` once drained.
+    pub(crate) placeholder: Option<N>,
+    pub(crate) realized: Option<Realized<N>>,
+    pub(crate) nodes: Vec<N>,
+}
+
+/// Realize one parked item now that its handler is installed. Called by
+/// [`Registry::register_deferred`](crate::Registry::register_deferred) in
+/// park (= document) order.
+///
+/// The mount itself is a plain [`realize`] of the element that was parked,
+/// so the handler call, the child walk, the node shape and the subtree's
+/// own [`Owned`] scope are all exactly what an eager mount would have
+/// produced. Only the attach differs: `insert_at` at the placeholder's
+/// recorded index, then `remove_child` of the placeholder — in that order,
+/// so the index is still valid when the real node goes in.
+///
+/// The recorded index is stable under the SAME constraint the spliced
+/// reactive regions already document: content BEFORE the item must be
+/// structurally static. A deferred item may not be a subtree ROOT at all
+/// (see [`MountCx::mount_item`]), which is what keeps every cached
+/// top-level node vector in the tree (keyed rows, spliced holes) out of
+/// the drain's way — those caches only ever hold region roots.
+pub(crate) fn realize_parked<H: Host>(
+    backend: &Rc<RefCell<H>>,
+    registry: &Rc<Registry<H>>,
+    slot: &Rc<RefCell<DeferredSlot<H::Node>>>,
+) {
+    let (element, parent, index, placeholder) = {
+        let mut s = slot.borrow_mut();
+        // Already drained (a second registration for the same kind).
+        let (Some(element), Some(placeholder)) = (s.element.take(), s.placeholder.take()) else {
+            return;
+        };
+        (element, s.parent.clone(), s.index, placeholder)
+        // borrow released before any handler runs
+    };
+
+    let realized = realize(backend, registry, element);
+    let nodes = realized.collect_nodes();
+    {
+        let mut b = backend.borrow_mut();
+        let mut p = parent.clone();
+        for (i, node) in nodes.iter().enumerate() {
+            b.insert_at(&mut p, node.clone(), index + i);
+        }
+        b.remove_child(&parent, &placeholder);
+    }
+
+    let mut s = slot.borrow_mut();
+    s.nodes = nodes;
+    s.realized = Some(realized);
 }
 
 /// A live keyed list.
@@ -389,6 +505,16 @@ impl<'a, H: Host> MountCx<'a, H> {
         element: Element,
         inserted: &mut usize,
     ) -> LiveNode<H::Node> {
+        // Late-bound kind whose handler has not arrived: park it. This is
+        // the ONLY place parking happens, because it is the only place
+        // that knows the item's parent AND its index within that parent —
+        // the two things the eventual drain needs to place the node.
+        if let Element::Item { data, .. } = &element {
+            let type_id = (**data).type_id();
+            if self.registry.get(type_id).is_none() && self.registry.is_deferred(type_id) {
+                return self.park_item(parent, element, type_id, inserted);
+            }
+        }
         match element {
             Element::Item { .. } => {
                 let live = self.mount_item(element);
@@ -491,15 +617,69 @@ impl<'a, H: Host> MountCx<'a, H> {
         }
     }
 
+    /// Park a late-bound item: reserve its slot in `parent` with a
+    /// layout-transparent placeholder, stash the element, and record the
+    /// slot with the registry (weakly — see [`DeferredSlot`]).
+    ///
+    /// The placeholder is what makes the drain non-disruptive: the item
+    /// occupies exactly one child index from mount onwards, so every
+    /// sibling's index — including a following spliced reactive region's
+    /// captured base index — is the same before and after the handler
+    /// arrives.
+    fn park_item(
+        &mut self,
+        parent: &mut H::Node,
+        element: Element,
+        type_id: std::any::TypeId,
+        inserted: &mut usize,
+    ) -> LiveNode<H::Node> {
+        let placeholder = self.backend.borrow_mut().create_anchor();
+        self.backend
+            .borrow_mut()
+            .insert(parent, placeholder.clone());
+        let index = *inserted;
+        *inserted += 1;
+        let slot = Rc::new(RefCell::new(DeferredSlot {
+            element: Some(element),
+            parent: parent.clone(),
+            index,
+            placeholder: Some(placeholder),
+            realized: None,
+            nodes: Vec::new(),
+        }));
+        self.registry.park(type_id, self.backend.clone(), &slot);
+        LiveNode::Deferred(DeferredLive { slot })
+    }
+
     /// Mount one `Item` through its registered handler. The handler's
     /// `realize_children_into` calls land in a fresh frame, which becomes
     /// the item's live children.
     fn mount_item(&mut self, element: Element) -> LiveNode<H::Node> {
+        // One nesting level of the realize recursion. See `depth` for why
+        // the budget is enforced here and nowhere else.
+        let _level = depth::enter();
         let Element::Item { data, children } = element else {
             unreachable!("mount_item called on a non-Item")
         };
         let type_id = (*data).type_id();
         let handler = self.registry.get(type_id).unwrap_or_else(|| {
+            // A DECLARED-deferred kind reaching mount_item means it is a
+            // subtree ROOT (a branch/row/screen/portal root), which the
+            // parking model cannot serve: the drain places the real node
+            // with `insert_at(parent, node, index)`, and a root has
+            // neither. It would also invalidate the top-level node vector
+            // its enclosing region caches. Mirrors the `Element::Many`
+            // standalone-root rule, and for the same reason.
+            if self.registry.is_deferred(type_id) {
+                panic!(
+                    "runtime-scene: a DEFERRED payload ({type_id:?}) appeared as a subtree root \
+                     (a `when`/`switch` branch, a keyed or static-`for` row, a navigator screen, \
+                     or portal content). A deferred item is parked with a placeholder at a known \
+                     index in a known parent, and the drain splices the real node in at that \
+                     index — a subtree root has neither, and its enclosing region caches the \
+                     root node handles the drain would invalidate. Wrap it in a view."
+                )
+            }
             panic!(
                 "runtime-scene: no handler registered for item payload ({type_id:?}) — \
                  register one on this backend's Registry before realizing"
@@ -514,6 +694,123 @@ impl<'a, H: Host> MountCx<'a, H> {
             children: kids,
         }
     }
+}
+
+// ============================================================================
+// Recursion depth budget
+// ============================================================================
+
+/// Nesting-depth guard for the realize recursion.
+///
+/// # The bug this prevents
+///
+/// `realize` descends a tree by recursion: `mount_item` → the handler →
+/// `realize_children_into` → `splice_children` → `realize_placed` →
+/// `mount_item`. A deep enough tree exhausts the thread stack. On native
+/// that is an abort; on **wasm** it is
+/// `RuntimeError: memory access out of bounds` raised inside whatever
+/// leaf call happened to need the last few bytes — historically
+/// `RefCell::borrow_mut` inside `__externref_table_alloc`, which reads
+/// exactly like a wasm-bindgen externref-reentrance bug and is nothing of
+/// the sort. The old walker shipped that failure mode for real: the
+/// website's `/demo` page died at ~13 levels of nesting because
+/// `walker::build_inner` compiled to a 77 KB stack frame
+/// (`runtime-core/tests/walker/stack_depth.rs` is the post-fix pin, and
+/// `mock-backend`'s `deep_tree_overflow_multi_site` the `#[ignore]`d
+/// reproducer).
+///
+/// The old core's guarantee against this was **a frame-size budget and
+/// nothing else** — no cap, no guard, no diagnostic. It bought headroom
+/// by shrinking `build_inner` to ~2.3 KB and pinned that with a test on a
+/// stack constrained to wasm-ld's 1 MiB default.
+///
+/// This core inherits the budget test
+/// (`tests::deep_nested_items_realize_within_wasm_stack_budget`) and adds
+/// what the old core lacked: an explicit cap, so the failure is a NAMED
+/// panic pointing at the author's tree instead of an inscrutable trap.
+///
+/// # Why the cap sits where it does
+///
+/// [`MAX_DEPTH`] is set from the measured native cost of one level
+/// (~1.1 KiB — 1 MiB carries ~900 levels; see the budget test) with a
+/// deliberate ~2× margin, so the guard fires *before* the stack does on
+/// any host whose frames are within 2× of native. It is not a promise
+/// that 511 levels always fit; it is a promise that exceeding 512 always
+/// reports itself. Real trees are nowhere near: the deepest screen in
+/// this repo's website sits around 18-20 levels.
+///
+/// # Why `mount_item` and nowhere else
+///
+/// Every recursive path through the walk passes through an item mount —
+/// fragments, `Many` expansions and reactive holes all bottom out in one.
+/// Counting there costs one thread-local increment per mounted node and
+/// cannot double-count a level. The guard is RAII, so it unwinds
+/// correctly through the panic it raises and through any handler panic.
+///
+/// Driver rebuilds (a `Dyn` swap, a keyed row render) run from
+/// `World::flush` on a fresh stack; the counter is naturally zero there
+/// because the guards from the mount that created the driver have long
+/// since dropped.
+mod depth {
+    use std::cell::Cell;
+
+    /// Maximum item-nesting depth of a single realize walk. See the
+    /// module docs for how the number was chosen.
+    pub const MAX_DEPTH: usize = 512;
+
+    thread_local! {
+        static DEPTH: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// RAII depth level. Panics with a named diagnostic when the tree
+    /// nests past [`MAX_DEPTH`].
+    pub struct Level;
+
+    pub fn enter() -> Level {
+        let next = DEPTH.with(|d| {
+            let n = d.get() + 1;
+            d.set(n);
+            n
+        });
+        if next > MAX_DEPTH {
+            // Unwind the counter before panicking: the `Level` for THIS
+            // frame is never constructed, so nothing else will.
+            DEPTH.with(|d| d.set(d.get() - 1));
+            panic!(
+                "runtime-scene: element tree nests more than {MAX_DEPTH} levels deep. \
+                 realize() descends by recursion, so a tree this deep would overflow the \
+                 thread stack — on wasm that surfaces as an opaque \
+                 `memory access out of bounds` trap rather than this message. \
+                 This is almost always an accidentally unbounded recursion in a component \
+                 body (a component that renders itself with no base case), not a real \
+                 layout: the deepest hand-authored screens run well under 30 levels."
+            );
+        }
+        Level
+    }
+
+    impl Drop for Level {
+        fn drop(&mut self) {
+            // `try_with`: a realize can be unwinding during thread
+            // teardown, after this TLS has been destroyed.
+            let _ = DEPTH.try_with(|d| d.set(d.get().saturating_sub(1)));
+        }
+    }
+
+    /// Current depth — test-only observability.
+    #[cfg(test)]
+    pub fn current() -> usize {
+        DEPTH.with(|d| d.get())
+    }
+}
+
+pub use depth::MAX_DEPTH;
+
+/// Current realize nesting depth — test-only observability for the RAII
+/// unwind invariant (see [`depth`]).
+#[cfg(test)]
+pub(crate) fn depth_for_test() -> usize {
+    depth::current()
 }
 
 /// Realize an element tree against a backend + registry. Must run with the
@@ -564,6 +861,17 @@ fn build_realized<'a, H: Host>(
     produce_tracked: bool,
     mount: impl FnOnce(&mut MountCx<'a, H>, Element) -> LiveNode<H::Node>,
 ) -> Realized<H::Node> {
+    // Late-registration drain (see `crate::late`). BEFORE the collector,
+    // so a parked item that realizes here gets its OWN `Owned` scope
+    // rather than being adopted by whichever subtree happened to be
+    // realizing when its chunk landed. UNTRACKED, so a registration
+    // closure that reads a signal cannot add a dependency to an enclosing
+    // driver effect. The guard keeps the empty case (every app that never
+    // defers, every realization after the chunks have loaded) at one
+    // thread-local read.
+    if crate::late::has_pending_registrations() {
+        untrack(|| crate::late::drain_registrations(registry));
+    }
     let ((root, absorbed), mut owned) = collect_owned(|| {
         let element = if produce_tracked {
             produce()

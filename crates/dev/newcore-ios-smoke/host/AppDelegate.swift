@@ -1,7 +1,7 @@
 // Swift shell for newcore-ios-smoke — mirrors the CLI-generated
-// old-core wrapper template (crates/tools/run/ios/templates/
-// AppDelegate.swift) minus the deep-link seeding (the smoke app has no
-// navigator). Stands up a UIWindow + ViewController.
+// wrapper template (crates/tools/run/ios/templates/AppDelegate.swift)
+// minus the deep-link seeding (the smoke app has no navigator). Stands
+// up a UIWindow + ViewController.
 
 import UIKit
 

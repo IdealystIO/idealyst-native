@@ -351,12 +351,6 @@ fn center_container_sheet() -> Rc<StyleSheet> {
 /// fading dimming backdrop and a themed, viewport-capped, scrollable
 /// surface that fades and slides in. Dismissal is delegated to the host
 /// via `on_dismiss`/`on_backdrop_press`.
-///
-/// **Cargo features:** requires `prim-portal` + `prim-presence` (both in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without them compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Modal(props: ModalProps) -> Element {
     let open = props.open;

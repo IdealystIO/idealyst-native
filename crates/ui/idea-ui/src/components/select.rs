@@ -34,9 +34,7 @@ use runtime_core::{
 
 use idea_theme::theme::IdeaThemeRef;
 
-// The `icon` primitive builder only exists under `prim-icon`; only the
-// Select component (gated below) renders it.
-#[cfg(all(feature = "prim-icon", feature = "prim-portal"))]
+// The `icon` primitive builder — the Select trigger's chevron.
 use runtime_core::icon;
 use crate::stylesheets::{SelectOption as SelectOptionStyle, SelectTrigger};
 
@@ -98,7 +96,6 @@ impl SelectOption {
 // live inside the trigger's label text source. `icon` is structural (the
 // chevron is built once into a bound view) — see the TODO in the body.
 #[runtime_core::props]
-#[cfg(all(feature = "prim-icon", feature = "prim-portal"))]
 #[derive(IdealystSchema)]
 pub struct SelectProps {
     /// Controlled selected value — the `id` of the chosen
@@ -120,7 +117,6 @@ pub struct SelectProps {
     pub icon: Option<IconData>,
 }
 
-#[cfg(all(feature = "prim-icon", feature = "prim-portal"))]
 impl Default for SelectProps {
     fn default() -> Self {
         Self {
@@ -138,13 +134,6 @@ impl Default for SelectProps {
 /// option's label (or `placeholder`), opening an anchored menu of
 /// [`SelectOption`] rows. Choosing a row fires `on_change` and closes
 /// the menu.
-#[cfg(all(feature = "prim-icon", feature = "prim-portal"))]
-///
-/// **Cargo features:** requires `prim-icon` + `prim-portal` (both in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without them compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Select(props: SelectProps) -> Element {
     let value = props.value;
@@ -165,9 +154,9 @@ pub fn Select(props: SelectProps) -> Element {
     let label_placeholder = placeholder.clone();
     // `placeholder` is read LIVE inside the trigger's label source, so a
     // reactive placeholder re-paints the empty-trigger text in place.
-    // (Plain closure into `text(...)` — the same reactive Bound/Dyn text
-    // source conversion on both cores; the old explicit
-    // `IntoTextSource::into_text_source` spelling was redundant.)
+    // (Plain closure into `text(...)` — the reactive text-source
+    // conversion is implicit; an explicit `into_text_source` spelling
+    // would be redundant.)
     let label_source = move || {
         label_options
             .iter()
@@ -243,7 +232,6 @@ pub fn Select(props: SelectProps) -> Element {
     }
 }
 
-#[cfg(all(feature = "prim-icon", feature = "prim-portal"))]
 fn menu_build(
     value: Signal<String>,
     options: Rc<Vec<SelectOption>>,

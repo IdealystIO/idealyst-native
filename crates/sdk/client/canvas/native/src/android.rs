@@ -35,7 +35,9 @@ use canvas_core::{
     Paint, PaintKind, Path, PathSeg, Scene, TextureLayer,
 };
 use std::collections::HashMap;
-use runtime_core::{after_ms_scoped, effect};
+use canvas_core::CanvasPrim;
+use runtime_scene::{Element, MountCx};
+use runtime_vocabulary::scoped_scheduling::after_ms_scoped;
 
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::sys::{jfloat, jint};
@@ -45,19 +47,18 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Register the Android canvas renderer against an `AndroidBackend`.
-pub fn register(backend: &mut AndroidBackend) {
-    canvas_core::ensure_wire_serde();
-    backend.register_external::<CanvasProps, _>(|props, b| build_canvas(props, b));
-}
-
-// Self-register at backend construction (no app-side `register` call needed).
-// See [[project_inventory_self_registration]]. Behind the default-on
-// `self-register` feature so delegate-only consumers can opt out (matters
-// for web bundle size; gated on every target for feature consistency).
-#[cfg(feature = "self-register")]
-inventory::submit! {
-    backend_android::AndroidExternalRegistrar(register)
+pub(crate) fn mount_canvas(
+    cx: &mut MountCx<'_, AndroidBackend>,
+    prim: &Rc<CanvasPrim>,
+    _children: Vec<Element>,
+) -> GlobalRef {
+    let backend = cx.backend().clone();
+    let node = {
+        let mut b = backend.borrow_mut();
+        build_canvas(&prim.props, &mut b)
+    };
+    crate::finish_mount(&backend, &node, prim);
+    node
 }
 
 fn build_canvas(props: &Rc<CanvasProps>, b: &mut AndroidBackend) -> GlobalRef {
@@ -114,14 +115,14 @@ fn build_canvas(props: &Rc<CanvasProps>, b: &mut AndroidBackend) -> GlobalRef {
     };
 
     // Reactive repaint: re-record the Picture whenever a signal the draw
-    // closure reads changes (animation re-records every frame). Built in the
-    // canvas walker, so the component scope owns it. Clones hoisted so the
-    // macro's `move` captures them (cloned once).
+    // closure reads changes (animation re-records every frame). Realize runs
+    // world-entered, so the effect is collected into the mounting subtree and
+    // dies at unmount. Clones hoisted so the closure captures them once.
     {
         let props = props.clone();
         let cell = cell.clone();
         let render = render.clone();
-        effect!({
+        runtime_world::effect(move || {
             *cell.borrow_mut() = canvas_core::paint_scene(&props);
             render();
         });

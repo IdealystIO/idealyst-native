@@ -56,15 +56,19 @@ use dev_server::{
     serve_with_sidecar_and_tracker, SessionMode, SessionTracker, Sidecar, SidecarIn,
     WireRecordingBackend,
 };
-use runtime_core::{Backend, StyleRules};
+use runtime_scene::Host;
+use runtime_shared::StyleRules;
+use runtime_vocabulary::caps;
 use runtime_server_shell_native::{protocol_mismatch, RuntimeServerShell};
 use wire::{Command, NodeId};
 
 // ---------------------------------------------------------------------------
-// RecordingBackend — a minimal `Backend` that records the structural
-// calls the shell replays into it. This is the stand-in for a real
-// platform backend (UIKit / Android View / DOM); it just notes what it
-// was told to build so the test can assert the tree arrived.
+// RecordingBackend — a minimal `Host` + capability implementation that
+// records the structural calls the shell replays into it. This is the
+// stand-in for a real platform backend (UIKit / Android View / DOM); it
+// just notes what it was told to build so the test can assert the tree
+// arrived. Capability families it does not model take the caps
+// defaults.
 // ---------------------------------------------------------------------------
 
 #[derive(Default)]
@@ -82,53 +86,102 @@ impl RecordingBackend {
     }
 }
 
-impl Backend for RecordingBackend {
+impl Host for RecordingBackend {
     type Node = u64;
 
-    fn create_view(&mut self, _a11y: &runtime_core::accessibility::AccessibilityProps) -> u64 {
+    fn insert(&mut self, _parent: &mut u64, _child: u64) {}
+    fn insert_at(&mut self, _parent: &mut u64, _child: u64, _index: usize) {}
+    fn remove_child(&mut self, _parent: &u64, _child: &u64) {}
+    fn clear_children(&mut self, _node: &u64) {}
+
+    fn create_anchor(&mut self) -> u64 {
+        self.next += 1;
+        self.next
+    }
+
+    /// The recorder is anchored (the wire protocol has no
+    /// `RemoveChild`/`InsertAt`), so a replay target never splices.
+    fn supports_splice(&self) -> bool {
+        false
+    }
+}
+
+impl caps::ViewOps for RecordingBackend {
+    fn create_view(&mut self, _a11y: &runtime_shared::accessibility::AccessibilityProps) -> u64 {
         self.next += 1;
         self.view_count += 1;
         self.next
     }
+}
 
+impl caps::TextOps for RecordingBackend {
     fn create_text(
         &mut self,
         content: &str,
-        _a11y: &runtime_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> u64 {
         self.next += 1;
         self.texts.push(content.to_string());
         self.next
     }
-
-    fn create_button(
-        &mut self,
-        _label: &str,
-        _on_click: &runtime_core::Action,
-        _leading: Option<&runtime_core::primitives::icon::IconData>,
-        _trailing: Option<&runtime_core::primitives::icon::IconData>,
-        _a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> u64 {
-        self.next += 1;
-        self.next
-    }
-
-    fn insert(&mut self, _parent: &mut u64, _child: u64) {}
 
     fn update_text(&mut self, _node: &u64, content: &str) {
         // Reflect the post-snapshot text so reactive label updates are
         // observable too.
         self.texts.push(content.to_string());
     }
+}
 
-    fn clear_children(&mut self, _node: &u64) {}
+impl caps::ButtonOps for RecordingBackend {
+    fn create_button(
+        &mut self,
+        _label: &str,
+        _on_click: &runtime_shared::Action,
+        _leading: Option<&runtime_shared::primitives::icon::IconData>,
+        _trailing: Option<&runtime_shared::primitives::icon::IconData>,
+        _a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> u64 {
+        self.next += 1;
+        self.next
+    }
+}
 
+impl caps::StyleOps for RecordingBackend {
     fn apply_style(&mut self, _node: &u64, _style: &Rc<StyleRules>) {}
+}
 
+impl caps::LifecycleOps for RecordingBackend {
     fn finish(&mut self, _root: u64) {
         self.finish_count += 1;
     }
 }
+
+// Families the shell's stand-in target does not model — caps defaults.
+impl caps::A11yOps for RecordingBackend {}
+impl caps::ActivityIndicatorOps for RecordingBackend {}
+impl caps::AnimationOps for RecordingBackend {}
+impl caps::AppEnvOps for RecordingBackend {}
+impl caps::AssetOps for RecordingBackend {}
+impl caps::BatchOps for RecordingBackend {}
+impl caps::DocumentOps for RecordingBackend {}
+impl caps::ExternalOps for RecordingBackend {}
+impl caps::GraphicsOps for RecordingBackend {}
+impl caps::IconOps for RecordingBackend {}
+impl caps::ImageOps for RecordingBackend {}
+impl caps::InputOps for RecordingBackend {}
+impl caps::IntrospectionOps for RecordingBackend {}
+impl caps::LinkOps for RecordingBackend {}
+impl caps::NavigatorOps for RecordingBackend {}
+impl caps::PortalOps for RecordingBackend {}
+impl caps::PresenceOps for RecordingBackend {}
+impl caps::PressableOps for RecordingBackend {}
+impl caps::SafeAreaOps for RecordingBackend {}
+impl caps::ScrollOps for RecordingBackend {}
+impl caps::SliderOps for RecordingBackend {}
+impl caps::TextInputOps for RecordingBackend {}
+impl caps::ToggleOps for RecordingBackend {}
+impl caps::VirtualizerOps for RecordingBackend {}
+impl caps::WireBindingOps for RecordingBackend {}
 
 // ---------------------------------------------------------------------------
 // Loopback dev-server harness — mirrors `sessions.rs::spin_up_server`.

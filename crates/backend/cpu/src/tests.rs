@@ -1,9 +1,9 @@
 //! End-to-end smoke tests for the CPU backend.
 //!
-//! These build a small framework tree directly via the `Backend`
-//! trait (no `runtime_core::mount` — we want to drive the trait
-//! methods in isolation), render to a `MemSurface`, and assert on
-//! pixel-level output.
+//! These build a small framework tree directly via the capability
+//! traits (no scene realize — we want to drive the backend methods in
+//! isolation), render to a `MemSurface`, and assert on pixel-level
+//! output.
 //!
 //! What these tests are checking is the rasterizer pipeline:
 //! style→Taffy translation, paint order, alpha composition, and
@@ -14,10 +14,17 @@
 
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::animation::AnimProp;
-use runtime_core::{
-    Backend, Gradient, GradientKind, GradientStop, Length, RadialExtent, StyleRules, Tokenized,
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::animation::AnimProp;
+use runtime_shared::{
+    Gradient, GradientKind, GradientStop, Length, RadialExtent, StyleRules, Tokenized,
+};
+// The mechanism lives on the capability traits (the `Backend`
+// mega-trait is gone), so these tests reach it through them; `Host`
+// supplies the structural ops.
+use runtime_scene::Host;
+use runtime_vocabulary::caps::{
+    AnimationOps, ButtonOps, LifecycleOps, PressableOps, ScrollOps, StyleOps, TextOps, ViewOps,
 };
 
 use crate::{CpuBackend, ClickOutcome, MemSurface, Surface};
@@ -298,7 +305,7 @@ fn set_animated_f32_translate_shifts_paint_position() {
             s.background = Some(Tokenized::Literal("rgb(0, 255, 0)".into()));
             s.width = Some(Tokenized::Literal(Length::Px(10.0)));
             s.height = Some(Tokenized::Literal(Length::Px(10.0)));
-            s.position = Some(runtime_core::Position::Absolute);
+            s.position = Some(runtime_shared::Position::Absolute);
             s.top = Some(Tokenized::Literal(Length::Px(0.0)));
             s.left = Some(Tokenized::Literal(Length::Px(0.0)));
         }),
@@ -348,7 +355,7 @@ fn z_index_reorders_paint_order() {
         &style_with(|s| {
             s.width = Some(Tokenized::Literal(Length::Px(20.0)));
             s.height = Some(Tokenized::Literal(Length::Px(20.0)));
-            s.position = Some(runtime_core::Position::Relative);
+            s.position = Some(runtime_shared::Position::Relative);
         }),
     );
     // Two overlapping children — red on bottom, blue on top by
@@ -361,7 +368,7 @@ fn z_index_reorders_paint_order() {
             s.background = Some(Tokenized::Literal("rgb(255, 0, 0)".into()));
             s.width = Some(Tokenized::Literal(Length::Px(20.0)));
             s.height = Some(Tokenized::Literal(Length::Px(20.0)));
-            s.position = Some(runtime_core::Position::Absolute);
+            s.position = Some(runtime_shared::Position::Absolute);
             s.top = Some(Tokenized::Literal(Length::Px(0.0)));
             s.left = Some(Tokenized::Literal(Length::Px(0.0)));
         }),
@@ -373,7 +380,7 @@ fn z_index_reorders_paint_order() {
             s.background = Some(Tokenized::Literal("rgb(0, 0, 255)".into()));
             s.width = Some(Tokenized::Literal(Length::Px(20.0)));
             s.height = Some(Tokenized::Literal(Length::Px(20.0)));
-            s.position = Some(runtime_core::Position::Absolute);
+            s.position = Some(runtime_shared::Position::Absolute);
             s.top = Some(Tokenized::Literal(Length::Px(0.0)));
             s.left = Some(Tokenized::Literal(Length::Px(0.0)));
         }),
@@ -405,8 +412,8 @@ fn linear_gradient_interpolates_across_axis() {
             s.background_gradient = Some(Gradient {
                 kind: GradientKind::Linear { angle_deg: 90.0 },
                 stops: vec![
-                    GradientStop { offset: 0.0, color: runtime_core::Color("rgb(255, 0, 0)".into()) },
-                    GradientStop { offset: 1.0, color: runtime_core::Color("rgb(0, 255, 0)".into()) },
+                    GradientStop { offset: 0.0, color: runtime_shared::Color("rgb(255, 0, 0)".into()) },
+                    GradientStop { offset: 1.0, color: runtime_shared::Color("rgb(0, 255, 0)".into()) },
                 ],
             });
         }),
@@ -453,9 +460,9 @@ fn radial_gradient_interpolates_with_distance_from_center() {
                 stops: vec![
                     GradientStop {
                         offset: 0.0,
-                        color: runtime_core::Color("rgb(255, 255, 255)".into()),
+                        color: runtime_shared::Color("rgb(255, 255, 255)".into()),
                     },
-                    GradientStop { offset: 1.0, color: runtime_core::Color("rgb(0, 0, 0)".into()) },
+                    GradientStop { offset: 1.0, color: runtime_shared::Color("rgb(0, 0, 0)".into()) },
                 ],
             });
         }),
@@ -491,8 +498,8 @@ fn animated_gradient_stop_color_overrides_static() {
             s.background_gradient = Some(Gradient {
                 kind: GradientKind::Linear { angle_deg: 90.0 },
                 stops: vec![
-                    GradientStop { offset: 0.0, color: runtime_core::Color("rgb(255, 0, 0)".into()) },
-                    GradientStop { offset: 1.0, color: runtime_core::Color("rgb(255, 0, 0)".into()) },
+                    GradientStop { offset: 0.0, color: runtime_shared::Color("rgb(255, 0, 0)".into()) },
+                    GradientStop { offset: 1.0, color: runtime_shared::Color("rgb(255, 0, 0)".into()) },
                 ],
             });
         }),

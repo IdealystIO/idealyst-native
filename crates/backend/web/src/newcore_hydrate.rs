@@ -52,7 +52,7 @@
 //! 1. `WebBackend::hydrate(selector)` — cursor at the SSR root, microtask
 //!    buffering ON (deferred builds must not escape the adoption window).
 //! 2. Seed the SSR-assumed viewport (`data-ssr-viewport`) so anything
-//!    that reads `runtime_core`'s viewport during the build sees the
+//!    that reads `runtime_shared`'s viewport during the build sees the
 //!    server's value, not the real one (first client render must equal
 //!    the server render — the clean-adoption prerequisite).
 //! 3. `world.enter`: build + `realize` (every `create_*` adopts), then
@@ -110,7 +110,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_core::Backend;
 use runtime_scene::{realize, Element, Registry};
 use runtime_world::World;
 
@@ -136,7 +135,7 @@ pub fn hydrate_in(
     // hydration buffering both ride the scheduler, so it must exist first.
     crate::install_scheduler();
     crate::install_time_source();
-    // Route `runtime_core::driver::spawn` futures through the hooked
+    // Route `runtime_shared::driver::spawn` futures through the hooked
     // executor so future polls fire the post-dispatch flush hook.
     #[cfg(feature = "async-driver")]
     crate::install_async_executor();
@@ -157,7 +156,7 @@ pub fn hydrate_in(
     // the server didn't stamp `data-ssr-viewport` — then there's nothing
     // to diverge from.
     if let Some((w, h)) = crate::ssr_viewport(selector) {
-        runtime_core::set_viewport_size(runtime_core::ViewportSize::new(w, h));
+        runtime_shared::set_viewport_size(runtime_shared::ViewportSize::new(w, h));
     }
 
     let mut registry: Registry<WebBackend> = Registry::new();
@@ -172,7 +171,7 @@ pub fn hydrate_in(
         // Drain deferred builds INSIDE the adoption window (module docs
         // step 3): buffered microtasks may build subtrees, so they run
         // under the world ambient, before `finish` retires the cursor.
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         // Capture the per-world viewport ctx AFTER the build (same
         // rationale as `start_in`: the derived-bucket memo captures the
         // breakpoint table at creation, and apps install custom tables
@@ -197,7 +196,7 @@ pub fn hydrate_in(
     // Exits hydration mode + ends microtask buffering. The root was
     // adopted (it IS the mount's first child), so `finish` returns
     // without clearing — the server's DOM stays live, no flash.
-    Backend::finish(&mut *backend.borrow_mut(), root);
+    WebBackend::finish_impl(&mut *backend.borrow_mut(), root);
 
     // Commit anything staged during mount — AFTER `finish`, so reactive
     // rebuilds triggered by staged writes run off the hydration path
@@ -342,7 +341,7 @@ mod tests {
             .first_element_child()
             .unwrap()
             .unchecked_into::<web_sys::Node>();
-        Backend::finish(&mut b, root);
+        WebBackend::finish_impl(&mut b, root);
         assert!(
             Host::supports_splice(&b),
             "post-finish regions splice as usual"

@@ -25,8 +25,8 @@
 // `css_num`, not `f32: Display` — a bare `{}` on an f32 reinstates core's
 // ~12-15 KB flt2dec float formatter in every bundle (see css::css_num).
 use css::css_num;
-use runtime_core::primitives::presence::PresenceState;
-use runtime_core::Easing;
+use runtime_shared::primitives::presence::PresenceState;
+use runtime_shared::Easing;
 use wasm_bindgen::JsCast;
 use web_sys::Node;
 

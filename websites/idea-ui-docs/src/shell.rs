@@ -21,12 +21,7 @@ use idea_ui::{
 use idea_ui::{Table, TableCell, TableRow};
 use icons_lucide::SEARCH;
 
-#[cfg(feature = "old-core")]
 use runtime_core::Route;
-// SEAM(new-core): `Route` isn't mirrored by the glue facade — same type,
-// pulled from the real runtime-core rebinding in lib.rs.
-#[cfg(feature = "new-core")]
-use crate::runtime_core_real::Route;
 
 use crate::routes::{Entry, Status, CATALOG};
 use crate::styles::{
@@ -325,13 +320,10 @@ fn build_nav(query: &str, active_route: Signal<&'static str>) -> Element {
 
 // =============================================================================
 // route_link — the in-app route-jump wrapper shared by the sidebar nav
-// items and the Overview landing CTAs. SAME-SOURCE on both cores: the
-// framework `link(route = …, params = ())` primitive. (The new-core
-// pressable + `set_nav_select` stash that used to live here is gone —
-// `link(route=)` landed end-to-end on the new core in the P6 nav wave:
-// the swap navigator provides the `LinkActivator` world context around
-// every screen AND author-layout build, and the macro emits the same
-// lowering on both cores. Real `<a href>` sidebar entries again.)
+// items and the Overview landing CTAs. The framework
+// `link(route = …, params = ())` primitive: the swap navigator provides
+// the `LinkActivator` world context around every screen AND
+// author-layout build, so these are real `<a href>` sidebar entries.
 // =============================================================================
 
 pub fn route_link(route: &'static Route<()>, child: Element) -> Element {
@@ -560,10 +552,10 @@ fn highlight(src: &str, palette: Palette) -> Vec<(String, Color)> {
     out
 }
 
-// Dual-core `codeblock` SDK (the new-core leg registers the identical
-// `<pre>`/span handler on the scene registry — `codeblock::register`
-// at boot), so ONE CodePanel body serves both cores with the per-span
-// highlight intact.
+// The `codeblock` SDK registers its `<pre>`/span handler on the scene
+// registry (`codeblock::register`, wired by
+// `crate::register_scene_extensions` at boot), so this one CodePanel
+// body carries the per-span highlight on every host.
 #[component]
 pub fn CodePanel(props: &CodePanelProps) -> Element {
     let panel_style = CodePanelBox();

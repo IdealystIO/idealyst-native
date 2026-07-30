@@ -25,7 +25,7 @@
 // `lazy!` is deprecated in favor of `#[component(lazy)]`, but this fixture
 // deliberately keeps exercising it: the block form must keep splitting
 // correctly for as long as it exists. The component-form equivalent of this
-// boundary is covered by `tests/lazy-external-split`.
+// boundary is covered by `tests/lazy-payload-split`.
 #![allow(deprecated)]
 
 use idea_ui::{
@@ -45,7 +45,7 @@ pub fn app() -> Element {
     // the things data-pruning could plausibly damage.
     let chunk = lazy! {
         let count: Signal<u32> = signal(0);
-        let inc: Rc<dyn Fn()> = Rc::new(move || count.update(|n| *n += 1));
+        let inc: Rc<dyn Fn()> = Rc::new(move || count.update(|n| n + 1));
         ui! {
             view {
                 Stack(gap = StackGap::Sm) {
@@ -83,4 +83,11 @@ pub fn app() -> Element {
     }
 }
 
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+// SDK-handler registration seam, invoked by the CLI-generated wrapper
+// after `runtime_vocabulary::register_builtins`. Registry-generic over
+// the scene `Host` so one seam serves every backend. This fixture
+// registers no third-party scene handlers.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}

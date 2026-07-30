@@ -29,12 +29,20 @@ use runtime_core::{
     signal, stylesheet, text, ui, Color, Element, FlexDirection, Length, Signal, StyleApplication,
 };
 
-/// No `Element::External` SDKs to register — `file-picker` is a capability
-/// crate, not a rendered primitive.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam, invoked by the CLI-generated wrappers
+/// after `runtime_vocabulary::register_builtins`. Registry-generic over
+/// the scene `Host` so ONE seam serves every backend. `file-picker` is a
+/// capability crate, not a rendered primitive, so there is nothing to
+/// register.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
+/// Recorder-side seam for the runtime-server sidecar
+/// (`dev_server::sidecar::run_newcore`).
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {}
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}
 
 // The drop zone, idle: a dashed neutral box.
 stylesheet! {

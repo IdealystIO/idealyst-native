@@ -13,10 +13,31 @@ serde_json = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
-# Integration tests define `#[component]` functions to verify the
-# distributed-slice registration round-trips. The `catalog` feature on
-# runtime-core forwards to `runtime-macros/catalog` (the emission
-# gate) and re-exports this crate as `runtime_core::__mcp`, which
-# is what `#[component]`'s emission references.
+# The catalog-emission suite (`tests/registers_component.rs`) compiles
+# real `#[component]` / `#[derive(IdealystSchema)]` / `#[idealyst_tool]` /
+# `recipe!` / `doc_scope!` invocations and asserts what they submit into
+# THIS crate's inventory slices.
+#
+# `runtime-core` is the author surface (`extern crate runtime_core as
+# runtime_core;` at the test root). Its `catalog` feature is the single
+# switch that makes a graph catalog-capable: it turns on the emission gate
+# (`runtime-macros/catalog`) and the `glue::__mcp` anchor, which the
+# facade root's glob re-export carries — so the alias-resolved
+# `::runtime_core::__mcp` emissions (the derive / tool / `recipe!` /
+# `doc_scope!` entry points, which do NOT pass through
+# `runtime_macros::finish`) land on the same anchor as `#[component]`'s
+# retargeted `::runtime_vocabulary::glue::__mcp`.
+#
+# This dep is a CYCLE: `runtime-core` → `runtime-vocabulary/catalog` →
+# `dep:mcp-catalog`. Cargo permits cycles through dev-dependencies — the
+# lib is built once and both the lib target and the test target link the
+# same artifact — which is what lets the suite live next to the crate
+# whose contract it pins. It could not be a normal dependency, and
+# dev-dependencies cannot be optional; with one core there is nothing
+# left to condition on.
 runtime-core = { workspace = true, features = ["catalog"] }
+# `#[component]`'s submission spells the absolute path
+# `::runtime_vocabulary::glue::__mcp`, so the vocabulary must be nameable
+# from the test crate's extern prelude.
+runtime-vocabulary = { workspace = true, features = ["catalog"] }
 runtime-macros = { workspace = true, features = ["catalog"] }

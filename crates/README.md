@@ -2,13 +2,14 @@
 
 Idealyst is two concepts with a contract between them: the
 **Runtime** above and a **Backend** below, glued by the
-`runtime_core::Backend` trait (the Backend Interface). Every
-top-level directory here maps to one piece of that architecture.
+`runtime_scene::Host` seam plus the ~30 capability (`*Ops`) traits in
+`runtime-vocabulary` (the Backend Interface). Every top-level
+directory here maps to one piece of that architecture.
 
 ```
 crates/
-├── runtime/        ← The Runtime: primitives, reactivity, the
-│                     Walker, macros. Platform-agnostic.
+├── runtime/        ← The Runtime: reactive kernel, scene model,
+│                     primitive vocabulary, macros. Platform-agnostic.
 │
 ├── backend/        ← Backend Interface impls against native UI
 │                     toolkits (UIKit, AppKit, DOM, Android Views,
@@ -31,8 +32,8 @@ crates/
 │                     Pure composition over Runtime primitives.
 │
 ├── sdk/            ← Third-party extension primitives. Each crate
-│                     defines a new primitive plus per-Backend impls,
-│                     wired through `Element::External`.
+│                     defines a payload type plus per-backend mount
+│                     handlers on the scene `Registry`.
 │
 └── tools/          ← User-facing orchestration: the CLI, per-platform
                       build/run, and the source-language porters.
@@ -43,10 +44,11 @@ crates/
 
 If you're new to the codebase:
 
-1. [`runtime/`](./runtime) — start here. The Backend trait lives in
-   `runtime/core/src/backend.rs`; everything else hangs off it.
+1. [`runtime/`](./runtime) — start here. The `Host` seam lives in
+   `runtime/scene/src/host.rs` and the capability traits in
+   `runtime/vocabulary/src/caps/`; everything else hangs off them.
 2. [`backend/`](./backend) — pick one (web, ios, android, macos) and
-   read it as a complete implementation of the trait.
+   read it as a complete implementation of `Host` + the caps traits.
 3. [`gpu-backend/`](./gpu-backend) — the structurally different
    Backend. Lives in three layers because it can't inherit from a
    native toolkit.

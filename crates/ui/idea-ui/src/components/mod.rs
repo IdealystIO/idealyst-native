@@ -114,80 +114,49 @@ runtime_core::doc_scope!(
     docs = "idea-ui's component library — buttons, inputs, layout, overlays, feedback, and data-display widgets, all cross-platform."
 );
 
-#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
-// Per-component prim gating: a component compiles only when every
-// primitive family it (transitively) renders is enabled — see the
-// feature table in Cargo.toml (components/mod.rs gates are the
-// authoritative map). Using a gated-out component is a compile error
-// naming the missing `prim-*` feature, not a runtime placeholder.
 pub mod alert;
-#[cfg(all(feature = "prim-text-input", feature = "prim-portal"))]
 pub mod autocomplete;
-// Avatar renders its `src` through the image primitive (`image_from`).
-#[cfg(feature = "prim-image")]
 pub mod avatar;
 pub mod badge;
-#[cfg(feature = "prim-icon")]
 pub mod breadcrumbs;
-#[cfg(feature = "prim-icon")]
 pub mod checkbox;
 pub mod grid;
-#[cfg(feature = "prim-image")]
 pub mod image;
 pub mod link;
 pub mod list;
-#[cfg(feature = "prim-portal")]
 pub mod menu;
 /// Shared scrolling panel for the anchored-menu family (Select/Menu/SubMenu/
 /// Autocomplete). Internal — not a component; see `menu_panel::scrolling_menu_panel`.
 pub(crate) mod menu_panel;
-#[cfg(feature = "prim-icon")]
 pub mod pagination;
 pub mod progress;
 pub mod radio;
-#[cfg(feature = "prim-text-input")]
 pub mod textarea;
-#[cfg(all(feature = "prim-icon", feature = "prim-activity", feature = "prim-portal", feature = "prim-presence"))]
 pub mod toast;
-#[cfg(feature = "prim-portal")]
 pub mod tooltip;
-#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 pub mod button;
 pub mod card;
 pub mod center;
 pub mod chip;
 pub mod collapsible;
 pub mod divider;
-// Gated on text-input only: the module also hosts the shared input/help
-// stylesheets Textarea renders with. The Field COMPONENT additionally
-// needs icon + activity (adornments, loading spinner) — those items
-// carry their own cfg(all(...)) inside the module.
-#[cfg(feature = "prim-text-input")]
+// Hosts the Field component AND the shared input/help stylesheets
+// Textarea renders with.
 pub mod field;
-#[cfg(feature = "prim-icon")]
 pub mod icon;
-#[cfg(feature = "prim-icon")]
 pub mod icon_button;
-#[cfg(all(feature = "prim-portal", feature = "prim-presence"))]
 pub mod modal;
-#[cfg(feature = "prim-portal")]
 pub mod popover;
 pub mod segmented_control;
-// Gated on portal only: Autocomplete (text-input + portal) reuses the
-// module's `SelectOption` / `SelectSize` types, which carry no icon
-// dependency. The Select COMPONENT additionally needs icon (chevron) —
-// those items carry cfg(all(...)) inside the module.
-#[cfg(feature = "prim-portal")]
+// Hosts the Select component AND the `SelectOption` / `SelectSize`
+// data/style types Autocomplete reuses.
 pub mod select;
 pub mod skeleton;
-#[cfg(feature = "prim-icon")]
 pub mod slider;
 pub mod spacer;
-#[cfg(feature = "prim-activity")]
 pub mod spinner;
 pub mod stack;
 pub mod surface;
-#[cfg(feature = "prim-icon")]
 pub mod switch;
 #[cfg(feature = "table")]
 pub mod table;
@@ -198,5 +167,4 @@ pub mod typography;
 // `Icon` is re-exported here (rather than only at the crate root in
 // lib.rs) so it's reachable as `crate::components::Icon`. The crate-root
 // `idea_ui::Icon` alias lives in lib.rs alongside the other components.
-#[cfg(feature = "prim-icon")]
 pub use icon::{Icon, IconProps};

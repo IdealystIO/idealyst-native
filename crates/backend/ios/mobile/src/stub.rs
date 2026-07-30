@@ -1,40 +1,11 @@
-use runtime_core::{Backend, StyleRules};
-use std::rc::Rc;
+//! Non-iOS stub. Lets every consumer crate type-check on any host.
+//!
+//! The real backend lives under `cfg(target_os = "ios")` in
+//! [`crate::imp`]. Runtime v2 has no `Backend` mega-trait to stub: the
+//! capability impls (`crate::newcore`) are `target_os`-gated with the
+//! real backend, so off-target builds only need the type to exist.
 
 pub struct IosBackend;
-
-impl Backend for IosBackend {
-    type Node = ();
-
-    fn platform(&self) -> runtime_core::Platform {
-        runtime_core::Platform::Ios
-    }
-
-    fn create_view(&mut self, _a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
-        unreachable!("backend-ios stub: UIKit calls only on iOS target")
-    }
-    fn create_text(&mut self, _content: &str, _a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
-        unreachable!()
-    }
-    fn create_button(&mut self, _label: &str, _on_click: &runtime_core::Action, _leading_icon: Option<&runtime_core::IconData>, _trailing_icon: Option<&runtime_core::IconData>, _a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
-        unreachable!()
-    }
-    fn insert(&mut self, _parent: &mut Self::Node, _child: Self::Node) {
-        unreachable!()
-    }
-    fn update_text(&mut self, _node: &Self::Node, _content: &str) {
-        unreachable!()
-    }
-    fn clear_children(&mut self, _node: &Self::Node) {
-        unreachable!()
-    }
-    fn apply_style(&mut self, _node: &Self::Node, _style: &Rc<StyleRules>) {
-        unreachable!()
-    }
-    fn finish(&mut self, _root: Self::Node) {
-        unreachable!()
-    }
-}
 
 impl IosBackend {
     /// Stub for the iOS-only `run_layout` so non-iOS hosts that

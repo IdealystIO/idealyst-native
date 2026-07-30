@@ -102,7 +102,7 @@ impl Tab {
     }
 }
 
-/// Equality for the new core's `Signal<Vec<Tab>>` (guarded `set` needs
+/// Equality for `Signal<Vec<Tab>>` (the guarded `set` needs
 /// `T: PartialEq`). Static labels compare by value so an in-place label
 /// edit still notifies; Dynamic labels compare by closure identity (the
 /// closure re-reads its signals on every render, so identity is the

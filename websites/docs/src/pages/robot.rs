@@ -162,7 +162,7 @@ docs! {
                 #[method]
                 fn reset() { value.set(0); }
                 #[method]
-                fn bump_by(n: i32) { value.update(|v| *v += n); }
+                fn bump_by(n: i32) { value.update(|v| v + n); }
 
                 // ...
             }
@@ -266,7 +266,7 @@ docs! {
         list(
             ["Single thread, single arena. Robot reads from the same thread the \
               app runs on. Queries are synchronous and serialized with the \
-              render walker."],
+              realize pass."],
             ["The bridge is dev-mode. There's no auth on port ", code("9718"),
              ". Don't ship a Robot-enabled binary to end users. Leaving the \
              feature off (the default) is the production posture."],

@@ -17,7 +17,7 @@
 
 use crate::phase_timer::PhaseTimer;
 use crate::{DynamicPtrEntry, DynamicRule, DynamicSlot, PregenEntry, WebBackend};
-use runtime_core::{Easing, StyleRules};
+use runtime_shared::{Easing, StyleRules};
 // CSS conversion lives in the shared, platform-neutral `css` crate so
 // the web backend and the SSR backend emit byte-identical declarations.
 use css::{hash_class_name, rules_to_css, rules_to_css_text};
@@ -318,7 +318,7 @@ impl WebBackend {
         // `slots.len() == take <= rules.len()` — one rule group's worth of
         // indices, small and bounded. Insertion sort keeps ~4.5 KB of std
         // u32-sort machinery out of the wasm (`num::insertion_sort_by`).
-        runtime_core::num::insertion_sort_by(&mut slots, |a, b| a.cmp(b));
+        runtime_shared::num::insertion_sort_by(&mut slots, |a, b| a.cmp(b));
         let sheet = self.sheet();
         rules
             .iter()
@@ -405,7 +405,7 @@ impl WebBackend {
     /// felt by the DOM.
     pub(crate) fn impl_install_theme_variables(
         &mut self,
-        tokens: &[runtime_core::TokenEntry],
+        tokens: &[runtime_shared::TokenEntry],
     ) {
         // Token value → CSS string via the shared `css` crate, so web's
         // `:root` setProperty values and the SSR backend's `:root { … }`
@@ -468,7 +468,7 @@ impl WebBackend {
     /// index rather than `setProperty`, because the value we're
     /// changing IS the `var()` reference (not the resolved color),
     /// and only the reference changes when the SDK re-targets.
-    pub(crate) fn impl_set_app_background(&mut self, color: &runtime_core::Tokenized<runtime_core::Color>) {
+    pub(crate) fn impl_set_app_background(&mut self, color: &runtime_shared::Tokenized<runtime_shared::Color>) {
         let value = match color.name() {
             Some(name) => format!("var(--{name})"),
             None => color.value().0.clone(),
@@ -513,8 +513,8 @@ impl WebBackend {
     /// follows the theme indirectly.
     pub(crate) fn impl_set_scrollbar_theme(
         &mut self,
-        thumb: &runtime_core::Tokenized<runtime_core::Color>,
-        track: &runtime_core::Tokenized<runtime_core::Color>,
+        thumb: &runtime_shared::Tokenized<runtime_shared::Color>,
+        track: &runtime_shared::Tokenized<runtime_shared::Color>,
     ) {
         let thumb_v = match thumb.name() {
             Some(n) => format!("var(--{n})"),
@@ -596,7 +596,7 @@ impl WebBackend {
     pub(crate) fn snapshot_gradient_for_animation(
         &mut self,
         id: u32,
-        gradient: Option<&runtime_core::Gradient>,
+        gradient: Option<&runtime_shared::Gradient>,
     ) {
         let Some(g) = gradient else {
             return;
@@ -605,17 +605,17 @@ impl WebBackend {
         // Stable insertion sort: equal-offset stops are CSS hard stops whose
         // relative order is meaningful, and std's stable sort costs ~3 KB of
         // wasm for this one element type (`num::insertion_sort_by`).
-        runtime_core::num::insertion_sort_by(&mut stops, |a, b| {
+        runtime_shared::num::insertion_sort_by(&mut stops, |a, b| {
             a.offset.partial_cmp(&b.offset).unwrap_or(std::cmp::Ordering::Equal)
         });
         let offsets: Vec<f32> = stops.iter().map(|s| s.offset).collect();
         let colors: Vec<[f32; 4]> = stops.iter().map(|s| color_to_srgb(&s.color)).collect();
         let shape = crate::animated::GradientShape {
             kind: match g.kind {
-                runtime_core::GradientKind::Linear { angle_deg } => {
+                runtime_shared::GradientKind::Linear { angle_deg } => {
                     crate::animated::GradientShapeKind::Linear { angle_deg }
                 }
-                runtime_core::GradientKind::Radial { center, radius, extent } => {
+                runtime_shared::GradientKind::Radial { center, radius, extent } => {
                     crate::animated::GradientShapeKind::Radial { center, radius, extent }
                 }
             },
@@ -712,7 +712,7 @@ impl WebBackend {
         &mut self,
         node: &web_sys::Node,
         base: &std::rc::Rc<StyleRules>,
-        overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
+        overlays: &[(runtime_shared::StateBits, std::rc::Rc<StyleRules>)],
     ) {
         // States-only entry: no breakpoint or container overlays.
         // Delegates to the superset so the two paths can never drift (the
@@ -744,8 +744,8 @@ impl WebBackend {
         &mut self,
         node: &web_sys::Node,
         base: &std::rc::Rc<StyleRules>,
-        overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
-        breakpoint_overlays: &[(runtime_core::Breakpoint, std::rc::Rc<StyleRules>)],
+        overlays: &[(runtime_shared::StateBits, std::rc::Rc<StyleRules>)],
+        breakpoint_overlays: &[(runtime_shared::Breakpoint, std::rc::Rc<StyleRules>)],
         container_overlays: &[(f32, std::rc::Rc<StyleRules>)],
     ) {
         // Outer phase covers the whole call — comparing this against
@@ -1028,8 +1028,8 @@ impl WebBackend {
         node: &web_sys::Node,
         id: u32,
         base: &std::rc::Rc<StyleRules>,
-        overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
-        breakpoint_overlays: &[(runtime_core::Breakpoint, std::rc::Rc<StyleRules>)],
+        overlays: &[(runtime_shared::StateBits, std::rc::Rc<StyleRules>)],
+        breakpoint_overlays: &[(runtime_shared::Breakpoint, std::rc::Rc<StyleRules>)],
         container_overlays: &[(f32, std::rc::Rc<StyleRules>)],
     ) {
         let combined = css::variant_class_key(
@@ -1140,9 +1140,9 @@ impl WebBackend {
     /// teardown.
     pub(crate) fn impl_mint_class_for_app(
         &mut self,
-        app: &runtime_core::StyleApplication,
+        app: &runtime_shared::StyleApplication,
     ) -> String {
-        let resolved = runtime_core::resolve_style(app);
+        let resolved = runtime_shared::resolve_style(app);
         let key = resolved.content_key();
 
         // 1. Existing dynamic-by-content hit: bump refcount + reuse.
@@ -1214,14 +1214,14 @@ impl WebBackend {
 // CSS value converters — free functions, no backend state.
 // ---------------------------------------------------------------------------
 
-/// Resolve a `runtime_core::Color` (a CSS-string wrapper) to a
+/// Resolve a `runtime_shared::Color` (a CSS-string wrapper) to a
 /// concrete sRGB `[r, g, b, a]` in `0..=1`, used to seed the per-node
 /// `gradient_stops` snapshot the animation path mutates. Parsing
-/// lives in `runtime_core::color`; unknown shapes (named colors,
+/// lives in `runtime_shared::color`; unknown shapes (named colors,
 /// `hsl(...)`) fall back to opaque black — the CSS class still
 /// renders them correctly; this is only the seed for the animation
 /// state machine.
-pub(crate) fn color_to_srgb(c: &runtime_core::Color) -> [f32; 4] {
-    runtime_core::color::parse_or(&c.0, runtime_core::color::Rgba::BLACK).to_srgb_f32()
+pub(crate) fn color_to_srgb(c: &runtime_shared::Color) -> [f32; 4] {
+    runtime_shared::color::parse_or(&c.0, runtime_shared::color::Rgba::BLACK).to_srgb_f32()
 }
 

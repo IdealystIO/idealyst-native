@@ -1,0 +1,112 @@
+[
+  {
+    "CreateView": {
+      "a11y": {
+        "actions": [],
+        "hidden": false,
+        "hint": null,
+        "identifier": null,
+        "label": null,
+        "live_region": null,
+        "role": null,
+        "traits": 0
+      },
+      "id": 1
+    }
+  },
+  {
+    "CreateText": {
+      "a11y": {
+        "actions": [],
+        "hidden": false,
+        "hint": null,
+        "identifier": null,
+        "label": null,
+        "live_region": null,
+        "role": null,
+        "traits": 0
+      },
+      "content": "alpha",
+      "id": 2
+    }
+  },
+  {
+    "CreateButton": {
+      "a11y": {
+        "actions": [],
+        "hidden": false,
+        "hint": null,
+        "identifier": null,
+        "label": null,
+        "live_region": null,
+        "role": null,
+        "traits": 0
+      },
+      "id": 3,
+      "label": "Tap me",
+      "leading_icon": null,
+      "on_click": 1,
+      "trailing_icon": null
+    }
+  },
+  {
+    "CreateView": {
+      "a11y": {
+        "actions": [],
+        "hidden": false,
+        "hint": null,
+        "identifier": null,
+        "label": null,
+        "live_region": null,
+        "role": null,
+        "traits": 0
+      },
+      "id": 4
+    }
+  },
+  {
+    "CreateText": {
+      "a11y": {
+        "actions": [],
+        "hidden": false,
+        "hint": null,
+        "identifier": null,
+        "label": null,
+        "live_region": null,
+        "role": null,
+        "traits": 0
+      },
+      "content": "nested",
+      "id": 5
+    }
+  },
+  {
+    "Insert": {
+      "child": 2,
+      "parent": 1
+    }
+  },
+  {
+    "Insert": {
+      "child": 3,
+      "parent": 1
+    }
+  },
+  {
+    "Insert": {
+      "child": 4,
+      "parent": 1
+    }
+  },
+  {
+    "Insert": {
+      "child": 5,
+      "parent": 4
+    }
+  },
+  {
+    "Finish": {
+      "root": 1
+    }
+  }
+]

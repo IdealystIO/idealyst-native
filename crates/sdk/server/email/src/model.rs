@@ -145,7 +145,7 @@ impl Email {
         S: FnOnce(&mut backend_email::EmailBackend),
         F: FnOnce() -> runtime_core::Element,
     {
-        let rendered = backend_email::render_email_with(setup, app);
+        let rendered = backend_email::newcore::render_email_with(setup, app);
         self.html = Some(rendered.html);
         self.text = Some(rendered.text);
         if self.subject.is_empty() {

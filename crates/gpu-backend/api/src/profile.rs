@@ -7,7 +7,7 @@
 //! skin (UIKit, M3, etc.) is selected by the caller as a
 //! separate `Rc<dyn Painter>`, not encoded here.
 
-use runtime_core::ColorScheme;
+use runtime_shared::ColorScheme;
 
 /// What the variant tells the native shell to build.
 #[derive(Clone, Debug)]

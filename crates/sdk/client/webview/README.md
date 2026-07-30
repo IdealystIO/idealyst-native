@@ -2,9 +2,10 @@
 
 A `WebView` primitive for the idealyst framework — embed a live web
 document inside your native UI tree. Built on the framework's
-`Element::External` extension mechanism, so it's not part of
-runtime-core: an app opts in by depending on this crate and calling
-`webview::register(&mut backend)` once at bootstrap.
+third-party primitive contract (a payload type plus a scene-`Registry`
+mount handler installed at the boot seam), so it's not part of
+runtime-core: an app opts in by depending on this crate and passing
+`webview::register` to the boot entry once at bootstrap.
 
 This is the **canonical single-crate, `cfg`-gated** third-party
 primitive: one crate ships every backend, selected at compile time via
@@ -15,9 +16,9 @@ splits a shared core from per-backend leaf crates.)
 use webview::prelude::*;
 use runtime_core::{signal, Ref};
 
-// App bootstrap — one line per third-party SDK:
-let mut backend = WebBackend::new("#app");
-webview::register(&mut backend);
+// App bootstrap — one line per third-party SDK. `register` IS the boot
+// registration seam (it takes the scene `Registry`, not the backend):
+backend_web::newcore::start_in("#app", webview::register, app);
 
 // Inside a `ui!` block. The PascalCase `WebView` tag resolves through
 // `BuildElement` dispatch (`pub type WebView = WebViewProps`):

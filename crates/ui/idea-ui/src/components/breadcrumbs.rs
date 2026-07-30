@@ -90,12 +90,6 @@ fn crumb_style(is_current: bool) -> impl Fn() -> StyleApplication + Clone + 'sta
 
 /// Renders a horizontal trail of crumbs joined by `separator`. Earlier
 /// linked crumbs are clickable; the last crumb is the current page.
-///
-/// **Cargo features:** requires `prim-icon` (in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without it compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Breadcrumbs(props: BreadcrumbsProps) -> Element {
     let n = props.items.len();

@@ -31,6 +31,11 @@ jobs = { workspace = true }
 # Server-only (behind `server`), so the wasm client never compiles it.
 idealyst-config = { workspace = true, optional = true, features = ["jobs"] }
 runtime-core = { workspace = true, features = ["async-driver"] }
+# The `ui!`/`#[component]` expansions spell absolute
+# `::runtime_vocabulary::glue::…` paths, so this is a direct dep.
+runtime-vocabulary = { workspace = true }
+# The registration seam is generic over `runtime_scene::Registry<H>`.
+runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 serde = { workspace = true }
 

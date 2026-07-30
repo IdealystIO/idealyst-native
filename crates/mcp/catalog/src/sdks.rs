@@ -139,7 +139,7 @@ sdk!(
     "video",
     SdkCategory::Media,
     SdkKind::External,
-    "Third-party `Video` playback primitive (`Element::External`). WEB REGISTRATION REQUIRED: call `video::register(&mut backend)` from your wasm32 `register_extensions` or it renders an unsupported-`External` placeholder (runtime, not compile-time); native self-registers. See the `sdks` guide's \"Registering External UI SDKs\" section."
+    "Third-party `Video` playback primitive (a scene-registry payload). REGISTRATION REQUIRED ON EVERY TARGET: call `video::register(registry)` from your `register_scene_extensions` — the scene registry has no fallback handler, so an unregistered payload PANICS at realize. See the `sdks` guide's \"Registering extension SDKs\" section."
 );
 sdk!(
     "video-decode",
@@ -149,7 +149,7 @@ sdk!(
 );
 
 // ---------------------------------------------------------------------
-// UI — component library + Element::External primitives
+// UI — component library + scene-registry extension primitives
 // ---------------------------------------------------------------------
 
 sdk!(
@@ -174,7 +174,7 @@ sdk!(
     "webview",
     SdkCategory::Ui,
     SdkKind::External,
-    "Third-party `WebView` primitive. The canonical single-crate cfg-gated `Element::External` pattern. WEB REGISTRATION REQUIRED: call `webview::register(&mut backend)` from your wasm32 `register_extensions` — without it the primitive renders an `External \"…Props\" not supported` placeholder (runtime, not compile-time); native self-registers. See the `sdks` guide's \"Registering External UI SDKs\" section."
+    "Third-party `WebView` primitive. The canonical single-crate extension pattern. REGISTRATION REQUIRED ON EVERY TARGET: call `webview::register(registry)` from your `register_scene_extensions` — an unregistered payload PANICS at realize. See the `sdks` guide's \"Registering extension SDKs\" section."
 );
 sdk!(
     "maps",
@@ -210,7 +210,7 @@ sdk!(
     "form",
     SdkCategory::Ui,
     SdkKind::External,
-    "Third-party `Form` container SDK (backed by `Element::External`). Author it as a first-class tag: `ui! { Form(on_submit = Some(cb)) { text_input(value = name) button(label = \"Save\", on_click = cb) } }` — the `on_submit` closure reads your field signals (NOT DOM FormData); share the same `Rc` with your submit button so one action covers every backend. WEB: on web `Form` renders a real `<form>` (free Enter-to-submit, autofill), but call `form::register(&mut backend)` from your wasm32 `register_extensions` or it renders an unsupported-`External` placeholder (runtime, not compile-time); native self-registers as a passthrough container (submission is fired by your submit button). Need imperative `.submit()`? Use the fn-call form `form(props).bind(ref)` — the `ui!` tag form drops the handle."
+    "Third-party `Form` container SDK (a scene-registry payload). Author it as a first-class tag: `ui! { Form(on_submit = Some(cb)) { text_input(value = name) button(label = \"Save\", on_click = cb) } }` — the `on_submit` closure reads your field signals (NOT DOM FormData); share the same `Rc` with your submit button so one action covers every backend. WEB: on web `Form` renders a real `<form>` (free Enter-to-submit, autofill); elsewhere it is a passthrough container (submission is fired by your submit button). Call `form::register(registry)` from your `register_scene_extensions` on EVERY target — an unregistered payload PANICS at realize. Need imperative `.submit()`? Use the fn-call form `form(props).bind(ref)` — the `ui!` tag form drops the handle."
 );
 sdk!(
     "toolbar",

@@ -3,8 +3,8 @@
 The UI layer is everything the application author touches:
 `#[component]` functions, the `ui!` / `jsx!` macros, the typed handle
 system (`Ref<H>`), the `stylesheet!` macro. It produces a tree of
-`Element` values — the framework's structural IR — which the render
-walker hands to a `Backend`.
+`Element` values — the framework's structural IR — which
+`runtime_scene::realize` mounts against a platform.
 
 The big idea: **the surface DSL is a frontend, not a structural
 commitment.** `ui!`, `jsx!`, and any third macro you might write all
@@ -15,75 +15,74 @@ reactivity work identically across them.
 
 ## The structural IR: `Element`
 
-`runtime_core::Element` is an enum — one variant per "kind of thing
-the renderer knows about." A small sample:
+`runtime_scene::Element` is an enum with six variants, and it describes
+**structure only** — it carries primitive payloads without interpreting
+them (`crates/runtime/scene/src/element.rs`):
 
 ```rust
 pub enum Element {
-    View    { children: Vec<Element>, style: Option<StyleSource>, ref_fill: Option<RefFill> },
-    Text    { source: TextSource, style: Option<StyleSource>, ref_fill: Option<RefFill> },
-    Button  { label: TextSource, on_click: Rc<dyn Fn()>, style: …, ref_fill: …, disabled: … },
-    ScrollView { children: Vec<Element>, horizontal: bool, style: …, ref_fill: … },
-    Virtualizer { item_count, item_key, item_size, render_item, … },
-    Graphics { on_ready, on_resize, on_lost, … },
-    Navigator(Box<primitives::navigator::Navigator>),
-    When    { cond: Box<dyn Fn() -> bool>, then: …, otherwise: …, style: … },
-    Switch  { key: Box<dyn Fn() -> Box<dyn Any>>, eq: …, build: …, style: … },
-    // …
+    Item { data: Box<dyn Any>, children: Vec<Element> },  // a primitive + children
+    Fragment(Vec<Element>),                               // siblings with no node
+    Dyn(DynSpec),                                         // a reactive hole
+    Keyed { items: …, render: … },                        // a keyed reactive list
+    Owned { element: Box<Element>, owned: Owned },        // a component boundary
+    Many { data: Box<dyn Any> },                          // N siblings from one payload
 }
 ```
 
-Three patterns recur across variants:
+Only `Item` and `Many` ever become real platform nodes. Everything a
+primitive *is* lives in its payload struct
+(`crates/runtime/vocabulary/src/prims/`), and `realize` dispatches each
+payload to the handler registered for its `TypeId`. Three patterns recur
+across payloads:
 
-- **`style: Option<StyleSource>`** — every visual primitive can carry a
-  style. The framework applies it in a dedicated `Effect`, independent
-  of content updates, so style changes and content changes don't
-  invalidate each other.
-- **`ref_fill: Option<RefFill>`** — if the call site used `.bind(r)`,
-  the renderer fills the `Ref<H>` with a handle to the just-created
-  node. Imperative APIs (`focus`, `scroll_to`, `play`, etc.) flow
-  through these handles.
-- **Closures for reactive props** — `label: TextSource::Reactive(Fn ->
-  String)`, `src: Box<dyn Fn() -> String>`, `disabled: Option<Box<dyn
-  Fn() -> bool>>`. The walker installs an `Effect` around each, so
-  signals read inside the closure drive updates automatically.
+- **`style: Option<StyleProp>`** — every visual primitive can carry a
+  style. The handler attaches it in a dedicated binding effect,
+  independent of content updates, so style changes and content changes
+  don't invalidate each other.
+- **`ref_fill`** — if the call site used `.bind(r)`, the handler calls
+  it with the handle it minted for the new node. Imperative APIs
+  (`focus`, `scroll_to`, `play`) flow through those handles.
+- **`Value<T>` for props** — `Value::Const(T)` is applied once and
+  creates no reactive machinery; `Value::Dyn(Box<dyn Fn() -> T>)` gets a
+  binding effect, so signals read inside the closure drive updates
+  automatically.
 
 There is **no virtual DOM, no diff pass**. A primitive is built once;
-subsequent updates flow through `Effect`-driven mutation calls on the
-already-existing native node. The only "rebuild" path is the
-conditional primitives (`When`, `Switch`, plus virtualized list
-items) — and even there, only the affected subtree is rebuilt, not
-its siblings.
+subsequent updates flow through binding effects into capability calls on
+the already-existing native node. The only rebuild paths are the
+structural holes (`Dyn`, `Keyed` — what reactive `if` / `match` / keyed
+`for` and virtualized rows lower to), and even there only the affected
+subtree is rebuilt, not its siblings.
 
 ### Reactive conditionals
 
 ```rust
-pub fn when<C, T, O>(cond: C, then: T, otherwise: O) -> Element
-pub fn switch<S: PartialEq, F: Fn() -> S, B: Fn(&S) -> Element>(scrutinee: F, branches: B)
-   -> Element
+pub fn when(cond: impl Fn() -> bool, then: …, otherwise: …) -> Element
+pub fn switch<S: PartialEq>(scrutinee: impl Fn() -> S, branches: impl Fn(&S) -> Element) -> Element
 ```
 
 `when` is a two-way conditional, `switch` is a multi-way conditional
-keyed on any `PartialEq + 'static` type.
+keyed on any `PartialEq + 'static` type. Both lower to the scene's
+**guarded** hole (`runtime_scene::dyn_keyed`), so the key decides:
 
-Both wrap their decision closure in an `Effect`. When a signal the
-closure reads changes:
+- `when` rebuilds when the boolean flips; other signals the predicate
+  reads don't tear the branch down.
+- `switch` rebuilds only when the new scrutinee fails equality against
+  the previous one. `touch()` on a scrutinee is inert — change the value.
 
-- `when` rebuilds the branch if the condition flipped.
-- `switch` rebuilds only when the new key fails equality against the
-  previous key — so unrelated signal changes that don't affect the
-  branch identity don't tear down its state.
+The outgoing subtree's `Realized` drops on rebuild, running effect
+cleanups and freeing every signal and effect inside it. **State in a
+hidden branch is gone on toggle — this is the "dispose on hide" model.**
 
-The old subtree's `Scope` drops on rebuild, freeing every signal,
-effect, and ref inside it. **State in a hidden branch is gone on toggle
-— this is the "dispose on hide" model.**
-
-The rebuild itself is deferred to a microtask. This matters: the
-triggering event (click handler, scroll callback, etc.) is itself a
-wasm-bindgen closure or JNI trampoline. Tearing down the old subtree
-synchronously would drop other closures that the platform may still
-have queued events for. Deferring lets the platform finish draining
-those events before the closures vanish.
+The rebuild runs inside the world's flush, not inside the event handler
+that triggered it: the write stages, the driver effect for the hole
+re-runs during the flush, and the swap happens there
+(`crates/runtime/scene/src/realize.rs`). So the triggering platform
+closure has already returned before the old subtree's closures are
+dropped — the property the old core bought with a microtask deferral now
+falls out of the flush boundary. See
+[`automatic-batching.md`](./automatic-batching.md).
 
 ---
 
@@ -169,9 +168,10 @@ them apart. The `#[component]` attribute does three jobs:
    macro auto-injects a `bind_to: Option<Ref<CounterHandle>>` prop and
    fills it in-body, so the ordinary tag form binds:
    `ui! { Counter(bind_to = h) }`, then `h.get().map(|c| c.ping())`
-   (`.get()`, not `.with()` — methods write signals). The legacy
-   explicit-props form instead returns `Bindable<CounterHandle>` for
-   fn-call `.bind()`.
+   (`.get()`, not `.with()` — methods write signals). `#[method]`
+   requires this inline-props shape; the legacy explicit-props /
+   generic form is a compile error
+   (`crates/runtime/vocabulary/src/robot_methods.rs`).
 
 The author writes a function. The framework gets a Rust function (still
 callable normally), the `BuildElement` dispatch glue (used by the DSLs),
@@ -180,59 +180,67 @@ to write the body.
 
 ### Why two return paths
 
-Built-in primitive constructors return `Bound<H>` (the typed-handle
-wrapper that supports `.with_style(...)`, `.bind(...)`, `.disabled(...)`).
-A `#[component]` returns `Element` directly — components are leaf
-units of composition; the DSL coerces both via `IntoElement`. The
-result is that user components participate in the same composition
-slots (`children: Vec<Element>`) as the built-ins.
+Built-in primitive constructors return a builder (`GlueView`,
+`GlueButton`, … — the wrappers that support `.with_style(...)`,
+`.bind(...)`, `.disabled(...)`). A `#[component]` returns `Element`
+directly — components are leaf units of composition; the DSL coerces
+both via `IntoElement`. The result is that user components participate in
+the same composition slots (`children: Vec<Element>`) as the built-ins.
 
 ---
 
 ## Refs
 
-`Ref<H>` is a copy-handle pointing at an arena slot. The slot is owned
-by the active `Scope`, so refs free deterministically.
+`Ref<H>` is a copy-handle pointing at a slot in the shared substrate's
+arena (`crates/runtime/shared/src/reactive.rs`).
 
 ```rust
 let input_ref: Ref<TextInputHandle> = Ref::new();
 ui! {
-    TextInput(value = name, on_change = move |s| name.set(s)).bind(input_ref)
-    Button(label = "Focus", on_click = move || input_ref.with(|h| h.focus()))
+    text_input(value = name, on_change = move |s| name.set(s)).bind(input_ref)
+    button(label = "Focus", on_click = move || input_ref.with(|h| h.focus()))
 }
 ```
 
-`.bind(r)` on a `Bound<H>` is what lifts the ref into the `ref_fill`
-slot on the underlying primitive. The render walker reads `ref_fill`
-after construction and calls `Ref::fill(handle)` to populate the
-slot — so the slot is `None` between `Ref::new()` and mount, and `Some`
-after, matching `useRef`'s lifecycle in React.
+`.bind(r)` installs a `ref_fill` closure on the primitive's payload; the
+primitive's mount handler calls it with the handle it minted, so the
+slot is `None` between `Ref::new()` and mount and `Some` after —
+matching `useRef`'s lifecycle in React.
 
-Each primitive's handle type is built by a `make_*_handle` method on
-the backend. Backends that don't implement a given imperative API
-return a default no-op handle (the `Backend` trait's `make_*_handle`
-defaults do this). So calling `handle.focus()` on a backend that hasn't
-implemented `TextInputOps::focus` is a silent no-op rather than a
-build error — useful when you're filling in a new backend
+Each primitive's handle type is built by a `make_*_handle` capability
+method. Backends that don't implement a given imperative API inherit the
+default no-op handle (`runtime_vocabulary::caps::noop`), so calling
+`handle.focus()` on a backend without `TextInputOps::focus` is a silent
+no-op rather than a build error — useful when filling in a new backend
 incrementally.
 
-User components declared with `#[component]` + `#[method]` fns get
-the same machinery: the macro generates a handle struct, and
-`#[component]`'s rewrite turns the function's return type into a
-`Bindable<MyHandle>` that supports `.bind(ref)` exactly like
-primitives.
+**Lifetime caveat.** The ref slot's lifetime was tied to an old-core
+`Scope`, and no such scope is active in a runtime-v2 build, so a
+`Ref::new()` slot is not freed until the thread exits. Refs are
+per-component, so this is bounded — but a `Ref` created inside a
+frequently-remounted subtree accumulates slots. See
+[`reactivity.md` § `Ref<H>`](./reactivity.md#refh--the-imperative-handle-slot).
+
+User components declared with `#[component]` + `#[method]` fns get a
+parallel mechanism: the macro generates a handle struct and a
+`bind_to` prop the body fills, driven through `Ref<MyHandle>` exactly
+like a primitive's.
 
 ### Mount-time scoping
 
-Refs created inside a component body are registered to the active
-`Scope` (the same one the component's signals and effects join). When
-the component unmounts — its enclosing `when`/`switch` branch flips,
-the parent is rebuilt, the `Owner` drops — the scope's `Drop` frees
-the ref slot along with the signals. There's no manual cleanup.
+Signals and effects created inside a component body are collected into
+the component's ownership scope, and the scope rides on the
+`Element::Owned` boundary the `#[component]` macro emits. When the
+component unmounts — its enclosing reactive `if` / `match` flips, the
+parent's hole rebuilds, the root `Realized` drops — dropping that scope
+runs the effects' cleanups and frees the slots. There's no manual
+cleanup.
 
-The handle inside the slot is dropped at that same point; backends'
-handle types are responsible for any platform-specific teardown they
-need (most are zero-cost wrappers and don't need any).
+The `Ref<H>` *slot* is the exception, because it lives in the shared
+substrate's arena rather than the world (see the caveat above); the
+handle it holds is dropped when the ref is overwritten or the thread
+ends. Backends' handle types are responsible for any platform-specific
+teardown they need (most are zero-cost wrappers and need none).
 
 ---
 
@@ -358,14 +366,14 @@ different surface grammar, fully interoperable in the same component.
 
 ---
 
-## `Bound<H>` and the builder chain
+## The primitive builders
 
-Most primitive constructors don't return `Element` directly. They
-return `Bound<H>` — a small wrapper holding the in-progress
-`Element` and exposing a fluent builder:
+Primitive constructors don't return `Element` directly. They return a
+small builder holding the in-progress payload and exposing a fluent
+surface (`crates/runtime/vocabulary/src/glue.rs`):
 
 ```rust
-pub fn button<L, F>(label: L, on_click: F) -> Bound<ButtonHandle> { … }
+pub fn button(label: impl TextContent, on_click: impl IntoAction) -> GlueButton { … }
 
 button("Click", || …)
     .with_style(primary_button_style())
@@ -373,15 +381,18 @@ button("Click", || …)
     .disabled(move || disabled.get())
 ```
 
-Each builder method mutates the inner `Element`'s optional slot
-(`style`, `ref_fill`, `disabled`) and returns `Self`. When the
-chain ends inside `ui!` children, the `IntoElement` impl unwraps
-the `Bound<H>` back to a bare `Element`.
+Each builder method fills one of the payload's optional slots and
+returns `Self`. When the chain ends inside `ui!` children, the
+`IntoElement` impl turns the builder into an `Element::Item` carrying
+the finished payload.
 
-This is what makes `style = ...` work uniformly on every primitive:
-the DSL emits `.with_style(expr)` on the constructed `Bound<H>`,
-the builder method stuffs it into the `Element`'s `style` slot,
-and the walker picks it up at build time.
+This is what makes `style = ...` work uniformly on every primitive: the
+DSL emits `.with_style(expr)` on the constructed builder, the builder
+stuffs it into the payload's `style` slot, and the primitive's handler
+attaches it at mount. The universal setters — `with_style`, `test_id`,
+`accessibility`, `a11y_*`, `live_region` — are generated once for every
+builder by a shared macro, so they exist on all of them by
+construction.
 
 ---
 
@@ -430,11 +441,11 @@ into the surrounding `Vec<Element>`:
 - `Element` → push as-is.
 - `Option<Element>` → push if `Some`.
 - `Vec<Element>` → extend.
-- `Bound<H>` → unwrap and push.
+- a primitive builder → convert and push.
 - Iterators in `for` blocks → push each.
 
-This is why `if let Some(x) = … { Text { x } }` and `for item in items
-{ Text { item.name.clone() } }` work seamlessly inside `ui!` without
+This is why `if let Some(x) = … { text { x } }` and `for item in items
+{ text { item.name.clone() } }` work seamlessly inside `ui!` without
 the macro special-casing every shape. The shape work is in the trait
 impls; the macro just calls `append_to`.
 
@@ -486,12 +497,13 @@ If you want to:
 
 | Goal | Where it lives |
 | --- | --- |
-| Add a new built-in primitive | New `Element` variant + walker arm in `runtime_core::lib`, plus a `create_*` / `update_*` method on `Backend` |
+| Add a new built-in primitive | A payload struct in `runtime_vocabulary::prims` + a mount handler in `runtime_vocabulary::handlers` (registered by `register_builtins`) + any new `caps::*Ops` method, with a default |
+| Add a third-party primitive | A payload struct + a handler registered at the app's boot seam — no framework change ([`external-export.md`](./external-export.md)) |
 | Add a new user-facing component | A `#[component] fn name(...) -> Element` in app code |
 | Add imperative methods on a component | `#[method] fn foo(…) { … }` nested fns inside the `#[component]` body |
-| Make a prop reactive | Wrap with a closure containing `.get()`; the constructor accepts `IntoTextSource` etc. or `Box<dyn Fn() -> T>` |
+| Make a prop reactive | Pass a signal or a closure containing `.get()`; the constructor takes `impl IntoValue<T>`, which lowers to `Value::Dyn` |
 | Add a new DSL | A new proc-macro that emits primitive / `name!` calls (see [`ui-layer.md` § DSLs](#dsls)) |
-| Add a new style property | A field on `StyleRules` + the matching `stylesheet!` grammar + a backend branch in `apply_style` |
-| Wire imperative platform features | A new method on the relevant `*Ops` trait + backend impl + handle method |
+| Add a new style property | A field on `StyleRules` + the matching `stylesheet!` grammar + a backend branch in `StyleOps::apply_style` |
+| Wire imperative platform features | A new method on the relevant handle `*Ops` trait + backend impl + handle method |
 
 Each one is a localized change — none of the others has to know.

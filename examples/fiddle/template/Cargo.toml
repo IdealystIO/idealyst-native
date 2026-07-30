@@ -36,8 +36,13 @@ web = []
 
 [dependencies]
 # Path-relative to this Cargo.toml: `examples/fiddle/template/Cargo.toml`
-# → workspace crates live four levels up.
+# → workspace crates live three levels up.
+#
+# `runtime-core` is aliased to `runtime_core` at the crate root (the
+# author surface); `runtime-vocabulary` because the `ui!` emission spells
+# absolute `::runtime_vocabulary::glue::…` paths.
 runtime-core = { path = "../../../crates/runtime/core", features = ["async-driver"] }
+runtime-vocabulary = { path = "../../../crates/runtime/vocabulary" }
 idea-ui = { path = "../../../crates/ui/idea-ui" }
 
 # Browser-only deps. The compiled snippet only runs on wasm32; the
@@ -47,8 +52,8 @@ idea-ui = { path = "../../../crates/ui/idea-ui" }
 backend-web = { path = "../../../crates/backend/web", features = ["async-driver"] }
 # Pulled in only under the `simulator` feature. The `web` mode
 # doesn't need any of the wgpu stack.
-host-web = { path = "../../../crates/host/web", optional = true }
-ios-sim = { path = "../../../crates/skin/ios-sim", optional = true }
+host-web = { path = "../../../crates/gpu-backend/host/web", optional = true }
+ios-sim = { path = "../../../crates/gpu-backend/painter/ios-sim", optional = true }
 wasm-bindgen = "0.2"
 # `spawn_local` for the host-web mount future — we kick it off
 # inside the Graphics primitive's `on_ready` callback.

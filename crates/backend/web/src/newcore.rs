@@ -90,7 +90,7 @@
 //!    lifecycle, virtualizer row mount/release, state setters, and the
 //!    app-level key handler. The wrapper calls the author fn, then
 //!    [`schedule_flush`] — one deduped
-//!    `runtime_core::scheduling::schedule_microtask` → `world.flush()`.
+//!    `runtime_shared::scheduling::schedule_microtask` → `world.flush()`.
 //!    Net effect: stage during dispatch, commit in the microtask
 //!    checkpoint right after — the idea-lite contract. Because the
 //!    wrapping happens in these new-core-only impls, the shared
@@ -112,7 +112,7 @@
 //! is covered now: the navigator URL-sync port (`newcore_url_sync`,
 //! installed by [`start_in`]) fires [`schedule_flush`] after staging
 //! reconciled nav commands. Raw `wasm_bindgen_futures::spawn_local`
-//! calls that bypass `runtime_core::driver::spawn` are the app's own
+//! calls that bypass `runtime_shared::driver::spawn` are the app's own
 //! responsibility.
 //!
 //! Everything funnels through [`schedule_flush`]/`flush_now`, which
@@ -123,18 +123,18 @@ use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use runtime_core::accessibility::{AccessibilityProps, AccessibilityTree, LiveRegionPriority, Role};
-use runtime_core::animation::AnimProp;
-use runtime_core::assets::{
+use runtime_shared::accessibility::{AccessibilityProps, AccessibilityTree, LiveRegionPriority, Role};
+use runtime_shared::animation::AnimProp;
+use runtime_shared::assets::{
     AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
 };
-use runtime_core::breakpoint::Breakpoint;
-use runtime_core::introspect::NativeNode;
-use runtime_core::primitives;
-use runtime_core::primitives::portal::ViewportRect;
-use runtime_core::styled_text::TextRun;
-use runtime_core::{
-    Action, Backend, BackendBatch, Color, ColorScheme, Easing, FileDropHandler, FontFamily,
+use runtime_shared::breakpoint::Breakpoint;
+use runtime_shared::introspect::NativeNode;
+use runtime_shared::primitives;
+use runtime_shared::primitives::portal::ViewportRect;
+use runtime_shared::styled_text::TextRun;
+use runtime_shared::{
+    Action, BackendBatch, Color, ColorScheme, Easing, FileDropHandler, FontFamily,
     HoverHandler, ImageErrorHandler, ImageLoadHandler, PageMetadata, Platform, SafeAreaSides,
     Screenshot, StateBits, StyleApplication, StyleRules, TokenEntry, Tokenized, TouchHandler,
     TouchId, VirtualizerCallbacks, WheelHandler,
@@ -211,9 +211,8 @@ pub fn start_in(
     crate::install_time_source();
     // URL sync service for the vocabulary navigator handlers (before
     // the build, so every navigator registers) — see newcore_url_sync.
-    #[cfg(feature = "prim-navigator")]
     crate::newcore_url_sync::install();
-    // Route `runtime_core::driver::spawn` futures through the hooked
+    // Route `runtime_shared::driver::spawn` futures through the hooked
     // executor so future polls fire the post-dispatch flush hook.
     #[cfg(feature = "async-driver")]
     crate::install_async_executor();
@@ -234,7 +233,7 @@ pub fn start_in(
     // breakpoint instead of 0-width `Xs`. (Hydrate boots deliberately
     // seed the SSR viewport instead — see `newcore_hydrate`.)
     if let Some(size) = current_window_viewport() {
-        runtime_core::set_viewport_size(size);
+        runtime_shared::set_viewport_size(size);
     }
 
     let world = World::new();
@@ -265,7 +264,7 @@ pub fn start_in(
              top-level node (got {n}) — wrap fragment/multi-root trees in a view"
         ),
     };
-    Backend::finish(&mut *backend.borrow_mut(), root);
+    WebBackend::finish_impl(&mut *backend.borrow_mut(), root);
 
     // Commit anything staged during mount (ref-fill callbacks, handler
     // setup) before the first paint.
@@ -346,7 +345,6 @@ pub fn flush_sync() {
 pub fn stop() {
     #[cfg(feature = "robot")]
     crate::robot_transport::clear_newcore_driver_env();
-    #[cfg(feature = "prim-navigator")]
     crate::newcore_url_sync::reset();
     remove_viewport_source();
     crate::dispatch_hook::clear_dispatch_hook();
@@ -409,7 +407,7 @@ fn js_sid(raw_id: u64) -> u64 {
 //   OUTSIDE `World::enter` — capture, don't inject) so breakpoint-
 //   dependent author reactivity (`when(!sidebar_pinned(Lg))`) re-fires
 //   on the flush it schedules;
-// - the shared old-core TLS value (`runtime_core::set_viewport_size`) so
+// - the shared old-core TLS value (`runtime_shared::set_viewport_size`) so
 //   every value-read seam (the vocabulary's native breakpoint-overlay
 //   merge, `Tokenized` apply paths, a later hydrate's seed) stays
 //   coherent with what author reactivity sees.
@@ -421,18 +419,18 @@ fn js_sid(raw_id: u64) -> u64 {
 /// `window.inner{Width,Height}` as a logical-pixel [`ViewportSize`].
 /// `None` outside a browser context (workers) — degrade like the
 /// old-core observer.
-fn current_window_viewport() -> Option<runtime_core::ViewportSize> {
+fn current_window_viewport() -> Option<runtime_shared::ViewportSize> {
     let win = web_sys::window()?;
     let w = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
     let h = win.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-    Some(runtime_core::ViewportSize::new(w, h))
+    Some(runtime_shared::ViewportSize::new(w, h))
 }
 
 /// One resize push: both sinks + a scheduled flush (the staged write
 /// commits like any handler-staged write).
-fn push_viewport(sig: runtime_world::Signal<runtime_core::ViewportSize>) {
+fn push_viewport(sig: runtime_world::Signal<runtime_shared::ViewportSize>) {
     if let Some(size) = current_window_viewport() {
-        runtime_core::set_viewport_size(size);
+        runtime_shared::set_viewport_size(size);
         // Equality-guarded staged write on the world handle; dead-world
         // writes (a straggler event after `stop`) are silent no-ops.
         sig.set(size);
@@ -444,7 +442,7 @@ fn push_viewport(sig: runtime_world::Signal<runtime_core::ViewportSize>) {
 /// end of every boot path (`start_in` AND `newcore_hydrate`); replaces
 /// any previous listener (idempotent across re-boots).
 pub(crate) fn install_viewport_source(
-    sig: runtime_world::Signal<runtime_core::ViewportSize>,
+    sig: runtime_world::Signal<runtime_shared::ViewportSize>,
 ) {
     remove_viewport_source();
     let Some(win) = web_sys::window() else { return };
@@ -460,7 +458,7 @@ pub(crate) fn install_viewport_source(
 /// the real one lands after the server DOM is adopted, mirroring the
 /// old-core "observer installed post-mount" ordering).
 pub(crate) fn push_current_viewport_now(
-    sig: runtime_world::Signal<runtime_core::ViewportSize>,
+    sig: runtime_world::Signal<runtime_shared::ViewportSize>,
 ) {
     push_viewport(sig);
 }
@@ -491,7 +489,7 @@ pub fn schedule_flush() {
     if FLUSH_QUEUED.with(|q| q.replace(true)) {
         return;
     }
-    runtime_core::scheduling::schedule_microtask(|| {
+    runtime_shared::scheduling::schedule_microtask(|| {
         FLUSH_QUEUED.with(|q| q.set(false));
         flush_now();
     });
@@ -587,30 +585,30 @@ impl Host for WebBackend {
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
         let _t = crate::phase_timer::PhaseTimer::start("nc_insert");
-        <WebBackend as Backend>::insert(self, parent, child)
+        WebBackend::insert_impl(self, parent, child)
     }
 
     fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
         let _t = crate::phase_timer::PhaseTimer::start("nc_insert_many");
-        <WebBackend as Backend>::insert_many(self, parent, children)
+        WebBackend::insert_many_impl(self, parent, children)
     }
 
     fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
-        <WebBackend as Backend>::insert_at(self, parent, child, index)
+        WebBackend::insert_at_impl(self, parent, child, index)
     }
 
     fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
         let _t = crate::phase_timer::PhaseTimer::start("nc_remove_child");
-        <WebBackend as Backend>::remove_child(self, parent, child)
+        WebBackend::remove_child_impl(self, parent, child)
     }
 
     fn clear_children(&mut self, node: &Self::Node) {
         let _t = crate::phase_timer::PhaseTimer::start("nc_clear_children");
-        <WebBackend as Backend>::clear_children(self, node)
+        WebBackend::clear_children_impl(self, node)
     }
 
     fn create_anchor(&mut self) -> Self::Node {
-        <WebBackend as Backend>::create_reactive_anchor(self)
+        WebBackend::create_reactive_anchor_impl(self)
     }
 
     fn supports_splice(&self) -> bool {
@@ -625,8 +623,8 @@ impl Host for WebBackend {
         // remount cascade). Queried per region mount, so regions first
         // built after `finish` (which clears `is_hydrating`) splice as
         // usual. See `newcore_hydrate.rs`.
-        !<WebBackend as Backend>::is_hydrating(self)
-            && <WebBackend as Backend>::supports_child_splice(self)
+        !WebBackend::is_hydrating_impl(self)
+            && WebBackend::supports_child_splice_impl(self)
     }
 }
 
@@ -636,31 +634,27 @@ impl Host for WebBackend {
 
 impl caps::AppEnvOps for WebBackend {
     fn color_scheme(&self) -> ColorScheme {
-        <WebBackend as Backend>::color_scheme(self)
+        WebBackend::color_scheme_impl(self)
     }
 
     fn platform(&self) -> Platform {
-        <WebBackend as Backend>::platform(self)
+        WebBackend::platform_impl(self)
     }
 
     fn url_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
-        <WebBackend as Backend>::url_opener(self)
+        WebBackend::url_opener_impl(self)
     }
 
     fn fullscreen_setter(&self) -> Option<Rc<dyn Fn(bool)>> {
-        <WebBackend as Backend>::fullscreen_setter(self)
-    }
-
-    fn set_page_metadata(&mut self, meta: &PageMetadata) {
-        <WebBackend as Backend>::set_page_metadata(self, meta)
+        WebBackend::fullscreen_setter_impl(self)
     }
 
     fn set_app_background(&mut self, color: &Tokenized<Color>) {
-        <WebBackend as Backend>::set_app_background(self, color)
+        WebBackend::set_app_background_impl(self, color)
     }
 
     fn set_scrollbar_theme(&mut self, thumb: &Tokenized<Color>, track: &Tokenized<Color>) {
-        <WebBackend as Backend>::set_scrollbar_theme(self, thumb, track)
+        WebBackend::set_scrollbar_theme_impl(self, thumb, track)
     }
 
     fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
@@ -672,29 +666,17 @@ impl caps::AppEnvOps for WebBackend {
                 outcome
             })
         });
-        <WebBackend as Backend>::set_app_key_handler(self, handler)
+        WebBackend::set_app_key_handler_impl(self, handler)
     }
 }
 
 impl caps::LifecycleOps for WebBackend {
     fn finish(&mut self, root: Self::Node) {
-        <WebBackend as Backend>::finish(self, root)
-    }
-
-    fn run_layout(&mut self) {
-        <WebBackend as Backend>::run_layout(self)
-    }
-
-    fn schedule_layout_pass() {
-        <WebBackend as Backend>::schedule_layout_pass()
+        WebBackend::finish_impl(self, root)
     }
 
     fn is_hydrating(&self) -> bool {
-        <WebBackend as Backend>::is_hydrating(self)
-    }
-
-    fn renders_lazy_chunks(&self) -> bool {
-        <WebBackend as Backend>::renders_lazy_chunks(self)
+        WebBackend::is_hydrating_impl(self)
     }
 }
 
@@ -705,11 +687,11 @@ impl caps::LifecycleOps for WebBackend {
 impl caps::ViewOps for WebBackend {
     fn create_view(&mut self, a11y: &AccessibilityProps) -> Self::Node {
         let _t = crate::phase_timer::PhaseTimer::start("nc_create_view");
-        <WebBackend as Backend>::create_view(self, a11y)
+        WebBackend::create_view_impl(self, a11y)
     }
 
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
-        <WebBackend as Backend>::make_view_handle(self, node)
+    fn make_view_handle(&self, node: &Self::Node) -> runtime_shared::ViewHandle {
+        WebBackend::make_view_handle_impl(self, node)
     }
 }
 
@@ -724,11 +706,7 @@ impl caps::InputOps for WebBackend {
                 response
             })
         };
-        <WebBackend as Backend>::install_touch_handler(self, node, handler)
-    }
-
-    fn claim_touch(&mut self, node: &Self::Node, touch_id: TouchId) {
-        <WebBackend as Backend>::claim_touch(self, node, touch_id)
+        WebBackend::install_touch_handler_impl(self, node, handler)
     }
 
     fn install_wheel_handler(&mut self, node: &Self::Node, handler: WheelHandler) {
@@ -740,15 +718,15 @@ impl caps::InputOps for WebBackend {
                 response
             })
         };
-        <WebBackend as Backend>::install_wheel_handler(self, node, handler)
+        WebBackend::install_wheel_handler_impl(self, node, handler)
     }
 
     fn install_hover_handler(&mut self, node: &Self::Node, handler: HoverHandler) {
-        <WebBackend as Backend>::install_hover_handler(self, node, flushing1(handler))
+        WebBackend::install_hover_handler_impl(self, node, flushing1(handler))
     }
 
     fn mark_preserves_focus(&mut self, node: &Self::Node) {
-        <WebBackend as Backend>::mark_preserves_focus(self, node)
+        WebBackend::mark_preserves_focus_impl(self, node)
     }
 
     fn install_file_drop_handler(&mut self, node: &Self::Node, handler: FileDropHandler) {
@@ -760,17 +738,17 @@ impl caps::InputOps for WebBackend {
                 response
             })
         };
-        <WebBackend as Backend>::install_file_drop_handler(self, node, handler)
+        WebBackend::install_file_drop_handler_impl(self, node, handler)
     }
 }
 
 impl caps::PressableOps for WebBackend {
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> Self::Node {
-        <WebBackend as Backend>::create_pressable(self, flushing0(on_click), a11y)
+        WebBackend::create_pressable_impl(self, flushing0(on_click), a11y)
     }
 
-    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_core::PressableHandle {
-        <WebBackend as Backend>::make_pressable_handle(self, node)
+    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_shared::PressableHandle {
+        WebBackend::make_pressable_handle_impl(self, node)
     }
 }
 
@@ -781,19 +759,19 @@ impl caps::PressableOps for WebBackend {
 impl caps::TextOps for WebBackend {
     fn create_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
         let _t = crate::phase_timer::PhaseTimer::start("nc_create_text");
-        <WebBackend as Backend>::create_text(self, content, a11y)
+        WebBackend::create_text_impl(self, content, a11y)
     }
 
     fn create_styled_text(&mut self, runs: &[TextRun], a11y: &AccessibilityProps) -> Self::Node {
-        <WebBackend as Backend>::create_styled_text(self, runs, a11y)
+        WebBackend::create_styled_text_impl(self, runs, a11y)
     }
 
     fn update_styled_text(&mut self, node: &Self::Node, runs: &[TextRun]) {
-        <WebBackend as Backend>::update_styled_text(self, node, runs)
+        WebBackend::update_styled_text_impl(self, node, runs)
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
-        <WebBackend as Backend>::update_text(self, node, content)
+        WebBackend::update_text_impl(self, node, content)
     }
 
     fn create_text_with_id(
@@ -801,19 +779,19 @@ impl caps::TextOps for WebBackend {
         content: &str,
         a11y: &AccessibilityProps,
     ) -> Option<(Self::Node, u32)> {
-        <WebBackend as Backend>::create_text_with_id(self, content, a11y)
+        WebBackend::create_text_with_id_impl(self, content, a11y)
     }
 
     fn update_text_by_id(&mut self, id: u32, content: String) {
-        <WebBackend as Backend>::update_text_by_id(self, id, content)
+        WebBackend::update_text_by_id_impl(self, id, content)
     }
 
     fn release_text_id(&mut self, id: u32) {
-        <WebBackend as Backend>::release_text_id(self, id)
+        WebBackend::release_text_id_impl(self, id)
     }
 
     fn supports_js_text_bindings(&self) -> bool {
-        <WebBackend as Backend>::supports_js_text_bindings(self)
+        WebBackend::supports_js_text_bindings_impl(self)
     }
 
     fn register_reactive_text_binding(
@@ -828,7 +806,7 @@ impl caps::TextOps for WebBackend {
         // [`js_sid`]; must match the `notify_signal_text_js` delivery
         // fold or commits go to a key no binding subscribed.
         let folded: Vec<u64> = signal_ids.iter().map(|id| js_sid(*id)).collect();
-        <WebBackend as Backend>::register_reactive_text_binding(
+        WebBackend::register_reactive_text_binding_impl(
             self,
             text_id,
             &folded,
@@ -839,7 +817,7 @@ impl caps::TextOps for WebBackend {
     }
 
     fn release_reactive_text_binding(&mut self, text_id: u32) {
-        <WebBackend as Backend>::release_reactive_text_binding(self, text_id)
+        WebBackend::release_reactive_text_binding_impl(self, text_id)
     }
 
     /// New-core-only channel (string sibling of
@@ -859,8 +837,8 @@ impl caps::TextOps for WebBackend {
         self.ship_signal_change_to_js(js_sid(signal_id), value);
     }
 
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
-        <WebBackend as Backend>::make_text_handle(self, node)
+    fn make_text_handle(&self, node: &Self::Node) -> runtime_shared::TextHandle {
+        WebBackend::make_text_handle_impl(self, node)
     }
 }
 
@@ -882,15 +860,11 @@ impl caps::ButtonOps for WebBackend {
             output: on_click.output,
             fire: flushing0(on_click.fire.clone()),
         };
-        <WebBackend as Backend>::create_button(self, label, &on_click, leading_icon, trailing_icon, a11y)
+        WebBackend::create_button_impl(self, label, &on_click, leading_icon, trailing_icon, a11y)
     }
 
-    fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-        <WebBackend as Backend>::update_button_label(self, node, label)
-    }
-
-    fn make_button_handle(&self, node: &Self::Node) -> runtime_core::ButtonHandle {
-        <WebBackend as Backend>::make_button_handle(self, node)
+    fn make_button_handle(&self, node: &Self::Node) -> runtime_shared::ButtonHandle {
+        WebBackend::make_button_handle_impl(self, node)
     }
 }
 
@@ -900,15 +874,15 @@ impl caps::ButtonOps for WebBackend {
 
 impl caps::ImageOps for WebBackend {
     fn create_image(&mut self, src: &str, alt: Option<&str>, a11y: &AccessibilityProps) -> Self::Node {
-        <WebBackend as Backend>::create_image(self, src, alt, a11y)
+        WebBackend::create_image_impl(self, src, alt, a11y)
     }
 
     fn update_image_src(&mut self, node: &Self::Node, src: &str) {
-        <WebBackend as Backend>::update_image_src(self, node, src)
+        WebBackend::update_image_src_impl(self, node, src)
     }
 
     fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
-        <WebBackend as Backend>::update_image_alt(self, node, alt)
+        WebBackend::update_image_alt_impl(self, node, alt)
     }
 
     fn install_image_load_handler(&mut self, node: &Self::Node, handler: ImageLoadHandler) {
@@ -919,15 +893,11 @@ impl caps::ImageOps for WebBackend {
                 schedule_flush();
             })
         };
-        <WebBackend as Backend>::install_image_load_handler(self, node, handler)
+        WebBackend::install_image_load_handler_impl(self, node, handler)
     }
 
     fn install_image_error_handler(&mut self, node: &Self::Node, handler: ImageErrorHandler) {
-        <WebBackend as Backend>::install_image_error_handler(self, node, flushing0(handler))
-    }
-
-    fn make_image_handle(&self, node: &Self::Node) -> primitives::image::ImageHandle {
-        <WebBackend as Backend>::make_image_handle(self, node)
+        WebBackend::install_image_error_handler_impl(self, node, flushing0(handler))
     }
 }
 
@@ -938,19 +908,19 @@ impl caps::IconOps for WebBackend {
         color: Option<&Color>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WebBackend as Backend>::create_icon(self, data, color, a11y)
+        WebBackend::create_icon_impl(self, data, color, a11y)
     }
 
     fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
-        <WebBackend as Backend>::update_icon_color(self, node, color)
+        WebBackend::update_icon_color_impl(self, node, color)
     }
 
     fn update_icon_data(&mut self, node: &Self::Node, data: &primitives::icon::IconData) {
-        <WebBackend as Backend>::update_icon_data(self, node, data)
+        WebBackend::update_icon_data_impl(self, node, data)
     }
 
     fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
-        <WebBackend as Backend>::update_icon_stroke(self, node, progress)
+        WebBackend::update_icon_stroke_impl(self, node, progress)
     }
 
     fn animate_icon_stroke(
@@ -963,7 +933,7 @@ impl caps::IconOps for WebBackend {
         infinite: bool,
         autoreverses: bool,
     ) {
-        <WebBackend as Backend>::animate_icon_stroke(
+        WebBackend::animate_icon_stroke_impl(
             self,
             node,
             from,
@@ -973,10 +943,6 @@ impl caps::IconOps for WebBackend {
             infinite,
             autoreverses,
         )
-    }
-
-    fn make_icon_handle(&self, node: &Self::Node) -> primitives::icon::IconHandle {
-        <WebBackend as Backend>::make_icon_handle(self, node)
     }
 }
 
@@ -990,15 +956,15 @@ impl caps::LinkOps for WebBackend {
         // (stages nav-queue tick signals on the new core).
         let mut config = config;
         config.on_activate = flushing0(config.on_activate.clone());
-        <WebBackend as Backend>::create_link(self, config, a11y)
+        WebBackend::create_link_impl(self, config, a11y)
     }
 
     fn update_link_url(&mut self, node: &Self::Node, url: &str) {
-        <WebBackend as Backend>::update_link_url(self, node, url)
+        WebBackend::update_link_url_impl(self, node, url)
     }
 
     fn make_link_handle(&self, node: &Self::Node) -> primitives::link::LinkHandle {
-        <WebBackend as Backend>::make_link_handle(self, node)
+        WebBackend::make_link_handle_impl(self, node)
     }
 }
 
@@ -1017,7 +983,7 @@ impl caps::TextInputOps for WebBackend {
         secure: bool,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WebBackend as Backend>::create_text_input(
+        WebBackend::create_text_input_impl(
             self,
             initial_value,
             placeholder,
@@ -1036,19 +1002,19 @@ impl caps::TextInputOps for WebBackend {
     }
 
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
-        <WebBackend as Backend>::update_text_input_value(self, node, value)
+        WebBackend::update_text_input_value_impl(self, node, value)
     }
 
     fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
-        <WebBackend as Backend>::update_text_input_secure(self, node, secure)
+        WebBackend::update_text_input_secure_impl(self, node, secure)
     }
 
     fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
-        <WebBackend as Backend>::set_text_input_focus_handler(self, node, flushing1(handler))
+        WebBackend::set_text_input_focus_handler_impl(self, node, flushing1(handler))
     }
 
     fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
-        <WebBackend as Backend>::update_text_input_placeholder(self, node, placeholder)
+        WebBackend::update_text_input_placeholder_impl(self, node, placeholder)
     }
 
     fn create_text_area(
@@ -1062,7 +1028,7 @@ impl caps::TextInputOps for WebBackend {
         on_key_down: Option<primitives::key::KeyDownHandler>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WebBackend as Backend>::create_text_area(
+        WebBackend::create_text_area_impl(
             self,
             initial_value,
             placeholder,
@@ -1076,15 +1042,15 @@ impl caps::TextInputOps for WebBackend {
     }
 
     fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
-        <WebBackend as Backend>::update_text_area_value(self, node, value)
+        WebBackend::update_text_area_value_impl(self, node, value)
     }
 
     fn make_text_input_handle(&self, node: &Self::Node) -> primitives::text_input::TextInputHandle {
-        <WebBackend as Backend>::make_text_input_handle(self, node)
+        WebBackend::make_text_input_handle_impl(self, node)
     }
 
     fn make_text_area_handle(&self, node: &Self::Node) -> primitives::text_area::TextAreaHandle {
-        <WebBackend as Backend>::make_text_area_handle(self, node)
+        WebBackend::make_text_area_handle_impl(self, node)
     }
 }
 
@@ -1095,15 +1061,11 @@ impl caps::ToggleOps for WebBackend {
         on_change: Rc<dyn Fn(bool)>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WebBackend as Backend>::create_toggle(self, initial_value, flushing1(on_change), a11y)
+        WebBackend::create_toggle_impl(self, initial_value, flushing1(on_change), a11y)
     }
 
     fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
-        <WebBackend as Backend>::update_toggle_value(self, node, value)
-    }
-
-    fn make_toggle_handle(&self, node: &Self::Node) -> primitives::toggle::ToggleHandle {
-        <WebBackend as Backend>::make_toggle_handle(self, node)
+        WebBackend::update_toggle_value_impl(self, node, value)
     }
 }
 
@@ -1117,7 +1079,7 @@ impl caps::SliderOps for WebBackend {
         on_change: Rc<dyn Fn(f32)>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WebBackend as Backend>::create_slider(
+        WebBackend::create_slider_impl(
             self,
             initial_value,
             min,
@@ -1129,11 +1091,7 @@ impl caps::SliderOps for WebBackend {
     }
 
     fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
-        <WebBackend as Backend>::update_slider_value(self, node, value)
-    }
-
-    fn make_slider_handle(&self, node: &Self::Node) -> primitives::slider::SliderHandle {
-        <WebBackend as Backend>::make_slider_handle(self, node)
+        WebBackend::update_slider_value_impl(self, node, value)
     }
 }
 
@@ -1144,7 +1102,7 @@ impl caps::ActivityIndicatorOps for WebBackend {
         color: Option<&Color>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WebBackend as Backend>::create_activity_indicator(self, size, color, a11y)
+        WebBackend::create_activity_indicator_impl(self, size, color, a11y)
     }
 
     fn update_activity_indicator_size(
@@ -1152,14 +1110,7 @@ impl caps::ActivityIndicatorOps for WebBackend {
         node: &Self::Node,
         size: primitives::activity_indicator::ActivityIndicatorSize,
     ) {
-        <WebBackend as Backend>::update_activity_indicator_size(self, node, size)
-    }
-
-    fn make_activity_indicator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> primitives::activity_indicator::ActivityIndicatorHandle {
-        <WebBackend as Backend>::make_activity_indicator_handle(self, node)
+        WebBackend::update_activity_indicator_size_impl(self, node, size)
     }
 }
 
@@ -1182,30 +1133,23 @@ impl caps::ScrollOps for WebBackend {
                 schedule_flush();
             })
         });
-        <WebBackend as Backend>::create_scroll_view(self, horizontal, on_scroll, a11y)
+        WebBackend::create_scroll_view_impl(self, horizontal, on_scroll, a11y)
     }
 
     fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
-        <WebBackend as Backend>::node_scroll(self, node)
+        WebBackend::node_scroll_impl(self, node)
     }
 
     fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
-        <WebBackend as Backend>::set_node_scroll(self, node, x, y)
+        WebBackend::set_node_scroll_impl(self, node, x, y)
     }
 
     fn make_scroll_view_handle(&self, node: &Self::Node) -> primitives::scroll_view::ScrollViewHandle {
-        <WebBackend as Backend>::make_scroll_view_handle(self, node)
+        WebBackend::make_scroll_view_handle_impl(self, node)
     }
 }
 
 impl caps::SafeAreaOps for WebBackend {
-    fn apply_safe_area_padding(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-        <WebBackend as Backend>::apply_safe_area_padding(self, node, sides)
-    }
-
-    fn apply_scroll_view_safe_area_inset(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-        <WebBackend as Backend>::apply_scroll_view_safe_area_inset(self, node, sides)
-    }
 }
 
 impl caps::VirtualizerOps for WebBackend {
@@ -1265,19 +1209,15 @@ impl caps::VirtualizerOps for WebBackend {
                 })
             },
         };
-        <WebBackend as Backend>::create_virtualizer(self, callbacks, overscan, layout, a11y)
+        WebBackend::create_virtualizer_impl(self, callbacks, overscan, layout, a11y)
     }
 
     fn virtualizer_data_changed(&mut self, node: &Self::Node) {
-        <WebBackend as Backend>::virtualizer_data_changed(self, node)
+        WebBackend::virtualizer_data_changed_impl(self, node)
     }
 
     fn release_virtualizer(&mut self, node: &Self::Node) {
-        <WebBackend as Backend>::release_virtualizer(self, node)
-    }
-
-    fn make_virtualizer_handle(&self, node: &Self::Node) -> primitives::virtualizer::VirtualizerHandle {
-        <WebBackend as Backend>::make_virtualizer_handle(self, node)
+        WebBackend::release_virtualizer_impl(self, node)
     }
 }
 
@@ -1316,15 +1256,15 @@ impl caps::GraphicsOps for WebBackend {
                 schedule_flush();
             })
         };
-        <WebBackend as Backend>::create_graphics(self, on_ready, on_resize, on_lost, a11y)
+        WebBackend::create_graphics_impl(self, on_ready, on_resize, on_lost, a11y)
     }
 
     fn release_graphics(&mut self, node: &Self::Node) {
-        <WebBackend as Backend>::release_graphics(self, node)
+        WebBackend::release_graphics_impl(self, node)
     }
 
     fn make_graphics_handle(&self, node: &Self::Node) -> primitives::graphics::GraphicsHandle {
-        <WebBackend as Backend>::make_graphics_handle(self, node)
+        WebBackend::make_graphics_handle_impl(self, node)
     }
 }
 
@@ -1339,26 +1279,19 @@ impl caps::PortalOps for WebBackend {
         // Dispatch-site glue: backdrop click / Escape dismissal runs
         // the author's on_dismiss.
         let on_dismiss = on_dismiss.map(flushing0);
-        <WebBackend as Backend>::create_portal(self, target, on_dismiss, trap_focus, a11y)
+        WebBackend::create_portal_impl(self, target, on_dismiss, trap_focus, a11y)
     }
 
     fn release_portal(&mut self, node: &Self::Node) {
-        <WebBackend as Backend>::release_portal(self, node)
-    }
-
-    fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
-        <WebBackend as Backend>::set_portal_hidden(self, node, hidden)
+        WebBackend::release_portal_impl(self, node)
     }
 
     fn make_portal_handle(&self, node: &Self::Node) -> primitives::portal::PortalHandle {
-        <WebBackend as Backend>::make_portal_handle(self, node)
+        WebBackend::make_portal_handle_impl(self, node)
     }
 }
 
 impl caps::PresenceOps for WebBackend {
-    fn create_presence_placeholder(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-        <WebBackend as Backend>::create_presence_placeholder(self, a11y)
-    }
 
     fn apply_presence(
         &mut self,
@@ -1366,59 +1299,22 @@ impl caps::PresenceOps for WebBackend {
         state: primitives::presence::PresenceState,
         transition: Option<(u32, Easing)>,
     ) {
-        <WebBackend as Backend>::apply_presence(self, node, state, transition)
-    }
-
-    fn make_presence_handle(&self, node: &Self::Node) -> primitives::presence::PresenceHandle {
-        <WebBackend as Backend>::make_presence_handle(self, node)
+        WebBackend::apply_presence_impl(self, node, state, transition)
     }
 }
 
 impl caps::NavigatorOps for WebBackend {
-    fn create_navigator(
-        &mut self,
-        type_id: TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn Any>,
-        host: primitives::navigator::NavigatorHost<Self::Node>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // NOT wrapped: NavigatorHost's callbacks (mount_screen etc.)
-        // belong to the OLD-core navigator path, which the new core
-        // does not route through (the vocabulary navigator handlers own
-        // screens; their browser-back arrives via `newcore_url_sync`,
-        // which stages commands and fires `schedule_flush` itself).
-        // Author-initiated navigation stages via handlers already
-        // wrapped above and commits inside the flush.
-        <WebBackend as Backend>::create_navigator(self, type_id, type_name, presentation, host, a11y)
-    }
-
-    fn release_navigator(&mut self, node: &Self::Node) {
-        <WebBackend as Backend>::release_navigator(self, node)
-    }
-
-    fn apply_navigator_slot_style(
-        &mut self,
-        node: &Self::Node,
-        slot: &'static str,
-        style: &Rc<StyleRules>,
-    ) {
-        <WebBackend as Backend>::apply_navigator_slot_style(self, node, slot, style)
-    }
-
-    fn make_navigator_handle(&self, node: &Self::Node) -> primitives::navigator::NavigatorHandle {
-        <WebBackend as Backend>::make_navigator_handle(self, node)
-    }
-
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn Any>,
-    ) {
-        <WebBackend as Backend>::navigator_attach_initial(self, navigator, screen, scope_id, options)
-    }
+    // Every method of this capability is now the caps trait's default.
+    // The old-core `create_navigator` (which registered the per-instance
+    // `NavigatorHandler` these four methods dispatched to) was DELETED
+    // with the old core — it does not fall back to a default
+    // (docs/runtime-v2-deletion-baseline.md §2.3), so no handler is ever
+    // registered and the vocabulary's navigator handler never calls
+    // them — it mounts navigators over `ViewOps`/`LifecycleOps` and
+    // folds screen chrome itself. Native push / header chrome on this
+    // backend is the documented native-nav seam, tracked in the module
+    // docs; it must be re-entered through the scene registry, not
+    // through a resurrected mega-trait cap.
 }
 
 // ---------------------------------------------------------------------------
@@ -1433,37 +1329,29 @@ impl caps::ExternalOps for WebBackend {
         payload: &Rc<dyn Any>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <WebBackend as Backend>::create_external(self, type_id, type_name, payload, a11y)
+        WebBackend::create_external_impl(self, type_id, type_name, payload, a11y)
     }
 
     fn release_external(&mut self, node: &Self::Node) {
-        <WebBackend as Backend>::release_external(self, node)
-    }
-
-    fn missing_primitive_placeholder(&mut self, label: &'static str) -> Self::Node {
-        <WebBackend as Backend>::missing_primitive_placeholder(self, label)
+        WebBackend::release_external_impl(self, node)
     }
 }
 
 impl caps::DocumentOps for WebBackend {
     fn create_element(&mut self, tag: &str) -> Self::Node {
-        <WebBackend as Backend>::create_element(self, tag)
+        WebBackend::create_element_impl(self, tag)
     }
 
     fn attach_html_id(&self, node: &Self::Node, id: &str) {
-        <WebBackend as Backend>::attach_html_id(self, node, id)
+        WebBackend::attach_html_id_impl(self, node, id)
     }
 
     fn attach_html_class(&self, node: &Self::Node, class: &str) {
-        <WebBackend as Backend>::attach_html_class(self, node, class)
+        WebBackend::attach_html_class_impl(self, node, class)
     }
 
     fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
-        <WebBackend as Backend>::attach_html_style(self, node, prop, value)
-    }
-
-    fn register_raw_css(&mut self, css: &str) {
-        <WebBackend as Backend>::register_raw_css(self, css)
+        WebBackend::attach_html_style_impl(self, node, prop, value)
     }
 }
 
@@ -1474,16 +1362,16 @@ impl caps::DocumentOps for WebBackend {
 impl caps::StyleOps for WebBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         let _t = crate::phase_timer::PhaseTimer::start("nc_apply_style");
-        <WebBackend as Backend>::apply_style(self, node, style)
+        WebBackend::apply_style_impl(self, node, style)
     }
 
     fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
-        <WebBackend as Backend>::mint_style_class(self, style)
+        WebBackend::mint_style_class_impl(self, style)
     }
 
     fn mint_class_for_app(&mut self, app: &StyleApplication) -> Option<String> {
         let _t = crate::phase_timer::PhaseTimer::start("nc_mint_class_for_app");
-        <WebBackend as Backend>::mint_class_for_app(self, app)
+        WebBackend::mint_class_for_app_impl(self, app)
     }
 
     fn apply_styled_states(
@@ -1492,7 +1380,7 @@ impl caps::StyleOps for WebBackend {
         base: &Rc<StyleRules>,
         overlays: &[(StateBits, Rc<StyleRules>)],
     ) {
-        <WebBackend as Backend>::apply_styled_states(self, node, base, overlays)
+        WebBackend::apply_styled_states_impl(self, node, base, overlays)
     }
 
     fn apply_styled_variants(
@@ -1504,7 +1392,7 @@ impl caps::StyleOps for WebBackend {
         container_overlays: &[(f32, Rc<StyleRules>)],
     ) {
         let _t = crate::phase_timer::PhaseTimer::start("nc_apply_styled_variants");
-        <WebBackend as Backend>::apply_styled_variants(
+        WebBackend::apply_styled_variants_impl(
             self,
             node,
             base,
@@ -1515,36 +1403,36 @@ impl caps::StyleOps for WebBackend {
     }
 
     fn mark_container(&mut self, node: &Self::Node) {
-        <WebBackend as Backend>::mark_container(self, node)
+        WebBackend::mark_container_impl(self, node)
     }
 
     fn handles_states_natively(&self) -> bool {
-        <WebBackend as Backend>::handles_states_natively(self)
+        WebBackend::handles_states_natively_impl(self)
     }
 
     fn token_updates_propagate_via_cascade(&self) -> bool {
-        <WebBackend as Backend>::token_updates_propagate_via_cascade(self)
+        WebBackend::token_updates_propagate_via_cascade_impl(self)
     }
 
     fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        <WebBackend as Backend>::register_stylesheet(self, rules)
+        WebBackend::register_stylesheet_impl(self, rules)
     }
 
     fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        <WebBackend as Backend>::unregister_stylesheet(self, rules)
+        WebBackend::unregister_stylesheet_impl(self, rules)
     }
 
     fn install_tokens(&mut self, tokens: &[TokenEntry]) {
-        <WebBackend as Backend>::install_tokens(self, tokens)
+        WebBackend::install_tokens_impl(self, tokens)
     }
 
     fn update_tokens(&mut self, tokens: &[TokenEntry]) {
-        <WebBackend as Backend>::update_tokens(self, tokens)
+        WebBackend::update_tokens_impl(self, tokens)
     }
 
     fn on_node_unstyled(&mut self, node: &Self::Node) {
         let _t = crate::phase_timer::PhaseTimer::start("nc_on_node_unstyled");
-        <WebBackend as Backend>::on_node_unstyled(self, node)
+        WebBackend::on_node_unstyled_impl(self, node)
     }
 
     fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
@@ -1559,23 +1447,23 @@ impl caps::StyleOps for WebBackend {
                 schedule_flush();
             })
         };
-        <WebBackend as Backend>::attach_states(self, node, setter)
+        WebBackend::attach_states_impl(self, node, setter)
     }
 
     fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
-        <WebBackend as Backend>::set_disabled(self, node, disabled)
+        WebBackend::set_disabled_impl(self, node, disabled)
     }
 
     fn supports_preminted_styles(&self) -> bool {
-        <WebBackend as Backend>::supports_preminted_styles(self)
+        WebBackend::supports_preminted_styles_impl(self)
     }
 
     fn apply_default_text_font(&mut self, font: Option<&FontFamily>) {
-        <WebBackend as Backend>::apply_default_text_font(self, font)
+        WebBackend::apply_default_text_font_impl(self, font)
     }
 
     fn supports_js_class_bindings(&self) -> bool {
-        <WebBackend as Backend>::supports_js_class_bindings(self)
+        WebBackend::supports_js_class_bindings_impl(self)
     }
 
     fn register_reactive_class_binding(
@@ -1588,7 +1476,7 @@ impl caps::StyleOps for WebBackend {
     ) -> u32 {
         // Folded into the new-core sid half — see [`js_sid`]; must
         // match the `notify_signal_value_js` delivery fold.
-        <WebBackend as Backend>::register_reactive_class_binding(
+        WebBackend::register_reactive_class_binding_impl(
             self,
             node,
             js_sid(signal_id),
@@ -1599,7 +1487,7 @@ impl caps::StyleOps for WebBackend {
     }
 
     fn release_reactive_class_binding(&mut self, binding_id: u32) {
-        <WebBackend as Backend>::release_reactive_class_binding(self, binding_id)
+        WebBackend::release_reactive_class_binding_impl(self, binding_id)
     }
 
     fn notify_signal_value_js(&mut self, signal_id: u64, value: u32) {
@@ -1617,11 +1505,11 @@ impl caps::StyleOps for WebBackend {
 
 impl caps::AssetOps for WebBackend {
     fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
-        <WebBackend as Backend>::register_asset(self, id, kind, source)
+        WebBackend::register_asset_impl(self, id, kind, source)
     }
 
     fn unregister_asset(&mut self, id: AssetId, kind: AssetTag) {
-        <WebBackend as Backend>::unregister_asset(self, id, kind)
+        WebBackend::unregister_asset_impl(self, id, kind)
     }
 
     fn register_typeface(
@@ -1631,11 +1519,11 @@ impl caps::AssetOps for WebBackend {
         faces: &[TypefaceFace],
         fallback: SystemFallback,
     ) {
-        <WebBackend as Backend>::register_typeface(self, id, family_name, faces, fallback)
+        WebBackend::register_typeface_impl(self, id, family_name, faces, fallback)
     }
 
     fn unregister_typeface(&mut self, id: TypefaceId) {
-        <WebBackend as Backend>::unregister_typeface(self, id)
+        WebBackend::unregister_typeface_impl(self, id)
     }
 }
 
@@ -1650,59 +1538,36 @@ impl caps::A11yOps for WebBackend {
         a11y: &AccessibilityProps,
         inferred_role: Option<Role>,
     ) {
-        <WebBackend as Backend>::update_accessibility(self, node, a11y, inferred_role)
+        WebBackend::update_accessibility_impl(self, node, a11y, inferred_role)
     }
 
     fn announce_for_accessibility(&mut self, msg: &str, priority: LiveRegionPriority) {
-        <WebBackend as Backend>::announce_for_accessibility(self, msg, priority)
-    }
-
-    fn dump_accessibility_tree(&self) -> Option<AccessibilityTree> {
-        <WebBackend as Backend>::dump_accessibility_tree(self)
+        WebBackend::announce_for_accessibility_impl(self, msg, priority)
     }
 }
 
 impl caps::AnimationOps for WebBackend {
     fn set_animated_f32(&mut self, node: &Self::Node, prop: AnimProp, value: f32) {
-        <WebBackend as Backend>::set_animated_f32(self, node, prop, value)
+        WebBackend::set_animated_f32_impl(self, node, prop, value)
     }
 
     fn set_animated_color(&mut self, node: &Self::Node, prop: AnimProp, value: [f32; 4]) {
-        <WebBackend as Backend>::set_animated_color(self, node, prop, value)
+        WebBackend::set_animated_color_impl(self, node, prop, value)
     }
 }
 
 impl caps::IntrospectionOps for WebBackend {
-    fn frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <WebBackend as Backend>::frame(self, node)
-    }
-
-    fn absolute_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <WebBackend as Backend>::absolute_frame(self, node)
-    }
-
-    fn device_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <WebBackend as Backend>::device_frame(self, node)
-    }
 
     fn supports_native_introspection(&self) -> bool {
-        <WebBackend as Backend>::supports_native_introspection(self)
+        WebBackend::supports_native_introspection_impl(self)
     }
 
     fn introspect_native(&self, node: &Self::Node) -> Option<NativeNode> {
-        <WebBackend as Backend>::introspect_native(self, node)
+        WebBackend::introspect_native_impl(self, node)
     }
 
     fn note_introspection_root(&self, node: &Self::Node) {
-        <WebBackend as Backend>::note_introspection_root(self, node)
-    }
-
-    fn supports_screenshot(&self) -> bool {
-        <WebBackend as Backend>::supports_screenshot(self)
-    }
-
-    fn capture_screenshot(&self, done: Box<dyn FnOnce(Result<Screenshot, String>)>) {
-        <WebBackend as Backend>::capture_screenshot(self, done)
+        WebBackend::note_introspection_root_impl(self, node)
     }
 }
 
@@ -1712,11 +1577,11 @@ impl caps::IntrospectionOps for WebBackend {
 
 impl caps::BatchOps for WebBackend {
     fn supports_batched_repeat(&self) -> bool {
-        <WebBackend as Backend>::supports_batched_repeat(self)
+        WebBackend::supports_batched_repeat_impl(self)
     }
 
     fn execute_batch(&mut self, batch: BackendBatch) -> Vec<Self::Node> {
-        <WebBackend as Backend>::execute_batch(self, batch)
+        WebBackend::execute_batch_impl(self, batch)
     }
 
     fn execute_batch_with_attach(
@@ -1725,104 +1590,11 @@ impl caps::BatchOps for WebBackend {
         parent: &mut Self::Node,
         attach_locals: &[u32],
     ) -> Vec<Self::Node> {
-        <WebBackend as Backend>::execute_batch_with_attach(self, batch, parent, attach_locals)
+        WebBackend::execute_batch_with_attach_impl(self, batch, parent, attach_locals)
     }
 }
 
 impl caps::WireBindingOps for WebBackend {
-    fn note_text_binding(&mut self, node: &Self::Node, signal_ids: &[u64], method: &'static str) {
-        <WebBackend as Backend>::note_text_binding(self, node, signal_ids, method)
-    }
-
-    fn note_signal_initial(&mut self, signal_id: u64, value: &runtime_core::__serde_json::Value) {
-        <WebBackend as Backend>::note_signal_initial(self, signal_id, value)
-    }
-
-    fn note_when_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        cond_method: &'static str,
-        then_node: &Self::Node,
-        otherwise_node: &Self::Node,
-    ) {
-        <WebBackend as Backend>::note_when_binding(
-            self,
-            anchor,
-            signal_ids,
-            cond_method,
-            then_node,
-            otherwise_node,
-        )
-    }
-
-    fn note_switch_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        cond_method: &'static str,
-        arms: &[(runtime_core::__serde_json::Value, Self::Node)],
-        default_node: &Self::Node,
-    ) {
-        <WebBackend as Backend>::note_switch_binding(
-            self,
-            anchor,
-            signal_ids,
-            cond_method,
-            arms,
-            default_node,
-        )
-    }
-
-    fn note_repeat_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        count_method: &'static str,
-        row_template: &Self::Node,
-        row_index_signal_id: Option<u64>,
-    ) {
-        <WebBackend as Backend>::note_repeat_binding(
-            self,
-            anchor,
-            signal_ids,
-            count_method,
-            row_template,
-            row_index_signal_id,
-        )
-    }
-
-    fn note_virtualizer_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        count_method: &'static str,
-        row_template: &Self::Node,
-        row_index_signal_id: Option<u64>,
-        horizontal: bool,
-    ) {
-        <WebBackend as Backend>::note_virtualizer_binding(
-            self,
-            anchor,
-            signal_ids,
-            count_method,
-            row_template,
-            row_index_signal_id,
-            horizontal,
-        )
-    }
-
-    fn supports_lazy_slot_capture(&self) -> bool {
-        <WebBackend as Backend>::supports_lazy_slot_capture(self)
-    }
-
-    fn begin_slot_capture(&mut self) {
-        <WebBackend as Backend>::begin_slot_capture(self)
-    }
-
-    fn end_slot_capture(&mut self, slot_root: &Self::Node) {
-        <WebBackend as Backend>::end_slot_capture(self, slot_root)
-    }
 }
 
 // ===========================================================================
@@ -1943,7 +1715,7 @@ mod tests {
         assert!(body_text().contains("t=0"), "boot mounted the tree");
 
         let count = slot.get().expect("build ran");
-        runtime_core::scheduling::after_ms_detached(0, move || count.set(9));
+        runtime_shared::scheduling::after_ms_detached(0, move || count.set(9));
         assert!(body_text().contains("t=0"), "timer not fired yet");
         sleep_ms(20).await;
         assert!(
@@ -2069,14 +1841,14 @@ mod tests {
         start(move || {
             // A fixed-height list surface: the JS window fill mounts
             // nothing into a zero-extent viewport.
-            let sheet = Rc::new(runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
-                height: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(120.0))),
+            let sheet = Rc::new(runtime_shared::StyleSheet::r#static(runtime_shared::StyleRules {
+                height: Some(runtime_shared::Tokenized::Literal(runtime_shared::Length::Px(120.0))),
                 ..Default::default()
             }));
             runtime_vocabulary::builders::virtualizer(
                 || 3usize,
                 |i| i as u64,
-                runtime_core::primitives::virtualizer::ItemSize::Known(Rc::new(|_| 20.0)),
+                runtime_shared::primitives::virtualizer::ItemSize::Known(Rc::new(|_| 20.0)),
                 |i| {
                     // Creation-side row work — the aborting class: a
                     // row-local signal plus a Dyn text effect.
@@ -2163,11 +1935,11 @@ mod tests {
         let world = World::new();
 
         let sheet = {
-            let rules = runtime_core::StyleRules {
-                opacity: Some(runtime_core::Tokenized::Literal(0.9)),
+            let rules = runtime_shared::StyleRules {
+                opacity: Some(runtime_shared::Tokenized::Literal(0.9)),
                 ..Default::default()
             };
-            Rc::new(runtime_core::StyleSheet::r#static(rules))
+            Rc::new(runtime_shared::StyleSheet::r#static(rules))
         };
         let (rows, realized) = world.enter(|| {
             let rows = signal(vec![1u32, 2, 3]);
@@ -2177,7 +1949,7 @@ mod tests {
                     let mut children =
                         runtime_vocabulary::glue::__static_repeat(3, move |i| {
                             view()
-                                .style(runtime_core::StyleApplication::new(sheet.clone()))
+                                .style(runtime_shared::StyleApplication::new(sheet.clone()))
                                 .child(text().content(format!("batch{i}")))
                                 .build()
                         });
@@ -2373,6 +2145,74 @@ mod tests {
         setup_mount();
     }
 
+    /// Regression (ported from the deleted old-core walker battery's
+    /// `regression_fstring_two_bindings_one_signal` +
+    /// `regression_fstring_existing_js_notifier_not_clobbered`): TWO text
+    /// bindings against the SAME signal must both update. The second
+    /// binding's per-signal auto-register loop sees
+    /// `signal_has_js_notifier == true` and short-circuits, so the
+    /// FIRST notifier must still be live and the JS dispatcher must fan
+    /// the change out to both subscribers. The failure modes this
+    /// catches are (a) the second registration clobbering the first
+    /// notifier (one node goes dark) and (b) the JS shim tracking only
+    /// one subscriber per sid (the later node wins).
+    #[wasm_bindgen_test]
+    fn regression_two_text_bindings_on_one_signal_both_update() {
+        setup_mount();
+        let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
+        crate::install_global_self(&backend);
+        let mut registry: Registry<WebBackend> = Registry::new();
+        runtime_vocabulary::register_builtins(&mut registry);
+        let registry = Rc::new(registry);
+        let world = World::new();
+
+        use runtime_vocabulary::glue::{
+            ReactiveTextSlot as _, TextSlotPart, __idealyst_text_from_parts,
+        };
+        let (s, realized) = world.enter(|| {
+            let s = signal(0u32);
+            let one = __idealyst_text_from_parts(vec![
+                TextSlotPart::Lit("a="),
+                TextSlotPart::Slot(s.__idealyst_text_slot(|d| format!("{d}"))),
+            ]);
+            let two = __idealyst_text_from_parts(vec![
+                TextSlotPart::Lit("b="),
+                TextSlotPart::Slot(s.__idealyst_text_slot(|d| format!("{d}"))),
+            ]);
+            let tree = view()
+                .child(text().content(one))
+                .child(text().content(two))
+                .build();
+            (s, realize(&backend, &registry, tree))
+        });
+        let root = realized.collect_nodes().pop().expect("one root");
+        setup_mount().append_child(&root).unwrap();
+        assert!(root.text_content().unwrap().contains("a=0"));
+        assert!(root.text_content().unwrap().contains("b=0"));
+
+        s.set(7);
+        world.flush();
+        let txt = root.text_content().unwrap();
+        assert!(
+            txt.contains("a=7") && txt.contains("b=7"),
+            "both bindings on one signal must update, got {txt:?}"
+        );
+
+        // Second fire — catches a notifier that survives one dispatch
+        // and is then replaced mid-flight.
+        s.set(9);
+        world.flush();
+        let txt = root.text_content().unwrap();
+        assert!(
+            txt.contains("a=9") && txt.contains("b=9"),
+            "both bindings must keep updating, got {txt:?}"
+        );
+
+        drop(realized);
+        drop(world);
+        setup_mount();
+    }
+
     /// Regression (found by the bench gate): a TEXT-binding notifier
     /// firing BEFORE the first class binding registers caches the
     /// pre-wrap `__idealystOnSignalChanged` handle — class bindings
@@ -2394,9 +2234,9 @@ mod tests {
         };
         let sheet = {
             static KEY: u8 = 0;
-            runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
-                Rc::new(runtime_core::StyleSheet::r#static(
-                    runtime_core::StyleRules::default(),
+            runtime_shared::cached_stylesheet(&KEY as *const u8 as usize, || {
+                Rc::new(runtime_shared::StyleSheet::r#static(
+                    runtime_shared::StyleRules::default(),
                 ))
             })
         };
@@ -2419,14 +2259,14 @@ mod tests {
                         c,
                         &[0, 1],
                         move |v| {
-                            let mut rules = runtime_core::StyleRules::default();
+                            let mut rules = runtime_shared::StyleRules::default();
                             rules.opacity =
-                                Some(runtime_core::Tokenized::Literal(if v == 0 {
+                                Some(runtime_shared::Tokenized::Literal(if v == 0 {
                                     0.25
                                 } else {
                                     0.75
                                 }));
-                            runtime_core::StyleApplication::new(sheet.clone())
+                            runtime_shared::StyleApplication::new(sheet.clone())
                                 .with_overrides(rules)
                         },
                     )),

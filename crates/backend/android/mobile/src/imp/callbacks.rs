@@ -52,7 +52,7 @@ pub struct HeaderButtonCallback(pub Rc<dyn Fn()>);
 /// scale only a handful of holders are alive at once, so the bound
 /// on accumulated boxes is small.
 pub(crate) struct StateCallback {
-    pub(crate) inner: RefCell<Option<Rc<dyn Fn(runtime_core::StateBits, bool)>>>,
+    pub(crate) inner: RefCell<Option<Rc<dyn Fn(runtime_shared::StateBits, bool)>>>,
 }
 
 /// `TextInput.on_change`. JVM-side `RustTextWatcher.afterTextChanged`
@@ -67,7 +67,7 @@ pub(crate) struct TextChangeCallback(pub(crate) Rc<dyn Fn(String)>);
 /// already takes a built `KeyEvent`, so this wrapper carries it
 /// directly; the keycode → canonical-name mapping happens in the JNI
 /// export itself.
-pub(crate) struct KeyDownCallback(pub(crate) runtime_core::primitives::key::KeyDownHandler);
+pub(crate) struct KeyDownCallback(pub(crate) runtime_shared::primitives::key::KeyDownHandler);
 
 /// `Toggle.on_change`. JVM-side `RustToggleListener.onCheckedChanged`
 /// calls `nativeChanged(ptr, checked)`.
@@ -116,11 +116,11 @@ pub(crate) fn leak<T>(value: T) -> jlong {
 /// dispatcher can fire after the View detaches, and a freed box
 /// would SIGSEGV.
 pub(crate) struct TouchCallback {
-    pub(crate) inner: RefCell<Option<runtime_core::TouchHandler>>,
+    pub(crate) inner: RefCell<Option<runtime_shared::TouchHandler>>,
     /// The View this handler is installed on, kept so the trampoline can
     /// publish a node-bound claim closure (cancel ancestor scroll interception)
     /// for recognizers that commit off the touch stream — e.g. a long-press
     /// drag whose timer fires while the finger is held still. See
-    /// [`runtime_core::set_active_touch_claim`].
+    /// [`runtime_shared::set_active_touch_claim`].
     pub(crate) node: jni::objects::GlobalRef,
 }

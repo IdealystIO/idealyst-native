@@ -16,7 +16,7 @@
 //! is wrapped to schedule a flush when it returns). But author code
 //! also runs from surfaces that are *not* toolkit events:
 //!
-//! - `runtime_core::scheduling::after_ms` timers (e.g. a debounce that
+//! - `runtime_shared::scheduling::after_ms` timers (e.g. a debounce that
 //!   sets a signal),
 //! - one-shot `after_animation_frame` callbacks and `raf_loop`
 //!   iterations (animation ticks that stage writes),

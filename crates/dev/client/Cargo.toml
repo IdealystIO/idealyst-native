@@ -8,7 +8,8 @@ license.workspace = true
 path = "src/lib.rs"
 
 # App-side replay engine for the dev-mode hot-reload wire protocol.
-# Generic over a platform `Backend` so each backend (iOS, Android,
+# Generic over the platform capability surface
+# (`runtime_vocabulary::caps::AllCaps`) so each backend (iOS, Android,
 # web, …) can host hot-reload without changes to its native code.
 #
 # Everything in this crate is gated by the `dev-hot-reload` feature.
@@ -32,37 +33,18 @@ dev-hot-reload = []
 # `runtime-server` feature. This crate is platform-pure: protocol +
 # replay engine only.
 
-# New-core replay target (idea-lite migration): compiles the `newcore`
-# module — `CapsReplay<B>`, the adapter that lets the replayer drive a
-# backend's `runtime_vocabulary::caps` surface (the inverse of
-# vocabulary's `LegacyBridge`). Off by default so old-core-only client
-# shells don't drag the scene/vocabulary crates.
-# `runtime-vocabulary/legacy-bridge` is required: `CapsReplay` exposes
-# the old-`Backend` surface over the caps (interop by definition), and
-# the vocabulary gates the interop half of the caps —
-# `caps::NavigatorOps::create_navigator` included — behind that feature.
-new-core = [
-    "dep:runtime-scene",
-    "dep:runtime-vocabulary",
-    "runtime-vocabulary/legacy-bridge",
-]
 
 [dependencies]
-runtime-core = { workspace = true }
+runtime-shared = { workspace = true }
 wire = { workspace = true }
 serde_json = { workspace = true }
 
-# New-core substrate (feature `new-core` only) — see the feature's
-# comment above.
-runtime-scene = { workspace = true, optional = true }
-runtime-vocabulary = { workspace = true, optional = true }
+# The replay target: `WireBackend<B>` is bounded on
+# `runtime_vocabulary::caps::AllCaps` (which is itself bounded on
+# `runtime_scene::Host`), so the replayer drives a platform through the
+# capability traits and names no backend crate.
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
 
 [dev-dependencies]
 mock-backend = { workspace = true }
-
-# The caps-only replay gate (client half of the dev-session wire-chain
-# port) only makes sense with the newcore module compiled. Run with
-# `cargo test -p dev-client --features new-core`.
-[[test]]
-name = "newcore_caps_replay"
-required-features = ["new-core"]

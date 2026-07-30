@@ -86,6 +86,50 @@ core_recipe!(
     uses: ["button", "overlay", "text", "view"]
 );
 
+// ---------------------------------------------------------------------------
+// Navigation recipes.
+//
+// These used to be `recipe!(…)` invocations inside the navigator SDKs
+// (`swap-navigator/src/recipes.rs`, `stack-navigator/src/recipes.rs`),
+// gated `#[cfg(all(feature = "catalog", not(feature = "new-core")))]` —
+// so on the new core the framework served NO navigation recipe at all,
+// which is a product-surface regression, not just a test gap (the arena
+// nav-notes feedback, run-0, is exactly an agent reconstructing this
+// skeleton by grepping source because `list_recipes` had none).
+//
+// They move here for the same two reasons the core-primitive recipes did
+// (see the module docs): a `recipe!` body's `ui!` lowering is decided
+// build-graph-wide, and the SDK crates carry an unconditional
+// `runtime_core` dependency, so `::runtime_core::Element` inside an
+// SDK-hosted recipe means the OLD Element even in a new-core graph — the
+// body could not compile on both cores from in there. As static data
+// with the source `include_str!`d, the served text is core-neutral
+// (`::runtime_core::…` is whatever root the reader's app aliases) and the
+// compile check happens where a core CAN be selected:
+// `crates/dev/newcore-app/tests/recipes_compile.rs`, which builds both
+// files on both legs against the real navigator SDKs.
+//
+// `uses` lists the primitives each body reaches for, matching the
+// core-primitive entries' convention (the navigator itself is the
+// `target`, not a "use").
+// ---------------------------------------------------------------------------
+
+core_recipe!(
+    "swap_three_screens_tab_bar",
+    "SwapNavigator",
+    "swap_three_screens_tab_bar.rs",
+    "A three-screen swap navigator with an author tab bar. `swap` has no\npush/pop depth — selecting a screen SWAPS the one visible screen — and\nthe \"tab bar\" is just ordinary author layout wrapped around the\nnavigator's single `{ nav.outlet }` (the analog of react-router's\n`<Outlet/>`). The `use swap_navigator::{…}` line matters: `SwapBuilder`\n(`.screen`/`.layout`/`.bind`) is an extension trait on the navigator\nbuilder — it must be in scope or the builder calls fail to resolve.\n\nIn the layout: splat `{ nav.outlet }` BARE (it ships its own\n`flex: 1 1 0; min-height: 0` fill rules; a styled wrapper replaces them\nand collapses grow-based screens) and keep the tab bar in a non-growing\nsibling slot so only the outlet grows. Each tab button calls\n`nav.on_select(\"<route name>\")` to switch; read `nav.active_route` to\nhighlight the live tab.",
+    uses: ["button", "text", "view"]
+);
+
+core_recipe!(
+    "stack_two_screens",
+    "StackNavigator",
+    "stack_two_screens.rs",
+    "A list → detail stack: two screens, a typed `Route` param that\nround-trips through the URL (`/note/:slug`), and an author\n`.layout(...)` shell around the outlet. The `use stack_navigator::{…}`\nline matters: `StackBuilder` (`.screen`/`.layout`/`.bind`) and\n`StackScreenExt` (`.title`) are extension traits — both must be in\nscope or the builder calls fail to resolve. In the layout, splat\n`{ nav.outlet }` BARE (it ships its own `flex: 1 1 0; min-height: 0`\nfill rules; a styled wrapper replaces them and collapses grow-based\nscreens) and keep chrome in a non-growing sibling slot.",
+    uses: ["button", "text", "view"]
+);
+
 #[cfg(test)]
 mod tests {
     /// The four core recipes register into the catalog's recipe slice
@@ -121,5 +165,70 @@ mod tests {
         assert!(recipes
             .iter()
             .any(|r| r.get("name").and_then(|n| n.as_str()) == Some("confirm_dialog_overlay")));
+    }
+
+    /// The two navigation recipes register here rather than in the
+    /// navigator SDKs, so they exist on BOTH cores (they used to be
+    /// `cfg(not(new-core))` inside the SDKs — a served-content regression
+    /// on the new core, not merely a test gap).
+    ///
+    /// The assertions on the served source are ported verbatim from the
+    /// deleted `stack-navigator/tests/recipes.rs`: the load-bearing pieces
+    /// an agent copy-pastes. Both extension-trait import lines are
+    /// load-bearing — omitting `StackBuilder` breaks `.screen(...)`
+    /// resolution, which is precisely what the arena feedback caught.
+    #[test]
+    fn navigation_recipes_register_with_their_import_lines() {
+        let swap = mcp_catalog::recipes()
+            .find(|r| r.name == "swap_three_screens_tab_bar")
+            .expect("swap_three_screens_tab_bar recipe registered in the catalog");
+        assert_eq!(swap.target, "SwapNavigator");
+        for needle in [
+            "use swap_navigator::",
+            "SwapBuilder",
+            "Route::<()>::new(\"search\", \"/search\")",
+            "nav.outlet",
+            "nav.on_select",
+        ] {
+            assert!(
+                swap.source.contains(needle),
+                "swap recipe source should contain `{needle}`; got:\n{}",
+                swap.source,
+            );
+        }
+
+        let stack = mcp_catalog::recipes()
+            .find(|r| r.name == "stack_two_screens")
+            .expect("stack_two_screens recipe registered in the catalog");
+        assert_eq!(stack.target, "StackNavigator");
+        for needle in [
+            "use stack_navigator::",
+            "StackBuilder",
+            "StackScreenExt",
+            "Route::<NoteId>::new(\"detail\", \"/note/:slug\")",
+            "nav.outlet",
+        ] {
+            assert!(
+                stack.source.contains(needle),
+                "stack recipe source should contain `{needle}`; got:\n{}",
+                stack.source,
+            );
+        }
+
+        // `recipes_for` is what `describe_recipe`/`list_recipes` join on:
+        // the navigator TYPE name must resolve to its recipe.
+        let cat = mcp_catalog::ResolvedCatalog::build();
+        assert!(
+            cat.recipes_for("StackNavigator")
+                .iter()
+                .any(|r| r.name == "stack_two_screens"),
+            "recipes_for(StackNavigator) must surface the stack recipe"
+        );
+        assert!(
+            cat.recipes_for("SwapNavigator")
+                .iter()
+                .any(|r| r.name == "swap_three_screens_tab_bar"),
+            "recipes_for(SwapNavigator) must surface the swap recipe"
+        );
     }
 }

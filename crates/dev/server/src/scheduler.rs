@@ -1,8 +1,8 @@
-//! Sidecar-side `runtime_core::scheduling::Scheduler` impl.
+//! Sidecar-side `runtime_shared::scheduling::Scheduler` impl.
 //!
 //! The sidecar is a plain Rust process with no platform run loop
 //! (no NSRunLoop, no browser raf, no Choreographer). Without an
-//! installed `Scheduler`, `runtime_core::scheduling::raf_loop`
+//! installed `Scheduler`, `runtime_shared::scheduling::raf_loop`
 //! returns an inert handle and any author code using
 //! `raf_loop_scoped` / `after_ms` / animation infrastructure silently
 //! does nothing. That's how the welcome example's planets sat at
@@ -42,7 +42,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use runtime_core::scheduling::{ScheduleHandle, Scheduler};
+use runtime_shared::scheduling::{ScheduleHandle, Scheduler};
 
 /// Unit struct because all per-callback state lives in thread-locals;
 /// the struct itself carries nothing. `Send + Sync` falls out
@@ -225,7 +225,40 @@ impl Drop for DeadlineHandle {
 /// once per process at sidecar startup. Subsequent session-thread
 /// spawns reuse the same install.
 pub fn install() {
-    runtime_core::scheduling::install_scheduler(Box::new(SidecarScheduler));
+    runtime_shared::scheduling::install_scheduler(Box::new(SidecarScheduler));
+}
+
+/// Install the sidecar's monotonic clock. Idempotent (process-wide
+/// `OnceLock`, first install wins).
+///
+/// The old core installed a clock from `mount`; the new-core sidecar
+/// boot never ran that preamble, so `now_micros()` read `0` forever.
+/// Every tween and raf-driven computation then resolved against t=0
+/// and re-emitted an identical value each tick — the raf loop still
+/// spins and the wire still floods with `SetAnimated*`, but nothing
+/// moves and tweens stay pinned at their start value.
+///
+/// Deliberately NOT `runtime_shared::time::install_default_time_source`:
+/// that helper skips `Platform::Web` (wasm has no std monotonic clock),
+/// and the sidecar reports its *client's* platform while itself always
+/// running natively. Routing through it would skip the install for
+/// every web session — exactly the case this exists to fix.
+pub fn install_clock() {
+    runtime_shared::time::install_time_source(Box::new(
+        runtime_shared::time::InstantTimeSource::new(),
+    ));
+}
+
+/// The sidecar's complete process-wide boot install: scheduler + clock.
+///
+/// `sidecar::run_loop` calls exactly this and nothing else, so a test
+/// can pin what the boot leaves behind. That indirection is the point —
+/// the bug was never that `install_clock` misbehaved, it was that the
+/// boot never called it, and a test calling `install_clock` directly
+/// would not have caught that.
+pub fn install_boot() {
+    install();
+    install_clock();
 }
 
 /// Drive everything the scheduler stashed on the **calling thread**:
@@ -334,12 +367,12 @@ mod tests {
     //! investigation: in the live welcome scene, timeline-driven
     //! tweens flow after rerender but the raf_loop body never fires.
     use super::*;
-    use runtime_core::scheduling::{after_ms_scoped, raf_loop_scoped};
+    use runtime_shared::scheduling::{after_ms_scoped, raf_loop_scoped};
     use std::cell::Cell;
     use std::rc::Rc;
 
     /// Install the sidecar scheduler exactly once across the whole
-    /// test binary. `runtime_core::scheduling::install_scheduler`
+    /// test binary. `runtime_shared::scheduling::install_scheduler`
     /// uses a `OnceLock`, so calling install repeatedly is harmless
     /// — but starting from a clean state per test isn't possible
     /// either. All scheduling tests therefore have to live with the
@@ -367,10 +400,10 @@ mod tests {
 
         // Helper: build one "lifetime" of the welcome pattern,
         // return an owning Subscription + a per-lifetime call counter.
-        fn build_lifetime() -> (runtime_core::Subscription, Rc<Cell<u32>>) {
+        fn build_lifetime() -> (runtime_shared::Subscription, Rc<Cell<u32>>) {
             let calls = Rc::new(Cell::new(0u32));
             let calls_for_body = calls.clone();
-            let effect = runtime_core::watch(move || {
+            let effect = runtime_shared::watch(move || {
                 let counter = calls_for_body.clone();
                 // delay=0 matches `session::after_ms(at, ...)` after
                 // the session epoch has already passed `at`.
@@ -423,7 +456,7 @@ mod tests {
 
         let raf_calls = Rc::new(Cell::new(0u32));
         let raf_calls_for_body = raf_calls.clone();
-        let _sub = runtime_core::watch(move || {
+        let _sub = runtime_shared::watch(move || {
             let raf_calls_inner = raf_calls_for_body.clone();
             after_ms_scoped(0, move || {
                 let counter = raf_calls_inner.clone();
@@ -470,13 +503,13 @@ mod tests {
         use std::cell::RefCell;
         ensure_installed();
 
-        let slot: Rc<RefCell<Option<runtime_core::scheduling::ScheduledTask>>> =
+        let slot: Rc<RefCell<Option<runtime_shared::scheduling::ScheduledTask>>> =
             Rc::new(RefCell::new(None));
         let slot_for_body = slot.clone();
         let fired = Rc::new(Cell::new(0u32));
         let fired_inner = fired.clone();
 
-        let task = runtime_core::scheduling::after_ms(0, move || {
+        let task = runtime_shared::scheduling::after_ms(0, move || {
             fired_inner.set(fired_inner.get() + 1);
             // Drop this deadline's own handle while it's executing —
             // ScheduledTask::Drop → DeadlineHandle::cancel →

@@ -20,16 +20,16 @@ crate-type = ["rlib"]
 
 [features]
 default = []
-# Forwards to `runtime-core/async-driver` so `runtime_core::driver::*` is in
+# Forwards to `runtime-shared/async-driver` so `runtime_shared::driver::*` is in
 # scope, enabling the cooperative main-thread `async_executor`. The leaf
 # backends' own `async-driver` feature turns this on (ios-core → apple-core).
-async-driver = ["runtime-core/async-driver"]
+async-driver = ["runtime-shared/async-driver"]
 
 [dependencies]
 # `embed-font-bytes`: CoreText registers fonts from their raw bytes
 # (`CTFontManagerRegisterGraphicsFont`), so iOS/macOS builds need the
-# bytes embedded. See `runtime_core::assets`.
-runtime-core = { workspace = true, features = ["embed-font-bytes"] }
+# bytes embedded. See `runtime_shared::assets`.
+runtime-shared = { workspace = true, features = ["embed-font-bytes"] }
 
 [target.'cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))'.dependencies]
 objc2 = "0.5"

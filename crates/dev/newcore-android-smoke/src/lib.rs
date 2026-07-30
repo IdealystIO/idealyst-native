@@ -1,4 +1,5 @@
-//! Smoke app for the Android backend's new-core boot path (P5).
+//! Smoke app for the Android backend's boot path
+//! (`backend_android::newcore::start`).
 //!
 //! Everything here is DIRECT vocabulary-builder calls — no `ui!`, no
 //! `jsx!` — deliberately, so this crate proves the `runtime_scene`
@@ -15,11 +16,11 @@
 //! Android Views), and one literal `StyleRules` (the `StyleOps`
 //! delegation on the native apply-style path).
 //!
-//! Hosted by the CLI-generated JNI wrapper with its `new-core` feature
-//! on ([`scene_app`] is the entry the wrapper mounts); [`app`] is the
-//! old-core placeholder the same wrapper mounts with the feature off.
+//! Hosted by the CLI-generated JNI wrapper: [`scene_app`] is the entry
+//! its `attach` mounts, and [`register_scene_extensions`] is the
+//! SDK-registration seam it passes alongside.
 
-use runtime_core::{Length, StyleRules, Tokenized};
+use runtime_shared::{Length, StyleRules, Tokenized};
 use runtime_scene::{keyed, Element};
 use runtime_vocabulary::builders::IntoSceneElement;
 use runtime_vocabulary::{button, text, toggle, view};
@@ -37,7 +38,7 @@ fn padded_column() -> StyleRules {
     }
 }
 
-/// The new-core app tree. Runs inside `World::enter` (the boot path
+/// The app tree. Runs inside `World::enter` (the boot path
 /// wraps it), so the free `signal()` constructor works; these
 /// top-level signals are world-root-owned and live for the app.
 pub fn scene_app() -> Element {
@@ -80,12 +81,12 @@ pub fn scene_app() -> Element {
         use std::cell::RefCell;
         use std::rc::Rc;
         runtime_world::effect(move || {
-            let pending: Rc<RefCell<Vec<runtime_core::scheduling::ScheduledTask>>> =
+            let pending: Rc<RefCell<Vec<runtime_shared::scheduling::ScheduledTask>>> =
                 Rc::new(RefCell::new(Vec::new()));
             let chain = pending.clone();
-            let t = runtime_core::scheduling::after_ms(2500, move || {
+            let t = runtime_shared::scheduling::after_ms(2500, move || {
                 count.set(41); // stages — the driver must commit it
-                let t2 = runtime_core::scheduling::after_ms(700, move || {
+                let t2 = runtime_shared::scheduling::after_ms(700, move || {
                     let committed = count.get() == 41;
                     let views = backend_android::newcore::live_view_count();
                     let verdict = if committed && views > 10 { "PASS" } else { "FAIL" };
@@ -149,19 +150,12 @@ pub fn scene_app() -> Element {
         .build()
 }
 
-/// Old-core placeholder. The generated wrapper's DEFAULT (feature-off)
-/// branch mounts this via `runtime_core::mount`; it exists so the same
-/// project builds under both wrapper modes. Not the point of this
-/// crate — run the launcher (which passes `--features new-core`) to
-/// exercise [`scene_app`].
-pub fn app() -> runtime_core::Element {
-    runtime_core::text(
-        "newcore-android-smoke built WITHOUT the wrapper's new-core \
-         feature — this is the old core. Run `cargo run -p \
-         newcore-android-smoke --features launcher --bin launch`.",
-    )
-    .into()
+/// SDK-handler registration seam the CLI-generated JNI wrapper invokes
+/// after `runtime_vocabulary::register_builtins` (the wrapper's `attach`
+/// passes it straight into `backend_android::newcore::start`). This
+/// scaffold registers nothing, so it is an empty generic over the scene
+/// registry's host.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
 }
-
-/// Wrapper seam: this scaffold registers no third-party SDKs.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}

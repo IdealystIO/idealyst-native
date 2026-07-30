@@ -165,7 +165,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustStateListener_nativeS
         return;
     }
     let cb = &*(ptr as *const StateCallback);
-    let bit = runtime_core::StateBits(bit as u8);
+    let bit = runtime_shared::StateBits(bit as u8);
     let on = on != 0;
     // Clone the inner Rc out of the RefCell so we can release the
     // borrow before invoking — the callback flips a Signal which
@@ -214,7 +214,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustTouchListener_nativeI
     if ptr == 0 {
         return 0;
     }
-    use runtime_core::{TouchEvent, TouchId, TouchPhase, TouchPoint};
+    use runtime_shared::{TouchEvent, TouchId, TouchPhase, TouchPoint};
     let phase = match phase {
         0 => TouchPhase::Began,
         1 => TouchPhase::Moved,
@@ -257,7 +257,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustTouchListener_nativeI
     // mirroring the iOS backend; idempotent with the Kotlin inline claim.
     if matches!(phase, TouchPhase::Began) {
         let node = cb.node.clone();
-        runtime_core::set_active_touch_claim(Some(std::rc::Rc::new(move || {
+        runtime_shared::set_active_touch_claim(Some(std::rc::Rc::new(move || {
             crate::imp::primitives::touch::claim_node(&node);
         })));
     }
@@ -268,7 +268,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustTouchListener_nativeI
         std::panic::AssertUnwindSafe(|| handler(&event)),
     );
     if matches!(phase, TouchPhase::Began) {
-        runtime_core::set_active_touch_claim(None);
+        runtime_shared::set_active_touch_claim(None);
     }
     let mut packed: jint = 0;
     if response.consumed {
@@ -321,7 +321,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustTextWatcher_nativeCha
 
 /// `RustKeyListener.onKey` dispatch. Maps the Android keycode +
 /// metaState + unicodeChar into the canonical `KeyEvent` shape
-/// documented on `runtime_core::primitives::key`, invokes the
+/// documented on `runtime_shared::primitives::key`, invokes the
 /// user's handler, and returns `true` for `KeyOutcome::PreventDefault`
 /// so the EditText's default action is suppressed.
 ///
@@ -351,7 +351,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustKeyListener_nativeKey
     // META_SHIFT_ON = 0x1, META_ALT_ON = 0x2, META_CTRL_ON = 0x1000,
     // META_META_ON = 0x10000. Bitmask check matches whether *either*
     // L/R variant of the modifier is pressed.
-    let event = runtime_core::primitives::key::KeyEvent {
+    let event = runtime_shared::primitives::key::KeyEvent {
         key,
         shift: (meta_state & 0x1) != 0,
         ctrl: (meta_state & 0x1000) != 0,
@@ -365,8 +365,8 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustKeyListener_nativeKey
         std::panic::AssertUnwindSafe(|| (cb.0)(&event)),
     );
     match outcome {
-        runtime_core::primitives::key::KeyOutcome::PreventDefault => 1,
-        runtime_core::primitives::key::KeyOutcome::Default => 0,
+        runtime_shared::primitives::key::KeyOutcome::PreventDefault => 1,
+        runtime_shared::primitives::key::KeyOutcome::Default => 0,
     }
 }
 
@@ -393,7 +393,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustGlobalKeyListener_nat
     }
     let cb = &*(ptr as *const KeyDownCallback);
     let key = android_key_name(key_code, unicode_char);
-    let event = runtime_core::primitives::key::KeyEvent {
+    let event = runtime_shared::primitives::key::KeyEvent {
         key,
         shift: (meta_state & 0x1) != 0,
         ctrl: (meta_state & 0x1000) != 0,
@@ -407,8 +407,8 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustGlobalKeyListener_nat
         std::panic::AssertUnwindSafe(|| (cb.0)(&event)),
     );
     match outcome {
-        runtime_core::primitives::key::KeyOutcome::PreventDefault => 1,
-        runtime_core::primitives::key::KeyOutcome::Default => 0,
+        runtime_shared::primitives::key::KeyOutcome::PreventDefault => 1,
+        runtime_shared::primitives::key::KeyOutcome::Default => 0,
     }
 }
 
@@ -690,7 +690,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustPopupDismissListener_
 // share a leaked `VirtualizerCallbacks` pointer; `nativeDrop` is the
 // only one that frees the box.
 
-pub(crate) type AndroidVirtCallbacks = runtime_core::VirtualizerCallbacks<jni::objects::GlobalRef>;
+pub(crate) type AndroidVirtCallbacks = runtime_shared::VirtualizerCallbacks<jni::objects::GlobalRef>;
 
 /// Catch panics + downcast the pointer in one place.
 unsafe fn with_callbacks<R>(

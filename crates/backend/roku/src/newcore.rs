@@ -1,20 +1,30 @@
-//! New-core adoption for the Roku backend (idea-lite migration:
-//! long-lived world like the terminal, but **embedder-driven** —
-//! there is no first-party host loop or scheduler).
+//! Rendering: the `runtime_scene::Host` + capability-trait surface, the
+//! boot entry, and the flush driver.
 //!
-//! Implements [`runtime_scene::Host`] plus **all 30** capability traits
-//! (`runtime_vocabulary::caps`) directly on [`RokuBackend`] — the
-//! production shape of the migration (no `LegacyBridge` in the render
-//! path). Every trait method delegates via UFCS
-//! (`<RokuBackend as Backend>::method(self, …)`) to the existing
-//! `Backend` impl, so the command-emission mechanism (NodeId minting,
-//! HandlerId minting, `RokuCommand` queueing, slot capture) is REUSED
-//! verbatim: the same scene emits the same serialized command stream on
-//! both cores (pinned byte-for-byte by `tests/newcore_parity.rs`).
-//! Where a `Backend` method is not overridden by `RokuBackend`, the
-//! UFCS call resolves to the same trait-default the old walker hits —
-//! behavior identical by construction. **30/30 direct, 0 adapted,
-//! 0 stubbed.**
+//! [`RokuBackend`] implements [`runtime_scene::Host`] plus **all 30**
+//! capability traits (`runtime_vocabulary::caps`) — the production shape
+//! of the migration. Every mechanism body in this file was moved here
+//! verbatim from the crate's old `impl runtime_core::Backend for RokuBackend`
+//! when the 159-method mega-trait was deleted, so the command-stream mechanism code (node
+//! allocation, style translation, command emission)
+//! is unchanged: the same scene emits the same commands
+//! (pinned by `tests/newcore_parity.rs` against the frozen old-core
+//! command streams).
+//! Capabilities this backend does not implement are simply absent — the
+//! caps-trait DEFAULT bodies serve them, and those defaults were audited
+//! byte-for-byte against the `Backend` defaults they replace
+//! (`docs/runtime-v2-deletion-baseline.md` S2.1; 115 of this backend's
+//! 152 caps methods resolve to a default).
+//!
+//! **30/30 traits implemented, 0 adapted, 0 stubbed.**
+//!
+//! # Two layers in one file: mechanism + flush policy
+//!
+//! Capability methods that take an author callback wrap it before running
+//! the mechanism (`flushing0`/`flushing1`/`flushing_key` + the inline
+//! wrappers below) so a staged write commits after the callback returns.
+//! That dispatch-site policy is why the mechanism lives here rather than
+//! in an inherent impl: the wrap and the body are one method.
 //!
 //! # Boot sequence ([`start`])
 //!
@@ -26,7 +36,7 @@
 //! 3. Fresh [`World`]; build + [`realize`] inside `world.enter`.
 //! 4. Entered buffered-microtask drain (no-op without a buffering
 //!    scheduler; load-bearing under one).
-//! 5. Single root → `Backend::finish` (emits the `Finish { root }`
+//! 5. Single root → `caps::LifecycleOps::finish` (emits the `Finish { root }`
 //!    wire op, matching the old-core mount).
 //! 6. `world.flush()` commits anything staged during mount, so the
 //!    first [`RokuBackend::drain`] carries the complete initial scene.
@@ -92,29 +102,23 @@
 //!   stream IS the observable output, which is why the parity tests
 //!   compare JSON bytes rather than pixels.
 
-use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use runtime_core::accessibility::{AccessibilityProps, AccessibilityTree, LiveRegionPriority, Role};
-use runtime_core::animation::AnimProp;
-use runtime_core::assets::{
-    AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
-};
-use runtime_core::breakpoint::Breakpoint;
-use runtime_core::introspect::NativeNode;
-use runtime_core::primitives;
-use runtime_core::primitives::portal::ViewportRect;
-use runtime_core::styled_text::TextRun;
-use runtime_core::{
-    Action, Backend, BackendBatch, Color, ColorScheme, Easing, FileDropHandler, FontFamily,
-    HoverHandler, ImageErrorHandler, ImageLoadHandler, PageMetadata, Platform, SafeAreaSides,
-    Screenshot, StateBits, StyleApplication, StyleRules, TokenEntry, Tokenized, TouchHandler,
-    TouchId, VirtualizerCallbacks, WheelHandler,
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives;
+use runtime_shared::{
+    Action, Color, StyleRules,
 };
 use runtime_scene::{realize, Element, Host, Realized, Registry};
 use runtime_vocabulary::caps;
 use runtime_world::World;
+use crate::command::{self, RokuCommand, SignalId, WireColor, WireStyle};
+use crate::style;
+use crate::inspect_simple_text_row;
+use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
+use runtime_shared::primitives::icon::IconData;
+use runtime_vocabulary::caps::WireBindingOps as _;
 
 use crate::{NodeId, RokuBackend};
 
@@ -201,8 +205,8 @@ pub fn start(
     // Monotonic clock (idempotent, first install wins) — animation and
     // presence timing read it; the old boot relied on the host's lazy
     // default, the new boot installs it explicitly like macOS/wgpu.
-    let platform = Backend::platform(&*backend.borrow());
-    runtime_core::time::install_default_time_source(platform);
+    let platform = caps::AppEnvOps::platform(&*backend.borrow());
+    runtime_shared::time::install_default_time_source(platform);
 
     let mut registry: Registry<RokuBackend> = Registry::new();
     runtime_vocabulary::register_builtins(&mut registry);
@@ -223,7 +227,7 @@ pub fn start(
     // queue scheduler). Must run with NO backend borrow held (drained
     // tasks re-borrow); ENTERED because a buffered task may do
     // creation-side work.
-    world.enter(runtime_core::scheduling::drain_buffered_microtasks);
+    world.enter(runtime_shared::scheduling::drain_buffered_microtasks);
 
     // Single-root contract, matching the old-core mount (the wire's
     // `Finish { root }` op names exactly one application root).
@@ -235,7 +239,7 @@ pub fn start(
              top-level node (got {n}) — wrap fragment/multi-root trees in a view"
         ),
     };
-    Backend::finish(&mut *backend.borrow_mut(), root);
+    caps::LifecycleOps::finish(&mut *backend.borrow_mut(), root);
 
     // Commit anything staged during mount so the first `drain()`
     // carries the complete initial scene.
@@ -283,7 +287,7 @@ pub fn schedule_flush() {
     if FLUSH_QUEUED.with(|q| q.replace(true)) {
         return;
     }
-    runtime_core::scheduling::schedule_microtask(|| {
+    runtime_shared::scheduling::schedule_microtask(|| {
         FLUSH_QUEUED.with(|q| q.set(false));
         flush_now();
     });
@@ -304,7 +308,7 @@ pub fn flush_sync() {
 /// [`NewCoreApp::stop`] (dead-world no-op); see the module docs for
 /// the full contract.
 pub fn settle() {
-    enter_mounted_world(runtime_core::scheduling::drain_buffered_microtasks);
+    enter_mounted_world(runtime_shared::scheduling::drain_buffered_microtasks);
     flush_sync();
 }
 
@@ -387,31 +391,57 @@ impl Host for RokuBackend {
     type Node = NodeId;
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
-        <RokuBackend as Backend>::insert(self, parent, child)
+        self.push(RokuCommand::Insert {
+            parent: *parent,
+            child,
+        });
     }
 
-    fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
-        <RokuBackend as Backend>::insert_many(self, parent, children)
+    // `insert_many` is deliberately NOT implemented: `Host`'s default is
+    // the same N-x-`insert` loop the old `Backend` default ran, so the
+    // resulting child order is unchanged (deletion-baseline S2.2 —
+    // "byte-identical on `Host`, safe").
+
+    /// Explicit port of the old `Backend::insert_at` DEFAULT body: append,
+    /// ignoring the index. `Host` makes the method REQUIRED, so the default
+    /// that used to supply this body is gone — reproduced verbatim rather
+    /// than inherited (deletion-baseline S2.2). Never reached in practice:
+    /// [`supports_splice`](Self::supports_splice) is `false`, so reactive
+    /// regions rebuild wholesale under their own anchor and no positional
+    /// splice is ever emitted.
+    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, _index: usize) {
+        self.insert(parent, child)
     }
 
-    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
-        <RokuBackend as Backend>::insert_at(self, parent, child, index)
-    }
-
-    fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
-        <RokuBackend as Backend>::remove_child(self, parent, child)
+    /// Explicit port of the old `Backend::remove_child` DEFAULT body (a
+    /// no-op). `Host` makes it REQUIRED, so it is stated here rather than
+    /// inherited (deletion-baseline S2.2). Only meaningful for
+    /// splice-capable hosts; this one is anchored, so the framework never
+    /// calls it.
+    fn remove_child(&mut self, _parent: &Self::Node, _child: &Self::Node) {
+        // default: no-op
     }
 
     fn clear_children(&mut self, node: &Self::Node) {
-        <RokuBackend as Backend>::clear_children(self, node)
+        self.push(RokuCommand::ClearChildren { parent: *node });
     }
 
     fn create_anchor(&mut self) -> Self::Node {
-        <RokuBackend as Backend>::create_reactive_anchor(self)
+        let id = self.mint_node();
+        self.push(RokuCommand::CreateReactiveAnchor { id });
+        id
     }
 
+    /// Explicit `false` — the port of the old
+    /// `Backend::supports_child_splice` DEFAULT this backend relied on.
+    /// `Host` makes it REQUIRED, so the value is stated here instead of
+    /// inherited (deletion-baseline S2.2). ANCHORED mode is what the frozen
+    /// artifacts in `tests/goldens/` recorded from the old core: flipping it
+    /// to `true` would move every reactive region out from under its anchor
+    /// and change the output wholesale. Pinned by a literal assertion in the
+    /// crate's parity suite.
     fn supports_splice(&self) -> bool {
-        <RokuBackend as Backend>::supports_child_splice(self)
+        false
     }
 }
 
@@ -420,60 +450,14 @@ impl Host for RokuBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::AppEnvOps for RokuBackend {
-    fn color_scheme(&self) -> ColorScheme {
-        <RokuBackend as Backend>::color_scheme(self)
-    }
-
-    fn platform(&self) -> Platform {
-        <RokuBackend as Backend>::platform(self)
-    }
-
-    fn url_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
-        <RokuBackend as Backend>::url_opener(self)
-    }
-
-    fn fullscreen_setter(&self) -> Option<Rc<dyn Fn(bool)>> {
-        <RokuBackend as Backend>::fullscreen_setter(self)
-    }
-
-    fn set_page_metadata(&mut self, meta: &PageMetadata) {
-        <RokuBackend as Backend>::set_page_metadata(self, meta)
-    }
-
-    fn set_app_background(&mut self, color: &Tokenized<Color>) {
-        <RokuBackend as Backend>::set_app_background(self, color)
-    }
-
-    fn set_scrollbar_theme(&mut self, thumb: &Tokenized<Color>, track: &Tokenized<Color>) {
-        <RokuBackend as Backend>::set_scrollbar_theme(self, thumb, track)
-    }
-
-    fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
-        // Dispatch-site glue: the app-level key handler runs author code.
-        let handler = handler.map(flushing_key);
-        <RokuBackend as Backend>::set_app_key_handler(self, handler)
+    fn platform(&self) -> runtime_shared::Platform {
+        runtime_shared::Platform::Roku
     }
 }
 
 impl caps::LifecycleOps for RokuBackend {
     fn finish(&mut self, root: Self::Node) {
-        <RokuBackend as Backend>::finish(self, root)
-    }
-
-    fn run_layout(&mut self) {
-        <RokuBackend as Backend>::run_layout(self)
-    }
-
-    fn schedule_layout_pass() {
-        <RokuBackend as Backend>::schedule_layout_pass()
-    }
-
-    fn is_hydrating(&self) -> bool {
-        <RokuBackend as Backend>::is_hydrating(self)
-    }
-
-    fn renders_lazy_chunks(&self) -> bool {
-        <RokuBackend as Backend>::renders_lazy_chunks(self)
+        self.push(RokuCommand::Finish { root });
     }
 }
 
@@ -482,76 +466,32 @@ impl caps::LifecycleOps for RokuBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::ViewOps for RokuBackend {
-    fn create_view(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-        <RokuBackend as Backend>::create_view(self, a11y)
-    }
-
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
-        <RokuBackend as Backend>::make_view_handle(self, node)
-    }
-}
-
-impl caps::InputOps for RokuBackend {
-    fn install_touch_handler(&mut self, node: &Self::Node, handler: TouchHandler) {
-        // Dispatch-site glue (module docs): flush after author code.
-        let handler: TouchHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                let response = f(ev);
-                schedule_flush();
-                response
-            })
-        };
-        <RokuBackend as Backend>::install_touch_handler(self, node, handler)
-    }
-
-    fn claim_touch(&mut self, node: &Self::Node, touch_id: TouchId) {
-        <RokuBackend as Backend>::claim_touch(self, node, touch_id)
-    }
-
-    fn install_wheel_handler(&mut self, node: &Self::Node, handler: WheelHandler) {
-        let handler: WheelHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                let response = f(ev);
-                schedule_flush();
-                response
-            })
-        };
-        <RokuBackend as Backend>::install_wheel_handler(self, node, handler)
-    }
-
-    fn install_hover_handler(&mut self, node: &Self::Node, handler: HoverHandler) {
-        <RokuBackend as Backend>::install_hover_handler(self, node, flushing1(handler))
-    }
-
-    fn mark_preserves_focus(&mut self, node: &Self::Node) {
-        <RokuBackend as Backend>::mark_preserves_focus(self, node)
-    }
-
-    fn install_file_drop_handler(&mut self, node: &Self::Node, handler: FileDropHandler) {
-        let handler: FileDropHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                let response = f(ev);
-                schedule_flush();
-                response
-            })
-        };
-        <RokuBackend as Backend>::install_file_drop_handler(self, node, handler)
+    fn create_view(
+        &mut self,
+        _a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        let id = self.mint_node();
+        self.push(RokuCommand::CreateView { id });
+        id
     }
 }
+
+impl caps::InputOps for RokuBackend {}
 
 impl caps::PressableOps for RokuBackend {
-    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> Self::Node {
+    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Self::Node {
         // Dispatch-site glue: the wrapped closure is what
         // `create_pressable` registers in the HandlerTable, so the
         // embedder's `dispatch_unit(id)` gets the flush for free.
-        <RokuBackend as Backend>::create_pressable(self, flushing0(on_click), a11y)
-    }
-
-    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_core::PressableHandle {
-        <RokuBackend as Backend>::make_pressable_handle(self, node)
+        let on_click = flushing0(on_click);
+        let id = self.mint_node();
+        let handler = self.mint_handler();
+        self.handlers.borrow_mut().unit.push((handler, on_click));
+        self.push(RokuCommand::CreatePressable {
+            id,
+            on_click: handler,
+        });
+        id
     }
 }
 
@@ -560,66 +500,24 @@ impl caps::PressableOps for RokuBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::TextOps for RokuBackend {
-    fn create_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
-        <RokuBackend as Backend>::create_text(self, content, a11y)
-    }
-
-    fn create_styled_text(&mut self, runs: &[TextRun], a11y: &AccessibilityProps) -> Self::Node {
-        <RokuBackend as Backend>::create_styled_text(self, runs, a11y)
-    }
-
-    fn update_styled_text(&mut self, node: &Self::Node, runs: &[TextRun]) {
-        <RokuBackend as Backend>::update_styled_text(self, node, runs)
+    fn create_text(
+        &mut self,
+        content: &str,
+        _a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        let id = self.mint_node();
+        self.push(RokuCommand::CreateText {
+            id,
+            content: content.to_string(),
+        });
+        id
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
-        <RokuBackend as Backend>::update_text(self, node, content)
-    }
-
-    fn create_text_with_id(
-        &mut self,
-        content: &str,
-        a11y: &AccessibilityProps,
-    ) -> Option<(Self::Node, u32)> {
-        <RokuBackend as Backend>::create_text_with_id(self, content, a11y)
-    }
-
-    fn update_text_by_id(&mut self, id: u32, content: String) {
-        <RokuBackend as Backend>::update_text_by_id(self, id, content)
-    }
-
-    fn release_text_id(&mut self, id: u32) {
-        <RokuBackend as Backend>::release_text_id(self, id)
-    }
-
-    fn supports_js_text_bindings(&self) -> bool {
-        <RokuBackend as Backend>::supports_js_text_bindings(self)
-    }
-
-    fn register_reactive_text_binding(
-        &mut self,
-        text_id: u32,
-        signal_ids: &[u64],
-        template_parts: &[&str],
-        initial_values: &[&str],
-        stringifiers: &[Rc<dyn Fn() -> String>],
-    ) {
-        <RokuBackend as Backend>::register_reactive_text_binding(
-            self,
-            text_id,
-            signal_ids,
-            template_parts,
-            initial_values,
-            stringifiers,
-        )
-    }
-
-    fn release_reactive_text_binding(&mut self, text_id: u32) {
-        <RokuBackend as Backend>::release_reactive_text_binding(self, text_id)
-    }
-
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
-        <RokuBackend as Backend>::make_text_handle(self, node)
+        self.push(RokuCommand::UpdateText {
+            id: *node,
+            content: content.to_string(),
+        });
     }
 }
 
@@ -630,7 +528,7 @@ impl caps::ButtonOps for RokuBackend {
         on_click: &Action,
         leading_icon: Option<&primitives::icon::IconData>,
         trailing_icon: Option<&primitives::icon::IconData>,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: wrap the Action's runtime evaluator (the
         // closure `create_button` registers in the HandlerTable); the
@@ -644,22 +542,54 @@ impl caps::ButtonOps for RokuBackend {
             output: on_click.output,
             fire: flushing0(on_click.fire.clone()),
         };
-        <RokuBackend as Backend>::create_button(
-            self,
-            label,
-            &on_click,
-            leading_icon,
-            trailing_icon,
-            a11y,
-        )
+        let on_click = &on_click;
+        let id = self.mint_node();
+        let handler = self.mint_handler();
+        // Roku has no host runtime to evaluate the closure; we ship
+        // the structured metadata (method + signal ids + optional
+        // output signal) as a `BindButton` wire op below. The
+        // closure itself is still registered in the handler table
+        // so a host-side runtime-server shell (dev mode) can fire it; in
+        // baked-binary builds the device's transpiled #[method]
+        // does the work and the closure is dead weight.
+        self.handlers
+            .borrow_mut()
+            .unit
+            .push((handler, on_click.fire.clone()));
+        let leading = leading_icon.map(|d| self.lower_icon(d));
+        let trailing = trailing_icon.map(|d| self.lower_icon(d));
+        self.push(RokuCommand::CreateButton {
+            id,
+            label: label.to_string(),
+            on_click: handler,
+            leading_icon: leading,
+            trailing_icon: trailing,
+        });
+        // Carry the structured metadata onto the wire if the Action
+        // has any (i.e. came from a `#[method]`-backed handler). An
+        // opaque Action (closure with empty method) skips this —
+        // generator backends can't ship a nameless handler.
+        if !on_click.is_opaque() {
+            // Declare each input signal first so the device has a
+            // value to read at dispatch time.
+            for (sid, val) in on_click.inputs.iter().zip(on_click.initial.iter()) {
+                self.note_signal_initial(*sid, val);
+            }
+            self.push(RokuCommand::BindButton {
+                button_id: id,
+                input_signal_ids: on_click.inputs.iter().map(|i| SignalId(*i)).collect(),
+                method: on_click.method.to_string(),
+                output_signal_id: on_click.output.map(SignalId),
+            });
+        }
+        id
     }
 
     fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-        <RokuBackend as Backend>::update_button_label(self, node, label)
-    }
-
-    fn make_button_handle(&self, node: &Self::Node) -> runtime_core::ButtonHandle {
-        <RokuBackend as Backend>::make_button_handle(self, node)
+        self.push(RokuCommand::UpdateButtonLabel {
+            id: *node,
+            label: label.to_string(),
+        });
     }
 }
 
@@ -668,108 +598,55 @@ impl caps::ButtonOps for RokuBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::ImageOps for RokuBackend {
-    fn create_image(&mut self, src: &str, alt: Option<&str>, a11y: &AccessibilityProps) -> Self::Node {
-        <RokuBackend as Backend>::create_image(self, src, alt, a11y)
+    fn create_image(
+        &mut self,
+        src: &str,
+        alt: Option<&str>,
+        _a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        let id = self.mint_node();
+        self.push(RokuCommand::CreateImage {
+            id,
+            src: src.to_string(),
+            alt: alt.map(|s| s.to_string()),
+        });
+        id
     }
 
     fn update_image_src(&mut self, node: &Self::Node, src: &str) {
-        <RokuBackend as Backend>::update_image_src(self, node, src)
-    }
-
-    fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
-        <RokuBackend as Backend>::update_image_alt(self, node, alt)
-    }
-
-    fn install_image_load_handler(&mut self, node: &Self::Node, handler: ImageLoadHandler) {
-        let handler: ImageLoadHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                f(ev);
-                schedule_flush();
-            })
-        };
-        <RokuBackend as Backend>::install_image_load_handler(self, node, handler)
-    }
-
-    fn install_image_error_handler(&mut self, node: &Self::Node, handler: ImageErrorHandler) {
-        <RokuBackend as Backend>::install_image_error_handler(self, node, flushing0(handler))
-    }
-
-    fn make_image_handle(&self, node: &Self::Node) -> primitives::image::ImageHandle {
-        <RokuBackend as Backend>::make_image_handle(self, node)
+        self.push(RokuCommand::UpdateImageSrc {
+            id: *node,
+            src: src.to_string(),
+        });
     }
 }
 
 impl caps::IconOps for RokuBackend {
     fn create_icon(
         &mut self,
-        data: &primitives::icon::IconData,
+        data: &IconData,
         color: Option<&Color>,
-        a11y: &AccessibilityProps,
+        _a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        <RokuBackend as Backend>::create_icon(self, data, color, a11y)
+        let id = self.mint_node();
+        let wire = self.lower_icon(data);
+        self.push(RokuCommand::CreateIcon {
+            id,
+            data: wire,
+            color: color.map(|c| WireColor::literal(c.0.clone())),
+        });
+        id
     }
 
     fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
-        <RokuBackend as Backend>::update_icon_color(self, node, color)
-    }
-
-    fn update_icon_data(&mut self, node: &Self::Node, data: &primitives::icon::IconData) {
-        <RokuBackend as Backend>::update_icon_data(self, node, data)
-    }
-
-    fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
-        <RokuBackend as Backend>::update_icon_stroke(self, node, progress)
-    }
-
-    fn animate_icon_stroke(
-        &mut self,
-        node: &Self::Node,
-        from: f32,
-        to: f32,
-        duration_ms: u32,
-        easing: Easing,
-        infinite: bool,
-        autoreverses: bool,
-    ) {
-        <RokuBackend as Backend>::animate_icon_stroke(
-            self,
-            node,
-            from,
-            to,
-            duration_ms,
-            easing,
-            infinite,
-            autoreverses,
-        )
-    }
-
-    fn make_icon_handle(&self, node: &Self::Node) -> primitives::icon::IconHandle {
-        <RokuBackend as Backend>::make_icon_handle(self, node)
+        self.push(RokuCommand::UpdateIconColor {
+            id: *node,
+            color: WireColor::literal(color.0.clone()),
+        });
     }
 }
 
-impl caps::LinkOps for RokuBackend {
-    fn create_link(
-        &mut self,
-        config: primitives::link::LinkConfig,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Dispatch-site glue: link activation dispatches navigation
-        // (stages nav-queue tick signals on the new core).
-        let mut config = config;
-        config.on_activate = flushing0(config.on_activate.clone());
-        <RokuBackend as Backend>::create_link(self, config, a11y)
-    }
-
-    fn update_link_url(&mut self, node: &Self::Node, url: &str) {
-        <RokuBackend as Backend>::update_link_url(self, node, url)
-    }
-
-    fn make_link_handle(&self, node: &Self::Node) -> primitives::link::LinkHandle {
-        <RokuBackend as Backend>::make_link_handle(self, node)
-    }
-}
+impl caps::LinkOps for RokuBackend {}
 
 // ---------------------------------------------------------------------------
 // Form widgets
@@ -784,78 +661,41 @@ impl caps::TextInputOps for RokuBackend {
         on_key_down: Option<primitives::key::KeyDownHandler>,
         on_blur: Option<primitives::text_input::BlurHandler>,
         secure: bool,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // The wrapped on_change is what lands in the HandlerTable's
         // string slot — the embedder's dispatch_string covers it.
-        <RokuBackend as Backend>::create_text_input(
-            self,
-            initial_value,
-            placeholder,
-            flushing1(on_change),
-            on_key_down.map(flushing_key),
-            on_blur.map(|f| -> primitives::text_input::BlurHandler {
+        let on_change = flushing1(on_change);
+        let _on_key_down = on_key_down.map(flushing_key);
+        let _on_blur = on_blur.map(|f| -> primitives::text_input::BlurHandler {
                 Rc::new(move || {
                     let outcome = f();
                     schedule_flush();
                     outcome
                 })
-            }),
+            });
+        // `_on_key_down` is unused on Roku — the SceneGraph keyboard
+        // surface doesn't expose pre-default key interception in the
+        // way Web/UIKit/Android do. Document explicitly so the
+        // asymmetry is visible at the API boundary.
+        let id = self.mint_node();
+        let handler = self.mint_handler();
+        self.handlers.borrow_mut().string.push((handler, on_change));
+        self.push(RokuCommand::CreateTextInput {
+            id,
+            initial_value: initial_value.to_string(),
+            placeholder: placeholder.map(|s| s.to_string()),
             secure,
-            a11y,
-        )
+            on_change: handler,
+        });
+        id
     }
 
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
-        <RokuBackend as Backend>::update_text_input_value(self, node, value)
-    }
-
-    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
-        <RokuBackend as Backend>::update_text_input_secure(self, node, secure)
-    }
-
-    fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
-        <RokuBackend as Backend>::set_text_input_focus_handler(self, node, flushing1(handler))
-    }
-
-    fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
-        <RokuBackend as Backend>::update_text_input_placeholder(self, node, placeholder)
-    }
-
-    fn create_text_area(
-        &mut self,
-        initial_value: &str,
-        placeholder: Option<&str>,
-        wrap: bool,
-        min_rows: Option<u32>,
-        max_rows: Option<u32>,
-        on_change: Rc<dyn Fn(String)>,
-        on_key_down: Option<primitives::key::KeyDownHandler>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        <RokuBackend as Backend>::create_text_area(
-            self,
-            initial_value,
-            placeholder,
-            wrap,
-            min_rows,
-            max_rows,
-            flushing1(on_change),
-            on_key_down.map(flushing_key),
-            a11y,
-        )
-    }
-
-    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
-        <RokuBackend as Backend>::update_text_area_value(self, node, value)
-    }
-
-    fn make_text_input_handle(&self, node: &Self::Node) -> primitives::text_input::TextInputHandle {
-        <RokuBackend as Backend>::make_text_input_handle(self, node)
-    }
-
-    fn make_text_area_handle(&self, node: &Self::Node) -> primitives::text_area::TextAreaHandle {
-        <RokuBackend as Backend>::make_text_area_handle(self, node)
+        self.push(RokuCommand::UpdateTextInputValue {
+            id: *node,
+            value: value.to_string(),
+        });
     }
 }
 
@@ -864,18 +704,23 @@ impl caps::ToggleOps for RokuBackend {
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // The wrapped on_change lands in the HandlerTable's bool slot.
-        <RokuBackend as Backend>::create_toggle(self, initial_value, flushing1(on_change), a11y)
+        let on_change = flushing1(on_change);
+        let id = self.mint_node();
+        let handler = self.mint_handler();
+        self.handlers.borrow_mut().bool_.push((handler, on_change));
+        self.push(RokuCommand::CreateToggle {
+            id,
+            initial_value,
+            on_change: handler,
+        });
+        id
     }
 
     fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
-        <RokuBackend as Backend>::update_toggle_value(self, node, value)
-    }
-
-    fn make_toggle_handle(&self, node: &Self::Node) -> primitives::toggle::ToggleHandle {
-        <RokuBackend as Backend>::make_toggle_handle(self, node)
+        self.push(RokuCommand::UpdateToggleValue { id: *node, value });
     }
 }
 
@@ -887,52 +732,47 @@ impl caps::SliderOps for RokuBackend {
         max: f32,
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // The wrapped on_change lands in the HandlerTable's float slot.
-        <RokuBackend as Backend>::create_slider(
-            self,
+        let on_change = flushing1(on_change);
+        let id = self.mint_node();
+        let handler = self.mint_handler();
+        self.handlers.borrow_mut().float.push((handler, on_change));
+        self.push(RokuCommand::CreateSlider {
+            id,
             initial_value,
             min,
             max,
             step,
-            flushing1(on_change),
-            a11y,
-        )
+            on_change: handler,
+        });
+        id
     }
 
     fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
-        <RokuBackend as Backend>::update_slider_value(self, node, value)
-    }
-
-    fn make_slider_handle(&self, node: &Self::Node) -> primitives::slider::SliderHandle {
-        <RokuBackend as Backend>::make_slider_handle(self, node)
+        self.push(RokuCommand::UpdateSliderValue { id: *node, value });
     }
 }
 
 impl caps::ActivityIndicatorOps for RokuBackend {
     fn create_activity_indicator(
         &mut self,
-        size: primitives::activity_indicator::ActivityIndicatorSize,
+        size: ActivityIndicatorSize,
         color: Option<&Color>,
-        a11y: &AccessibilityProps,
+        _a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        <RokuBackend as Backend>::create_activity_indicator(self, size, color, a11y)
-    }
-
-    fn update_activity_indicator_size(
-        &mut self,
-        node: &Self::Node,
-        size: primitives::activity_indicator::ActivityIndicatorSize,
-    ) {
-        <RokuBackend as Backend>::update_activity_indicator_size(self, node, size)
-    }
-
-    fn make_activity_indicator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> primitives::activity_indicator::ActivityIndicatorHandle {
-        <RokuBackend as Backend>::make_activity_indicator_handle(self, node)
+        let id = self.mint_node();
+        let wire_size = match size {
+            ActivityIndicatorSize::Small => command::ActivityIndicatorSize::Small,
+            ActivityIndicatorSize::Large => command::ActivityIndicatorSize::Large,
+        };
+        self.push(RokuCommand::CreateActivityIndicator {
+            id,
+            size: wire_size,
+            color: color.map(|c| WireColor::literal(c.0.clone())),
+        });
+        id
     }
 }
 
@@ -945,7 +785,7 @@ impl caps::ScrollOps for RokuBackend {
         &mut self,
         horizontal: bool,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: Roku's create_scroll_view currently drops
         // on_scroll (no wire op), but wrap anyway so the delegation
@@ -956,96 +796,16 @@ impl caps::ScrollOps for RokuBackend {
                 schedule_flush();
             })
         });
-        <RokuBackend as Backend>::create_scroll_view(self, horizontal, on_scroll, a11y)
-    }
-
-    fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
-        <RokuBackend as Backend>::node_scroll(self, node)
-    }
-
-    fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
-        <RokuBackend as Backend>::set_node_scroll(self, node, x, y)
-    }
-
-    fn make_scroll_view_handle(&self, node: &Self::Node) -> primitives::scroll_view::ScrollViewHandle {
-        <RokuBackend as Backend>::make_scroll_view_handle(self, node)
+        let _on_scroll = on_scroll;
+        let id = self.mint_node();
+        self.push(RokuCommand::CreateScrollView { id, horizontal });
+        id
     }
 }
 
-impl caps::SafeAreaOps for RokuBackend {
-    fn apply_safe_area_padding(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-        <RokuBackend as Backend>::apply_safe_area_padding(self, node, sides)
-    }
+impl caps::SafeAreaOps for RokuBackend {}
 
-    fn apply_scroll_view_safe_area_inset(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-        <RokuBackend as Backend>::apply_scroll_view_safe_area_inset(self, node, sides)
-    }
-}
-
-impl caps::VirtualizerOps for RokuBackend {
-    fn create_virtualizer(
-        &mut self,
-        callbacks: VirtualizerCallbacks<Self::Node>,
-        overscan: f32,
-        layout: primitives::virtualizer::VirtualLayout,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Dispatch-site glue + world entry: mount/release run author
-        // render closures and scope cleanups; mount_item REALIZES the
-        // row (creation-side work that needs the ambient world).
-        // item_count/item_key/item_size are pure reads, unwrapped.
-        let VirtualizerCallbacks {
-            item_count,
-            item_key,
-            item_size,
-            measure_sizes,
-            mount_item,
-            release_item,
-            set_measured_size,
-        } = callbacks;
-        let callbacks = VirtualizerCallbacks {
-            item_count,
-            item_key,
-            item_size,
-            measure_sizes,
-            mount_item: {
-                let f = mount_item;
-                Rc::new(move |i| {
-                    let mounted = enter_mounted_world(|| f(i));
-                    schedule_flush();
-                    mounted
-                })
-            },
-            release_item: {
-                let f = release_item;
-                Rc::new(move |scope_id| {
-                    enter_mounted_world(|| f(scope_id));
-                    schedule_flush();
-                })
-            },
-            set_measured_size: {
-                let f = set_measured_size;
-                Rc::new(move |key, size| {
-                    f(key, size);
-                    schedule_flush();
-                })
-            },
-        };
-        <RokuBackend as Backend>::create_virtualizer(self, callbacks, overscan, layout, a11y)
-    }
-
-    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
-        <RokuBackend as Backend>::virtualizer_data_changed(self, node)
-    }
-
-    fn release_virtualizer(&mut self, node: &Self::Node) {
-        <RokuBackend as Backend>::release_virtualizer(self, node)
-    }
-
-    fn make_virtualizer_handle(&self, node: &Self::Node) -> primitives::virtualizer::VirtualizerHandle {
-        <RokuBackend as Backend>::make_virtualizer_handle(self, node)
-    }
-}
+impl caps::VirtualizerOps for RokuBackend {}
 
 // ---------------------------------------------------------------------------
 // Graphics + portal + presence + navigator
@@ -1057,7 +817,7 @@ impl caps::GraphicsOps for RokuBackend {
         on_ready: primitives::graphics::OnReady,
         on_resize: primitives::graphics::OnResize,
         on_lost: primitives::graphics::OnLost,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: surface lifecycle callbacks run author
         // code (Roku never fires them — no GPU surface, the Backend
@@ -1084,15 +844,12 @@ impl caps::GraphicsOps for RokuBackend {
                 schedule_flush();
             })
         };
-        <RokuBackend as Backend>::create_graphics(self, on_ready, on_resize, on_lost, a11y)
-    }
-
-    fn release_graphics(&mut self, node: &Self::Node) {
-        <RokuBackend as Backend>::release_graphics(self, node)
-    }
-
-    fn make_graphics_handle(&self, node: &Self::Node) -> primitives::graphics::GraphicsHandle {
-        <RokuBackend as Backend>::make_graphics_handle(self, node)
+        let _on_ready = on_ready;
+        let _on_resize = on_resize;
+        let _on_lost = on_lost;
+        let id = self.mint_node();
+        self.push(RokuCommand::CreateView { id });
+        id
     }
 }
 
@@ -1102,142 +859,78 @@ impl caps::PortalOps for RokuBackend {
         target: primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // The wrapped on_dismiss lands in the HandlerTable's unit slot.
         let on_dismiss = on_dismiss.map(flushing0);
-        <RokuBackend as Backend>::create_portal(self, target, on_dismiss, trap_focus, a11y)
-    }
-
-    fn release_portal(&mut self, node: &Self::Node) {
-        <RokuBackend as Backend>::release_portal(self, node)
-    }
-
-    fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
-        <RokuBackend as Backend>::set_portal_hidden(self, node, hidden)
-    }
-
-    fn make_portal_handle(&self, node: &Self::Node) -> primitives::portal::PortalHandle {
-        <RokuBackend as Backend>::make_portal_handle(self, node)
-    }
-}
-
-impl caps::PresenceOps for RokuBackend {
-    fn create_presence_placeholder(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-        <RokuBackend as Backend>::create_presence_placeholder(self, a11y)
-    }
-
-    fn apply_presence(
-        &mut self,
-        node: &Self::Node,
-        state: primitives::presence::PresenceState,
-        transition: Option<(u32, Easing)>,
-    ) {
-        <RokuBackend as Backend>::apply_presence(self, node, state, transition)
-    }
-
-    fn make_presence_handle(&self, node: &Self::Node) -> primitives::presence::PresenceHandle {
-        <RokuBackend as Backend>::make_presence_handle(self, node)
-    }
-}
-
-impl caps::NavigatorOps for RokuBackend {
-    fn create_navigator(
-        &mut self,
-        type_id: TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn Any>,
-        host: primitives::navigator::NavigatorHost<Self::Node>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // NOT wrapped: NavigatorHost's callbacks belong to the OLD-core
-        // navigator path; the vocabulary navigator handlers own screens
-        // on the new core and their dispatch is handler-safe. On Roku
-        // this delegates to the trait's `unimplemented!()` default on
-        // BOTH cores — the documented navigator gap.
-        <RokuBackend as Backend>::create_navigator(
-            self,
-            type_id,
-            type_name,
-            presentation,
-            host,
-            a11y,
-        )
-    }
-
-    fn release_navigator(&mut self, node: &Self::Node) {
-        <RokuBackend as Backend>::release_navigator(self, node)
-    }
-
-    fn apply_navigator_slot_style(
-        &mut self,
-        node: &Self::Node,
-        slot: &'static str,
-        style: &Rc<StyleRules>,
-    ) {
-        <RokuBackend as Backend>::apply_navigator_slot_style(self, node, slot, style)
-    }
-
-    fn make_navigator_handle(&self, node: &Self::Node) -> primitives::navigator::NavigatorHandle {
-        <RokuBackend as Backend>::make_navigator_handle(self, node)
-    }
-
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn Any>,
-    ) {
-        <RokuBackend as Backend>::navigator_attach_initial(self, navigator, screen, scope_id, options)
+        use runtime_shared::primitives::portal as p;
+        let id = self.mint_node();
+        let on_dismiss_handler = on_dismiss.map(|cb| {
+            let h = self.mint_handler();
+            self.handlers.borrow_mut().unit.push((h, cb));
+            h
+        });
+        let wire_target = match target {
+            p::PortalTarget::Viewport(placement) => command::WirePortalTarget::Viewport {
+                placement: match placement {
+                    p::ViewportPlacement::Center => command::WireViewportPlacement::Center,
+                    p::ViewportPlacement::Top => command::WireViewportPlacement::Top,
+                    p::ViewportPlacement::Bottom => command::WireViewportPlacement::Bottom,
+                    p::ViewportPlacement::Left => command::WireViewportPlacement::Left,
+                    p::ViewportPlacement::Right => command::WireViewportPlacement::Right,
+                    p::ViewportPlacement::FullScreen => {
+                        command::WireViewportPlacement::FullScreen
+                    }
+                },
+            },
+            p::PortalTarget::Anchor { side, align, offset, .. } => {
+                // No live anchor-rect signal yet — the Roku runtime
+                // applies the side/align/offset hints against
+                // whatever the composition lays down. Carrying a
+                // sentinel id (0) tells the BS client this binding
+                // is static; revisit once `AnchorTarget` exposes its
+                // backing signal id to generator backends.
+                command::WirePortalTarget::Anchor {
+                    anchor_rect_signal_id: SignalId(0),
+                    side: match side {
+                        p::ElementSide::Above => command::WireElementSide::Above,
+                        p::ElementSide::Below => command::WireElementSide::Below,
+                        p::ElementSide::Start => command::WireElementSide::Start,
+                        p::ElementSide::End => command::WireElementSide::End,
+                    },
+                    align: match align {
+                        p::ElementAlign::Start => command::WireElementAlign::Start,
+                        p::ElementAlign::Center => command::WireElementAlign::Center,
+                        p::ElementAlign::End => command::WireElementAlign::End,
+                    },
+                    offset,
+                }
+            }
+            p::PortalTarget::Named(slot) => command::WirePortalTarget::Named {
+                slot: slot.to_string(),
+            },
+        };
+        self.push(RokuCommand::CreatePortal {
+            id,
+            target: wire_target,
+            on_dismiss: on_dismiss_handler,
+            trap_focus,
+        });
+        id
     }
 }
+
+impl caps::PresenceOps for RokuBackend {}
+
+impl caps::NavigatorOps for RokuBackend {}
 
 // ---------------------------------------------------------------------------
 // External + document
 // ---------------------------------------------------------------------------
 
-impl caps::ExternalOps for RokuBackend {
-    fn create_external(
-        &mut self,
-        type_id: TypeId,
-        type_name: &'static str,
-        payload: &Rc<dyn Any>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        <RokuBackend as Backend>::create_external(self, type_id, type_name, payload, a11y)
-    }
+impl caps::ExternalOps for RokuBackend {}
 
-    fn release_external(&mut self, node: &Self::Node) {
-        <RokuBackend as Backend>::release_external(self, node)
-    }
-
-    fn missing_primitive_placeholder(&mut self, label: &'static str) -> Self::Node {
-        <RokuBackend as Backend>::missing_primitive_placeholder(self, label)
-    }
-}
-
-impl caps::DocumentOps for RokuBackend {
-    fn create_element(&mut self, tag: &str) -> Self::Node {
-        <RokuBackend as Backend>::create_element(self, tag)
-    }
-
-    fn attach_html_id(&self, node: &Self::Node, id: &str) {
-        <RokuBackend as Backend>::attach_html_id(self, node, id)
-    }
-
-    fn attach_html_class(&self, node: &Self::Node, class: &str) {
-        <RokuBackend as Backend>::attach_html_class(self, node, class)
-    }
-
-    fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
-        <RokuBackend as Backend>::attach_html_style(self, node, prop, value)
-    }
-
-    fn register_raw_css(&mut self, css: &str) {
-        <RokuBackend as Backend>::register_raw_css(self, css)
-    }
-}
+impl caps::DocumentOps for RokuBackend {}
 
 // ---------------------------------------------------------------------------
 // Style + assets
@@ -1245,249 +938,153 @@ impl caps::DocumentOps for RokuBackend {
 
 impl caps::StyleOps for RokuBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
-        <RokuBackend as Backend>::apply_style(self, node, style)
-    }
-
-    fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
-        <RokuBackend as Backend>::mint_style_class(self, style)
-    }
-
-    fn mint_class_for_app(&mut self, app: &StyleApplication) -> Option<String> {
-        <RokuBackend as Backend>::mint_class_for_app(self, app)
+        let wire = style::lower_style(style);
+        self.push(RokuCommand::ApplyStyle {
+            id: *node,
+            style: Box::new(wire),
+        });
     }
 
     fn apply_styled_states(
         &mut self,
         node: &Self::Node,
         base: &Rc<StyleRules>,
-        overlays: &[(StateBits, Rc<StyleRules>)],
+        overlays: &[(runtime_shared::StateBits, Rc<StyleRules>)],
     ) {
-        <RokuBackend as Backend>::apply_styled_states(self, node, base, overlays)
-    }
+        // Find the overlay (if any) for each well-known state.
+        // The framework hands us a list, not a map, so we scan
+        // once per state.
+        let find = |target: runtime_shared::StateBits| -> Option<Box<WireStyle>> {
+            overlays
+                .iter()
+                .find(|(bits, _)| *bits == target)
+                .map(|(_, rules)| Box::new(style::lower_style(rules)))
+        };
 
-    fn apply_styled_variants(
-        &mut self,
-        node: &Self::Node,
-        base: &Rc<StyleRules>,
-        state_overlays: &[(StateBits, Rc<StyleRules>)],
-        breakpoint_overlays: &[(Breakpoint, Rc<StyleRules>)],
-        container_overlays: &[(f32, Rc<StyleRules>)],
-    ) {
-        <RokuBackend as Backend>::apply_styled_variants(
-            self,
-            node,
-            base,
-            state_overlays,
-            breakpoint_overlays,
-            container_overlays,
-        )
-    }
-
-    fn mark_container(&mut self, node: &Self::Node) {
-        <RokuBackend as Backend>::mark_container(self, node)
+        self.push(RokuCommand::ApplyStyleStates {
+            id: *node,
+            base: Box::new(style::lower_style(base)),
+            hovered: find(runtime_shared::StateBits::HOVERED),
+            focused: find(runtime_shared::StateBits::FOCUSED),
+            pressed: find(runtime_shared::StateBits::PRESSED),
+            disabled: find(runtime_shared::StateBits::DISABLED),
+        });
     }
 
     fn handles_states_natively(&self) -> bool {
-        <RokuBackend as Backend>::handles_states_natively(self)
+        // Same posture as the web backend: the framework hands us
+        // the base rules plus per-state overlays declaratively, and
+        // we ship them through a single wire command. The Roku-side
+        // runtime maintains its own focus/press state (driven by
+        // D-pad input) and applies the right merged style locally —
+        // no Rust round-trip per state change.
+        true
     }
 
-    fn token_updates_propagate_via_cascade(&self) -> bool {
-        <RokuBackend as Backend>::token_updates_propagate_via_cascade(self)
+    fn install_tokens(&mut self, _tokens: &[runtime_shared::TokenEntry]) {
+        // No-op (matches iOS / Android posture).
+        //
+        // The Roku wire protocol has no runtime variable layer — there is no
+        // analog of CSS custom properties on SceneGraph. Styles are lowered
+        // through `style::lower_style` at every `apply_style` call, and any
+        // `Tokenized<T>` field has already been read via `Tokenized::value()`
+        // by then, producing a literal `WireColor` / `WireLength` / number in
+        // the emitted `ApplyStyle` command.
+        //
+        // When the app calls `update_tokens(...)`, the framework's
+        // tokens-version signal re-fires every styled effect that subscribed
+        // to any of the changed tokens; each of those effects calls
+        // `apply_style` again with freshly-resolved literal values. So the
+        // wire stream picks up the new values automatically — this method
+        // doesn't need to emit anything.
+        //
+        // Previously this panicked via `unimplemented!()`, breaking any app
+        // that touched the token system on Roku (theme switching, custom
+        // tokens). The earlier comment referenced a removed
+        // `register_theme_variant` hook; the framework moved on to a
+        // re-apply-driven model, so the no-op is now the correct behavior.
     }
 
-    fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        <RokuBackend as Backend>::register_stylesheet(self, rules)
-    }
-
-    fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        <RokuBackend as Backend>::unregister_stylesheet(self, rules)
-    }
-
-    fn install_tokens(&mut self, tokens: &[TokenEntry]) {
-        <RokuBackend as Backend>::install_tokens(self, tokens)
-    }
-
-    fn update_tokens(&mut self, tokens: &[TokenEntry]) {
-        <RokuBackend as Backend>::update_tokens(self, tokens)
-    }
-
-    fn on_node_unstyled(&mut self, node: &Self::Node) {
-        <RokuBackend as Backend>::on_node_unstyled(self, node)
-    }
-
-    fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
-        // Dispatch-site glue: state flips can stage writes when the
-        // style path routes states through signals.
-        let setter: Rc<dyn Fn(StateBits, bool)> = {
-            let f = setter;
-            Rc::new(move |bits, on| {
-                f(bits, on);
-                schedule_flush();
-            })
-        };
-        <RokuBackend as Backend>::attach_states(self, node, setter)
+    fn update_tokens(&mut self, _tokens: &[runtime_shared::TokenEntry]) {
+        // See `install_tokens` above — same no-op rationale. Updated token
+        // values propagate to the wire via re-application of every styled
+        // effect that subscribed to a changed token.
     }
 
     fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
-        <RokuBackend as Backend>::set_disabled(self, node, disabled)
-    }
-
-    fn supports_preminted_styles(&self) -> bool {
-        <RokuBackend as Backend>::supports_preminted_styles(self)
-    }
-
-    fn apply_default_text_font(&mut self, font: Option<&FontFamily>) {
-        <RokuBackend as Backend>::apply_default_text_font(self, font)
-    }
-
-    fn supports_js_class_bindings(&self) -> bool {
-        <RokuBackend as Backend>::supports_js_class_bindings(self)
-    }
-
-    fn register_reactive_class_binding(
-        &mut self,
-        node: &Self::Node,
-        signal_id: u64,
-        values: &[u32],
-        classes: &[&str],
-        value_reader: Rc<dyn Fn() -> u32>,
-    ) -> u32 {
-        <RokuBackend as Backend>::register_reactive_class_binding(
-            self,
-            node,
-            signal_id,
-            values,
-            classes,
-            value_reader,
-        )
-    }
-
-    fn release_reactive_class_binding(&mut self, binding_id: u32) {
-        <RokuBackend as Backend>::release_reactive_class_binding(self, binding_id)
+        self.push(RokuCommand::SetDisabled {
+            id: *node,
+            disabled,
+        });
     }
 }
 
-impl caps::AssetOps for RokuBackend {
-    fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
-        <RokuBackend as Backend>::register_asset(self, id, kind, source)
-    }
-
-    fn unregister_asset(&mut self, id: AssetId, kind: AssetTag) {
-        <RokuBackend as Backend>::unregister_asset(self, id, kind)
-    }
-
-    fn register_typeface(
-        &mut self,
-        id: TypefaceId,
-        family_name: &str,
-        faces: &[TypefaceFace],
-        fallback: SystemFallback,
-    ) {
-        <RokuBackend as Backend>::register_typeface(self, id, family_name, faces, fallback)
-    }
-
-    fn unregister_typeface(&mut self, id: TypefaceId) {
-        <RokuBackend as Backend>::unregister_typeface(self, id)
-    }
-}
+impl caps::AssetOps for RokuBackend {}
 
 // ---------------------------------------------------------------------------
 // A11y + animation + introspection
 // ---------------------------------------------------------------------------
 
-impl caps::A11yOps for RokuBackend {
-    fn update_accessibility(
-        &mut self,
-        node: &Self::Node,
-        a11y: &AccessibilityProps,
-        inferred_role: Option<Role>,
-    ) {
-        <RokuBackend as Backend>::update_accessibility(self, node, a11y, inferred_role)
-    }
+impl caps::A11yOps for RokuBackend {}
 
-    fn announce_for_accessibility(&mut self, msg: &str, priority: LiveRegionPriority) {
-        <RokuBackend as Backend>::announce_for_accessibility(self, msg, priority)
-    }
+impl caps::AnimationOps for RokuBackend {}
 
-    fn dump_accessibility_tree(&self) -> Option<AccessibilityTree> {
-        <RokuBackend as Backend>::dump_accessibility_tree(self)
-    }
-}
-
-impl caps::AnimationOps for RokuBackend {
-    fn set_animated_f32(&mut self, node: &Self::Node, prop: AnimProp, value: f32) {
-        <RokuBackend as Backend>::set_animated_f32(self, node, prop, value)
-    }
-
-    fn set_animated_color(&mut self, node: &Self::Node, prop: AnimProp, value: [f32; 4]) {
-        <RokuBackend as Backend>::set_animated_color(self, node, prop, value)
-    }
-}
-
-impl caps::IntrospectionOps for RokuBackend {
-    fn frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <RokuBackend as Backend>::frame(self, node)
-    }
-
-    fn absolute_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <RokuBackend as Backend>::absolute_frame(self, node)
-    }
-
-    fn device_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <RokuBackend as Backend>::device_frame(self, node)
-    }
-
-    fn supports_native_introspection(&self) -> bool {
-        <RokuBackend as Backend>::supports_native_introspection(self)
-    }
-
-    fn introspect_native(&self, node: &Self::Node) -> Option<NativeNode> {
-        <RokuBackend as Backend>::introspect_native(self, node)
-    }
-
-    fn note_introspection_root(&self, node: &Self::Node) {
-        <RokuBackend as Backend>::note_introspection_root(self, node)
-    }
-
-    fn supports_screenshot(&self) -> bool {
-        <RokuBackend as Backend>::supports_screenshot(self)
-    }
-
-    fn capture_screenshot(&self, done: Box<dyn FnOnce(Result<Screenshot, String>)>) {
-        <RokuBackend as Backend>::capture_screenshot(self, done)
-    }
-}
+impl caps::IntrospectionOps for RokuBackend {}
 
 // ---------------------------------------------------------------------------
 // Batch + wire bindings
 // ---------------------------------------------------------------------------
 
-impl caps::BatchOps for RokuBackend {
-    fn supports_batched_repeat(&self) -> bool {
-        <RokuBackend as Backend>::supports_batched_repeat(self)
-    }
-
-    fn execute_batch(&mut self, batch: BackendBatch) -> Vec<Self::Node> {
-        <RokuBackend as Backend>::execute_batch(self, batch)
-    }
-
-    fn execute_batch_with_attach(
-        &mut self,
-        batch: BackendBatch,
-        parent: &mut Self::Node,
-        attach_locals: &[u32],
-    ) -> Vec<Self::Node> {
-        <RokuBackend as Backend>::execute_batch_with_attach(self, batch, parent, attach_locals)
-    }
-}
+impl caps::BatchOps for RokuBackend {}
 
 impl caps::WireBindingOps for RokuBackend {
-    fn note_text_binding(&mut self, node: &Self::Node, signal_ids: &[u64], method: &'static str) {
-        <RokuBackend as Backend>::note_text_binding(self, node, signal_ids, method)
+    fn note_text_binding(
+        &mut self,
+        node: &Self::Node,
+        signal_ids: &[u64],
+        method: &'static str,
+    ) {
+        // The walker hands us a `TextSource::Bound` after the
+        // `create_text` step; we round-trip the binding into the
+        // wire stream so the device-side runtime can subscribe the
+        // Label to the signals and apply the transformer on every
+        // change. The subsequent Effect will still fire once at
+        // snapshot time and emit a redundant `UpdateText` — that's
+        // a one-line wire dup with the same string the BindText's
+        // initial subscriber-fire would produce anyway, so it's a
+        // visual no-op. Worth optimizing later if wire size matters.
+        self.push(RokuCommand::BindText {
+            node_id: *node,
+            signal_ids: signal_ids.iter().map(|id| SignalId(*id)).collect(),
+            method: method.to_string(),
+        });
     }
 
-    fn note_signal_initial(&mut self, signal_id: u64, value: &runtime_core::__serde_json::Value) {
-        <RokuBackend as Backend>::note_signal_initial(self, signal_id, value)
+    fn note_signal_initial(
+        &mut self,
+        signal_id: u64,
+        value: &runtime_shared::__serde_json::Value,
+    ) {
+        // First-time signal observation: declare the signal to the
+        // device with its current value. Subsequent observations of
+        // the same id are dropped — the value lives in the BS-side
+        // arena once it's been seeded; later mutations come from
+        // button actions on the device, not from the framework's
+        // snapshot. Without dedup, every structured binding that names the
+        // same signal would emit a redundant CreateSignal and reset
+        // it back to its initial each time.
+        if self.created_signals.insert(signal_id) {
+            // Bypass `push` — signals are global. If we routed this
+            // through `push` and a nested bind happened to be capturing
+            // when its inner signal was first declared, the
+            // CreateSignal would land in a slot buffer and get
+            // re-emitted on every slot replay, clobbering the signal's
+            // current value.
+            self.commands.push(RokuCommand::CreateSignal {
+                id: SignalId(signal_id),
+                initial: value.clone(),
+            });
+        }
     }
 
     fn note_when_binding(
@@ -1498,14 +1095,21 @@ impl caps::WireBindingOps for RokuBackend {
         then_node: &Self::Node,
         otherwise_node: &Self::Node,
     ) {
-        <RokuBackend as Backend>::note_when_binding(
-            self,
-            anchor,
-            signal_ids,
-            cond_method,
-            then_node,
-            otherwise_node,
-        )
+        let then_slot = command::Slot {
+            root_node_id: *then_node,
+            commands: self.take_captured_slot(*then_node),
+        };
+        let otherwise_slot = command::Slot {
+            root_node_id: *otherwise_node,
+            commands: self.take_captured_slot(*otherwise_node),
+        };
+        self.push(RokuCommand::BindWhen {
+            anchor_id: *anchor,
+            signal_ids: signal_ids.iter().map(|id| SignalId(*id)).collect(),
+            cond_method: cond_method.to_string(),
+            then_slot,
+            otherwise_slot,
+        });
     }
 
     fn note_switch_binding(
@@ -1513,17 +1117,30 @@ impl caps::WireBindingOps for RokuBackend {
         anchor: &Self::Node,
         signal_ids: &[u64],
         cond_method: &'static str,
-        arms: &[(runtime_core::__serde_json::Value, Self::Node)],
+        arms: &[(runtime_shared::__serde_json::Value, Self::Node)],
         default_node: &Self::Node,
     ) {
-        <RokuBackend as Backend>::note_switch_binding(
-            self,
-            anchor,
-            signal_ids,
-            cond_method,
-            arms,
-            default_node,
-        )
+        let arms_wire: Vec<command::SwitchArm> = arms
+            .iter()
+            .map(|(pat, node)| command::SwitchArm {
+                pattern: pat.clone(),
+                slot: command::Slot {
+                    root_node_id: *node,
+                    commands: self.take_captured_slot(*node),
+                },
+            })
+            .collect();
+        let default_slot = command::Slot {
+            root_node_id: *default_node,
+            commands: self.take_captured_slot(*default_node),
+        };
+        self.push(RokuCommand::BindSwitch {
+            anchor_id: *anchor,
+            signal_ids: signal_ids.iter().map(|id| SignalId(*id)).collect(),
+            cond_method: cond_method.to_string(),
+            arms: arms_wire,
+            default_slot,
+        });
     }
 
     fn note_repeat_binding(
@@ -1534,14 +1151,17 @@ impl caps::WireBindingOps for RokuBackend {
         row_template: &Self::Node,
         row_index_signal_id: Option<u64>,
     ) {
-        <RokuBackend as Backend>::note_repeat_binding(
-            self,
-            anchor,
-            signal_ids,
-            count_method,
+        let row_template = command::Slot {
+            root_node_id: *row_template,
+            commands: self.take_captured_slot(*row_template),
+        };
+        self.push(RokuCommand::BindRepeat {
+            anchor_id: *anchor,
+            signal_ids: signal_ids.iter().map(|id| SignalId(*id)).collect(),
+            count_method: count_method.to_string(),
             row_template,
-            row_index_signal_id,
-        )
+            row_index_signal_id: row_index_signal_id.map(SignalId),
+        });
     }
 
     fn note_virtualizer_binding(
@@ -1553,26 +1173,73 @@ impl caps::WireBindingOps for RokuBackend {
         row_index_signal_id: Option<u64>,
         horizontal: bool,
     ) {
-        <RokuBackend as Backend>::note_virtualizer_binding(
-            self,
-            anchor,
-            signal_ids,
-            count_method,
-            row_template,
+        let row_template = command::Slot {
+            root_node_id: *row_template,
+            commands: self.take_captured_slot(*row_template),
+        };
+        // Inspect the slot. Today we only lower row templates that
+        // are structurally one Text node with one BindText (and any
+        // ApplyStyle/UpdateText decoration). Anything else falls
+        // back to the existing BindRepeat path so the framework
+        // stays correct on Roku while we grow MarkupList coverage
+        // primitive-by-primitive.
+        if let Some(dynamic_fields) = inspect_simple_text_row(
+            &row_template,
             row_index_signal_id,
-            horizontal,
-        )
+        ) {
+            // Component name is keyed on the anchor's id — anchors
+            // are unique per virtualizer in the snapshot, so this
+            // produces a stable, unique name build-roku can use to
+            // emit the .xml/.brs pair.
+            let item_component = format!("IdealystListItem_{}", anchor.0);
+            self.push(RokuCommand::CreateMarkupList {
+                anchor_id: *anchor,
+                item_component,
+                count_method: count_method.to_string(),
+                signal_ids: signal_ids.iter().map(|id| SignalId(*id)).collect(),
+                row_index_signal_id: row_index_signal_id.map(SignalId),
+                dynamic_fields,
+                row_template,
+                // V1: hard-coded scroll-axis cell size. For
+                // vertical lists this is row height; for
+                // horizontal carousels we interpret it as the
+                // row's height (cell width is then derived from
+                // viewport / visibleItems). A future iteration
+                // should read this from the row template's style
+                // (height for vertical, width for horizontal).
+                item_size: 200.0,
+                horizontal,
+            });
+        } else {
+            // Generic row template — fall back to the BindRepeat
+            // path (the device-side replay machinery handles
+            // arbitrary row shapes).
+            self.push(RokuCommand::BindRepeat {
+                anchor_id: *anchor,
+                signal_ids: signal_ids.iter().map(|id| SignalId(*id)).collect(),
+                count_method: count_method.to_string(),
+                row_template,
+                row_index_signal_id: row_index_signal_id.map(SignalId),
+            });
+        }
     }
 
     fn supports_lazy_slot_capture(&self) -> bool {
-        <RokuBackend as Backend>::supports_lazy_slot_capture(self)
+        true
     }
 
     fn begin_slot_capture(&mut self) {
-        <RokuBackend as Backend>::begin_slot_capture(self)
+        self.capture_stack.push(Vec::new());
     }
 
     fn end_slot_capture(&mut self, slot_root: &Self::Node) {
-        <RokuBackend as Backend>::end_slot_capture(self, slot_root)
+        // Walker is expected to balance begin/end calls. Popping
+        // without a matching begin would mean the walker has a bug
+        // — error loudly rather than silently swallow the slot.
+        let buf = self
+            .capture_stack
+            .pop()
+            .expect("end_slot_capture without matching begin_slot_capture");
+        self.captured_slots.insert(*slot_root, buf);
     }
 }

@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use runtime_core::driver::{
+use runtime_shared::driver::{
     install_render_loop_driver, RenderLoopDriver, RenderLoopHandle,
 };
 use objc2::rc::Retained;

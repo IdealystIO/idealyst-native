@@ -495,7 +495,7 @@ impl PrivateLayerPassthroughView {
 
 // =========================================================================
 // PresencePlaceholderView — the mount point a `Presence` subtree is inserted
-// into (see `runtime_core::walker::presence`). The runtime builds the child in
+// into (see `runtime_shared::walker::presence`). The runtime builds the child in
 // a fresh scope and `insert`s it into this placeholder, which is itself a
 // child of the real parent. Almost every presence child — a settings popover,
 // a media inspector, the chrome restore button — is `position: Absolute`, so
@@ -688,7 +688,7 @@ declare_class!(
                 // window-resize `setFrameSize:` runs on the main runloop OUTSIDE
                 // any framework borrow window, unlike `finish` (which defers
                 // this mirror precisely because it runs mid-borrow).
-                runtime_core::set_viewport_size(runtime_core::ViewportSize {
+                runtime_shared::set_viewport_size(runtime_shared::ViewportSize {
                     width: next.0,
                     height: next.1,
                 });
@@ -697,8 +697,7 @@ declare_class!(
                 // author reactivity re-fires on resize (no-op TLS read
                 // when no new-core app is booted). See newcore.rs,
                 // "Viewport source".
-                #[cfg(feature = "new-core")]
-                crate::newcore::forward_viewport(runtime_core::ViewportSize {
+                crate::newcore::forward_viewport(runtime_shared::ViewportSize {
                     width: next.0,
                     height: next.1,
                 });

@@ -6,10 +6,10 @@ license.workspace = true
 
 # Email-rendering backend — the "SSG for emails" engine.
 #
-# `EmailBackend` is a headless [`Backend`](runtime_core::Backend) like
-# `backend-ssr`, but tuned for the email surface instead of the browser:
-# it walks the SAME author `Element` tree every other backend renders and
-# emits an email-safe HTML document. The differences from SSR are all about
+# `EmailBackend` is a headless renderer like `backend-ssr`, but tuned for
+# the email surface instead of the browser: it realizes the SAME author
+# scene every other backend renders and emits an email-safe HTML
+# document. The differences from SSR are all about
 # where email clients diverge from browsers:
 #
 #   * styles are baked INLINE on each node (`style="…"`), never a `<head>`
@@ -27,36 +27,18 @@ license.workspace = true
 # how the web backend stays layout-neutral and idea-ui owns the opinions.
 
 [features]
-# New-core (idea-lite) render path: `newcore::render_email` /
-# `newcore::render_email_with` render on a fresh `runtime_world::World`
-# per email through the vocabulary's builtin handlers, with
-# `EmailBackend` implementing `runtime_scene::Host` + all 30 capability
-# traits directly. Additive — the old-core render path is untouched with
-# or without this feature (same convention as backend-ssr's `new-core`).
-new-core = [
-    "dep:runtime-world",
-    "dep:runtime-scene",
-    "dep:runtime-vocabulary",
-    # `create_navigator` (old-Element-typed NavigatorHost) is behind the
-    # vocabulary's `legacy-bridge` gate; this backend's newcore.rs
-    # implements it by delegating to the old Backend impl.
-    "runtime-vocabulary/legacy-bridge",
-]
 
 [dependencies]
-runtime-core = { workspace = true }
+# The permanent substrate both cores compiled against (style engine,
+# tokens, prop/handle structs, scheduling, viewport). `runtime-core` is
+# NOT a dependency: this backend has no `Element`/`Backend` surface left.
+runtime-shared = { workspace = true }
 css = { workspace = true }
-# New-core migration crates — only compiled under the `new-core` feature.
-runtime-world = { workspace = true, optional = true }
-runtime-scene = { workspace = true, optional = true }
-runtime-vocabulary = { workspace = true, optional = true }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
 
 [dev-dependencies]
-# Old-core side of the new-core golden corpus
-# (`tests/newcore_golden.rs`): the real idea-ui-mail components render
-# through the old walker while the new side re-authors the same template
-# with vocabulary builders (`ui!`'s lowering is a build-graph-wide
-# switch, so one binary cannot compile the same component for both
-# cores). Dev-dep only — idea-ui-mail's own backend-email dep is ALSO
-# dev-only, so no cycle.
-idea-ui-mail = { workspace = true }
+# Frozen old-core output for the cross-core parity corpus, so the gate
+# survives the deletion of the old core. See tests/goldens/README.md.
+parity-goldens = { workspace = true }

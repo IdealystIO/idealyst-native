@@ -16,9 +16,9 @@ use std::rc::Rc;
 // `pump_frames` aliased to the pre-host-mock suite's name `pump_frame`
 // so the call sites' vocabulary is unchanged.
 use host_mock::pump::{install_scheduler, pump_frames as pump_frame, pump_timers};
-use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement};
-use runtime_core::primitives::presence::PresenceAnim;
-use runtime_core::Easing;
+use runtime_shared::primitives::portal::{PortalTarget, ViewportPlacement};
+use runtime_shared::primitives::presence::PresenceAnim;
+use runtime_shared::Easing;
 use runtime_scene::{dyn_keyed, realize};
 use runtime_vocabulary::builders::{overlay, portal, presence, text, view};
 use runtime_vocabulary::prims::ScreenNav;

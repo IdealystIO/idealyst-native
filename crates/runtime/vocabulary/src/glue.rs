@@ -90,6 +90,25 @@ pub use runtime_shared::Easing;
 // preludes reference it; the type is shared with the old core).
 pub use runtime_shared::Color;
 pub use runtime_shared::{FileDropHandler, IntoAction, SafeAreaSides, TouchHandler, WheelHandler};
+// The EVENT PAYLOADS those handler aliases carry. Exporting only the
+// `*Handler` type aliases left SDKs unable to name their own handler's
+// argument — `Rc<dyn Fn(&FileDropEvent) -> bool>` is unspellable without
+// `FileDropEvent`. Pure shared data types; the old root exported them by
+// glob.
+pub use runtime_shared::{DroppedFile, FileDropEvent, FileDropPhase, WheelEvent, WheelKind};
+// The gesture-recognizer contract (`crates/sdk/client/{pan,zoom,dnd}`
+// implement `Recognizer` against it). Shared substrate — the touch
+// pipeline is backend-fed, not core-fed.
+pub use runtime_shared::{
+    AsyncNotifier, GestureState, Recognizer, RecognizerCtx, RecognizerKind, RecognizerUpdate,
+};
+// Touch-claim arbitration: a scroller claims the active gesture so a
+// child pressable stops treating it as a tap. Thread-local pair, no core
+// involvement.
+pub use runtime_shared::{active_touch_claim, set_active_touch_claim};
+// `log!` / `LogLevel` and friends — the framework's platform-routed
+// logging module.
+pub use runtime_shared::logging;
 use runtime_scene::{dyn_element, dyn_keyed, Key};
 // `fragment(children)` — flat siblings, no node: part of the old root
 // author surface (mirrored 1:1 by the scene fragment).
@@ -167,9 +186,22 @@ pub use runtime_shared::debug;
 #[doc(hidden)]
 pub use ::mcp_catalog as __mcp;
 
+// Premint style-dump registry anchor. `stylesheet!` emits its
+// `cfg(idealyst_premint_dump)` linkme registration as
+// `::runtime_core::premint::{linkme, PREMINT_SHEETS, PremintSheet}`, and
+// the retarget pass rewrites that head to
+// `::runtime_vocabulary::glue::premint::…` — so the registry has to be
+// reachable HERE for a dump build to compile. (runtime-macros' module
+// docs called this out as the one retarget path with no glue home, on the
+// assumption dump builds stayed old-core; with one core they cannot.)
+// Same `style-dump` gate as the substrate module: only the CLI's
+// ephemeral dump build and `premint-dump`'s own tests turn it on.
+#[cfg(feature = "style-dump")]
+pub use runtime_shared::premint;
+
 // ============================================================================
 // P6 SDK-retarget surface — the rest of the old runtime-core AUTHOR
-// surface that aliased SDK crates (`extern crate runtime_facade as
+// surface that aliased SDK crates (`extern crate runtime_core as
 // runtime_core;` — idea-theme / idea-ui / idea-ui-nav) reach for
 // directly, outside the macro emission. Three kinds of entry:
 //
@@ -437,7 +469,8 @@ pub fn current_breakpoint() -> ReadSignal<runtime_shared::Breakpoint> {
 // animates" bug), so they're shadowed by the new-core-anchored
 // versions in [`crate::scoped_scheduling`].
 pub use runtime_shared::scheduling::{
-    after_animation_frame, after_ms, after_ms_detached, raf_loop, RafLoop, ScheduledTask,
+    after_animation_frame, after_ms, after_ms_detached, raf_loop, schedule_microtask, RafLoop,
+    ScheduledTask,
 };
 pub use crate::scoped_scheduling::{after_ms_scoped, raf_loop_scoped};
 
@@ -453,6 +486,14 @@ pub use runtime_shared::{IntoTextSource, StyleSource, TextSource};
 // Styled-run data types at the root, exactly where the old core
 // re-exported them (`runtime_shared::{TextRun, TextRunStyle}`).
 pub use runtime_shared::{TextRun, TextRunStyle};
+
+// `flat_list` / `fixed_size` / `FlatListItemSize` at the ROOT, where the
+// old core exported them (`runtime-core/src/lib.rs`'s
+// `pub use primitives::flat_list::{flat_list, fixed_size, FlatListItemSize}`).
+// They also live at `primitives::flat_list::…`, but the documented
+// spelling — taught in `websites/docs`'s lists page — is the root one, so
+// the root is where they have to resolve.
+pub use primitives::flat_list::{fixed_size, flat_list, FlatListItemSize};
 
 /// Module mirror of old `runtime_shared::styled_text` — the data helpers
 /// author code imports by path (`styled_text::plain_text_of`). The
@@ -632,6 +673,26 @@ pub use runtime_world::{inject, provide};
 #[doc(hidden)]
 pub use runtime_world::is_entered as __world_is_entered;
 
+/// Is a [`World`](runtime_world::World) currently ambient on this thread?
+///
+/// **The handler-safe fork.** Framework code, SDKs and components that
+/// touch world-scoped context (`theme_ctx`, `viewport_ctx`, an SDK's own
+/// per-world context) must branch on this: `true` ⇒ inject/read the
+/// ambient world's context; `false` ⇒ the caller is an EVENT HANDLER (or
+/// a timer/async continuation), which runs outside `enter`, so it must
+/// use a handle captured at build time. Injecting from a handler panics
+/// with "signal()/effect() called outside World::enter" — the shape of
+/// the idea-theme theme-swap crash.
+///
+/// This is the public spelling. `__world_is_entered` remains as a
+/// doc-hidden alias for macro emissions that already spell it; new code
+/// should call this. It was double-underscored while it was believed to
+/// be migration-internal, but SDK authors need it — a fork this
+/// load-bearing should not look like a private hook.
+pub fn world_is_entered() -> bool {
+    runtime_world::is_entered()
+}
+
 // TEST-SUPPORT mirror of the kernel `World` for aliased crates' own
 // dual-core suites that need enter/EXIT control — `__with_fresh_world`
 // keeps the world ambient for the whole body, which cannot express "the
@@ -739,6 +800,33 @@ pub use runtime_shared::safe_area_insets;
 // registries — all core-agnostic by construction.
 pub use runtime_shared::{is_frame_active, platform, ColorScheme, Platform};
 pub use runtime_shared::time;
+// The rest of the ambient-host free-function surface the old
+// `runtime_core` root re-exported from `runtime_shared::host` (the old
+// root's `pub use runtime_shared::*;` picked these up for free; this
+// facade enumerates its exports, so they had to be named). All four are
+// thread-local reads/writes against installers a host wires at boot —
+// no core involvement whatsoever, so the old-core behavior is the
+// behavior, byte for byte.
+//
+// `announce` is the a11y live-region author surface, `open_url` /
+// `set_fullscreen` route through the host-installed setters (no-op when
+// the host installed none), and `color_scheme()` reads the installed
+// scheme. Pinned by `glue_host_surface.rs`.
+pub use runtime_shared::{announce, color_scheme, open_url, set_fullscreen};
+/// `runtime_core::host::…` — the module path the old root also exposed
+/// (via its glob) alongside the root-level re-exports above. Author code
+/// and SDKs reach `host::color_scheme()` through this; the installers
+/// (`install_announcer`, `install_url_opener`, …) are the boot-side half
+/// that backends call.
+pub use runtime_shared::host;
+// Color parsing/blending helpers (`color::parse_or`, `color::Rgba`) —
+// shared substrate used by the canvas SDK's scene lowering. Module
+// re-export, matching the old root's glob.
+pub use runtime_shared::color;
+// The app-level key-down handler installer. The caps plumbing
+// (`AppEnvOps::set_app_key_handler`) was always mirrored; the free
+// function that author code calls was not.
+pub use runtime_shared::set_app_key_handler;
 // `driver` (spawn_async + render_loop) is feature-gated in runtime-core
 // itself (`async-driver`); this crate's same-named forwarding feature
 // keeps the gate. Apps that reach `runtime_shared::driver` through the
@@ -754,7 +842,8 @@ pub use runtime_shared::driver;
 // (orphan rule) — use the handles' `network_state()`.
 #[cfg(feature = "async-driver")]
 pub use crate::async_reactive::{
-    mutation, resource, Mutation, MutationState, Resource, ResourceCancel, ResourceState,
+    async_reducer, mutation, resource, AsyncReducer, AsyncStatus, Mutation, MutationState,
+    Resource, ResourceCancel, ResourceState,
 };
 #[cfg(feature = "async-driver")]
 pub use runtime_shared::NetworkState;
@@ -833,6 +922,128 @@ where
         *prev.borrow_mut() = Some(new);
     })
 }
+
+/// Mirror of old `on(deps, f)`: fire `f(new, prev)` immediately AND on
+/// every dependency change. The subscription set is `deps`; the body runs
+/// untracked, so reads inside it never widen it. Same contract as the old
+/// root's `on` — the only difference from [`on_defer`] is that the first
+/// run invokes the body instead of only recording the baseline.
+pub fn on<D, F>(deps: D, mut f: F) -> Effect
+where
+    D: Trackable + 'static,
+    F: FnMut(&D::Value, Option<&D::Value>) + 'static,
+{
+    let prev: Rc<std::cell::RefCell<Option<D::Value>>> = Rc::new(std::cell::RefCell::new(None));
+    effect(move || {
+        let new = deps.track();
+        let prev_value = prev.borrow().clone();
+        untrack(|| f(&new, prev_value.as_ref()));
+        *prev.borrow_mut() = Some(new);
+    })
+}
+
+/// Mirror of old `memo_with(eq, f)`: a cached derivation whose
+/// notification is gated by a CALLER-SUPPLIED equality instead of
+/// `PartialEq` — tolerance comparisons, "equal enough to skip a
+/// repaint", and the like.
+///
+/// Implemented over the world kernel rather than re-exported: the shared
+/// `memo_with` builds an old-arena `Signal` + `Effect`, which nothing on
+/// a world mount subscribes to (the same silent inertness as the old
+/// `resource`/`AnimatedValue::bind` — see `crate::async_reactive`).
+///
+/// **One documented narrowing.** The old signature accepted `T` with no
+/// `PartialEq` at all (its stated second use case). The world kernel's
+/// signal storage is `PartialEq`-bounded end to end, so this mirror
+/// requires `T: PartialEq` and uses `set_always` to make the caller's
+/// `eq` the authoritative gate — the custom-comparison case is fully
+/// preserved, the no-`PartialEq` case is not expressible. For a `T`
+/// without `PartialEq` (e.g. one holding a trait object), wrap it in a
+/// newtype whose `PartialEq` impl encodes the comparison and memo on
+/// that.
+pub fn memo_with<T, F, E>(eq: E, f: F) -> ReadSignal<T>
+where
+    T: Clone + PartialEq + 'static,
+    F: Fn() -> T + 'static,
+    E: Fn(&T, &T) -> bool + 'static,
+{
+    // Seed untracked so a read between construction and the effect's
+    // first commit sees a coherent value (old-core behavior).
+    let initial = untrack(&f);
+    let out = signal(initial.clone());
+    let write = out.write_only();
+    // The effect compares against its OWN last emission rather than
+    // reading `out` (which would subscribe it to its own output).
+    let last = Rc::new(std::cell::RefCell::new(initial));
+    // The returned `Effect` is a Copy handle with no Drop — the effect
+    // itself lives in the arena, owned by the ambient collector, exactly
+    // like `runtime_world::memo`'s.
+    let _ = effect(move || {
+        let next = f();
+        let changed = !eq(&last.borrow(), &next);
+        if changed {
+            *last.borrow_mut() = next.clone();
+            // `set_always`: the caller's `eq` already decided, so the
+            // kernel's own guarded `set` must not second-guess it (they
+            // can disagree — that is the whole point of `memo_with`).
+            write.set_always(next);
+        }
+    });
+    out.read_only()
+}
+
+/// Mirror of old `reducer(initial, f)`: a `(state, dispatch)` pair where
+/// every dispatch folds the current state with an action.
+///
+/// Implemented over the world kernel for the same reason as
+/// [`memo_with`]. Two documented differences, both forced by the kernel:
+///
+/// - `S: PartialEq` is required (world signal storage is
+///   `PartialEq`-bounded); the old signature asked only for `Clone`.
+/// - There is no `cycle(..)` wrap. On this kernel a dispatch's writes
+///   are STAGED and the flush commits them together, so sibling writes
+///   coalesce into one fan-out by construction — `cycle` had no
+///   counterpart to port. See the migration guide's breaking-changes
+///   table.
+///
+/// The historical "every dispatch notifies" contract is preserved with
+/// `set_always`, so a reducer that folds to an equal state still wakes
+/// its subscribers.
+pub fn reducer<S, A>(initial: S, f: impl Fn(&S, A) -> S + 'static) -> (Signal<S>, impl Fn(A))
+where
+    S: Clone + PartialEq + 'static,
+{
+    let state = signal(initial);
+    let dispatch = move |action: A| {
+        // Fold against the STAGED value so two dispatches in one event
+        // turn compose (0→1→2) instead of both reading the committed 0.
+        // The old core read `untrack(|| state.get())`, which was the
+        // same intent against a synchronous arena.
+        state.update(|current| f(current, action));
+        // Preserve "a dispatch always notifies": `update` stages
+        // guarded, so a fold back to an equal value would be silent
+        // otherwise.
+        state.touch();
+    };
+    (state, dispatch)
+}
+
+// Stable per-position identifiers. Pure thread-local reads over
+// `runtime_shared::identity` — no core involvement, and the deletion
+// baseline lists `identity` as an explicit SURVIVOR (§4.2), so dropping
+// the accessors from the author surface was an oversight, not a
+// decision. `runtime_core::use_id()` is documented on the docs site.
+//
+// ⚠️ Contract caveat, honestly stated: `use_id()` derives from the
+// AMBIENT identity, which the old walker set per emission
+// (`walker.rs::build`). The surviving renderer does not set it yet, so
+// every call currently answers from `Identity::UNIDENTIFIED` — stable
+// and non-panicking, but NOT per-position-unique. `with_current_identity`
+// still works for callers that establish it themselves. Tracked in the
+// deletion baseline; pinned by `glue_reactive_surface.rs`.
+pub use runtime_shared::{
+    current_identity, hash_key, use_id, use_id_keyed, with_current_identity, Identity,
+};
 
 /// Mirror of the old `Trackable` (the dependency-source trait `on_defer`
 /// is generic over): a tracked read of the current value.

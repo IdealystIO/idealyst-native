@@ -203,46 +203,69 @@ pub fn gen_bridge_lib(components: &[ExternalComponent]) -> String {
          use std::cell::{Cell, RefCell};\n\
          use std::rc::Rc;\n\n\
          use backend_web::WebBackend;\n\
-         use runtime_core::{build_detached, current_identity, with_current_identity, \
-         DetachedScope, Identity, Signal};\n\
+         use runtime_scene::{realize, Realized, Registry};\n\
+         use runtime_vocabulary::glue::{signal, Signal};\n\
+         use runtime_world::World;\n\
          use wasm_bindgen::prelude::*;\n\n\
          thread_local! {\n\
          \x20   static BOOTED: Cell<bool> = const { Cell::new(false) };\n\
+         \x20   static WORLD: RefCell<Option<World>> = const { RefCell::new(None) };\n\
          \x20   static SHARED_BACKEND: RefCell<Option<Rc<RefCell<WebBackend>>>> =\n\
          \x20       const { RefCell::new(None) };\n\
-         \x20   static NEXT_ELEMENT_ID: Cell<u64> = const { Cell::new(1) };\n\
+         \x20   static REGISTRY: RefCell<Option<Rc<Registry<WebBackend>>>> =\n\
+         \x20       const { RefCell::new(None) };\n\
          }\n\n\
-         /// A fresh per-element identity seed. Every mounted element builds\n\
-         /// its subtree under a UNIQUE identity so the runtime's id-keyed\n\
-         /// registrations (reactive bindings, event closures) of two\n\
-         /// elements never collide — a collision would release the earlier\n\
-         /// element's closures (a `null function` trap on its handlers).\n\
-         fn next_element_id() -> u64 {\n\
-         \x20   NEXT_ELEMENT_ID.with(|c| {\n\
-         \x20       let v = c.get();\n\
-         \x20       c.set(v + 1);\n\
-         \x20       v\n\
-         \x20   })\n\
-         }\n\n\
-         /// One-time runtime boot — a component bundle has no app `main()`.\n\
+         /// One-time runtime boot — a component bundle has no app `main()`,\n\
+         /// so the bridge installs what a boot entry normally would: the\n\
+         /// scheduler + time source, the console logger, and the\n\
+         /// post-dispatch flush hook (framework-internal callbacks —\n\
+         /// timers, animation frames, future polls — fire it, so a write\n\
+         /// staged inside one commits before paint).\n\
          fn ensure_runtime() {\n\
          \x20   BOOTED.with(|b| {\n\
          \x20       if !b.get() {\n\
          \x20           backend_web::install_scheduler();\n\
          \x20           backend_web::install_time_source();\n\
          \x20           backend_web::install_logger();\n\
+         \x20           backend_web::dispatch_hook::install_dispatch_hook(flush);\n\
          \x20           b.set(true);\n\
          \x20       }\n\
          \x20   });\n\
          }\n\n\
+         /// The page-wide reactive world. Every exported element's state\n\
+         /// AND subtree live in it, so one flush commits a write no matter\n\
+         /// which element it landed on — and two elements can share signals\n\
+         /// if the app hands them the same handle.\n\
+         fn world() -> World {\n\
+         \x20   ensure_runtime();\n\
+         \x20   WORLD.with(|w| {\n\
+         \x20       if let Some(w) = w.borrow().as_ref() {\n\
+         \x20           return w.clone();\n\
+         \x20       }\n\
+         \x20       let fresh = World::new();\n\
+         \x20       *w.borrow_mut() = Some(fresh.clone());\n\
+         \x20       fresh\n\
+         \x20   })\n\
+         }\n\n\
+         /// Commit staged writes. Signal writes stage until the driver\n\
+         /// flushes; a JS property setter is an entry point the framework's\n\
+         /// dispatch-site wrappers don't cover, so the bridge flushes\n\
+         /// explicitly after each one. Cloning the world out of the\n\
+         /// thread-local first keeps the borrow from spanning the flush.\n\
+         fn flush() {\n\
+         \x20   let w = WORLD.with(|w| w.borrow().clone());\n\
+         \x20   if let Some(w) = w {\n\
+         \x20       w.flush();\n\
+         \x20   }\n\
+         }\n\n\
          /// One backend shared by every exported element on the page. Each\n\
-         /// element builds its OWN detached subtree into its host, so the\n\
+         /// element realizes its OWN subtree into its host, so the\n\
          /// runtime's per-backend JS shims (text/class batchers, …) install\n\
-         /// exactly once. Multiple independent `mount()` roots would each\n\
+         /// exactly once. Multiple independent backends would each\n\
          /// re-install those global shims, freeing the previous root's\n\
          /// closures — a `null function` trap on the first tree's handlers.\n\
          /// The backend's own mount node is a throwaway detached <div>; we\n\
-         /// append each subtree's root into the real host instead.\n\
+         /// append each subtree's nodes into the real host instead.\n\
          fn shared_backend() -> Rc<RefCell<WebBackend>> {\n\
          \x20   SHARED_BACKEND.with(|s| {\n\
          \x20       if let Some(b) = s.borrow().as_ref() {\n\
@@ -255,6 +278,23 @@ pub fn gen_bridge_lib(components: &[ExternalComponent]) -> String {
          \x20       backend_web::install_global_self(&b);\n\
          \x20       *s.borrow_mut() = Some(b.clone());\n\
          \x20       b\n\
+         \x20   })\n\
+         }\n\n\
+         /// The scene registry every element realizes against. Carries the\n\
+         /// framework's own primitive handlers. A third-party SDK payload\n\
+         /// reached from an exported component needs its handler here too:\n\
+         /// an unregistered payload panics at realize (the scene contract),\n\
+         /// and this bundle has no app boot seam to compose registers into.\n\
+         fn registry() -> Rc<Registry<WebBackend>> {\n\
+         \x20   REGISTRY.with(|r| {\n\
+         \x20       if let Some(r) = r.borrow().as_ref() {\n\
+         \x20           return r.clone();\n\
+         \x20       }\n\
+         \x20       let mut fresh: Registry<WebBackend> = Registry::new();\n\
+         \x20       runtime_vocabulary::register_builtins(&mut fresh);\n\
+         \x20       let fresh = Rc::new(fresh);\n\
+         \x20       *r.borrow_mut() = Some(fresh.clone());\n\
+         \x20       fresh\n\
          \x20   })\n\
          }\n\n",
     );
@@ -281,7 +321,7 @@ fn gen_bridge_class(c: &ExternalComponent) -> String {
         match &p.kind {
             PropKind::Value { rust, reactive, .. } => {
                 fields.push_str(&format!("    {}: Signal<{}>,\n", p.name, rust));
-                inits.push_str(&format!("            {}: Signal::new(Default::default()),\n", p.name));
+                inits.push_str(&format!("            {}: signal(Default::default()),\n", p.name));
                 captures.push_str(&format!("        let {n} = self.{n};\n", n = p.name));
                 if *reactive {
                     prop_inits.push_str(&format!("                {n}: {n}.into(),\n", n = p.name));
@@ -290,7 +330,7 @@ fn gen_bridge_class(c: &ExternalComponent) -> String {
                 }
                 setters.push_str(&format!(
                     "    #[wasm_bindgen(setter, js_name = {js})]\n    \
-                     pub fn set_{n}(&self, value: {rust}) {{ self.{n}.set(value); }}\n",
+                     pub fn set_{n}(&self, value: {rust}) {{ self.{n}.set(value); flush(); }}\n",
                     js = p.js_name(),
                     n = p.name,
                     rust = rust,
@@ -337,30 +377,41 @@ fn gen_bridge_class(c: &ExternalComponent) -> String {
     format!(
         "#[wasm_bindgen]\n\
          pub struct {class} {{\n\
-         {fields}    scope: Option<DetachedScope>,\n\
+         {fields}    mounted: Option<Realized<web_sys::Node>>,\n\
          }}\n\n\
          #[wasm_bindgen]\n\
          impl {class} {{\n\
          \x20   #[wasm_bindgen(constructor)]\n\
          \x20   pub fn new() -> {class} {{\n\
-         \x20       ensure_runtime();\n\
-         \x20       {class} {{\n\
-         {inits}            scope: None,\n\
-         \x20       }}\n\
+         \x20       // Signals are world-owned, so creating them requires the\n\
+         \x20       // world entered — and it happens HERE, at construction,\n\
+         \x20       // because the custom element applies pending JS property\n\
+         \x20       // writes before it calls `mount`.\n\
+         \x20       world().enter(|| {class} {{\n\
+         {inits}            mounted: None,\n\
+         \x20       }})\n\
          \x20   }}\n\n\
          \x20   pub fn mount(&mut self, host: web_sys::Element) {{\n\
          \x20       let backend = shared_backend();\n\
-         {captures}        let props = {props_path} {{\n\
-         {prop_inits}            ..Default::default()\n\
-         \x20       }};\n\
-         \x20       let element = {comp_path}(&props);\n\
-         \x20       let seed = Identity::node(current_identity(), 0, None, Some(next_element_id()));\n\
-         \x20       let (node, scope) =\n\
-         \x20           with_current_identity(seed, || build_detached(&backend, element, None));\n\
-         \x20       let _ = host.append_child(&node);\n\
-         \x20       self.scope = Some(scope);\n\
+         \x20       let registry = registry();\n\
+         {captures}        let realized = world().enter(|| {{\n\
+         \x20           let props = {props_path} {{\n\
+         {prop_inits}                ..Default::default()\n\
+         \x20           }};\n\
+         \x20           realize(&backend, &registry, {comp_path}(&props))\n\
+         \x20       }});\n\
+         \x20       for node in realized.collect_nodes() {{\n\
+         \x20           let _ = host.append_child(&node);\n\
+         \x20       }}\n\
+         \x20       self.mounted = Some(realized);\n\
+         \x20       flush();\n\
          \x20   }}\n\n\
-         \x20   pub fn unmount(&mut self) {{ self.scope = None; }}\n\n\
+         \x20   /// Dropping the `Realized` IS the teardown: effects run their\n\
+         \x20   /// cleanups, signals are freed, nodes are released.\n\
+         \x20   pub fn unmount(&mut self) {{\n\
+         \x20       self.mounted = None;\n\
+         \x20       flush();\n\
+         \x20   }}\n\n\
          {setters}}}\n",
     )
 }
@@ -956,16 +1007,32 @@ mod tests {
         assert!(src.contains("..Default::default()"));
         // setters mapped to JS names.
         assert!(src.contains("js_name = onGreet"));
-        // Shared backend + detached subtree (so multiple elements on one
-        // page don't clobber each other's per-backend JS shims).
+        // Shared backend + registry + one detached subtree per element
+        // (so multiple elements on one page don't clobber each other's
+        // per-backend JS shims).
         assert!(src.contains("fn shared_backend()"));
         assert!(src.contains("let backend = shared_backend();"));
-        assert!(src.contains("build_detached(&backend, element, None)"));
-        assert!(!src.contains("mount(backend"));
-        // Unique identity seed per element (no id collisions between
-        // multiple elements on one page).
-        assert!(src.contains("with_current_identity(seed"));
-        assert!(src.contains("Some(next_element_id())"));
+        assert!(src.contains("fn registry()"));
+        assert!(src.contains("runtime_vocabulary::register_builtins(&mut fresh)"));
+        assert!(src.contains("realize(&backend, &registry, external_export_demo::Greeter(&props))"));
+        assert!(!src.contains("build_detached"));
+        // ONE page-wide world: state and every subtree live in it, so a
+        // single flush commits a write regardless of which element it
+        // landed on.
+        assert!(src.contains("fn world() -> World"));
+        assert!(src.contains("static WORLD:"));
+        assert!(src.contains("world().enter("));
+        // Signals are created entered, at construction — the custom
+        // element applies pending JS writes before it calls mount().
+        assert!(src.contains("name: signal(Default::default())"));
+        // Staged writes: a JS setter is not a wrapped dispatch site, so
+        // the bridge flushes explicitly; framework callbacks ride the
+        // installed post-dispatch hook.
+        assert!(src.contains("self.name.set(value); flush();"));
+        assert!(src.contains("install_dispatch_hook(flush)"));
+        // Teardown is drop.
+        assert!(src.contains("mounted: Option<Realized<web_sys::Node>>"));
+        assert!(src.contains("self.mounted = None;"));
     }
 
     #[test]

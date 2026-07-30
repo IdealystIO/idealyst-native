@@ -68,7 +68,8 @@ fn browser_viewport() -> Option<wire::WireViewport> {
 }
 
 use dev_client::WireBackend;
-use runtime_core::{Backend, RafLoop};
+use runtime_shared::RafLoop;
+use runtime_vocabulary::caps::AllCaps;
 use js_sys::{ArrayBuffer, Uint8Array};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
@@ -110,7 +111,7 @@ impl Drop for WebClientHandle {
 /// Returns immediately after binding the event handlers. The
 /// returned [`WebClientHandle`] must be kept alive (typically in a
 /// `thread_local!`) for the connection to function.
-pub fn connect_web<B: Backend + 'static>(
+pub fn connect_web<B: AllCaps + 'static>(
     url: &str,
     wire: Rc<RefCell<WireBackend<B>>>,
     on_disconnect: Rc<dyn Fn()>,
@@ -278,7 +279,7 @@ where
     // "client→server→client" loop latency to one tick.
     let socket_for_pump = socket.clone();
     let mut last_raf_ms = now_ms();
-    let outbound_pump = runtime_core::raf_loop(move || {
+    let outbound_pump = runtime_shared::raf_loop(move || {
         // Skip the entire tick while the socket is still mid-handshake
         // — `send_with_u8_array` would throw `InvalidStateError` and
         // the raf would spam console errors until `onopen` fires.
@@ -493,7 +494,7 @@ fn schedule_callback<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
     );
 }
 
-fn apply_dev_msg<B: Backend + 'static>(wire: &Rc<RefCell<WireBackend<B>>>, msg: DevToApp)
+fn apply_dev_msg<B: AllCaps + 'static>(wire: &Rc<RefCell<WireBackend<B>>>, msg: DevToApp)
 where
     B::Node: 'static,
 {

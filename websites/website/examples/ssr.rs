@@ -5,11 +5,12 @@
 //! Runs `website::app()` (the same entry the web bundle mounts) on the
 //! host against `SsrBackend`, once per URL, and writes each rendered
 //! document to `/tmp/ssr-website/<name>.html`. Proves render-at-path on
-//! a real, complex DrawerNavigator app.
+//! a real, complex navigator app.
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use backend_ssr::{render_document, render_path_with};
+use backend_ssr::newcore::render_path_with;
+use backend_ssr::render_document;
 
 fn main() {
     let routes: &[(&str, &str)] = &[
@@ -39,13 +40,12 @@ fn main() {
         // cross-render signal-slot recycling).
         let path = path.to_string();
         let doc = std::thread::spawn(move || {
-            // The same registration the CLI's SSR wrapper calls
-            // (navigator chrome). The codeblock SDK registers no
-            // host-side SSR handler (wasm32-only), so code panels
-            // render the standard External placeholder.
+            // The same registration the CLI's SSR wrapper calls: the
+            // codeblock scene handler (navigators are vocabulary
+            // built-ins — nothing to register).
             let page = render_path_with(
                 &path,
-                |b| website::register_ssr_extensions(b),
+                website::register_ssr_scene_handlers,
                 website::app,
             );
             // Pure rendered screen (no bundle script, no extra head) —

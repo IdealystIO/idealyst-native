@@ -1,5 +1,5 @@
 //! `Backend::mark_preserves_focus` — the web half of the framework's
-//! focus-preserving press region (see `runtime_core::backend`).
+//! focus-preserving press region (see `runtime_shared::backend`).
 //!
 //! In browsers, moving keyboard focus is the *default action* of
 //! `mousedown` — and per the Pointer Events spec, canceling `pointerdown`

@@ -26,3 +26,8 @@ backend-roku-transpile = { workspace = true }
 # `build-ios` is the shared home for those utilities.
 build-ios = { workspace = true }
 syn = { version = "2", features = ["full"] }
+
+[dev-dependencies]
+# Wrapper-shape tests generate the snapshot wrapper into a scratch dir
+# and assert on its text (they never invoke cargo).
+tempfile = "3"

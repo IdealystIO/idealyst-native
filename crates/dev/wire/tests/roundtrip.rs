@@ -1,11 +1,12 @@
 //! End-to-end round-trip test for the hot-reload wire prototype.
 //!
 //! Demonstrates the full pipeline:
-//!   1. Dev side records walker calls into a [`WireRecordingBackend`].
+//!   1. Dev side records capability calls into a [`WireRecordingBackend`].
 //!   2. Commands are JSON-serialized.
 //!   3. JSON is deserialized on the "app" side.
 //!   4. Commands replay against a [`TraceBackend`] (a stand-in for a
-//!      real platform backend) that just notes every call.
+//!      real platform backend — `runtime_scene::Host` + the 30
+//!      capability traits) that just notes every call.
 //!   5. The trace matches the original recording — proving the wire
 //!      faithfully carries the structural+style intent across.
 //!
@@ -13,14 +14,17 @@
 
 use std::rc::Rc;
 
-use runtime_core::{Action, Backend, Color, ColorScheme, IntoAction, StyleRules, Tokenized};
+use runtime_shared::{Action, Color, ColorScheme, IntoAction, StyleRules, Tokenized};
+use runtime_scene::Host;
+use runtime_vocabulary::caps;
 use dev_client::WireBackend;
 use dev_server::WireRecordingBackend;
 use wire::{Command, DevToApp};
 
 // ---------------------------------------------------------------------------
-// TraceBackend — minimal Backend impl that records every call it
-// receives. Used as the "real platform backend" in tests.
+// TraceBackend — a minimal `Host` + capability implementation that
+// records every call it receives. Used as the "real platform backend"
+// in tests; families it does not model take the caps defaults.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,7 +46,7 @@ struct TraceBackend {
     /// `announce_for_accessibility(msg, priority)`. Stashed on the side
     /// so the e2e tests can assert end-to-end wire delivery of the new
     /// `Command::AnnounceForAccessibility` variant.
-    announcements: Vec<(String, runtime_core::accessibility::LiveRegionPriority)>,
+    announcements: Vec<(String, runtime_shared::accessibility::LiveRegionPriority)>,
     /// Latest `(node_id, label)` seen on `create_text` with an explicit
     /// `accessibility.label`. Lets tests verify a11y bag delivery
     /// without changing `Trace::CreateText`'s shape.
@@ -55,13 +59,36 @@ struct TraceBackend {
     last_view_action_handlers: Vec<(String, Rc<dyn Fn()>)>,
 }
 
-impl Backend for TraceBackend {
+impl Host for TraceBackend {
     type Node = u64;
 
-    fn create_view(
-        &mut self,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> u64 {
+    fn insert(&mut self, parent: &mut u64, child: u64) {
+        self.trace.push(Trace::Insert(*parent, child));
+    }
+
+    fn insert_at(&mut self, parent: &mut u64, child: u64, _index: usize) {
+        self.trace.push(Trace::Insert(*parent, child));
+    }
+
+    fn remove_child(&mut self, _parent: &u64, _child: &u64) {}
+
+    fn clear_children(&mut self, _node: &u64) {}
+
+    fn create_anchor(&mut self) -> u64 {
+        self.next += 1;
+        self.next
+    }
+
+    /// The recorder is anchored (the wire protocol has no
+    /// `RemoveChild`/`InsertAt` ops), so a replay target never needs to
+    /// splice.
+    fn supports_splice(&self) -> bool {
+        false
+    }
+}
+
+impl caps::ViewOps for TraceBackend {
+    fn create_view(&mut self, a11y: &runtime_shared::accessibility::AccessibilityProps) -> u64 {
         self.next += 1;
         let id = self.next;
         // Capture every AX action's handler so the end-to-end test
@@ -76,11 +103,13 @@ impl Backend for TraceBackend {
         self.trace.push(Trace::CreateView(id));
         id
     }
+}
 
+impl caps::TextOps for TraceBackend {
     fn create_text(
         &mut self,
         content: &str,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> u64 {
         self.next += 1;
         let id = self.next;
@@ -96,77 +125,108 @@ impl Backend for TraceBackend {
         id
     }
 
+    fn update_text(&mut self, node: &u64, content: &str) {
+        self.trace.push(Trace::UpdateText(*node, content.to_string()));
+    }
+}
+
+impl caps::A11yOps for TraceBackend {
     fn announce_for_accessibility(
         &mut self,
         msg: &str,
-        priority: runtime_core::accessibility::LiveRegionPriority,
+        priority: runtime_shared::accessibility::LiveRegionPriority,
     ) {
         self.announcements.push((msg.to_string(), priority));
     }
+}
 
+impl caps::ButtonOps for TraceBackend {
     fn create_button(
         &mut self,
         label: &str,
-        _on_click: &runtime_core::Action,
-        _leading_icon: Option<&runtime_core::primitives::icon::IconData>,
-        _trailing_icon: Option<&runtime_core::primitives::icon::IconData>,
-        _a11y: &runtime_core::accessibility::AccessibilityProps,
+        _on_click: &runtime_shared::Action,
+        _leading_icon: Option<&runtime_shared::primitives::icon::IconData>,
+        _trailing_icon: Option<&runtime_shared::primitives::icon::IconData>,
+        _a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> u64 {
         self.next += 1;
         let id = self.next;
         self.trace.push(Trace::CreateButton(id, label.to_string()));
         id
     }
+}
 
-    fn insert(&mut self, parent: &mut u64, child: u64) {
-        self.trace.push(Trace::Insert(*parent, child));
-    }
-
-    fn update_text(&mut self, node: &u64, content: &str) {
-        self.trace.push(Trace::UpdateText(*node, content.to_string()));
-    }
-
-    fn clear_children(&mut self, _node: &u64) {}
-
+impl caps::StyleOps for TraceBackend {
     fn apply_style(&mut self, node: &u64, _style: &Rc<StyleRules>) {
         self.trace.push(Trace::ApplyStyle(*node));
     }
+}
 
+impl caps::LifecycleOps for TraceBackend {
     fn finish(&mut self, root: u64) {
         self.trace.push(Trace::Finish(root));
     }
+}
 
+impl caps::LinkOps for TraceBackend {
     fn create_link(
         &mut self,
-        _config: runtime_core::primitives::link::LinkConfig,
-        _a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> u64 {
-        self.next += 1;
-        self.next
-    }
-
-    fn create_portal(
-        &mut self,
-        _target: runtime_core::primitives::portal::PortalTarget,
-        _on_dismiss: Option<Rc<dyn Fn()>>,
-        _trap_focus: bool,
-        _a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> u64 {
-        self.next += 1;
-        self.next
-    }
-
-    fn create_graphics(
-        &mut self,
-        _on_ready: runtime_core::primitives::graphics::OnReady,
-        _on_resize: runtime_core::primitives::graphics::OnResize,
-        _on_lost: runtime_core::primitives::graphics::OnLost,
-        _a11y: &runtime_core::accessibility::AccessibilityProps,
+        _config: runtime_shared::primitives::link::LinkConfig,
+        _a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> u64 {
         self.next += 1;
         self.next
     }
 }
+
+impl caps::PortalOps for TraceBackend {
+    fn create_portal(
+        &mut self,
+        _target: runtime_shared::primitives::portal::PortalTarget,
+        _on_dismiss: Option<Rc<dyn Fn()>>,
+        _trap_focus: bool,
+        _a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> u64 {
+        self.next += 1;
+        self.next
+    }
+}
+
+impl caps::GraphicsOps for TraceBackend {
+    fn create_graphics(
+        &mut self,
+        _on_ready: runtime_shared::primitives::graphics::OnReady,
+        _on_resize: runtime_shared::primitives::graphics::OnResize,
+        _on_lost: runtime_shared::primitives::graphics::OnLost,
+        _a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> u64 {
+        self.next += 1;
+        self.next
+    }
+}
+
+// Families the trace target does not model — caps defaults.
+impl caps::ActivityIndicatorOps for TraceBackend {}
+impl caps::AnimationOps for TraceBackend {}
+impl caps::AppEnvOps for TraceBackend {}
+impl caps::AssetOps for TraceBackend {}
+impl caps::BatchOps for TraceBackend {}
+impl caps::DocumentOps for TraceBackend {}
+impl caps::ExternalOps for TraceBackend {}
+impl caps::IconOps for TraceBackend {}
+impl caps::ImageOps for TraceBackend {}
+impl caps::InputOps for TraceBackend {}
+impl caps::IntrospectionOps for TraceBackend {}
+impl caps::NavigatorOps for TraceBackend {}
+impl caps::PresenceOps for TraceBackend {}
+impl caps::PressableOps for TraceBackend {}
+impl caps::SafeAreaOps for TraceBackend {}
+impl caps::ScrollOps for TraceBackend {}
+impl caps::SliderOps for TraceBackend {}
+impl caps::TextInputOps for TraceBackend {}
+impl caps::ToggleOps for TraceBackend {}
+impl caps::VirtualizerOps for TraceBackend {}
+impl caps::WireBindingOps for TraceBackend {}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -183,9 +243,9 @@ fn build_demo_tree(backend: &mut WireRecordingBackend) {
     let header_style: Rc<StyleRules> = Rc::new({
         let mut s = StyleRules::default();
         s.background = Some(Tokenized::Literal(Color("#202020".into())));
-        s.flex_direction = Some(runtime_core::FlexDirection::Row);
-        s.padding_top = Some(Tokenized::Literal(runtime_core::Length::Px(16.0)));
-        s.padding_bottom = Some(Tokenized::Literal(runtime_core::Length::Px(16.0)));
+        s.flex_direction = Some(runtime_shared::FlexDirection::Row);
+        s.padding_top = Some(Tokenized::Literal(runtime_shared::Length::Px(16.0)));
+        s.padding_bottom = Some(Tokenized::Literal(runtime_shared::Length::Px(16.0)));
         s
     });
 
@@ -371,48 +431,24 @@ fn unknown_node_is_a_protocol_error() {
     ));
 }
 
-/// Drive the real framework walker against a `WireRecordingBackend`,
-/// then replay the captured commands through `WireBackend<TraceBackend>`.
-/// This proves the recorder slots into `runtime_core::render(...)`
-/// without modification — i.e. real user component trees produce
-/// faithful wire output.
+/// Drive a real scene realize against a `WireRecordingBackend`, then
+/// replay the captured commands through `WireBackend<TraceBackend>`.
+/// This proves the recorder slots into
+/// `dev_server::newcore::SceneSession` without modification — i.e. real
+/// user component trees produce faithful wire output.
 #[test]
-fn real_walker_drives_recorder() {
-    use runtime_core::{render, Element};
-    use std::cell::RefCell;
-
-    // A minimal Element tree: a View with a Text child. Built by
-    // hand to avoid pulling in the `ui!` macro for the test.
-    let tree = Element::View {
-        children: vec![Element::Text {
-            source: runtime_core::TextSource::Static("hello, wire".into()),
-            style: None,
-            ref_fill: None,
-            accessibility: Default::default(),
-            test_id: None,
-        }],
-        style: None,
-        ref_fill: None,
-        safe_area_sides: Default::default(),
-        on_touch: None,
-        on_wheel: None,
-        preserves_focus: false,
-        on_file_drop: None,
-        on_hover: None,
-        is_container: false,
-        accessibility: Default::default(),
-        test_id: None,
-    };
+fn real_realize_drives_recorder() {
+    use runtime_vocabulary::builders::{text, view};
 
     let recorder = WireRecordingBackend::new();
-    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-    let _owner = render(backend_rc, tree);
+    let _session = dev_server::newcore::SceneSession::mount(&recorder, |_r| {}, || {
+        view().child(text().content("hello, wire")).build()
+    });
 
     let commands = recorder.drain_commands();
 
     // At minimum: CreateText, CreateView, Insert, Finish. (Order may
-    // vary — the walker tends to build children first then insert
-    // them into the parent View it creates.)
+    // vary — children are built first, then inserted into the parent.)
     let count_create_text = commands
         .iter()
         .filter(|c| matches!(c, Command::CreateText { .. }))
@@ -433,7 +469,7 @@ fn real_walker_drives_recorder() {
     assert_eq!(count_create_view, 1, "exactly one View was built");
     assert_eq!(count_create_text, 1, "exactly one Text was built");
     assert_eq!(count_insert, 1, "Text inserted into View");
-    assert_eq!(count_finish, 1, "render() called finish(root)");
+    assert_eq!(count_finish, 1, "the mount called finish(root)");
 
     // Replay the captured commands through the app-side wire backend.
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -451,13 +487,13 @@ fn real_walker_drives_recorder() {
     );
 }
 
-/// Drive a Element::Link through the recording backend. Verifies
+/// Drive a link element through the recording backend. Verifies
 /// that `create_link` emits a `CreateLink` command with the route /
 /// url / handler id intact, and that the app-side replay round-trips
 /// to a `create_link` call on the real backend.
 #[test]
 fn link_round_trip() {
-    use runtime_core::primitives::link::LinkConfig;
+    use runtime_shared::primitives::link::LinkConfig;
 
     let mut recorder = WireRecordingBackend::new();
     let on_activate: Rc<dyn Fn()> = Rc::new(|| {});
@@ -495,7 +531,7 @@ fn link_round_trip() {
 /// or named), on_dismiss handler id, and focus-trap flag.
 #[test]
 fn portal_round_trip() {
-    use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement};
+    use runtime_shared::primitives::portal::{PortalTarget, ViewportPlacement};
 
     let mut recorder = WireRecordingBackend::new();
     let on_dismiss: Option<Rc<dyn Fn()>> = Some(Rc::new(|| {}));
@@ -540,9 +576,9 @@ fn portal_round_trip() {
 #[test]
 fn graphics_round_trip_unnamed() {
     let mut recorder = WireRecordingBackend::new();
-    let on_ready: runtime_core::primitives::graphics::OnReady = Box::new(|_evt| {});
-    let on_resize: runtime_core::primitives::graphics::OnResize = Box::new(|_evt| {});
-    let on_lost: runtime_core::primitives::graphics::OnLost = Box::new(|| {});
+    let on_ready: runtime_shared::primitives::graphics::OnReady = Box::new(|_evt| {});
+    let on_resize: runtime_shared::primitives::graphics::OnResize = Box::new(|_evt| {});
+    let on_lost: runtime_shared::primitives::graphics::OnLost = Box::new(|| {});
     let _node = recorder.create_graphics(on_ready, on_resize, on_lost, &Default::default());
 
     let commands = recorder.drain_commands();
@@ -579,7 +615,7 @@ fn graphics_round_trip_unnamed() {
 
 #[test]
 fn wire_accessibility_props_serde_round_trip() {
-    use runtime_core::accessibility::AccessibilityTraits;
+    use runtime_shared::accessibility::AccessibilityTraits;
     use wire::{
         HandlerId, WireAccessibilityAction, WireAccessibilityProps, WireLiveRegionPriority,
         WireRole,
@@ -632,7 +668,7 @@ fn wire_accessibility_action_serde_round_trip() {
 #[test]
 fn a11y_from_then_back_is_identity_modulo_actions() {
     use dev_server::HandlerTable;
-    use runtime_core::accessibility::{
+    use runtime_shared::accessibility::{
         AccessibilityAction, AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
     };
 
@@ -731,8 +767,7 @@ fn announce_for_accessibility_command_serde_round_trip() {
 
 #[test]
 fn end_to_end_announce_reaches_trace_backend() {
-    use runtime_core::accessibility::LiveRegionPriority;
-    use runtime_core::Backend as _;
+    use runtime_shared::accessibility::LiveRegionPriority;
 
     // Dev side: call `announce_for_accessibility` on the recorder and
     // capture the emitted command.
@@ -757,8 +792,7 @@ fn end_to_end_announce_reaches_trace_backend() {
 
 #[test]
 fn end_to_end_update_accessibility_reaches_trace_backend() {
-    use runtime_core::accessibility::{AccessibilityProps, AccessibilityTraits, Role};
-    use runtime_core::Backend as _;
+    use runtime_shared::accessibility::{AccessibilityProps, AccessibilityTraits, Role};
     use std::cell::Cell;
 
     // TraceBackend doesn't override `update_accessibility` (default
@@ -802,8 +836,7 @@ fn end_to_end_update_accessibility_reaches_trace_backend() {
 
 #[test]
 fn end_to_end_create_carries_a11y_through_to_trace_backend() {
-    use runtime_core::accessibility::{AccessibilityProps, AccessibilityTraits};
-    use runtime_core::Backend as _;
+    use runtime_shared::accessibility::{AccessibilityProps, AccessibilityTraits};
 
     // Recorder side: build a Text with non-default a11y.
     let mut recorder = WireRecordingBackend::new();
@@ -854,10 +887,9 @@ fn end_to_end_create_carries_a11y_through_to_trace_backend() {
 /// trampoline factory, etc.) fails this test loudly.
 #[test]
 fn end_to_end_accessibility_action_handler_fires() {
-    use runtime_core::accessibility::{
+    use runtime_shared::accessibility::{
         AccessibilityAction, AccessibilityProps,
     };
-    use runtime_core::Backend as _;
     use std::cell::Cell;
 
     let mut recorder = WireRecordingBackend::new();

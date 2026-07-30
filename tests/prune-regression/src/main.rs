@@ -29,6 +29,53 @@
 //! Requires `idealyst` on PATH (`cargo install --path crates/tools/cli
 //! --force`). `--browser` additionally requires a system Chrome /
 //! Chromium install discoverable by `headless_chrome`.
+//!
+//! # Measurements performed
+//!
+//! 1. **Build smoke** (every app in [`APPS`]): `idealyst build --web
+//!    --release --data-prune` must exit 0.
+//! 2. **Artifact shape** ([`verify_artifacts`], every app): `index.html`
+//!    exists, a non-empty (> 1 KiB) `{stem}_bg[.hash].wasm` exists, and a
+//!    matching `{stem}[.hash].js` shim exists.
+//! 3. **Browser smoke** (`--browser`, every app): the page mounts, the
+//!    app's `expected_marker` text appears, and no `console.error` fires.
+//! 4. **Handler-registration main.wasm delta** ([`measure_chunk_split`],
+//!    the `lazy-payload-split` pair only): the `lazy` variant's
+//!    `main.wasm` must be at least [`MIN_MAIN_SHRINK_BYTES`] smaller than
+//!    `eager`'s.
+//!
+//! # What the size gate measures
+//!
+//! **Where a third-party payload's mount handler is registered**, and
+//! whether that choice actually moves bytes.
+//!
+//! The `lazy-payload-split` pair is two apps that are identical — same
+//! `app()`, same rendered tree, same `#[component(lazy)]` chunk body —
+//! except for one line in `register_scene_extensions`:
+//!
+//! - `eager/`: `heavy::register(registry)` installs the handler at the
+//!   boot seam, so `main.wasm` statically reaches it and the 512 KiB
+//!   static it touches.
+//! - `lazy/`: `registry.defer::<heavy::HeavyProps>()` only DECLARES the
+//!   payload kind late-bound (a compile-time `TypeId` and nothing else);
+//!   the handler installs itself from inside the chunk through
+//!   `runtime_scene::defer_registration` → `Registry::register_deferred`.
+//!   Realize meets the payload before the handler exists, parks it behind
+//!   a placeholder, and completes the mount in place when the chunk
+//!   lands.
+//!
+//! So a passing gate asserts three mechanisms at once: `runtime-scene`'s
+//! post-boot registration seam genuinely keeps a handler out of the boot
+//! module, wasm-split places the chunk-only symbol outside `main.wasm`,
+//! and `--data-prune` evicts the now-unreachable static from main's data
+//! segments. A regression in any one of them collapses the delta.
+//!
+//! This is the axis the fixtures measured before runtime v2 as well (on
+//! the old `Element::External` + `defer_external_registration` seam,
+//! which recorded 1294 KiB → 781 KiB). Runtime v2 deleted that seam and
+//! the pair briefly degraded to measuring plain call-site reachability;
+//! `runtime_scene::Registry::defer` / `register_deferred` restored the
+//! capability, and this gate measures it again.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -78,29 +125,35 @@ const APPS: &[AppCfg] = &[
         expected_marker: "Loaded from a separate wasm chunk",
         marker_wait_ms: 15_000,
     },
-    // The registration-split pair. Their H2 headings live in the MAIN
-    // bundle, so the marker only confirms mount; the point of these two is
-    // the main.wasm SIZE DELTA asserted by `measure_registration_split`
-    // after the build loop, not their DOM.
+    // The handler-registration pair. The point of these two is the
+    // main.wasm SIZE DELTA asserted by `measure_chunk_split` after the
+    // build loop — but the marker is load-bearing too: "heavy payload
+    // byte:" is rendered BY THE HANDLER, so seeing it proves the handler
+    // ran. In the lazy variant that means the item `app()` parked was
+    // drained in place after the chunk installed its handler, i.e. the
+    // seam the size delta credits actually works at runtime.
     AppCfg {
-        dir: "lazy-external-split/eager",
-        wasm_stem: "lazy_external_split_eager",
-        expected_marker: "eager registration",
+        dir: "lazy-payload-split/eager",
+        wasm_stem: "lazy_payload_split_eager",
+        expected_marker: "heavy payload byte:",
         marker_wait_ms: 10_000,
     },
     AppCfg {
-        dir: "lazy-external-split/lazy",
-        wasm_stem: "lazy_external_split_lazy",
-        expected_marker: "lazy registration",
-        marker_wait_ms: 10_000,
+        dir: "lazy-payload-split/lazy",
+        wasm_stem: "lazy_payload_split_lazy",
+        // Longer: here the marker cannot appear until the chunk has been
+        // fetched, instantiated, and its registration drained.
+        expected_marker: "heavy payload byte:",
+        marker_wait_ms: 15_000,
     },
 ];
 
 /// Least main.wasm shrinkage we require between the eager and lazy
 /// variants. The heavy SDK's payload is 512 KiB; a delta above ~400 KiB
 /// proves the payload left main (the slack absorbs wasm-opt variance and
-/// the few bytes the deferral seam itself adds). Well below 512 to stay
-/// robust; far above build-to-build noise (single-KB) to be a real signal.
+/// the handful of bytes the extra `app()` call site itself adds). Well
+/// below 512 to stay robust; far above build-to-build noise (single-KB)
+/// to be a real signal.
 const MIN_MAIN_SHRINK_BYTES: u64 = 400 * 1024;
 
 fn main() -> ExitCode {
@@ -202,18 +255,18 @@ fn main() -> ExitCode {
         }
     }
 
-    // Registration-split measurement: when both variants built this run,
-    // diff their main.wasm and require the lazy one to be meaningfully
-    // smaller — the heavy SDK's payload must have left main.wasm.
-    let eager = "lazy-external-split/eager";
-    let lazy = "lazy-external-split/lazy";
+    // Chunk-split measurement: when both variants built this run, diff
+    // their main.wasm and require the lazy one to be meaningfully smaller
+    // — the heavy SDK's payload must have left main.wasm.
+    let eager = "lazy-payload-split/eager";
+    let lazy = "lazy-payload-split/lazy";
     if built.contains(&eager) && built.contains(&lazy) {
-        println!("\n=== registration-split main.wasm delta ===");
-        match measure_registration_split(&tests_dir) {
+        println!("\n=== chunk-split main.wasm delta ===");
+        match measure_chunk_split(&tests_dir) {
             Ok(()) => println!("  size delta ok"),
             Err(e) => {
                 eprintln!("  FAIL: {e}");
-                failed.push("lazy-external-split (size delta)");
+                failed.push("lazy-payload-split (size delta)");
             }
         }
     }
@@ -285,14 +338,21 @@ fn find_pkg_file(pkg: &Path, prefix: &str, suffix: &str) -> Option<PathBuf> {
     hits.into_iter().next()
 }
 
-/// Compare the two variants' main bundles. The eager app anchors the
-/// heavy SDK's 512 KiB payload in `main.wasm`; the lazy app defers
-/// registration into the chunk so the release data-prune drops it. Assert
-/// the lazy main is smaller by at least [`MIN_MAIN_SHRINK_BYTES`], and
-/// print both sizes + the delta so a regression (or a win) is legible.
-fn measure_registration_split(tests_dir: &Path) -> Result<(), String> {
-    let eager = main_wasm_bytes(tests_dir, "lazy-external-split/eager", "lazy_external_split_eager")?;
-    let lazy = main_wasm_bytes(tests_dir, "lazy-external-split/lazy", "lazy_external_split_lazy")?;
+/// Compare the two variants' main bundles. The eager app registers the
+/// heavy SDK's mount handler at the boot seam, anchoring its 512 KiB
+/// payload in `main.wasm`; the lazy app only DECLARES the payload kind
+/// late-bound and lets the handler install itself from inside the
+/// `#[component(lazy)]` chunk, so wasm-split confines it to the chunk and
+/// the release data-prune drops the static from main. Assert the lazy
+/// main is smaller by at least [`MIN_MAIN_SHRINK_BYTES`], and print both
+/// sizes + the delta so a regression (or a win) is legible.
+///
+/// This is the runner's ONLY bundle-size assertion. It covers the scene's
+/// post-boot registration seam, wasm-split chunk placement, and
+/// data-prune eviction together (see the module docs).
+fn measure_chunk_split(tests_dir: &Path) -> Result<(), String> {
+    let eager = main_wasm_bytes(tests_dir, "lazy-payload-split/eager", "lazy_payload_split_eager")?;
+    let lazy = main_wasm_bytes(tests_dir, "lazy-payload-split/lazy", "lazy_payload_split_lazy")?;
 
     let delta = eager.saturating_sub(lazy);
     println!("  eager main.wasm: {} KiB", eager / 1024);
@@ -306,7 +366,7 @@ fn measure_registration_split(tests_dir: &Path) -> Result<(), String> {
     if lazy >= eager {
         return Err(format!(
             "lazy main.wasm ({} KiB) is not smaller than eager ({} KiB) — \
-             deferred registration failed to keep the heavy SDK out of main",
+             late handler registration failed to keep the heavy SDK out of main",
             lazy / 1024,
             eager / 1024,
         ));
@@ -314,7 +374,9 @@ fn measure_registration_split(tests_dir: &Path) -> Result<(), String> {
     if delta < MIN_MAIN_SHRINK_BYTES {
         return Err(format!(
             "main.wasm shrank only {} KiB (< {} KiB) — the heavy payload did not \
-             fully leave main; check the deferral seam or the data-prune classification",
+             fully leave main; check that nothing in main names the SDK's handler \
+             (`Registry::defer` must be the only mention), then wasm-split's chunk \
+             reachability and the data-prune classification",
             delta / 1024,
             MIN_MAIN_SHRINK_BYTES / 1024,
         ));

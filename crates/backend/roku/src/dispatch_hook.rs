@@ -14,7 +14,7 @@
 //!
 //! This hook exists for the one dispatch surface the wrappers cannot
 //! reach: author code invoked by a *runtime scheduler*, if the embedder
-//! installs one (`runtime_core::scheduling::install_scheduler`) — an
+//! installs one (`runtime_shared::scheduling::install_scheduler`) — an
 //! `after_ms` debounce that sets a signal, a `raf_loop` tick. Roku has
 //! no first-party host loop, so the fire-site contract is on the
 //! embedder: after your scheduler runs a timer / animation-frame

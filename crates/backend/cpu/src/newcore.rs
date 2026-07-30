@@ -1,22 +1,30 @@
-//! New-core adoption for the CPU-rasterizer backend (idea-lite
-//! migration: host-driven cadence, the terminal shape applied to the
-//! pixel framebuffer).
+//! Rendering: the `runtime_scene::Host` + capability-trait surface, the
+//! boot entry, and the flush driver.
 //!
-//! Implements [`runtime_scene::Host`] plus **all 30** capability traits
-//! (`runtime_vocabulary::caps`) directly on [`CpuBackend`] — the
-//! production shape of the migration (no `LegacyBridge` in the render
-//! path). Every trait method delegates via UFCS
-//! (`<CpuBackend as Backend>::method(self, …)`) to the existing
-//! `Backend` impl, so the rasterizer mechanism code (node allocation,
-//! Taffy layout, hit-testing, [`CpuBackend::render`]) is REUSED
-//! verbatim: the same scene renders to the same pixels on both cores
-//! (pinned by `tests/newcore_parity.rs`). `CpuBackend` overrides only a
-//! SUBSET of `Backend` (view / text / button / pressable / scroll_view
-//! plus visible-placeholder `create_*` for the rest); where a method is
-//! not overridden, the UFCS call resolves to the same trait-default the
-//! old walker hits — behavior identical by construction, which is why
-//! all 30 caps delegate uniformly rather than special-casing the
-//! placeholder set. **30/30 direct, 0 adapted, 0 stubbed.**
+//! [`CpuBackend`] implements [`runtime_scene::Host`] plus **all 30**
+//! capability traits (`runtime_vocabulary::caps`) — the production shape
+//! of the migration. Every mechanism body in this file was moved here
+//! verbatim from the crate's old `impl runtime_core::Backend for CpuBackend`
+//! when the 159-method mega-trait was deleted, so the rasterizer mechanism code (node allocation,
+//! Taffy layout, hit-testing, `render`)
+//! is unchanged: the same scene paints the same pixels
+//! (pinned by `tests/newcore_parity.rs` against the frozen old-core
+//! framebuffers).
+//! Capabilities this backend does not implement are simply absent — the
+//! caps-trait DEFAULT bodies serve them, and those defaults were audited
+//! byte-for-byte against the `Backend` defaults they replace
+//! (`docs/runtime-v2-deletion-baseline.md` S2.1; 128 of this backend's
+//! 152 caps methods resolve to a default).
+//!
+//! **30/30 traits implemented, 0 adapted, 0 stubbed.**
+//!
+//! # Two layers in one file: mechanism + flush policy
+//!
+//! Capability methods that take an author callback wrap it before running
+//! the mechanism (`flushing0`/`flushing1`/`flushing_key` + the inline
+//! wrappers below) so a staged write commits after the callback returns.
+//! That dispatch-site policy is why the mechanism lives here rather than
+//! in an inherent impl: the wrap and the body are one method.
 //!
 //! # Boot sequence ([`start`])
 //!
@@ -33,7 +41,7 @@
 //!    same ordering comment as backend-web/terminal).
 //! 4. Entered buffered-microtask drain (no-op under a real scheduler;
 //!    load-bearing under a buffering test scheduler).
-//! 5. Single root → `Backend::finish`; `world.flush()` commits
+//! 5. Single root → `caps::LifecycleOps::finish`; `world.flush()` commits
 //!    anything staged during mount before the first paint.
 //! 6. Install the flush driver and retain
 //!    `{Realized, backend, registry, world}` in [`NewCoreApp`].
@@ -94,29 +102,24 @@
 //!   type routes through `Backend::create_navigator` exactly as before
 //!   (which, on this backend, renders the visible placeholder).
 
-use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use runtime_core::accessibility::{AccessibilityProps, AccessibilityTree, LiveRegionPriority, Role};
-use runtime_core::animation::AnimProp;
-use runtime_core::assets::{
-    AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
-};
-use runtime_core::breakpoint::Breakpoint;
-use runtime_core::introspect::NativeNode;
-use runtime_core::primitives;
-use runtime_core::primitives::portal::ViewportRect;
-use runtime_core::styled_text::TextRun;
-use runtime_core::{
-    Action, Backend, BackendBatch, Color, ColorScheme, Easing, FileDropHandler, FontFamily,
-    HoverHandler, ImageErrorHandler, ImageLoadHandler, PageMetadata, Platform, SafeAreaSides,
-    Screenshot, StateBits, StyleApplication, StyleRules, TokenEntry, Tokenized, TouchHandler,
-    TouchId, VirtualizerCallbacks, WheelHandler,
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::animation::AnimProp;
+use runtime_shared::primitives;
+use runtime_shared::{
+    Action, ColorScheme, Platform, StyleRules,
+    VirtualizerCallbacks,
 };
 use runtime_scene::{realize, Element, Host, Realized, Registry};
 use runtime_vocabulary::caps;
 use runtime_world::World;
+use crate::node::{NodeKind, ResolvedGradient};
+use runtime_shared::primitives::icon::IconData;
+use runtime_vocabulary::caps::ViewOps as _;
+use runtime_shared::color::{parse_or, Rgba};
+use runtime_shared::Length;
 
 use crate::{CpuBackend, CpuNode};
 
@@ -202,8 +205,8 @@ pub fn start(
     // Monotonic clock (idempotent, first install wins) — animation and
     // presence timing read it; the old boot relied on the host's lazy
     // default, the new boot installs it explicitly like macOS/terminal.
-    let platform = Backend::platform(&*backend.borrow());
-    runtime_core::time::install_default_time_source(platform);
+    let platform = caps::AppEnvOps::platform(&*backend.borrow());
+    runtime_shared::time::install_default_time_source(platform);
 
     let mut registry: Registry<CpuBackend> = Registry::new();
     runtime_vocabulary::register_builtins(&mut registry);
@@ -226,7 +229,7 @@ pub fn start(
     // load-bearing under a buffering test scheduler. Must run with NO
     // backend borrow held (drained tasks re-borrow); ENTERED because a
     // buffered task may do creation-side work.
-    world.enter(runtime_core::scheduling::drain_buffered_microtasks);
+    world.enter(runtime_shared::scheduling::drain_buffered_microtasks);
 
     // Single-root contract, matching the old-core mount (`find_root`
     // wants exactly one application root — id 1).
@@ -238,7 +241,7 @@ pub fn start(
              top-level node (got {n}) — wrap fragment/multi-root trees in a view"
         ),
     };
-    Backend::finish(&mut *backend.borrow_mut(), root);
+    caps::LifecycleOps::finish(&mut *backend.borrow_mut(), root);
 
     // Commit anything staged during mount before the first paint.
     world.flush();
@@ -289,7 +292,7 @@ pub fn schedule_flush() {
     if FLUSH_QUEUED.with(|q| q.replace(true)) {
         return;
     }
-    runtime_core::scheduling::schedule_microtask(|| {
+    runtime_shared::scheduling::schedule_microtask(|| {
         FLUSH_QUEUED.with(|q| q.set(false));
         flush_now();
     });
@@ -339,11 +342,11 @@ thread_local! {
     /// The mounted world's viewport signal (`Copy` handle). `None`
     /// outside a new-core boot, so `set_viewport` costs one TLS read
     /// and nothing else on the old core.
-    static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_core::ViewportSize>>> =
+    static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_shared::ViewportSize>>> =
         const { Cell::new(None) };
 }
 
-fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_core::ViewportSize>>) {
+fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_shared::ViewportSize>>) {
     VIEWPORT_SINK.with(|s| s.set(sig));
 }
 
@@ -352,7 +355,7 @@ fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_core::ViewportSiz
 /// viewport ctx. No-op before [`start`] / after teardown. Called by
 /// [`CpuBackend::set_viewport`] right beside the old-core TLS write —
 /// the two sinks must never diverge.
-pub(crate) fn forward_viewport(size: runtime_core::ViewportSize) {
+pub(crate) fn forward_viewport(size: runtime_shared::ViewportSize) {
     let Some(sig) = VIEWPORT_SINK.with(|s| s.get()) else {
         return;
     };
@@ -415,31 +418,69 @@ impl Host for CpuBackend {
     type Node = CpuNode;
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
-        <CpuBackend as Backend>::insert(self, parent, child)
+        let Some(parent_layout) = self.nodes.get(&parent.id).map(|d| d.layout) else { return };
+        let Some(child_layout) = self.nodes.get(&child.id).map(|d| d.layout) else { return };
+        self.layout.add_child(parent_layout, child_layout);
+        if let Some(parent_data) = self.nodes.get_mut(&parent.id) {
+            parent_data.children.push(child.id);
+        }
     }
 
-    fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
-        <CpuBackend as Backend>::insert_many(self, parent, children)
+    // `insert_many` is deliberately NOT implemented: `Host`'s default is
+    // the same N-x-`insert` loop the old `Backend` default ran, so the
+    // resulting child order is unchanged (deletion-baseline S2.2 —
+    // "byte-identical on `Host`, safe").
+
+    /// Explicit port of the old `Backend::insert_at` DEFAULT body: append,
+    /// ignoring the index. `Host` makes the method REQUIRED, so the default
+    /// that used to supply this body is gone — reproduced verbatim rather
+    /// than inherited (deletion-baseline S2.2). Never reached in practice:
+    /// [`supports_splice`](Self::supports_splice) is `false`, so reactive
+    /// regions rebuild wholesale under their own anchor and no positional
+    /// splice is ever emitted.
+    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, _index: usize) {
+        self.insert(parent, child)
     }
 
-    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
-        <CpuBackend as Backend>::insert_at(self, parent, child, index)
-    }
-
-    fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
-        <CpuBackend as Backend>::remove_child(self, parent, child)
+    /// Explicit port of the old `Backend::remove_child` DEFAULT body (a
+    /// no-op). `Host` makes it REQUIRED, so it is stated here rather than
+    /// inherited (deletion-baseline S2.2). Only meaningful for
+    /// splice-capable hosts; this one is anchored, so the framework never
+    /// calls it.
+    fn remove_child(&mut self, _parent: &Self::Node, _child: &Self::Node) {
+        // default: no-op
     }
 
     fn clear_children(&mut self, node: &Self::Node) {
-        <CpuBackend as Backend>::clear_children(self, node)
+        let Some(child_ids) = self.nodes.get(&node.id).map(|d| d.children.clone()) else { return };
+        for child_id in &child_ids {
+            self.remove_subtree(*child_id);
+        }
+        if let Some(data) = self.nodes.get_mut(&node.id) {
+            data.children.clear();
+        }
     }
 
+    /// Explicit port of the old `Backend::create_reactive_anchor` DEFAULT
+    /// body (`create_view` with default a11y). `Host` makes it REQUIRED, so
+    /// it is stated here rather than inherited (deletion-baseline S2.2). A
+    /// plain container view is the right anchor for this backend: an
+    /// unstyled view draws nothing, so the anchor is invisible and
+    /// layout-neutral.
     fn create_anchor(&mut self) -> Self::Node {
-        <CpuBackend as Backend>::create_reactive_anchor(self)
+        self.create_view(&AccessibilityProps::default())
     }
 
+    /// Explicit `false` — the port of the old
+    /// `Backend::supports_child_splice` DEFAULT this backend relied on.
+    /// `Host` makes it REQUIRED, so the value is stated here instead of
+    /// inherited (deletion-baseline S2.2). ANCHORED mode is what the frozen
+    /// artifacts in `tests/goldens/` recorded from the old core: flipping it
+    /// to `true` would move every reactive region out from under its anchor
+    /// and change the output wholesale. Pinned by a literal assertion in the
+    /// crate's parity suite.
     fn supports_splice(&self) -> bool {
-        <CpuBackend as Backend>::supports_child_splice(self)
+        false
     }
 }
 
@@ -449,62 +490,26 @@ impl Host for CpuBackend {
 
 impl caps::AppEnvOps for CpuBackend {
     fn color_scheme(&self) -> ColorScheme {
-        <CpuBackend as Backend>::color_scheme(self)
+        // The CPU backend has no host preference of its own; the
+        // application's theme is the source of truth. Authors that
+        // care can override via the framework's theme APIs.
+        ColorScheme::Auto
     }
 
     fn platform(&self) -> Platform {
-        <CpuBackend as Backend>::platform(self)
-    }
-
-    fn url_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
-        <CpuBackend as Backend>::url_opener(self)
-    }
-
-    fn fullscreen_setter(&self) -> Option<Rc<dyn Fn(bool)>> {
-        <CpuBackend as Backend>::fullscreen_setter(self)
-    }
-
-    fn set_page_metadata(&mut self, meta: &PageMetadata) {
-        <CpuBackend as Backend>::set_page_metadata(self, meta)
-    }
-
-    fn set_app_background(&mut self, color: &Tokenized<Color>) {
-        <CpuBackend as Backend>::set_app_background(self, color)
-    }
-
-    fn set_scrollbar_theme(&mut self, thumb: &Tokenized<Color>, track: &Tokenized<Color>) {
-        <CpuBackend as Backend>::set_scrollbar_theme(self, thumb, track)
-    }
-
-    fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
-        // Dispatch-site glue: the app-level key handler runs author
-        // code. The CPU backend never dispatches keys today (trait
-        // default drops the handler), but the wrap keeps the
-        // delegation mechanically uniform.
-        let handler = handler.map(flushing_key);
-        <CpuBackend as Backend>::set_app_key_handler(self, handler)
+        // `Custom("cpu")` documents the renderer kind without
+        // collapsing it into one of the named native platforms.
+        // Author code that branches on `Platform::Custom("cpu")`
+        // can opt into pixel-art / lower-density chrome.
+        Platform::Custom("cpu")
     }
 }
 
 impl caps::LifecycleOps for CpuBackend {
-    fn finish(&mut self, root: Self::Node) {
-        <CpuBackend as Backend>::finish(self, root)
-    }
-
-    fn run_layout(&mut self) {
-        <CpuBackend as Backend>::run_layout(self)
-    }
-
-    fn schedule_layout_pass() {
-        <CpuBackend as Backend>::schedule_layout_pass()
-    }
-
-    fn is_hydrating(&self) -> bool {
-        <CpuBackend as Backend>::is_hydrating(self)
-    }
-
-    fn renders_lazy_chunks(&self) -> bool {
-        <CpuBackend as Backend>::renders_lazy_chunks(self)
+    fn finish(&mut self, _root: Self::Node) {
+        // Nothing to do — the host calls `render` when it wants a
+        // frame. Unlike a windowed backend, we don't drive paints
+        // on a vsync; the host decides cadence.
     }
 }
 
@@ -513,78 +518,26 @@ impl caps::LifecycleOps for CpuBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::ViewOps for CpuBackend {
-    fn create_view(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-        <CpuBackend as Backend>::create_view(self, a11y)
-    }
-
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
-        <CpuBackend as Backend>::make_view_handle(self, node)
+    fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
+        self.alloc_node(NodeKind::View, String::new())
     }
 }
 
-impl caps::InputOps for CpuBackend {
-    fn install_touch_handler(&mut self, node: &Self::Node, handler: TouchHandler) {
-        // Dispatch-site glue (module docs): flush after author code.
-        let handler: TouchHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                let response = f(ev);
-                schedule_flush();
-                response
-            })
-        };
-        <CpuBackend as Backend>::install_touch_handler(self, node, handler)
-    }
-
-    fn claim_touch(&mut self, node: &Self::Node, touch_id: TouchId) {
-        <CpuBackend as Backend>::claim_touch(self, node, touch_id)
-    }
-
-    fn install_wheel_handler(&mut self, node: &Self::Node, handler: WheelHandler) {
-        let handler: WheelHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                let response = f(ev);
-                schedule_flush();
-                response
-            })
-        };
-        <CpuBackend as Backend>::install_wheel_handler(self, node, handler)
-    }
-
-    fn install_hover_handler(&mut self, node: &Self::Node, handler: HoverHandler) {
-        <CpuBackend as Backend>::install_hover_handler(self, node, flushing1(handler))
-    }
-
-    fn mark_preserves_focus(&mut self, node: &Self::Node) {
-        <CpuBackend as Backend>::mark_preserves_focus(self, node)
-    }
-
-    fn install_file_drop_handler(&mut self, node: &Self::Node, handler: FileDropHandler) {
-        let handler: FileDropHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                let response = f(ev);
-                schedule_flush();
-                response
-            })
-        };
-        <CpuBackend as Backend>::install_file_drop_handler(self, node, handler)
-    }
-}
+impl caps::InputOps for CpuBackend {}
 
 impl caps::PressableOps for CpuBackend {
-    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> Self::Node {
+    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Self::Node {
         // Dispatch-site glue: the wrapped closure lands in the node's
         // `on_click` slot and is exactly what `dispatch_click` hands
         // back in `ClickOutcome::HandlerFired`, so the host's plain
         // `h()` call gets the flush for free (the completeness
         // argument in the module docs).
-        <CpuBackend as Backend>::create_pressable(self, flushing0(on_click), a11y)
-    }
-
-    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_core::PressableHandle {
-        <CpuBackend as Backend>::make_pressable_handle(self, node)
+        let on_click = flushing0(on_click);
+        let node = self.alloc_node(NodeKind::Pressable, String::new());
+        if let Some(data) = self.nodes.get_mut(&node.id) {
+            data.on_click = Some(on_click);
+        }
+        node
     }
 }
 
@@ -593,66 +546,16 @@ impl caps::PressableOps for CpuBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::TextOps for CpuBackend {
-    fn create_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
-        <CpuBackend as Backend>::create_text(self, content, a11y)
-    }
-
-    fn create_styled_text(&mut self, runs: &[TextRun], a11y: &AccessibilityProps) -> Self::Node {
-        <CpuBackend as Backend>::create_styled_text(self, runs, a11y)
-    }
-
-    fn update_styled_text(&mut self, node: &Self::Node, runs: &[TextRun]) {
-        <CpuBackend as Backend>::update_styled_text(self, node, runs)
+    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
+        self.alloc_node(NodeKind::Text, content.to_string())
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
-        <CpuBackend as Backend>::update_text(self, node, content)
-    }
-
-    fn create_text_with_id(
-        &mut self,
-        content: &str,
-        a11y: &AccessibilityProps,
-    ) -> Option<(Self::Node, u32)> {
-        <CpuBackend as Backend>::create_text_with_id(self, content, a11y)
-    }
-
-    fn update_text_by_id(&mut self, id: u32, content: String) {
-        <CpuBackend as Backend>::update_text_by_id(self, id, content)
-    }
-
-    fn release_text_id(&mut self, id: u32) {
-        <CpuBackend as Backend>::release_text_id(self, id)
-    }
-
-    fn supports_js_text_bindings(&self) -> bool {
-        <CpuBackend as Backend>::supports_js_text_bindings(self)
-    }
-
-    fn register_reactive_text_binding(
-        &mut self,
-        text_id: u32,
-        signal_ids: &[u64],
-        template_parts: &[&str],
-        initial_values: &[&str],
-        stringifiers: &[Rc<dyn Fn() -> String>],
-    ) {
-        <CpuBackend as Backend>::register_reactive_text_binding(
-            self,
-            text_id,
-            signal_ids,
-            template_parts,
-            initial_values,
-            stringifiers,
-        )
-    }
-
-    fn release_reactive_text_binding(&mut self, text_id: u32) {
-        <CpuBackend as Backend>::release_reactive_text_binding(self, text_id)
-    }
-
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
-        <CpuBackend as Backend>::make_text_handle(self, node)
+        if let Some(data) = self.nodes.get_mut(&node.id) {
+            if data.content != content {
+                data.content = content.to_string();
+            }
+        }
     }
 }
 
@@ -661,9 +564,9 @@ impl caps::ButtonOps for CpuBackend {
         &mut self,
         label: &str,
         on_click: &Action,
-        leading_icon: Option<&primitives::icon::IconData>,
-        trailing_icon: Option<&primitives::icon::IconData>,
-        a11y: &AccessibilityProps,
+        _leading_icon: Option<&primitives::icon::IconData>,
+        _trailing_icon: Option<&primitives::icon::IconData>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: wrap the Action's runtime evaluator (the
         // closure `dispatch_click` returns — `create_button` stores
@@ -676,22 +579,13 @@ impl caps::ButtonOps for CpuBackend {
             output: on_click.output,
             fire: flushing0(on_click.fire.clone()),
         };
-        <CpuBackend as Backend>::create_button(
-            self,
-            label,
-            &on_click,
-            leading_icon,
-            trailing_icon,
-            a11y,
-        )
-    }
-
-    fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-        <CpuBackend as Backend>::update_button_label(self, node, label)
-    }
-
-    fn make_button_handle(&self, node: &Self::Node) -> runtime_core::ButtonHandle {
-        <CpuBackend as Backend>::make_button_handle(self, node)
+        let on_click = &on_click;
+        let node = self.alloc_node(NodeKind::Button, label.to_string());
+        let handler = on_click.fire.clone();
+        if let Some(data) = self.nodes.get_mut(&node.id) {
+            data.on_click = Some(handler);
+        }
+        node
     }
 }
 
@@ -700,112 +594,34 @@ impl caps::ButtonOps for CpuBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::ImageOps for CpuBackend {
-    fn create_image(&mut self, src: &str, alt: Option<&str>, a11y: &AccessibilityProps) -> Self::Node {
-        <CpuBackend as Backend>::create_image(self, src, alt, a11y)
-    }
-
-    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
-        <CpuBackend as Backend>::update_image_src(self, node, src)
-    }
-
-    fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
-        <CpuBackend as Backend>::update_image_alt(self, node, alt)
-    }
-
-    fn install_image_load_handler(&mut self, node: &Self::Node, handler: ImageLoadHandler) {
-        let handler: ImageLoadHandler = {
-            let f = handler;
-            Rc::new(move |ev| {
-                f(ev);
-                schedule_flush();
-            })
-        };
-        <CpuBackend as Backend>::install_image_load_handler(self, node, handler)
-    }
-
-    fn install_image_error_handler(&mut self, node: &Self::Node, handler: ImageErrorHandler) {
-        <CpuBackend as Backend>::install_image_error_handler(self, node, flushing0(handler))
-    }
-
-    fn make_image_handle(&self, node: &Self::Node) -> primitives::image::ImageHandle {
-        <CpuBackend as Backend>::make_image_handle(self, node)
+    fn create_image(
+        &mut self,
+        _src: &str,
+        _alt: Option<&str>,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.alloc_node(
+            NodeKind::Text,
+            "Image not supported on CPU backend".to_string(),
+        )
     }
 }
 
 impl caps::IconOps for CpuBackend {
     fn create_icon(
         &mut self,
-        data: &primitives::icon::IconData,
-        color: Option<&Color>,
-        a11y: &AccessibilityProps,
+        _data: &IconData,
+        _color: Option<&runtime_shared::Color>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <CpuBackend as Backend>::create_icon(self, data, color, a11y)
-    }
-
-    fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
-        <CpuBackend as Backend>::update_icon_color(self, node, color)
-    }
-
-    fn update_icon_data(&mut self, node: &Self::Node, data: &primitives::icon::IconData) {
-        <CpuBackend as Backend>::update_icon_data(self, node, data)
-    }
-
-    fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
-        <CpuBackend as Backend>::update_icon_stroke(self, node, progress)
-    }
-
-    fn animate_icon_stroke(
-        &mut self,
-        node: &Self::Node,
-        from: f32,
-        to: f32,
-        duration_ms: u32,
-        easing: Easing,
-        infinite: bool,
-        autoreverses: bool,
-    ) {
-        <CpuBackend as Backend>::animate_icon_stroke(
-            self,
-            node,
-            from,
-            to,
-            duration_ms,
-            easing,
-            infinite,
-            autoreverses,
+        self.alloc_node(
+            NodeKind::Text,
+            "Icon not supported on CPU backend".to_string(),
         )
     }
-
-    fn make_icon_handle(&self, node: &Self::Node) -> primitives::icon::IconHandle {
-        <CpuBackend as Backend>::make_icon_handle(self, node)
-    }
 }
 
-impl caps::LinkOps for CpuBackend {
-    fn create_link(
-        &mut self,
-        config: primitives::link::LinkConfig,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Dispatch-site glue: link activation dispatches navigation
-        // (stages nav-queue tick signals on the new core). The trait
-        // default renders links via `create_pressable` on backends
-        // without a native link, so the wrapped closure lands in an
-        // on_click slot and nav-link clicks flush exactly like
-        // pressables.
-        let mut config = config;
-        config.on_activate = flushing0(config.on_activate.clone());
-        <CpuBackend as Backend>::create_link(self, config, a11y)
-    }
-
-    fn update_link_url(&mut self, node: &Self::Node, url: &str) {
-        <CpuBackend as Backend>::update_link_url(self, node, url)
-    }
-
-    fn make_link_handle(&self, node: &Self::Node) -> primitives::link::LinkHandle {
-        <CpuBackend as Backend>::make_link_handle(self, node)
-    }
-}
+impl caps::LinkOps for CpuBackend {}
 
 // ---------------------------------------------------------------------------
 // Form widgets
@@ -814,159 +630,96 @@ impl caps::LinkOps for CpuBackend {
 impl caps::TextInputOps for CpuBackend {
     fn create_text_input(
         &mut self,
-        initial_value: &str,
+        _initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<primitives::key::KeyDownHandler>,
         on_blur: Option<primitives::text_input::BlurHandler>,
-        secure: bool,
-        a11y: &AccessibilityProps,
+        _secure: bool,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // The CPU backend renders a placeholder (no key dispatch), but
         // the wrap keeps the delegation mechanically uniform.
-        <CpuBackend as Backend>::create_text_input(
-            self,
-            initial_value,
-            placeholder,
-            flushing1(on_change),
-            on_key_down.map(flushing_key),
-            on_blur.map(|f| -> primitives::text_input::BlurHandler {
+        let _placeholder = placeholder;
+        let _on_change = flushing1(on_change);
+        let _on_key_down = on_key_down.map(flushing_key);
+        let _on_blur = on_blur.map(|f| -> primitives::text_input::BlurHandler {
                 Rc::new(move || {
                     let outcome = f();
                     schedule_flush();
                     outcome
                 })
-            }),
-            secure,
-            a11y,
+            });
+        self.alloc_node(
+            NodeKind::Text,
+            "TextInput not supported on CPU backend".to_string(),
         )
-    }
-
-    fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
-        <CpuBackend as Backend>::update_text_input_value(self, node, value)
-    }
-
-    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
-        <CpuBackend as Backend>::update_text_input_secure(self, node, secure)
-    }
-
-    fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
-        <CpuBackend as Backend>::set_text_input_focus_handler(self, node, flushing1(handler))
-    }
-
-    fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
-        <CpuBackend as Backend>::update_text_input_placeholder(self, node, placeholder)
     }
 
     fn create_text_area(
         &mut self,
-        initial_value: &str,
-        placeholder: Option<&str>,
-        wrap: bool,
-        min_rows: Option<u32>,
-        max_rows: Option<u32>,
+        _initial_value: &str,
+        _placeholder: Option<&str>,
+        _wrap: bool,
+        _min_rows: Option<u32>,
+        _max_rows: Option<u32>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<primitives::key::KeyDownHandler>,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <CpuBackend as Backend>::create_text_area(
-            self,
-            initial_value,
-            placeholder,
-            wrap,
-            min_rows,
-            max_rows,
-            flushing1(on_change),
-            on_key_down.map(flushing_key),
-            a11y,
+        let _on_change = flushing1(on_change);
+        let _on_key_down = on_key_down.map(flushing_key);
+        self.alloc_node(
+            NodeKind::Text,
+            "TextArea not supported on CPU backend".to_string(),
         )
-    }
-
-    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
-        <CpuBackend as Backend>::update_text_area_value(self, node, value)
-    }
-
-    fn make_text_input_handle(&self, node: &Self::Node) -> primitives::text_input::TextInputHandle {
-        <CpuBackend as Backend>::make_text_input_handle(self, node)
-    }
-
-    fn make_text_area_handle(&self, node: &Self::Node) -> primitives::text_area::TextAreaHandle {
-        <CpuBackend as Backend>::make_text_area_handle(self, node)
     }
 }
 
 impl caps::ToggleOps for CpuBackend {
     fn create_toggle(
         &mut self,
-        initial_value: bool,
+        _initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <CpuBackend as Backend>::create_toggle(self, initial_value, flushing1(on_change), a11y)
-    }
-
-    fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
-        <CpuBackend as Backend>::update_toggle_value(self, node, value)
-    }
-
-    fn make_toggle_handle(&self, node: &Self::Node) -> primitives::toggle::ToggleHandle {
-        <CpuBackend as Backend>::make_toggle_handle(self, node)
+        let _on_change = flushing1(on_change);
+        self.alloc_node(
+            NodeKind::Text,
+            "Toggle not supported on CPU backend".to_string(),
+        )
     }
 }
 
 impl caps::SliderOps for CpuBackend {
     fn create_slider(
         &mut self,
-        initial_value: f32,
-        min: f32,
-        max: f32,
-        step: Option<f32>,
+        _initial_value: f32,
+        _min: f32,
+        _max: f32,
+        _step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <CpuBackend as Backend>::create_slider(
-            self,
-            initial_value,
-            min,
-            max,
-            step,
-            flushing1(on_change),
-            a11y,
+        let _on_change = flushing1(on_change);
+        self.alloc_node(
+            NodeKind::Text,
+            "Slider not supported on CPU backend".to_string(),
         )
-    }
-
-    fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
-        <CpuBackend as Backend>::update_slider_value(self, node, value)
-    }
-
-    fn make_slider_handle(&self, node: &Self::Node) -> primitives::slider::SliderHandle {
-        <CpuBackend as Backend>::make_slider_handle(self, node)
     }
 }
 
 impl caps::ActivityIndicatorOps for CpuBackend {
     fn create_activity_indicator(
         &mut self,
-        size: primitives::activity_indicator::ActivityIndicatorSize,
-        color: Option<&Color>,
-        a11y: &AccessibilityProps,
+        _size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
+        _color: Option<&runtime_shared::Color>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <CpuBackend as Backend>::create_activity_indicator(self, size, color, a11y)
-    }
-
-    fn update_activity_indicator_size(
-        &mut self,
-        node: &Self::Node,
-        size: primitives::activity_indicator::ActivityIndicatorSize,
-    ) {
-        <CpuBackend as Backend>::update_activity_indicator_size(self, node, size)
-    }
-
-    fn make_activity_indicator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> primitives::activity_indicator::ActivityIndicatorHandle {
-        <CpuBackend as Backend>::make_activity_indicator_handle(self, node)
+        self.alloc_node(
+            NodeKind::Text,
+            "ActivityIndicator not supported on CPU backend".to_string(),
+        )
     }
 }
 
@@ -979,7 +732,7 @@ impl caps::ScrollOps for CpuBackend {
         &mut self,
         horizontal: bool,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: the CPU backend drops `on_scroll` today
         // (no wheel/touch scroll dispatch), but the wrap keeps the
@@ -991,39 +744,32 @@ impl caps::ScrollOps for CpuBackend {
                 schedule_flush();
             })
         });
-        <CpuBackend as Backend>::create_scroll_view(self, horizontal, on_scroll, a11y)
-    }
-
-    fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
-        <CpuBackend as Backend>::node_scroll(self, node)
-    }
-
-    fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
-        <CpuBackend as Backend>::set_node_scroll(self, node, x, y)
-    }
-
-    fn make_scroll_view_handle(&self, node: &Self::Node) -> primitives::scroll_view::ScrollViewHandle {
-        <CpuBackend as Backend>::make_scroll_view_handle(self, node)
-    }
-}
-
-impl caps::SafeAreaOps for CpuBackend {
-    fn apply_safe_area_padding(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-        <CpuBackend as Backend>::apply_safe_area_padding(self, node, sides)
-    }
-
-    fn apply_scroll_view_safe_area_inset(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-        <CpuBackend as Backend>::apply_scroll_view_safe_area_inset(self, node, sides)
+        let _on_scroll = on_scroll;
+        let node = self.alloc_node(NodeKind::ScrollView, String::new());
+        if let Some(data) = self.nodes.get_mut(&node.id) {
+            // `horizontal` flag lives on the existing
+            // `scroll_x` / `scroll_y` pair: we just remember which
+            // axis to honor in dispatch. For the MVP we honor both
+            // simultaneously regardless of the flag; surface a real
+            // axis lock once we add wheel/touch scroll.
+            let _ = horizontal;
+            // Pin children inside our box.
+            data.scroll_x = 0.0;
+            data.scroll_y = 0.0;
+        }
+        node
     }
 }
+
+impl caps::SafeAreaOps for CpuBackend {}
 
 impl caps::VirtualizerOps for CpuBackend {
     fn create_virtualizer(
         &mut self,
         callbacks: VirtualizerCallbacks<Self::Node>,
-        overscan: f32,
-        layout: primitives::virtualizer::VirtualLayout,
-        a11y: &AccessibilityProps,
+        _overscan: f32,
+        _layout: primitives::virtualizer::VirtualLayout,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue + world entry: mount/release run author
         // render closures and scope cleanups; mount_item REALIZES the
@@ -1069,19 +815,11 @@ impl caps::VirtualizerOps for CpuBackend {
                 })
             },
         };
-        <CpuBackend as Backend>::create_virtualizer(self, callbacks, overscan, layout, a11y)
-    }
-
-    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
-        <CpuBackend as Backend>::virtualizer_data_changed(self, node)
-    }
-
-    fn release_virtualizer(&mut self, node: &Self::Node) {
-        <CpuBackend as Backend>::release_virtualizer(self, node)
-    }
-
-    fn make_virtualizer_handle(&self, node: &Self::Node) -> primitives::virtualizer::VirtualizerHandle {
-        <CpuBackend as Backend>::make_virtualizer_handle(self, node)
+        let _callbacks = callbacks;
+        self.alloc_node(
+            NodeKind::Text,
+            "Virtualizer not supported on CPU backend".to_string(),
+        )
     }
 }
 
@@ -1095,7 +833,7 @@ impl caps::GraphicsOps for CpuBackend {
         on_ready: primitives::graphics::OnReady,
         on_resize: primitives::graphics::OnResize,
         on_lost: primitives::graphics::OnLost,
-        a11y: &AccessibilityProps,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: surface lifecycle callbacks run author
         // code (the CPU backend never fires them — placeholder node —
@@ -1121,114 +859,36 @@ impl caps::GraphicsOps for CpuBackend {
                 schedule_flush();
             })
         };
-        <CpuBackend as Backend>::create_graphics(self, on_ready, on_resize, on_lost, a11y)
-    }
-
-    fn release_graphics(&mut self, node: &Self::Node) {
-        <CpuBackend as Backend>::release_graphics(self, node)
-    }
-
-    fn make_graphics_handle(&self, node: &Self::Node) -> primitives::graphics::GraphicsHandle {
-        <CpuBackend as Backend>::make_graphics_handle(self, node)
+        let _on_ready = on_ready;
+        let _on_resize = on_resize;
+        let _on_lost = on_lost;
+        self.alloc_node(
+            NodeKind::Text,
+            "Graphics not supported on CPU backend".to_string(),
+        )
     }
 }
 
 impl caps::PortalOps for CpuBackend {
     fn create_portal(
         &mut self,
-        target: primitives::portal::PortalTarget,
+        _target: primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
-        trap_focus: bool,
-        a11y: &AccessibilityProps,
+        _trap_focus: bool,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let on_dismiss = on_dismiss.map(flushing0);
-        <CpuBackend as Backend>::create_portal(self, target, on_dismiss, trap_focus, a11y)
-    }
-
-    fn release_portal(&mut self, node: &Self::Node) {
-        <CpuBackend as Backend>::release_portal(self, node)
-    }
-
-    fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
-        <CpuBackend as Backend>::set_portal_hidden(self, node, hidden)
-    }
-
-    fn make_portal_handle(&self, node: &Self::Node) -> primitives::portal::PortalHandle {
-        <CpuBackend as Backend>::make_portal_handle(self, node)
-    }
-}
-
-impl caps::PresenceOps for CpuBackend {
-    fn create_presence_placeholder(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-        <CpuBackend as Backend>::create_presence_placeholder(self, a11y)
-    }
-
-    fn apply_presence(
-        &mut self,
-        node: &Self::Node,
-        state: primitives::presence::PresenceState,
-        transition: Option<(u32, Easing)>,
-    ) {
-        <CpuBackend as Backend>::apply_presence(self, node, state, transition)
-    }
-
-    fn make_presence_handle(&self, node: &Self::Node) -> primitives::presence::PresenceHandle {
-        <CpuBackend as Backend>::make_presence_handle(self, node)
-    }
-}
-
-impl caps::NavigatorOps for CpuBackend {
-    fn create_navigator(
-        &mut self,
-        type_id: TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn Any>,
-        host: primitives::navigator::NavigatorHost<Self::Node>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // NOT wrapped: NavigatorHost's callbacks belong to the OLD-core
-        // navigator path; the vocabulary navigator handlers own screens
-        // on the new core and their dispatch is handler-safe (queue +
-        // tick signal committed by a driver effect on flush). Author
-        // navigation stages via handlers already wrapped above. On this
-        // backend the call renders the visible placeholder either way.
-        <CpuBackend as Backend>::create_navigator(
-            self,
-            type_id,
-            type_name,
-            presentation,
-            host,
-            a11y,
+        let _on_dismiss = on_dismiss;
+        self.alloc_node(
+            NodeKind::Text,
+            "Portal not supported on CPU backend".to_string(),
         )
     }
-
-    fn release_navigator(&mut self, node: &Self::Node) {
-        <CpuBackend as Backend>::release_navigator(self, node)
-    }
-
-    fn apply_navigator_slot_style(
-        &mut self,
-        node: &Self::Node,
-        slot: &'static str,
-        style: &Rc<StyleRules>,
-    ) {
-        <CpuBackend as Backend>::apply_navigator_slot_style(self, node, slot, style)
-    }
-
-    fn make_navigator_handle(&self, node: &Self::Node) -> primitives::navigator::NavigatorHandle {
-        <CpuBackend as Backend>::make_navigator_handle(self, node)
-    }
-
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn Any>,
-    ) {
-        <CpuBackend as Backend>::navigator_attach_initial(self, navigator, screen, scope_id, options)
-    }
 }
+
+impl caps::PresenceOps for CpuBackend {}
+
+impl caps::NavigatorOps for CpuBackend {}
 
 // ---------------------------------------------------------------------------
 // External + document
@@ -1237,44 +897,19 @@ impl caps::NavigatorOps for CpuBackend {
 impl caps::ExternalOps for CpuBackend {
     fn create_external(
         &mut self,
-        type_id: TypeId,
+        _type_id: std::any::TypeId,
         type_name: &'static str,
-        payload: &Rc<dyn Any>,
-        a11y: &AccessibilityProps,
+        _payload: &Rc<dyn std::any::Any>,
+        _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <CpuBackend as Backend>::create_external(self, type_id, type_name, payload, a11y)
-    }
-
-    fn release_external(&mut self, node: &Self::Node) {
-        <CpuBackend as Backend>::release_external(self, node)
-    }
-
-    fn missing_primitive_placeholder(&mut self, label: &'static str) -> Self::Node {
-        <CpuBackend as Backend>::missing_primitive_placeholder(self, label)
+        self.alloc_node(
+            NodeKind::Text,
+            format!("External \"{type_name}\" not supported on CPU backend"),
+        )
     }
 }
 
-impl caps::DocumentOps for CpuBackend {
-    fn create_element(&mut self, tag: &str) -> Self::Node {
-        <CpuBackend as Backend>::create_element(self, tag)
-    }
-
-    fn attach_html_id(&self, node: &Self::Node, id: &str) {
-        <CpuBackend as Backend>::attach_html_id(self, node, id)
-    }
-
-    fn attach_html_class(&self, node: &Self::Node, class: &str) {
-        <CpuBackend as Backend>::attach_html_class(self, node, class)
-    }
-
-    fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
-        <CpuBackend as Backend>::attach_html_style(self, node, prop, value)
-    }
-
-    fn register_raw_css(&mut self, css: &str) {
-        <CpuBackend as Backend>::register_raw_css(self, css)
-    }
-}
+impl caps::DocumentOps for CpuBackend {}
 
 // ---------------------------------------------------------------------------
 // Style + assets
@@ -1282,334 +917,226 @@ impl caps::DocumentOps for CpuBackend {
 
 impl caps::StyleOps for CpuBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
-        <CpuBackend as Backend>::apply_style(self, node, style)
-    }
+        let Some(layout_node) = self.nodes.get(&node.id).map(|d| d.layout) else { return };
 
-    fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
-        <CpuBackend as Backend>::mint_style_class(self, style)
-    }
+        // Eagerly resolve `background` and `color` BEFORE handing the
+        // rules to `runtime-layout`'s `set_style`. Same ordering
+        // constraint the terminal backend documents — the cohort
+        // driver Effect re-fires on token-signal changes, and the
+        // resolve must happen before other style processing so the
+        // per-token edges land in this Effect's dependency set on
+        // the first re-fire. Without it, theme toggles update on
+        // the second toggle, not the first.
+        let _ = style.background.as_ref().map(|t| t.resolve());
+        let _ = style.color.as_ref().map(|t| t.resolve());
+        self.layout.set_style(layout_node, style);
 
-    fn mint_class_for_app(&mut self, app: &StyleApplication) -> Option<String> {
-        <CpuBackend as Backend>::mint_class_for_app(self, app)
-    }
+        let fg = style
+            .color
+            .as_ref()
+            .map(|t| parse_or(&t.resolve().0, Rgba::default()));
+        let bg = style
+            .background
+            .as_ref()
+            .map(|t| parse_or(&t.resolve().0, Rgba::TRANSPARENT));
+        let opacity = style
+            .opacity
+            .as_ref()
+            .map(|t| t.resolve().clamp(0.0, 1.0));
 
-    fn apply_styled_states(
-        &mut self,
-        node: &Self::Node,
-        base: &Rc<StyleRules>,
-        overlays: &[(StateBits, Rc<StyleRules>)],
-    ) {
-        <CpuBackend as Backend>::apply_styled_states(self, node, base, overlays)
-    }
+        // Borders.
+        let bw = [
+            style.border_top_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
+            style.border_right_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
+            style.border_bottom_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
+            style.border_left_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
+        ];
+        let bc = [
+            style
+                .border_top_color
+                .as_ref()
+                .map(|t| parse_or(&t.resolve().0, Rgba::BLACK)),
+            style
+                .border_right_color
+                .as_ref()
+                .map(|t| parse_or(&t.resolve().0, Rgba::BLACK)),
+            style
+                .border_bottom_color
+                .as_ref()
+                .map(|t| parse_or(&t.resolve().0, Rgba::BLACK)),
+            style
+                .border_left_color
+                .as_ref()
+                .map(|t| parse_or(&t.resolve().0, Rgba::BLACK)),
+        ];
 
-    fn apply_styled_variants(
-        &mut self,
-        node: &Self::Node,
-        base: &Rc<StyleRules>,
-        state_overlays: &[(StateBits, Rc<StyleRules>)],
-        breakpoint_overlays: &[(Breakpoint, Rc<StyleRules>)],
-        container_overlays: &[(f32, Rc<StyleRules>)],
-    ) {
-        <CpuBackend as Backend>::apply_styled_variants(
-            self,
-            node,
-            base,
-            state_overlays,
-            breakpoint_overlays,
-            container_overlays,
-        )
-    }
-
-    fn mark_container(&mut self, node: &Self::Node) {
-        <CpuBackend as Backend>::mark_container(self, node)
-    }
-
-    fn handles_states_natively(&self) -> bool {
-        <CpuBackend as Backend>::handles_states_natively(self)
-    }
-
-    fn token_updates_propagate_via_cascade(&self) -> bool {
-        <CpuBackend as Backend>::token_updates_propagate_via_cascade(self)
-    }
-
-    fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        <CpuBackend as Backend>::register_stylesheet(self, rules)
-    }
-
-    fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        <CpuBackend as Backend>::unregister_stylesheet(self, rules)
-    }
-
-    fn install_tokens(&mut self, tokens: &[TokenEntry]) {
-        <CpuBackend as Backend>::install_tokens(self, tokens)
-    }
-
-    fn update_tokens(&mut self, tokens: &[TokenEntry]) {
-        <CpuBackend as Backend>::update_tokens(self, tokens)
-    }
-
-    fn on_node_unstyled(&mut self, node: &Self::Node) {
-        <CpuBackend as Backend>::on_node_unstyled(self, node)
-    }
-
-    fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
-        // Dispatch-site glue: state flips can stage writes when the
-        // style path routes states through signals.
-        let setter: Rc<dyn Fn(StateBits, bool)> = {
-            let f = setter;
-            Rc::new(move |bits, on| {
-                f(bits, on);
-                schedule_flush();
-            })
+        // Corner radii. We only honor Px units — Percent radii would
+        // need the node's own frame size, which we don't have until
+        // layout has run. ESP32-class targets shouldn't use percent
+        // radii anyway (they're a CSS convenience, not load-bearing).
+        let radius_px = |t: &runtime_shared::Tokenized<Length>| -> f32 {
+            match t.resolve() {
+                Length::Px(v) => v,
+                _ => 0.0,
+            }
         };
-        <CpuBackend as Backend>::attach_states(self, node, setter)
-    }
+        let radii = [
+            style.border_top_left_radius.as_ref().map(radius_px).unwrap_or(0.0),
+            style.border_top_right_radius.as_ref().map(radius_px).unwrap_or(0.0),
+            style.border_bottom_right_radius.as_ref().map(radius_px).unwrap_or(0.0),
+            style.border_bottom_left_radius.as_ref().map(radius_px).unwrap_or(0.0),
+        ];
 
-    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
-        <CpuBackend as Backend>::set_disabled(self, node, disabled)
-    }
+        // Font size (Px-only; same rationale as radii).
+        let font_size_px = style.font_size.as_ref().and_then(|t| match t.resolve() {
+            Length::Px(v) => Some(v),
+            _ => None,
+        });
 
-    fn supports_preminted_styles(&self) -> bool {
-        <CpuBackend as Backend>::supports_preminted_styles(self)
-    }
+        // Gradient resolution. Stops are pre-parsed to Rgba so the
+        // per-pixel sampler in `paint_node` doesn't reparse strings
+        // on every paint.
+        let gradient = style.background_gradient.as_ref().map(|g| {
+            let stops: Vec<(f32, Rgba)> = g
+                .stops
+                .iter()
+                .map(|s| (s.offset, parse_or(&s.color.0, Rgba::TRANSPARENT)))
+                .collect();
+            let animated_stops = vec![None; stops.len()];
+            ResolvedGradient { kind: g.kind.clone(), stops, animated_stops }
+        });
 
-    fn apply_default_text_font(&mut self, font: Option<&FontFamily>) {
-        <CpuBackend as Backend>::apply_default_text_font(self, font)
-    }
+        // Static transform — TranslateX/Y only on the CPU backend.
+        // Scale / Rotate would force a per-pixel inverse transform
+        // (expensive without SIMD); skip for now and log a warning
+        // via the debug build assertion below.
+        let mut static_tx: Option<Length> = None;
+        let mut static_ty: Option<Length> = None;
+        if let Some(transforms) = style.transform.as_ref() {
+            for t in transforms {
+                match t {
+                    runtime_shared::Transform::TranslateX(l) => static_tx = Some(*l),
+                    runtime_shared::Transform::TranslateY(l) => static_ty = Some(*l),
+                    _ => {
+                        // Silently drop. Surface a real diagnostic
+                        // once we have a logger wired into the
+                        // backend; `println!` is the wrong shape
+                        // here (won't reach the ESP32 host).
+                    }
+                }
+            }
+        }
 
-    fn supports_js_class_bindings(&self) -> bool {
-        <CpuBackend as Backend>::supports_js_class_bindings(self)
-    }
-
-    fn register_reactive_class_binding(
-        &mut self,
-        node: &Self::Node,
-        signal_id: u64,
-        values: &[u32],
-        classes: &[&str],
-        value_reader: Rc<dyn Fn() -> u32>,
-    ) -> u32 {
-        <CpuBackend as Backend>::register_reactive_class_binding(
-            self,
-            node,
-            signal_id,
-            values,
-            classes,
-            value_reader,
-        )
-    }
-
-    fn release_reactive_class_binding(&mut self, binding_id: u32) {
-        <CpuBackend as Backend>::release_reactive_class_binding(self, binding_id)
+        if let Some(data) = self.nodes.get_mut(&node.id) {
+            data.style = Some(style.clone());
+            data.fg = fg;
+            data.bg = bg;
+            if let Some(o) = opacity {
+                data.opacity = o;
+            }
+            data.border_widths = bw;
+            data.border_colors = bc;
+            data.corner_radii = radii;
+            data.font_size_px = font_size_px;
+            data.static_translate_x = static_tx;
+            data.static_translate_y = static_ty;
+            // Preserve animated stops across stylesheet re-apply when
+            // the gradient's shape (stop count) matches — re-applying
+            // a stylesheet (state overlay, theme refresh, hot patch)
+            // shouldn't reset in-flight per-stop animations. The
+            // terminal backend documents the same rule.
+            let preserved = data
+                .gradient
+                .as_ref()
+                .and_then(|old| {
+                    gradient.as_ref().map(|new| {
+                        if new.stops.len() == old.stops.len() {
+                            old.animated_stops.clone()
+                        } else {
+                            vec![None; new.stops.len()]
+                        }
+                    })
+                });
+            data.gradient = gradient.map(|mut g| {
+                if let Some(p) = preserved {
+                    g.animated_stops = p;
+                }
+                g
+            });
+        }
     }
 }
 
-impl caps::AssetOps for CpuBackend {
-    fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
-        <CpuBackend as Backend>::register_asset(self, id, kind, source)
-    }
-
-    fn unregister_asset(&mut self, id: AssetId, kind: AssetTag) {
-        <CpuBackend as Backend>::unregister_asset(self, id, kind)
-    }
-
-    fn register_typeface(
-        &mut self,
-        id: TypefaceId,
-        family_name: &str,
-        faces: &[TypefaceFace],
-        fallback: SystemFallback,
-    ) {
-        <CpuBackend as Backend>::register_typeface(self, id, family_name, faces, fallback)
-    }
-
-    fn unregister_typeface(&mut self, id: TypefaceId) {
-        <CpuBackend as Backend>::unregister_typeface(self, id)
-    }
-}
+impl caps::AssetOps for CpuBackend {}
 
 // ---------------------------------------------------------------------------
 // A11y + animation + introspection
 // ---------------------------------------------------------------------------
 
-impl caps::A11yOps for CpuBackend {
-    fn update_accessibility(
-        &mut self,
-        node: &Self::Node,
-        a11y: &AccessibilityProps,
-        inferred_role: Option<Role>,
-    ) {
-        <CpuBackend as Backend>::update_accessibility(self, node, a11y, inferred_role)
-    }
-
-    fn announce_for_accessibility(&mut self, msg: &str, priority: LiveRegionPriority) {
-        <CpuBackend as Backend>::announce_for_accessibility(self, msg, priority)
-    }
-
-    fn dump_accessibility_tree(&self) -> Option<AccessibilityTree> {
-        <CpuBackend as Backend>::dump_accessibility_tree(self)
-    }
-}
+impl caps::A11yOps for CpuBackend {}
 
 impl caps::AnimationOps for CpuBackend {
+    /// Per-frame scalar-property write — opacity, translate, z-index.
+    /// Scale / Rotate fall through to a no-op for now; implementing
+    /// them correctly on a software rasterizer needs an inverse
+    /// transform on every pixel of the affected subtree, which is
+    /// the wrong cost to pay on an ESP32-class target. We log via
+    /// debug-assertion so authors notice when they hit the gap.
     fn set_animated_f32(&mut self, node: &Self::Node, prop: AnimProp, value: f32) {
-        <CpuBackend as Backend>::set_animated_f32(self, node, prop, value)
+        let Some(data) = self.nodes.get_mut(&node.id) else { return };
+        match prop {
+            AnimProp::Opacity => {
+                data.animated_opacity = Some(value.clamp(0.0, 1.0));
+            }
+            AnimProp::TranslateX => {
+                data.animated_translate_x = value;
+            }
+            AnimProp::TranslateY => {
+                data.animated_translate_y = value;
+            }
+            AnimProp::ZIndex => {
+                data.z_index = value;
+            }
+            // Scale / ScaleX / ScaleY / RotateZ — not supported by
+            // the axis-aligned rasterizer. Silently drop; documented
+            // in `README.md`. (debug_assert! would crash tests that
+            // exercise composite trees containing both supported and
+            // unsupported animations.)
+            _ => {}
+        }
     }
 
+    /// Per-frame color-property write — animated background,
+    /// foreground, or gradient stop.
     fn set_animated_color(&mut self, node: &Self::Node, prop: AnimProp, value: [f32; 4]) {
-        <CpuBackend as Backend>::set_animated_color(self, node, prop, value)
+        let Some(data) = self.nodes.get_mut(&node.id) else { return };
+        let rgba = Rgba::from_srgb_f32(value);
+        match prop {
+            AnimProp::BackgroundColor => {
+                data.animated_bg = Some(rgba);
+            }
+            AnimProp::ForegroundColor => {
+                data.animated_fg = Some(rgba);
+            }
+            AnimProp::GradientStopColor(idx) => {
+                if let Some(g) = data.gradient.as_mut() {
+                    let i = idx as usize;
+                    if i < g.animated_stops.len() {
+                        g.animated_stops[i] = Some(rgba);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
-impl caps::IntrospectionOps for CpuBackend {
-    fn frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <CpuBackend as Backend>::frame(self, node)
-    }
-
-    fn absolute_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <CpuBackend as Backend>::absolute_frame(self, node)
-    }
-
-    fn device_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <CpuBackend as Backend>::device_frame(self, node)
-    }
-
-    fn supports_native_introspection(&self) -> bool {
-        <CpuBackend as Backend>::supports_native_introspection(self)
-    }
-
-    fn introspect_native(&self, node: &Self::Node) -> Option<NativeNode> {
-        <CpuBackend as Backend>::introspect_native(self, node)
-    }
-
-    fn note_introspection_root(&self, node: &Self::Node) {
-        <CpuBackend as Backend>::note_introspection_root(self, node)
-    }
-
-    fn supports_screenshot(&self) -> bool {
-        <CpuBackend as Backend>::supports_screenshot(self)
-    }
-
-    fn capture_screenshot(&self, done: Box<dyn FnOnce(Result<Screenshot, String>)>) {
-        <CpuBackend as Backend>::capture_screenshot(self, done)
-    }
-}
+impl caps::IntrospectionOps for CpuBackend {}
 
 // ---------------------------------------------------------------------------
 // Batch + wire bindings
 // ---------------------------------------------------------------------------
 
-impl caps::BatchOps for CpuBackend {
-    fn supports_batched_repeat(&self) -> bool {
-        <CpuBackend as Backend>::supports_batched_repeat(self)
-    }
+impl caps::BatchOps for CpuBackend {}
 
-    fn execute_batch(&mut self, batch: BackendBatch) -> Vec<Self::Node> {
-        <CpuBackend as Backend>::execute_batch(self, batch)
-    }
-
-    fn execute_batch_with_attach(
-        &mut self,
-        batch: BackendBatch,
-        parent: &mut Self::Node,
-        attach_locals: &[u32],
-    ) -> Vec<Self::Node> {
-        <CpuBackend as Backend>::execute_batch_with_attach(self, batch, parent, attach_locals)
-    }
-}
-
-impl caps::WireBindingOps for CpuBackend {
-    fn note_text_binding(&mut self, node: &Self::Node, signal_ids: &[u64], method: &'static str) {
-        <CpuBackend as Backend>::note_text_binding(self, node, signal_ids, method)
-    }
-
-    fn note_signal_initial(&mut self, signal_id: u64, value: &runtime_core::__serde_json::Value) {
-        <CpuBackend as Backend>::note_signal_initial(self, signal_id, value)
-    }
-
-    fn note_when_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        cond_method: &'static str,
-        then_node: &Self::Node,
-        otherwise_node: &Self::Node,
-    ) {
-        <CpuBackend as Backend>::note_when_binding(
-            self,
-            anchor,
-            signal_ids,
-            cond_method,
-            then_node,
-            otherwise_node,
-        )
-    }
-
-    fn note_switch_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        cond_method: &'static str,
-        arms: &[(runtime_core::__serde_json::Value, Self::Node)],
-        default_node: &Self::Node,
-    ) {
-        <CpuBackend as Backend>::note_switch_binding(
-            self,
-            anchor,
-            signal_ids,
-            cond_method,
-            arms,
-            default_node,
-        )
-    }
-
-    fn note_repeat_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        count_method: &'static str,
-        row_template: &Self::Node,
-        row_index_signal_id: Option<u64>,
-    ) {
-        <CpuBackend as Backend>::note_repeat_binding(
-            self,
-            anchor,
-            signal_ids,
-            count_method,
-            row_template,
-            row_index_signal_id,
-        )
-    }
-
-    fn note_virtualizer_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        count_method: &'static str,
-        row_template: &Self::Node,
-        row_index_signal_id: Option<u64>,
-        horizontal: bool,
-    ) {
-        <CpuBackend as Backend>::note_virtualizer_binding(
-            self,
-            anchor,
-            signal_ids,
-            count_method,
-            row_template,
-            row_index_signal_id,
-            horizontal,
-        )
-    }
-
-    fn supports_lazy_slot_capture(&self) -> bool {
-        <CpuBackend as Backend>::supports_lazy_slot_capture(self)
-    }
-
-    fn begin_slot_capture(&mut self) {
-        <CpuBackend as Backend>::begin_slot_capture(self)
-    }
-
-    fn end_slot_capture(&mut self, slot_root: &Self::Node) {
-        <CpuBackend as Backend>::end_slot_capture(self, slot_root)
-    }
-}
+impl caps::WireBindingOps for CpuBackend {}

@@ -1,58 +1,58 @@
-# newcore-app — P3a integration proof for the `ui!` / `#[component]`
-# NEW-core lowering (idea-lite migration): a small but real app —
-# nested components with static/reactive/defaulted/children props, local
-# signals, a memo, reactive `if`, a keyed `for` with row-local state,
-# and event-handler-driven mutations — plus a P3-set primitive demo
-# (`build_demo`: overlay / anchored_overlay / presence / flat_list, the
-# formerly macro-deferred tags) — whose SOURCE (`src/app.rs`) is
-# core-agnostic and compiles against EITHER core:
+# newcore-app — the macro/handler END-TO-END INTEGRATION APP: a small
+# but real authored app (`src/app.rs`) driven all the way down the stack
+# by the suites in `tests/`.
 #
-#   cargo test  -p newcore-app --features new-core   # the e2e gate
-#   cargo check -p newcore-app --features old-core   # same-source proof
+# What one tree covers: nested `#[component]`s with
+# static/reactive/defaulted/children props, local signals, a memo, a
+# reactive `if`, a keyed `for` with row-local state, event-handler-driven
+# mutations, a `stylesheet!` with a token-referencing base + a variant +
+# a `state hovered` overlay, the overlay / anchored_overlay / presence /
+# flat_list primitive set, a `#[method]`-bearing component, and
+# `test_id =` identity anchors feeding the robot registry.
 #
-# The features are NON-default on purpose: `new-core` forwards to
-# `runtime-macros/new-core`, and proc-macro features unify across a
-# build graph — a default-on feature here would flip the lowering for
-# every ui! consumer in any workspace-wide build (see the feature's
-# docs in runtime-macros/Cargo.toml). With no features this crate
-# compiles to an empty lib.
+# `tests/e2e.rs` mounts that tree through the REAL path — `ui!` lowering
+# → glue wrappers → builders → prims → registry handlers → backend caps
+# — against the scene-parity mock host, fires the recorded platform
+# callbacks, and asserts the recorded op log.
+#
+# `tests/recipes_compile.rs` is the second, independent gate: it
+# `include!`s the MCP catalog's static recipe sources
+# (`crates/runtime/shared/recipes/*.rs`) so a prop/API change that would
+# rot a served example fails here.
+#
+#   cargo test -p newcore-app
+#
+# Historically this crate was the DUAL-CORE proof: one source tree
+# compiled and e2e-tested under both the old walker and runtime v2, with
+# a per-core prelude in `src/lib.rs` as the only wiring. The old core is
+# gone — the prelude resolves one surface now, and the suites are the
+# value that remains.
 [package]
 name = "newcore-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Integration example: ui! + #[component] authored app on the new core (idea-lite P3a)."
-
-[features]
-# Runtime-v2 defaults flip: the proof crate builds its new-core leg by
-# default. Old-core leg: `--no-default-features --features old-core`.
-default = ["new-core"]
-new-core = [
-    "runtime-macros/new-core",
-    "dep:runtime-vocabulary",
-    # The P5 identity seam: `test_id = ...` in src/app.rs registers into
-    # the vocabulary robot registry, and tests/e2e.rs drives the app
-    # through `runtime_vocabulary::robot::Robot` (find/click/type_text).
-    "runtime-vocabulary/robot",
-    "dep:runtime-scene",
-    "dep:runtime-world",
-    "dep:scene-parity",
-    # The alias target for tests/recipes_compile.rs — the dual-core
-    # compile gate over the STATIC recipe sources in
-    # crates/runtime/shared/recipes/ (see runtime_shared::recipes).
-    "dep:runtime-facade",
-]
-old-core = ["dep:runtime-core"]
+description = "Integration app: a ui! + #[component] authored tree, e2e-tested through the vocabulary registry."
 
 [dependencies]
 runtime-macros = { workspace = true }
-runtime-core = { workspace = true, optional = true }
-runtime-facade = { workspace = true, optional = true }
-runtime-vocabulary = { workspace = true, optional = true }
-runtime-scene = { workspace = true, optional = true }
-runtime-world = { workspace = true, optional = true }
-# The mock-host machinery (FullRecorder + LegacyBridge) the e2e tests
-# mount against. A normal (optional) dependency rather than a dev-dep
-# because dev-deps can't be optional and the crate must stay empty with
-# no features.
-scene-parity = { path = "../scene-parity", optional = true }
+# The `runtime_core::…` author-surface alias target: `runtime-core`.
+# `src/lib.rs`'s prelude names the glue directly; the recipe gate aliases
+# this crate to `runtime_core` so the shared recipe sources — which spell
+# `::runtime_core::…` — compile verbatim.
+runtime-core = { workspace = true }
+# `robot` is the identity seam: `test_id = ...` in src/app.rs registers
+# into the vocabulary robot registry, and tests/e2e.rs drives the app
+# through `runtime_vocabulary::robot::Robot` (find/click/type_text).
+runtime-vocabulary = { workspace = true, features = ["robot"] }
+runtime-scene = { workspace = true }
+runtime-world = { workspace = true }
+# The mock-host machinery (`FullRecorder` — a direct `runtime_scene::Host`
+# + all-30-caps impl) the suites mount against. A normal dependency
+# rather than a dev-dep so `cargo check` and `cargo test` see one graph.
+scene-parity = { path = "../scene-parity" }
+# The navigation SDKs the two navigation recipes in
+# tests/recipes_compile.rs compile against — the gate exercises their
+# real public surface, not a replica.
+swap-navigator = { workspace = true }
+stack-navigator = { workspace = true }

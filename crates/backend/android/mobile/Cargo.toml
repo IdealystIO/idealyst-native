@@ -22,43 +22,22 @@ runtime-server = ["dep:runtime-server-shell-native", "runtime-server-shell-nativ
 # Compile in this backend's render-thread `RenderLoopDriver`. The
 # driver itself lives in `backend-android-core` (shared with TV);
 # this feature just turns it on and forwards
-# `runtime-core/async-driver` so `render_loop` / `spawn_async`
+# `runtime-shared/async-driver` so `render_loop` / `spawn_async`
 # resolve. Host calls `install_render_loop()` once at init.
-async-driver = ["runtime-core/async-driver", "backend-android-core/async-driver"]
+async-driver = ["runtime-shared/async-driver", "backend-android-core/async-driver"]
 # Per-phase timing counters drained + logged after every layout pass.
 # `phase_timer::PhaseTimer::start("name")` becomes a real RAII guard
 # (now_micros snapshot + record_apply_phase on drop) when this
 # feature is on, and a zero-sized stub the optimizer strips when off.
 # The variant crate enables this through its OWN `debug-stats` feature
 # forwarding here — see CLAUDE.md for the variant-vs-dep gotcha.
-debug-stats = ["runtime-core/debug-stats"]
-# idea-lite core migration (P5, Android): the `newcore` module —
-# `runtime_scene::Host` + all 30 `runtime_vocabulary::caps` traits
-# implemented directly on `AndroidBackend` (UFCS delegation to the
-# existing Backend impl), plus the new-core mount path
-# (`newcore::start`) and its dispatch-site flush driver (author
-# callbacks wrapped at the caps impls + the scheduler/executor
-# post-dispatch hook). OFF by default; with the feature off the build
-# is unchanged (the module and its deps are not compiled). Mirrors
-# `backend-macos`'s / `backend-web`'s `new-core`. The caps/boot half
-# of the module is additionally android-gated (like `imp`); the
-# flush-driver half compiles on the host so its regression tests run
-# from any platform (same rationale as `sticky_compute`).
-new-core = [
-    "dep:runtime-world",
-    "dep:runtime-scene",
-    "dep:runtime-vocabulary",
-    # `create_navigator` (old-Element-typed NavigatorHost) is behind the
-    # vocabulary's `legacy-bridge` gate; this backend's newcore.rs
-    # implements it by delegating to the old Backend impl.
-    "runtime-vocabulary/legacy-bridge",
-]
+debug-stats = ["runtime-shared/debug-stats"]
 
 [dependencies]
 # `embed-font-bytes`: Android loads fonts by writing the raw bytes to
 # the cache dir and calling `Typeface.createFromFile`, so it needs the
-# bytes embedded. See `runtime_core::assets`.
-runtime-core = { workspace = true, features = ["embed-font-bytes"] }
+# bytes embedded. See `runtime_shared::assets`.
+runtime-shared = { workspace = true, features = ["embed-font-bytes"] }
 inventory = "0.3"
 # Shared Android helpers (JNI utilities + render loop driver). Same
 # crate is consumed by `backend-android-tv`.
@@ -73,13 +52,9 @@ runtime-layout = { workspace = true }
 # `Surface` as a standard raw-window-handle so any GPU library
 # (wgpu, etc.) can plug in. Tiny dep; trait + enum definitions only.
 raw-window-handle = "0.6"
-# New-core migration crates (P5) — only compiled under the `new-core`
-# feature; the feature-off dependency graph is unchanged. Plain (not
-# target-gated) deps so the flush-driver half of `newcore` and its
-# host-runnable tests compile from any platform.
-runtime-world = { workspace = true, optional = true }
-runtime-scene = { workspace = true, optional = true }
-runtime-vocabulary = { workspace = true, optional = true }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"

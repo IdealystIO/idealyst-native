@@ -32,8 +32,8 @@
 
 use std::collections::HashMap;
 
-use runtime_core::animation::AnimProp;
-use runtime_core::Color;
+use runtime_shared::animation::AnimProp;
+use runtime_shared::Color;
 use objc2::encode::{Encode, Encoding};
 use objc2::msg_send;
 use objc2::rc::Retained;
@@ -206,7 +206,7 @@ fn matrix_eq(a: &CGAffineTransform, b: &CGAffineTransform) -> bool {
 fn animate_set_transform(
     view: &UIView,
     matrix: CGAffineTransform,
-    transition: &runtime_core::Transition,
+    transition: &runtime_shared::Transition,
 ) {
     use block2::StackBlock;
     // Retain the view into the animations block — UIKit may invoke it
@@ -252,9 +252,9 @@ impl IosBackend {
     pub(crate) fn apply_static_transform(
         &mut self,
         node: &IosNode,
-        style: &runtime_core::StyleRules,
+        style: &runtime_shared::StyleRules,
     ) {
-        use runtime_core::{Length, Transform};
+        use runtime_shared::{Length, Transform};
         let key = node.view_key();
         let view = node.as_view();
         let state = self.animated_states.entry(key).or_default();
@@ -615,8 +615,8 @@ impl IosBackend {
     pub(crate) fn impl_apply_presence(
         &mut self,
         node: &IosNode,
-        state: runtime_core::PresenceState,
-        transition: Option<(u32, runtime_core::Easing)>,
+        state: runtime_shared::PresenceState,
+        transition: Option<(u32, runtime_shared::Easing)>,
     ) {
         let key = node.view_key();
         let view = node.as_view().retain();
@@ -669,7 +669,7 @@ impl IosBackend {
     }
 }
 
-/// Map a framework [`Easing`](runtime_core::Easing) to UIKit's
+/// Map a framework [`Easing`](runtime_shared::Easing) to UIKit's
 /// `UIViewAnimationOptions` curve bits. The curve lives in bits
 /// 16..18 of the options mask:
 ///
@@ -685,8 +685,8 @@ impl IosBackend {
 /// custom curve would need `CAMediaTimingFunction` + a CATransaction
 /// rather than the `UIView.animate` options path, which presence's
 /// narrow fade/slide vocabulary doesn't warrant.
-fn easing_to_uiview_options(e: runtime_core::Easing) -> u64 {
-    use runtime_core::Easing;
+fn easing_to_uiview_options(e: runtime_shared::Easing) -> u64 {
+    use runtime_shared::Easing;
     match e {
         Easing::EaseInOut => 0 << 16,
         Easing::EaseIn => 1 << 16,
@@ -715,7 +715,7 @@ pub(crate) type AnimatedStateMap = HashMap<usize, AnimatedTransformState>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::Easing;
+    use runtime_shared::Easing;
 
     // The curve lives in bits 16..18 of the UIViewAnimationOptions
     // mask. These constants are part of UIKit's stable ABI; a
@@ -741,7 +741,7 @@ mod tests {
         // Mirror the resolution logic in impl_apply_presence without
         // touching UIKit: a rest() state must produce opacity 1,
         // translate 0, scale 1.
-        let s = runtime_core::PresenceState::rest();
+        let s = runtime_shared::PresenceState::rest();
         assert_eq!(s.opacity.unwrap_or(1.0), 1.0);
         assert_eq!(s.translate_x.unwrap_or(0.0), 0.0);
         assert_eq!(s.translate_y.unwrap_or(0.0), 0.0);

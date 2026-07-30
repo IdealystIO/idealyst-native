@@ -1,11 +1,12 @@
-//! Smoke app for the web backend's new-core boot path (P3b).
+//! Smoke app for the web backend's boot path
+//! (`backend_web::newcore::start` / `hydrate`).
 //!
 //! Everything here is DIRECT vocabulary-builder calls — no `ui!`, no
-//! `jsx!` — deliberately, so this crate proves the
-//! `runtime_scene` registry-dispatch render path independent of the
-//! parallel P3a macro-lowering work (this is the sanctioned deviation
-//! from CLAUDE.md §9.2: the macro can't target the new core yet, and
-//! this crate exists to gate the layer *under* the macro).
+//! `jsx!` — deliberately, so this crate gates the `runtime_scene`
+//! registry-dispatch render path with the macro lowering out of the
+//! picture (the sanctioned deviation from CLAUDE.md §9.2: this crate
+//! exists to gate the layer *under* the macro; `crates/dev/newcore-app`
+//! is where the macro path is tested).
 //!
 //! Coverage: static + reactive `text`, `button` (event → staged write →
 //! driver flush), a two-way `toggle`, a structural Dyn hole (closure
@@ -14,7 +15,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{
+use runtime_shared::{
     Color, Length, StyleApplication, StyleRules, StyleSheet, TokenEntry, TokenValue, Tokenized,
 };
 use runtime_scene::{keyed, Element};
@@ -24,7 +25,7 @@ use runtime_world::signal;
 use wasm_bindgen::prelude::*;
 
 /// A minimal literal style — exercises the `StyleOps` delegation
-/// (dynamic class minting) on the new-core path.
+/// (dynamic class minting) on the web caps path.
 fn padded_column() -> StyleRules {
     StyleRules {
         padding_top: Some(Tokenized::Literal(Length::Px(16.0))),
@@ -35,7 +36,7 @@ fn padded_column() -> StyleRules {
 }
 
 // ===========================================================================
-// P3c styled section: sheet engine + theme tokens + hover overlay
+// Styled section: sheet engine + theme tokens + hover overlay
 // ===========================================================================
 
 /// The two theme palettes the "Swap theme" button cycles. Web delivers
@@ -117,7 +118,7 @@ fn styled_section() -> Element {
     // discipline as world signals. See `runtime_vocabulary::theme`.
     let theme_ctx = theme::theme_ctx();
     view()
-        .child(text().content("Styled (P3c sheet engine)"))
+        .child(text().content("Styled (sheet engine)"))
         .child(
             view()
                 .style(StyleApplication::new(card_sheet()))

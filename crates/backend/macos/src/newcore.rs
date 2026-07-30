@@ -80,7 +80,7 @@
 //! all-in-one entry apps call; it constructs the backend exactly like the
 //! old-core `host_appkit::run_with` and then calls [`start`].
 //!
-//! Sequence (mirrors `runtime_core::mount`'s ordering where they overlap):
+//! Sequence (mirrors `runtime_shared::mount`'s ordering where they overlap):
 //!
 //! 1. Install the default monotonic time source (the macOS analogue of
 //!    web `start_in`'s `install_time_source` — without it the animation
@@ -91,12 +91,12 @@
 //!    later-phase migration item.
 //! 2. `Registry` (`register_builtins` + the `register` seam) + `World` +
 //!    `world.enter(realize)`.
-//! 3. `runtime_core::scheduling::drain_buffered_microtasks()` — the host
+//! 3. `runtime_shared::scheduling::drain_buffered_microtasks()` — the host
 //!    opened a mount-buffering window (`begin_mount_buffering`) before
 //!    calling in, so microtasks scheduled during the build (deferred
 //!    chrome, follow-up layout passes) run HERE, synchronously, before
 //!    `finish` — landing in the first layout/paint exactly like the old
-//!    boot (`runtime_core::mount` drains at the same point; see
+//!    boot (`runtime_shared::mount` drains at the same point; see
 //!    `backend_apple_core::scheduler::MOUNT_BUFFER` and the macOS
 //!    chrome-first-paint-buffering note). A [`schedule_flush`] issued
 //!    during the window also buffers and therefore commits inside this
@@ -134,7 +134,7 @@
 //!    lifecycle, virtualizer row mount/release/measure, state setters,
 //!    and the app-level key handler. The wrapper calls the author fn,
 //!    then [`schedule_flush`] — one deduped
-//!    `runtime_core::scheduling::schedule_microtask`, which on this
+//!    `runtime_shared::scheduling::schedule_microtask`, which on this
 //!    platform is `dispatch_async(main_queue)` (see
 //!    `backend_apple_core::scheduler`) and drains on a LATER run-loop
 //!    iteration — strictly AFTER the current event's synchronous
@@ -197,18 +197,18 @@ use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use runtime_core::accessibility::{AccessibilityProps, AccessibilityTree, LiveRegionPriority, Role};
-use runtime_core::animation::AnimProp;
-use runtime_core::assets::{
+use runtime_shared::accessibility::{AccessibilityProps, AccessibilityTree, LiveRegionPriority, Role};
+use runtime_shared::animation::AnimProp;
+use runtime_shared::assets::{
     AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
 };
-use runtime_core::breakpoint::Breakpoint;
-use runtime_core::introspect::NativeNode;
-use runtime_core::primitives;
-use runtime_core::primitives::portal::ViewportRect;
-use runtime_core::styled_text::TextRun;
-use runtime_core::{
-    Action, Backend, BackendBatch, Color, ColorScheme, Easing, FileDropHandler, FontFamily,
+use runtime_shared::breakpoint::Breakpoint;
+use runtime_shared::introspect::NativeNode;
+use runtime_shared::primitives;
+use runtime_shared::primitives::portal::ViewportRect;
+use runtime_shared::styled_text::TextRun;
+use runtime_shared::{
+    Action, BackendBatch, Color, ColorScheme, Easing, FileDropHandler, FontFamily,
     HoverHandler, ImageErrorHandler, ImageLoadHandler, PageMetadata, Platform, SafeAreaSides,
     Screenshot, StateBits, StyleApplication, StyleRules, TokenEntry, Tokenized, TouchHandler,
     TouchId, VirtualizerCallbacks, WheelHandler,
@@ -222,7 +222,7 @@ use crate::imp::{MacosBackend, MacosNode};
 // Re-exported so the host shell (`host-appkit`) and app wrappers can
 // name the boot-path types without a direct runtime-scene dependency —
 // mirrors how consumers reach the old core's `Element` through
-// `runtime_core`.
+// `runtime_shared`.
 pub use runtime_scene::Element as SceneElement;
 pub use runtime_scene::Registry as SceneRegistry;
 
@@ -300,11 +300,11 @@ pub fn start(
     // announcer) live in a runtime-core-private module and are NOT
     // reachable from a backend crate — same situation as
     // `backend_web::newcore::start`, which also boots without them.
-    // Author code reading `runtime_core::platform()` on the new core
+    // Author code reading `runtime_shared::platform()` on the new core
     // gets the uninstalled default until the migration gives those
     // installs a public seam (later-phase item, noted in module docs).
-    let platform = backend.borrow().platform();
-    runtime_core::time::install_default_time_source(platform);
+    let platform = backend.borrow().platform_impl();
+    runtime_shared::time::install_default_time_source(platform);
 
     let mut registry: Registry<MacosBackend> = Registry::new();
     runtime_vocabulary::register_builtins(&mut registry);
@@ -328,7 +328,7 @@ pub fn start(
     // Pre-`finish` buffered drain (step 3) — deferred chrome and any
     // build-time `schedule_flush` land before the first layout. Must run
     // with NO backend borrow held (drained tasks re-borrow the backend).
-    runtime_core::scheduling::drain_buffered_microtasks();
+    runtime_shared::scheduling::drain_buffered_microtasks();
 
     // Single-root contract, matching the old-core mount: `finish`
     // parents the root view into the host root and runs the first
@@ -341,7 +341,7 @@ pub fn start(
              top-level node (got {n}) — wrap fragment/multi-root trees in a view"
         ),
     };
-    Backend::finish(&mut *backend.borrow_mut(), root);
+    MacosBackend::finish_impl(&mut *backend.borrow_mut(), root);
 
     // Commit anything staged during mount before the first paint.
     world.flush();
@@ -384,7 +384,7 @@ pub fn schedule_flush() {
     if FLUSH_QUEUED.with(|q| q.replace(true)) {
         return;
     }
-    runtime_core::scheduling::schedule_microtask(|| {
+    runtime_shared::scheduling::schedule_microtask(|| {
         FLUSH_QUEUED.with(|q| q.set(false));
         flush_now();
     });
@@ -447,7 +447,7 @@ fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
 // pushes live sizes (its module docs). This backend's resize seams are
 // the `LayoutObserverView` `setFrameSize:` override (imp/callbacks.rs)
 // and `finish`'s deferred first mirror (imp/mod.rs); both keep writing
-// the shared old-core TLS value (`runtime_core::set_viewport_size`) —
+// the shared old-core TLS value (`runtime_shared::set_viewport_size`) —
 // the old core subscribes to it, and the world ctx SEEDS from it — and
 // additionally call [`forward_viewport`] so breakpoint-dependent author
 // reactivity (`when(!sidebar_pinned(Lg))` — the idea-ui-docs hamburger
@@ -466,19 +466,19 @@ thread_local! {
     /// The mounted world's viewport signal (`Copy` handle). `None`
     /// outside a new-core boot, so the shared old-core seams cost one
     /// TLS read and nothing else when the old core is driving.
-    static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_core::ViewportSize>>> =
+    static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_shared::ViewportSize>>> =
         const { Cell::new(None) };
 }
 
-fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_core::ViewportSize>>) {
+fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_shared::ViewportSize>>) {
     VIEWPORT_SINK.with(|s| s.set(sig));
 }
 
 /// Forward one platform viewport mirror into the mounted world's
 /// viewport ctx (no-op before [`start`] / after teardown). Called by
-/// the same macOS seams that write `runtime_core::set_viewport_size`,
+/// the same macOS seams that write `runtime_shared::set_viewport_size`,
 /// with the same value — the two sinks never diverge.
-pub(crate) fn forward_viewport(size: runtime_core::ViewportSize) {
+pub(crate) fn forward_viewport(size: runtime_shared::ViewportSize) {
     let Some(sig) = VIEWPORT_SINK.with(|s| s.get()) else {
         return;
     };
@@ -543,31 +543,34 @@ impl Host for MacosBackend {
     type Node = MacosNode;
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
-        <MacosBackend as Backend>::insert(self, parent, child)
-    }
-
-    fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
-        <MacosBackend as Backend>::insert_many(self, parent, children)
+        MacosBackend::insert_impl(self, parent, child)
     }
 
     fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
-        <MacosBackend as Backend>::insert_at(self, parent, child, index)
+        MacosBackend::insert_at_impl(self, parent, child, index)
     }
 
     fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
-        <MacosBackend as Backend>::remove_child(self, parent, child)
+        MacosBackend::remove_child_impl(self, parent, child)
     }
 
     fn clear_children(&mut self, node: &Self::Node) {
-        <MacosBackend as Backend>::clear_children(self, node)
+        MacosBackend::clear_children_impl(self, node)
     }
 
     fn create_anchor(&mut self) -> Self::Node {
-        <MacosBackend as Backend>::create_reactive_anchor(self)
+        // Runtime v2: `Host::create_anchor` is REQUIRED, and this backend
+        // never overrode the old `Backend::create_reactive_anchor`, whose
+        // default was exactly this. Reproduced verbatim: a plain view is a
+        // correct anchor on this backend (only web needs the
+        // `display: contents` variant so the branch's children keep the
+        // surrounding flex context). See
+        // docs/runtime-v2-deletion-baseline.md §2.2.
+        MacosBackend::create_view_impl(self, &AccessibilityProps::default())
     }
 
     fn supports_splice(&self) -> bool {
-        <MacosBackend as Backend>::supports_child_splice(self)
+        MacosBackend::supports_child_splice_impl(self)
     }
 }
 
@@ -577,60 +580,40 @@ impl Host for MacosBackend {
 
 impl caps::AppEnvOps for MacosBackend {
     fn color_scheme(&self) -> ColorScheme {
-        <MacosBackend as Backend>::color_scheme(self)
+        MacosBackend::color_scheme_impl(self)
     }
 
     fn platform(&self) -> Platform {
-        <MacosBackend as Backend>::platform(self)
+        MacosBackend::platform_impl(self)
     }
 
     fn url_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
-        <MacosBackend as Backend>::url_opener(self)
+        MacosBackend::url_opener_impl(self)
     }
 
     fn fullscreen_setter(&self) -> Option<Rc<dyn Fn(bool)>> {
-        <MacosBackend as Backend>::fullscreen_setter(self)
-    }
-
-    fn set_page_metadata(&mut self, meta: &PageMetadata) {
-        <MacosBackend as Backend>::set_page_metadata(self, meta)
+        MacosBackend::fullscreen_setter_impl(self)
     }
 
     fn set_app_background(&mut self, color: &Tokenized<Color>) {
-        <MacosBackend as Backend>::set_app_background(self, color)
-    }
-
-    fn set_scrollbar_theme(&mut self, thumb: &Tokenized<Color>, track: &Tokenized<Color>) {
-        <MacosBackend as Backend>::set_scrollbar_theme(self, thumb, track)
+        MacosBackend::set_app_background_impl(self, color)
     }
 
     fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
         // Dispatch-site glue: app-level key handlers run author code
         // (the imp/keyboard.rs NSEvent monitor dispatches into them).
         let handler = handler.map(flushing_key);
-        <MacosBackend as Backend>::set_app_key_handler(self, handler)
+        MacosBackend::set_app_key_handler_impl(self, handler)
     }
 }
 
 impl caps::LifecycleOps for MacosBackend {
     fn finish(&mut self, root: Self::Node) {
-        <MacosBackend as Backend>::finish(self, root)
-    }
-
-    fn run_layout(&mut self) {
-        <MacosBackend as Backend>::run_layout(self)
+        MacosBackend::finish_impl(self, root)
     }
 
     fn schedule_layout_pass() {
-        <MacosBackend as Backend>::schedule_layout_pass()
-    }
-
-    fn is_hydrating(&self) -> bool {
-        <MacosBackend as Backend>::is_hydrating(self)
-    }
-
-    fn renders_lazy_chunks(&self) -> bool {
-        <MacosBackend as Backend>::renders_lazy_chunks(self)
+        MacosBackend::schedule_layout_pass_impl()
     }
 }
 
@@ -640,11 +623,11 @@ impl caps::LifecycleOps for MacosBackend {
 
 impl caps::ViewOps for MacosBackend {
     fn create_view(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-        <MacosBackend as Backend>::create_view(self, a11y)
+        MacosBackend::create_view_impl(self, a11y)
     }
 
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
-        <MacosBackend as Backend>::make_view_handle(self, node)
+    fn make_view_handle(&self, node: &Self::Node) -> runtime_shared::ViewHandle {
+        MacosBackend::make_view_handle_impl(self, node)
     }
 }
 
@@ -659,11 +642,7 @@ impl caps::InputOps for MacosBackend {
                 response
             })
         };
-        <MacosBackend as Backend>::install_touch_handler(self, node, handler)
-    }
-
-    fn claim_touch(&mut self, node: &Self::Node, touch_id: TouchId) {
-        <MacosBackend as Backend>::claim_touch(self, node, touch_id)
+        MacosBackend::install_touch_handler_impl(self, node, handler)
     }
 
     fn install_wheel_handler(&mut self, node: &Self::Node, handler: WheelHandler) {
@@ -675,15 +654,15 @@ impl caps::InputOps for MacosBackend {
                 response
             })
         };
-        <MacosBackend as Backend>::install_wheel_handler(self, node, handler)
+        MacosBackend::install_wheel_handler_impl(self, node, handler)
     }
 
     fn install_hover_handler(&mut self, node: &Self::Node, handler: HoverHandler) {
-        <MacosBackend as Backend>::install_hover_handler(self, node, flushing1(handler))
+        MacosBackend::install_hover_handler_impl(self, node, flushing1(handler))
     }
 
     fn mark_preserves_focus(&mut self, node: &Self::Node) {
-        <MacosBackend as Backend>::mark_preserves_focus(self, node)
+        MacosBackend::mark_preserves_focus_impl(self, node)
     }
 
     fn install_file_drop_handler(&mut self, node: &Self::Node, handler: FileDropHandler) {
@@ -695,17 +674,17 @@ impl caps::InputOps for MacosBackend {
                 response
             })
         };
-        <MacosBackend as Backend>::install_file_drop_handler(self, node, handler)
+        MacosBackend::install_file_drop_handler_impl(self, node, handler)
     }
 }
 
 impl caps::PressableOps for MacosBackend {
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> Self::Node {
-        <MacosBackend as Backend>::create_pressable(self, flushing0(on_click), a11y)
+        MacosBackend::create_pressable_impl(self, flushing0(on_click), a11y)
     }
 
-    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_core::PressableHandle {
-        <MacosBackend as Backend>::make_pressable_handle(self, node)
+    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_shared::PressableHandle {
+        MacosBackend::make_pressable_handle_impl(self, node)
     }
 }
 
@@ -715,65 +694,23 @@ impl caps::PressableOps for MacosBackend {
 
 impl caps::TextOps for MacosBackend {
     fn create_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
-        <MacosBackend as Backend>::create_text(self, content, a11y)
+        MacosBackend::create_text_impl(self, content, a11y)
     }
 
     fn create_styled_text(&mut self, runs: &[TextRun], a11y: &AccessibilityProps) -> Self::Node {
-        <MacosBackend as Backend>::create_styled_text(self, runs, a11y)
+        MacosBackend::create_styled_text_impl(self, runs, a11y)
     }
 
     fn update_styled_text(&mut self, node: &Self::Node, runs: &[TextRun]) {
-        <MacosBackend as Backend>::update_styled_text(self, node, runs)
+        MacosBackend::update_styled_text_impl(self, node, runs)
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
-        <MacosBackend as Backend>::update_text(self, node, content)
+        MacosBackend::update_text_impl(self, node, content)
     }
 
-    fn create_text_with_id(
-        &mut self,
-        content: &str,
-        a11y: &AccessibilityProps,
-    ) -> Option<(Self::Node, u32)> {
-        <MacosBackend as Backend>::create_text_with_id(self, content, a11y)
-    }
-
-    fn update_text_by_id(&mut self, id: u32, content: String) {
-        <MacosBackend as Backend>::update_text_by_id(self, id, content)
-    }
-
-    fn release_text_id(&mut self, id: u32) {
-        <MacosBackend as Backend>::release_text_id(self, id)
-    }
-
-    fn supports_js_text_bindings(&self) -> bool {
-        <MacosBackend as Backend>::supports_js_text_bindings(self)
-    }
-
-    fn register_reactive_text_binding(
-        &mut self,
-        text_id: u32,
-        signal_ids: &[u64],
-        template_parts: &[&str],
-        initial_values: &[&str],
-        stringifiers: &[Rc<dyn Fn() -> String>],
-    ) {
-        <MacosBackend as Backend>::register_reactive_text_binding(
-            self,
-            text_id,
-            signal_ids,
-            template_parts,
-            initial_values,
-            stringifiers,
-        )
-    }
-
-    fn release_reactive_text_binding(&mut self, text_id: u32) {
-        <MacosBackend as Backend>::release_reactive_text_binding(self, text_id)
-    }
-
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
-        <MacosBackend as Backend>::make_text_handle(self, node)
+    fn make_text_handle(&self, node: &Self::Node) -> runtime_shared::TextHandle {
+        MacosBackend::make_text_handle_impl(self, node)
     }
 }
 
@@ -795,7 +732,7 @@ impl caps::ButtonOps for MacosBackend {
             output: on_click.output,
             fire: flushing0(on_click.fire.clone()),
         };
-        <MacosBackend as Backend>::create_button(
+        MacosBackend::create_button_impl(
             self,
             label,
             &on_click,
@@ -806,11 +743,11 @@ impl caps::ButtonOps for MacosBackend {
     }
 
     fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-        <MacosBackend as Backend>::update_button_label(self, node, label)
+        MacosBackend::update_button_label_impl(self, node, label)
     }
 
-    fn make_button_handle(&self, node: &Self::Node) -> runtime_core::ButtonHandle {
-        <MacosBackend as Backend>::make_button_handle(self, node)
+    fn make_button_handle(&self, node: &Self::Node) -> runtime_shared::ButtonHandle {
+        MacosBackend::make_button_handle_impl(self, node)
     }
 }
 
@@ -820,15 +757,11 @@ impl caps::ButtonOps for MacosBackend {
 
 impl caps::ImageOps for MacosBackend {
     fn create_image(&mut self, src: &str, alt: Option<&str>, a11y: &AccessibilityProps) -> Self::Node {
-        <MacosBackend as Backend>::create_image(self, src, alt, a11y)
+        MacosBackend::create_image_impl(self, src, alt, a11y)
     }
 
     fn update_image_src(&mut self, node: &Self::Node, src: &str) {
-        <MacosBackend as Backend>::update_image_src(self, node, src)
-    }
-
-    fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
-        <MacosBackend as Backend>::update_image_alt(self, node, alt)
+        MacosBackend::update_image_src_impl(self, node, src)
     }
 
     fn install_image_load_handler(&mut self, node: &Self::Node, handler: ImageLoadHandler) {
@@ -840,15 +773,11 @@ impl caps::ImageOps for MacosBackend {
                 schedule_flush();
             })
         };
-        <MacosBackend as Backend>::install_image_load_handler(self, node, handler)
+        MacosBackend::install_image_load_handler_impl(self, node, handler)
     }
 
     fn install_image_error_handler(&mut self, node: &Self::Node, handler: ImageErrorHandler) {
-        <MacosBackend as Backend>::install_image_error_handler(self, node, flushing0(handler))
-    }
-
-    fn make_image_handle(&self, node: &Self::Node) -> primitives::image::ImageHandle {
-        <MacosBackend as Backend>::make_image_handle(self, node)
+        MacosBackend::install_image_error_handler_impl(self, node, flushing0(handler))
     }
 }
 
@@ -859,45 +788,11 @@ impl caps::IconOps for MacosBackend {
         color: Option<&Color>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <MacosBackend as Backend>::create_icon(self, data, color, a11y)
+        MacosBackend::create_icon_impl(self, data, color, a11y)
     }
 
     fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
-        <MacosBackend as Backend>::update_icon_color(self, node, color)
-    }
-
-    fn update_icon_data(&mut self, node: &Self::Node, data: &primitives::icon::IconData) {
-        <MacosBackend as Backend>::update_icon_data(self, node, data)
-    }
-
-    fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
-        <MacosBackend as Backend>::update_icon_stroke(self, node, progress)
-    }
-
-    fn animate_icon_stroke(
-        &mut self,
-        node: &Self::Node,
-        from: f32,
-        to: f32,
-        duration_ms: u32,
-        easing: Easing,
-        infinite: bool,
-        autoreverses: bool,
-    ) {
-        <MacosBackend as Backend>::animate_icon_stroke(
-            self,
-            node,
-            from,
-            to,
-            duration_ms,
-            easing,
-            infinite,
-            autoreverses,
-        )
-    }
-
-    fn make_icon_handle(&self, node: &Self::Node) -> primitives::icon::IconHandle {
-        <MacosBackend as Backend>::make_icon_handle(self, node)
+        MacosBackend::update_icon_color_impl(self, node, color)
     }
 }
 
@@ -911,15 +806,7 @@ impl caps::LinkOps for MacosBackend {
         // (stages nav-queue tick signals on the new core).
         let mut config = config;
         config.on_activate = flushing0(config.on_activate.clone());
-        <MacosBackend as Backend>::create_link(self, config, a11y)
-    }
-
-    fn update_link_url(&mut self, node: &Self::Node, url: &str) {
-        <MacosBackend as Backend>::update_link_url(self, node, url)
-    }
-
-    fn make_link_handle(&self, node: &Self::Node) -> primitives::link::LinkHandle {
-        <MacosBackend as Backend>::make_link_handle(self, node)
+        MacosBackend::create_link_impl(self, config, a11y)
     }
 }
 
@@ -938,7 +825,7 @@ impl caps::TextInputOps for MacosBackend {
         secure: bool,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <MacosBackend as Backend>::create_text_input(
+        MacosBackend::create_text_input_impl(
             self,
             initial_value,
             placeholder,
@@ -957,19 +844,19 @@ impl caps::TextInputOps for MacosBackend {
     }
 
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
-        <MacosBackend as Backend>::update_text_input_value(self, node, value)
+        MacosBackend::update_text_input_value_impl(self, node, value)
     }
 
     fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
-        <MacosBackend as Backend>::update_text_input_secure(self, node, secure)
+        MacosBackend::update_text_input_secure_impl(self, node, secure)
     }
 
     fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
-        <MacosBackend as Backend>::set_text_input_focus_handler(self, node, flushing1(handler))
+        MacosBackend::set_text_input_focus_handler_impl(self, node, flushing1(handler))
     }
 
     fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
-        <MacosBackend as Backend>::update_text_input_placeholder(self, node, placeholder)
+        MacosBackend::update_text_input_placeholder_impl(self, node, placeholder)
     }
 
     fn create_text_area(
@@ -983,7 +870,7 @@ impl caps::TextInputOps for MacosBackend {
         on_key_down: Option<primitives::key::KeyDownHandler>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <MacosBackend as Backend>::create_text_area(
+        MacosBackend::create_text_area_impl(
             self,
             initial_value,
             placeholder,
@@ -997,15 +884,15 @@ impl caps::TextInputOps for MacosBackend {
     }
 
     fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
-        <MacosBackend as Backend>::update_text_area_value(self, node, value)
+        MacosBackend::update_text_area_value_impl(self, node, value)
     }
 
     fn make_text_input_handle(&self, node: &Self::Node) -> primitives::text_input::TextInputHandle {
-        <MacosBackend as Backend>::make_text_input_handle(self, node)
+        MacosBackend::make_text_input_handle_impl(self, node)
     }
 
     fn make_text_area_handle(&self, node: &Self::Node) -> primitives::text_area::TextAreaHandle {
-        <MacosBackend as Backend>::make_text_area_handle(self, node)
+        MacosBackend::make_text_area_handle_impl(self, node)
     }
 }
 
@@ -1016,15 +903,11 @@ impl caps::ToggleOps for MacosBackend {
         on_change: Rc<dyn Fn(bool)>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <MacosBackend as Backend>::create_toggle(self, initial_value, flushing1(on_change), a11y)
+        MacosBackend::create_toggle_impl(self, initial_value, flushing1(on_change), a11y)
     }
 
     fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
-        <MacosBackend as Backend>::update_toggle_value(self, node, value)
-    }
-
-    fn make_toggle_handle(&self, node: &Self::Node) -> primitives::toggle::ToggleHandle {
-        <MacosBackend as Backend>::make_toggle_handle(self, node)
+        MacosBackend::update_toggle_value_impl(self, node, value)
     }
 }
 
@@ -1038,7 +921,7 @@ impl caps::SliderOps for MacosBackend {
         on_change: Rc<dyn Fn(f32)>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <MacosBackend as Backend>::create_slider(
+        MacosBackend::create_slider_impl(
             self,
             initial_value,
             min,
@@ -1050,11 +933,7 @@ impl caps::SliderOps for MacosBackend {
     }
 
     fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
-        <MacosBackend as Backend>::update_slider_value(self, node, value)
-    }
-
-    fn make_slider_handle(&self, node: &Self::Node) -> primitives::slider::SliderHandle {
-        <MacosBackend as Backend>::make_slider_handle(self, node)
+        MacosBackend::update_slider_value_impl(self, node, value)
     }
 }
 
@@ -1065,22 +944,7 @@ impl caps::ActivityIndicatorOps for MacosBackend {
         color: Option<&Color>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <MacosBackend as Backend>::create_activity_indicator(self, size, color, a11y)
-    }
-
-    fn update_activity_indicator_size(
-        &mut self,
-        node: &Self::Node,
-        size: primitives::activity_indicator::ActivityIndicatorSize,
-    ) {
-        <MacosBackend as Backend>::update_activity_indicator_size(self, node, size)
-    }
-
-    fn make_activity_indicator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> primitives::activity_indicator::ActivityIndicatorHandle {
-        <MacosBackend as Backend>::make_activity_indicator_handle(self, node)
+        MacosBackend::create_activity_indicator_impl(self, size, color, a11y)
     }
 }
 
@@ -1107,30 +971,23 @@ impl caps::ScrollOps for MacosBackend {
                 schedule_flush();
             })
         });
-        <MacosBackend as Backend>::create_scroll_view(self, horizontal, on_scroll, a11y)
+        MacosBackend::create_scroll_view_impl(self, horizontal, on_scroll, a11y)
     }
 
     fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
-        <MacosBackend as Backend>::node_scroll(self, node)
+        MacosBackend::node_scroll_impl(self, node)
     }
 
     fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
-        <MacosBackend as Backend>::set_node_scroll(self, node, x, y)
+        MacosBackend::set_node_scroll_impl(self, node, x, y)
     }
 
     fn make_scroll_view_handle(&self, node: &Self::Node) -> primitives::scroll_view::ScrollViewHandle {
-        <MacosBackend as Backend>::make_scroll_view_handle(self, node)
+        MacosBackend::make_scroll_view_handle_impl(self, node)
     }
 }
 
 impl caps::SafeAreaOps for MacosBackend {
-    fn apply_safe_area_padding(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-        <MacosBackend as Backend>::apply_safe_area_padding(self, node, sides)
-    }
-
-    fn apply_scroll_view_safe_area_inset(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-        <MacosBackend as Backend>::apply_scroll_view_safe_area_inset(self, node, sides)
-    }
 }
 
 impl caps::VirtualizerOps for MacosBackend {
@@ -1190,19 +1047,15 @@ impl caps::VirtualizerOps for MacosBackend {
                 })
             },
         };
-        <MacosBackend as Backend>::create_virtualizer(self, callbacks, overscan, layout, a11y)
+        MacosBackend::create_virtualizer_impl(self, callbacks, overscan, layout, a11y)
     }
 
     fn virtualizer_data_changed(&mut self, node: &Self::Node) {
-        <MacosBackend as Backend>::virtualizer_data_changed(self, node)
+        MacosBackend::virtualizer_data_changed_impl(self, node)
     }
 
     fn release_virtualizer(&mut self, node: &Self::Node) {
-        <MacosBackend as Backend>::release_virtualizer(self, node)
-    }
-
-    fn make_virtualizer_handle(&self, node: &Self::Node) -> primitives::virtualizer::VirtualizerHandle {
-        <MacosBackend as Backend>::make_virtualizer_handle(self, node)
+        MacosBackend::release_virtualizer_impl(self, node)
     }
 }
 
@@ -1241,15 +1094,7 @@ impl caps::GraphicsOps for MacosBackend {
                 schedule_flush();
             })
         };
-        <MacosBackend as Backend>::create_graphics(self, on_ready, on_resize, on_lost, a11y)
-    }
-
-    fn release_graphics(&mut self, node: &Self::Node) {
-        <MacosBackend as Backend>::release_graphics(self, node)
-    }
-
-    fn make_graphics_handle(&self, node: &Self::Node) -> primitives::graphics::GraphicsHandle {
-        <MacosBackend as Backend>::make_graphics_handle(self, node)
+        MacosBackend::create_graphics_impl(self, on_ready, on_resize, on_lost, a11y)
     }
 }
 
@@ -1264,25 +1109,21 @@ impl caps::PortalOps for MacosBackend {
         // Dispatch-site glue: backdrop click dismissal runs the
         // author's on_dismiss.
         let on_dismiss = on_dismiss.map(flushing0);
-        <MacosBackend as Backend>::create_portal(self, target, on_dismiss, trap_focus, a11y)
+        MacosBackend::create_portal_impl(self, target, on_dismiss, trap_focus, a11y)
     }
 
     fn release_portal(&mut self, node: &Self::Node) {
-        <MacosBackend as Backend>::release_portal(self, node)
+        MacosBackend::release_portal_impl(self, node)
     }
 
     fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
-        <MacosBackend as Backend>::set_portal_hidden(self, node, hidden)
-    }
-
-    fn make_portal_handle(&self, node: &Self::Node) -> primitives::portal::PortalHandle {
-        <MacosBackend as Backend>::make_portal_handle(self, node)
+        MacosBackend::set_portal_hidden_impl(self, node, hidden)
     }
 }
 
 impl caps::PresenceOps for MacosBackend {
     fn create_presence_placeholder(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-        <MacosBackend as Backend>::create_presence_placeholder(self, a11y)
+        MacosBackend::create_presence_placeholder_impl(self, a11y)
     }
 
     fn apply_presence(
@@ -1291,64 +1132,22 @@ impl caps::PresenceOps for MacosBackend {
         state: primitives::presence::PresenceState,
         transition: Option<(u32, Easing)>,
     ) {
-        <MacosBackend as Backend>::apply_presence(self, node, state, transition)
-    }
-
-    fn make_presence_handle(&self, node: &Self::Node) -> primitives::presence::PresenceHandle {
-        <MacosBackend as Backend>::make_presence_handle(self, node)
+        MacosBackend::apply_presence_impl(self, node, state, transition)
     }
 }
 
 impl caps::NavigatorOps for MacosBackend {
-    fn create_navigator(
-        &mut self,
-        type_id: TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn Any>,
-        host: primitives::navigator::NavigatorHost<Self::Node>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // NOT wrapped: NavigatorHost's callbacks (mount_screen etc.)
-        // belong to the OLD-core navigator path, which the new core
-        // does not route through (the vocabulary navigator handlers
-        // own screens; author-initiated navigation stages via handlers
-        // already wrapped above and commits inside the flush).
-        <MacosBackend as Backend>::create_navigator(
-            self,
-            type_id,
-            type_name,
-            presentation,
-            host,
-            a11y,
-        )
-    }
-
-    fn release_navigator(&mut self, node: &Self::Node) {
-        <MacosBackend as Backend>::release_navigator(self, node)
-    }
-
-    fn apply_navigator_slot_style(
-        &mut self,
-        node: &Self::Node,
-        slot: &'static str,
-        style: &Rc<StyleRules>,
-    ) {
-        <MacosBackend as Backend>::apply_navigator_slot_style(self, node, slot, style)
-    }
-
-    fn make_navigator_handle(&self, node: &Self::Node) -> primitives::navigator::NavigatorHandle {
-        <MacosBackend as Backend>::make_navigator_handle(self, node)
-    }
-
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn Any>,
-    ) {
-        <MacosBackend as Backend>::navigator_attach_initial(self, navigator, screen, scope_id, options)
-    }
+    // Every method of this capability is now the caps trait's default.
+    // The old-core `create_navigator` (which registered the per-instance
+    // `NavigatorHandler` these four methods dispatched to) was DELETED
+    // with the old core — it does not fall back to a default
+    // (docs/runtime-v2-deletion-baseline.md §2.3), so no handler is ever
+    // registered and the vocabulary's navigator handler never calls
+    // them — it mounts navigators over `ViewOps`/`LifecycleOps` and
+    // folds screen chrome itself. Native push / header chrome on this
+    // backend is the documented native-nav seam, tracked in the module
+    // docs; it must be re-entered through the scene registry, not
+    // through a resurrected mega-trait cap.
 }
 
 // ---------------------------------------------------------------------------
@@ -1363,38 +1162,15 @@ impl caps::ExternalOps for MacosBackend {
         payload: &Rc<dyn Any>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        <MacosBackend as Backend>::create_external(self, type_id, type_name, payload, a11y)
+        MacosBackend::create_external_impl(self, type_id, type_name, payload, a11y)
     }
 
     fn release_external(&mut self, node: &Self::Node) {
-        <MacosBackend as Backend>::release_external(self, node)
-    }
-
-    fn missing_primitive_placeholder(&mut self, label: &'static str) -> Self::Node {
-        <MacosBackend as Backend>::missing_primitive_placeholder(self, label)
+        MacosBackend::release_external_impl(self, node)
     }
 }
 
 impl caps::DocumentOps for MacosBackend {
-    fn create_element(&mut self, tag: &str) -> Self::Node {
-        <MacosBackend as Backend>::create_element(self, tag)
-    }
-
-    fn attach_html_id(&self, node: &Self::Node, id: &str) {
-        <MacosBackend as Backend>::attach_html_id(self, node, id)
-    }
-
-    fn attach_html_class(&self, node: &Self::Node, class: &str) {
-        <MacosBackend as Backend>::attach_html_class(self, node, class)
-    }
-
-    fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
-        <MacosBackend as Backend>::attach_html_style(self, node, prop, value)
-    }
-
-    fn register_raw_css(&mut self, css: &str) {
-        <MacosBackend as Backend>::register_raw_css(self, css)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1403,74 +1179,7 @@ impl caps::DocumentOps for MacosBackend {
 
 impl caps::StyleOps for MacosBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
-        <MacosBackend as Backend>::apply_style(self, node, style)
-    }
-
-    fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
-        <MacosBackend as Backend>::mint_style_class(self, style)
-    }
-
-    fn mint_class_for_app(&mut self, app: &StyleApplication) -> Option<String> {
-        <MacosBackend as Backend>::mint_class_for_app(self, app)
-    }
-
-    fn apply_styled_states(
-        &mut self,
-        node: &Self::Node,
-        base: &Rc<StyleRules>,
-        overlays: &[(StateBits, Rc<StyleRules>)],
-    ) {
-        <MacosBackend as Backend>::apply_styled_states(self, node, base, overlays)
-    }
-
-    fn apply_styled_variants(
-        &mut self,
-        node: &Self::Node,
-        base: &Rc<StyleRules>,
-        state_overlays: &[(StateBits, Rc<StyleRules>)],
-        breakpoint_overlays: &[(Breakpoint, Rc<StyleRules>)],
-        container_overlays: &[(f32, Rc<StyleRules>)],
-    ) {
-        <MacosBackend as Backend>::apply_styled_variants(
-            self,
-            node,
-            base,
-            state_overlays,
-            breakpoint_overlays,
-            container_overlays,
-        )
-    }
-
-    fn mark_container(&mut self, node: &Self::Node) {
-        <MacosBackend as Backend>::mark_container(self, node)
-    }
-
-    fn handles_states_natively(&self) -> bool {
-        <MacosBackend as Backend>::handles_states_natively(self)
-    }
-
-    fn token_updates_propagate_via_cascade(&self) -> bool {
-        <MacosBackend as Backend>::token_updates_propagate_via_cascade(self)
-    }
-
-    fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        <MacosBackend as Backend>::register_stylesheet(self, rules)
-    }
-
-    fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        <MacosBackend as Backend>::unregister_stylesheet(self, rules)
-    }
-
-    fn install_tokens(&mut self, tokens: &[TokenEntry]) {
-        <MacosBackend as Backend>::install_tokens(self, tokens)
-    }
-
-    fn update_tokens(&mut self, tokens: &[TokenEntry]) {
-        <MacosBackend as Backend>::update_tokens(self, tokens)
-    }
-
-    fn on_node_unstyled(&mut self, node: &Self::Node) {
-        <MacosBackend as Backend>::on_node_unstyled(self, node)
+        MacosBackend::apply_style_impl(self, node, style)
     }
 
     fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
@@ -1485,55 +1194,17 @@ impl caps::StyleOps for MacosBackend {
                 schedule_flush();
             })
         };
-        <MacosBackend as Backend>::attach_states(self, node, setter)
-    }
-
-    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
-        <MacosBackend as Backend>::set_disabled(self, node, disabled)
-    }
-
-    fn supports_preminted_styles(&self) -> bool {
-        <MacosBackend as Backend>::supports_preminted_styles(self)
-    }
-
-    fn apply_default_text_font(&mut self, font: Option<&FontFamily>) {
-        <MacosBackend as Backend>::apply_default_text_font(self, font)
-    }
-
-    fn supports_js_class_bindings(&self) -> bool {
-        <MacosBackend as Backend>::supports_js_class_bindings(self)
-    }
-
-    fn register_reactive_class_binding(
-        &mut self,
-        node: &Self::Node,
-        signal_id: u64,
-        values: &[u32],
-        classes: &[&str],
-        value_reader: Rc<dyn Fn() -> u32>,
-    ) -> u32 {
-        <MacosBackend as Backend>::register_reactive_class_binding(
-            self,
-            node,
-            signal_id,
-            values,
-            classes,
-            value_reader,
-        )
-    }
-
-    fn release_reactive_class_binding(&mut self, binding_id: u32) {
-        <MacosBackend as Backend>::release_reactive_class_binding(self, binding_id)
+        MacosBackend::attach_states_impl(self, node, setter)
     }
 }
 
 impl caps::AssetOps for MacosBackend {
     fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
-        <MacosBackend as Backend>::register_asset(self, id, kind, source)
+        MacosBackend::register_asset_impl(self, id, kind, source)
     }
 
     fn unregister_asset(&mut self, id: AssetId, kind: AssetTag) {
-        <MacosBackend as Backend>::unregister_asset(self, id, kind)
+        MacosBackend::unregister_asset_impl(self, id, kind)
     }
 
     fn register_typeface(
@@ -1543,11 +1214,11 @@ impl caps::AssetOps for MacosBackend {
         faces: &[TypefaceFace],
         fallback: SystemFallback,
     ) {
-        <MacosBackend as Backend>::register_typeface(self, id, family_name, faces, fallback)
+        MacosBackend::register_typeface_impl(self, id, family_name, faces, fallback)
     }
 
     fn unregister_typeface(&mut self, id: TypefaceId) {
-        <MacosBackend as Backend>::unregister_typeface(self, id)
+        MacosBackend::unregister_typeface_impl(self, id)
     }
 }
 
@@ -1562,59 +1233,43 @@ impl caps::A11yOps for MacosBackend {
         a11y: &AccessibilityProps,
         inferred_role: Option<Role>,
     ) {
-        <MacosBackend as Backend>::update_accessibility(self, node, a11y, inferred_role)
+        MacosBackend::update_accessibility_impl(self, node, a11y, inferred_role)
     }
 
     fn announce_for_accessibility(&mut self, msg: &str, priority: LiveRegionPriority) {
-        <MacosBackend as Backend>::announce_for_accessibility(self, msg, priority)
-    }
-
-    fn dump_accessibility_tree(&self) -> Option<AccessibilityTree> {
-        <MacosBackend as Backend>::dump_accessibility_tree(self)
+        MacosBackend::announce_for_accessibility_impl(self, msg, priority)
     }
 }
 
 impl caps::AnimationOps for MacosBackend {
     fn set_animated_f32(&mut self, node: &Self::Node, prop: AnimProp, value: f32) {
-        <MacosBackend as Backend>::set_animated_f32(self, node, prop, value)
+        MacosBackend::set_animated_f32_impl(self, node, prop, value)
     }
 
     fn set_animated_color(&mut self, node: &Self::Node, prop: AnimProp, value: [f32; 4]) {
-        <MacosBackend as Backend>::set_animated_color(self, node, prop, value)
+        MacosBackend::set_animated_color_impl(self, node, prop, value)
     }
 }
 
 impl caps::IntrospectionOps for MacosBackend {
     fn frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <MacosBackend as Backend>::frame(self, node)
-    }
-
-    fn absolute_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <MacosBackend as Backend>::absolute_frame(self, node)
-    }
-
-    fn device_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-        <MacosBackend as Backend>::device_frame(self, node)
+        MacosBackend::frame_impl(self, node)
     }
 
     fn supports_native_introspection(&self) -> bool {
-        <MacosBackend as Backend>::supports_native_introspection(self)
+        MacosBackend::supports_native_introspection_impl(self)
     }
 
     fn introspect_native(&self, node: &Self::Node) -> Option<NativeNode> {
-        <MacosBackend as Backend>::introspect_native(self, node)
-    }
-
-    fn note_introspection_root(&self, node: &Self::Node) {
-        <MacosBackend as Backend>::note_introspection_root(self, node)
+        MacosBackend::introspect_native_impl(self, node)
     }
 
     fn supports_screenshot(&self) -> bool {
-        <MacosBackend as Backend>::supports_screenshot(self)
+        MacosBackend::supports_screenshot_impl(self)
     }
 
     fn capture_screenshot(&self, done: Box<dyn FnOnce(Result<Screenshot, String>)>) {
-        <MacosBackend as Backend>::capture_screenshot(self, done)
+        MacosBackend::capture_screenshot_impl(self, done)
     }
 }
 
@@ -1623,118 +1278,9 @@ impl caps::IntrospectionOps for MacosBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::BatchOps for MacosBackend {
-    fn supports_batched_repeat(&self) -> bool {
-        <MacosBackend as Backend>::supports_batched_repeat(self)
-    }
-
-    fn execute_batch(&mut self, batch: BackendBatch) -> Vec<Self::Node> {
-        <MacosBackend as Backend>::execute_batch(self, batch)
-    }
-
-    fn execute_batch_with_attach(
-        &mut self,
-        batch: BackendBatch,
-        parent: &mut Self::Node,
-        attach_locals: &[u32],
-    ) -> Vec<Self::Node> {
-        <MacosBackend as Backend>::execute_batch_with_attach(self, batch, parent, attach_locals)
-    }
 }
 
 impl caps::WireBindingOps for MacosBackend {
-    fn note_text_binding(&mut self, node: &Self::Node, signal_ids: &[u64], method: &'static str) {
-        <MacosBackend as Backend>::note_text_binding(self, node, signal_ids, method)
-    }
-
-    fn note_signal_initial(&mut self, signal_id: u64, value: &runtime_core::__serde_json::Value) {
-        <MacosBackend as Backend>::note_signal_initial(self, signal_id, value)
-    }
-
-    fn note_when_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        cond_method: &'static str,
-        then_node: &Self::Node,
-        otherwise_node: &Self::Node,
-    ) {
-        <MacosBackend as Backend>::note_when_binding(
-            self,
-            anchor,
-            signal_ids,
-            cond_method,
-            then_node,
-            otherwise_node,
-        )
-    }
-
-    fn note_switch_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        cond_method: &'static str,
-        arms: &[(runtime_core::__serde_json::Value, Self::Node)],
-        default_node: &Self::Node,
-    ) {
-        <MacosBackend as Backend>::note_switch_binding(
-            self,
-            anchor,
-            signal_ids,
-            cond_method,
-            arms,
-            default_node,
-        )
-    }
-
-    fn note_repeat_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        count_method: &'static str,
-        row_template: &Self::Node,
-        row_index_signal_id: Option<u64>,
-    ) {
-        <MacosBackend as Backend>::note_repeat_binding(
-            self,
-            anchor,
-            signal_ids,
-            count_method,
-            row_template,
-            row_index_signal_id,
-        )
-    }
-
-    fn note_virtualizer_binding(
-        &mut self,
-        anchor: &Self::Node,
-        signal_ids: &[u64],
-        count_method: &'static str,
-        row_template: &Self::Node,
-        row_index_signal_id: Option<u64>,
-        horizontal: bool,
-    ) {
-        <MacosBackend as Backend>::note_virtualizer_binding(
-            self,
-            anchor,
-            signal_ids,
-            count_method,
-            row_template,
-            row_index_signal_id,
-            horizontal,
-        )
-    }
-
-    fn supports_lazy_slot_capture(&self) -> bool {
-        <MacosBackend as Backend>::supports_lazy_slot_capture(self)
-    }
-
-    fn begin_slot_capture(&mut self) {
-        <MacosBackend as Backend>::begin_slot_capture(self)
-    }
-
-    fn end_slot_capture(&mut self, slot_root: &Self::Node) {
-        <MacosBackend as Backend>::end_slot_capture(self, slot_root)
-    }
 }
 
 // ===========================================================================
@@ -1786,7 +1332,7 @@ mod tests {
         schedule_flush();
         assert_eq!(*log.borrow(), vec![0], "staged, not committed");
 
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(
             *log.borrow(),
             vec![0, 2],
@@ -1800,7 +1346,7 @@ mod tests {
         // The flag re-arms for the next write→flush cycle.
         count.set(3);
         schedule_flush();
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(*log.borrow(), vec![0, 2, 3]);
 
         set_flush_world(None);
@@ -1870,7 +1416,7 @@ mod tests {
         count.set(7);
         backend_apple_core::dispatch_hook::fire_dispatch_hook();
         assert_eq!(*log.borrow(), vec![0], "staged, commits at the turn boundary");
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(*log.borrow(), vec![0, 7], "hook → schedule_flush → commit");
 
         // Teardown severs the route: a late timer fires the hook into a
@@ -1883,7 +1429,7 @@ mod tests {
             !FLUSH_QUEUED.with(|q| q.get()),
             "cleared hook schedules nothing"
         );
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(*log.borrow(), vec![0, 7], "no commit after teardown");
         backend_apple_core::scheduler::end_mount_buffering();
     }
@@ -1915,7 +1461,7 @@ mod tests {
         let wrapped = flushing0(Rc::new(move || count.set(1)));
         wrapped();
         assert!(FLUSH_QUEUED.with(|q| q.get()), "flush queued after author fn");
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(*log.borrow(), vec![0, 1], "on_press write committed");
 
         // flushing1 — the on_change shape (value passes through).
@@ -1927,16 +1473,16 @@ mod tests {
         }));
         wrapped(0.5);
         assert_eq!(seen.get(), 0.5, "value reached the author fn unchanged");
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(*log.borrow(), vec![0, 1, 2], "on_change write committed");
 
         // flushing_key — outcome passes through so the backend's
         // suppress-default decision is unchanged.
         let wrapped = flushing_key(Rc::new(move |_ev| {
             count.set(3);
-            runtime_core::primitives::key::KeyOutcome::PreventDefault
+            runtime_shared::primitives::key::KeyOutcome::PreventDefault
         }));
-        let ev = runtime_core::primitives::key::KeyEvent {
+        let ev = runtime_shared::primitives::key::KeyEvent {
             key: "a".into(),
             shift: false,
             ctrl: false,
@@ -1948,9 +1494,9 @@ mod tests {
         let outcome = wrapped(&ev);
         assert!(matches!(
             outcome,
-            runtime_core::primitives::key::KeyOutcome::PreventDefault
+            runtime_shared::primitives::key::KeyOutcome::PreventDefault
         ));
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(*log.borrow(), vec![0, 1, 2, 3], "key write committed");
 
         set_flush_world(None);
@@ -2000,30 +1546,30 @@ mod tests {
         set_viewport_sink(Some(vp_sig));
 
         // The seam: fires outside `enter`, stages, flush commits.
-        forward_viewport(runtime_core::ViewportSize {
+        forward_viewport(runtime_shared::ViewportSize {
             width: 1280.0,
             height: 800.0,
         });
         assert_eq!(runs.get(), 1, "staged — commits at the turn boundary");
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(last.get(), Breakpoint::Xl, "bucket followed the resize");
         assert_eq!(runs.get(), 2);
 
         // Same-bucket resize: per-pixel change, no bucket flip, no
         // re-fire (memo equality cut).
-        forward_viewport(runtime_core::ViewportSize {
+        forward_viewport(runtime_shared::ViewportSize {
             width: 1290.0,
             height: 800.0,
         });
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(runs.get(), 2, "per-pixel resizes inside a bucket stay silent");
 
         // Cross back below the threshold — the hamburger's `when` flips.
-        forward_viewport(runtime_core::ViewportSize {
+        forward_viewport(runtime_shared::ViewportSize {
             width: 700.0,
             height: 800.0,
         });
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(last.get(), Breakpoint::Sm);
         assert_eq!(runs.get(), 3);
 
@@ -2031,7 +1577,7 @@ mod tests {
         // resize callback forwards into a cleared sink and nothing is
         // staged or scheduled.
         set_viewport_sink(None);
-        forward_viewport(runtime_core::ViewportSize {
+        forward_viewport(runtime_shared::ViewportSize {
             width: 1280.0,
             height: 800.0,
         });
@@ -2039,7 +1585,7 @@ mod tests {
             !FLUSH_QUEUED.with(|q| q.get()),
             "cleared sink schedules nothing"
         );
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(runs.get(), 3, "no re-fire after teardown");
 
         set_flush_world(None);

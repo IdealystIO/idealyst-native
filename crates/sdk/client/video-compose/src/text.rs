@@ -104,7 +104,7 @@ mod tests {
     use super::*;
 
     // A real font so the shaper has glyphs to lay out (Inter, already in the repo).
-    const FONT: &[u8] = include_bytes!("../../../../examples/welcome/fonts/Inter-Regular.ttf");
+    const FONT: &[u8] = include_bytes!("../../../../../examples/welcome/fonts/Inter-Regular.ttf");
 
     #[test]
     fn rasterizes_text_to_a_nonempty_image() {

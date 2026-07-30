@@ -6,7 +6,9 @@ the *rendering strategy*. Each backend interprets a `StyleRules` value
 however suits its platform: the web backend mints CSS classes, native
 backends call view setters directly.
 
-Implementation: `runtime_core::style` plus `runtime_macros::stylesheet`.
+Implementation: `runtime_shared::style` (the data model, re-exported under
+`runtime_core::…`) plus `runtime_vocabulary::style_attach` (the attach engine)
+and `runtime_macros::stylesheet`.
 
 ---
 
@@ -30,7 +32,7 @@ pub struct StyleRules {
 }
 ```
 
-The walker hands this to `Backend::apply_style(node, rules)` as
+The style binding hands this to `StyleOps::apply_style(node, rules)` as
 `Rc<StyleRules>`. The backend's job is to translate it into the
 platform's native style format. Caching strategy is the backend's
 problem.
@@ -257,20 +259,23 @@ token is exactly the set that needs to re-apply, by construction.
 
 ## How styles reach the backend
 
-The render walker's `attach_style(backend, node, source)` is the
-seam between author-facing style values and the backend.
+`runtime_vocabulary::style_attach::attach_style(backend, node, prop)` is
+the seam between author-facing style values and the backend. The author
+value arrives as a `StyleProp` with six arms — `Static`, `Dynamic`,
+`Sheet`, `SheetDynamic`, `SignalClass`, `Preminted` — and each primitive
+handler calls `attach_style` once with whatever the builder collected.
 
-For each styled node:
+For each styled node on the sheet paths:
 
 1. Allocate a per-node `Signal<StateBits>` (initially `NONE`). This is
    the state machinery for `state hovered { ... }` overlays.
-2. Build an `Effect` that:
+2. Build an effect that:
    - Calls the source closure to get a `StyleApplication`.
    - Calls `ensure_registered_with(sheet, register=…, unregister=…)`
      to lazily pre-generate this sheet's variants for the active
      theme (the first time the backend sees it).
    - Resolves to `Rc<StyleRules>` against the active theme.
-   - If `Backend::handles_states_natively() == true`, calls
+   - If `StyleOps::handles_states_natively() == true`, calls
      `apply_styled_states(node, base, &overlays)`.
    - Else calls `apply_style(node, &resolved)` where `resolved` is
      the base merged with any active state overlay.
@@ -318,8 +323,13 @@ entirely. The pipeline has two halves, coordinated by nothing but a
 shared naming scheme:
 
 1. **Dump build.** The CLI generates an ephemeral native binary that
-   links the app with `--cfg idealyst_premint_dump` and runtime-core's
-   `style-dump` feature. Every `stylesheet!` in the app and its
+   links the app with `--cfg idealyst_premint_dump` and the
+   `style-dump` feature. The registry itself lives in `runtime-shared`
+   (`runtime_shared::premint`); `runtime-core/style-dump` forwards it
+   through the vocabulary so the macro's registration — which spells
+   `::runtime_core::premint::…` and retargets to
+   `::runtime_vocabulary::glue::premint::…` — resolves. Every
+   `stylesheet!` in the app and its
    dependencies registers into a link-time distributed slice; the
    binary enumerates each sheet's full variant space, resolves it
    through the same layer resolution the live web engine uses, and
@@ -327,12 +337,12 @@ shared naming scheme:
    content-addressed `pkg/premint.<hash>.css`, linked from
    `index.html`.
 2. **Shipped build.** The wasm compiles with `--cfg idealyst_premint`,
-   which flips each `stylesheet!` builder's `into_style_source` to a
+   which flips each `stylesheet!` builder's `into_style_prop` to a
    fast path: an all-constant application (plain variant values, no
    overrides, nothing reactive) returns
-   `StyleSource::Preminted { class }`. The walker stamps the classes on
-   the node and stops — no `StyleRules`, no resolution, no rule
-   minting. State overlays (`state hovered { … }`), breakpoints, and
+   `StyleProp::Preminted { class }`. `attach_style` stamps the classes
+   on the node via `DocumentOps::attach_html_class` and stops — no
+   `StyleRules`, no resolution, no rule minting. State overlays (`state hovered { … }`), breakpoints, and
    container queries ship as pseudo-class/`@media`/`@container` rules
    inside the same `.css`, so the browser drives them.
 
@@ -418,28 +428,42 @@ build-time rule can't reproduce, so preminted rule bodies whose sheet
 sets no `font_family` carry
 `font-family: var(--iy-default-font, inherit)` and the driver defines
 that variable from the installed theme
-(`Backend::apply_default_text_font`; web sets it on the document
+(`StyleOps::apply_default_text_font`; web sets it on the document
 element, SSR emits it in the head CSS). With no default font
 installed the `inherit` fallback reproduces the plain cascade.
 
-### Dropping the engine: the `style-dynamic` feature
+### Dropping the engine — not available, and the old lever is removed
 
-Preminting alone changes *when* rules are made, not the bundle size —
-the engine still ships for the fallback paths. The size win comes from
-the `style-dynamic` cargo feature (default-on, same model as the
-`prim-*` primitive gates): an app whose every style premints sets
-`default-features = false` on **both** runtime-core and backend-web
-(re-adding the `prim-*` families it uses), and the walker's dynamic
-style arms — `Static`/`Reactive`/`SignalClass` attachment, `StyleRules`
-resolution, the theme cohort, backend CSS minting — compile out.
-Preminted class stamping and the theme-state driver stay. Any dynamic
-style that still reaches the walker degrades to an UNSTYLED node with
-a dev-build warning naming the feature; release builds degrade
-silently.
+Preminting changes *when* rules are made, not the bundle size: the
+engine still ships for the fallback paths.
 
-On the one-text-node floor app this is ~107 KB of wasm (~40 KB
-gzipped) — see `stylesheet!`'s feature docs in runtime-core's
-Cargo.toml for the unification caveat.
+The lever that used to remove it was the `style-dynamic` cargo feature,
+which gated the old walker's dynamic style arms so an all-preminted app
+could compile them out. **That feature has been deleted.** It was the
+last remnant of the `prim-*` bundle-size gating model that runtime v2
+removed by decision, and it had already stopped doing anything:
+
+- `runtime_vocabulary::style_attach::attach_style` matches all six
+  `StyleProp` arms unconditionally, with no feature gate, so the engine
+  stays reachable and dead-code elimination cannot drop it;
+- `runtime-shared` contained **zero** `cfg(feature = "style-dynamic")`
+  blocks — only a dead-code lint `allow`;
+- `backend-web` had already dropped its forward, so the documented
+  instruction ("set `default-features = false` on BOTH runtime-core and
+  your backend crate") was an unknown-feature error, not a size win;
+- feature unification made it unturnoffable regardless: the workspace
+  dep spec for `runtime-shared` does not set
+  `default-features = false`, so any graph containing the vocabulary
+  force-enabled it.
+
+`style-dump` (the CLI's ephemeral premint-dump build) no longer implies
+it. Nothing in the tree declares or forwards it any more.
+
+The structural successor, if the size lever is ever wanted back, is a
+gate inside `attach_style` itself, next to the arms it would remove —
+one home, one decision, instead of a feature threaded through every
+backend crate. Until that lands, treat preminting as a resolution-cost
+optimization rather than a size lever.
 
 ### Current limits
 
@@ -452,9 +476,9 @@ Cargo.toml for the unification caveat.
 - A component that COMPOSES or INTROSPECTS a builder's styles (merging
   an inherited color onto a label sheet, re-deriving a cell's
   application to layer a hover) must call the builder's
-  `into_style_application()` instead of `into_style_source()`: under
+  `into_style_application()` instead of `into_style_prop()`: under
   premint the latter returns an opaque class, and pattern-matching it
-  as `Static` panics. `into_style_application()` names the requirement
+  as `Sheet` panics. `into_style_application()` names the requirement
   in its type — composition needs the live engine, so anything derived
   from it stays live-minted (idea-ui's `Tag`/`Alert` label coloring and
   `Table`'s clickable-row cells work this way).
@@ -600,7 +624,7 @@ match current_breakpoint().get() {
 
 Prefer declarative `breakpoint` blocks where you can — they keep web
 and native in lockstep and survive SSR. The signal is the escape hatch.
-See [`breakpoint.rs`](../crates/runtime/core/src/breakpoint.rs) for the
+See [`breakpoint.rs`](../crates/runtime/shared/src/breakpoint.rs) for the
 bucket definitions and thresholds.
 
 ---

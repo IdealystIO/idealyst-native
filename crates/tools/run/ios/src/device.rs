@@ -129,9 +129,6 @@ pub fn run(project_dir: &Path, opts: DeviceOptions) -> Result<DeviceArtifact> {
             device: true,
             source: opts.source.clone(),
             user_features: opts.user_features.clone(),
-            // Dual-core apps ship their default core (new-core since
-            // the runtime-v2 defaults flip); legacy apps stay old-core.
-            new_core: build_ios::declares_feature(&project_dir, "new-core"),
         },
     )?;
 

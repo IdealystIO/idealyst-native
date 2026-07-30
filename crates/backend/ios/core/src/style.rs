@@ -1,4 +1,4 @@
-use runtime_core::{Color, Length, StyleRules, Tokenized};
+use runtime_shared::{Color, Length, StyleRules, Tokenized};
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
@@ -36,28 +36,28 @@ pub fn length_to_px(len: &Length) -> CGFloat {
     }
 }
 
-pub fn font_weight_to_uikit(weight: runtime_core::FontWeight) -> CGFloat {
+pub fn font_weight_to_uikit(weight: runtime_shared::FontWeight) -> CGFloat {
     match weight {
-        runtime_core::FontWeight::Thin => -0.6,
-        runtime_core::FontWeight::ExtraLight => -0.5,
-        runtime_core::FontWeight::Light => -0.4,
-        runtime_core::FontWeight::Normal => 0.0,
-        runtime_core::FontWeight::Medium => 0.23,
-        runtime_core::FontWeight::SemiBold => 0.3,
-        runtime_core::FontWeight::Bold => 0.4,
-        runtime_core::FontWeight::ExtraBold => 0.56,
-        runtime_core::FontWeight::Black => 0.62,
+        runtime_shared::FontWeight::Thin => -0.6,
+        runtime_shared::FontWeight::ExtraLight => -0.5,
+        runtime_shared::FontWeight::Light => -0.4,
+        runtime_shared::FontWeight::Normal => 0.0,
+        runtime_shared::FontWeight::Medium => 0.23,
+        runtime_shared::FontWeight::SemiBold => 0.3,
+        runtime_shared::FontWeight::Bold => 0.4,
+        runtime_shared::FontWeight::ExtraBold => 0.56,
+        runtime_shared::FontWeight::Black => 0.62,
     }
 }
 
 /// Map framework Easing to UIView animation options bitmask.
-pub fn easing_to_options(easing: &runtime_core::Easing) -> u64 {
+pub fn easing_to_options(easing: &runtime_shared::Easing) -> u64 {
     match easing {
-        runtime_core::Easing::Linear => 3 << 16,
-        runtime_core::Easing::Ease | runtime_core::Easing::EaseInOut => 0 << 16,
-        runtime_core::Easing::EaseIn => 1 << 16,
-        runtime_core::Easing::EaseOut => 2 << 16,
-        runtime_core::Easing::CubicBezier(_, _, _, _) => 0 << 16,
+        runtime_shared::Easing::Linear => 3 << 16,
+        runtime_shared::Easing::Ease | runtime_shared::Easing::EaseInOut => 0 << 16,
+        runtime_shared::Easing::EaseIn => 1 << 16,
+        runtime_shared::Easing::EaseOut => 2 << 16,
+        runtime_shared::Easing::CubicBezier(_, _, _, _) => 0 << 16,
     }
 }
 
@@ -66,13 +66,13 @@ pub fn easing_to_options(easing: &runtime_core::Easing) -> u64 {
 /// stylesheet's per-property `Transition` field — explicit opt-in.
 /// Snap by default.
 fn effective_transition(
-    explicit: Option<&runtime_core::Transition>,
-) -> Option<runtime_core::Transition> {
+    explicit: Option<&runtime_shared::Transition>,
+) -> Option<runtime_shared::Transition> {
     explicit.copied()
 }
 
 /// Run property changes inside a UIView animation block.
-pub fn animate(transition: &runtime_core::Transition, changes: Rc<dyn Fn()>) {
+pub fn animate(transition: &runtime_shared::Transition, changes: Rc<dyn Fn()>) {
     let duration = transition.duration_ms as CGFloat / 1000.0;
     let options = easing_to_options(&transition.easing);
     let block = ConcreteBlock::new(move || {
@@ -128,7 +128,7 @@ pub fn animate(transition: &runtime_core::Transition, changes: Rc<dyn Fn()>) {
 /// use that to clear stored state.
 pub fn install_gradient(
     view: &UIView,
-    gradient: Option<&runtime_core::Gradient>,
+    gradient: Option<&runtime_shared::Gradient>,
 ) -> Option<(Retained<NSObject>, Vec<[f32; 4]>)> {
     let g = gradient?;
     let layer: Retained<NSObject> = unsafe { msg_send_id![view, layer] };
@@ -165,7 +165,7 @@ pub fn set_animated_gradient_stop(
 fn build_gradient_layer(
     view: &UIView,
     layer: &NSObject,
-    g: &runtime_core::Gradient,
+    g: &runtime_shared::Gradient,
 ) -> Option<(Retained<NSObject>, Vec<[f32; 4]>)> {
     // Remove any previously-installed `idealyst_gradient` sublayer
     // so a re-apply doesn't stack layers. We pay the sublayer walk
@@ -226,7 +226,7 @@ fn build_gradient_layer(
 
     // Linear vs. radial setup.
     match g.kind {
-        runtime_core::GradientKind::Linear { angle_deg } => {
+        runtime_shared::GradientKind::Linear { angle_deg } => {
             // Convert the framework's CSS-style angle (0° = bottom→top,
             // clockwise) into CAGradientLayer start/end points in
             // unit-square coords (0,0 = top-left, 1,1 = bottom-right).
@@ -246,7 +246,7 @@ fn build_gradient_layer(
             let _: () = unsafe { msg_send![&gradient_layer, setStartPoint: start] };
             let _: () = unsafe { msg_send![&gradient_layer, setEndPoint: end] };
         }
-        runtime_core::GradientKind::Radial { center, radius, extent } => {
+        runtime_shared::GradientKind::Radial { center, radius, extent } => {
             // CAGradientLayer's `radial` type uses `startPoint` as
             // the center and `endPoint` as a point at the outermost
             // stop. The gradient is parametrised elliptically with
@@ -281,8 +281,8 @@ fn build_gradient_layer(
                 y: center.1 as f64,
             };
             let axis_offset = match extent {
-                runtime_core::RadialExtent::ClosestSide => radius * 0.5,
-                runtime_core::RadialExtent::FarthestCorner => radius * std::f32::consts::FRAC_1_SQRT_2,
+                runtime_shared::RadialExtent::ClosestSide => radius * 0.5,
+                runtime_shared::RadialExtent::FarthestCorner => radius * std::f32::consts::FRAC_1_SQRT_2,
             };
             let end = objc2_foundation::CGPoint {
                 x: (center.0 + axis_offset) as f64,
@@ -341,12 +341,12 @@ fn write_colors_on_layer(layer: &NSObject, stops: &[[f32; 4]]) {
     }
 }
 
-/// Resolve a `runtime_core::Color` to sRGB `[r, g, b, a]` in
+/// Resolve a `runtime_shared::Color` to sRGB `[r, g, b, a]` in
 /// `0..=1`. Mirrors `color_to_uicolor`'s parsing but skips the
 /// UIColor construction — useful for caching colors in animation
 /// state and rebuilding the UIColor on each apply.
 fn color_to_srgb(color: &Color) -> [f32; 4] {
-    runtime_core::color::parse_or(&color.0, runtime_core::color::Rgba::BLACK).to_srgb_f32()
+    runtime_shared::color::parse_or(&color.0, runtime_shared::color::Rgba::BLACK).to_srgb_f32()
 }
 
 /// Inverse of `color_to_srgb`: build a `UIColor` from sRGB floats.
@@ -719,8 +719,8 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     // Overflow
     if let Some(overflow) = &style.overflow {
         match overflow {
-            runtime_core::Overflow::Hidden => unsafe { view.setClipsToBounds(true) },
-            runtime_core::Overflow::Visible => unsafe { view.setClipsToBounds(false) },
+            runtime_shared::Overflow::Hidden => unsafe { view.setClipsToBounds(true) },
+            runtime_shared::Overflow::Visible => unsafe { view.setClipsToBounds(false) },
         }
     }
 
@@ -789,12 +789,12 @@ pub fn apply_text_style(
             .font_weight
             .as_ref()
             .copied()
-            .unwrap_or(runtime_core::FontWeight::Normal);
+            .unwrap_or(runtime_shared::FontWeight::Normal);
         let fstyle = style
             .font_style
             .as_ref()
             .copied()
-            .unwrap_or(runtime_core::FontStyle::Normal);
+            .unwrap_or(runtime_shared::FontStyle::Normal);
         let size = match style.font_size.as_ref().map(|t| t.resolve()) {
             Some(len) => {
                 let px = length_to_px(&len);
@@ -826,10 +826,10 @@ pub fn apply_text_style(
     // Text alignment
     if let Some(ta) = &style.text_align {
         let align: isize = match ta {
-            runtime_core::TextAlign::Left => 0,
-            runtime_core::TextAlign::Center => 1,
-            runtime_core::TextAlign::Right => 2,
-            runtime_core::TextAlign::Justify => 3,
+            runtime_shared::TextAlign::Left => 0,
+            runtime_shared::TextAlign::Center => 1,
+            runtime_shared::TextAlign::Right => 2,
+            runtime_shared::TextAlign::Justify => 3,
         };
         let _: () = unsafe { msg_send![view, setTextAlignment: align] };
     }
@@ -1026,7 +1026,7 @@ fn idealyst_text_field_class() -> Option<&'static objc2::runtime::AnyClass> {
 
 fn apply_text_insets_if_label(
     view: &UIView,
-    style: &runtime_core::StyleRules,
+    style: &runtime_shared::StyleRules,
 ) {
     // Applies to both the label (`IdealystLabel`) and the editable input
     // (`IdealystTextField`) — both honor `padding_*` via `setTextInsets:`.

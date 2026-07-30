@@ -12,7 +12,7 @@
 //! because the session thread drove the future with `pollster::block_on`
 //! on a thread that had no Tokio runtime context. After the fix,
 //! `dev_server::async_executor::install()` (called per session thread in
-//! `run_session_thread`) routes `runtime_core::driver::spawn_async`
+//! `run_session_thread`) routes `runtime_shared::driver::spawn_async`
 //! through a current-thread Tokio runtime, so the socket finds its
 //! reactor.
 //!
@@ -67,7 +67,7 @@ fn regression_aas_session_async_has_reactor() {
             let got = Rc::new(Cell::new(0u8));
             let got_in = got.clone();
 
-            runtime_core::driver::spawn_async(async move {
+            runtime_shared::driver::spawn_async(async move {
                 // This is the call that panicked pre-fix: constructing a
                 // tokio `TcpStream` registers it with the current
                 // runtime's I/O reactor.

@@ -22,7 +22,7 @@
 //! panic, but a less confusing one than a freed Signal).
 
 use crate::WebBackend;
-use runtime_core::{Lanes, VirtualizerCallbacks, VirtualLayout};
+use runtime_shared::{Lanes, VirtualizerCallbacks, VirtualLayout};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -312,7 +312,7 @@ pub(crate) fn release(b: &mut WebBackend, node: &Node) {
     // outer `backend.borrow_mut()` (held by the cleanup Effect's
     // Drop) is released before the microtask runs, so the
     // re-entrant `borrow_mut()` from per-item scope drops is safe.
-    runtime_core::schedule_microtask(move || {
+    runtime_shared::schedule_microtask(move || {
         // Best-effort `release()` call on the JS side. If the
         // method is missing (older shim version), we silently
         // proceed — dropping the closures below is the actual

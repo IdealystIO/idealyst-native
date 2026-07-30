@@ -1,26 +1,22 @@
-//! Core-free macOS NSToolbar machinery, shared by BOTH core legs.
+//! Runtime-free macOS NSToolbar machinery.
 //!
 //! Everything AppKit lives here: the delegate class, NSToolbar
 //! construction, the wipe+repopulate item update, the 0-size in-tree
 //! placeholder view, and the imperative ops. What does NOT live here is
-//! anything reactive — the per-core wrappers (`macos.rs` on the old
-//! core, `macos_newcore.rs` on the new core) own:
+//! anything reactive — `macos.rs` (the scene handler) owns:
 //!
-//! - the reactive items subscription (old: `runtime_core::effect!`;
-//!   new: `runtime_world::effect`), and
+//! - the reactive items subscription (`runtime_world::effect`), and
 //! - the click-callback discipline ([`plan_items`]'s `wrap_click`
-//!   parameter: identity on the old core, a
-//!   `backend_macos::newcore::schedule_flush` wrapper on the new core —
-//!   NSToolbar target-action fires outside the new core's wrapped
+//!   parameter: a `backend_macos::newcore::schedule_flush` wrapper —
+//!   NSToolbar target-action fires outside the runtime's wrapped
 //!   dispatch sites, so unwrapped clicks would stage signal writes
 //!   forever).
 //!
 //! The split point is data, not props structs: [`build_native_toolbar`]
 //! takes the initial `visible` bool + an optional host window, and
 //! [`apply_items`] takes an [`ItemPlan`] produced by the pure
-//! [`plan_items`] translation. `ToolbarProps` is defined per-leg (the
-//! two cores' surfaces are mutually exclusive), so this module never
-//! names it; [`ToolbarItem`](crate::ToolbarItem) itself is core-free
+//! [`plan_items`] translation. This module never names `ToolbarProps`;
+//! [`ToolbarItem`](crate::ToolbarItem) itself is runtime-free
 //! (`src/items.rs`) and shared.
 //!
 //! NSToolbar + NSToolbarItem + the delegate are reached at the Obj-C
@@ -37,7 +33,7 @@
 //!   lifetime.
 //! - The Rust-side `ToolbarDelegate` holds the click callbacks and
 //!   item metadata. NSToolbar holds its delegate weakly, so the
-//!   per-core wrapper must keep the returned [`NativeToolbar`] (which
+//!   scene handler must keep the returned [`NativeToolbar`] (which
 //!   owns a `Retained<ToolbarDelegate>`) alive — both legs do this by
 //!   capturing it in their reactive items closure, which the framework
 //!   scope owns for as long as the primitive is mounted. Same trick
@@ -353,13 +349,13 @@ pub(crate) struct ItemPlan {
 }
 
 /// Translate a fresh `Vec<ToolbarItem>` into an [`ItemPlan`]. Pure —
-/// no AppKit — so both cores share one tested translation.
+/// no AppKit — so the translation is unit-testable on its own.
 ///
-/// `wrap_click` is the per-core click-callback discipline, applied to
-/// every button `on_click` as it enters the plan: the old core passes
-/// identity (clicks apply writes synchronously there), the new core
-/// wraps with `backend_macos::newcore::schedule_flush` (NSToolbar
-/// target-action fires outside the new core's wrapped dispatch sites).
+/// `wrap_click` is the click-callback discipline, applied to every
+/// button `on_click` as it enters the plan: production wraps with
+/// `backend_macos::newcore::schedule_flush` (NSToolbar target-action
+/// fires outside the runtime's wrapped dispatch sites). Parameterized so
+/// the ordering contract is testable without a booted app.
 pub(crate) fn plan_items(
     new_items: Vec<ToolbarItem>,
     wrap_click: &dyn Fn(Rc<dyn Fn()>) -> Rc<dyn Fn()>,
@@ -410,8 +406,8 @@ pub(crate) fn plan_items(
 // =========================================================================
 
 /// The live native toolbar pair. Clone is cheap (two `Retained`
-/// bumps); the per-core reactive closure captures a clone, which is
-/// what anchors the weakly-held delegate (see the module-level
+/// bumps); the scene handler's reactive closure captures a clone, which
+/// is what anchors the weakly-held delegate (see the module-level
 /// lifetime model).
 #[derive(Clone)]
 pub(crate) struct NativeToolbar {
@@ -440,8 +436,8 @@ pub(crate) fn window_of_view(root: &NSView) -> Option<Retained<NSObject>> {
 }
 
 /// Build NSToolbar + delegate, configure them, and attach to `window`
-/// (when present). Items arrive later via [`apply_items`] — the
-/// per-core reactive wrapper drives that.
+/// (when present). Items arrive later via [`apply_items`] — the scene
+/// handler's reactive effect drives that.
 pub(crate) fn build_native_toolbar(
     mtm: MainThreadMarker,
     window: Option<&NSObject>,
@@ -609,7 +605,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    /// Identity wrap — the old core's discipline.
+    /// Identity wrap — isolates the translation from the flush wrap.
     fn identity(cb: Rc<dyn Fn()>) -> Rc<dyn Fn()> {
         cb
     }
@@ -654,9 +650,9 @@ mod tests {
         assert!(plan.records[1].icon.is_none());
     }
 
-    /// The per-core `wrap_click` discipline is applied to every button
-    /// handler as it enters the plan — this is the seam the new core
-    /// uses to append `schedule_flush` after author clicks.
+    /// The `wrap_click` discipline is applied to every button handler
+    /// as it enters the plan — this is the seam the handler uses to
+    /// append `schedule_flush` after author clicks.
     #[test]
     fn plan_items_routes_button_clicks_through_wrap_click() {
         let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));

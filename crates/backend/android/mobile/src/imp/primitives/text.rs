@@ -111,7 +111,7 @@ pub(crate) fn create(b: &mut AndroidBackend, content: &str) -> GlobalRef {
 /// the boundaries is not styled" flag.
 const SPAN_EXCLUSIVE_EXCLUSIVE: i32 = 33;
 
-pub(crate) fn create_styled(b: &mut AndroidBackend, runs: &[runtime_core::TextRun]) -> GlobalRef {
+pub(crate) fn create_styled(b: &mut AndroidBackend, runs: &[runtime_shared::TextRun]) -> GlobalRef {
     // Reuse the full plain-text path (font-padding strip, gravity,
     // measure_fn — `View.measure` reflects the spannable once set),
     // then swap the plain string for the spanned realization.
@@ -121,9 +121,9 @@ pub(crate) fn create_styled(b: &mut AndroidBackend, runs: &[runtime_core::TextRu
 }
 
 /// Build the `SpannableString` and hand it to `TextView.setText`.
-pub(crate) fn set_styled(view: &GlobalRef, runs: &[runtime_core::TextRun]) {
+pub(crate) fn set_styled(view: &GlobalRef, runs: &[runtime_shared::TextRun]) {
     with_env(|env| {
-        let plain = runtime_core::styled_text::plain_text_of(runs);
+        let plain = runtime_shared::styled_text::plain_text_of(runs);
         let jplain = env.new_string(&plain).unwrap();
         let sp_class = env.find_class("android/text/SpannableString").unwrap();
         let sp = env
@@ -184,7 +184,7 @@ pub(crate) fn set_styled(view: &GlobalRef, runs: &[runtime_core::TextRun]) {
                 // faces (SF Mono, Menlo) don't exist on Android and a
                 // registered custom `Typeface` span needs API 28 —
                 // documented gap, the generic covers the inline-code case.
-                if let Some(runtime_core::FontFamily::System(stack)) = &style.font_family {
+                if let Some(runtime_shared::FontFamily::System(stack)) = &style.font_family {
                     let lower = stack.to_ascii_lowercase();
                     let family = if lower.contains("monospace") {
                         Some("monospace")
@@ -209,10 +209,10 @@ pub(crate) fn set_styled(view: &GlobalRef, runs: &[runtime_core::TextRun]) {
                 if let Some(w) = style.font_weight {
                     if matches!(
                         w,
-                        runtime_core::FontWeight::SemiBold
-                            | runtime_core::FontWeight::Bold
-                            | runtime_core::FontWeight::ExtraBold
-                            | runtime_core::FontWeight::Black
+                        runtime_shared::FontWeight::SemiBold
+                            | runtime_shared::FontWeight::Bold
+                            | runtime_shared::FontWeight::ExtraBold
+                            | runtime_shared::FontWeight::Black
                     ) {
                         let cls = env.find_class("android/text/style/StyleSpan").unwrap();
                         // Typeface.BOLD = 1
@@ -220,7 +220,7 @@ pub(crate) fn set_styled(view: &GlobalRef, runs: &[runtime_core::TextRun]) {
                         set_span(env, &sp, span, start, end);
                     }
                 }
-                if let Some(runtime_core::Length::Px(px)) =
+                if let Some(runtime_shared::Length::Px(px)) =
                     style.font_size.as_ref().map(|t| t.resolve())
                 {
                     // dip=true: framework px are density-independent, the

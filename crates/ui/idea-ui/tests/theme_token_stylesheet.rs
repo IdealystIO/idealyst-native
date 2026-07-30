@@ -8,11 +8,6 @@
 
 use idea_ui::{install_idea_theme, light_theme, theme_length, theme_token};
 
-// The new-core alias: same-source `runtime_core::…` paths in this test
-// resolve against the glue facade (see idea-ui's lib.rs note).
-#[cfg(feature = "new-core")]
-extern crate runtime_facade as runtime_core;
-
 use runtime_core::{resolve_style, stylesheet, StyleApplication, Tokenized};
 
 // A custom, app-authored sheet — the "custom sidebar" from the report.
@@ -35,16 +30,6 @@ stylesheet! {
 
 /// The STATIC sheet application off a builder (the token reference is a
 /// constant `Tokenized`, so the built style must be the static arm).
-/// The conversion trait's method name differs per core — the one fork.
-#[cfg(not(feature = "new-core"))]
-fn static_app(b: impl runtime_core::IntoStyleSource) -> StyleApplication {
-    match b.into_style_source() {
-        runtime_core::StyleSource::Static(app) => app,
-        _ => panic!("a constant token reference must produce a static application"),
-    }
-}
-
-#[cfg(feature = "new-core")]
 fn static_app(b: impl runtime_core::IntoStyleSource) -> StyleApplication {
     match b.into_style_prop() {
         runtime_vocabulary::StyleProp::Sheet(app) => *app,

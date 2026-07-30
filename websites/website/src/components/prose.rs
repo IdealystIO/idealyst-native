@@ -22,9 +22,9 @@
 use runtime_core::{
     component, Color, Element, FontFamily, Reactive, StyleApplication, Tokenized,
 };
-// `styled_text` + the run types resolve on BOTH cores: old-core root
-// re-exports, or the glue facade's `styled_text(runs)` mirror over the
-// vocabulary text builder (same old-core `TextRun` type either way).
+// `styled_text(runs)` + the run types come through the facade's mirror
+// over the vocabulary text builder (`TextRun`/`TextRunStyle` are
+// runtime-shared types).
 use runtime_core::{styled_text, TextRun, TextRunStyle};
 
 use idea_ui::{
@@ -133,16 +133,26 @@ pub fn Prose(props: &ProseProps) -> Element {
     build(segs, props.kind.get(), props.muted.get())
 }
 
-/// Lower parsed segments to one styled-text node carrying the
-/// paragraph's Typography-sheet style (same axes Typography uses).
-fn build(segs: Vec<Segment>, kind: TypographyKindRef, muted: bool) -> Element {
-    let runs: Vec<TextRun> = segs
-        .into_iter()
+/// Map parsed segments to styled-text runs: prose stays unstyled (it
+/// inherits the paragraph's size/line-height/color from the node's own
+/// Typography-sheet application) and each code segment carries the
+/// mono/chip delta.
+///
+/// Split out of [`build`] so the run shape is assertable without
+/// introspecting the built element's opaque item payload.
+pub(crate) fn runs_for(segs: Vec<Segment>) -> Vec<TextRun> {
+    segs.into_iter()
         .map(|seg| match seg {
             Segment::Text(t) => TextRun::plain(t),
             Segment::Code(c) => TextRun::styled(c, code_run_style()),
         })
-        .collect();
+        .collect()
+}
+
+/// Lower parsed segments to one styled-text node carrying the
+/// paragraph's Typography-sheet style (same axes Typography uses).
+fn build(segs: Vec<Segment>, kind: TypographyKindRef, muted: bool) -> Element {
+    let runs: Vec<TextRun> = runs_for(segs);
 
     let color_key = if muted { "muted" } else { "default" };
     let paragraph_style = StyleApplication::new(installed_typography_sheet())
@@ -155,10 +165,6 @@ fn build(segs: Vec<Segment>, kind: TypographyKindRef, muted: bool) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "old-core")]
-    use idea_ui::{install_idea_theme, light_theme};
-    #[cfg(feature = "old-core")]
-    use runtime_core::{styled_text::plain_text_of, TextSource};
 
     fn text_seg(s: &str) -> Segment {
         Segment::Text(s.to_string())
@@ -221,47 +227,46 @@ mod tests {
         assert_eq!(segments(""), Vec::<Segment>::new());
     }
 
-    /// Backticked prose lowers to ONE styled-text node (every backend
-    /// wraps it as a single paragraph) with the paragraph style
-    /// attached and the code runs styled.
+    /// Backticked prose lowers to ONE run per segment, with the code
+    /// run — and only the code run — carrying the mono/chip delta. The
+    /// prose runs stay unstyled so they inherit the paragraph's
+    /// size/line-height/color from the node's Typography-sheet
+    /// application.
     ///
-    /// Old-core-only: matches the old `Element::Text` enum shape (the
-    /// new core's `Element::Item` payload is opaque; the styled-runs
-    /// lowering there is pinned by the vocabulary's own text tests).
-    #[cfg(feature = "old-core")]
+    /// The built element's item payload is opaque, so this asserts the
+    /// RUNS rather than the element shape; the runs → backend
+    /// attributed-text lowering is pinned by the vocabulary's own text
+    /// tests.
     #[test]
-    fn code_prose_lowers_to_styled_text_runs() {
-        install_idea_theme(light_theme());
-        let el = build(segments("the `ui!` macro"), TypographyKindRef::default(), false);
-        let Element::Text { source: TextSource::Styled(runs), style, .. } = el else {
-            panic!("prose with code renders one styled text node");
-        };
-        assert!(style.is_some(), "paragraph carries the typography style");
-        assert_eq!(plain_text_of(&runs), "the ui! macro");
+    fn code_prose_lowers_to_one_styled_run_per_segment() {
+        // No theme install: the chip style is a `Tokenized::token(..)`
+        // REFERENCE with a literal fallback, so it needs no registry —
+        // and installing a theme here would create signals outside
+        // `World::enter`, which panics.
+        let runs = runs_for(segments("the `ui!` macro"));
         assert_eq!(runs.len(), 3);
-        assert!(runs[0].style.is_none() && runs[2].style.is_none());
+        assert_eq!(
+            runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            vec!["the ", "ui!", " macro"],
+        );
+        assert!(
+            runs[0].style.is_none() && runs[2].style.is_none(),
+            "prose runs inherit the paragraph style"
+        );
         let chip = runs[1].style.as_ref().expect("code run is styled");
         assert!(chip.font_family.is_some(), "code run gets the mono stack");
         assert!(chip.background.is_some(), "code run gets the chip background");
     }
 
-    /// Backtick-free content goes straight to Typography — identical
-    /// output to a direct Typography call site.
-    ///
-    /// Old-core-only: matches the old `Element::Text` enum shape.
-    #[cfg(feature = "old-core")]
+    /// Backtick-free content never reaches the styled-text path — it
+    /// delegates to Typography, so a `Prose` with no code is
+    /// indistinguishable from a direct Typography call site.
     #[test]
-    fn plain_content_delegates_to_typography() {
-        install_idea_theme(light_theme());
-        let props = ProseProps {
-            content: Reactive::Static("no code at all".to_string()),
-            ..Default::default()
-        };
-        let el = Prose(&props);
-        let Element::Text { source: TextSource::Static(s), style, .. } = el else {
-            panic!("plain prose renders one text node");
-        };
-        assert_eq!(s, "no code at all");
-        assert!(style.is_some(), "Typography always attaches its style");
+    fn plain_content_produces_no_styled_runs() {
+        let segs = segments("no code at all");
+        assert!(!segs.iter().any(|s| matches!(s, Segment::Code(_))));
+        let runs = runs_for(segs);
+        assert_eq!(runs.len(), 1);
+        assert!(runs[0].style.is_none());
     }
 }

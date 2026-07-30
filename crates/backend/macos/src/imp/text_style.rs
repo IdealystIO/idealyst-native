@@ -3,7 +3,7 @@
 //! apply_text_style` — same shape, AppKit setters.
 
 use backend_apple_core::font::FontRegistry;
-use runtime_core::{FontFamily, FontStyle, FontWeight, StyleRules};
+use runtime_shared::{FontFamily, FontStyle, FontWeight, StyleRules};
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_app_kit::NSView;
@@ -84,10 +84,10 @@ pub(crate) fn apply_text_style(
     // Text alignment
     if let Some(ta) = &style.text_align {
         let align: isize = match ta {
-            runtime_core::TextAlign::Left => NS_TEXT_ALIGNMENT_LEFT,
-            runtime_core::TextAlign::Right => NS_TEXT_ALIGNMENT_RIGHT,
-            runtime_core::TextAlign::Center => NS_TEXT_ALIGNMENT_CENTER,
-            runtime_core::TextAlign::Justify => NS_TEXT_ALIGNMENT_JUSTIFIED,
+            runtime_shared::TextAlign::Left => NS_TEXT_ALIGNMENT_LEFT,
+            runtime_shared::TextAlign::Right => NS_TEXT_ALIGNMENT_RIGHT,
+            runtime_shared::TextAlign::Center => NS_TEXT_ALIGNMENT_CENTER,
+            runtime_shared::TextAlign::Justify => NS_TEXT_ALIGNMENT_JUSTIFIED,
         };
         let _: () = unsafe { msg_send![view, setAlignment: align] };
     }
@@ -199,11 +199,11 @@ pub(crate) fn system_font(weight: FontWeight, size: CGFloat) -> Retained<NSObjec
 /// Same mapping iOS uses (serif → Times New Roman, monospace →
 /// Menlo, sans → system).
 fn resolve_system_fallback(
-    fallback: runtime_core::assets::SystemFallback,
+    fallback: runtime_shared::assets::SystemFallback,
     weight: FontWeight,
     size: CGFloat,
 ) -> Option<Retained<NSObject>> {
-    use runtime_core::assets::SystemFallback;
+    use runtime_shared::assets::SystemFallback;
     match fallback {
         SystemFallback::Serif => ns_font_with_name("Times New Roman", size)
             .or_else(|| Some(system_font(weight, size))),
@@ -241,10 +241,10 @@ fn text_shadow_offset(x: f32, y: f32) -> (CGFloat, CGFloat) {
     (x as CGFloat, -(y as CGFloat))
 }
 
-pub(crate) fn length_to_px(len: &runtime_core::Length) -> CGFloat {
+pub(crate) fn length_to_px(len: &runtime_shared::Length) -> CGFloat {
     match len {
-        runtime_core::Length::Px(v) => *v as CGFloat,
-        runtime_core::Length::Percent(_) | runtime_core::Length::Auto => 0.0,
+        runtime_shared::Length::Px(v) => *v as CGFloat,
+        runtime_shared::Length::Percent(_) | runtime_shared::Length::Auto => 0.0,
     }
 }
 

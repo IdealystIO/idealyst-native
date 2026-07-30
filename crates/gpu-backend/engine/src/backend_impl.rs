@@ -14,24 +14,24 @@ use std::rc::{Rc, Weak};
 // `web-time` for wasm32 compat — see `host.rs` for the rationale.
 use web_time::Instant;
 
-use runtime_core::accessibility::{
+use glyphon::FontSystem;
+use runtime_layout::{AvailableSpace, LayoutNode, LayoutTree, Size as TaffySize};
+use runtime_shared::accessibility::{
     default_role, AccessibilityNode, AccessibilityProps, AccessibilityRect, AccessibilityTree,
     LiveRegionPriority, PrimitiveKind, Role,
 };
-use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
-use runtime_core::{Action, Backend, Color, ColorScheme, Easing, StateBits, StyleRules, Tokenized};
-use glyphon::FontSystem;
-use runtime_layout::{AvailableSpace, LayoutNode, LayoutTree, Size as TaffySize};
+use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
+use runtime_shared::{Action, Color, ColorScheme, Easing, StateBits, StyleRules, Tokenized};
 
 use crate::animation::{AnimProperty, Animator, TweenKey};
 use crate::node::{
     new_node, NodeData, NodeKind, WgpuNode, ACTIVITY_INDICATOR_LARGE_SIZE,
-    ACTIVITY_INDICATOR_SMALL_SIZE, ICON_DEFAULT_SIZE, IMAGE_DEFAULT_SIZE,
-    SLIDER_DEFAULT_WIDTH, SLIDER_HEIGHT, TEXT_AREA_DEFAULT_HEIGHT,
-    TEXT_INPUT_DEFAULT_HEIGHT, TOGGLE_ANIM_MS, TOGGLE_HEIGHT, TOGGLE_WIDTH,
+    ACTIVITY_INDICATOR_SMALL_SIZE, ICON_DEFAULT_SIZE, IMAGE_DEFAULT_SIZE, SLIDER_DEFAULT_WIDTH,
+    SLIDER_HEIGHT, TEXT_AREA_DEFAULT_HEIGHT, TEXT_INPUT_DEFAULT_HEIGHT, TOGGLE_ANIM_MS,
+    TOGGLE_HEIGHT, TOGGLE_WIDTH,
 };
-use crate::style_convert::parse_color;
 use crate::scheduler::request_redraw;
+use crate::style_convert::parse_color;
 use crate::text::{resolve_rich_spans, TextStore};
 
 /// Bullet glyph rendered per character for `secure` (password) text
@@ -132,8 +132,7 @@ pub struct WgpuBackend {
     /// path as filesystem sources — same mount surface as iOS /
     /// Android / macOS, which all store the decoded image keyed
     /// by `AssetId` in their per-backend `ImageCache`.
-    pub(crate) image_asset_bytes:
-        std::collections::HashMap<runtime_core::AssetId, Vec<u8>>,
+    pub(crate) image_asset_bytes: std::collections::HashMap<runtime_shared::AssetId, Vec<u8>>,
     /// Served-file URLs of `Bundled` fonts the app registered but
     /// whose bytes aren't in the binary (i.e. `embed-font-bytes` is
     /// off — the web host path). `register_asset` pushes `/{path}`
@@ -143,37 +142,10 @@ pub struct WgpuBackend {
     /// native, where `face!` carries the bytes inline (`BundledEmbedded`)
     /// and they're loaded synchronously below.
     pub(crate) pending_font_urls: Vec<String>,
-    /// Third-party `Element::External` registry. Populated by
-    /// per-platform leaf crates at app bootstrap. wgpu apps wire
-    /// WebView / Maps / etc. by calling
-    /// `backend.register_external::<T, _>(handler)` on the wgpu
-    /// engine — the handler renders into the same engine surface
-    /// (no native overlay yet; the overlay-per-host story remains
-    /// pending). Same registry shape iOS / Android / macOS use.
-    pub(crate) external_handlers: runtime_core::ExternalRegistry<WgpuBackend>,
-    /// Registry of `Element::Navigator` handler factories. SDK
-    /// leaves (`stack_navigator`, `tab_navigator`, `drawer_navigator`)
-    /// call `register_navigator::<TheirPresentation, _>(factory)` at
-    /// bootstrap; `create_navigator` resolves the matching factory
-    /// and runs `init`, stashing the handler in
-    /// `nav_handler_instances` for follow-up dispatch.
-    pub(crate) navigator_handlers:
-        runtime_core::NavigatorRegistry<WgpuBackend>,
-    /// Per-navigator-instance handler, keyed by the
-    /// `WgpuNode`'s pointer. Subsequent trait methods
-    /// (`navigator_attach_initial`, `release_navigator`,
-    /// `make_navigator_handle`, `apply_navigator_slot_style`) look
-    /// the handler up here and delegate.
-    pub(crate) nav_handler_instances: std::collections::HashMap<
-        usize,
-        std::rc::Rc<
-            std::cell::RefCell<Box<dyn runtime_core::NavigatorHandler<WgpuBackend>>>,
-        >,
-    >,
     /// App-level key handler (fires for every key press regardless of focus),
     /// installed by `set_app_key_handler`. Read by `Host::key` before the
     /// focused-input path.
-    pub(crate) app_key_handler: Option<runtime_core::primitives::key::KeyDownHandler>,
+    pub(crate) app_key_handler: Option<runtime_shared::primitives::key::KeyDownHandler>,
 }
 
 /// Per-node presence interpolation entry. `node` is a strong ref so
@@ -242,37 +214,8 @@ impl WgpuBackend {
             sticky_registry: crate::sticky::StickyRegistry::new(),
             image_asset_bytes: std::collections::HashMap::new(),
             pending_font_urls: Vec::new(),
-            external_handlers: runtime_core::ExternalRegistry::new(),
-            navigator_handlers: runtime_core::NavigatorRegistry::new(),
-            nav_handler_instances: std::collections::HashMap::new(),
             app_key_handler: None,
         }
-    }
-
-    /// Register a handler for the third-party external primitive
-    /// whose payload type is `T`. Called by per-platform leaf crates
-    /// (e.g. a future `webview-wgpu`, `maps-wgpu`) at app bootstrap.
-    /// The handler receives the typed payload + a mutable borrow of
-    /// the backend and produces the `WgpuNode` to mount. Mirrors
-    /// `IosBackend::register_external` / `MacosBackend::register_external`.
-    pub fn register_external<T, F>(&mut self, handler: F)
-    where
-        T: 'static,
-        F: Fn(&std::rc::Rc<T>, &mut WgpuBackend) -> WgpuNode + 'static,
-    {
-        self.external_handlers.register::<T, _>(handler);
-    }
-
-    /// Register a `Element::Navigator` handler factory keyed by
-    /// presentation type `P`. SDK leaf crates call this once at
-    /// bootstrap. Mirrors `IosBackend::register_navigator` /
-    /// `MacosBackend::register_navigator`.
-    pub fn register_navigator<P, F>(&mut self, factory: F)
-    where
-        P: 'static,
-        F: Fn() -> Box<dyn runtime_core::NavigatorHandler<WgpuBackend>> + 'static,
-    {
-        self.navigator_handlers.register::<P, _>(factory);
     }
 
     /// Look up the raw bytes for a registered image asset. Returns
@@ -281,10 +224,7 @@ impl WgpuBackend {
     /// `pub` so the renderer in [`crate::renderer`] — which is in
     /// the same crate but accesses `WgpuBackend` through `Host::
     /// backend()` — can call without going through a private field.
-    pub fn image_asset_bytes(
-        &self,
-        id: runtime_core::AssetId,
-    ) -> Option<&[u8]> {
+    pub fn image_asset_bytes(&self, id: runtime_shared::AssetId) -> Option<&[u8]> {
         self.image_asset_bytes.get(&id).map(|v| v.as_slice())
     }
 
@@ -366,7 +306,10 @@ impl WgpuBackend {
             id,
             Rc::new(move |known, available| {
                 let (Some(text), Some(fs)) = (text_weak.upgrade(), fs_weak.upgrade()) else {
-                    return TaffySize { width: 0.0, height: 0.0 };
+                    return TaffySize {
+                        width: 0.0,
+                        height: 0.0,
+                    };
                 };
                 let mut text = text.borrow_mut();
                 let mut fs = fs.borrow_mut();
@@ -384,47 +327,22 @@ impl WgpuBackend {
                         AvailableSpace::MinContent => text.measure_min_content(&mut fs, id),
                     },
                 };
-                TaffySize { width: w, height: h }
+                TaffySize {
+                    width: w,
+                    height: h,
+                }
             }),
         );
     }
 }
 
-/// Generic-handler registration surface. The inherent
-/// `register_navigator` / `register_external` methods above are what the
-/// per-platform leaf crates (and the wgpu host) call directly; these
-/// trait impls forward to them so SDK crates that register through the
-/// *backend-neutral* generic path — `fn register<B: RegisterNavigator>`
-/// / `fn register<B: RegisterExternal>` — also resolve on the GPU
-/// backend. The drawer navigator's primitive `chrome::register` is the
-/// motivating consumer: it renders the navigator from primitives, which
-/// the wgpu renderer draws natively, so the GPU backend can host a
-/// `DrawerNavigator` app without a wgpu-specific drawer handler. Mirrors
-/// `impl RegisterNavigator for SsrBackend`.
-impl runtime_core::primitives::navigator::RegisterNavigator for WgpuBackend {
-    fn register_navigator<P, F>(&mut self, factory: F)
-    where
-        P: 'static,
-        F: Fn() -> Box<dyn runtime_core::NavigatorHandler<Self>> + 'static,
-    {
-        self.navigator_handlers.register::<P, _>(factory);
-    }
-}
-
-impl runtime_core::RegisterExternal for WgpuBackend {
-    fn register_external<T, F>(&mut self, handler: F)
-    where
-        T: 'static,
-        F: Fn(&std::rc::Rc<T>, &mut Self) -> Self::Node + 'static,
-    {
-        self.external_handlers.register::<T, _>(handler);
-    }
-}
-
-impl Backend for WgpuBackend {
-    type Node = WgpuNode;
-
-    fn platform(&self) -> runtime_core::Platform {
+// The backend mechanism, as inherent methods (runtime v2: the `Backend`
+// mega-trait is gone). Bodies are verbatim what the trait impl carried;
+// `newcore.rs` adapts them onto `runtime_scene::Host` + the
+// `runtime_vocabulary::caps::*Ops` capability traits, one delegation per
+// method. `_impl` suffix keeps the adapter's call sites unambiguous.
+impl WgpuBackend {
+    pub(crate) fn platform_impl(&self) -> runtime_shared::Platform {
         // The wgpu renderer itself is platform-agnostic; the active
         // `Painter` decides what host it's pretending to be. Delegating
         // here means iOS-sim / android-sim skins each self-report
@@ -433,14 +351,14 @@ impl Backend for WgpuBackend {
         self.skin.platform()
     }
 
-    fn color_scheme(&self) -> ColorScheme {
+    pub(crate) fn color_scheme_impl(&self) -> ColorScheme {
         self.color_scheme
     }
 
-    fn create_view(
+    pub(crate) fn create_view_impl(
         &mut self,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
         let layout = self.layout.new_node();
         let node = new_node(NodeKind::View, layout);
         init_node_a11y(&node, a11y, PrimitiveKind::View);
@@ -448,11 +366,11 @@ impl Backend for WgpuBackend {
         node
     }
 
-    fn create_text(
+    pub(crate) fn create_text_impl(
         &mut self,
         content: &str,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
         let layout = self.layout.new_node();
         {
             let mut text = self.text.borrow_mut();
@@ -461,7 +379,9 @@ impl Backend for WgpuBackend {
         }
         self.install_text_measure(layout);
         let node = new_node(
-            NodeKind::Text { content: content.to_string() },
+            NodeKind::Text {
+                content: content.to_string(),
+            },
             layout,
         );
         init_node_a11y(&node, a11y, PrimitiveKind::Text);
@@ -469,13 +389,13 @@ impl Backend for WgpuBackend {
         node
     }
 
-    fn create_styled_text(
+    pub(crate) fn create_styled_text_impl(
         &mut self,
-        runs: &[runtime_core::TextRun],
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        runs: &[runtime_shared::TextRun],
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
         let layout = self.layout.new_node();
-        let plain = runtime_core::styled_text::plain_text_of(runs);
+        let plain = runtime_shared::styled_text::plain_text_of(runs);
         {
             let mut text = self.text.borrow_mut();
             let mut fs = self.font_system.borrow_mut();
@@ -488,7 +408,11 @@ impl Backend for WgpuBackend {
         node
     }
 
-    fn update_styled_text(&mut self, node: &Self::Node, runs: &[runtime_core::TextRun]) {
+    pub(crate) fn update_styled_text_impl(
+        &mut self,
+        node: &WgpuNode,
+        runs: &[runtime_shared::TextRun],
+    ) {
         // Theme-cohort re-realization: run token colors resolve inside
         // `resolve_rich_spans` against the NEW theme. Re-shape + mark
         // dirty (a run font delta can move metrics) + repaint.
@@ -496,7 +420,7 @@ impl Backend for WgpuBackend {
         {
             let mut data = node.borrow_mut();
             if let NodeKind::Text { content } = &mut data.kind {
-                *content = runtime_core::styled_text::plain_text_of(runs);
+                *content = runtime_shared::styled_text::plain_text_of(runs);
             }
         }
         {
@@ -508,14 +432,14 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
-    fn create_button(
+    pub(crate) fn create_button_impl(
         &mut self,
         label: &str,
         on_click: &Action,
-        _leading_icon: Option<&runtime_core::primitives::icon::IconData>,
-        _trailing_icon: Option<&runtime_core::primitives::icon::IconData>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        _leading_icon: Option<&runtime_shared::primitives::icon::IconData>,
+        _trailing_icon: Option<&runtime_shared::primitives::icon::IconData>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
         let layout = self.layout.new_node();
         {
             let mut text = self.text.borrow_mut();
@@ -529,7 +453,10 @@ impl Backend for WgpuBackend {
             request_redraw();
         });
         let node = new_node(
-            NodeKind::Button { label: label.to_string(), on_click: cb },
+            NodeKind::Button {
+                label: label.to_string(),
+                on_click: cb,
+            },
             layout,
         );
         init_node_a11y(&node, a11y, PrimitiveKind::Button);
@@ -550,18 +477,18 @@ impl Backend for WgpuBackend {
             // merge in `apply_style` handles `defaults <- defaults`
             // as a no-op when the author hasn't supplied any.
             let rules = Rc::new(defaults);
-            self.apply_style(&node, &rules);
+            self.apply_style_impl(&node, &rules);
         }
 
         self.roots.push(node.clone());
         node
     }
 
-    fn create_pressable(
+    pub(crate) fn create_pressable_impl(
         &mut self,
         on_click: Rc<dyn Fn()>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
         let layout = self.layout.new_node();
         // Wrap to request a redraw — the user's closure mutates
         // app state, but the framework doesn't drive a redraw on
@@ -577,10 +504,10 @@ impl Backend for WgpuBackend {
         node
     }
 
-    fn install_touch_handler(
+    pub(crate) fn install_touch_handler_impl(
         &mut self,
-        node: &Self::Node,
-        handler: runtime_core::TouchHandler,
+        node: &WgpuNode,
+        handler: runtime_shared::TouchHandler,
     ) {
         node.borrow_mut().touch_handler = Some(handler);
     }
@@ -591,16 +518,16 @@ impl Backend for WgpuBackend {
     // Android backends will override this to call into UIKit /
     // Android-View claim mechanisms.
 
-    fn create_text_input(
+    pub(crate) fn create_text_input_impl(
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        _on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
+        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        _on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
         secure: bool,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
         let layout = self.layout.new_node();
         // The visible glyph buffer holds whichever of value /
         // placeholder is currently being shown. Empty value =>
@@ -640,11 +567,17 @@ impl Backend for WgpuBackend {
         node
     }
 
-    fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
+    pub(crate) fn update_text_input_value_impl(&mut self, node: &WgpuNode, value: &str) {
         let layout = node.borrow().layout;
         let visible = {
             let mut data = node.borrow_mut();
-            if let NodeKind::TextInput { value: stored, placeholder, secure, .. } = &mut data.kind {
+            if let NodeKind::TextInput {
+                value: stored,
+                placeholder,
+                secure,
+                ..
+            } = &mut data.kind
+            {
                 *stored = value.to_string();
                 if value.is_empty() {
                     placeholder.clone().unwrap_or_default()
@@ -666,13 +599,19 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
-    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
+    pub(crate) fn update_text_input_secure_impl(&mut self, node: &WgpuNode, secure: bool) {
         // Flip the stored mask flag and re-render the displayed glyphs from
         // the (cleartext) stored value — bullets when secure, plain otherwise.
         let layout = node.borrow().layout;
         let visible = {
             let mut data = node.borrow_mut();
-            if let NodeKind::TextInput { value, placeholder, secure: stored, .. } = &mut data.kind {
+            if let NodeKind::TextInput {
+                value,
+                placeholder,
+                secure: stored,
+                ..
+            } = &mut data.kind
+            {
                 *stored = secure;
                 if value.is_empty() {
                     placeholder.clone().unwrap_or_default()
@@ -694,7 +633,7 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
-    fn create_text_area(
+    pub(crate) fn create_text_area_impl(
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
@@ -709,9 +648,9 @@ impl Backend for WgpuBackend {
         _min_rows: Option<u32>,
         _max_rows: Option<u32>,
         on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
         // MVP: shape identical to TextInput, larger default height.
         // The renderer + host treat NodeKind::TextArea the same as
         // NodeKind::TextInput for now; multi-line wrap + caret are
@@ -742,11 +681,16 @@ impl Backend for WgpuBackend {
         node
     }
 
-    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
+    pub(crate) fn update_text_area_value_impl(&mut self, node: &WgpuNode, value: &str) {
         let layout = node.borrow().layout;
         let visible = {
             let mut data = node.borrow_mut();
-            if let NodeKind::TextArea { value: stored, placeholder, .. } = &mut data.kind {
+            if let NodeKind::TextArea {
+                value: stored,
+                placeholder,
+                ..
+            } = &mut data.kind
+            {
                 *stored = value.to_string();
                 if value.is_empty() {
                     placeholder.clone().unwrap_or_default()
@@ -766,17 +710,20 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
-    fn create_toggle(
+    pub(crate) fn create_toggle_impl(
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
         let layout = self.layout.new_node();
         self.layout
             .set_intrinsic_size(layout, TOGGLE_WIDTH, TOGGLE_HEIGHT);
         let node = new_node(
-            NodeKind::Toggle { value: initial_value, on_change },
+            NodeKind::Toggle {
+                value: initial_value,
+                on_change,
+            },
             layout,
         );
         init_node_a11y(&node, a11y, PrimitiveKind::Toggle);
@@ -784,7 +731,7 @@ impl Backend for WgpuBackend {
         node
     }
 
-    fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
+    pub(crate) fn update_toggle_value_impl(&mut self, node: &WgpuNode, value: bool) {
         let layout = node.borrow().layout;
         // Only animate on an actual value change. The framework
         // re-fires the controlled-value Effect even when the new
@@ -815,15 +762,15 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
-    fn create_slider(
+    pub(crate) fn create_slider_impl(
         &mut self,
         initial_value: f32,
         min: f32,
         max: f32,
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
         let layout = self.layout.new_node();
         self.layout
             .set_intrinsic_size(layout, SLIDER_DEFAULT_WIDTH, SLIDER_HEIGHT);
@@ -842,19 +789,19 @@ impl Backend for WgpuBackend {
         node
     }
 
-    fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
+    pub(crate) fn update_slider_value_impl(&mut self, node: &WgpuNode, value: f32) {
         if let NodeKind::Slider { value: stored, .. } = &mut node.borrow_mut().kind {
             *stored = value;
         }
         request_redraw();
     }
 
-    fn create_activity_indicator(
+    pub(crate) fn create_activity_indicator_impl(
         &mut self,
         size: ActivityIndicatorSize,
         color: Option<&Color>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
         let layout = self.layout.new_node();
         let diameter = match size {
             ActivityIndicatorSize::Small => ACTIVITY_INDICATOR_SMALL_SIZE,
@@ -878,12 +825,12 @@ impl Backend for WgpuBackend {
         node
     }
 
-    fn create_scroll_view(
+    pub(crate) fn create_scroll_view_impl(
         &mut self,
         horizontal: bool,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
         let layout = self.layout.new_node();
         // Pin the scrollview's main-axis `min-size` to 0 so the
         // parent's flex layout can shrink it below its children's
@@ -913,7 +860,7 @@ impl Backend for WgpuBackend {
         node
     }
 
-    fn create_reactive_anchor(&mut self) -> Self::Node {
+    pub(crate) fn create_reactive_anchor_impl(&mut self) -> WgpuNode {
         let layout = self.layout.new_node();
         let node = new_node(NodeKind::ReactiveAnchor, layout);
         // ReactiveAnchor is a transparent control-flow container —
@@ -930,11 +877,11 @@ impl Backend for WgpuBackend {
     // pre-baked with its push/replace/reset dispatch logic.
     // -----------------------------------------------------------
 
-    fn create_link(
+    pub(crate) fn create_link_impl(
         &mut self,
-        config: runtime_core::primitives::link::LinkConfig,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        config: runtime_shared::primitives::link::LinkConfig,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
         let layout = self.layout.new_node();
         // Wrap the activate closure to also request a redraw so
         // a click that mutates app state repaints immediately.
@@ -955,12 +902,12 @@ impl Backend for WgpuBackend {
     // textured-quad pipeline is future work.
     // -----------------------------------------------------------
 
-    fn create_image(
+    pub(crate) fn create_image_impl(
         &mut self,
         src: &str,
         alt: Option<&str>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
         let layout = self.layout.new_node();
         self.layout
             .set_intrinsic_size(layout, IMAGE_DEFAULT_SIZE, IMAGE_DEFAULT_SIZE);
@@ -976,7 +923,7 @@ impl Backend for WgpuBackend {
         node
     }
 
-    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
+    pub(crate) fn update_image_src_impl(&mut self, node: &WgpuNode, src: &str) {
         if let NodeKind::Image { src: stored, .. } = &mut node.borrow_mut().kind {
             *stored = src.to_string();
         }
@@ -988,12 +935,12 @@ impl Backend for WgpuBackend {
     // icon's tint flows through `update_icon_color`.
     // -----------------------------------------------------------
 
-    fn create_icon(
+    pub(crate) fn create_icon_impl(
         &mut self,
-        data: &runtime_core::primitives::icon::IconData,
+        data: &runtime_shared::primitives::icon::IconData,
         color: Option<&Color>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
         let layout = self.layout.new_node();
         self.layout
             .set_intrinsic_size(layout, ICON_DEFAULT_SIZE, ICON_DEFAULT_SIZE);
@@ -1015,23 +962,26 @@ impl Backend for WgpuBackend {
         node
     }
 
-    fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
+    pub(crate) fn update_icon_color_impl(&mut self, node: &WgpuNode, color: &Color) {
         if let NodeKind::Icon { color: stored, .. } = &mut node.borrow_mut().kind {
             *stored = Some(parse_color(color));
         }
         request_redraw();
     }
 
-    fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
-        if let NodeKind::Icon { stroke_progress, .. } = &node.borrow().kind {
+    pub(crate) fn update_icon_stroke_impl(&mut self, node: &WgpuNode, progress: f32) {
+        if let NodeKind::Icon {
+            stroke_progress, ..
+        } = &node.borrow().kind
+        {
             stroke_progress.set(progress.clamp(0.0, 1.0));
         }
         request_redraw();
     }
 
-    fn animate_icon_stroke(
+    pub(crate) fn animate_icon_stroke_impl(
         &mut self,
-        node: &Self::Node,
+        node: &WgpuNode,
         from: f32,
         to: f32,
         duration_ms: u32,
@@ -1045,7 +995,10 @@ impl Backend for WgpuBackend {
         // once and hold at `to`", which is the most useful
         // degenerate behavior for static screenshots.
         let layout = node.borrow().layout;
-        if let NodeKind::Icon { stroke_progress, .. } = &node.borrow().kind {
+        if let NodeKind::Icon {
+            stroke_progress, ..
+        } = &node.borrow().kind
+        {
             stroke_progress.set(from.clamp(0.0, 1.0));
         }
         self.animator.animate(
@@ -1070,17 +1023,18 @@ impl Backend for WgpuBackend {
     // every frame anyway. `Named` slots aren't wired up.
     // -----------------------------------------------------------
 
-    fn create_portal(
+    pub(crate) fn create_portal_impl(
         &mut self,
-        target: runtime_core::primitives::portal::PortalTarget,
+        target: runtime_shared::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         _trap_focus: bool,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        if matches!(target, runtime_core::primitives::portal::PortalTarget::Named(_)) {
-            unimplemented!(
-                "PortalTarget::Named is not supported by the wgpu backend"
-            );
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
+        if matches!(
+            target,
+            runtime_shared::primitives::portal::PortalTarget::Named(_)
+        ) {
+            unimplemented!("PortalTarget::Named is not supported by the wgpu backend");
         }
         let layout = self.layout.new_node();
         let node = new_node(NodeKind::Portal { target, on_dismiss }, layout);
@@ -1095,13 +1049,13 @@ impl Backend for WgpuBackend {
     // calls `mount_item` for each index; we insert the result.
     // -----------------------------------------------------------
 
-    fn create_virtualizer(
+    pub(crate) fn create_virtualizer_impl(
         &mut self,
-        callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
+        callbacks: runtime_shared::VirtualizerCallbacks<WgpuNode>,
         _overscan: f32,
-        virt_layout: runtime_core::VirtualLayout,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        virt_layout: runtime_shared::VirtualLayout,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
         // GPU backend mounts every item (no windowing yet), so
         // lane/grid layout isn't honored — only the scroll axis maps to
         // the existing flow. Grid support lands when this grows a real
@@ -1138,7 +1092,7 @@ impl Backend for WgpuBackend {
         node
     }
 
-    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
+    pub(crate) fn virtualizer_data_changed_impl(&mut self, node: &WgpuNode) {
         // Deferred for the same reason as the initial fill (see
         // `create_virtualizer`): the new-core data effect calls this
         // under `backend.borrow_mut()`, and the refill must invoke the
@@ -1158,14 +1112,13 @@ impl Backend for WgpuBackend {
     // strip around the active screen's rect.
     // -----------------------------------------------------------
 
-
-    fn create_graphics(
+    pub(crate) fn create_graphics_impl(
         &mut self,
-        _on_ready: runtime_core::primitives::graphics::OnReady,
-        _on_resize: runtime_core::primitives::graphics::OnResize,
-        _on_lost: runtime_core::primitives::graphics::OnLost,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        _on_ready: runtime_shared::primitives::graphics::OnReady,
+        _on_resize: runtime_shared::primitives::graphics::OnResize,
+        _on_lost: runtime_shared::primitives::graphics::OnLost,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
         // We can't satisfy the framework's `OnReady(GraphicsSurface)`
         // contract — `GraphicsSurface` is a real-window handle, and
         // we're rendering into a sub-region of our own surface, not
@@ -1190,10 +1143,10 @@ impl Backend for WgpuBackend {
         node
     }
 
-    fn make_graphics_handle(
+    pub(crate) fn make_graphics_handle_impl(
         &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::graphics::GraphicsHandle {
+        node: &WgpuNode,
+    ) -> runtime_shared::primitives::graphics::GraphicsHandle {
         // Wrap the `WgpuNode` itself as the handle's userdata so
         // `register_graphics_drawer` can downcast back to recover
         // it. `WgpuNode = Rc<RefCell<NodeData>>`; the `Rc<dyn Any>`
@@ -1201,23 +1154,21 @@ impl Backend for WgpuBackend {
         // inner concrete type is `WgpuNode` (i.e.
         // `Rc<RefCell<NodeData>>`). Downcast target on retrieval
         // is the same `WgpuNode` type alias.
-        runtime_core::primitives::graphics::GraphicsHandle::new(
+        runtime_shared::primitives::graphics::GraphicsHandle::new(
             Rc::new(node.clone()) as Rc<dyn std::any::Any>,
             &WgpuGraphicsOps,
         )
     }
 
-    fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
+    pub(crate) fn insert_impl(&mut self, parent: &mut WgpuNode, child: WgpuNode) {
         let parent_layout = parent.borrow().layout;
         let child_layout = child.borrow().layout;
-        let parent_is_scroll =
-            matches!(parent.borrow().kind, NodeKind::ScrollView { .. });
+        let parent_is_scroll = matches!(parent.borrow().kind, NodeKind::ScrollView { .. });
         // Portal nodes are taken out of normal flow at the
         // Taffy level so the parent's flex layout doesn't
         // reserve inline space for them. The actual screen
         // position is computed in the renderer's top-z pass.
-        let child_is_portal =
-            matches!(child.borrow().kind, NodeKind::Portal { .. });
+        let child_is_portal = matches!(child.borrow().kind, NodeKind::Portal { .. });
         self.layout.add_child(parent_layout, child_layout);
         parent.borrow_mut().children.push(child.clone());
         // The child is no longer orphaned — drop it from `roots`.
@@ -1231,7 +1182,7 @@ impl Backend for WgpuBackend {
             // portal's *children* out within whatever size we
             // compute for the portal node itself.
             let floating = StyleRules {
-                position: Some(runtime_core::Position::Absolute),
+                position: Some(runtime_shared::Position::Absolute),
                 ..Default::default()
             };
             self.layout.set_style(child_layout, &floating);
@@ -1260,7 +1211,7 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
-    fn update_text(&mut self, node: &Self::Node, content: &str) {
+    pub(crate) fn update_text_impl(&mut self, node: &WgpuNode, content: &str) {
         let layout = node.borrow().layout;
         {
             let mut data = node.borrow_mut();
@@ -1279,7 +1230,7 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
-    fn clear_children(&mut self, node: &Self::Node) {
+    pub(crate) fn clear_children_impl(&mut self, node: &WgpuNode) {
         let parent_layout = node.borrow().layout;
         let children: Vec<WgpuNode> = node.borrow_mut().children.drain(..).collect();
         for child in &children {
@@ -1301,16 +1252,16 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
-    fn set_app_key_handler(
+    pub(crate) fn set_app_key_handler_impl(
         &mut self,
-        handler: Option<runtime_core::primitives::key::KeyDownHandler>,
+        handler: Option<runtime_shared::primitives::key::KeyDownHandler>,
     ) {
         // Stored here; `Host::key` reads it on each key press (before the
         // focused-input path) since the winit event loop routes through Host.
         self.app_key_handler = handler;
     }
 
-    fn finish(&mut self, root: Self::Node) {
+    pub(crate) fn finish_impl(&mut self, root: WgpuNode) {
         // The framework hands us the root once the build walker has
         // emitted every create/insert/apply_style for this tree.
         // Make sure it's the only entry in `roots` (every other
@@ -1322,25 +1273,29 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
-    fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
+    pub(crate) fn attach_states_impl(
+        &mut self,
+        node: &WgpuNode,
+        setter: Rc<dyn Fn(StateBits, bool)>,
+    ) {
         node.borrow_mut().state_setter = Some(setter);
     }
 
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
-        runtime_core::ViewHandle::new(Rc::new(node.clone()), &crate::handles::WGPU_VIEW_OPS)
+    pub(crate) fn make_view_handle_impl(&self, node: &WgpuNode) -> runtime_shared::ViewHandle {
+        runtime_shared::ViewHandle::new(Rc::new(node.clone()), &crate::handles::WGPU_VIEW_OPS)
     }
 
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
-        runtime_core::TextHandle::new(Rc::new(node.clone()), &crate::handles::WGPU_TEXT_OPS)
+    pub(crate) fn make_text_handle_impl(&self, node: &WgpuNode) -> runtime_shared::TextHandle {
+        runtime_shared::TextHandle::new(Rc::new(node.clone()), &crate::handles::WGPU_TEXT_OPS)
     }
 
-    fn set_animated_f32(
+    pub(crate) fn set_animated_f32_impl(
         &mut self,
-        node: &Self::Node,
-        prop: runtime_core::animation::AnimProp,
+        node: &WgpuNode,
+        prop: runtime_shared::animation::AnimProp,
         value: f32,
     ) {
-        use runtime_core::animation::AnimProp;
+        use runtime_shared::animation::AnimProp;
         {
             let mut data = node.borrow_mut();
             let ov = data
@@ -1373,11 +1328,11 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
-    fn register_asset(
+    pub(crate) fn register_asset_impl(
         &mut self,
-        id: runtime_core::AssetId,
-        kind: runtime_core::AssetTag,
-        source: &runtime_core::AssetSource,
+        id: runtime_shared::AssetId,
+        kind: runtime_shared::AssetTag,
+        source: &runtime_shared::AssetSource,
     ) {
         // Two paths: Font assets go into cosmic-text's font db so
         // the text shaper can resolve them. Image assets go into
@@ -1387,7 +1342,7 @@ impl Backend for WgpuBackend {
         // kinds (Audio, Blob) flow through their own pipelines or
         // aren't supported yet — silently ignored.
         match kind {
-            runtime_core::AssetTag::Font => {
+            runtime_shared::AssetTag::Font => {
                 match source {
                     // Bytes-in-binary path (native, `embed-font-bytes`
                     // on): `face!` emits `BundledEmbedded` (path +
@@ -1395,8 +1350,8 @@ impl Backend for WgpuBackend {
                     // `embed_asset!` font. Load synchronously — the
                     // bytes are `'static`, so `to_vec()` is a cheap
                     // one-time-per-font clone.
-                    runtime_core::AssetSource::Embedded { bytes, .. }
-                    | runtime_core::AssetSource::BundledEmbedded { bytes, .. } => {
+                    runtime_shared::AssetSource::Embedded { bytes, .. }
+                    | runtime_shared::AssetSource::BundledEmbedded { bytes, .. } => {
                         self.font_system
                             .borrow_mut()
                             .db_mut()
@@ -1426,7 +1381,7 @@ impl Backend for WgpuBackend {
                     //   `path` is the app-relative path the recorder
                     //   captured; it resolves against the process CWD
                     //   (the project dir for a dev-server sidecar).
-                    runtime_core::AssetSource::Bundled { path } => {
+                    runtime_shared::AssetSource::Bundled { path } => {
                         #[cfg(target_arch = "wasm32")]
                         {
                             self.pending_font_urls.push(format!("/{path}"));
@@ -1453,14 +1408,14 @@ impl Backend for WgpuBackend {
                         }
                     }
                     // Arbitrary remote URL — same deferred-fetch hook.
-                    runtime_core::AssetSource::Remote { url } => {
+                    runtime_shared::AssetSource::Remote { url } => {
                         self.pending_font_urls.push((*url).to_string());
                     }
                 }
             }
-            runtime_core::AssetTag::Image => {
-                if let runtime_core::AssetSource::Embedded { bytes, .. }
-                | runtime_core::AssetSource::BundledEmbedded { bytes, .. } = source
+            runtime_shared::AssetTag::Image => {
+                if let runtime_shared::AssetSource::Embedded { bytes, .. }
+                | runtime_shared::AssetSource::BundledEmbedded { bytes, .. } = source
                 {
                     // Store the raw bytes; the renderer decodes
                     // lazily on first `asset://{id}` reference. The
@@ -1474,24 +1429,24 @@ impl Backend for WgpuBackend {
         }
     }
 
-    fn unregister_asset(
+    pub(crate) fn unregister_asset_impl(
         &mut self,
-        id: runtime_core::AssetId,
-        kind: runtime_core::AssetTag,
+        id: runtime_shared::AssetId,
+        kind: runtime_shared::AssetTag,
     ) {
         // Remove the cached bytes when the framework hot-reloads or
         // explicitly retires an asset. Font removal can't be undone
         // through cosmic-text's `load_font_data` API (the database
         // is append-only), so we just drop our image-side entry.
-        if matches!(kind, runtime_core::AssetTag::Image) {
+        if matches!(kind, runtime_shared::AssetTag::Image) {
             self.image_asset_bytes.remove(&id);
         }
     }
 
-    fn apply_presence(
+    pub(crate) fn apply_presence_impl(
         &mut self,
-        node: &Self::Node,
-        state: runtime_core::primitives::presence::PresenceState,
+        node: &WgpuNode,
+        state: runtime_shared::primitives::presence::PresenceState,
         transition: Option<(u32, Easing)>,
     ) {
         let node_key = Rc::as_ptr(node) as usize;
@@ -1548,9 +1503,7 @@ impl Backend for WgpuBackend {
                         from: current,
                         to: target,
                         started: Instant::now(),
-                        duration: std::time::Duration::from_millis(
-                            duration_ms as u64,
-                        ),
+                        duration: std::time::Duration::from_millis(duration_ms as u64),
                         easing,
                     },
                 );
@@ -1559,13 +1512,13 @@ impl Backend for WgpuBackend {
         }
     }
 
-    fn set_animated_color(
+    pub(crate) fn set_animated_color_impl(
         &mut self,
-        node: &Self::Node,
-        prop: runtime_core::animation::AnimProp,
+        node: &WgpuNode,
+        prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
-        use runtime_core::animation::AnimProp;
+        use runtime_shared::animation::AnimProp;
         {
             let mut data = node.borrow_mut();
             let ov = data
@@ -1578,9 +1531,7 @@ impl Backend for WgpuBackend {
                     // Per-stop override: replace if the stop is already
                     // tracked, else append. Linear scan is fine — a
                     // gradient typically has < 8 stops.
-                    if let Some(slot) =
-                        ov.gradient_stops.iter_mut().find(|(i, _)| *i == idx)
-                    {
+                    if let Some(slot) = ov.gradient_stops.iter_mut().find(|(i, _)| *i == idx) {
                         slot.1 = value;
                     } else {
                         ov.gradient_stops.push((idx, value));
@@ -1601,8 +1552,7 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
-
-    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
+    pub(crate) fn set_disabled_impl(&mut self, node: &WgpuNode, disabled: bool) {
         // The framework's state-overlay system handles the
         // visual side — any stylesheet with a
         // `state { disabled, … }` overlay re-resolves and
@@ -1616,14 +1566,14 @@ impl Backend for WgpuBackend {
         }
     }
 
-    fn frame(
+    pub(crate) fn frame_impl(
         &self,
-        node: &Self::Node,
-    ) -> Option<runtime_core::primitives::portal::ViewportRect> {
+        node: &WgpuNode,
+    ) -> Option<runtime_shared::primitives::portal::ViewportRect> {
         // Local frame (relative to the parent's content box) —
         // straight out of Taffy's computed layout.
         let frame = self.layout.frame_of(node.borrow().layout);
-        Some(runtime_core::primitives::portal::ViewportRect {
+        Some(runtime_shared::primitives::portal::ViewportRect {
             x: frame.x,
             y: frame.y,
             width: frame.width,
@@ -1631,17 +1581,17 @@ impl Backend for WgpuBackend {
         })
     }
 
-    fn absolute_frame(
+    pub(crate) fn absolute_frame_impl(
         &self,
-        node: &Self::Node,
-    ) -> Option<runtime_core::primitives::portal::ViewportRect> {
+        node: &WgpuNode,
+    ) -> Option<runtime_shared::primitives::portal::ViewportRect> {
         // Walk down from each root accumulating origins until we
         // hit `node`. `absolute_origin` already does this for the
         // host's pointer dispatch; the rect's size is just the
         // Taffy frame at the node.
         let origin = crate::host::absolute_origin(self, node);
         let size = self.layout.frame_of(node.borrow().layout);
-        Some(runtime_core::primitives::portal::ViewportRect {
+        Some(runtime_shared::primitives::portal::ViewportRect {
             x: origin.0,
             y: origin.1,
             width: size.width,
@@ -1666,9 +1616,9 @@ impl Backend for WgpuBackend {
     // the projection contract those hosts must follow.
     // -----------------------------------------------------------------
 
-    fn update_accessibility(
+    pub(crate) fn update_accessibility_impl(
         &mut self,
-        node: &Self::Node,
+        node: &WgpuNode,
         a11y: &AccessibilityProps,
         inferred_role: Option<Role>,
     ) {
@@ -1686,7 +1636,11 @@ impl Backend for WgpuBackend {
         data.inferred_role = inferred_role;
     }
 
-    fn announce_for_accessibility(&mut self, msg: &str, priority: LiveRegionPriority) {
+    pub(crate) fn announce_for_accessibility_impl(
+        &mut self,
+        msg: &str,
+        priority: LiveRegionPriority,
+    ) {
         // Append to the one-shot queue; the host shell drains via
         // `drain_pending_announcements()` and posts each entry to
         // the platform announcement API. We don't dedupe — two
@@ -1696,7 +1650,12 @@ impl Backend for WgpuBackend {
         self.pending_announcements.push((msg.to_string(), priority));
     }
 
-    fn dump_accessibility_tree(&self) -> Option<AccessibilityTree> {
+    // `pub` (not `pub(crate)`): the AccessKit host bridge
+    // (`host-wgpu-accesskit`) projects this tree into the platform AX
+    // layer. With the `Backend` mega-trait gone it reaches the mechanism
+    // through this inherent method via its own local `TreeSource` trait
+    // (same orphan-rule-dodging pattern as `AnnouncementSource`).
+    pub fn dump_accessibility_tree_impl(&self) -> Option<AccessibilityTree> {
         // Build the parallel semantics tree from the active root.
         // Returns `None` if nothing has been mounted yet — matches
         // the `roots` invariant ("`root()` is the last entry, or
@@ -1707,10 +1666,10 @@ impl Backend for WgpuBackend {
         })
     }
 
-    fn apply_safe_area_padding(
+    pub(crate) fn apply_safe_area_padding_impl(
         &mut self,
-        node: &Self::Node,
-        sides: runtime_core::SafeAreaSides,
+        node: &WgpuNode,
+        sides: runtime_shared::SafeAreaSides,
     ) {
         // Read the current insets and stamp them onto the
         // node's Taffy style as padding. The framework's walker
@@ -1721,10 +1680,10 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
-    fn apply_scroll_view_safe_area_inset(
+    pub(crate) fn apply_scroll_view_safe_area_inset_impl(
         &mut self,
-        node: &Self::Node,
-        sides: runtime_core::SafeAreaSides,
+        node: &WgpuNode,
+        sides: runtime_shared::SafeAreaSides,
     ) {
         // For the wgpu sim the two paths produce the same
         // visual: padding on the scrollview node. Real native
@@ -1737,14 +1696,13 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
-
-    fn on_node_unstyled(&mut self, node: &Self::Node) {
+    pub(crate) fn on_node_unstyled_impl(&mut self, node: &WgpuNode) {
         // Clear the setter so a stale closure can't fire on a
         // node whose style scope has dropped.
         node.borrow_mut().state_setter = None;
     }
 
-    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
+    pub(crate) fn apply_style_impl(&mut self, node: &WgpuNode, style: &Rc<StyleRules>) {
         let layout = node.borrow().layout;
 
         // Merge skin-supplied platform defaults *under* the author
@@ -1877,20 +1835,19 @@ impl Backend for WgpuBackend {
         // with a populated `scroll_layout`. The fall-back-to-
         // relative behaviour matches CSS in the meantime.
         match style.position {
-            Some(runtime_core::Position::Sticky) => {
+            Some(runtime_shared::Position::Sticky) => {
                 let threshold_top = crate::sticky::threshold_top_from_style(style);
                 // Split-borrow the registry against `layout` and
                 // `roots` — `register` walks Taffy parents to
                 // resolve the enclosing scroll view, which would
                 // otherwise alias `&mut self`.
-                let WgpuBackend { sticky_registry, layout, roots, .. } = self;
-                crate::sticky::register(
+                let WgpuBackend {
                     sticky_registry,
                     layout,
                     roots,
-                    node,
-                    threshold_top,
-                );
+                    ..
+                } = self;
+                crate::sticky::register(sticky_registry, layout, roots, node, threshold_top);
             }
             _ => {
                 crate::sticky::deregister(&mut self.sticky_registry, node);
@@ -1920,135 +1877,35 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
-    fn create_external(
+    pub(crate) fn create_external_impl(
         &mut self,
-        type_id: std::any::TypeId,
+        _type_id: std::any::TypeId,
         type_name: &'static str,
-        payload: &Rc<dyn std::any::Any>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        // Consult the registry. SDK leaves (a future
-        // `webview-wgpu`, `maps-wgpu`, etc.) call
-        // `register_external::<TheirProps, _>(handler)` at bootstrap;
-        // when one matches, the handler renders via the engine's
-        // existing primitives (the overlay-per-host path is the
-        // separate `project_wgpu_external_strategy` follow-up that
-        // would mount real WebKit / MapKit views via native
-        // overlays — not needed for SDKs that draw their own
-        // visuals through wgpu).
-        //
-        // No-match: visible "kind X not registered" text so author
-        // code that mounted an external sees the missing wiring
-        // at runtime instead of an empty rect.
-        if let Some(handler) = self.external_handlers.get(type_id) {
-            let node = handler(payload, self);
-            init_node_a11y(&node, a11y, PrimitiveKind::External);
-            return node;
-        }
+        _payload: &Rc<dyn std::any::Any>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
+        // Runtime v2: there is no backend-side External registry any more.
+        // Third-party primitives register a payload handler on the scene
+        // `Registry` (`runtime_scene::Registry::register`), which dispatches
+        // BEFORE reaching a backend cap — so this method is only ever the
+        // last-resort placeholder an SDK's own degradation handler asks for
+        // on a host it has no leg for. Placeholder body unchanged.
+        // Visible "kind X not registered" text so author code that mounted
+        // an external with no handler sees the missing wiring at runtime
+        // instead of an empty rect.
         let msg = format!(
             "External \"{type_name}\" not registered on wgpu \
-             — SDK leaf needs `register_external(&mut backend)` \
-             on wgpu targets"
+             — the SDK leaf must register a scene handler for its payload"
         );
-        self.create_text(&msg, a11y)
+        self.create_text_impl(&msg, a11y)
     }
 
-    fn release_external(&mut self, _node: &Self::Node) {
+    pub(crate) fn release_external_impl(&mut self, _node: &WgpuNode) {
         // No per-external bookkeeping today. Future SDKs that hold
         // GPU resources (custom render targets, sampler caches) can
         // clean up here keyed by the node's layout id.
     }
-
-    fn create_navigator(
-        &mut self,
-        type_id: std::any::TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn std::any::Any>,
-        host: runtime_core::primitives::navigator::NavigatorHost<Self::Node>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        // Same registry shape as macOS — `register_navigator`
-        // installs a factory keyed by presentation TypeId; we run
-        // `init`, stash the handler under the resolved node's
-        // pointer for follow-up dispatch.
-        if let Some(factory) = self.navigator_handlers.get(type_id) {
-            let mut handler: Box<dyn runtime_core::NavigatorHandler<WgpuBackend>> =
-                (factory)();
-            let node = handler.init(self, host, presentation);
-            let key = Rc::as_ptr(&node) as usize;
-            self.nav_handler_instances.insert(
-                key,
-                std::rc::Rc::new(std::cell::RefCell::new(handler)),
-            );
-            init_node_a11y(&node, a11y, PrimitiveKind::View);
-            return node;
-        }
-        let msg = format!(
-            "Navigator kind \"{type_name}\" not registered on wgpu \
-             — SDK leaf needs `register_navigator(&mut backend)` \
-             on wgpu targets"
-        );
-        self.create_text(&msg, a11y)
-    }
-
-    fn release_navigator(&mut self, node: &Self::Node) {
-        let key = Rc::as_ptr(node) as usize;
-        if let Some(handler_cell) = self.nav_handler_instances.remove(&key) {
-            handler_cell.borrow_mut().release(self);
-        }
-    }
-
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn std::any::Any>,
-    ) {
-        let key = Rc::as_ptr(navigator) as usize;
-        if let Some(handler_cell) = self.nav_handler_instances.get(&key).cloned() {
-            handler_cell
-                .borrow_mut()
-                .attach_initial(self, screen, scope_id, options);
-        }
-    }
-
-    fn apply_navigator_slot_style(
-        &mut self,
-        node: &Self::Node,
-        slot: &'static str,
-        style: &Rc<runtime_core::StyleRules>,
-    ) {
-        let key = Rc::as_ptr(node) as usize;
-        if let Some(handler_cell) = self.nav_handler_instances.get(&key).cloned() {
-            handler_cell
-                .borrow_mut()
-                .apply_slot_style(self, slot, style);
-        }
-    }
-
-    fn make_navigator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::navigator::NavigatorHandle {
-        let key = Rc::as_ptr(node) as usize;
-        if let Some(handler_cell) = self.nav_handler_instances.get(&key) {
-            return handler_cell.borrow().make_handle();
-        }
-        runtime_core::primitives::navigator::NavigatorHandle::new(
-            std::rc::Rc::new(()),
-            &NOOP_WGPU_NAV_OPS,
-        )
-    }
 }
-
-/// Inert `NavigatorOps` for `make_navigator_handle` calls that land
-/// on a navigator container with no registered handler. Empty trait,
-/// so the impl is just a marker; handles built from this ignore all
-/// dispatch attempts.
-struct NoopWgpuNavOps;
-impl runtime_core::primitives::navigator::NavigatorOps for NoopWgpuNavOps {}
-static NOOP_WGPU_NAV_OPS: NoopWgpuNavOps = NoopWgpuNavOps;
 
 // =========================================================================
 // Accessibility — node-side stash + semantics-tree construction.
@@ -2094,7 +1951,11 @@ fn build_a11y_node(layout: &LayoutTree, node: &WgpuNode) -> AccessibilityNode {
     let frame = layout.frame_of(node.borrow().layout);
     let (props, role, children) = {
         let data = node.borrow();
-        let role = data.accessibility.role.or(data.inferred_role).unwrap_or(Role::Group);
+        let role = data
+            .accessibility
+            .role
+            .or(data.inferred_role)
+            .unwrap_or(Role::Group);
         let children: Vec<WgpuNode> = data.children.clone();
         (data.accessibility.clone(), role, children)
     };
@@ -2166,20 +2027,24 @@ pub(crate) fn global_self() -> Option<std::rc::Weak<RefCell<WgpuBackend>>> {
 fn schedule_virtualizer_fill(node: &WgpuNode) {
     {
         let data = node.borrow();
-        let NodeKind::Virtualizer { fill_queued, .. } = &data.kind else { return };
+        let NodeKind::Virtualizer { fill_queued, .. } = &data.kind else {
+            return;
+        };
         if fill_queued.replace(true) {
             return;
         }
     }
     let node = node.clone();
-    runtime_core::scheduling::schedule_microtask(move || {
+    runtime_shared::scheduling::schedule_microtask(move || {
         {
             let data = node.borrow();
             if let NodeKind::Virtualizer { fill_queued, .. } = &data.kind {
                 fill_queued.set(false);
             }
         }
-        let Some(rc) = global_self().and_then(|w| w.upgrade()) else { return };
+        let Some(rc) = global_self().and_then(|w| w.upgrade()) else {
+            return;
+        };
         refill_virtualizer(&rc, &node);
     });
 }
@@ -2270,28 +2135,26 @@ fn refill_virtualizer(rc: &Rc<RefCell<WgpuBackend>>, node: &WgpuNode) {
 /// at its next frame — no harm done).
 pub fn set_animated_f32(
     node: &crate::node::WgpuNode,
-    prop: runtime_core::animation::AnimProp,
+    prop: runtime_shared::animation::AnimProp,
     value: f32,
 ) {
     let Some(weak) = global_self() else { return };
     let Some(rc) = weak.upgrade() else { return };
     if let Ok(mut b) = rc.try_borrow_mut() {
-        use runtime_core::Backend;
-        b.set_animated_f32(node, prop, value);
+        b.set_animated_f32_impl(node, prop, value);
     };
 }
 
 /// Color-family counterpart of [`set_animated_f32`].
 pub fn set_animated_color(
     node: &crate::node::WgpuNode,
-    prop: runtime_core::animation::AnimProp,
+    prop: runtime_shared::animation::AnimProp,
     value: [f32; 4],
 ) {
     let Some(weak) = global_self() else { return };
     let Some(rc) = weak.upgrade() else { return };
     if let Ok(mut b) = rc.try_borrow_mut() {
-        use runtime_core::Backend;
-        b.set_animated_color(node, prop, value);
+        b.set_animated_color_impl(node, prop, value);
     };
 }
 
@@ -2301,11 +2164,11 @@ pub fn set_animated_color(
 /// imperative ops today; future host→author commands (resize
 /// hints, capture-frame) would land here.
 struct WgpuGraphicsOps;
-impl runtime_core::primitives::graphics::GraphicsOps for WgpuGraphicsOps {}
+impl runtime_shared::primitives::graphics::GraphicsOps for WgpuGraphicsOps {}
 
 /// Install a per-frame draw closure on a `GraphicsHandle`'s
 /// node. The handle must be obtained from
-/// `runtime_core::primitives::graphics::graphics(...).bind(ref)`
+/// `runtime_shared::primitives::graphics::graphics(...).bind(ref)`
 /// + the framework's `Ref<GraphicsHandle>::get()` after mount.
 ///
 /// The closure is invoked from the renderer's pre-pass each
@@ -2322,7 +2185,7 @@ impl runtime_core::primitives::graphics::GraphicsOps for WgpuGraphicsOps {}
 /// replaces the previously-installed drawer (the old closure
 /// drops at end-of-statement).
 pub fn register_graphics_drawer(
-    handle: &runtime_core::primitives::graphics::GraphicsHandle,
+    handle: &runtime_shared::primitives::graphics::GraphicsHandle,
     drawer: crate::node::GraphicsDrawer,
 ) {
     let Some(wgpu_node) = handle.node().downcast_ref::<WgpuNode>() else {
@@ -2334,37 +2197,12 @@ pub fn register_graphics_drawer(
     }
 }
 
-/// Convenience builder: construct a `Graphics` primitive whose
-/// drawer is wired up automatically when the node mounts. Hides
-/// the boilerplate of creating a `Ref<GraphicsHandle>`,
-/// `.bind(...)`-ing it, and threading a second closure through
-/// to `register_graphics_drawer` from an Effect. Authors who
-/// need the live `GraphicsHandle` for other imperative ops can
-/// still go through the framework's `graphics(...).bind(r)`
-/// path and call [`register_graphics_drawer`] manually.
-pub fn graphics_with_drawer<D>(
-    drawer: D,
-) -> runtime_core::Bound<runtime_core::primitives::graphics::GraphicsHandle>
-where
-    D: FnMut(&mut crate::node::GraphicsFrame) + 'static,
-{
-    let mut prim = runtime_core::primitives::graphics::graphics(|_| {});
-    // Re-encode the drawer as a `RefFill::Graphics` closure: the
-    // framework fires that closure during mount with the
-    // backend-built `GraphicsHandle`. We hand it straight to
-    // `register_graphics_drawer` so the per-frame pre-pass picks
-    // it up starting from the next render. Bypasses `.bind(r)` —
-    // the author doesn't need a `Ref` for this case.
-    let drawer_box: crate::node::GraphicsDrawer = Box::new(drawer);
-    if let runtime_core::Element::Graphics { ref_fill, .. } = prim.primitive_mut() {
-        *ref_fill = Some(runtime_core::RefFill::Graphics(Box::new(
-            move |h: runtime_core::primitives::graphics::GraphicsHandle| {
-                register_graphics_drawer(&h, drawer_box);
-            },
-        )));
-    }
-    prim
-}
+// `graphics_with_drawer` (the `Element::Graphics` + `RefFill::Graphics`
+// convenience builder) was DELETED with the old core: it constructed an
+// `Element` and stuffed a `RefFill` into it, neither of which exists on
+// runtime v2. It had no consumers. The supported path is the framework's
+// `graphics(..)` primitive bound to a `Ref<GraphicsHandle>`, plus a manual
+// [`register_graphics_drawer`] call once the handle arrives.
 
 /// Start a color tween for `property` on `node` if the supplied
 /// transition spec exists and the value actually changed. No-op
@@ -2376,7 +2214,7 @@ fn maybe_animate_color(
     property: AnimProperty,
     old_value: [f32; 4],
     new_value: [f32; 4],
-    transition: Option<&runtime_core::Transition>,
+    transition: Option<&runtime_shared::Transition>,
     now: Instant,
 ) {
     let Some(t) = transition else { return };
@@ -2420,7 +2258,14 @@ fn drop_subtree(
 ) {
     let children: Vec<WgpuNode> = node.borrow().children.clone();
     for child in &children {
-        drop_subtree(layout, text, animator, spinner_count, sticky_registry, child);
+        drop_subtree(
+            layout,
+            text,
+            animator,
+            spinner_count,
+            sticky_registry,
+            child,
+        );
     }
     let id = node.borrow().layout;
     if matches!(node.borrow().kind, NodeKind::ActivityIndicator { .. }) {
@@ -2459,11 +2304,11 @@ const _: fn() = || {
 fn apply_safe_area_to_node(
     layout: &mut LayoutTree,
     node: &WgpuNode,
-    sides: runtime_core::SafeAreaSides,
+    sides: runtime_shared::SafeAreaSides,
     _as_padding: bool,
 ) {
-    use runtime_core::{Length, SafeAreaSides};
-    let insets = runtime_core::safe_area_insets().get();
+    use runtime_shared::{Length, SafeAreaSides};
+    let insets = runtime_shared::safe_area_insets().get();
     let author = node.borrow().style.clone();
     let author_padding = |t: Option<&Tokenized<Length>>| -> f32 {
         t.and_then(|t| match t.resolve() {
@@ -2483,7 +2328,11 @@ fn apply_safe_area_to_node(
         (0.0, 0.0, 0.0, 0.0)
     };
     let combine = |flag: SafeAreaSides, base: f32, inset: f32| -> Tokenized<Length> {
-        let total = if sides.contains(flag) { base + inset } else { base };
+        let total = if sides.contains(flag) {
+            base + inset
+        } else {
+            base
+        };
         Tokenized::Literal(Length::Px(total))
     };
     let rules = StyleRules {
@@ -2502,10 +2351,7 @@ fn apply_safe_area_to_node(
 /// yet (legacy nav substrate was removed; per-kind SDK paths will
 /// repopulate this when wired up). Returns `false` so the host's
 /// tick loop doesn't keep redrawing.
-pub(crate) fn tick_nav_transitions(
-    _backend: &Rc<RefCell<WgpuBackend>>,
-    _now: Instant,
-) -> bool {
+pub(crate) fn tick_nav_transitions(_backend: &Rc<RefCell<WgpuBackend>>, _now: Instant) -> bool {
     false
 }
 
@@ -2547,7 +2393,7 @@ fn read_presence_state(node: &WgpuNode) -> PresenceSnapshot {
 /// `state` snap back to rest" (web clears the inline `style`
 /// property, which reveals the stylesheet rest value).
 fn resolve_presence_target(
-    state: runtime_core::primitives::presence::PresenceState,
+    state: runtime_shared::primitives::presence::PresenceState,
     _current: PresenceSnapshot,
 ) -> PresenceSnapshot {
     let rest = PresenceSnapshot::rest();
@@ -2567,7 +2413,7 @@ fn resolve_presence_target(
 /// value (identical to the web leaf's `style.remove_property`).
 fn write_presence_overrides(
     node: &WgpuNode,
-    state: &runtime_core::primitives::presence::PresenceState,
+    state: &runtime_shared::primitives::presence::PresenceState,
     target: PresenceSnapshot,
 ) {
     let mut data = node.borrow_mut();
@@ -2593,10 +2439,7 @@ fn write_presence_overrides(
 /// Called from [`crate::host::Host::tick`] before navigator
 /// transitions and momentum scrolling, so the per-tween writes are
 /// composited into the frame the host is about to submit.
-pub(crate) fn tick_presence_tweens(
-    backend: &Rc<RefCell<WgpuBackend>>,
-    now: Instant,
-) -> bool {
+pub(crate) fn tick_presence_tweens(backend: &Rc<RefCell<WgpuBackend>>, now: Instant) -> bool {
     let b = backend.borrow();
     if b.presence_tweens.is_empty() {
         return false;
@@ -2615,7 +2458,7 @@ pub(crate) fn tick_presence_tweens(
         } else {
             (elapsed.as_secs_f32() / tween.duration.as_secs_f32()).clamp(0.0, 1.0)
         };
-        let t = runtime_core::animation::apply_easing(raw_t, tween.easing);
+        let t = runtime_shared::animation::apply_easing(raw_t, tween.easing);
         let sample = PresenceSnapshot {
             opacity: lerp(tween.from.opacity, tween.to.opacity, t),
             translate_x: lerp(tween.from.translate_x, tween.to.translate_x, t),
@@ -2696,10 +2539,10 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 #[cfg(test)]
 mod a11y_tests {
     use super::*;
-    use runtime_core::accessibility::{
+    use runtime_shared::accessibility::{
         AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
     };
-    use runtime_core::ColorScheme;
+    use runtime_shared::ColorScheme;
 
     /// Standalone `Painter` for headless accessibility tests. Implements
     /// the full trait surface with no-op paints — the a11y tests
@@ -2814,11 +2657,11 @@ mod a11y_tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn bundled_font_is_loaded_from_disk_on_native() {
-        use runtime_core::{AssetId, AssetSource, AssetTag, Backend};
+        use runtime_shared::{AssetId, AssetSource, AssetTag};
 
         let mut b = make_backend();
         let before = b.font_system.borrow().db().len();
-        b.register_asset(
+        b.register_asset_impl(
             AssetId(1),
             AssetTag::Font,
             &AssetSource::Bundled {
@@ -2850,9 +2693,9 @@ mod a11y_tests {
             label: Some("Hello world".into()),
             ..Default::default()
         };
-        let mut root = b.create_view(&view_a11y);
-        let text = b.create_text("Hello world", &text_a11y);
-        b.insert(&mut root, text);
+        let mut root = b.create_view_impl(&view_a11y);
+        let text = b.create_text_impl("Hello world", &text_a11y);
+        b.insert_impl(&mut root, text);
         // Stamp intrinsic sizes so the layout pass produces
         // non-degenerate rects — `frame_of` returns the zero rect
         // when no compute has run. View fills, text takes 80×20.
@@ -2860,14 +2703,16 @@ mod a11y_tests {
         let text_layout = root.borrow().children[0].borrow().layout;
         b.layout.set_intrinsic_size(text_layout, 80.0, 20.0);
         b.layout.compute(view_layout, 200.0, 100.0);
-        b.finish(root.clone());
+        b.finish_impl(root.clone());
         (b, root)
     }
 
     #[test]
     fn dump_tree_reflects_view_with_text_child() {
         let (b, root) = build_view_with_text();
-        let tree = b.dump_accessibility_tree().expect("tree present after mount");
+        let tree = b
+            .dump_accessibility_tree_impl()
+            .expect("tree present after mount");
 
         // Root: View carries the custom label / identifier and the
         // walker's `default_role(View)` returns `None` → resolved
@@ -2912,7 +2757,7 @@ mod a11y_tests {
     #[test]
     fn dump_tree_is_none_before_mount() {
         let b = make_backend();
-        assert!(b.dump_accessibility_tree().is_none());
+        assert!(b.dump_accessibility_tree_impl().is_none());
     }
 
     #[test]
@@ -2921,8 +2766,8 @@ mod a11y_tests {
         // Drain before any announce — empty.
         assert!(b.drain_pending_announcements().is_empty());
 
-        b.announce_for_accessibility("loading", LiveRegionPriority::Polite);
-        b.announce_for_accessibility("complete", LiveRegionPriority::Assertive);
+        b.announce_for_accessibility_impl("loading", LiveRegionPriority::Polite);
+        b.announce_for_accessibility_impl("complete", LiveRegionPriority::Assertive);
 
         let drained = b.drain_pending_announcements();
         assert_eq!(drained.len(), 2);
@@ -2942,7 +2787,9 @@ mod a11y_tests {
         // they're separate concerns (tree is persistent, announcements
         // are transient one-shots). Sanity-check that announcing
         // doesn't accidentally mutate the tree shape.
-        let tree = b.dump_accessibility_tree().expect("tree still present");
+        let tree = b
+            .dump_accessibility_tree_impl()
+            .expect("tree still present");
         assert_eq!(tree.root.children.len(), 1);
     }
 
@@ -2953,7 +2800,7 @@ mod a11y_tests {
 
         // Before: text role inferred, label "Hello world".
         {
-            let tree = b.dump_accessibility_tree().expect("tree");
+            let tree = b.dump_accessibility_tree_impl().expect("tree");
             let text_node = &tree.root.children[0];
             assert_eq!(text_node.props.label.as_deref(), Some("Hello world"));
             assert!(text_node.props.traits.is_empty());
@@ -2968,19 +2815,25 @@ mod a11y_tests {
             traits: AccessibilityTraits::SELECTED,
             ..Default::default()
         };
-        b.update_accessibility(&text, &new_props, Some(Role::Text));
+        b.update_accessibility_impl(&text, &new_props, Some(Role::Text));
 
         // After: the next dump must reflect the swap.
-        let tree = b.dump_accessibility_tree().expect("tree");
+        let tree = b.dump_accessibility_tree_impl().expect("tree");
         let text_node = &tree.root.children[0];
         assert_eq!(text_node.props.label.as_deref(), Some("Greetings, world"));
-        assert!(text_node.props.traits.contains(AccessibilityTraits::SELECTED));
+        assert!(text_node
+            .props
+            .traits
+            .contains(AccessibilityTraits::SELECTED));
         assert_eq!(text_node.role, Role::Text);
 
         // Re-dumping after a no-op call still produces the same
         // tree — no caching means stale data can never lag.
-        let tree2 = b.dump_accessibility_tree().expect("tree");
-        assert_eq!(tree2.root.children[0].props.label.as_deref(), Some("Greetings, world"));
+        let tree2 = b.dump_accessibility_tree_impl().expect("tree");
+        assert_eq!(
+            tree2.root.children[0].props.label.as_deref(),
+            Some("Greetings, world")
+        );
     }
 
     /// Regression: before this landed, `apply_presence` was the
@@ -3003,14 +2856,17 @@ mod a11y_tests {
     /// path remains a manual on-device check.
     #[test]
     fn regression_wgpu_register_asset_caches_image_bytes() {
-        use runtime_core::{AssetId, AssetSource, AssetTag};
+        use runtime_shared::{AssetId, AssetSource, AssetTag};
         let mut b = make_backend();
         let id = AssetId(42);
         const BYTES: &[u8] = b"hello-image-bytes";
-        b.register_asset(
+        b.register_asset_impl(
             id,
             AssetTag::Image,
-            &AssetSource::Embedded { bytes: BYTES, extension: "png" },
+            &AssetSource::Embedded {
+                bytes: BYTES,
+                extension: "png",
+            },
         );
         assert_eq!(
             b.image_asset_bytes(id),
@@ -3018,7 +2874,7 @@ mod a11y_tests {
             "register_asset(Image, Embedded) must populate the byte cache"
         );
 
-        b.unregister_asset(id, AssetTag::Image);
+        b.unregister_asset_impl(id, AssetTag::Image);
         assert!(
             b.image_asset_bytes(id).is_none(),
             "unregister_asset(Image) must clear the byte cache so hot-reload re-decodes"
@@ -3037,25 +2893,29 @@ mod a11y_tests {
     /// `host-web` and is exercised on-device.
     #[test]
     fn regression_wgpu_bundled_font_queues_served_url() {
-        use runtime_core::{AssetId, AssetSource, AssetTag};
+        use runtime_shared::{AssetId, AssetSource, AssetTag};
         let mut b = make_backend();
 
         // A bytes-free Bundled font (embed-font-bytes off) must be
         // queued as a root-absolute served URL, not dropped.
-        b.register_asset(
+        b.register_asset_impl(
             AssetId(1),
             AssetTag::Font,
-            &AssetSource::Bundled { path: "fonts/Inter-Bold.ttf" },
+            &AssetSource::Bundled {
+                path: "fonts/Inter-Bold.ttf",
+            },
         );
         // A Remote font is queued by its absolute URL verbatim.
-        b.register_asset(
+        b.register_asset_impl(
             AssetId(2),
             AssetTag::Font,
-            &AssetSource::Remote { url: "https://cdn.example/Roboto.ttf" },
+            &AssetSource::Remote {
+                url: "https://cdn.example/Roboto.ttf",
+            },
         );
         // A BundledEmbedded font (native, bytes inline) is loaded
         // synchronously and must NOT add to the fetch queue.
-        b.register_asset(
+        b.register_asset_impl(
             AssetId(3),
             AssetTag::Font,
             &AssetSource::BundledEmbedded {
@@ -3104,7 +2964,7 @@ mod a11y_tests {
 
         let mut b = make_backend();
         let payload: Rc<dyn std::any::Any> = Rc::new(());
-        let ext_node = b.create_external(
+        let ext_node = b.create_external_impl(
             TypeId::of::<()>(),
             "test_external",
             &payload,
@@ -3119,18 +2979,14 @@ mod a11y_tests {
     /// `Some(transition)` path enrolls a tween.
     #[test]
     fn regression_wgpu_apply_presence_writes_overrides_and_enrolls_tween() {
-        use runtime_core::primitives::presence::PresenceState;
+        use runtime_shared::primitives::presence::PresenceState;
 
         let mut b = make_backend();
-        let node = b.create_view(&AccessibilityProps::default());
+        let node = b.create_view_impl(&AccessibilityProps::default());
 
         // Snap path. `state.opacity = Some(0.0)` should land on
         // `node.animated.opacity`; untouched fields stay None.
-        b.apply_presence(
-            &node,
-            PresenceState::rest().opacity(0.0),
-            None,
-        );
+        b.apply_presence_impl(&node, PresenceState::rest().opacity(0.0), None);
         {
             let data = node.borrow();
             let ov = data
@@ -3151,10 +3007,10 @@ mod a11y_tests {
         // Tween path. Should enroll an entry in `presence_tweens`,
         // keyed by the node's pointer.
         let key = Rc::as_ptr(&node) as usize;
-        b.apply_presence(
+        b.apply_presence_impl(
             &node,
             PresenceState::rest(),
-            Some((150, runtime_core::Easing::EaseInOut)),
+            Some((150, runtime_shared::Easing::EaseInOut)),
         );
         assert!(
             b.presence_tweens.contains_key(&key),
@@ -3178,7 +3034,7 @@ mod a11y_tests {
         let on_change: Rc<dyn Fn(String)> = Rc::new(move |s| {
             on_change_called_clone.borrow_mut().push(s);
         });
-        let node = b.create_text_area(
+        let node = b.create_text_area_impl(
             "initial",
             Some("placeholder"),
             true,
@@ -3192,7 +3048,7 @@ mod a11y_tests {
             matches!(node.borrow().kind, NodeKind::TextArea { .. }),
             "create_text_area must produce a NodeKind::TextArea, not a fallback"
         );
-        b.update_text_area_value(&node, "updated");
+        b.update_text_area_value_impl(&node, "updated");
         match &node.borrow().kind {
             NodeKind::TextArea { value, .. } => assert_eq!(value, "updated"),
             other => panic!("expected NodeKind::TextArea after update, got {other:?}"),
@@ -3221,16 +3077,15 @@ mod a11y_tests {
         // Build an `Action` from a bare closure via `IntoAction`. The
         // closure path produces an Action with empty `method` /
         // `inputs` — fine for this test, which never fires the button.
-        let action = runtime_core::IntoAction::into_action(|| {});
-        let btn = b.create_button("Submit", &action, None, None, &a11y);
+        let action = runtime_shared::IntoAction::into_action(|| {});
+        let btn = b.create_button_impl("Submit", &action, None, None, &a11y);
         let btn_layout = btn.borrow().layout;
         b.layout.set_intrinsic_size(btn_layout, 100.0, 30.0);
         b.layout.compute(btn_layout, 100.0, 30.0);
-        b.finish(btn);
+        b.finish_impl(btn);
 
-        let tree = b.dump_accessibility_tree().expect("tree");
+        let tree = b.dump_accessibility_tree_impl().expect("tree");
         assert_eq!(tree.root.role, Role::Button);
         assert_eq!(tree.root.props.label.as_deref(), Some("Submit"));
     }
 }
-

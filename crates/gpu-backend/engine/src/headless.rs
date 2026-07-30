@@ -41,10 +41,10 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use glyphon::Buffer;
-use runtime_core::scheduling::{
+use runtime_shared::scheduling::{
     install_scheduler, is_scheduler_installed, ScheduleHandle, Scheduler,
 };
-use runtime_core::{ColorScheme, Element};
+use runtime_shared::ColorScheme;
 
 use crate::keyboard::{KeySpec, LaidKey, LayoutMetrics};
 use crate::painter::{NavigatorHeaderChrome, NavigatorHeaderHit, Painter};
@@ -73,7 +73,7 @@ thread_local! {
 /// that microtask *immediately*, re-entering the walker (it re-borrows the
 /// same backend to build the slot's child tree) and panicking with
 /// "RefCell already borrowed". Buffering instead defers each microtask;
-/// `runtime_core::mount` drains them via `drain_buffered_microtasks` after
+/// `runtime_shared::mount` drains them via `drain_buffered_microtasks` after
 /// the mount walk completes and the borrow is free, so the slot/screen
 /// builds run safely. This is what lets a `DrawerNavigator` (or any
 /// navigator) app rasterize headlessly on the GPU backend.
@@ -296,7 +296,7 @@ impl Screenshotter {
 
     /// As [`Self::with_color_scheme`] but lets the caller supply the
     /// [`Painter`] skin. The skin's [`Painter::platform`] read-out is what
-    /// author code sees via `runtime_core::platform()`, so passing a
+    /// author code sees via `runtime_shared::platform()`, so passing a
     /// [`crate::NativeSkin`] built for a desktop OS makes the capture
     /// exercise the app's native-desktop layout (e.g. idea-ui-docs's
     /// pinned-sidebar branch under `Platform::MacOs`) rather than the
@@ -324,32 +324,31 @@ impl Screenshotter {
 
         // No surface to be compatible with — this is the whole point of
         // headless. Try hardware first, then a software fallback.
-        let (adapter, software) = match pollster::block_on(instance.request_adapter(
-            &wgpu::RequestAdapterOptions {
+        let (adapter, software) =
+            match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
                 force_fallback_adapter: false,
                 compatible_surface: None,
-            },
-        )) {
-            Ok(a) => (a, false),
-            Err(_) => {
-                let a = pollster::block_on(instance.request_adapter(
-                    &wgpu::RequestAdapterOptions {
-                        power_preference: wgpu::PowerPreference::default(),
-                        force_fallback_adapter: true,
-                        compatible_surface: None,
-                    },
-                ))
-                .map_err(|e| {
-                    format!(
-                        "no GPU and no software fallback adapter for headless render: {e}. \
+            })) {
+                Ok(a) => (a, false),
+                Err(_) => {
+                    let a = pollster::block_on(instance.request_adapter(
+                        &wgpu::RequestAdapterOptions {
+                            power_preference: wgpu::PowerPreference::default(),
+                            force_fallback_adapter: true,
+                            compatible_surface: None,
+                        },
+                    ))
+                    .map_err(|e| {
+                        format!(
+                            "no GPU and no software fallback adapter for headless render: {e}. \
                          On a Linux server install Mesa lavapipe (`libgl1-mesa-dri` / \
                          `mesa-vulkan-drivers`)."
-                    )
-                })?;
-                (a, true)
-            }
-        };
+                        )
+                    })?;
+                    (a, true)
+                }
+            };
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("idealyst-headless-device"),
@@ -386,15 +385,12 @@ impl Screenshotter {
         self.host.backend().clone()
     }
 
-    /// Mount an app directly (in-process, no wire). Keeps the reactive
-    /// scope alive on the host until the screenshotter is dropped.
-    pub fn mount<F>(&mut self, build_ui: F)
-    where
-        F: FnOnce() -> Element + 'static,
-    {
-        self.host.set_viewport(self.width as f32, self.height as f32);
-        self.host.mount(build_ui);
-    }
+    // Mounting is `crate::newcore::start(shot.backend(), register, build)`
+    // — the same call the windowed hosts and `newcore-gpu-smoke`'s
+    // headless mode make. There is deliberately no `Screenshotter::mount`
+    // wrapper: the viewport is already set from `width`/`height` at
+    // construction, so a wrapper would only hide which world owns the
+    // returned app (the caller must keep it alive across the capture).
 
     /// Current target size in physical pixels.
     pub fn size(&self) -> (u32, u32) {
@@ -513,9 +509,10 @@ impl Screenshotter {
 /// multiple times instead.
 pub fn mount_and_capture_png<F>(width: u32, height: u32, app: F) -> Result<Vec<u8>, String>
 where
-    F: FnOnce() -> Element + 'static,
+    F: FnOnce() -> runtime_scene::Element,
 {
     let mut shot = Screenshotter::new(width, height)?;
-    shot.mount(app);
+    // `_app` must outlive the capture — dropping it unmounts the tree.
+    let _app = crate::newcore::start(shot.backend(), |_| {}, app);
     shot.capture_png()
 }

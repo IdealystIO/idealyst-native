@@ -2253,7 +2253,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "List the opt-in SDK crates — peripheral capabilities that ship OUTSIDE runtime-core (networking, persistence, camera, the component library, …) and are invisible to list_components/list_primitives/list_utilities because they expose plain functions/types or `Element::External` primitives. THIS is how you discover which crate makes a network request (`net`), persists data (`storage`/`credentials`), or renders a map (`maps`). Lightweight { name, category, kind, dep_line, summary }; pass `filter` (case-insensitive, glob `*`, matches name/category/kind) to narrow, then `describe_sdk` for the full record. Prose home: the `sdks` guide (read_guide).")]
+    #[tool(description = "List the opt-in SDK crates — peripheral capabilities that ship OUTSIDE runtime-core (networking, persistence, camera, the component library, …) and are invisible to list_components/list_primitives/list_utilities because they expose plain functions/types or scene-registry extension primitives. THIS is how you discover which crate makes a network request (`net`), persists data (`storage`/`credentials`), or renders a map (`maps`). Lightweight { name, category, kind, dep_line, summary }; pass `filter` (case-insensitive, glob `*`, matches name/category/kind) to narrow, then `describe_sdk` for the full record. Prose home: the `sdks` guide (read_guide).")]
     async fn list_sdks(
         &self,
         Parameters(req): Parameters<FilterRequest>,
@@ -2280,7 +2280,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "Get the full record for one opt-in SDK crate: summary, the `Cargo.toml` dependency line to add, capability category, whether its surface is plain API or a `ui!` `Element::External` primitive, and the guide that documents it. Accepts the crate name (`net`, `storage`, `idea-ui`).")]
+    #[tool(description = "Get the full record for one opt-in SDK crate: summary, the `Cargo.toml` dependency line to add, capability category, whether its surface is plain API or a `ui!` extension primitive, and the guide that documents it. Accepts the crate name (`net`, `storage`, `idea-ui`).")]
     async fn describe_sdk(
         &self,
         Parameters(req): Parameters<NameRequest>,
@@ -3495,7 +3495,7 @@ mod tests {
     //! test binary must appear in the `list_components` tool's
     //! response.
     //!
-    //! Pre-fix the sidecar wrapper omitted `runtime-core/dev`, so
+    //! Pre-fix the sidecar wrapper omitted the `dev` feature, so
     //! `#[component]` macro emissions were stubbed out and the
     //! linked inventory was empty even though the user's source had
     //! components in it. `idealyst mcp` returned `[]` in runtime-
@@ -3517,7 +3517,8 @@ mod tests {
     #[allow(dead_code)]
     #[component]
     pub fn list_components_regression_canary() -> Element {
-        ::runtime_core::view(::std::vec::Vec::new())
+        // `view(..)` returns a builder, not an `Element` — coerce it.
+        ::runtime_core::IntoElement::into_element(::runtime_core::view(::std::vec::Vec::new()))
     }
 
     /// Parse a `list_*` tool result into `(name, has_summary, keys)`

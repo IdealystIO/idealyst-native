@@ -19,7 +19,7 @@
 //! tick scheduler with first-party fire sites), the CPU backend has no
 //! first-party fire site: the host decides render cadence (see the
 //! crate docs — "the host calls `render` when it wants a frame"), and
-//! the host decides whether to install a `runtime_core::scheduling`
+//! the host decides whether to install a `runtime_shared::scheduling`
 //! scheduler at all. The contract for embedders:
 //!
 //! - A host that installs a runtime scheduler MUST call

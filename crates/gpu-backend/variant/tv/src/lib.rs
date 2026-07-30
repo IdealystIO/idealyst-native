@@ -4,52 +4,33 @@
 //! so apps that switch palettes on TV pick the right one
 //! without a runtime check. The caller picks the visual skin.
 
+// Only the runtime-server boot below needs these; the local-mount
+// entries live in `boot.rs`.
+#[cfg(feature = "runtime-server")]
 use std::rc::Rc;
-
-use runtime_core::{ColorScheme, Element};
-use host_winit::{run as run_core, DeviceProfile, RunError};
+#[cfg(feature = "runtime-server")]
+use host_winit::{DeviceProfile, RunError};
+#[cfg(feature = "runtime-server")]
 use render_wgpu::Painter;
+#[cfg(feature = "runtime-server")]
+use runtime_shared::ColorScheme;
 
-// idea-lite core migration: `newcore::run`/`run_at`/`run_with` — the
-// new-core boot entries over `host_winit::newcore`, same window
-// profile. Off by default so the old-core build path is unchanged.
-#[cfg(feature = "new-core")]
-pub mod newcore;
+mod boot;
+
+pub use boot::{run, run_at, run_with};
+
+/// Compatibility path. These entries used to live behind a `newcore`
+/// module while the framework carried two cores; callers and docs
+/// spell them `variant_tv::newcore::run` / `::run_at` / `::run_with`. There is
+/// one core now and they live at the crate root — this re-export keeps
+/// the historical paths resolving.
+pub mod newcore {
+    pub use crate::{run, run_at, run_with};
+}
 
 pub const WIDTH: u32 = 1920;
 pub const HEIGHT: u32 = 1080;
 pub const TITLE: &str = "Idealyst Preview — TV";
-
-/// Run the TV preview with `skin`. See `variant-phone` for the
-/// same shape and a fuller example.
-pub fn run<F>(skin: Rc<dyn Painter>, build_ui: F) -> Result<(), RunError>
-where
-    F: FnOnce() -> Element + 'static,
-{
-    run_at(skin, None, build_ui)
-}
-
-/// Same as [`run`] but places the window at a specific
-/// screen-logical position.
-pub fn run_at<F>(
-    skin: Rc<dyn Painter>,
-    position: Option<(i32, i32)>,
-    build_ui: F,
-) -> Result<(), RunError>
-where
-    F: FnOnce() -> Element + 'static,
-{
-    run_core(
-        DeviceProfile {
-            logical_size: (WIDTH, HEIGHT),
-            position,
-            title: TITLE.to_string(),
-            color_scheme: ColorScheme::Dark,
-        },
-        skin,
-        build_ui,
-    )
-}
 
 /// Runtime-server variant of [`run`]. See `variant_phone::run_runtime_server`
 /// for the full per-frame behavior — only the window profile

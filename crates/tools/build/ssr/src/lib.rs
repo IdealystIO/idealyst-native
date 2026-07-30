@@ -3,8 +3,8 @@
 //! Mirror of `crates/tools/build/web`, `ios`, `android`, `macos`: the
 //! user's app crate stays platform-agnostic — it exposes
 //! `pub fn app() -> Element` plus a feature-gated
-//! `pub fn register_ssr_extensions(&mut backend_ssr::SsrBackend)` that
-//! the wrapper invokes per request to install SDK chrome handlers
+//! `pub fn register_ssr_scene_handlers(&mut runtime_scene::Registry<backend_ssr::SsrBackend>)`
+//! that the wrapper invokes per request to install SDK payload handlers
 //! (drawer navigator, code-block external, …). Everything else lives
 //! in this generated wrapper.
 //!
@@ -25,12 +25,9 @@
 //! - **`--static`** — no `<script>`, no hydration. Pure server-render
 //!   for SEO / unfurls / static preview.
 //!
-//! With [`BuildOptions::new_core`] (the CLI's `idealyst build
-//! --ssr/--ssg --new-core`) the SAME wrapper surface is generated
-//! against `backend_ssr::newcore::{render_all, serve}` — per-request
-//! `World`s instead of the old walker — with the user's
-//! `register_ssr_scene_handlers` as the registration seam. See
-//! `generate_wrapper` for the dual-core dep-graph rules.
+//! The wrapper renders through `backend_ssr::newcore::{render_all,
+//! serve}` — a fresh `World` per request — with the user's
+//! `register_ssr_scene_handlers` as the registration seam.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -51,17 +48,6 @@ pub struct BuildOptions {
     /// always-on `ssr` feature). Typically empty; reserved for future
     /// dev-mode flags.
     pub user_features: Vec<String>,
-    /// Build the wrapper against the NEW core (idea-lite migration):
-    /// renders through `backend_ssr::newcore::{render_all, serve}` on
-    /// per-request `World`s instead of the old walker. Requires the
-    /// dual-core app convention (the website / idea-ui-docs shape):
-    /// the user crate must expose a `new-core` cargo feature (its
-    /// default features are disabled — one core per build graph) and a
-    /// `register_ssr_scene_handlers(&mut runtime_scene::Registry<backend_ssr::SsrBackend>)`
-    /// fn (the scene-registry seam replacing the old
-    /// `register_ssr_extensions(&mut SsrBackend)`). The CLI sets this
-    /// from `idealyst build --new-core`.
-    pub new_core: bool,
 }
 
 #[derive(Debug)]
@@ -87,7 +73,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         .wrapper_root(&project_dir)
         .join(&manifest.name)
         .join("ssr/wrapper");
-    generate_wrapper(&wrapper_dir, &project_dir, &opts.source, &manifest, opts.new_core)?;
+    generate_wrapper(&wrapper_dir, &project_dir, &opts.source, &manifest)?;
 
     cargo_build(&wrapper_dir, opts.release, &opts.user_features)?;
 
@@ -122,30 +108,23 @@ fn binary_name(project_name: &str) -> String {
 /// overwrites whatever was there. Public so a future
 /// `idealyst scaffold ssr` command can drive the same generator.
 ///
-/// `new_core` swaps BOTH generated files onto the new-core leg (see
-/// [`BuildOptions::new_core`]): the dep graph compiles the user crate
-/// with `default-features = false, features = ["ssr", "new-core"]`
-/// (one core per build graph — a dual-core app's `old-core` default
-/// must not unify in) and the binary renders through
+/// The generated binary renders through
 /// `backend_ssr::newcore::{render_all, serve}` with the user's
-/// `register_ssr_scene_handlers` as the scene-registry seam. A
-/// mode-specific wrapper (rather than a cargo feature on one wrapper)
-/// because the `default-features = false` line cannot be
-/// feature-conditional in Cargo — and the wrapper is regenerated every
-/// build anyway.
+/// `register_ssr_scene_handlers` as the scene-registry seam.
 pub fn generate_wrapper(
     wrapper_dir: &Path,
     project_dir: &Path,
     source: &FrameworkSource,
     manifest: &Manifest,
-    new_core: bool,
 ) -> Result<()> {
     fs::create_dir_all(wrapper_dir.join("src"))
         .with_context(|| format!("create {}", wrapper_dir.display()))?;
 
     let bin_name = binary_name(&manifest.name);
-    let bssr_features: &[&str] = if new_core { &["serve", "new-core"] } else { &["serve"] };
-    let bssr_dep = source.dep("crates/backend/ssr", bssr_features);
+    // `new-core` compiles backend-ssr's per-request-`World` render path.
+    // The feature is vacuous once backend-ssr makes its contents
+    // unconditional; drop it from this list at that point.
+    let bssr_dep = source.dep("crates/backend/ssr", &["serve"]);
 
     // Bake the favicon `<link>` snippet into the wrapper. Empty
     // string when the project has no `[icon]` block — the wrapper
@@ -160,32 +139,13 @@ pub fn generate_wrapper(
     };
     let extra_head_literal = format!("{extra_head_snippet:?}");
 
-    // User-crate dep line per mode. New core disables default features:
-    // dual-core apps default to `old-core`, and exactly one core may be
-    // in a build graph (the proc-macro lowering is graph-wide).
-    let user_dep = if new_core {
-        format!(
-            "{user_name} = {{ path = \"{user_path}\", default-features = false, \
-             features = [\"ssr\", \"new-core\"] }}",
-            user_name = manifest.name,
-            user_path = project_dir.display(),
-        )
-    } else if build_ios::declares_feature(project_dir, "old-core") {
-        // Dual-core apps default to new-core since the runtime-v2
-        // defaults flip — the old-core build must pin single-core.
-        format!(
-            "{user_name} = {{ path = \"{user_path}\", default-features = false, \
-             features = [\"ssr\", \"old-core\"] }}",
-            user_name = manifest.name,
-            user_path = project_dir.display(),
-        )
-    } else {
-        format!(
-            "{user_name} = {{ path = \"{user_path}\", features = [\"ssr\"] }}",
-            user_name = manifest.name,
-            user_path = project_dir.display(),
-        )
-    };
+    // User-crate dep line: the app's own defaults plus `ssr` (which is
+    // what exposes the registration seam).
+    let user_dep = format!(
+        "{user_name} = {{ path = \"{user_path}\", features = [\"ssr\"] }}",
+        user_name = manifest.name,
+        user_path = project_dir.display(),
+    );
 
     let cargo_toml = format!(
         r#"# GENERATED by `idealyst dev --ssr` / `--static`. Do not edit —
@@ -209,9 +169,8 @@ path = "src/main.rs"
 backend-ssr = {bssr_dep}
 # User crate compiled with the `ssr` feature flipped on, which is
 # what exposes the wrapper's registration seam
-# (`register_ssr_extensions` on the old core,
-# `register_ssr_scene_handlers` under `--new-core`) and enables the
-# `backend-ssr` dep on the user side.
+# (`register_ssr_scene_handlers`) and enables the `backend-ssr` dep on
+# the user side.
 {user_dep}
 {patch_block}
 "#,
@@ -221,21 +180,11 @@ backend-ssr = {bssr_dep}
         patch_block = source.patch_block(),
     );
 
-    // Per-core render entries + registration seam. Same runtime CLI
-    // surface either way — only the imports and the register closure
-    // differ, so the two binaries are drop-in interchangeable.
-    let (entry_imports, register_arg) = if new_core {
-        (
-            "use backend_ssr::newcore::{render_all, serve};\n\
-             use backend_ssr::{render_document, ServeConfig};",
-            format!("|r| {lib}::register_ssr_scene_handlers(r)", lib = manifest.lib_name),
-        )
-    } else {
-        (
-            "use backend_ssr::{render_all, render_document, serve, ServeConfig};",
-            format!("|b| {lib}::register_ssr_extensions(b)", lib = manifest.lib_name),
-        )
-    };
+    // Render entries + registration seam.
+    let entry_imports = "use backend_ssr::newcore::{render_all, serve};\n\
+                         use backend_ssr::{render_document, ServeConfig};";
+    let register_arg =
+        format!("|r| {lib}::register_ssr_scene_handlers(r)", lib = manifest.lib_name);
 
     let main_rs = format!(
         r##"//! GENERATED by `idealyst dev --ssr` / `--static` / `idealyst build --ssg`.
@@ -458,7 +407,7 @@ mod wrapper_template_tests {
 
     use super::*;
 
-    fn generated_wrapper(new_core: bool) -> (String, String) {
+    fn generated_wrapper() -> (String, String) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project_dir = tmp.path().join("project");
         let wrapper_dir = tmp.path().join("wrapper");
@@ -472,7 +421,7 @@ mod wrapper_template_tests {
         let source = FrameworkSource::Workspace {
             root: tmp.path().join("workspace"),
         };
-        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, new_core)
+        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest)
             .expect("generate wrapper");
         (
             fs::read_to_string(wrapper_dir.join("src/main.rs")).unwrap(),
@@ -481,7 +430,7 @@ mod wrapper_template_tests {
     }
 
     fn generated_main_rs() -> String {
-        generated_wrapper(false).0
+        generated_wrapper().0
     }
 
     /// A production bundle staged by `idealyst build --web` has a
@@ -505,57 +454,36 @@ mod wrapper_template_tests {
         );
     }
 
-    /// The old-core wrapper keeps its shipped shape: old-core entries,
-    /// `register_ssr_extensions`, default features on the user crate.
+    /// The wrapper renders through `backend_ssr::newcore::{render_all,
+    /// serve}` with the scene-registry seam, and takes a plain
+    /// `features = ["ssr"]` dep on the user crate — no core pin, since
+    /// there is one core.
     #[test]
-    fn old_core_wrapper_uses_old_entries() {
-        let (main_rs, cargo_toml) = generated_wrapper(false);
-        assert!(
-            main_rs.contains("use backend_ssr::{render_all, render_document, serve, ServeConfig};"),
-            "old wrapper imports the old-core entries:\n{main_rs}",
-        );
-        assert!(
-            main_rs.contains("|b| demo_app::register_ssr_extensions(b)"),
-            "old wrapper registers through the SsrBackend seam:\n{main_rs}",
-        );
-        assert!(
-            cargo_toml.contains("features = [\"ssr\"] }"),
-            "old wrapper keeps the user crate's default features:\n{cargo_toml}",
-        );
-        assert!(
-            !cargo_toml.contains("\"new-core\""),
-            "old wrapper must not enable a new-core feature anywhere:\n{cargo_toml}",
-        );
-    }
-
-    /// `--new-core` swaps the wrapper onto `backend_ssr::newcore::{render_all,
-    /// serve}` with the scene-registry seam, and compiles the user crate
-    /// single-core (`default-features = false` + `new-core`) — a dual-core
-    /// app's `old-core` default must not unify into the graph.
-    #[test]
-    fn new_core_wrapper_uses_newcore_entries_and_single_core_dep() {
-        let (main_rs, cargo_toml) = generated_wrapper(true);
+    fn wrapper_uses_newcore_entries_and_scene_seam() {
+        let (main_rs, cargo_toml) = generated_wrapper();
         assert!(
             main_rs.contains("use backend_ssr::newcore::{render_all, serve};"),
-            "new-core wrapper imports the newcore entries:\n{main_rs}",
+            "wrapper imports the newcore entries:\n{main_rs}",
         );
         assert!(
             main_rs.contains("|r| demo_app::register_ssr_scene_handlers(r)"),
-            "new-core wrapper registers through the scene-registry seam:\n{main_rs}",
+            "wrapper registers through the scene-registry seam:\n{main_rs}",
         );
         assert!(
             !main_rs.contains("register_ssr_extensions"),
-            "new-core wrapper must not touch the old registration seam:\n{main_rs}",
+            "wrapper must not reference the deleted old registration seam:\n{main_rs}",
         );
         assert!(
-            cargo_toml.contains(
-                "default-features = false, features = [\"ssr\", \"new-core\"] }"
-            ),
-            "new-core wrapper compiles the user crate single-core:\n{cargo_toml}",
+            cargo_toml.contains("features = [\"ssr\"] }"),
+            "user crate keeps its own defaults plus `ssr`:\n{cargo_toml}",
         );
         assert!(
-            cargo_toml.contains("\"new-core\""),
-            "backend-ssr dep must carry the new-core feature:\n{cargo_toml}",
+            !cargo_toml.contains("default-features = false"),
+            "wrapper must not pin a core on the user crate:\n{cargo_toml}",
+        );
+        assert!(
+            !cargo_toml.contains("old-core"),
+            "wrapper must not mention old-core anywhere:\n{cargo_toml}",
         );
     }
 }

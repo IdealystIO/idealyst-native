@@ -6,9 +6,9 @@ license.workspace = true
 
 # `canvas-native` — renders a canvas `Scene` with each platform's NATIVE
 # 2D engine. One crate, cfg-gated per-backend modules (codeblock/video
-# pattern). The app picks this renderer by calling `canvas_native::register`
-# at bootstrap; it registers an `Element::External` handler for
-# `CanvasProps` keyed by its TypeId.
+# pattern). The app picks this renderer by passing
+# `canvas_native::register` to the boot entry's registry seam; it installs
+# a scene handler for `canvas_core::CanvasPrim`.
 #
 # Backend coverage:
 # - Web: `<canvas>` 2D context.
@@ -17,53 +17,30 @@ license.workspace = true
 #   the iOS op-replay through the `apple` module; only the context
 #   acquisition + bezier/color vtable differ).
 # - Android: `android.graphics.Canvas`.
-# - Other targets: framework `External` placeholder; use `canvas-vello`.
+# - Other targets: the External placeholder; use `canvas-vello`.
 
 [features]
-# Runtime-v2 defaults flip: new-core leg on by default (old-core via
-# `--no-default-features --features self-register`).
-default = ["self-register", "new-core"]
-# Old-core marker for uniform invocations.
-old-core = []
-# Self-registration of the per-backend external handler at backend
-# construction (no app-side `register` call needed). ON by default so apps
-# that depend on this crate directly keep the zero-config behavior.
-#
-# OFF for delegate-only consumers: `canvas-vello` depends on this crate
-# purely for `make_2d_rasterizer` (its Canvas2D fallback) with
-# `default-features = false`. The inventory ctor is a link-time anchor —
-# it makes the whole rasterizer + glyph stack (skrifa/read_fonts, ~670 KB
-# of a lazy web bundle's main.wasm) reachable from `main`'s ctors, which
-# pins it in `main.wasm` even when the canvas itself is lazy-loaded in a
-# wasm-split chunk. With the feature off, that code is reachable only from
-# the registering chunk and splits out cleanly. See the `lazy-loading`
-# guide ("Lazy-loading a heavy SDK").
-self-register = ["dep:inventory"]
-# Idea-lite migration (External-SDK wave): register the web (`<canvas>`
-# 2D) renderer as a scene-Registry handler for `canvas_core::CanvasPrim`
-# (see src/web_newcore.rs). Default-off and MUTUALLY EXCLUSIVE with the
-# old-core register surface (same public `register` name — one core per
-# build graph). Non-web targets install the External-placeholder
-# degradation handler until the native painters port (documented seam in
-# lib.rs). `backend-web/new-core` is required because the wasm32 handler
-# is `WebBackend`-concrete (Canvas2D has no caps-trait expression).
-new-core = [
-    "canvas-core/new-core",
-    "dep:runtime-scene",
-    "dep:runtime-vocabulary",
-    "dep:runtime-world",
-    "backend-web/new-core",
-]
+# VACUOUS — retained only so existing `features = ["self-register"]` dep
+# specs keep resolving. It used to gate an `inventory` ctor that
+# self-registered the handler at backend construction; the scene registry
+# is built explicitly at boot, so there is no ctor and nothing to gate.
+# (The old motivation was bundle size: the ctor was a link-time anchor
+# that pinned the rasterizer + glyph stack in a lazy web bundle's
+# `main.wasm`. With no ctor, delegate-only consumers like `canvas-vello`
+# reach `make_2d_rasterizer` without anchoring anything.) Safe to delete
+# once no dep spec names it.
+self-register = []
 
 [dependencies]
-runtime-core = { workspace = true }
 canvas-core = { workspace = true }
-# New-core surface (feature `new-core`).
-runtime-scene = { workspace = true, optional = true }
-runtime-vocabulary = { workspace = true, optional = true }
-runtime-world = { workspace = true, optional = true }
-# Self-registration of the per-backend external handler at construction.
-inventory = { version = "0.3", optional = true }
+# The scene registry the platform handlers install into, the vocabulary
+# caps + style channel they drive, and `runtime_world::effect` for the
+# reactive repaint. `runtime-shared` names
+# `accessibility::AccessibilityProps` on the placeholder arm.
+runtime-scene = { workspace = true }
+runtime-shared = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-world = { workspace = true }
 # Outline glyphs from font bytes so a `DrawOp::Glyphs` run (a rendered PDF's
 # text) renders on the CPU backends with the SAME geometry the GPU (vello) path
 # produces — both outline at upem = 1000 with hinting off. Pure Rust, builds on
@@ -136,9 +113,6 @@ backend-android-core = { workspace = true }
 jni = "0.21"
 
 [dev-dependencies]
-# Unconditional in tests so the self-register gate tests can iterate the
-# registry even when the feature (and the optional runtime dep) is off.
-inventory = "0.3"
-# tests/newcore.rs (`--features new-core`): the placeholder arm on the
-# shared host-mock recording substrate.
+# tests/canvas.rs: the placeholder arm on the shared host-mock recording
+# substrate.
 host-mock = { workspace = true }

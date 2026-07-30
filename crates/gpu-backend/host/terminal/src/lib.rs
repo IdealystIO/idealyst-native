@@ -1,7 +1,8 @@
 //! Terminal host shell for `backend-terminal`.
 //!
-//! Boots crossterm (raw mode + alternate screen + mouse capture),
-//! mounts the user's `app()`, runs a render loop that:
+//! [`run`] boots crossterm (raw mode + alternate screen + mouse
+//! capture), mounts the user's scene through
+//! `backend_terminal::newcore::start`, and runs a render loop that:
 //!   1. Drains terminal events (resize, keys, mouse) and dispatches.
 //!   2. Asks the backend to lay out + compose a fresh
 //!      [`backend_terminal::Grid`].
@@ -11,20 +12,34 @@
 //!
 //! Quits cleanly on `q`, `Esc`, or `Ctrl-C`, restoring the
 //! terminal's prior state.
+//!
+//! The boot entries ([`run`], [`render_headless`]) live in `boot.rs`
+//! and are re-exported at the crate root; [`newcore`] re-exports them
+//! again under their historical path.
 
-use std::cell::RefCell;
 use std::io::{self, Write};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
+mod boot;
+#[cfg(feature = "runtime-server")]
+mod runtime_server;
 mod scheduler;
 mod stderr_redirect;
 
-// New-core (idea-lite) leg: `newcore::run` / `newcore::render_headless`
-// mirror the old entries on `backend_terminal::newcore::start` (world
-// boot + dispatch-hook flush driver). Additive — see the module docs.
-#[cfg(feature = "new-core")]
-pub mod newcore;
+pub use boot::{render_headless, run};
+#[cfg(feature = "runtime-server")]
+pub use runtime_server::run_runtime_server;
+
+/// Compatibility path. The boot entries used to live behind a
+/// `newcore` module while the framework carried two cores; every
+/// caller and doc spells them `host_terminal::newcore::run` /
+/// `::render_headless`. There is one core now and the entries live at
+/// the crate root ([`crate::run`], [`crate::render_headless`]) — this
+/// re-export keeps the historical paths resolving so callers don't
+/// churn.
+pub mod newcore {
+    pub use crate::{render_headless, run};
+}
 
 /// Install the terminal scheduler on this thread without spinning up
 /// a full crossterm-backed host. Test-only — calling `run(...)`
@@ -40,23 +55,13 @@ pub fn tick_scheduler_for_testing() {
     scheduler::tick();
 }
 
-use backend_terminal::{Grid, TerminalBackend, TerminalKey};
+use backend_terminal::{Grid, TerminalKey};
 use crossterm::{
-    cursor,
-    event::{
-        DisableMouseCapture, EnableMouseCapture, Event, MouseButton, MouseEvent,
-        MouseEventKind,
-    },
-    execute, queue,
-    style::{Color as CtColor, ResetColor, SetBackgroundColor, SetForegroundColor},
-    terminal::{
-        disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
-        LeaveAlternateScreen,
-    },
+    cursor, queue,
+    style::{Color as CtColor, SetBackgroundColor, SetForegroundColor},
 };
 pub use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use runtime_core::color::Rgba;
-use runtime_core::Element;
+use runtime_shared::color::Rgba;
 
 /// Where stderr lands while the terminal session is alive. Lives
 /// under the cwd's `.idealyst/` so it's easy to `tail -f` from
@@ -73,8 +78,7 @@ fn default_log_path() -> std::path::PathBuf {
 /// with the raw-mode teardown — the alternate-screen exit executes
 /// mid-message and the terminal-log ends up with no diagnostic,
 /// leaving only the host's "exited with status 101" line in the build
-/// log. Shared by the old-core [`run`] and the new-core
-/// `newcore::run`.
+/// log. Shared by [`run`] and the runtime-server boot.
 ///
 /// Defensive shape: the original panic message is written FIRST and on
 /// its own try (a) so the user always sees what actually failed, even
@@ -183,50 +187,6 @@ impl std::fmt::Display for RunError {
 
 impl std::error::Error for RunError {}
 
-/// Mount `app` and render it once, headless — no TTY, no raw mode, no
-/// alternate screen. Drives `frames` scheduler ticks between renders so
-/// deferred microtasks (e.g. the drawer SDK's sidebar build, which is
-/// queued via `schedule_microtask` during navigator mount) actually run
-/// before the snapshot. Returns the final grid as one trimmed `String`
-/// per row.
-///
-/// This is the no-TTY counterpart to [`run`] for diagnostics and
-/// snapshot-style tests: the live `run` loop needs a controlling terminal
-/// (raw mode + crossterm input), which isn't available in CI or a piped
-/// shell. Use ≥2 frames to capture content that only appears after the
-/// first post-mount microtask drain.
-pub fn render_headless<F, R>(
-    app: F,
-    register_extensions: R,
-    cols: u16,
-    rows: u16,
-    cell_size: Option<(f32, f32)>,
-    frames: usize,
-) -> Vec<String>
-where
-    F: Fn() -> Element + 'static,
-    R: FnOnce(&mut TerminalBackend),
-{
-    scheduler::install();
-    let backend = Rc::new(RefCell::new(TerminalBackend::new()));
-    backend_terminal::install_global_self(Rc::downgrade(&backend));
-    register_extensions(&mut backend.borrow_mut());
-    if let Some((w, h)) = cell_size {
-        backend.borrow_mut().set_cell_size(w, h);
-    }
-    backend.borrow_mut().set_viewport(cols, rows);
-
-    let _owner = runtime_core::mount(backend.clone(), app);
-
-    let mut out = Vec::new();
-    for _ in 0..frames.max(1) {
-        scheduler::tick();
-        let grid = backend.borrow_mut().render_to_grid();
-        out = grid_to_rows(&grid);
-    }
-    out
-}
-
 /// Flatten a [`Grid`] into one trimmed `String` per row (control / null
 /// glyphs rendered as spaces). Diagnostic helper for [`render_headless`].
 fn grid_to_rows(grid: &Grid) -> Vec<String> {
@@ -240,460 +200,6 @@ fn grid_to_rows(grid: &Grid) -> Vec<String> {
             line.trim_end().to_string()
         })
         .collect()
-}
-
-/// Boot crossterm, mount `app`, and drive the render loop until the
-/// user quits. Restores the terminal state on return.
-///
-/// `register_extensions` runs after the [`TerminalBackend`] is
-/// constructed and the global self-handle is installed, but before
-/// the first `mount(...)`. SDK leaf crates (drawer-navigator,
-/// stack-navigator, third-party `Element::External` providers) get
-/// installed here — mirrors the web/iOS/Android wrappers which call
-/// `<user_crate>::register_extensions(&mut backend)` at the same
-/// point. Pass `|_| {}` if the app has no SDKs to register.
-pub fn run<F, R>(app: F, opts: RunOptions, register_extensions: R) -> Result<(), RunError>
-where
-    F: Fn() -> Element + 'static,
-    R: FnOnce(&mut TerminalBackend),
-{
-    let mut stdout = io::stdout();
-    // Steal stderr BEFORE raw mode so any framework/hot/runtime-
-    // server `eprintln!` lands in the log file instead of stomping
-    // on crossterm's paint stream. Dropped on return, restoring
-    // the original fd 2. See `stderr_redirect.rs` for the why.
-    let _stderr = stderr_redirect::StderrRedirect::install(&default_log_path());
-
-    install_panic_log_hook(default_log_path());
-
-    enable_raw_mode()?;
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        cursor::Hide,
-        Clear(ClearType::All)
-    )?;
-
-    // Install the framework's `Scheduler` *before* the first
-    // `mount(...)` — animation timers, `after_ms`, presence-anim
-    // unmount delays all read this on first construction. The native
-    // fallback (synchronous fire-now) would otherwise stick.
-    scheduler::install();
-
-    let backend = Rc::new(RefCell::new(TerminalBackend::new()));
-    // Install the self-handle the backend's `Toggle` click handler
-    // and `ActivityIndicator` rAF loop use to reach back into the
-    // backend without capturing it directly. Mirrors the
-    // `install_global_self` pattern in `backend-macos`.
-    backend_terminal::install_global_self(Rc::downgrade(&backend));
-
-    // Hand the bare backend to the user crate so it can install
-    // navigator-SDK / external-primitive handlers before mount.
-    // Same posture as the web wrapper's
-    // `{lib}::register_extensions(&mut web)` call.
-    register_extensions(&mut backend.borrow_mut());
-
-    // Apply the host's chosen cell_size BEFORE the first mount —
-    // measure_fns capture the value at install time, so changing
-    // it mid-session wouldn't apply to already-mounted text.
-    if let Some((w, h)) = opts.cell_size {
-        backend.borrow_mut().set_cell_size(w, h);
-    }
-
-    // Initial viewport snapshot.
-    let (cols, rows) = crossterm::terminal::size()?;
-    backend.borrow_mut().set_viewport(cols, rows);
-
-    // Mount the user's app — same posture as host-appkit: `mount`
-    // adopts the framework's root scope so `effect!` / `signal!`
-    // / `Ref` declarations inside the user's component bodies stay
-    // alive for the whole session.
-    //
-    // Bind the `Owner` to a local that lives for the whole run loop
-    // and drop it explicitly *before* the backend Rc + the TLS-bound
-    // reactive arena get torn down. The macOS host gets away with
-    // `mem::forget` because `nsapp.run()` never returns — but our
-    // terminal host returns cleanly on quit, and if the framework's
-    // reactive arena TLS is destroyed before the Owner's drop walks
-    // it, you get "cannot access TLS during destruction" panics
-    // after the user already saw their shell prompt.
-    let _owner = runtime_core::mount(backend.clone(), app);
-
-    let frame_budget = Duration::from_secs_f64(1.0 / opts.target_fps as f64);
-    let mut prev_grid: Option<Grid> = None;
-
-    let result = (|| -> Result<(), RunError> {
-        loop {
-            let frame_start = Instant::now();
-
-            // 1. Drain pending input. Block for at most one frame's
-            //    worth so we still tick the render loop when the user
-            //    is idle.
-            let poll_budget = frame_budget;
-            let mut quit = false;
-            while crossterm::event::poll(Duration::from_millis(0))? {
-                match crossterm::event::read()? {
-                    Event::Resize(new_cols, new_rows) => {
-                        backend.borrow_mut().set_viewport(new_cols, new_rows);
-                        // Force a full repaint on resize.
-                        prev_grid = None;
-                        execute!(stdout, Clear(ClearType::All))?;
-                    }
-                    Event::Mouse(MouseEvent {
-                        kind: MouseEventKind::Down(MouseButton::Left),
-                        column,
-                        row,
-                        ..
-                    }) => {
-                        // Backend walks the tree deepest-first and
-                        // *returns* the handler instead of firing it
-                        // — the click closure typically calls
-                        // `Signal::set`, which re-enters the backend
-                        // via the framework's reactive effect chain.
-                        // Releasing the borrow before invoking it is
-                        // the only way to avoid a "RefCell already
-                        // borrowed" panic. Same pattern the original
-                        // `hit_test` shape used.
-                        let outcome = backend.borrow_mut().dispatch_click(column, row);
-                        if let backend_terminal::ClickOutcome::HandlerFired(h) = outcome {
-                            h();
-                        }
-                    }
-                    Event::Mouse(MouseEvent {
-                        kind: MouseEventKind::ScrollDown,
-                        column,
-                        row,
-                        ..
-                    }) => {
-                        // Wheel scrolls by ~3 lines per tick — terminal
-                        // wheel deltas are unitless, so we pick a sane
-                        // step that feels like browser-default. The
-                        // backend clamps against content bounds.
-                        backend.borrow_mut().dispatch_scroll(column, row, 0.0, SCROLL_STEP);
-                    }
-                    Event::Mouse(MouseEvent {
-                        kind: MouseEventKind::ScrollUp,
-                        column,
-                        row,
-                        ..
-                    }) => {
-                        backend.borrow_mut().dispatch_scroll(column, row, 0.0, -SCROLL_STEP);
-                    }
-                    Event::Mouse(MouseEvent {
-                        kind: MouseEventKind::ScrollRight,
-                        column,
-                        row,
-                        ..
-                    }) => {
-                        backend.borrow_mut().dispatch_scroll(column, row, SCROLL_STEP, 0.0);
-                    }
-                    Event::Mouse(MouseEvent {
-                        kind: MouseEventKind::ScrollLeft,
-                        column,
-                        row,
-                        ..
-                    }) => {
-                        backend.borrow_mut().dispatch_scroll(column, row, -SCROLL_STEP, 0.0);
-                    }
-                    Event::Key(key) => {
-                        if key.kind != KeyEventKind::Press
-                            && key.kind != KeyEventKind::Repeat
-                        {
-                            continue;
-                        }
-                        // 1. Focused TextInput gets first crack. If
-                        //    it consumes the key, suppress everything
-                        //    downstream (global on_key, quit
-                        //    detection) so typing 'q' into an input
-                        //    doesn't kill the app.
-                        if let Some(tk) = to_terminal_key(&key) {
-                            if backend.borrow_mut().dispatch_key(&tk) {
-                                continue;
-                            }
-                        }
-                        // 2. Author's global handler.
-                        if let Some(cb) = opts.on_key.as_ref() {
-                            if cb(&key) {
-                                continue;
-                            }
-                        }
-                        // 3. Built-in quit shortcuts.
-                        if is_quit_key(&key) {
-                            quit = true;
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if quit {
-                break;
-            }
-
-            // 2. Pump the framework's scheduler. This fires expired
-            //    `after_ms` callbacks, next-frame one-shots, and any
-            //    `raf_loop` subscribers — including the per-frame
-            //    writes from `AnimatedValue::bind`. The walker's
-            //    reactive effects re-fire automatically when a
-            //    backend method (`set_animated_f32`, `update_text`,
-            //    etc.) writes through a signal.
-            scheduler::tick();
-
-            // 3. Compose the next frame.
-            let grid = backend.borrow_mut().render_to_grid();
-
-            // 4. Paint via diff against prev_grid.
-            paint_grid(&mut stdout, &grid, prev_grid.as_ref())?;
-            stdout.flush()?;
-            prev_grid = Some(grid);
-
-            // 5. Sleep until the next frame tick — but only if no
-            //    animation is in flight. If `has_pending()` is true,
-            //    we want the loop to spin (capped at `target_fps`)
-            //    so animations actually advance. With no pending
-            //    work, blocking on `poll` for the rest of the budget
-            //    keeps idle CPU near zero.
-            let elapsed = frame_start.elapsed();
-            if elapsed < poll_budget {
-                if scheduler::has_pending() {
-                    // Cooperative yield — just long enough to keep
-                    // us under the FPS cap. Don't block on `poll`
-                    // since we want to come right back to advance
-                    // animations.
-                    std::thread::sleep(poll_budget - elapsed);
-                } else {
-                    let _ = crossterm::event::poll(poll_budget - elapsed);
-                }
-            }
-        }
-        Ok(())
-    })();
-
-    // Always restore the terminal, even on error.
-    let _ = execute!(
-        stdout,
-        ResetColor,
-        cursor::Show,
-        DisableMouseCapture,
-        LeaveAlternateScreen
-    );
-    let _ = disable_raw_mode();
-    result
-}
-
-/// Runtime-server variant of [`run`]. Same crossterm boot + frame
-/// loop, but instead of mounting a local `app()` it spawns a
-/// `RuntimeServerShell<TerminalBackend>` that connects to the dev-
-/// host at `url` (CLI-baked via the `IDEALYST_DEV_ENDPOINT` env
-/// var) and applies the streamed wire commands into the terminal
-/// grid every frame.
-///
-/// The shell is ticked once per frame (inside the existing render
-/// loop) which: (a) applies pending inbound commands, (b) sends
-/// `RequestFrame` so the sidecar advances its animation clock,
-/// (c) reports the current viewport on resize. The sidecar's
-/// `RecordingViewOps::frame()` reads then return the actual
-/// terminal cell-grid size — author code reading
-/// `page_ref.frame()` sees real bounds, not the mobile-portrait
-/// fallback.
-#[cfg(feature = "runtime-server")]
-pub fn run_runtime_server(url: String, opts: RunOptions) -> Result<(), RunError> {
-    let mut stdout = io::stdout();
-    // Same posture as `run`: redirect stderr to the project's
-    // terminal log so the runtime-server shell's connect /
-    // disconnect chatter doesn't corrupt the cell grid.
-    let _stderr = stderr_redirect::StderrRedirect::install(&default_log_path());
-    enable_raw_mode()?;
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        cursor::Hide,
-        Clear(ClearType::All)
-    )?;
-
-    scheduler::install();
-
-    let backend = Rc::new(RefCell::new(TerminalBackend::new()));
-    backend_terminal::install_global_self(Rc::downgrade(&backend));
-
-    // Runtime-server clients almost always connect to a dev-host
-    // serving a mobile/desktop app whose stylesheet uses px values
-    // calibrated for those densities (a 200-px planet is normal on
-    // an iOS viewport). The default cell_size of (1.0, 1.0) treats
-    // 1 px = 1 cell, which makes that 200-px planet render as 200
-    // cells — overflowing every terminal. Default to roughly the
-    // aspect ratio of a typical monospace cell so author px values
-    // land at sane cell sizes; honor an explicit `opts.cell_size`
-    // override for callers (`hello-terminal`-style) that wrote their
-    // app in cell units.
-    let (cw, ch) = opts.cell_size.unwrap_or(DEFAULT_RUNTIME_SERVER_CELL_SIZE);
-    backend.borrow_mut().set_cell_size(cw, ch);
-
-    let (cols, rows) = crossterm::terminal::size()?;
-    backend.borrow_mut().set_viewport(cols, rows);
-
-    // Spawn the shell against the shared backend Rc — same
-    // `Rc<RefCell<TerminalBackend>>` we'll render from each
-    // frame. The shell's apply_batch writes through this Rc;
-    // the per-frame `render_to_grid` reads from it.
-    //
-    // Report the viewport in layout px (cells × cell_size), NOT in
-    // cells. The dev-host's Taffy + `RecordingViewOps::frame()`
-    // both speak px; reporting cells would tell the sidecar the
-    // app has a 80-px-wide viewport and the user's 200-px planet
-    // would render past the right edge before it ever reached us.
-    let shell = runtime_server_shell_native::RuntimeServerShell::<TerminalBackend>::spawn_with_shared_backend(
-        backend.clone(),
-        url,
-        runtime_server_shell_native::RuntimeServerShellOptions {
-            platform: runtime_server_shell_native::WirePlatform::Other,
-            device_label: Some(format!("terminal ({}×{})", cols, rows)),
-            viewport: Some(runtime_server_shell_native::WireViewport {
-                width: cols as f32 * cw,
-                height: rows as f32 * ch,
-            }),
-        },
-    );
-
-    let frame_budget = Duration::from_secs_f64(1.0 / opts.target_fps as f64);
-    let mut prev_grid: Option<Grid> = None;
-    let mut last_viewport = (cols, rows);
-
-    let result = (|| -> Result<(), RunError> {
-        loop {
-            let frame_start = Instant::now();
-            let poll_budget = frame_budget;
-            let mut quit = false;
-
-            // Drain input (same shape as local-mount `run`).
-            while crossterm::event::poll(Duration::from_millis(0))? {
-                match crossterm::event::read()? {
-                    Event::Resize(new_cols, new_rows) => {
-                        backend.borrow_mut().set_viewport(new_cols, new_rows);
-                        last_viewport = (new_cols, new_rows);
-                        prev_grid = None;
-                        execute!(stdout, Clear(ClearType::All))?;
-                    }
-                    Event::Mouse(MouseEvent {
-                        kind: MouseEventKind::Down(MouseButton::Left),
-                        column,
-                        row,
-                        ..
-                    }) => {
-                        let outcome = backend.borrow_mut().dispatch_click(column, row);
-                        if let backend_terminal::ClickOutcome::HandlerFired(h) = outcome {
-                            h();
-                        }
-                    }
-                    Event::Mouse(MouseEvent {
-                        kind: MouseEventKind::ScrollDown,
-                        column,
-                        row,
-                        ..
-                    }) => {
-                        backend.borrow_mut().dispatch_scroll(column, row, 0.0, SCROLL_STEP);
-                    }
-                    Event::Mouse(MouseEvent {
-                        kind: MouseEventKind::ScrollUp,
-                        column,
-                        row,
-                        ..
-                    }) => {
-                        backend.borrow_mut().dispatch_scroll(column, row, 0.0, -SCROLL_STEP);
-                    }
-                    Event::Mouse(MouseEvent {
-                        kind: MouseEventKind::ScrollRight,
-                        column,
-                        row,
-                        ..
-                    }) => {
-                        backend.borrow_mut().dispatch_scroll(column, row, SCROLL_STEP, 0.0);
-                    }
-                    Event::Mouse(MouseEvent {
-                        kind: MouseEventKind::ScrollLeft,
-                        column,
-                        row,
-                        ..
-                    }) => {
-                        backend.borrow_mut().dispatch_scroll(column, row, -SCROLL_STEP, 0.0);
-                    }
-                    Event::Key(key) => {
-                        if key.kind != KeyEventKind::Press
-                            && key.kind != KeyEventKind::Repeat
-                        {
-                            continue;
-                        }
-                        // Focused TextInput gets first crack — the
-                        // backend's TextInput primitive is local
-                        // bookkeeping (focus, cursor, value); typing
-                        // through the wire would round-trip every
-                        // keystroke through the sidecar. Same posture
-                        // as local-mount `run`: if dispatch_key returns
-                        // true the input swallowed it, so don't let it
-                        // also count as a quit shortcut.
-                        if let Some(tk) = to_terminal_key(&key) {
-                            if backend.borrow_mut().dispatch_key(&tk) {
-                                continue;
-                            }
-                        }
-                        if let Some(cb) = opts.on_key.as_ref() {
-                            if cb(&key) {
-                                continue;
-                            }
-                        }
-                        if is_quit_key(&key) {
-                            quit = true;
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if quit {
-                break;
-            }
-
-            // Tick the runtime-server shell: apply inbound batch,
-            // send `RequestFrame`, report viewport changes. The
-            // shell's apply lands on the shared backend `Rc`, so
-            // the next `render_to_grid` call below paints the
-            // updated scene. Reported viewport is in layout px
-            // (cells × cell_size); see the spawn block above for
-            // the rationale.
-            shell.tick(Some(runtime_server_shell_native::WireViewport {
-                width: last_viewport.0 as f32 * cw,
-                height: last_viewport.1 as f32 * ch,
-            }));
-
-            scheduler::tick();
-            let grid = backend.borrow_mut().render_to_grid();
-            paint_grid(&mut stdout, &grid, prev_grid.as_ref())?;
-            stdout.flush()?;
-            prev_grid = Some(grid);
-
-            let elapsed = frame_start.elapsed();
-            if elapsed < poll_budget {
-                // Runtime-server mode is always "pending" — there
-                // could be wire commands arriving on the next
-                // worker-thread iteration. Yield rather than block
-                // on poll so the next tick happens promptly.
-                std::thread::sleep(poll_budget - elapsed);
-            }
-        }
-        Ok(())
-    })();
-
-    let _ = execute!(
-        stdout,
-        ResetColor,
-        cursor::Show,
-        DisableMouseCapture,
-        LeaveAlternateScreen
-    );
-    let _ = disable_raw_mode();
-    result
 }
 
 fn is_quit_key(key: &KeyEvent) -> bool {

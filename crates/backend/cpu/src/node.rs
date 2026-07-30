@@ -14,8 +14,8 @@
 
 use std::rc::Rc;
 
-use runtime_core::color::Rgba;
-use runtime_core::{GradientKind, Length, StyleRules};
+use runtime_shared::color::Rgba;
+use runtime_shared::{GradientKind, Length, StyleRules};
 use runtime_layout::LayoutNode;
 
 /// Opaque handle the framework holds as the backend's `Self::Node`.

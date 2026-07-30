@@ -60,8 +60,8 @@ use esp_idf_svc::log::EspLogger;
 use log::info;
 use mipidsi::models::{ILI9341Rgb565, Model};
 use mipidsi::options::{ColorOrder, Orientation, Rotation};
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::{Backend, FlexDirection, Length, StyleRules, Tokenized};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::{Backend, FlexDirection, Length, StyleRules, Tokenized};
 use std::rc::Rc;
 
 /// Panel dimensions for the ILI9341 in landscape orientation.
@@ -358,7 +358,7 @@ fn style(mut f: impl FnMut(&mut StyleRules)) -> Rc<StyleRules> {
     Rc::new(s)
 }
 
-fn lit_color(s: &str) -> Tokenized<runtime_core::Color> {
+fn lit_color(s: &str) -> Tokenized<runtime_shared::Color> {
     Tokenized::Literal(s.into())
 }
 

@@ -69,7 +69,7 @@ fn picked_from_file(file: web_sys::File) -> PickedFile {
 /// filesystem path, so the backend stashed the raw `web_sys::File` in
 /// `DroppedFile::source`; we downcast it and reuse the picker's `File` reader.
 #[cfg(feature = "drop")]
-pub(crate) fn picked_from_dropped(f: &runtime_core::DroppedFile) -> Option<PickedFile> {
+pub(crate) fn picked_from_dropped(f: &runtime_shared::DroppedFile) -> Option<PickedFile> {
     let file = f.source.as_ref()?.downcast_ref::<web_sys::File>()?.clone();
     Some(picked_from_file(file))
 }

@@ -42,15 +42,6 @@ pub struct BuildOptions {
     pub mode: BuildMode,
     pub user_features: Vec<String>,
     pub source: FrameworkSource,
-    /// Local mode only: build against the NEW core (runtime v2, the
-    /// default since the defaults flip). The wrapper's `main` mounts
-    /// through `host_terminal::newcore::run` and the user crate
-    /// compiles single-core (`default-features = false, features =
-    /// ["new-core"]`; requires the dual-core app convention). `false` =
-    /// old-core wrapper (plus the `old-core` single-core pin for apps
-    /// declaring that feature). RuntimeServer mode ignores this — the
-    /// wire client is core-agnostic.
-    pub new_core: bool,
 }
 
 #[derive(Debug)]
@@ -146,7 +137,12 @@ fn generate_wrapper(
 
     let bin_name = binary_name(&manifest.name, opts.mode);
     let host_dep = opts.source.dep("crates/gpu-backend/host/terminal", &[]);
-    let fcore_dep = opts.source.dep("crates/runtime/core", &[]);
+    // `runtime-core` + `runtime-shared` as DIRECT deps so the wrapper's
+    // own `dev` feature can map onto them (cargo resolves `<dep>/<feat>`
+    // only for direct dependencies): the facade carries the catalog
+    // anchor + emission gate, runtime-shared the bridge transport.
+    let runtime_core_dep = opts.source.dep("crates/runtime/core", &[]);
+    let shared_dep = opts.source.dep("crates/runtime/shared", &[]);
     let bundle_id = manifest
         .app
         .bundle_id
@@ -184,58 +180,33 @@ fn generate_wrapper(
             // that override (see the tutorial's `[features] terminal`).
             // Crates that don't declare the feature keep the old behavior
             // (terminal auto-selected via `target_os` cfg on non-Apple
-            // desktop hosts), so this is backward-compatible.
-            // One core per build graph (runtime-v2 defaults flip):
-            // new-core pins the dual-core app convention's feature;
-            // old-core pins `old-core` when the app declares it and
-            // keeps the historical dep line otherwise. The `terminal`
-            // backend-disambiguation feature composes with either core.
+            // desktop hosts), so this is backward-compatible. Otherwise a
+            // plain path dep — the app's own defaults select its feature
+            // set.
             let terminal_feat = crate_declares_terminal_feature(project_dir);
-            let user_dep = if opts.new_core {
-                let feats = if terminal_feat {
-                    "\"new-core\", \"terminal\""
-                } else {
-                    "\"new-core\""
-                };
-                format!(
-                    "{{ path = \"{}\", default-features = false, features = [{feats}] }}",
-                    project_dir.display(),
-                )
-            } else if build_ios::declares_feature(project_dir, "old-core") {
-                let feats = if terminal_feat {
-                    "\"old-core\", \"terminal\""
-                } else {
-                    "\"old-core\""
-                };
-                format!(
-                    "{{ path = \"{}\", default-features = false, features = [{feats}] }}",
-                    project_dir.display(),
-                )
-            } else if terminal_feat {
+            let user_dep = if terminal_feat {
                 format!("{{ path = \"{}\", features = [\"terminal\"] }}", project_dir.display())
             } else {
                 format!("{{ path = \"{}\" }}", project_dir.display())
             };
-            let host_dep = if opts.new_core {
-                // `host-terminal/new-core` compiles the newcore boot
-                // (crossterm loop over `backend_terminal::newcore::start`).
-                opts.source.dep("crates/gpu-backend/host/terminal", &["new-core"])
-            } else {
-                host_dep.clone()
-            };
+            // `host-terminal/new-core` compiles the boot path (crossterm
+            // loop over `backend_terminal::newcore::start`). The feature
+            // is vacuous once backend-terminal makes its contents
+            // unconditional; drop it from this list at that point.
+            let host_dep = opts
+                .source
+                .dep("crates/gpu-backend/host/terminal", &[]);
             let deps = format!(
                 "host-terminal = {host_dep}\n\
-                 runtime-core = {fcore_dep}\n\
+                 runtime-core = {runtime_core_dep}\n\
+                 runtime-shared = {shared_dep}\n\
                  {user_name} = {user_dep}\n",
                 user_name = manifest.name,
             );
-            let features =
-                "[features]\ndev = [\"runtime-core/dev\"]\n".to_string();
-            let main = if opts.new_core {
-                local_main_rs_newcore(&manifest.lib_name, &bin_name, default_cell_size)
-            } else {
-                local_main_rs(&manifest.lib_name, &bin_name, default_cell_size)
-            };
+            let features = "[features]\n\
+                dev = [\"runtime-core/dev\", \"runtime-shared/robot\"]\n"
+                .to_string();
+            let main = local_main_rs(&manifest.lib_name, &bin_name, default_cell_size);
             (deps, features, main)
         }
         BuildMode::RuntimeServer => {
@@ -244,7 +215,8 @@ fn generate_wrapper(
                 .dep("crates/dev/runtime-server-shell", &["runtime-server"]);
             let deps = format!(
                 "host-terminal = {host_dep}\n\
-                 runtime-core = {fcore_dep}\n\
+                 runtime-core = {runtime_core_dep}\n\
+                 runtime-shared = {shared_dep}\n\
                  runtime-server-shell-native = {shell_dep}\n",
             );
             // `runtime-server` toggles host-terminal's runtime-
@@ -253,7 +225,7 @@ fn generate_wrapper(
             // runtime-server,dev` works from cargo.
             let features = "[features]\n\
                 runtime-server = [\"host-terminal/runtime-server\"]\n\
-                dev = [\"runtime-core/dev\"]\n"
+                dev = [\"runtime-core/dev\", \"runtime-shared/robot\"]\n"
                 .to_string();
             let main = runtime_server_main_rs(&bundle_id, &bin_name);
             (deps, features, main)
@@ -292,7 +264,14 @@ edition = "2021"
     Ok(())
 }
 
-fn local_main_rs(user_lib: &str, bin_name: &str, cell_size: Option<(f32, f32)>) -> String {
+/// Local wrapper `main`: mounts through `host_terminal::newcore::run`
+/// (crossterm loop over `backend_terminal::newcore::start` — world +
+/// scene registry + dispatch-hook flush driver).
+fn local_main_rs(
+    user_lib: &str,
+    bin_name: &str,
+    cell_size: Option<(f32, f32)>,
+) -> String {
     // Seed `cell_size` from the manifest-derived default. `None`
     // (terminal-only projects) leaves the natural 1 px = 1 cell so
     // hello-terminal-style apps keep working.
@@ -304,46 +283,12 @@ fn local_main_rs(user_lib: &str, bin_name: &str, cell_size: Option<(f32, f32)>) 
         r#"//! GENERATED by `idealyst dev --terminal` (local-mount).
 //! Mounts the user's `app()` into the terminal grid.
 
-use {user_lib}::app;
-
-fn main() {{
-    let mut opts = host_terminal::RunOptions::default();
-{cell_size_assign}    // The user crate must expose
-    // `pub fn register_extensions(&mut TerminalBackend)` — same shape as
-    // the web/iOS/Android wrappers. Pass an empty body if the app has
-    // no navigator SDK or external-primitive registrations.
-    if let Err(e) = host_terminal::run(app, opts, {user_lib}::register_extensions) {{
-        eprintln!("[{bin_name}] runtime error: {{e}}");
-        std::process::exit(1);
-    }}
-}}
-"#,
-    )
-}
-
-/// New-core local wrapper `main` (runtime v2, the default since the
-/// defaults flip): mounts through `host_terminal::newcore::run`
-/// (crossterm loop over `backend_terminal::newcore::start` — world +
-/// scene registry + dispatch-hook flush driver).
-fn local_main_rs_newcore(
-    user_lib: &str,
-    bin_name: &str,
-    cell_size: Option<(f32, f32)>,
-) -> String {
-    let cell_size_assign = match cell_size {
-        Some((w, h)) => format!("    opts.cell_size = Some(({w:.1}, {h:.1}));\n"),
-        None => String::new(),
-    };
-    format!(
-        r#"//! GENERATED by `idealyst dev --terminal` (local-mount, new core).
-//! Mounts the user's `app()` into the terminal grid on runtime v2.
-
 fn main() {{
     let mut opts = host_terminal::RunOptions::default();
 {cell_size_assign}    // The user crate must expose a registry-generic
-    // `register_scene_extensions` seam (the dual-core app convention) —
-    // this is how SDK payload handlers register on the new core.
-    if let Err(e) = host_terminal::newcore::run(
+    // `register_scene_extensions` seam — this is how SDK payload
+    // handlers register their per-backend implementations.
+    if let Err(e) = host_terminal::run(
         || {user_lib}::app(),
         opts,
         {user_lib}::register_scene_extensions,
@@ -482,7 +427,6 @@ mod regression_tests {
             source: FrameworkSource::Workspace {
                 root: workspace_root,
             },
-            new_core: false,
         };
         generate_wrapper(&wrapper_dir, &cargo_target, &project_dir, &manifest, &opts)
             .expect("generate wrapper");
@@ -614,7 +558,6 @@ mod regression_tests {
             mode: BuildMode::Local,
             user_features: Vec::new(),
             source: FrameworkSource::Workspace { root: tmp.path().join("workspace") },
-            new_core: false,
         };
         std::fs::create_dir_all(opts_source_root(&opts)).unwrap();
         generate_wrapper(
@@ -630,6 +573,32 @@ mod regression_tests {
         assert!(
             cargo.contains("features = [\"terminal\"]"),
             "wrapper should enable the user crate's terminal feature; got:\n{cargo}",
+        );
+    }
+
+    /// The local wrapper boots through `host_terminal::newcore::run`,
+    /// enables `host-terminal/new-core`, and pins no core feature on the
+    /// user crate (there is one core).
+    #[test]
+    fn local_wrapper_boots_newcore_run_with_plain_user_dep() {
+        let (wrapper_dir, _tmp) = run_generator(vec![Target::Terminal], BuildMode::Local);
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+        let main_rs = std::fs::read_to_string(wrapper_dir.join("src/main.rs")).unwrap();
+        assert!(
+            !cargo.contains("old-core"),
+            "wrapper must not pin any core feature on the user crate:\n{cargo}",
+        );
+        assert!(
+            !cargo.contains("default-features = false"),
+            "user-crate dep must be a plain path dep:\n{cargo}",
+        );
+        assert!(
+            main_rs.contains("host_terminal::run("),
+            "main must boot through host_terminal::run:\n{main_rs}",
+        );
+        assert!(
+            main_rs.contains("register_scene_extensions"),
+            "main must register through the scene seam:\n{main_rs}",
         );
     }
 

@@ -5,7 +5,7 @@
 //! UIKit-flavored leaf crates and the AppKit-flavored macOS backend
 //! both consume this through [`install_scheduler`].
 //!
-//! `runtime_core::scheduling` falls back to synchronous execution
+//! `runtime_shared::scheduling` falls back to synchronous execution
 //! on native when no scheduler is installed — fine for
 //! `schedule_microtask` (immediate dispatch is correct semantics on
 //! single-threaded native), but **wrong for `after_ms`** since
@@ -14,13 +14,13 @@
 //! other timer-driven feature follow.
 //!
 //! Hosts call [`install_scheduler`] once at startup, before the
-//! first `runtime_core::render(...)`.
+//! first `runtime_shared::render(...)`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use block2::StackBlock;
-use runtime_core::scheduling::{install_scheduler as install, ScheduleHandle, Scheduler};
+use runtime_shared::scheduling::{install_scheduler as install, ScheduleHandle, Scheduler};
 use objc2::{msg_send, msg_send_id};
 use objc2::rc::Retained;
 use objc2_foundation::{NSObject, NSString};
@@ -83,7 +83,7 @@ thread_local! {
     /// via `dispatch_async(main_queue)`, i.e. the *next* run-loop turn — which
     /// is AFTER the first paint). While a host has opened a mount-buffering
     /// window, microtasks queue here instead and are drained SYNCHRONOUSLY by
-    /// [`Scheduler::drain_buffered_microtasks`] (called from `runtime_core::mount`
+    /// [`Scheduler::drain_buffered_microtasks`] (called from `runtime_shared::mount`
     /// before `finish`), so navigator-SDK deferred chrome (the drawer header /
     /// sidebar, built via `schedule_microtask` to escape the `init` backend
     /// borrow) lands in the FIRST layout instead of popping in a turn later.
@@ -98,7 +98,7 @@ thread_local! {
 /// Open a mount-buffering window: microtasks scheduled until
 /// [`end_mount_buffering`] queue in [`MOUNT_BUFFER`] instead of dispatching to
 /// the next run-loop turn. The host calls this immediately before
-/// `runtime_core::mount(...)` so the build's deferred chrome can be drained
+/// `runtime_shared::mount(...)` so the build's deferred chrome can be drained
 /// before the first paint. Idempotent (a second call keeps the existing queue).
 pub fn begin_mount_buffering() {
     MOUNT_BUFFER.with(|b| {
@@ -125,24 +125,24 @@ pub fn end_mount_buffering() {
 /// install wins. Safe to call from any Apple host (iOS / tvOS / macOS).
 pub fn install_scheduler() {
     install(Box::new(AppleScheduler));
-    // Wire `runtime_core::debug_log` through NSLog so author-side
+    // Wire `runtime_shared::debug_log` through NSLog so author-side
     // diagnostic instrumentation (e.g. in the welcome example's
     // raf_loop) surfaces in `xcrun simctl spawn booted log show`.
     // First-install wins; subsequent calls no-op.
-    runtime_core::scheduling::install_debug_log(Box::new(|msg| {
+    runtime_shared::scheduling::install_debug_log(Box::new(|msg| {
         crate::log::apple_log(msg);
     }));
-    // Route the author-facing logger (`runtime_core::log` / `log_info!`)
+    // Route the author-facing logger (`runtime_shared::log` / `log_info!`)
     // through NSLog too, so app logs surface in the Xcode/Console.app
     // unified log rather than only stderr. First-install wins.
     crate::log::install_logger();
     // Install the cooperative main-thread async executor alongside the
-    // scheduler. Without it, `runtime_core::driver::spawn_async` falls back
+    // scheduler. Without it, `runtime_shared::driver::spawn_async` falls back
     // to `pollster::block_on` ON THE MAIN THREAD — fine for short one-shot
     // futures, but a long-running `recv` loop (`use_sse` / `use_socket`)
     // would block the main thread forever and freeze the UI. The executor
     // polls cooperatively on the main queue instead. First-install wins.
-    // Gated on `async-driver` (the feature that brings `runtime_core::driver`
+    // Gated on `async-driver` (the feature that brings `runtime_shared::driver`
     // into scope); without it there is no `spawn_async` to host.
     #[cfg(feature = "async-driver")]
     crate::async_executor::install_async_executor();
@@ -585,7 +585,7 @@ mod mount_buffer_tests {
     //! toolbar renders after the initial cycle" bug). Exercises only the
     //! buffered path (no libdispatch / run loop needed).
     use super::*;
-    use runtime_core::scheduling::Scheduler;
+    use runtime_shared::scheduling::Scheduler;
     use std::cell::RefCell;
     use std::rc::Rc;
 

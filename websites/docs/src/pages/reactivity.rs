@@ -1,7 +1,7 @@
 //! Reactivity page — built via the `docs!` macro.
 //!
 //! Long-form coverage of the reactive model: signals, effects,
-//! untracked reads, derived values, refs, scopes, cascades, dynamic
+//! untracked reads, derived values, refs, scopes, the flush, dynamic
 //! dependencies, performance properties, patterns, and pitfalls.
 
 use docs_macro::docs;
@@ -50,10 +50,10 @@ docs! {
             let items = signal(Vec::<Item>::new());
         "##),
 
-        p(code("signal(v)"), " is shorthand for ", code("Signal::new(v)"),
-          ". The value is stored in a thread-local arena; the ",
-          code("Signal<T>"), " you hold back is a small Copy token (a couple \
-           of u32s) that indexes into the arena. This is why you can pass \
+        p(code("signal(v)"),
+          " allocates a slot in the enclosing world's arena. The ",
+          code("Signal<T>"), " you hold back is a small ", code("Copy"),
+          " handle that routes to that slot, which is why you can pass \
            signals into closures and child components without ever calling ",
           code(".clone()"), "."),
 
@@ -61,23 +61,52 @@ docs! {
 
         code(rust, r##"
             let n = count.get();          // tracked read
-            count.set(7);                 // replace the value
-            count.update(|n| *n += 1);    // mutate in place
+            count.set(7);                 // stage a replacement value
+            count.update(|n| n + 1);      // read-modify-write
         "##),
 
         p(code(".get()"), " returns a clone of the current value (",
           code("T: Clone"), " is the only bound). ", code(".set(v)"),
-          " replaces the value. ", code(".update(|v| ...)"), " is the same as ",
-          code("set(f(get()))"), " but skips the clone — useful for collections."),
+          " stages a replacement. ", code(".update(|cur| next)"),
+          " takes the current value by reference and returns the next one."),
 
-        p("Both ", code(".set"), " and ", code(".update"), " run synchronously \
-           and trigger every dependent Effect to re-run before they return. \
-           See Cascades below for what that means in practice."),
+        p("A write ", code("stages"),
+          ": it records the pending value, and nothing observable changes \
+           until the world flushes. Reads never see a staged value — a ",
+          code(".get()"),
+          " on the next line returns the value from before the write. The \
+           flush happens automatically when your handler returns; see \
+           \"When does the flush happen\" below."),
 
-        p("Every signal has a stable arena id:"),
+        p("The one place that difference bites is a read-back increment. ",
+          code("set(get() + 1)"),
+          " twice in one handler nets +1, because the second ", code("get()"),
+          " still sees the committed value. ", code("update"),
+          " composes on the STAGED value instead, so increments never get lost:"),
 
         code(rust, r##"
-            let id: u64 = count.id();
+            // WRONG: both get()s see the committed value -> net +1.
+            count.set(count.get() + 1);
+            count.set(count.get() + 1);
+
+            // RIGHT: update composes on the staged value -> net +2.
+            count.update(|n| n + 1);
+            count.update(|n| n + 1);
+        "##),
+
+        p(code(".set(v)"), " is equality-guarded (", code("T: PartialEq"),
+          "): if the staged value equals the committed one at commit time — \
+           including an A→B→A round trip that nets to zero — subscribers are \
+           not notified. ", code(".set_always(v)"),
+          " forces the notification, ", code(".touch()"),
+          " notifies without writing, and ", code(".set_untracked(v)"),
+          " writes the committed value directly, bypassing both staging and \
+           notification."),
+
+        p("Every signal has a stable slot id:"),
+
+        code(rust, r##"
+            let id: u32 = count.id();
         "##),
 
         p("You rarely need this — it's the hook the wire protocol uses to \
@@ -144,7 +173,7 @@ docs! {
             on_click = move || {
                 // Not tracked — just a snapshot at click time.
                 println!("count is {}", count.get());
-                count.update(|n| *n += 1);
+                count.update(|n| n + 1);
             }
         "##),
 
@@ -167,7 +196,7 @@ docs! {
             effect!({
                 println!("count is now {}", count.get());
             });
-            count.set(1);  // re-runs the effect
+            count.set(1);  // stages; the effect re-runs on the flush
         "##),
 
         p("The macro inserts the ", code("move ||"),
@@ -202,11 +231,11 @@ docs! {
                No \"return a function from the body,\" no implicit \
                last-statement-is-cleanup convention. See the ",
               code("on_cleanup"), " section below."),
-            p("3. Runs synchronously on the change. Idealyst effects fire on \
-               the same call stack as the ", code("signal.set()"),
-              " that caused them, not after a commit phase. This is faster \
-               and more predictable, but means heavy work inside an effect \
-               blocks the writer."),
+            p("3. No commit-phase / render-phase split to reason about. An \
+               effect runs during the world's flush, once per flush no \
+               matter how many of its dependencies changed in that turn, \
+               and after every memo it reads has settled — so an effect can \
+               never observe a fresh signal next to a stale derivation."),
         },
         compare(from = Solid) {
             p(code("effect!"), " is ", code("createEffect(...)"),
@@ -257,7 +286,7 @@ docs! {
 
     section(heading = "on_cleanup — release on drop") {
         p(code("on_cleanup(callback)"), " registers a teardown that \
-           fires when the surrounding Effect or scope drops. Pair it \
+           fires when the surrounding Effect re-runs or drops. Pair it \
            with any reactive run that allocates an external resource — \
            timers, sockets, native handles, third-party subscriptions:"),
         code(rust, r##"
@@ -269,12 +298,25 @@ docs! {
                 deps.get();  // tracked: cleanup fires before each re-run
             });
         "##),
+        p(code("on_cleanup"), " requires a RUNNING effect. Calling it from a ",
+          code("#[component]"), " body panics with ",
+          code("\"on_cleanup called outside an effect\""),
+          " — wrap it in an ", code("effect!"),
+          " as above, or return the cleanup from the effect body, which is \
+           the shorter form of the same thing:"),
+        code(rust, r##"
+            effect!({
+                let t = start_timer();
+                move || t.cancel()      // runs before each re-run + at teardown
+            });
+        "##),
+        p("An effect-owned cleanup is also the correct ownership: it cancels \
+           its timers when the effect goes away, so a detached callback can \
+           never outlive a remounted world."),
         p("Cleanup fires before the effect's next re-run AND on final \
            disposal — exactly once per resource lifetime. Multiple ",
           code("on_cleanup"),
-          " calls within a single Effect run all fire in LIFO order \
-           (last-registered first), the way ", code("defer"),
-          " works in other languages."),
+          " calls within a single Effect run fire in registration order."),
     },
 
     section(heading = "memo() — cached derived values") {
@@ -293,11 +335,11 @@ docs! {
             // Many readers — all subscribe to `total`, not to `items`.
             text(move || format!("Sum: {}", total.get()))
         "##),
-        p(code("memo_with(eq, || expr)"),
-          " takes a custom equality predicate so the cache can skip \
-           propagation when the new value is \"equal enough\" — useful \
-           for floating-point thresholds, hash comparisons, or any \
-           expensive ", code("PartialEq"), " you'd rather not run."),
+        p("Memos are equality-guarded: a recompute that produces a value \
+           equal to the cached one does not wake consumers. They also form \
+           their own effect class, settling BEFORE user effects run in a \
+           flush — so an effect reading both a signal and a memo over that \
+           signal can never see the fresh signal with a stale memo."),
         compare(from = React) {
             p(code("memo()"), " is the family of ", code("useMemo"),
               " (cached value) and ", code("useSelector"),
@@ -309,77 +351,80 @@ docs! {
         compare(from = Solid) {
             p(code("memo()"), " is ", code("createMemo()"),
               " — identical caching semantics, identical \
-               dependency-tracking model. ", code("memo_with(eq, ...)"),
-              " is ", code("createMemo(..., undefined, { equals })"), "."),
+               dependency-tracking model, and the same default \
+               equality cut on the memo's output."),
         },
     },
 
-    section(heading = "batch() — group writes") {
-        p(code("batch(|| { /* multi-set */ })"),
-          " defers effect notifications until the closure returns. \
-           Multiple ", code(".set(...)"),
-          " calls inside the batch produce ONE effect re-run per \
-           dependent, not N:"),
+    section(heading = "When does the flush happen") {
+        p("You never call it. Each backend installs a flush driver that \
+           commits after every author-code entry point returns: event \
+           handlers, timers, animation frames, and async-task polls are all \
+           wrapped at the dispatch site. Your handler runs to completion \
+           against a consistent pre-write snapshot, then the flush commits \
+           every staged write as ONE logical update — still in the same tick, \
+           before paint."),
+        p("So every handler is implicitly a batch. There is no ",
+          code("batch(|| ...)"),
+          " wrapper to write: two writes in one turn already coalesce into a \
+           single fan-out, and a downstream effect sees the consistent pair."),
         code(rust, r##"
-            use runtime_core::{signal, batch};
-
             let first = signal("Ada".to_string());
             let last  = signal("Lovelace".to_string());
 
-            // Without batch: each set fires effects independently.
-            // With batch: both writes commit together, downstream
-            // effects see the consistent (first, last) pair and run
-            // once.
-            batch(|| {
+            on_click = move || {
                 first.set("Alan".into());
                 last.set("Turing".into());
-            });
+                // Both commit together when the handler returns; an effect
+                // reading both re-runs ONCE, with the consistent pair.
+            }
         "##),
-        p("Use this for any logically-atomic multi-write. The cost is \
-           a small allocation per batch; the win is one rebuild \
-           instead of N for the worst-case fan-out."),
+        p("SSR is the degenerate case: one flush per request, after the tree \
+           realizes. Web additionally exposes ",
+          code("backend_web::newcore::flush_sync()"),
+          " for foreign entry points (bench drivers, robot verbs) that need \
+           the commit to have happened before they return."),
     },
 
-    section(heading = "Trackable, on(), and on_defer()") {
+    section(heading = "Trackable and on_defer()") {
         p("By default Effects auto-track every signal read on each \
            run. Sometimes you want explicit control — \"re-run only \
-           when this specific set of deps changes\":"),
+           when this specific set of deps changes, and not on the first \
+           pass\":"),
         code(rust, r##"
-            use runtime_core::{signal, on, on_defer};
+            use runtime_core::{signal, on_defer};
 
             let count = signal(0);
             let mood  = signal("ok");
 
-            // on(deps, run) — fires immediately + on every dep change.
-            on(count, move |c| println!("count: {}", c));
+            // on_defer(deps, run) — skips the initial fire; the closure
+            // only runs from the FIRST change onward, and receives the
+            // new value plus the previous one.
+            on_defer(count, move |c, _prev| save_to_db(c));
 
-            // on((count, mood), ...) — multiple deps, fires on either.
-            on((count, mood), move |(c, m)| println!("{} {}", c, m));
-
-            // on_defer — same as on() but skips the initial fire.
-            // The closure only runs from the FIRST change onward.
-            on_defer(count, move |c| save_to_db(c));
+            // Multiple deps read as a tuple, firing on either.
+            on_defer((count, mood), move |(c, m), _prev| log(c, m));
         "##),
         p("Deps go through the ", code("Trackable"),
-          " trait — ", code("Signal<T>"),
-          " implements it, and so do tuples up to arity 4. Trackable \
-           is the \"this set of things is observable as a unit\" \
+          " trait — ", code("Signal<T>"), ", ", code("ReadSignal<T>"), ", ",
+          code("Memo<T>"), ", ", code("Reactive<T>"),
+          " implement it, and so do tuples. Trackable is the \
+           \"this set of things is observable as a unit\" \
            abstraction; the Effect uses it to subscribe to all of \
            them at once and read them as a tuple when re-running."),
     },
 
-    section(heading = "reducer() — action-driven state") {
-        p(code("reducer(initial, |state, action| next_state)"),
-          " gives you Redux-style state: a read-only signal of the \
-           current state, and a dispatch function for sending \
-           actions. The reducer closure is called inside a tracked \
-           context, so reads inside it auto-subscribe:"),
+    section(heading = "Action-driven state") {
+        p("Redux-style state — one closure holding every transition, an \
+           action enum as the write vocabulary — is a shape you compose from \
+           a signal plus ", code("update"),
+          ". There is no separate reducer primitive to learn:"),
         code(rust, r##"
-            use runtime_core::{reducer, Action};
-
             enum CounterAction { Inc, Dec, Reset }
 
-            let (count, dispatch) = reducer(0i32, |state, action| match action {
+            let count = signal(0i32);
+
+            let dispatch = move |action| count.update(|state| match action {
                 CounterAction::Inc   => state + 1,
                 CounterAction::Dec   => state - 1,
                 CounterAction::Reset => 0,
@@ -391,13 +436,12 @@ docs! {
             // Write: dispatch actions.
             button("+", move || dispatch(CounterAction::Inc));
         "##),
-        p("Why reducer when you have signals? Two reasons. The state \
-           transitions live in one closure (easier to test, easier to \
-           reason about), and the action enum is the natural shape \
-           for time-travel / log replay / generator-backend wire \
-           formats. Reducer pairs with ", code("Action"),
-          " (see Derived values above) for round-tripping through \
-           Roku-style generator backends."),
+        p("Because ", code("update"),
+          " composes on the staged value, two dispatches in one turn apply \
+           in order and commit as one logical update. The payoff of the shape \
+           is the same as always: transitions live in one closure (easier to \
+           test, easier to reason about), and the action enum is the natural \
+           form for time-travel and log replay."),
     },
 
     section(heading = "resource() — async data as a primitive") {
@@ -614,10 +658,8 @@ docs! {
 
     section(heading = "Refs") {
         p("A ", code("Ref<H>"),
-          " is a programmatic handle to a primitive. It's allocated in the \
-           same arena as signals and effects, but it's not a value type — \
-           it's a slot that the framework fills with a handle when the \
-           primitive mounts."),
+          " is a programmatic handle to a primitive: a slot the framework \
+           fills with a handle when the primitive mounts."),
 
         code(rust, r##"
             use runtime_core::{Ref, ButtonHandle};
@@ -652,9 +694,8 @@ docs! {
         p("Every Effect and every Signal is owned by a Scope. Scopes form a tree:"),
 
         list(
-            ["The renderer's ", code("Owner"),
-             " holds the root scope. When the owner drops, the entire app's \
-              reactive state is freed in one shot."],
+            ["The world holds the root scope. When the world drops, the \
+              entire app's reactive state is freed in one shot."],
             ["Reactive subtrees create nested scopes: the active branch of a ",
              code("When"),
              " lives in its own scope; flipping the condition drops the old \
@@ -677,7 +718,12 @@ docs! {
         ),
 
         p("This is why you don't write component teardown code. The scope \
-           owns the lifecycle."),
+           owns the lifecycle — there is no separate dispose call."),
+
+        p("One ordering note: within the release window of an unmounting \
+           subtree, each effect's own cleanups run in the order they were \
+           registered. Sibling cleanups should not depend on each other's \
+           relative order."),
 
         compare(from = React) {
             p("Closest analog: a component unmounting causes its hooks to \
@@ -691,32 +737,36 @@ docs! {
         },
     },
 
-    section(heading = "mount() — opening the root scope") {
+    section(heading = "Booting — where the world comes from") {
         p("Scopes are nested, but every tree has a root, and the root has \
-           to come from somewhere. The framework's entry point is ",
-          code("runtime_core::mount(backend, app)"),
-          " — it opens the root reactive scope and runs the user's ",
-          code("app"), " constructor inside it:"),
+           to come from somewhere. Each backend exposes a boot entry that \
+           creates the ", code("World"),
+          ", registers the primitive handlers, runs your root component \
+           inside ", code("World::enter"),
+          ", realizes the returned tree, and installs the flush driver:"),
 
         code(rust, r##"
-            use runtime_core::mount;
-
-            // Host glue (web.rs, generated iOS/Android wrappers, etc.):
-            let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
-            let owner = mount(backend, super::app);
-            //                            ^^^^^^^^^^
-            //          function pointer (`fn() -> Element`); `mount`
-            //          calls it inside the root scope, then walks the
-            //          returned tree.
+            // Web (client render):
+            backend_web::newcore::start(|| app());
+            // …with your own primitive handlers registered first:
+            backend_web::newcore::start_in("#app", my_app::register_scene_extensions, app);
         "##),
 
-        p("The closure form is what makes top-level reactive primitives \
-           work as you'd expect. ", code("signal!"), " / ", code("effect!"),
+        p("The native hosts mirror the shape — ",
+          code("host_appkit::newcore::run"), " on macOS, ",
+          code("backend_ios::newcore::run_in_view"), " on iOS, ",
+          code("host_winit::newcore::run"),
+          " for the GPU desktop renderer, ",
+          code("backend_ssr::newcore::render_to_string"),
+          " for SSR. The CLI-generated wrappers call the right one for you; \
+           see the boot table in the migration guide for the full list."),
+
+        p("Because the build runs inside ", code("World::enter"),
+          ", top-level ", code("signal(…)"), " / ", code("effect!"),
           " / ", code("Ref::new"),
           " declared at the top of ", code("app()"),
-          " are adopted by the root scope, so they're freed on ",
-          code("Owner"),
-          " drop alongside everything inside the tree."),
+          " are owned by the world root — they live for the app and are \
+           freed when the world drops."),
 
         p("Concretely — this welcome animation pattern works the way it \
            reads:"),
@@ -726,123 +776,83 @@ docs! {
             pub fn app() -> Element {
                 let phase = signal(0u8);
 
-                // Schedule a 3-beat timeline. Cleanups fire on
-                // page teardown (when Owner drops), not microseconds
-                // after `app()` returns.
+                // Schedule a 3-beat timeline. The cleanup is owned by the
+                // effect, so the timers are cancelled when the world tears
+                // down — not microseconds after `app()` returns.
                 effect!({
                     let t1 = after_ms(150, move || phase.set(1));
                     let t2 = after_ms(1050, move || phase.set(2));
                     let t3 = after_ms(2850, move || phase.set(3));
-                    on_cleanup(move || { drop(t1); drop(t2); drop(t3); });
+                    move || { drop(t1); drop(t2); drop(t3); }
                 });
 
                 ui! { /* presences keyed off phase.get() */ }
             }
         "##),
 
-        p("Under ", code("mount"), ", the ", code("effect!"),
-          " is owned by the root scope; the timer handles stashed via ",
-          code("on_cleanup"),
-          " stay alive for the page lifetime. Nothing is leaked, nothing \
-           is cancelled prematurely."),
+        p("There is no per-component lifecycle hook to pair with this — no \
+           equivalent of React's ", code("useEffect"), " / ",
+          code("componentDidMount"),
+          " — because the component body itself plays that role: it runs \
+           once when the component mounts, and its effects' cleanups fire \
+           when the owning scope drops."),
 
-        p("Note that ", code("mount"),
-          " is the framework entry point — not a per-component lifecycle \
-           hook. There's no equivalent of React's ",
-          code("useEffect"), " / ", code("componentDidMount"),
-          " because the component body itself plays that role: it runs \
-           once when the scope opens, again on signal change, and ",
-          code("on_cleanup"),
-          " teardowns fire when the scope drops."),
+        p("A world's lifetime is strict. Writes to a dropped world are \
+           silent no-ops, so an in-flight async task completing after \
+           unmount is harmless; READS from a dropped world panic, surfacing \
+           a handle leak instead of returning garbage."),
 
         compare(from = React) {
-            p(code("mount(backend, app)"), " plays the role of ",
+            p("The boot entry plays the role of ",
               code("createRoot(container).render(<App />)"),
               " — both are the program → backend attachment point that \
                establishes the reactive root before user code runs."),
         },
         compare(from = Solid) {
-            p(code("mount(backend, app)"), " ≈ ",
-              code("render(() => <App />, root)"),
+            p("≈ ", code("render(() => <App />, root)"),
               ". Both take a closure so the user's tree-construction code \
                runs inside the framework's reactive root."),
         },
         compare(from = VueThree) {
-            p(code("mount(backend, app)"), " ≈ ",
-              code("createApp(App).mount('#app')"),
-              ". Borrowed the name from Vue 3, in fact — same idea: \
-               attach a program to a backend, opening the root scope on \
-               the way in."),
+            p("≈ ", code("createApp(App).mount('#app')"),
+              " — same idea: attach a program to a backend, opening the \
+               root scope on the way in."),
         },
     },
 
-    section(heading = "render() — the value-taking variant") {
-        p(code("runtime_core::render(backend, primitive_value)"),
-          " is the pre-built-tree alternative: it takes a ",
-          code("Element"),
-          " value that the caller has already constructed, and opens \
-           the root scope around the build walk only. It's literally ",
-          code("mount(backend, move || tree)"),
-          " under the hood:"),
-
-        code(rust, r##"
-            pub fn render<B: Backend + 'static>(
-                backend: Rc<RefCell<B>>,
-                tree: Element,
-            ) -> Owner {
-                mount(backend, move || tree)
-            }
-        "##),
-
-        p("Reach for ", code("render"),
-          " when there is no user-authored constructor to run inside \
-           the scope — e.g. tests that build a fixture ",
-          code("Element"),
-          " by hand, or wire-protocol replay paths that synthesize a \
-           tree from incoming commands. New host glue should prefer ",
-          code("mount"),
-          " because as soon as user code grows a top-level ",
-          code("effect!"),
-          ", the value-taking form silently drops its cleanups."),
-
-        p("The CLI scaffold and the generated iOS / Android wrappers \
-           already use ", code("mount"),
-          " by default — new projects don't have to think about this."),
-    },
-
-    section(heading = "Cascades — what happens on a signal change") {
-        p("The cascade machinery is documented in detail on the Overview's \
-           \"How a render happens\" section. The summary:"),
+    section(heading = "The flush — what happens on a signal change") {
+        p("A write does not run anything. It stages, and the driver flushes:"),
 
         list(
-            [code("signal.set(v)"), " writes the new value to the arena."],
-            ["It snapshots the signal's current subscriber set."],
-            ["Each subscriber Effect re-runs in turn: its previous dependency \
-              set is cleared, the closure runs with ", code("CURRENT"),
-             " set to its id, so any read records as a fresh dependency, and \
-              the closure usually makes one backend call."],
-            ["If a subscriber's run writes another signal, that signal's \
-              subscribers are run before the outer write returns."],
+            [code("signal.set(v)"),
+             " records the pending value in the signal's slot. Nothing \
+              observable changes; reads still return the committed value."],
+            ["When the author-code entry point returns (handler, timer, frame, \
+              async poll), the backend's flush driver calls ",
+             code("World::flush"), "."],
+            ["The flush settles DERIVATIONS first — memos recompute, in \
+              dependency order, each one equality-guarded."],
+            ["Then user effects run, once each no matter how many of their \
+              dependencies changed in the turn. Each effect's previous \
+              dependency set is cleared and rebuilt from what the body \
+              actually reads on this run; the body usually makes one backend \
+              call."],
+            ["Writes made from inside an effect are staged too and settle \
+              within the same flush, so a memo chain converges in one flush \
+              rather than cascading out."],
         ),
 
-        p("Cascades are synchronous, depth-first, and bounded by the \
-           re-entry guard (an Effect that fires the signal it's currently \
-           reading is skipped, matching how Solid, MobX, and Reactively \
-           handle the same pattern)."),
+        p("Two consequences worth internalizing. First, an effect can never \
+           observe a fresh signal beside a stale memo over it — the \
+           derivation class settles before user effects run, which is the \
+           classic \"diamond glitch\" closed structurally. Second, the whole \
+           turn is ONE logical update: N writes to N signals feeding one \
+           effect produce one effect run, not N."),
 
-        p("There is no scheduler queue, no microtask drain, no batch \
-           boundary. By the time ", code("set"),
-          " returns, every downstream Effect has either run or been skipped, \
-           and every backend call those Effects produced has been made."),
-
-        p("For a single signal write, subscribers run in arena-id order — \
-           the order they were created. You shouldn't rely on this for \
-           correctness (any Effect should be order-independent given its \
-           dependencies), but it's stable and useful for debugging."),
-
-        p("For chained cascades, the order is depth-first: writes from \
-           inside an Effect run their consequences before the outer write \
-           returns."),
+        p("For a single flush, effects run in slot order — the order they \
+           were created. You shouldn't rely on this for correctness (any \
+           effect should be order-independent given its dependencies), but \
+           it's stable and useful for debugging."),
     },
 
     section(heading = "Dynamic dependencies") {
@@ -892,7 +902,7 @@ docs! {
              code("Signal<T>"), " itself is two ", code("u32"),
              "s. The closure environment doesn't grow with the number of \
               signals captured."],
-            ["Arena storage. Signals and effects are slots in a thread-local \
+            ["Arena storage. Signals and effects are slots in the world's \
               arena, not individual heap allocations. The cost of making a \
               signal is bumping an index."],
             ["Per-update cost is proportional to changed nodes. A signal \
@@ -914,7 +924,7 @@ docs! {
             let count = signal(0);
             ui! {
                 text { format!("Count: {}", count.get()) }
-                button(label = "++", on_click = move || count.update(|n| *n += 1))
+                button(label = "++", on_click = move || count.update(|n| n + 1))
             }
         "##),
 
@@ -927,7 +937,7 @@ docs! {
             fn counter(count: Signal<i32>) -> Element {
                 ui! {
                     text { format!("Count: {}", count.get()) }
-                    button(label = "++", on_click = move || count.update(|n| *n += 1))
+                    button(label = "++", on_click = move || count.update(|n| n + 1))
                 }
             }
 
@@ -1021,20 +1031,29 @@ docs! {
            context. If you want a frozen value, that's already what you have \
            — give it a name that says so."),
 
-        p("Writing a signal from inside its own Effect:"),
+        p("Creating reactive state inside an event handler. Handlers run \
+           OUTSIDE the world — signal handles are ", code("Copy"),
+          " and route to their own world, so ", code("get"), " / ",
+          code("set"), " / ", code("update"),
+          " all work in a handler, but ", code("signal(…)"), ", ",
+          code("effect(…)"), ", ", code("memo(…)"), ", ",
+          code("provide"), " / ", code("inject"),
+          " panic there. Create state at build time and capture the handles."),
+
+        p("The free theme functions have the same shape: ",
+          code("install_tokens(…)"),
+          " & co. resolve the ambient world's theme context and panic in a \
+           handler. Capture the context at build time and call its methods, \
+           which are handler-safe:"),
 
         code(rust, r##"
-            let count = signal(0);
-            effect!({
-                let v = count.get();
-                count.set(v + 1);    // re-entry: this run is skipped, no loop
-            });
+            let theme = theme_ctx();                 // build time (world entered)
+            ui! {
+                button(label = "Dark", on_click = move || {
+                    theme.install_tokens(&dark_tokens());   // handler-safe method
+                })
+            }
         "##),
-
-        p("The re-entry guard skips an Effect that's already running. The \
-           write happens, but the Effect doesn't loop. If you needed that \
-           write to fire other subscribers, it still does — only the \
-           self-fire is suppressed."),
 
         p("Reading a signal whose scope has dropped:"),
 
@@ -1047,8 +1066,18 @@ docs! {
         "##),
 
         p("Signals are scope-bound and single-threaded. Reads after the \
-           scope's drop panic with a diagnostic. Don't hold signals past \
-           their owning scope's lifetime."),
+           scope's drop panic with a diagnostic; WRITES after the world drops \
+           are silent no-ops, which is what makes an async task completing \
+           after unmount harmless. Don't hold signals past their owning \
+           scope's lifetime."),
+
+        p("Forcing a rebuild with ", code("touch()"),
+          " on a reactive ", code("match"), " scrutinee. A reactive ",
+          code("match"), " / ", code("switch"),
+          " is keyed on the scrutinee VALUE: a dependency re-fire that \
+           produces an equal value keeps the mounted arm instead of \
+           rebuilding it. If you need a forced rebuild, change the value — \
+           e.g. fold a generation counter into the scrutinee tuple."),
     },
 
     section(heading = "Where to read more") {
@@ -1059,8 +1088,8 @@ docs! {
              " declares user-component handles."],
             ["Styles — how the styling system uses the reactive substrate \
               internally."],
-            ["The wire protocol — how ", code("Derived<T>"), " and ",
-             code("Action"), "'s structured form ship to generator backends."],
+            ["The wire protocol — how derived values and structured actions \
+              ship to generator backends."],
         ),
     },
 }

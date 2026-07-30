@@ -1,8 +1,8 @@
 #!/bin/bash
 # Build + launch newcore-ios-smoke on the iOS Simulator, replicating
-# the `idealyst run ios` (crates/tools/run/ios) bundle steps by hand —
-# the CLI's generated wrapper mounts the OLD core, so the smoke app
-# ships its own new-core `ios_main` and this script does the shell's
+# the `idealyst run ios` (crates/tools/run/ios) bundle steps by hand.
+# The smoke app ships its OWN `ios_main` (so the boot path under test is
+# this crate's, not the CLI wrapper's) and this script does the shell's
 # other half: swiftc link, .app assembly, simctl install/launch.
 #
 # Launches with the self-test armed (SIMCTL_CHILD_NEWCORE_SMOKE_SELFTEST=1);

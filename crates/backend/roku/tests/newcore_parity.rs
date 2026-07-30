@@ -1,34 +1,43 @@
-//! New-core adoption tests for the Roku backend: old-vs-new
-//! COMMAND-STREAM byte parity (the strongest available gate — there is
-//! no device/thin-client to render against, so the serialized wire
-//! stream IS the observable output), plus op-level coverage of the
-//! embedder-driven flush discipline (device event → HandlerTable
-//! dispatch → staged writes → `settle()` → emitted commands).
+//! COMMAND-STREAM byte-parity tests for the Roku backend: the emitted
+//! wire stream must match the stream the OLD core emitted (the strongest
+//! available gate — there is no device/thin-client to render against, so
+//! the serialized wire stream IS the observable output), plus op-level
+//! coverage of the embedder-driven flush discipline (device event →
+//! HandlerTable dispatch → staged writes → `settle()` → emitted
+//! commands).
 //!
 //! Harness notes: the tests install a queue scheduler whose
 //! `drain_buffered_microtasks` drains its own queue — modeling an
 //! embedder whose scheduler buffers microtasks, which is the
-//! configuration where staged-ness is OBSERVABLE (without any
-//! scheduler, `schedule_microtask` falls back to synchronous off-web
-//! and the deduped flush commits inside the wrapped callback).
-//! `install_scheduler` is process-global/first-wins, but the queue
-//! state is thread-local, so each test thread drains only its own
-//! tasks.
-
-#![cfg(feature = "new-core")]
+//! configuration where staged-ness is OBSERVABLE (without any scheduler,
+//! `schedule_microtask` falls back to synchronous off-web and the deduped
+//! flush commits inside the wrapped callback). `install_scheduler` is
+//! process-global/first-wins, but the queue state is thread-local, so
+//! each test thread drains only its own tasks.
+//!
+//! # The frozen corpus is the contract
+//!
+//! Every gate compares against a **frozen old-core command stream**
+//! committed under `tests/goldens/` (indented JSON), written before the
+//! old walker was deleted. See [`check_new_stream`] for the ONE
+//! sanctioned divergence already baked into those artifacts. A mismatch
+//! is a real behavior change, NOT a stale artifact:
+//! `IDEALYST_FREEZE_GOLDENS=1` can now only RE-BASELINE against the
+//! current renderer, permanently discarding the old core's testimony —
+//! see `tests/goldens/README.md`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use backend_roku::{HandlerId, RokuBackend, RokuCommand};
-use runtime_core::{Color, Length, StyleApplication, StyleRules, StyleSheet, Tokenized};
+use runtime_shared::{Color, Length, StyleApplication, StyleRules, StyleSheet, Tokenized};
 
 // ===========================================================================
 // Queue scheduler (an embedder that buffers microtasks)
 // ===========================================================================
 
 mod test_scheduler {
-    use runtime_core::scheduling::{ScheduleHandle, Scheduler};
+    use runtime_shared::scheduling::{ScheduleHandle, Scheduler};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -65,8 +74,8 @@ mod test_scheduler {
     }
 
     pub fn ensure_installed() {
-        if !runtime_core::scheduling::is_scheduler_installed() {
-            runtime_core::scheduling::install_scheduler(Box::new(QueueScheduler));
+        if !runtime_shared::scheduling::is_scheduler_installed() {
+            runtime_shared::scheduling::install_scheduler(Box::new(QueueScheduler));
         }
     }
 
@@ -91,18 +100,6 @@ fn fresh_backend() -> Rc<RefCell<RokuBackend>> {
     Rc::new(RefCell::new(RokuBackend::new()))
 }
 
-/// Mount on the OLD core (walker + `runtime_core::mount` — the same
-/// path `backend_roku::snapshot` takes, with the Owner kept alive so
-/// handler invocations can drive follow-up commands).
-fn mount_old(
-    tree_fn: impl Fn() -> runtime_core::Element + 'static,
-) -> (Rc<RefCell<RokuBackend>>, runtime_core::Owner) {
-    let backend = fresh_backend();
-    let owner = runtime_core::mount(backend.clone(), tree_fn);
-    test_scheduler::drain();
-    (backend, owner)
-}
-
 /// Mount on the NEW core (`newcore::start`, vocabulary handlers).
 fn mount_new(
     build: impl FnOnce() -> runtime_scene::Element,
@@ -121,70 +118,81 @@ fn drain_json(backend: &Rc<RefCell<RokuBackend>>) -> (Vec<RokuCommand>, String) 
     (cmds, json)
 }
 
-/// Apply the ONE sanctioned old→new divergence to an OLD-core stream:
-/// the old walker emits a no-op `ClearChildren` on a VIRGIN reactive
-/// anchor (an anchor it just created and has never inserted into)
-/// before the first population of a `when`/`each` region; the new core
-/// deliberately skips it. This is divergence class #2 in
-/// docs/migrating-to-runtime-v2.md ("A skipped no-op `clear_children`
-/// on a virgin anchor — invisible") / `crates/dev/scene-parity/README.md`
-/// — invisible to the device (clearing an empty Group is a no-op), but
-/// visible in a command stream. Strip EXACTLY that shape and nothing
-/// else: a `ClearChildren` whose parent is a stream-created anchor
-/// with no prior `Insert` into it. Every other op is a hard invariant.
-fn normalize_sanctioned_old(cmds: &[RokuCommand]) -> String {
-    use std::collections::HashSet;
-    let mut anchors: HashSet<u64> = HashSet::new();
-    let mut populated: HashSet<u64> = HashSet::new();
-    let kept: Vec<&RokuCommand> = cmds
-        .iter()
-        .filter(|c| match c {
-            RokuCommand::CreateReactiveAnchor { id } => {
-                anchors.insert(id.0);
-                true
-            }
-            RokuCommand::Insert { parent, .. } => {
-                populated.insert(parent.0);
-                true
-            }
-            RokuCommand::ClearChildren { parent } => {
-                // Virgin-anchor clear: sanctioned skip on the new core.
-                !(anchors.contains(&parent.0) && !populated.contains(&parent.0))
-            }
-            _ => true,
-        })
-        .collect();
-    serde_json::to_string(&kept).expect("commands serialize")
+// ---------------------------------------------------------------------------
+// Frozen-artifact gate
+// ---------------------------------------------------------------------------
+
+fn goldens() -> parity_goldens::Goldens {
+    parity_goldens::Goldens::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Assert exact JSON equality with a byte-level first-divergence report
-/// (index + surrounding context from both sides) so a parity failure is
-/// directly actionable.
-fn assert_stream_bytes(name: &str, old: &str, new: &str) {
-    if old == new {
-        return;
+/// Re-serialize a compact command stream as indented JSON so the frozen
+/// artifacts are reviewable in a diff. `serde_json::Value` round-trips
+/// the stream and the key order is canonical (BTreeMap) on both sides,
+/// so the comparison stays exact — with ONE substitution, below.
+///
+/// **`cache_key` interning.** `CreateIcon`/`UpdateIconData` carry a
+/// `cache_key` the backend derives from the icon's `paths` static
+/// ADDRESS (`crates/backend/roku/src/lib.rs`,
+/// `data.paths.as_ptr() as u64 ^ filled`). That is stable within a
+/// process — which is why the in-process old-vs-new compare above uses
+/// the raw value and pins cross-core identity — but it changes between
+/// processes under ASLR, so a raw value cannot be frozen. Instead each
+/// DISTINCT cache_key is replaced by `#0`, `#1`, … in first-appearance
+/// order. That preserves everything the value means to a consumer (icon
+/// identity and aliasing: same path set ⇒ same key, `filled` variants ⇒
+/// different keys, ordering of first use) while being process-stable.
+/// This is an artifact-serialization concern, NOT a widened
+/// sanctioned divergence — no cross-core difference is being hidden.
+fn pretty_stream(json: &str) -> String {
+    let mut v: serde_json::Value = serde_json::from_str(json).expect("stream is valid JSON");
+    let mut seen: Vec<u64> = Vec::new();
+    intern_cache_keys(&mut v, &mut seen);
+    serde_json::to_string_pretty(&v).expect("stream re-serializes")
+}
+
+fn intern_cache_keys(v: &mut serde_json::Value, seen: &mut Vec<u64>) {
+    match v {
+        serde_json::Value::Object(map) => {
+            let keys: Vec<String> = map.keys().cloned().collect();
+            for k in keys {
+                if k == "cache_key" {
+                    if let Some(n) = map.get(&k).and_then(|x| x.as_u64()) {
+                        let idx = match seen.iter().position(|s| *s == n) {
+                            Some(i) => i,
+                            None => {
+                                seen.push(n);
+                                seen.len() - 1
+                            }
+                        };
+                        map.insert(k, serde_json::Value::String(format!("#{idx}")));
+                        continue;
+                    }
+                }
+                if let Some(child) = map.get_mut(&k) {
+                    intern_cache_keys(child, seen);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                intern_cache_keys(item, seen);
+            }
+        }
+        _ => {}
     }
-    let at = old
-        .bytes()
-        .zip(new.bytes())
-        .position(|(a, b)| a != b)
-        .unwrap_or_else(|| old.len().min(new.len()));
-    let lo = at.saturating_sub(80);
-    let old_hi = (at + 80).min(old.len());
-    let new_hi = (at + 80).min(new.len());
-    panic!(
-        "command-stream byte divergence in `{name}` at byte {at}\n\
-         old (len {}): …{}…\n\
-         new (len {}): …{}…\n\
-         full old:\n{}\n\
-         full new:\n{}",
-        old.len(),
-        &old[lo..old_hi],
-        new.len(),
-        &new[lo..new_hi],
-        old,
-        new,
-    );
+}
+
+/// The gate: the serialized command stream must match the frozen
+/// old-core stream byte-for-byte. The frozen artifacts already have the
+/// ONE sanctioned old→new divergence stripped — the old walker emitted a
+/// no-op `ClearChildren` on a VIRGIN reactive anchor before the first
+/// population of a `when`/`each` region and the new core deliberately
+/// skips it (divergence class #2 in docs/migrating-to-runtime-v2.md;
+/// invisible to the device, visible in a stream). Nothing else was ever
+/// normalized: every other op is a hard invariant.
+fn check_new_stream(name: &str, new_json: &str) {
+    goldens().check_text(name, &pretty_stream(new_json));
 }
 
 /// Find a button's wire HandlerId by label in a drained stream.
@@ -221,9 +229,9 @@ fn test_rules(width: f32, background: &str) -> StyleRules {
 
 fn flex_rules() -> StyleRules {
     StyleRules {
-        flex_direction: Some(runtime_core::FlexDirection::Row),
-        justify_content: Some(runtime_core::JustifyContent::SpaceBetween),
-        align_items: Some(runtime_core::AlignItems::Center),
+        flex_direction: Some(runtime_shared::FlexDirection::Row),
+        justify_content: Some(runtime_shared::JustifyContent::SpaceBetween),
+        align_items: Some(runtime_shared::AlignItems::Center),
         gap: Some(Tokenized::Literal(Length::Px(8.0))),
         padding_top: Some(Tokenized::Literal(Length::Px(12.0))),
         padding_left: Some(Tokenized::Literal(Length::Px(16.0))),
@@ -268,11 +276,11 @@ fn hover_sheet() -> Rc<StyleSheet> {
 /// use site, promoting a fresh anonymous array per mention and forking
 /// the cache_key between the two mounts; a `static` has one fixed
 /// initializer, so both cores read the same pointer.
-static TEST_ICON: runtime_core::primitives::icon::IconData =
-    runtime_core::primitives::icon::IconData {
+static TEST_ICON: runtime_shared::primitives::icon::IconData =
+    runtime_shared::primitives::icon::IconData {
         view_box: (24, 24),
         paths: &["M0 0h24v24H0z"],
-        fill_rule: runtime_core::primitives::icon::FillRule::NonZero,
+        fill_rule: runtime_shared::primitives::icon::FillRule::NonZero,
         filled: false,
     };
 
@@ -283,48 +291,12 @@ static TEST_ICON: runtime_core::primitives::icon::IconData =
 /// The rule-7 gate for this port: a torture scene (nested flex-styled
 /// views, text, button, toggle, slider, text input, pressable, image,
 /// icon, activity indicator, scroll view, state-overlay styling) built
-/// on the OLD core (walker + `runtime_core::mount`) and the NEW core
+/// on the OLD core (walker + `runtime_shared::mount`) and the NEW core
 /// (`newcore::start`, vocabulary handlers) must serialize to
 /// byte-identical command streams — NodeIds, HandlerIds, style
 /// payloads, ordering, everything.
 #[test]
 fn newcore_full_scene_command_stream_parity() {
-    let (old_backend, owner) = mount_old(|| {
-        use runtime_core::primitives::activity_indicator::activity_indicator;
-        use runtime_core::primitives::slider::slider;
-        use runtime_core::{
-            button, icon, image, pressable, scroll_view, signal, text, text_input, toggle, view,
-            IntoElement,
-        };
-        let on = signal(true);
-        let val = signal(2.5f32);
-        let input = signal(String::from("hi"));
-        view(vec![
-            view(vec![
-                text("hello roku").into_element(),
-                text("styled")
-                    .with_style(static_style(test_rules(20.0, "#334455")))
-                    .into_element(),
-            ])
-            .with_style(static_style(flex_rules()))
-            .into_element(),
-            view(vec![])
-                .with_style(StyleApplication::new(hover_sheet()))
-                .into_element(),
-            button("Go", || {}).into_element(),
-            toggle(on, |_| {}).into_element(),
-            slider(val, |_| {}).range(0.0, 10.0).step(0.5).into_element(),
-            text_input(input, |_| {})
-                .placeholder("Type here".to_string())
-                .into_element(),
-            pressable(vec![text("press me").into_element()], || {}).into_element(),
-            image("logo.png").alt("Logo".to_string()).into_element(),
-            icon(TEST_ICON).into_element(),
-            activity_indicator().into_element(),
-            scroll_view(vec![text("scrollable").into_element()]).into_element(),
-        ])
-        .into_element()
-    });
     let (new_backend, app) = mount_new(|| {
         use runtime_vocabulary::builders::{
             activity_indicator, button, icon, image, pressable, scroll_view, slider, text,
@@ -353,9 +325,8 @@ fn newcore_full_scene_command_stream_parity() {
             .child(scroll_view().child(text().content("scrollable")))
             .build()
     });
-    let (old_cmds, old_json) = drain_json(&old_backend);
     let (_, new_json) = drain_json(&new_backend);
-    assert_stream_bytes("full_scene", &normalize_sanctioned_old(&old_cmds), &new_json);
+    check_new_stream("full_scene.json", &new_json);
     // Sanity: the stream is live (every primitive family present).
     for needle in [
         "CreateView",
@@ -372,9 +343,8 @@ fn newcore_full_scene_command_stream_parity() {
         "ApplyStyleStates",
         "Finish",
     ] {
-        assert!(old_json.contains(needle), "{needle} emitted:\n{old_cmds:?}");
+        assert!(new_json.contains(needle), "{needle} emitted:\n{new_json}");
     }
-    drop(owner);
     app.stop();
 }
 
@@ -387,21 +357,7 @@ fn newcore_full_scene_command_stream_parity() {
 /// payload bytes.
 #[test]
 fn newcore_portal_command_stream_parity() {
-    use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement};
-    let (old_backend, owner) = mount_old(|| {
-        use runtime_core::{portal, text, view, IntoElement};
-        view(vec![
-            text("under").into_element(),
-            portal(
-                PortalTarget::Viewport(ViewportPlacement::Center),
-                vec![text("modal body").into_element()],
-            )
-            .on_dismiss(|| {})
-            .trap_focus(true)
-            .into_element(),
-        ])
-        .into_element()
-    });
+    use runtime_shared::primitives::portal::{PortalTarget, ViewportPlacement};
     let (new_backend, app) = mount_new(|| {
         use runtime_vocabulary::builders::{portal, text, view};
         view()
@@ -414,12 +370,10 @@ fn newcore_portal_command_stream_parity() {
             )
             .build()
     });
-    let (old_cmds, old_json) = drain_json(&old_backend);
     let (_, new_json) = drain_json(&new_backend);
-    assert_stream_bytes("portal", &normalize_sanctioned_old(&old_cmds), &new_json);
-    assert!(old_json.contains("CreatePortal"), "portal emitted:\n{old_cmds:?}");
-    assert!(old_json.contains("trap_focus\":true"), "trap_focus shipped:\n{old_json}");
-    drop(owner);
+    check_new_stream("portal.json", &new_json);
+    assert!(new_json.contains("CreatePortal"), "portal emitted:\n{new_json}");
+    assert!(new_json.contains("trap_focus\":true"), "trap_focus shipped:\n{new_json}");
     app.stop();
 }
 
@@ -430,24 +384,6 @@ fn newcore_portal_command_stream_parity() {
 #[test]
 fn newcore_dyn_branch_parity_both_initial_states() {
     for initial in [true, false] {
-        let (old_backend, owner) = mount_old(move || {
-            use runtime_core::{signal, text, view, when, IntoElement};
-            let show = signal(initial);
-            view(vec![
-                text("before").into_element(),
-                when(
-                    move || show.get(),
-                    || {
-                        view(vec![text("shown").into_element()])
-                            .with_style(static_style(test_rules(60.0, "#606060")))
-                            .into_element()
-                    },
-                    || text("hidden").into_element(),
-                ),
-                text("after").into_element(),
-            ])
-            .into_element()
-        });
         let (new_backend, app) = mount_new(move || {
             use runtime_scene::dyn_keyed;
             use runtime_vocabulary::builders::{text, view};
@@ -471,16 +407,11 @@ fn newcore_dyn_branch_parity_both_initial_states() {
                 .child(text().content("after"))
                 .build()
         });
-        let (old_cmds, old_json) = drain_json(&old_backend);
         let (_, new_json) = drain_json(&new_backend);
-        assert_stream_bytes(
-            if initial { "dyn_branch_then" } else { "dyn_branch_else" },
-            &normalize_sanctioned_old(&old_cmds),
-            &new_json,
-        );
+        let name = if initial { "dyn_branch_then" } else { "dyn_branch_else" };
+        check_new_stream(&format!("{name}.json"), &new_json);
         let want = if initial { "shown" } else { "hidden" };
-        assert!(old_json.contains(want), "committed initial branch emitted:\n{old_cmds:?}");
-        drop(owner);
+        assert!(new_json.contains(want), "committed initial branch emitted:\n{new_json}");
         app.stop();
     }
 }
@@ -496,26 +427,6 @@ fn newcore_dyn_branch_parity_both_initial_states() {
 /// reconcile, new = staged writes committed by `settle()`).
 #[test]
 fn newcore_keyed_list_reorder_follow_up_stream_parity() {
-    let (old_backend, owner) = mount_old(|| {
-        use runtime_core::{button, each_keyed, signal, text, view, EachKey, EachRowBuild, IntoElement};
-        let items = signal(vec![1u32, 2, 3]);
-        view(vec![
-            text("header").into_element(),
-            each_keyed(move || {
-                items
-                    .get()
-                    .into_iter()
-                    .map(|n| {
-                        let build: EachRowBuild =
-                            Box::new(move || vec![text(format!("row-{n}")).into_element()]);
-                        (EachKey::new(n), build)
-                    })
-                    .collect()
-            }),
-            button("shuffle", move || items.set(vec![3, 1, 2])).into_element(),
-        ])
-        .into_element()
-    });
     let (new_backend, app) = mount_new(|| {
         use runtime_scene::keyed;
         use runtime_vocabulary::builders::{button, text, view};
@@ -531,33 +442,21 @@ fn newcore_keyed_list_reorder_follow_up_stream_parity() {
             .child(button().label("shuffle").on_press(move || items.set(vec![3, 1, 2])))
             .build()
     });
-    let (old_cmds, old_json) = drain_json(&old_backend);
     let (new_cmds, new_json) = drain_json(&new_backend);
-    assert_stream_bytes("keyed_list_mount", &normalize_sanctioned_old(&old_cmds), &new_json);
-    assert!(old_json.contains("row-1") && old_json.contains("row-3"), "rows:\n{old_cmds:?}");
+    check_new_stream("keyed_list_mount.json", &new_json);
+    assert!(new_json.contains("row-1") && new_json.contains("row-3"), "rows:\n{new_json}");
 
     // Fire the reorder through the HandlerTable — the embedder model —
-    // on BOTH cores, then compare the follow-up streams.
-    let old_h = unit_handler(&old_backend, button_handler(&old_cmds, "shuffle"));
-    old_h();
-    test_scheduler::drain(); // old core: run any deferred reconcile work
-    let (old_up_cmds, _) = drain_json(&old_backend);
-
+    // then compare the follow-up stream.
     let new_h = unit_handler(&new_backend, button_handler(&new_cmds, "shuffle"));
     new_h();
     backend_roku::newcore::settle();
     let (_, new_up_json) = drain_json(&new_backend);
-
-    assert_stream_bytes(
-        "keyed_list_reorder_follow_up",
-        &normalize_sanctioned_old(&old_up_cmds),
-        &new_up_json,
-    );
+    check_new_stream("keyed_list_reorder_follow_up.json", &new_up_json);
     assert!(
-        !old_up_cmds.is_empty(),
+        !new_up_json.is_empty() && new_up_json != "[]",
         "reorder produced wire traffic (the parity compare must not be vacuous)"
     );
-    drop(owner);
     app.stop();
 }
 
@@ -574,15 +473,6 @@ fn newcore_keyed_list_reorder_follow_up_stream_parity() {
 /// after the same handler invocation.
 #[test]
 fn newcore_button_press_stays_staged_until_settle_then_matches_old() {
-    let (old_backend, owner) = mount_old(|| {
-        use runtime_core::{button, signal, text, view, IntoElement};
-        let count = signal(0i32);
-        view(vec![
-            text(move || format!("count: {}", count.get())).into_element(),
-            button("inc", move || count.set(count.get() + 1)).into_element(),
-        ])
-        .into_element()
-    });
     let (new_backend, app) = mount_new(|| {
         use runtime_vocabulary::builders::{button, text, view};
         use runtime_world::signal;
@@ -592,20 +482,11 @@ fn newcore_button_press_stays_staged_until_settle_then_matches_old() {
             .child(button().label("inc").on_press(move || count.update(|c| c + 1)))
             .build()
     });
-    let (old_cmds, old_json) = drain_json(&old_backend);
     let (new_cmds, new_json) = drain_json(&new_backend);
-    assert_stream_bytes("counter_mount", &normalize_sanctioned_old(&old_cmds), &new_json);
-    assert!(old_json.contains("count: 0"), "initial text emitted:\n{old_cmds:?}");
+    check_new_stream("counter_mount.json", &new_json);
+    assert!(new_json.contains("count: 0"), "initial text emitted:\n{new_json}");
 
-    // Old core: synchronous — the follow-up UpdateText is in the queue
-    // as soon as the handler (plus any deferred effects) ran.
-    let old_h = unit_handler(&old_backend, button_handler(&old_cmds, "inc"));
-    old_h();
-    test_scheduler::drain();
-    let (_, old_up_json) = drain_json(&old_backend);
-    assert!(old_up_json.contains("count: 1"), "old core follow-up:\n{old_up_json}");
-
-    // New core: the write is STAGED — nothing on the wire until the
+    // The write is STAGED — nothing on the wire until the
     // embedder's settle() fence. This is the staged-write model's whole
     // point; without the assert a synchronous-flush regression would
     // pass silently.
@@ -618,9 +499,7 @@ fn newcore_button_press_stays_staged_until_settle_then_matches_old() {
     );
     backend_roku::newcore::settle();
     let (_, new_up_json) = drain_json(&new_backend);
-    assert_stream_bytes("counter_follow_up", &old_up_json, &new_up_json);
-
-    drop(owner);
+    check_new_stream("counter_follow_up.json", &new_up_json);
     app.stop();
 }
 
@@ -669,24 +548,19 @@ fn newcore_stop_makes_late_handler_fire_and_settle_no_ops() {
 // 7. Splice contract pin
 // ===========================================================================
 
-/// Host's structural seam must track the Backend splice contract via
-/// delegation, and on Roku that contract is ANCHORED (`false`): the
-/// wire's `Slot`/anchor replay model on the BrightScript side assumes
-/// anchor nodes exist (`CreateReactiveAnchor` + `ClearChildren`
-/// rebuilds); `remove_child`/`insert_at` are walker-side no-op
-/// defaults. If either half flips independently, anchor placement
-/// diverges between cores and the device runtime's teardown walk
-/// breaks.
+/// Roku's structural seam must stay ANCHORED (`false`): the wire's
+/// `Slot`/anchor replay model on the BrightScript side assumes anchor
+/// nodes exist (`CreateReactiveAnchor` + `ClearChildren` rebuilds), and
+/// there are no `RemoveChild`/`InsertAt` wire ops at all. The value used
+/// to arrive from a `Backend` trait DEFAULT (`supports_child_splice`);
+/// `Host` makes it REQUIRED, so `newcore.rs` now carries an explicit body
+/// reproducing it — see docs/runtime-v2-deletion-baseline.md §2.2. A flip
+/// would change anchor placement AND break the device runtime's teardown
+/// walk, so pin the literal.
 #[test]
-fn newcore_host_splice_delegates_and_is_anchored() {
-    use runtime_core::Backend;
+fn newcore_host_splice_is_anchored() {
     use runtime_scene::Host;
     let b = RokuBackend::new();
-    assert_eq!(
-        Host::supports_splice(&b),
-        Backend::supports_child_splice(&b),
-        "Host::supports_splice must delegate to the Backend contract"
-    );
     assert!(
         !Host::supports_splice(&b),
         "Roku is an anchored backend — flipping this requires a real \

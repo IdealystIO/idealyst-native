@@ -96,7 +96,7 @@
 //!    seams for them are a later-phase migration item.
 //! 2. `Registry` (`register_builtins` + the `register` seam) + `World`
 //!    + `world.enter(realize)`.
-//! 3. `runtime_core::scheduling::drain_buffered_microtasks()` — the
+//! 3. `runtime_shared::scheduling::drain_buffered_microtasks()` — the
 //!    boot opened a mount-buffering window (`begin_mount_buffering`)
 //!    before realizing, so microtasks scheduled during the build
 //!    (deferred chrome, follow-up layout passes) run HERE,
@@ -138,7 +138,7 @@
 //!    dismiss, graphics lifecycle, virtualizer row mount/release,
 //!    state setters, and the app-level key handler. The wrapper calls
 //!    the author fn, then [`schedule_flush`] — one deduped
-//!    `runtime_core::scheduling::schedule_microtask`, which on this
+//!    `runtime_shared::scheduling::schedule_microtask`, which on this
 //!    platform is `dispatch_async(main_queue)` (see
 //!    `backend_apple_core::scheduler`) and drains on a LATER run-loop
 //!    iteration — strictly AFTER the current UIKit event's synchronous
@@ -192,7 +192,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use runtime_core::primitives;
+use runtime_shared::primitives;
 use runtime_world::World;
 
 // Re-exported so the Swift-shell wrapper crates (and the smoke app)
@@ -228,7 +228,7 @@ pub fn schedule_flush() {
     if FLUSH_QUEUED.with(|q| q.replace(true)) {
         return;
     }
-    runtime_core::scheduling::schedule_microtask(|| {
+    runtime_shared::scheduling::schedule_microtask(|| {
         FLUSH_QUEUED.with(|q| q.set(false));
         flush_now();
     });
@@ -285,7 +285,7 @@ pub fn flush_sync() {
 // `LayoutObserverView::layoutSubviews` (imp/callbacks.rs — UIKit calls
 // it on every host bounds change: rotation, split-view, first
 // measurement); it keeps writing the shared old-core TLS value
-// (`runtime_core::set_viewport_size`) — the old core subscribes to it,
+// (`runtime_shared::set_viewport_size`) — the old core subscribes to it,
 // and the world ctx SEEDS from it — and additionally calls
 // [`forward_viewport`] so breakpoint-dependent author reactivity
 // re-fires on rotation instead of freezing at its seed.
@@ -303,19 +303,19 @@ thread_local! {
     /// The mounted world's viewport signal (`Copy` handle). `None`
     /// outside a new-core boot, so the shared old-core seam costs one
     /// TLS read and nothing else when the old core is driving.
-    static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_core::ViewportSize>>> =
+    static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_shared::ViewportSize>>> =
         const { Cell::new(None) };
 }
 
-fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_core::ViewportSize>>) {
+fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_shared::ViewportSize>>) {
     VIEWPORT_SINK.with(|s| s.set(sig));
 }
 
 /// Forward one platform viewport mirror into the mounted world's
 /// viewport ctx (no-op before boot / after teardown). Called by the
-/// same iOS seam that writes `runtime_core::set_viewport_size`, with
+/// same iOS seam that writes `runtime_shared::set_viewport_size`, with
 /// the same value — the two sinks never diverge.
-pub(crate) fn forward_viewport(size: runtime_core::ViewportSize) {
+pub(crate) fn forward_viewport(size: runtime_shared::ViewportSize) {
     let Some(sig) = VIEWPORT_SINK.with(|s| s.get()) else {
         return;
     };
@@ -406,20 +406,20 @@ mod ios_impl {
     use objc2::rc::Retained;
     use objc2_foundation::MainThreadMarker;
     use objc2_ui_kit::UIView;
-    use runtime_core::accessibility::{
+    use runtime_shared::accessibility::{
         AccessibilityProps, AccessibilityTree, LiveRegionPriority, Role,
     };
-    use runtime_core::animation::AnimProp;
-    use runtime_core::assets::{
+    use runtime_shared::animation::AnimProp;
+    use runtime_shared::assets::{
         AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
     };
-    use runtime_core::breakpoint::Breakpoint;
-    use runtime_core::introspect::NativeNode;
-    use runtime_core::primitives;
-    use runtime_core::primitives::portal::ViewportRect;
-    use runtime_core::styled_text::TextRun;
-    use runtime_core::{
-        Action, Backend, BackendBatch, Color, ColorScheme, Easing, FileDropHandler, FontFamily,
+    use runtime_shared::breakpoint::Breakpoint;
+    use runtime_shared::introspect::NativeNode;
+    use runtime_shared::primitives;
+    use runtime_shared::primitives::portal::ViewportRect;
+    use runtime_shared::styled_text::TextRun;
+    use runtime_shared::{
+        Action, BackendBatch, Color, ColorScheme, Easing, FileDropHandler, FontFamily,
         HoverHandler, ImageErrorHandler, ImageLoadHandler, PageMetadata, Platform, SafeAreaSides,
         Screenshot, StateBits, StyleApplication, StyleRules, TokenEntry, Tokenized, TouchHandler,
         TouchId, VirtualizerCallbacks, WheelHandler,
@@ -544,8 +544,8 @@ mod ios_impl {
         // Monotonic clock (step 1) — idempotent, first install wins.
         // The old `mount` preamble's other ambient installs are
         // runtime-core-private and skipped, same as web/macOS.
-        let platform = backend.borrow().platform();
-        runtime_core::time::install_default_time_source(platform);
+        let platform = backend.borrow().platform_impl();
+        runtime_shared::time::install_default_time_source(platform);
 
         let mut registry: Registry<IosBackend> = Registry::new();
         runtime_vocabulary::register_builtins(&mut registry);
@@ -569,7 +569,7 @@ mod ios_impl {
         // any build-time `schedule_flush` land before the first
         // layout. Must run with NO backend borrow held (drained tasks
         // re-borrow the backend).
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
 
         // Single-root contract, matching the old-core mount: `finish`
         // parents the root view into the host root and runs the first
@@ -582,7 +582,7 @@ mod ios_impl {
                  top-level node (got {n}) — wrap fragment/multi-root trees in a view"
             ),
         };
-        Backend::finish(&mut *backend.borrow_mut(), root);
+        IosBackend::finish_impl(&mut *backend.borrow_mut(), root);
 
         // Commit anything staged during mount before the first paint.
         world.flush();
@@ -623,31 +623,34 @@ mod ios_impl {
         type Node = IosNode;
 
         fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
-            <IosBackend as Backend>::insert(self, parent, child)
-        }
-
-        fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
-            <IosBackend as Backend>::insert_many(self, parent, children)
+            IosBackend::insert_impl(self, parent, child)
         }
 
         fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
-            <IosBackend as Backend>::insert_at(self, parent, child, index)
+            IosBackend::insert_at_impl(self, parent, child, index)
         }
 
         fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
-            <IosBackend as Backend>::remove_child(self, parent, child)
+            IosBackend::remove_child_impl(self, parent, child)
         }
 
         fn clear_children(&mut self, node: &Self::Node) {
-            <IosBackend as Backend>::clear_children(self, node)
+            IosBackend::clear_children_impl(self, node)
         }
 
         fn create_anchor(&mut self) -> Self::Node {
-            <IosBackend as Backend>::create_reactive_anchor(self)
+            // Runtime v2: `Host::create_anchor` is REQUIRED, and this backend
+            // never overrode the old `Backend::create_reactive_anchor`, whose
+            // default was exactly this. Reproduced verbatim: a plain view is a
+            // correct anchor on this backend (only web needs the
+            // `display: contents` variant so the branch's children keep the
+            // surrounding flex context). See
+            // docs/runtime-v2-deletion-baseline.md §2.2.
+            IosBackend::create_view_impl(self, &AccessibilityProps::default())
         }
 
         fn supports_splice(&self) -> bool {
-            <IosBackend as Backend>::supports_child_splice(self)
+            IosBackend::supports_child_splice_impl(self)
         }
     }
 
@@ -657,60 +660,40 @@ mod ios_impl {
 
     impl caps::AppEnvOps for IosBackend {
         fn color_scheme(&self) -> ColorScheme {
-            <IosBackend as Backend>::color_scheme(self)
+            IosBackend::color_scheme_impl(self)
         }
 
         fn platform(&self) -> Platform {
-            <IosBackend as Backend>::platform(self)
+            IosBackend::platform_impl(self)
         }
 
         fn url_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
-            <IosBackend as Backend>::url_opener(self)
+            IosBackend::url_opener_impl(self)
         }
 
         fn fullscreen_setter(&self) -> Option<Rc<dyn Fn(bool)>> {
-            <IosBackend as Backend>::fullscreen_setter(self)
-        }
-
-        fn set_page_metadata(&mut self, meta: &PageMetadata) {
-            <IosBackend as Backend>::set_page_metadata(self, meta)
-        }
-
-        fn set_app_background(&mut self, color: &Tokenized<Color>) {
-            <IosBackend as Backend>::set_app_background(self, color)
-        }
-
-        fn set_scrollbar_theme(&mut self, thumb: &Tokenized<Color>, track: &Tokenized<Color>) {
-            <IosBackend as Backend>::set_scrollbar_theme(self, thumb, track)
+            IosBackend::fullscreen_setter_impl(self)
         }
 
         fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
             // Dispatch-site glue: app-level key handlers run author code
             // (hardware-keyboard events on iPad, simulator keyboards).
             let handler = handler.map(flushing_key);
-            <IosBackend as Backend>::set_app_key_handler(self, handler)
+            IosBackend::set_app_key_handler_impl(self, handler)
         }
     }
 
     impl caps::LifecycleOps for IosBackend {
         fn finish(&mut self, root: Self::Node) {
-            <IosBackend as Backend>::finish(self, root)
+            IosBackend::finish_impl(self, root)
         }
 
         fn run_layout(&mut self) {
-            <IosBackend as Backend>::run_layout(self)
+            IosBackend::run_layout_impl(self)
         }
 
         fn schedule_layout_pass() {
-            <IosBackend as Backend>::schedule_layout_pass()
-        }
-
-        fn is_hydrating(&self) -> bool {
-            <IosBackend as Backend>::is_hydrating(self)
-        }
-
-        fn renders_lazy_chunks(&self) -> bool {
-            <IosBackend as Backend>::renders_lazy_chunks(self)
+            IosBackend::schedule_layout_pass_impl()
         }
     }
 
@@ -720,11 +703,11 @@ mod ios_impl {
 
     impl caps::ViewOps for IosBackend {
         fn create_view(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-            <IosBackend as Backend>::create_view(self, a11y)
+            IosBackend::create_view_impl(self, a11y)
         }
 
-        fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
-            <IosBackend as Backend>::make_view_handle(self, node)
+        fn make_view_handle(&self, node: &Self::Node) -> runtime_shared::ViewHandle {
+            IosBackend::make_view_handle_impl(self, node)
         }
     }
 
@@ -739,43 +722,15 @@ mod ios_impl {
                     response
                 })
             };
-            <IosBackend as Backend>::install_touch_handler(self, node, handler)
+            IosBackend::install_touch_handler_impl(self, node, handler)
         }
 
         fn claim_touch(&mut self, node: &Self::Node, touch_id: TouchId) {
-            <IosBackend as Backend>::claim_touch(self, node, touch_id)
-        }
-
-        fn install_wheel_handler(&mut self, node: &Self::Node, handler: WheelHandler) {
-            let handler: WheelHandler = {
-                let f = handler;
-                Rc::new(move |ev| {
-                    let response = f(ev);
-                    schedule_flush();
-                    response
-                })
-            };
-            <IosBackend as Backend>::install_wheel_handler(self, node, handler)
-        }
-
-        fn install_hover_handler(&mut self, node: &Self::Node, handler: HoverHandler) {
-            <IosBackend as Backend>::install_hover_handler(self, node, flushing1(handler))
+            IosBackend::claim_touch_impl(self, node, touch_id)
         }
 
         fn mark_preserves_focus(&mut self, node: &Self::Node) {
-            <IosBackend as Backend>::mark_preserves_focus(self, node)
-        }
-
-        fn install_file_drop_handler(&mut self, node: &Self::Node, handler: FileDropHandler) {
-            let handler: FileDropHandler = {
-                let f = handler;
-                Rc::new(move |ev| {
-                    let response = f(ev);
-                    schedule_flush();
-                    response
-                })
-            };
-            <IosBackend as Backend>::install_file_drop_handler(self, node, handler)
+            IosBackend::mark_preserves_focus_impl(self, node)
         }
     }
 
@@ -785,11 +740,11 @@ mod ios_impl {
             on_click: Rc<dyn Fn()>,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
-            <IosBackend as Backend>::create_pressable(self, flushing0(on_click), a11y)
+            IosBackend::create_pressable_impl(self, flushing0(on_click), a11y)
         }
 
-        fn make_pressable_handle(&self, node: &Self::Node) -> runtime_core::PressableHandle {
-            <IosBackend as Backend>::make_pressable_handle(self, node)
+        fn make_pressable_handle(&self, node: &Self::Node) -> runtime_shared::PressableHandle {
+            IosBackend::make_pressable_handle_impl(self, node)
         }
     }
 
@@ -799,65 +754,23 @@ mod ios_impl {
 
     impl caps::TextOps for IosBackend {
         fn create_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
-            <IosBackend as Backend>::create_text(self, content, a11y)
+            IosBackend::create_text_impl(self, content, a11y)
         }
 
         fn create_styled_text(&mut self, runs: &[TextRun], a11y: &AccessibilityProps) -> Self::Node {
-            <IosBackend as Backend>::create_styled_text(self, runs, a11y)
+            IosBackend::create_styled_text_impl(self, runs, a11y)
         }
 
         fn update_styled_text(&mut self, node: &Self::Node, runs: &[TextRun]) {
-            <IosBackend as Backend>::update_styled_text(self, node, runs)
+            IosBackend::update_styled_text_impl(self, node, runs)
         }
 
         fn update_text(&mut self, node: &Self::Node, content: &str) {
-            <IosBackend as Backend>::update_text(self, node, content)
+            IosBackend::update_text_impl(self, node, content)
         }
 
-        fn create_text_with_id(
-            &mut self,
-            content: &str,
-            a11y: &AccessibilityProps,
-        ) -> Option<(Self::Node, u32)> {
-            <IosBackend as Backend>::create_text_with_id(self, content, a11y)
-        }
-
-        fn update_text_by_id(&mut self, id: u32, content: String) {
-            <IosBackend as Backend>::update_text_by_id(self, id, content)
-        }
-
-        fn release_text_id(&mut self, id: u32) {
-            <IosBackend as Backend>::release_text_id(self, id)
-        }
-
-        fn supports_js_text_bindings(&self) -> bool {
-            <IosBackend as Backend>::supports_js_text_bindings(self)
-        }
-
-        fn register_reactive_text_binding(
-            &mut self,
-            text_id: u32,
-            signal_ids: &[u64],
-            template_parts: &[&str],
-            initial_values: &[&str],
-            stringifiers: &[Rc<dyn Fn() -> String>],
-        ) {
-            <IosBackend as Backend>::register_reactive_text_binding(
-                self,
-                text_id,
-                signal_ids,
-                template_parts,
-                initial_values,
-                stringifiers,
-            )
-        }
-
-        fn release_reactive_text_binding(&mut self, text_id: u32) {
-            <IosBackend as Backend>::release_reactive_text_binding(self, text_id)
-        }
-
-        fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
-            <IosBackend as Backend>::make_text_handle(self, node)
+        fn make_text_handle(&self, node: &Self::Node) -> runtime_shared::TextHandle {
+            IosBackend::make_text_handle_impl(self, node)
         }
     }
 
@@ -879,7 +792,7 @@ mod ios_impl {
                 output: on_click.output,
                 fire: flushing0(on_click.fire.clone()),
             };
-            <IosBackend as Backend>::create_button(
+            IosBackend::create_button_impl(
                 self,
                 label,
                 &on_click,
@@ -890,11 +803,11 @@ mod ios_impl {
         }
 
         fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-            <IosBackend as Backend>::update_button_label(self, node, label)
+            IosBackend::update_button_label_impl(self, node, label)
         }
 
-        fn make_button_handle(&self, node: &Self::Node) -> runtime_core::ButtonHandle {
-            <IosBackend as Backend>::make_button_handle(self, node)
+        fn make_button_handle(&self, node: &Self::Node) -> runtime_shared::ButtonHandle {
+            IosBackend::make_button_handle_impl(self, node)
         }
     }
 
@@ -909,15 +822,11 @@ mod ios_impl {
             alt: Option<&str>,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
-            <IosBackend as Backend>::create_image(self, src, alt, a11y)
+            IosBackend::create_image_impl(self, src, alt, a11y)
         }
 
         fn update_image_src(&mut self, node: &Self::Node, src: &str) {
-            <IosBackend as Backend>::update_image_src(self, node, src)
-        }
-
-        fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
-            <IosBackend as Backend>::update_image_alt(self, node, alt)
+            IosBackend::update_image_src_impl(self, node, src)
         }
 
         fn install_image_load_handler(&mut self, node: &Self::Node, handler: ImageLoadHandler) {
@@ -930,15 +839,11 @@ mod ios_impl {
                     schedule_flush();
                 })
             };
-            <IosBackend as Backend>::install_image_load_handler(self, node, handler)
+            IosBackend::install_image_load_handler_impl(self, node, handler)
         }
 
         fn install_image_error_handler(&mut self, node: &Self::Node, handler: ImageErrorHandler) {
-            <IosBackend as Backend>::install_image_error_handler(self, node, flushing0(handler))
-        }
-
-        fn make_image_handle(&self, node: &Self::Node) -> primitives::image::ImageHandle {
-            <IosBackend as Backend>::make_image_handle(self, node)
+            IosBackend::install_image_error_handler_impl(self, node, flushing0(handler))
         }
     }
 
@@ -949,19 +854,15 @@ mod ios_impl {
             color: Option<&Color>,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
-            <IosBackend as Backend>::create_icon(self, data, color, a11y)
+            IosBackend::create_icon_impl(self, data, color, a11y)
         }
 
         fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
-            <IosBackend as Backend>::update_icon_color(self, node, color)
-        }
-
-        fn update_icon_data(&mut self, node: &Self::Node, data: &primitives::icon::IconData) {
-            <IosBackend as Backend>::update_icon_data(self, node, data)
+            IosBackend::update_icon_color_impl(self, node, color)
         }
 
         fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
-            <IosBackend as Backend>::update_icon_stroke(self, node, progress)
+            IosBackend::update_icon_stroke_impl(self, node, progress)
         }
 
         fn animate_icon_stroke(
@@ -974,7 +875,7 @@ mod ios_impl {
             infinite: bool,
             autoreverses: bool,
         ) {
-            <IosBackend as Backend>::animate_icon_stroke(
+            IosBackend::animate_icon_stroke_impl(
                 self,
                 node,
                 from,
@@ -987,7 +888,7 @@ mod ios_impl {
         }
 
         fn make_icon_handle(&self, node: &Self::Node) -> primitives::icon::IconHandle {
-            <IosBackend as Backend>::make_icon_handle(self, node)
+            IosBackend::make_icon_handle_impl(self, node)
         }
     }
 
@@ -1001,15 +902,7 @@ mod ios_impl {
             // (stages nav-queue tick signals on the new core).
             let mut config = config;
             config.on_activate = flushing0(config.on_activate.clone());
-            <IosBackend as Backend>::create_link(self, config, a11y)
-        }
-
-        fn update_link_url(&mut self, node: &Self::Node, url: &str) {
-            <IosBackend as Backend>::update_link_url(self, node, url)
-        }
-
-        fn make_link_handle(&self, node: &Self::Node) -> primitives::link::LinkHandle {
-            <IosBackend as Backend>::make_link_handle(self, node)
+            IosBackend::create_link_impl(self, config, a11y)
         }
     }
 
@@ -1028,7 +921,7 @@ mod ios_impl {
             secure: bool,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
-            <IosBackend as Backend>::create_text_input(
+            IosBackend::create_text_input_impl(
                 self,
                 initial_value,
                 placeholder,
@@ -1047,19 +940,11 @@ mod ios_impl {
         }
 
         fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
-            <IosBackend as Backend>::update_text_input_value(self, node, value)
+            IosBackend::update_text_input_value_impl(self, node, value)
         }
 
         fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
-            <IosBackend as Backend>::update_text_input_secure(self, node, secure)
-        }
-
-        fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
-            <IosBackend as Backend>::set_text_input_focus_handler(self, node, flushing1(handler))
-        }
-
-        fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
-            <IosBackend as Backend>::update_text_input_placeholder(self, node, placeholder)
+            IosBackend::update_text_input_secure_impl(self, node, secure)
         }
 
         fn create_text_area(
@@ -1073,7 +958,7 @@ mod ios_impl {
             on_key_down: Option<primitives::key::KeyDownHandler>,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
-            <IosBackend as Backend>::create_text_area(
+            IosBackend::create_text_area_impl(
                 self,
                 initial_value,
                 placeholder,
@@ -1087,18 +972,18 @@ mod ios_impl {
         }
 
         fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
-            <IosBackend as Backend>::update_text_area_value(self, node, value)
+            IosBackend::update_text_area_value_impl(self, node, value)
         }
 
         fn make_text_input_handle(
             &self,
             node: &Self::Node,
         ) -> primitives::text_input::TextInputHandle {
-            <IosBackend as Backend>::make_text_input_handle(self, node)
+            IosBackend::make_text_input_handle_impl(self, node)
         }
 
         fn make_text_area_handle(&self, node: &Self::Node) -> primitives::text_area::TextAreaHandle {
-            <IosBackend as Backend>::make_text_area_handle(self, node)
+            IosBackend::make_text_area_handle_impl(self, node)
         }
     }
 
@@ -1109,15 +994,11 @@ mod ios_impl {
             on_change: Rc<dyn Fn(bool)>,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
-            <IosBackend as Backend>::create_toggle(self, initial_value, flushing1(on_change), a11y)
+            IosBackend::create_toggle_impl(self, initial_value, flushing1(on_change), a11y)
         }
 
         fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
-            <IosBackend as Backend>::update_toggle_value(self, node, value)
-        }
-
-        fn make_toggle_handle(&self, node: &Self::Node) -> primitives::toggle::ToggleHandle {
-            <IosBackend as Backend>::make_toggle_handle(self, node)
+            IosBackend::update_toggle_value_impl(self, node, value)
         }
     }
 
@@ -1131,7 +1012,7 @@ mod ios_impl {
             on_change: Rc<dyn Fn(f32)>,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
-            <IosBackend as Backend>::create_slider(
+            IosBackend::create_slider_impl(
                 self,
                 initial_value,
                 min,
@@ -1143,11 +1024,7 @@ mod ios_impl {
         }
 
         fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
-            <IosBackend as Backend>::update_slider_value(self, node, value)
-        }
-
-        fn make_slider_handle(&self, node: &Self::Node) -> primitives::slider::SliderHandle {
-            <IosBackend as Backend>::make_slider_handle(self, node)
+            IosBackend::update_slider_value_impl(self, node, value)
         }
     }
 
@@ -1158,22 +1035,7 @@ mod ios_impl {
             color: Option<&Color>,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
-            <IosBackend as Backend>::create_activity_indicator(self, size, color, a11y)
-        }
-
-        fn update_activity_indicator_size(
-            &mut self,
-            node: &Self::Node,
-            size: primitives::activity_indicator::ActivityIndicatorSize,
-        ) {
-            <IosBackend as Backend>::update_activity_indicator_size(self, node, size)
-        }
-
-        fn make_activity_indicator_handle(
-            &self,
-            node: &Self::Node,
-        ) -> primitives::activity_indicator::ActivityIndicatorHandle {
-            <IosBackend as Backend>::make_activity_indicator_handle(self, node)
+            IosBackend::create_activity_indicator_impl(self, size, color, a11y)
         }
     }
 
@@ -1200,32 +1062,32 @@ mod ios_impl {
                     schedule_flush();
                 })
             });
-            <IosBackend as Backend>::create_scroll_view(self, horizontal, on_scroll, a11y)
+            IosBackend::create_scroll_view_impl(self, horizontal, on_scroll, a11y)
         }
 
         fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
-            <IosBackend as Backend>::node_scroll(self, node)
+            IosBackend::node_scroll_impl(self, node)
         }
 
         fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
-            <IosBackend as Backend>::set_node_scroll(self, node, x, y)
+            IosBackend::set_node_scroll_impl(self, node, x, y)
         }
 
         fn make_scroll_view_handle(
             &self,
             node: &Self::Node,
         ) -> primitives::scroll_view::ScrollViewHandle {
-            <IosBackend as Backend>::make_scroll_view_handle(self, node)
+            IosBackend::make_scroll_view_handle_impl(self, node)
         }
     }
 
     impl caps::SafeAreaOps for IosBackend {
         fn apply_safe_area_padding(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-            <IosBackend as Backend>::apply_safe_area_padding(self, node, sides)
+            IosBackend::apply_safe_area_padding_impl(self, node, sides)
         }
 
         fn apply_scroll_view_safe_area_inset(&mut self, node: &Self::Node, sides: SafeAreaSides) {
-            <IosBackend as Backend>::apply_scroll_view_safe_area_inset(self, node, sides)
+            IosBackend::apply_scroll_view_safe_area_inset_impl(self, node, sides)
         }
     }
 
@@ -1287,22 +1149,15 @@ mod ios_impl {
                     })
                 },
             };
-            <IosBackend as Backend>::create_virtualizer(self, callbacks, overscan, layout, a11y)
+            IosBackend::create_virtualizer_impl(self, callbacks, overscan, layout, a11y)
         }
 
         fn virtualizer_data_changed(&mut self, node: &Self::Node) {
-            <IosBackend as Backend>::virtualizer_data_changed(self, node)
+            IosBackend::virtualizer_data_changed_impl(self, node)
         }
 
         fn release_virtualizer(&mut self, node: &Self::Node) {
-            <IosBackend as Backend>::release_virtualizer(self, node)
-        }
-
-        fn make_virtualizer_handle(
-            &self,
-            node: &Self::Node,
-        ) -> primitives::virtualizer::VirtualizerHandle {
-            <IosBackend as Backend>::make_virtualizer_handle(self, node)
+            IosBackend::release_virtualizer_impl(self, node)
         }
     }
 
@@ -1341,15 +1196,7 @@ mod ios_impl {
                     schedule_flush();
                 })
             };
-            <IosBackend as Backend>::create_graphics(self, on_ready, on_resize, on_lost, a11y)
-        }
-
-        fn release_graphics(&mut self, node: &Self::Node) {
-            <IosBackend as Backend>::release_graphics(self, node)
-        }
-
-        fn make_graphics_handle(&self, node: &Self::Node) -> primitives::graphics::GraphicsHandle {
-            <IosBackend as Backend>::make_graphics_handle(self, node)
+            IosBackend::create_graphics_impl(self, on_ready, on_resize, on_lost, a11y)
         }
     }
 
@@ -1364,26 +1211,15 @@ mod ios_impl {
             // Dispatch-site glue: backdrop tap dismissal runs the
             // author's on_dismiss.
             let on_dismiss = on_dismiss.map(flushing0);
-            <IosBackend as Backend>::create_portal(self, target, on_dismiss, trap_focus, a11y)
+            IosBackend::create_portal_impl(self, target, on_dismiss, trap_focus, a11y)
         }
 
         fn release_portal(&mut self, node: &Self::Node) {
-            <IosBackend as Backend>::release_portal(self, node)
-        }
-
-        fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
-            <IosBackend as Backend>::set_portal_hidden(self, node, hidden)
-        }
-
-        fn make_portal_handle(&self, node: &Self::Node) -> primitives::portal::PortalHandle {
-            <IosBackend as Backend>::make_portal_handle(self, node)
+            IosBackend::release_portal_impl(self, node)
         }
     }
 
     impl caps::PresenceOps for IosBackend {
-        fn create_presence_placeholder(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-            <IosBackend as Backend>::create_presence_placeholder(self, a11y)
-        }
 
         fn apply_presence(
             &mut self,
@@ -1391,68 +1227,23 @@ mod ios_impl {
             state: primitives::presence::PresenceState,
             transition: Option<(u32, Easing)>,
         ) {
-            <IosBackend as Backend>::apply_presence(self, node, state, transition)
-        }
-
-        fn make_presence_handle(&self, node: &Self::Node) -> primitives::presence::PresenceHandle {
-            <IosBackend as Backend>::make_presence_handle(self, node)
+            IosBackend::apply_presence_impl(self, node, state, transition)
         }
     }
 
     impl caps::NavigatorOps for IosBackend {
-        fn create_navigator(
-            &mut self,
-            type_id: TypeId,
-            type_name: &'static str,
-            presentation: Rc<dyn Any>,
-            host: primitives::navigator::NavigatorHost<Self::Node>,
-            a11y: &AccessibilityProps,
-        ) -> Self::Node {
-            // NOT wrapped: NavigatorHost's callbacks (mount_screen etc.)
-            // belong to the OLD-core navigator path, which the new core
-            // does not route through (the vocabulary navigator handlers
-            // own screens; author-initiated navigation stages via
-            // handlers already wrapped above and commits inside the
-            // flush). Native push surfaces / system back are a named
-            // P4/P5 port — their glue must call `schedule_flush` when
-            // they land.
-            <IosBackend as Backend>::create_navigator(
-                self,
-                type_id,
-                type_name,
-                presentation,
-                host,
-                a11y,
-            )
-        }
-
-        fn release_navigator(&mut self, node: &Self::Node) {
-            <IosBackend as Backend>::release_navigator(self, node)
-        }
-
-        fn apply_navigator_slot_style(
-            &mut self,
-            node: &Self::Node,
-            slot: &'static str,
-            style: &Rc<StyleRules>,
-        ) {
-            <IosBackend as Backend>::apply_navigator_slot_style(self, node, slot, style)
-        }
-
-        fn make_navigator_handle(&self, node: &Self::Node) -> primitives::navigator::NavigatorHandle {
-            <IosBackend as Backend>::make_navigator_handle(self, node)
-        }
-
-        fn navigator_attach_initial(
-            &mut self,
-            navigator: &Self::Node,
-            screen: Self::Node,
-            scope_id: u64,
-            options: Box<dyn Any>,
-        ) {
-            <IosBackend as Backend>::navigator_attach_initial(self, navigator, screen, scope_id, options)
-        }
-    }
+    // Every method of this capability is now the caps trait's default.
+    // The old-core `create_navigator` (which registered the per-instance
+    // `NavigatorHandler` these four methods dispatched to) was DELETED
+    // with the old core — it does not fall back to a default
+    // (docs/runtime-v2-deletion-baseline.md §2.3), so no handler is ever
+    // registered and the vocabulary's navigator handler never calls
+    // them — it mounts navigators over `ViewOps`/`LifecycleOps` and
+    // folds screen chrome itself. Native push / header chrome on this
+    // backend is the documented native-nav seam, tracked in the module
+    // docs; it must be re-entered through the scene registry, not
+    // through a resurrected mega-trait cap.
+}
 
     // -----------------------------------------------------------------------
     // External + document
@@ -1466,38 +1257,15 @@ mod ios_impl {
             payload: &Rc<dyn Any>,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
-            <IosBackend as Backend>::create_external(self, type_id, type_name, payload, a11y)
+            IosBackend::create_external_impl(self, type_id, type_name, payload, a11y)
         }
 
         fn release_external(&mut self, node: &Self::Node) {
-            <IosBackend as Backend>::release_external(self, node)
-        }
-
-        fn missing_primitive_placeholder(&mut self, label: &'static str) -> Self::Node {
-            <IosBackend as Backend>::missing_primitive_placeholder(self, label)
+            IosBackend::release_external_impl(self, node)
         }
     }
 
     impl caps::DocumentOps for IosBackend {
-        fn create_element(&mut self, tag: &str) -> Self::Node {
-            <IosBackend as Backend>::create_element(self, tag)
-        }
-
-        fn attach_html_id(&self, node: &Self::Node, id: &str) {
-            <IosBackend as Backend>::attach_html_id(self, node, id)
-        }
-
-        fn attach_html_class(&self, node: &Self::Node, class: &str) {
-            <IosBackend as Backend>::attach_html_class(self, node, class)
-        }
-
-        fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
-            <IosBackend as Backend>::attach_html_style(self, node, prop, value)
-        }
-
-        fn register_raw_css(&mut self, css: &str) {
-            <IosBackend as Backend>::register_raw_css(self, css)
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -1506,74 +1274,7 @@ mod ios_impl {
 
     impl caps::StyleOps for IosBackend {
         fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
-            <IosBackend as Backend>::apply_style(self, node, style)
-        }
-
-        fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
-            <IosBackend as Backend>::mint_style_class(self, style)
-        }
-
-        fn mint_class_for_app(&mut self, app: &StyleApplication) -> Option<String> {
-            <IosBackend as Backend>::mint_class_for_app(self, app)
-        }
-
-        fn apply_styled_states(
-            &mut self,
-            node: &Self::Node,
-            base: &Rc<StyleRules>,
-            overlays: &[(StateBits, Rc<StyleRules>)],
-        ) {
-            <IosBackend as Backend>::apply_styled_states(self, node, base, overlays)
-        }
-
-        fn apply_styled_variants(
-            &mut self,
-            node: &Self::Node,
-            base: &Rc<StyleRules>,
-            state_overlays: &[(StateBits, Rc<StyleRules>)],
-            breakpoint_overlays: &[(Breakpoint, Rc<StyleRules>)],
-            container_overlays: &[(f32, Rc<StyleRules>)],
-        ) {
-            <IosBackend as Backend>::apply_styled_variants(
-                self,
-                node,
-                base,
-                state_overlays,
-                breakpoint_overlays,
-                container_overlays,
-            )
-        }
-
-        fn mark_container(&mut self, node: &Self::Node) {
-            <IosBackend as Backend>::mark_container(self, node)
-        }
-
-        fn handles_states_natively(&self) -> bool {
-            <IosBackend as Backend>::handles_states_natively(self)
-        }
-
-        fn token_updates_propagate_via_cascade(&self) -> bool {
-            <IosBackend as Backend>::token_updates_propagate_via_cascade(self)
-        }
-
-        fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-            <IosBackend as Backend>::register_stylesheet(self, rules)
-        }
-
-        fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-            <IosBackend as Backend>::unregister_stylesheet(self, rules)
-        }
-
-        fn install_tokens(&mut self, tokens: &[TokenEntry]) {
-            <IosBackend as Backend>::install_tokens(self, tokens)
-        }
-
-        fn update_tokens(&mut self, tokens: &[TokenEntry]) {
-            <IosBackend as Backend>::update_tokens(self, tokens)
-        }
-
-        fn on_node_unstyled(&mut self, node: &Self::Node) {
-            <IosBackend as Backend>::on_node_unstyled(self, node)
+            IosBackend::apply_style_impl(self, node, style)
         }
 
         fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
@@ -1588,55 +1289,21 @@ mod ios_impl {
                     schedule_flush();
                 })
             };
-            <IosBackend as Backend>::attach_states(self, node, setter)
+            IosBackend::attach_states_impl(self, node, setter)
         }
 
         fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
-            <IosBackend as Backend>::set_disabled(self, node, disabled)
-        }
-
-        fn supports_preminted_styles(&self) -> bool {
-            <IosBackend as Backend>::supports_preminted_styles(self)
-        }
-
-        fn apply_default_text_font(&mut self, font: Option<&FontFamily>) {
-            <IosBackend as Backend>::apply_default_text_font(self, font)
-        }
-
-        fn supports_js_class_bindings(&self) -> bool {
-            <IosBackend as Backend>::supports_js_class_bindings(self)
-        }
-
-        fn register_reactive_class_binding(
-            &mut self,
-            node: &Self::Node,
-            signal_id: u64,
-            values: &[u32],
-            classes: &[&str],
-            value_reader: Rc<dyn Fn() -> u32>,
-        ) -> u32 {
-            <IosBackend as Backend>::register_reactive_class_binding(
-                self,
-                node,
-                signal_id,
-                values,
-                classes,
-                value_reader,
-            )
-        }
-
-        fn release_reactive_class_binding(&mut self, binding_id: u32) {
-            <IosBackend as Backend>::release_reactive_class_binding(self, binding_id)
+            IosBackend::set_disabled_impl(self, node, disabled)
         }
     }
 
     impl caps::AssetOps for IosBackend {
         fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
-            <IosBackend as Backend>::register_asset(self, id, kind, source)
+            IosBackend::register_asset_impl(self, id, kind, source)
         }
 
         fn unregister_asset(&mut self, id: AssetId, kind: AssetTag) {
-            <IosBackend as Backend>::unregister_asset(self, id, kind)
+            IosBackend::unregister_asset_impl(self, id, kind)
         }
 
         fn register_typeface(
@@ -1646,11 +1313,11 @@ mod ios_impl {
             faces: &[TypefaceFace],
             fallback: SystemFallback,
         ) {
-            <IosBackend as Backend>::register_typeface(self, id, family_name, faces, fallback)
+            IosBackend::register_typeface_impl(self, id, family_name, faces, fallback)
         }
 
         fn unregister_typeface(&mut self, id: TypefaceId) {
-            <IosBackend as Backend>::unregister_typeface(self, id)
+            IosBackend::unregister_typeface_impl(self, id)
         }
     }
 
@@ -1665,59 +1332,39 @@ mod ios_impl {
             a11y: &AccessibilityProps,
             inferred_role: Option<Role>,
         ) {
-            <IosBackend as Backend>::update_accessibility(self, node, a11y, inferred_role)
+            IosBackend::update_accessibility_impl(self, node, a11y, inferred_role)
         }
 
         fn announce_for_accessibility(&mut self, msg: &str, priority: LiveRegionPriority) {
-            <IosBackend as Backend>::announce_for_accessibility(self, msg, priority)
-        }
-
-        fn dump_accessibility_tree(&self) -> Option<AccessibilityTree> {
-            <IosBackend as Backend>::dump_accessibility_tree(self)
+            IosBackend::announce_for_accessibility_impl(self, msg, priority)
         }
     }
 
     impl caps::AnimationOps for IosBackend {
         fn set_animated_f32(&mut self, node: &Self::Node, prop: AnimProp, value: f32) {
-            <IosBackend as Backend>::set_animated_f32(self, node, prop, value)
+            IosBackend::set_animated_f32_impl(self, node, prop, value)
         }
 
         fn set_animated_color(&mut self, node: &Self::Node, prop: AnimProp, value: [f32; 4]) {
-            <IosBackend as Backend>::set_animated_color(self, node, prop, value)
+            IosBackend::set_animated_color_impl(self, node, prop, value)
         }
     }
 
     impl caps::IntrospectionOps for IosBackend {
         fn frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-            <IosBackend as Backend>::frame(self, node)
+            IosBackend::frame_impl(self, node)
         }
 
         fn absolute_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-            <IosBackend as Backend>::absolute_frame(self, node)
-        }
-
-        fn device_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
-            <IosBackend as Backend>::device_frame(self, node)
-        }
-
-        fn supports_native_introspection(&self) -> bool {
-            <IosBackend as Backend>::supports_native_introspection(self)
-        }
-
-        fn introspect_native(&self, node: &Self::Node) -> Option<NativeNode> {
-            <IosBackend as Backend>::introspect_native(self, node)
-        }
-
-        fn note_introspection_root(&self, node: &Self::Node) {
-            <IosBackend as Backend>::note_introspection_root(self, node)
+            IosBackend::absolute_frame_impl(self, node)
         }
 
         fn supports_screenshot(&self) -> bool {
-            <IosBackend as Backend>::supports_screenshot(self)
+            IosBackend::supports_screenshot_impl(self)
         }
 
         fn capture_screenshot(&self, done: Box<dyn FnOnce(Result<Screenshot, String>)>) {
-            <IosBackend as Backend>::capture_screenshot(self, done)
+            IosBackend::capture_screenshot_impl(self, done)
         }
     }
 
@@ -1726,118 +1373,9 @@ mod ios_impl {
     // -----------------------------------------------------------------------
 
     impl caps::BatchOps for IosBackend {
-        fn supports_batched_repeat(&self) -> bool {
-            <IosBackend as Backend>::supports_batched_repeat(self)
-        }
-
-        fn execute_batch(&mut self, batch: BackendBatch) -> Vec<Self::Node> {
-            <IosBackend as Backend>::execute_batch(self, batch)
-        }
-
-        fn execute_batch_with_attach(
-            &mut self,
-            batch: BackendBatch,
-            parent: &mut Self::Node,
-            attach_locals: &[u32],
-        ) -> Vec<Self::Node> {
-            <IosBackend as Backend>::execute_batch_with_attach(self, batch, parent, attach_locals)
-        }
     }
 
     impl caps::WireBindingOps for IosBackend {
-        fn note_text_binding(&mut self, node: &Self::Node, signal_ids: &[u64], method: &'static str) {
-            <IosBackend as Backend>::note_text_binding(self, node, signal_ids, method)
-        }
-
-        fn note_signal_initial(&mut self, signal_id: u64, value: &runtime_core::__serde_json::Value) {
-            <IosBackend as Backend>::note_signal_initial(self, signal_id, value)
-        }
-
-        fn note_when_binding(
-            &mut self,
-            anchor: &Self::Node,
-            signal_ids: &[u64],
-            cond_method: &'static str,
-            then_node: &Self::Node,
-            otherwise_node: &Self::Node,
-        ) {
-            <IosBackend as Backend>::note_when_binding(
-                self,
-                anchor,
-                signal_ids,
-                cond_method,
-                then_node,
-                otherwise_node,
-            )
-        }
-
-        fn note_switch_binding(
-            &mut self,
-            anchor: &Self::Node,
-            signal_ids: &[u64],
-            cond_method: &'static str,
-            arms: &[(runtime_core::__serde_json::Value, Self::Node)],
-            default_node: &Self::Node,
-        ) {
-            <IosBackend as Backend>::note_switch_binding(
-                self,
-                anchor,
-                signal_ids,
-                cond_method,
-                arms,
-                default_node,
-            )
-        }
-
-        fn note_repeat_binding(
-            &mut self,
-            anchor: &Self::Node,
-            signal_ids: &[u64],
-            count_method: &'static str,
-            row_template: &Self::Node,
-            row_index_signal_id: Option<u64>,
-        ) {
-            <IosBackend as Backend>::note_repeat_binding(
-                self,
-                anchor,
-                signal_ids,
-                count_method,
-                row_template,
-                row_index_signal_id,
-            )
-        }
-
-        fn note_virtualizer_binding(
-            &mut self,
-            anchor: &Self::Node,
-            signal_ids: &[u64],
-            count_method: &'static str,
-            row_template: &Self::Node,
-            row_index_signal_id: Option<u64>,
-            horizontal: bool,
-        ) {
-            <IosBackend as Backend>::note_virtualizer_binding(
-                self,
-                anchor,
-                signal_ids,
-                count_method,
-                row_template,
-                row_index_signal_id,
-                horizontal,
-            )
-        }
-
-        fn supports_lazy_slot_capture(&self) -> bool {
-            <IosBackend as Backend>::supports_lazy_slot_capture(self)
-        }
-
-        fn begin_slot_capture(&mut self) {
-            <IosBackend as Backend>::begin_slot_capture(self)
-        }
-
-        fn end_slot_capture(&mut self, slot_root: &Self::Node) {
-            <IosBackend as Backend>::end_slot_capture(self, slot_root)
-        }
     }
 }
 
@@ -1892,7 +1430,7 @@ mod tests {
         schedule_flush();
         assert_eq!(*log.borrow(), vec![0], "staged, not committed");
 
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(
             *log.borrow(),
             vec![0, 2],
@@ -1906,7 +1444,7 @@ mod tests {
         // The flag re-arms for the next write→flush cycle.
         count.set(3);
         schedule_flush();
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(*log.borrow(), vec![0, 2, 3]);
 
         set_flush_world(None);
@@ -1976,7 +1514,7 @@ mod tests {
         count.set(7);
         backend_apple_core::dispatch_hook::fire_dispatch_hook();
         assert_eq!(*log.borrow(), vec![0], "staged, commits at the turn boundary");
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(*log.borrow(), vec![0, 7], "hook → schedule_flush → commit");
 
         // Teardown severs the route: a late timer fires the hook into a
@@ -1989,7 +1527,7 @@ mod tests {
             !FLUSH_QUEUED.with(|q| q.get()),
             "cleared hook schedules nothing"
         );
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(*log.borrow(), vec![0, 7], "no commit after teardown");
         backend_apple_core::scheduler::end_mount_buffering();
     }
@@ -2018,7 +1556,7 @@ mod tests {
         let wrapped = flushing0(Rc::new(move || count.set(1)));
         wrapped();
         assert!(FLUSH_QUEUED.with(|q| q.get()), "flush queued after author fn");
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(*log.borrow(), vec![0, 1], "on_press write committed");
 
         // flushing1 — the on_change shape (value passes through).
@@ -2030,16 +1568,16 @@ mod tests {
         }));
         wrapped(0.5);
         assert_eq!(seen.get(), 0.5, "value reached the author fn unchanged");
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(*log.borrow(), vec![0, 1, 2], "on_change write committed");
 
         // flushing_key — outcome passes through so the backend's
         // suppress-default decision is unchanged.
         let wrapped = flushing_key(Rc::new(move |_ev| {
             count.set(3);
-            runtime_core::primitives::key::KeyOutcome::PreventDefault
+            runtime_shared::primitives::key::KeyOutcome::PreventDefault
         }));
-        let ev = runtime_core::primitives::key::KeyEvent {
+        let ev = runtime_shared::primitives::key::KeyEvent {
             key: "a".into(),
             shift: false,
             ctrl: false,
@@ -2051,9 +1589,9 @@ mod tests {
         let outcome = wrapped(&ev);
         assert!(matches!(
             outcome,
-            runtime_core::primitives::key::KeyOutcome::PreventDefault
+            runtime_shared::primitives::key::KeyOutcome::PreventDefault
         ));
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(*log.borrow(), vec![0, 1, 2, 3], "key write committed");
 
         set_flush_world(None);
@@ -2087,7 +1625,7 @@ mod tests {
             let ctx = runtime_vocabulary::viewport::viewport_ctx();
             let bp = ctx.breakpoint();
             let runs = Rc::new(Cell::new(0usize));
-            let last = Rc::new(Cell::new(runtime_core::Breakpoint::Xs));
+            let last = Rc::new(Cell::new(runtime_shared::Breakpoint::Xs));
             let runs_c = runs.clone();
             let last_c = last.clone();
             // Stand-in for the shell's `when(!sidebar_pinned(Lg))`.
@@ -2103,41 +1641,41 @@ mod tests {
 
         // The seam: fires outside `enter` (a UIKit layout callback),
         // stages, flush commits.
-        forward_viewport(runtime_core::ViewportSize {
+        forward_viewport(runtime_shared::ViewportSize {
             width: 1280.0,
             height: 800.0,
         });
         assert_eq!(runs.get(), 1, "staged — commits at the turn boundary");
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(
             last.get(),
-            runtime_core::Breakpoint::Xl,
+            runtime_shared::Breakpoint::Xl,
             "bucket followed the resize"
         );
         assert_eq!(runs.get(), 2);
 
         // Same-bucket resize: per-pixel change, no bucket flip, no
         // re-fire (memo equality cut).
-        forward_viewport(runtime_core::ViewportSize {
+        forward_viewport(runtime_shared::ViewportSize {
             width: 1290.0,
             height: 800.0,
         });
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(runs.get(), 2, "per-pixel resizes inside a bucket stay silent");
 
         // Rotation-shaped crossing below the threshold.
-        forward_viewport(runtime_core::ViewportSize {
+        forward_viewport(runtime_shared::ViewportSize {
             width: 700.0,
             height: 800.0,
         });
-        runtime_core::scheduling::drain_buffered_microtasks();
-        assert_eq!(last.get(), runtime_core::Breakpoint::Sm);
+        runtime_shared::scheduling::drain_buffered_microtasks();
+        assert_eq!(last.get(), runtime_shared::Breakpoint::Sm);
         assert_eq!(runs.get(), 3);
 
         // Teardown severs the route (what `stop` does): a late UIKit
         // layout callback forwards into a cleared sink.
         set_viewport_sink(None);
-        forward_viewport(runtime_core::ViewportSize {
+        forward_viewport(runtime_shared::ViewportSize {
             width: 1280.0,
             height: 800.0,
         });
@@ -2145,7 +1683,7 @@ mod tests {
             !FLUSH_QUEUED.with(|q| q.get()),
             "cleared sink schedules nothing"
         );
-        runtime_core::scheduling::drain_buffered_microtasks();
+        runtime_shared::scheduling::drain_buffered_microtasks();
         assert_eq!(runs.get(), 3, "no re-fire after teardown");
 
         set_flush_world(None);

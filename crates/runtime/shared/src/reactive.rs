@@ -1266,11 +1266,11 @@ pub(crate) fn unscope<R, F: FnOnce() -> R>(f: F) -> R {
     f()
 }
 
-/// Depth of nested [`unscope`] calls on this thread. Non-zero means the
-/// signals being created are deliberate thread-lifetime globals — see
-/// [`warn_unowned_signal`], which skips its leak warning while inside.
-/// Debug-only: the warning it guards is itself debug-only, so this carries
-/// zero cost in release.
+// Depth of nested `unscope` calls on this thread. Non-zero means the
+// signals being created are deliberate thread-lifetime globals — see
+// `warn_unowned_signal`, which skips its leak warning while inside.
+// Debug-only: the warning it guards is itself debug-only, so this carries
+// zero cost in release.
 #[cfg(debug_assertions)]
 thread_local! {
     static UNSCOPE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -3361,12 +3361,12 @@ pub fn with_scope<R>(scope: &mut Scope, f: impl FnOnce() -> R) -> R {
     result
 }
 
-/// Dev-build diagnostic: a signal created with no active scope has no owner
-/// and leaks until thread exit. Warn ONCE per creation site (handlers and
-/// async blocks run hot; a warning per call would be noise, zero warnings
-/// was the bug — arena run-3's adversary found per-item signals leaking on
-/// every add/delete cycle with nothing telling the author). Silenceable via
-/// IDEALYST_NO_UNOWNED_SIGNAL_WARN=1 for intentional-leak test harnesses.
+// Dev-build diagnostic: a signal created with no active scope has no owner
+// and leaks until thread exit. Warn ONCE per creation site (handlers and
+// async blocks run hot; a warning per call would be noise, zero warnings
+// was the bug — arena run-3's adversary found per-item signals leaking on
+// every add/delete cycle with nothing telling the author). Silenceable via
+// IDEALYST_NO_UNOWNED_SIGNAL_WARN=1 for intentional-leak test harnesses.
 #[cfg(debug_assertions)]
 thread_local! {
     /// Count of unowned-signal warnings actually emitted on this thread (after

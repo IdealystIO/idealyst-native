@@ -12,7 +12,7 @@ license.workspace = true
 # locale or a placeholder that doesn't match a typed argument is a
 # *compile error*, not a runtime surprise.
 #
-# This crate is the runtime half: the global reactive locale signal, the
+# This crate is the runtime half: the per-world reactive locale signal, the
 # interpolation `format()` fn + a pluggable-formatter seam (so a richer
 # Fluent/ICU layer can swap in), and the opt-in pack registry + loader
 # seam for locales that live on the network rather than in the binary.
@@ -29,7 +29,7 @@ default = []
 # Compile-checked usage recipes for the docs/MCP catalog. Off in every
 # production build (the `recipe!` macro then expands to nothing). Must be
 # THIS crate's own feature — the `#[cfg(feature = "catalog")]` gate on
-# `src/recipes.rs` only sees this crate's features, not runtime-core's.
+# `src/recipes.rs` only sees this crate's features, not the facade's.
 catalog = ["runtime-core/catalog"]
 
 # Ready-made network pack loader for opt-in locales: fetches
@@ -39,7 +39,16 @@ catalog = ["runtime-core/catalog"]
 lazy-fetch = ["dep:net", "runtime-core/async-driver", "dep:web-sys"]
 
 [dependencies]
+# The author surface, aliased to `runtime_core` at the crate root (see
+# src/lib.rs): the per-world `Signal` + `provide`/`inject` the locale ctx is
+# built from, `Reactive` (re-exported for generated message fns), and the
+# `recipe!`/`ui!` macros. `runtime-vocabulary` is a direct dep because the
+# recipes' `ui!` emission spells absolute `::runtime_vocabulary::glue::…`.
 runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+# One module only: `logging`, which glue does not re-export yet (see
+# src/packs.rs).
+runtime-shared = { workspace = true }
 i18n-macros = { workspace = true }
 net = { workspace = true, optional = true }
 # Parsing flat `{ "key": "value" }` locale packs (SSR-inlined or fetched).
@@ -55,6 +64,3 @@ web-sys = { version = "0.3", features = ["Window", "Location"], optional = true 
 # Compile-fail tests that prove the strong-typing guarantees: a missing
 # bundled locale / a bad placeholder / an unused arg must fail to compile.
 trybuild = "1"
-# Integration tests drive the reactive primitives directly to prove that a
-# generated message recomputes when the locale (or a pack) changes.
-runtime-core = { workspace = true }

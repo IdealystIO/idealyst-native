@@ -10,7 +10,6 @@
 //! widget instead of one widget per token. Long lines scroll horizontally
 //! rather than wrapping (single-axis scroller), matching `<pre>{overflow-x:auto}`.
 
-use crate::CodeBlockProps;
 use backend_macos::{MacosBackend, MacosNode};
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyObject, NSObject};
@@ -20,15 +19,14 @@ use objc2_foundation::{
     CGPoint, CGRect, CGSize, MainThreadMarker, NSAttributedString, NSDictionary,
     NSMutableAttributedString, NSString,
 };
-use runtime_core::Color;
-use std::rc::Rc;
+use runtime_shared::Color;
 
-/// `Element::External` handler for the macOS codeblock kind. Returns the
-/// wrapping `NSScrollView` so the framework parents it into the surrounding
-/// view tree; the inner `NSTextField` + `NSAttributedString` are invisible to
-/// Taffy (one external node, one layout entry sized via
+/// Build the macOS codeblock node. Returns the wrapping `NSScrollView` so
+/// the framework parents it into the surrounding view tree; the inner
+/// `NSTextField` + `NSAttributedString` are invisible to Taffy (one
+/// node, one layout entry sized via
 /// `install_external_content_measure`).
-pub(crate) fn build(props: &Rc<CodeBlockProps>, backend: &mut MacosBackend) -> MacosNode {
+pub(crate) fn build(spans: &[(String, Color)], backend: &mut MacosBackend) -> MacosNode {
     let mtm = backend.mtm();
 
     // Label in label mode: non-editable, non-selectable, transparent. Multi-line
@@ -47,7 +45,7 @@ pub(crate) fn build(props: &Rc<CodeBlockProps>, backend: &mut MacosBackend) -> M
     set_monospace_font(&label, 13.0);
 
     // Attributed text: one `NSForegroundColorAttributeName` range per run.
-    let attributed = build_attributed_string(&props.spans, mtm);
+    let attributed = build_attributed_string(spans, mtm);
     unsafe {
         let _: () = msg_send![
             &label,
@@ -161,10 +159,10 @@ fn build_color_dict(color: &NSColor) -> Retained<NSDictionary<NSString, NSObject
 }
 
 /// Parse the framework `Color` (a CSS-ish string) and build an sRGB `NSColor`.
-/// We resolve via `runtime_core::color` rather than the backend's private
+/// We resolve via `runtime_shared::color` rather than the backend's private
 /// helper so the SDK stays decoupled from `backend-macos` internals.
 fn color_to_nscolor(color: &Color) -> Retained<NSColor> {
-    let rgba = runtime_core::color::parse_or(&color.0, runtime_core::color::Rgba::BLACK);
+    let rgba = runtime_shared::color::parse_or(&color.0, runtime_shared::color::Rgba::BLACK);
     unsafe {
         NSColor::colorWithSRGBRed_green_blue_alpha(
             rgba.r as f64 / 255.0,
