@@ -1,5 +1,14 @@
 # Migrating to runtime v2
 
+> **Upgrading an app? Start at
+> [`migration-0.5-to-1.0.md`](migration-0.5-to-1.0.md).** Runtime v2 ships
+> as **1.0.0**, and that page is the front door: the complete breaking-change
+> inventory for the 0.5.x → 1.0 range (including the removals this document
+> does not list), plus the order to work in. It links back here for the
+> detail — staged writes, boot, handler context, teardown, crate layout,
+> testing — which is what this document is for. Read it there, come here for
+> the why.
+
 Runtime v2 replaced the reactive arena, the render walker, and the
 `Element` enum with three crates: `runtime-world` (per-world signal
 arenas with staged-commit flushes), `runtime-scene` (a six-variant

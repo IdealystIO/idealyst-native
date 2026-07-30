@@ -86,6 +86,18 @@ If you're new to the codebase, read the docs in this order:
 
 ## Migrating
 
+Guides are listed newest first. **Upgrading an app? Start with the
+version-pair guide for where you are** — each one links onward.
+
+- [`migration-0.5-to-1.0.md`](./migration-0.5-to-1.0.md). **The 1.0 front
+  door.** The complete breaking-change inventory for 0.5.x → 1.0, derived
+  by diffing the exported surface at the `0.5.2` tag against the tree:
+  the reactive-semantics changes (staged writes, the `PartialEq` bound),
+  all 19 removals from the `runtime_core` author surface, the
+  `--primitives` / `prim-*` removal, and a step-by-step upgrade
+  procedure. Also states what did *not* change — the wire protocol,
+  navigation, `ui!` and the component library — since the diff is large
+  and easy to over-read. Links into the runtime-v2 document for depth.
 - [`migrating-to-runtime-v2.md`](./migrating-to-runtime-v2.md). Runtime v2 —
   now the only runtime: staged-commit reactivity (writes commit at the driver's flush,
   `update` composes, `batch` removed), drop-as-teardown scopes and the
