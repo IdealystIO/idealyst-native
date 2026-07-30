@@ -75,3 +75,12 @@ pub use runtime_vocabulary::{animated, effect, rx, timeline};
 // for `node_ref!` — live). A module re-export can't carry them, so they
 // live here.
 pub use runtime_shared::{face, node_ref, typeface};
+
+// The per-level logging macros, same story. `#[macro_export]` puts them at
+// their defining crate's ROOT, so `pub use runtime_shared::logging` (in
+// glue) re-exports the module's FUNCTIONS but not these — and authors have
+// spelled `runtime_core::log_info!(…)` since 0.5.x, when `logging` was a
+// module of this crate and the macros landed at this root for free. Keeping
+// them here preserves that surface; without it the break is silent in the
+// migration guide's inventory (they are not among its removed 19 names).
+pub use runtime_shared::{log_debug, log_error, log_info, log_warn};

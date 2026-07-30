@@ -419,6 +419,21 @@ pub struct MediaStream {
     inner: Rc<StreamInner>,
 }
 
+/// Pointer identity — a `MediaStream` is a HANDLE to a live capture, so clones
+/// of one stream are equal and two independent streams never are.
+///
+/// There is no meaningful VALUE equality to offer: the payload is a live frame
+/// channel plus a native source, and comparing frames would be both wrong (a
+/// stream is not its current frame) and unbounded. 1.0 bounds the whole `Signal`
+/// handle on `PartialEq`, and holding a camera/screen stream in app state is the
+/// common case, so the guarded `set` needs *an* answer — pointer identity is the
+/// one that matches this type's semantics. Mirrors `idea_theme`'s `ThemeSlot`.
+impl PartialEq for MediaStream {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
 impl MediaStream {
     /// Create a stream and its producer [`FrameWriter`]. The producer spins
     /// up capture (writing through the `FrameWriter`), optionally sets a
