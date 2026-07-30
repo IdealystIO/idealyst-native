@@ -2404,6 +2404,23 @@ pub mod primitives {
                 self
             }
 
+            /// Toggle soft-wrapping. `true` (the default) wraps long lines at
+            /// the box edge; `false` keeps them unwrapped and scrolls
+            /// horizontally — the code-editor shape. Mirrors
+            /// `TextAreaBuilder::wrap`, which this wrapper otherwise hid.
+            pub fn wrap(mut self, wrap: bool) -> Self {
+                self.b = self.b.wrap(wrap);
+                self
+            }
+
+            /// Convenience for the code-editor shape: unwrapped lines that
+            /// scroll horizontally. Equivalent to `.wrap(false)`. A code editor
+            /// is fixed-height, so pair it with a pinned height or a sized
+            /// parent at the call site.
+            pub fn code_mode(self) -> Self {
+                self.wrap(false)
+            }
+
             /// Mirror of `Bound::<TextAreaHandle>::bind`.
             pub fn bind(mut self, r: super::super::Ref<TextAreaHandle>) -> Self {
                 self.b = self.b.on_handle(move |h| r.fill(h));
