@@ -123,13 +123,11 @@ pub(crate) fn combobox_menu_panel(rows: Vec<Element>, anchor: AnchorTarget) -> E
             match anchor.rect() {
                 Some(r) if r.width > 0.0 => {
                     let w = r.width;
-                    app.with_computed(
-                        format!("combobox-menu-minw-{}", w.round() as i32),
-                        move || StyleRules {
-                            min_width: Some(Tokenized::Literal(Length::Px(w))),
-                            ..Default::default()
-                        },
-                    )
+                    // Measured from the anchor — continuous, so inline.
+                    app.with_inline(StyleRules {
+                        min_width: Some(Tokenized::Literal(Length::Px(w))),
+                        ..Default::default()
+                    })
                 }
                 _ => app,
             }
@@ -151,13 +149,10 @@ fn capped_scroller(rows: Vec<Element>) -> Element {
     runtime_core::primitives::scroll_view::scroll_view(vec![body])
         .with_style(move || {
             let max_h = menu_max_height(viewport.get().height);
-            StyleApplication::new(menu_scroll_sheet()).with_computed(
-                format!("menu-scroll-maxh-{}", max_h.round() as i32),
-                move || StyleRules {
-                    max_height: Some(Tokenized::Literal(Length::Px(max_h))),
-                    ..Default::default()
-                },
-            )
+            StyleApplication::new(menu_scroll_sheet()).with_inline(StyleRules {
+                max_height: Some(Tokenized::Literal(Length::Px(max_h))),
+                ..Default::default()
+            })
         })
         .into_element()
 }

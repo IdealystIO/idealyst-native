@@ -206,7 +206,10 @@ pub fn IconButton(props: &IconButtonProps) -> Element {
             let sp = size_px.get();
             let layer_key =
                 format!("ib-layout-{}", sp.map(|p| (p * 100.0).round() as i32).unwrap_or(-1));
-            style = style.with_computed(layer_key, move || {
+            // `size_px` is an author-supplied pixel value — continuous, so
+            // inline. As a computed layer keyed `ib-layout-{px}` it minted an
+            // entry per distinct size AND disqualified the IconButton sheet.
+            style = style.with_inline({
                 let mut rules =
                     StyleRules { align_self: Some(AlignSelf::Center), ..Default::default() };
                 if let Some(px) = sp {

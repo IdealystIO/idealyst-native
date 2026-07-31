@@ -11,8 +11,9 @@
 //! ```
 //!
 //! A muted track with a tone-colored fill. The fill width tracks the
-//! value reactively (cached per whole-percent, so a smoothly-changing
-//! value mints at most 101 backend classes). Indeterminate mode pulses
+//! value reactively as an INLINE style, so a smoothly-changing value
+//! mints no classes at all and the fill sheet still premints
+//! (`StyleApplication::with_inline`). Indeterminate mode pulses
 //! the full-width fill's opacity via the animator — a uniform,
 //! measurement-free indicator that behaves identically on every
 //! backend (no sliding bar that would need per-backend width probing).
@@ -177,11 +178,13 @@ pub fn Progress(props: &ProgressProps) -> Element {
                     let pct = runtime_core::num::clamp_f32(value.get(), 0.0, 1.0) * 100.0;
                     StyleApplication::new(fill_sheet.clone())
                         .with("appearance", appearance_for())
-                        .with_computed(format!("progress-w-{}", pct.round() as i32), move || {
-                            StyleRules {
-                                width: Some(Tokenized::Literal(Length::pct(pct))),
-                                ..Default::default()
-                            }
+                        // Continuous: a computed layer keyed on the rounded
+                        // percent minted a cache entry and a CSS class per
+                        // whole percent. Inline keeps the fill sheet
+                        // premintable and puts only the width on the node.
+                        .with_inline(StyleRules {
+                            width: Some(Tokenized::Literal(Length::pct(pct))),
+                            ..Default::default()
                         })
                 })
                 .into_element()

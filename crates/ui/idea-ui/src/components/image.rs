@@ -92,7 +92,9 @@ pub fn Image(props: &ImageProps) -> Element {
                 h.map(|x| x as i32).unwrap_or(-1),
                 rounded as u8
             );
-            StyleApplication::new(ImageBox::sheet()).with_computed(key, move || {
+            // Author-supplied pixel dims are continuous, so the whole layer
+            // goes inline rather than minting a cache entry per (w, h).
+            StyleApplication::new(ImageBox::sheet()).with_inline({
                 let mut r = StyleRules::default();
                 if let Some(w) = w {
                     r.width = Some(Tokenized::Literal(Length::Px(w)));

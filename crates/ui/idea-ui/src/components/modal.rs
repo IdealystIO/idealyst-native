@@ -544,13 +544,11 @@ fn assemble_overlay(
             let insets = safe_area_insets().get();
             let avail_h = viewport_for_scroll.get().height - insets.top - insets.bottom;
             let max_h = effective_modal_max_height(avail_h);
-            StyleApplication::new(modal_scroll_sheet()).with_computed(
-                format!("modal-scroll-maxh-{}", max_h.round() as i32),
-                move || StyleRules {
-                    max_height: Some(Tokenized::Literal(Length::Px(max_h))),
-                    ..Default::default()
-                },
-            )
+            // Measured from the live viewport — continuous, so inline.
+            StyleApplication::new(modal_scroll_sheet()).with_inline(StyleRules {
+                max_height: Some(Tokenized::Literal(Length::Px(max_h))),
+                ..Default::default()
+            })
         })
         .into_element();
 
@@ -563,13 +561,8 @@ fn assemble_overlay(
             let insets = safe_area_insets().get();
             let effective = effective_modal_width(desired, vp.width - insets.left - insets.right);
             let max_h = effective_modal_max_height(vp.height - insets.top - insets.bottom);
-            let app = StyleApplication::new(ModalStyle::sheet()).with_computed(
-                format!(
-                    "modal-wh-{}-{}",
-                    effective.round() as i32,
-                    max_h.round() as i32
-                ),
-                move || StyleRules {
+            let app = StyleApplication::new(ModalStyle::sheet()).with_inline(
+                StyleRules {
                     width: Some(Tokenized::Literal(Length::Px(effective))),
                     max_height: Some(Tokenized::Literal(Length::Px(max_h))),
                     // Clip the scroll content to the frame's rounded corners.

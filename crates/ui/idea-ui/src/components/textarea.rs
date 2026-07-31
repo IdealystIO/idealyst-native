@@ -201,7 +201,8 @@ pub fn Textarea(props: &TextareaProps) -> Element {
                 .with("size", size_key)
                 .with("appearance", appearance)
                 .with("tone", tone_key)
-                .with_computed(dim_key, move || StyleRules {
+                // Author-supplied pixel dims — continuous, so inline.
+                .with_inline(StyleRules {
                     min_height: min_height.map(|h| Tokenized::Literal(Length::Px(h))),
                     width: width.map(|w| Tokenized::Literal(Length::Px(w))),
                     ..Default::default()

@@ -160,11 +160,11 @@ pub fn Slider(props: &SliderProps) -> Element {
                 let pct = norm_pos(value.get(), min, max) * 100.0;
                 StyleApplication::new(fill_sheet.clone())
                     .with("appearance", app())
-                    .with_computed(format!("slider-fill-{}", pct.round() as i32), move || {
-                        StyleRules {
-                            width: Some(Tokenized::Literal(Length::pct(pct))),
-                            ..Default::default()
-                        }
+                    // Continuous — one entry/class per whole percent as a
+                    // computed layer. Inline instead.
+                    .with_inline(StyleRules {
+                        width: Some(Tokenized::Literal(Length::pct(pct))),
+                        ..Default::default()
                     })
             })
             .into_element()
@@ -193,11 +193,12 @@ pub fn Slider(props: &SliderProps) -> Element {
                 StyleApplication::new(thumb_sheet.clone())
                     .with("appearance", app())
                     .with("size", size_key())
-                    .with_computed(format!("slider-thumb-{}", left.round() as i32), move || {
-                        StyleRules {
-                            left: Some(Tokenized::Literal(Length::Px(left))),
-                            ..Default::default()
-                        }
+                    // Continuous, and the worst of the set: keyed on the
+                    // thumb's pixel offset, a drag across a 300px track minted
+                    // ~300 cache entries and ~300 classes, none reusable.
+                    .with_inline(StyleRules {
+                        left: Some(Tokenized::Literal(Length::Px(left))),
+                        ..Default::default()
                     })
             })
             .into_element()
