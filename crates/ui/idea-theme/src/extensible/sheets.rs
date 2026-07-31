@@ -415,24 +415,7 @@ where
     // Mirrors Button/ControlRow: 1px border in the focus-ring color; the web
     // `:focus` rule kills the browser outline and macOS suppresses its native
     // ring, so this is the sole indicator.
-    sheet = sheet.variant("__state_focused", "on", |_vs| {
-        let theme_rc = active_theme();
-        let theme_ref = theme_rc
-            .downcast_ref::<IdeaThemeRef>()
-            .expect("Sheet closure: install_idea_theme(...) first");
-        let ring = theme_ref.colors().focus_ring.clone();
-        StyleRules {
-            border_top_width: Some(Tokenized::Literal(1.0)),
-            border_right_width: Some(Tokenized::Literal(1.0)),
-            border_bottom_width: Some(Tokenized::Literal(1.0)),
-            border_left_width: Some(Tokenized::Literal(1.0)),
-            border_top_color: Some(ring.clone()),
-            border_right_color: Some(ring.clone()),
-            border_bottom_color: Some(ring.clone()),
-            border_left_color: Some(ring),
-            ..Default::default()
-        }
-    });
+    sheet = sheet.variant("__state_focused", "on", |_vs| focus_ring_rules(1.0, "Sheet closure"));
     Rc::new(sheet)
 }
 
@@ -971,6 +954,35 @@ pub fn install_default_icon_button_sheet() {
 // `checked=off` arm reliably wins over the appearance fill, and the
 // `size` arm (dimensions only) wins over both.
 
+/// The themed focus ring as a uniform `width`px border in
+/// `colors().focus_ring`. Shared by every sheet that rides a *pressable*
+/// host (Switch track, Checkbox box, Radio ring, Tag/Chip): the state
+/// overlay resolves above the variant arms, so this wins over whatever
+/// border the `checked`/`appearance` arm set.
+///
+/// WHY a border and not an outline/box-shadow: `StyleRules` has no outline
+/// property, and a border lives inside the border-box, so swapping it on
+/// focus never changes the control's outer size (no layout nudge on
+/// focus/blur).
+fn focus_ring_rules(width: f32, whose: &'static str) -> StyleRules {
+    let theme_rc = active_theme();
+    let theme_ref = theme_rc
+        .downcast_ref::<IdeaThemeRef>()
+        .unwrap_or_else(|| panic!("{whose}: install_idea_theme(...) first"));
+    let ring = theme_ref.colors().focus_ring.clone();
+    StyleRules {
+        border_top_width: Some(Tokenized::Literal(width)),
+        border_right_width: Some(Tokenized::Literal(width)),
+        border_bottom_width: Some(Tokenized::Literal(width)),
+        border_left_width: Some(Tokenized::Literal(width)),
+        border_top_color: Some(ring.clone()),
+        border_right_color: Some(ring.clone()),
+        border_bottom_color: Some(ring.clone()),
+        border_left_color: Some(ring),
+        ..Default::default()
+    }
+}
+
 /// The neutral "unselected" look, shared by Checkbox box + Radio
 /// outer ring: transparent surface, a 1px theme border on every side,
 /// and muted foreground. Overrides whatever the `appearance` arm set.
@@ -1185,24 +1197,7 @@ impl SwitchSheetBuilder {
         // the pressable host; browser outline killed by the web `:focus` rule).
         // State overlays resolve above the `checked` arms, so this 2px border
         // wins over the OFF arm's zeroed borders.
-        sheet = sheet.variant("__state_focused", "on", |_vs| {
-            let theme_rc = active_theme();
-            let theme_ref = theme_rc
-                .downcast_ref::<IdeaThemeRef>()
-                .expect("Switch sheet: install_idea_theme(...) first");
-            let ring = theme_ref.colors().focus_ring.clone();
-            StyleRules {
-                border_top_width: Some(Tokenized::Literal(2.0)),
-                border_right_width: Some(Tokenized::Literal(2.0)),
-                border_bottom_width: Some(Tokenized::Literal(2.0)),
-                border_left_width: Some(Tokenized::Literal(2.0)),
-                border_top_color: Some(ring.clone()),
-                border_right_color: Some(ring.clone()),
-                border_bottom_color: Some(ring.clone()),
-                border_left_color: Some(ring),
-                ..Default::default()
-            }
-        });
+        sheet = sheet.variant("__state_focused", "on", |_vs| focus_ring_rules(2.0, "Switch sheet"));
 
         // Size — track width/height.
         for (key, w, h) in SWITCH_TRACK_DIMS {
@@ -1308,6 +1303,13 @@ impl CheckboxSheetBuilder {
         box_sheet = box_sheet
             .variant("checked", "off", |_vs| unchecked_surface_rules())
             .variant("checked", "on", |_vs| StyleRules::default());
+        // The BOX is the pressable host (the label row around it is a plain
+        // view), so the focus ring lands on the box alone — a Tab-focused
+        // Checkbox rings the square, not the whole label row. State overlays
+        // resolve above the `checked` arms, so this 2px border wins over the
+        // OFF arm's 1px theme border and the ON arm's fill.
+        box_sheet = box_sheet
+            .variant("__state_focused", "on", |_vs| focus_ring_rules(2.0, "Checkbox sheet"));
         for (key, dim, _glyph) in CHECKBOX_DIMS {
             box_sheet = box_sheet.variant("size", key, move |_vs| StyleRules {
                 width: Some(Tokenized::Literal(Length::Px(dim))),
@@ -1464,6 +1466,9 @@ impl RadioSheetBuilder {
         outer = outer
             .variant("checked", "off", |_vs| unchecked_surface_rules())
             .variant("checked", "on", |_vs| StyleRules::default());
+        // The RING is the pressable host (see the Checkbox box) — focus rings
+        // the indicator alone, never the whole label row.
+        outer = outer.variant("__state_focused", "on", |_vs| focus_ring_rules(2.0, "Radio sheet"));
         for (key, dim, _dot) in RADIO_DIMS {
             outer = outer.variant("size", key, move |_vs| StyleRules {
                 width: Some(Tokenized::Literal(Length::Px(dim))),
@@ -1864,6 +1869,24 @@ mod selection_sheet_tests {
         assert_eq!(appearance_arms(&s.glyph_sheet), BUILTIN_APPEARANCE_ARMS);
         assert!(has(&s.box_sheet, "checked", "off"));
         assert!(has(&s.box_sheet, "size", "lg"));
+    }
+
+    /// The focus ring belongs to the CONTROL, never to the label row: the
+    /// Checkbox box (and the Radio ring) is the pressable host, so its own
+    /// sheet carries the `__state_focused` overlay. Before this, the row
+    /// wrapping box + label drew the ring, which read as a stray border
+    /// around the label text.
+    #[test]
+    fn regression_focus_ring_lives_on_the_control_not_the_label_row() {
+        let cb = CheckboxSheetBuilder::new().build();
+        assert!(has(&cb.box_sheet, "__state_focused", "on"), "checkbox box rings itself");
+        assert!(
+            !has(&cb.glyph_sheet, "__state_focused", "on"),
+            "the checkmark is not a focus target"
+        );
+        let radio = RadioSheetBuilder::new().build();
+        assert!(has(&radio.outer_sheet, "__state_focused", "on"), "radio ring rings itself");
+        assert!(!has(&radio.dot_sheet, "__state_focused", "on"), "the dot is not a focus target");
     }
 
     #[test]

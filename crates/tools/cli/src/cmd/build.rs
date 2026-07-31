@@ -215,14 +215,42 @@ pub struct Args {
     #[arg(long)]
     pub old_core: bool,
 
-    /// REMOVED: per-primitive-family bundle gating no longer exists.
-    /// This named the `prim-*` families the web wrapper compiled in;
-    /// runtime v2 registers handlers into a `runtime_scene::Registry`
-    /// instead, so there is nothing to switch off. Still parsed so the
-    /// invocation fails with the migration pointer rather than a silent
-    /// no-op (an unexplained bundle-size regression for a size-tuned
-    /// pipeline) — see `crate::removed_flags` and
-    /// `docs/migrating-to-runtime-v2.md`.
+
+    /// Web + release only: additionally compile the runtime style engine OUT
+    /// of the bundle. Implies `--premint`.
+    ///
+    /// `--premint` mints build-time CSS but CANNOT remove the engine: the
+    /// `stylesheet!` builder's preminted fast path falls through to the live
+    /// engine for any reactive or override-carrying style, so the engine
+    /// stays linked even when every class preminted. This strips those
+    /// fallthrough paths.
+    ///
+    /// A promise the build cannot verify. Styles that still need the engine
+    /// — a reactive input, a runtime slot override, `signal_class`, a raw
+    /// `StyleRules` closure, or passing the raw sheet (`style =
+    /// card_style()`) instead of the builder (`style = Card()`) — panic at
+    /// mount with a message naming the shape. Use `--premint` alone if
+    /// unsure; it is always safe.
+    #[arg(long)]
+    pub premint_only: bool,
+
+    /// Web only: which builtin primitives the bundle registers. Omit to
+    /// register every builtin (the default, and what every release before
+    /// this did).
+    ///
+    /// Accepts a preset — `core` (`view` + `text`: just the framework, with
+    /// nothing composable on top) or `all` — or an explicit list:
+    /// `--primitives view,text,button,text_input`.
+    ///
+    /// Unlisted primitives are never named at the boot seam, so their
+    /// handlers, the backend code behind them, and the web-sys imports and
+    /// JS glue they alone reached are all dropped by LLVM. Measured on a
+    /// `view`+`text` app: 195,255 → 126,813 bytes brotli (-35%) and 236 →
+    /// 163 wasm imports.
+    ///
+    /// Rendering a primitive the set omits panics at mount — deliberately
+    /// loud, the same failure a missing third-party payload gets. Note a
+    /// component library counts: `idea_ui::Button` needs `button`.
     #[arg(long, value_delimiter = ',')]
     pub primitives: Option<Vec<String>>,
 }
@@ -236,10 +264,6 @@ pub fn run(args: Args) -> Result<()> {
     //
     // One core: `--new-core` is a no-op, `--old-core` is a hard error.
     crate::core_mode::validate_flags(args.new_core, args.old_core)?;
-    // `--primitives` is likewise a hard error — the size lever it drove
-    // does not exist on runtime v2, and ignoring it silently would build
-    // the all-families bundle a size-tuned pipeline wrote it to avoid.
-    crate::removed_flags::validate_build_flags(args.primitives.as_deref())?;
 
     let dir = std::fs::canonicalize(&args.dir)
         .with_context(|| format!("cannot resolve project dir {}", args.dir.display()))?;
@@ -435,6 +459,8 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
     let artifact = build_web::build(
         dir,
         build_web::BuildOptions {
+            primitives: args.primitives.clone(),
+            premint_only: args.premint_only,
             // `--strip-panics` is a release-only transform, so it implies
             // `--release` (panic_immediate_abort in a debug build would
             // just slow the build for no benefit).
@@ -467,7 +493,10 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
                 args.data_prune,
                 args.no_data_prune,
             ),
-            premint: args.premint,
+            // `--premint-only` strips the engine, so it MUST also premint —
+            // otherwise the bundle has neither build-time classes nor a
+            // runtime to mint them, and every styled node panics.
+            premint: args.premint || args.premint_only,
         },
     )?;
     let bundle = artifact

@@ -41,7 +41,9 @@ pub mod capabilities;
 pub mod source;
 pub mod web_html;
 
-pub use source::{FrameworkSource, GitDefaults, GitRef, require_workspace_root};
+pub use source::{
+    remap_path_flags, FrameworkSource, GitDefaults, GitRef, require_workspace_root,
+};
 pub use web_html::{font_preload_tags, inject_into_head};
 
 #[derive(Clone, Debug)]

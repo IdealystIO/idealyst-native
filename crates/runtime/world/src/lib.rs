@@ -396,6 +396,7 @@ impl World {
                 free_effects: RefCell::new(Vec::new()),
                 staged: RefCell::new(Vec::new()),
                 context: RefCell::new(FxHashMap::default()),
+                next_ctx_id: Cell::new(0),
                 flushing: Cell::new(false),
             });
             t.worlds.insert(id, Rc::clone(&arena));
@@ -457,12 +458,22 @@ impl World {
 
     /// Store a value in this world's context, keyed by its type. Use newtype
     /// wrappers to distinguish values of the same underlying type.
+    ///
+    /// Always **world-lifetime**: this is the outside-in API, called on a
+    /// `World` value rather than from inside a mount, so there is no
+    /// ambient scope to own the provision. Use the free
+    /// [`provide`] from inside components when the entry should die with
+    /// the providing scope.
     pub fn provide<T: Clone + 'static>(&self, value: T) {
-        self.core
-            .arena
+        let arena = &self.core.arena;
+        let id = arena.next_ctx_id.get();
+        arena.next_ctx_id.set(id.wrapping_add(1));
+        arena
             .context
             .borrow_mut()
-            .insert(TypeId::of::<T>(), Box::new(value));
+            .entry(TypeId::of::<T>())
+            .or_default()
+            .push(CtxEntry { id, value: Box::new(value) });
     }
 
     /// Fetch a value from this world's context by type. Untracked — this is
@@ -473,7 +484,8 @@ impl World {
             .context
             .borrow()
             .get(&TypeId::of::<T>())
-            .and_then(|boxed| boxed.downcast_ref::<T>())
+            .and_then(|stack| stack.last())
+            .and_then(|entry| entry.value.downcast_ref::<T>())
             .cloned()
     }
 
@@ -577,9 +589,28 @@ struct WorldArena {
     /// Signal slots with a staged `next` (or a forced notify), awaiting
     /// commit. Deduped via `SignalSlot::queued`. Empty at rest.
     staged: RefCell<Vec<u32>>,
-    /// World-level context: shared values keyed by type.
-    context: RefCell<FxHashMap<TypeId, Box<dyn Any>>>,
+    /// World context: for each type, the STACK of live provisions, newest
+    /// last. `inject` reads the top. A stack rather than a single slot
+    /// because provisions are owned (see [`CtxEntry`]): retracting a
+    /// shadowed entry must leave its shadower in place, and retracting a
+    /// shadower must re-expose what it shadowed.
+    context: RefCell<FxHashMap<TypeId, Vec<CtxEntry>>>,
+    /// Hands out [`CtxEntry::id`]. Monotonic per world; never reused, so an
+    /// id identifies one provision for the world's whole life.
+    next_ctx_id: Cell<u64>,
     flushing: Cell<bool>,
+}
+
+/// One `provide`d value.
+///
+/// `id` is what an owning scope retracts on teardown. It has to be an id
+/// and not "the top of the stack": between a provision and its retraction,
+/// other scopes may have provided the same type (shadowing) or the same
+/// scope may have re-provided it, and a drop must remove exactly the entry
+/// it created — never a stranger's.
+struct CtxEntry {
+    id: u64,
+    value: Box<dyn Any>,
 }
 
 struct SignalSlot {
@@ -887,6 +918,64 @@ impl_handle_meta!(ReadSignal<T>);
 impl_handle_meta!(WriteSignal<T>);
 impl_handle_meta!(Effect);
 
+/// True when `(world, slot, gen)` still names a live signal. Never panics
+/// and never subscribes — the non-committal form of the check
+/// `with_signal_data` performs before it aborts.
+fn signal_is_alive(world: WorldId, slot: u32, gen: u32) -> bool {
+    // A slot whose `data` is temporarily `None` is mid-operation, not dead
+    // (see `with_signal_data`), so the generation alone is the liveness
+    // test — matching exactly what `stale_signal_panic` keys on.
+    arena_of(world).is_some_and(|arena| {
+        arena.signals.borrow().get(slot as usize).is_some_and(|s| s.gen == gen)
+    })
+}
+
+/// True when `(world, slot, gen)` still names a live effect.
+fn effect_is_alive(world: WorldId, slot: u32, gen: u32) -> bool {
+    arena_of(world).is_some_and(|arena| {
+        arena.effects.borrow().get(slot as usize).is_some_and(|e| e.gen == gen)
+    })
+}
+
+macro_rules! impl_signal_liveness {
+    ($name:ident) => {
+        impl<T> $name<T> {
+            /// Is this handle still usable — its world alive and its slot
+            /// neither freed nor recycled?
+            ///
+            /// Handles are `Copy` and carry no ownership, so one can
+            /// outlive the [`Owned`] scope that collected its signal; a
+            /// *read* through such a handle aborts with
+            /// `stale-signal-handle` rather than fabricating a value. This
+            /// is the probe that lets a holder check first instead of
+            /// crashing, for the cases where the handle legitimately
+            /// arrives from somewhere with a shorter life than the reader
+            /// — most notably a value pulled out of [`inject`].
+            ///
+            /// Treat it as a guard, not a license: `true` means the slot is
+            /// live *now*, and the answer is only stable while nothing
+            /// drops an `Owned` in between. Code whose correctness depends
+            /// on the signal existing wants a real ownership relationship,
+            /// not a probe.
+            pub fn is_alive(&self) -> bool {
+                signal_is_alive(self.world, self.slot, self.gen)
+            }
+        }
+    };
+}
+
+impl_signal_liveness!(Signal);
+impl_signal_liveness!(ReadSignal);
+impl_signal_liveness!(WriteSignal);
+
+impl Effect {
+    /// Is this handle still usable — its world alive and its effect slot
+    /// neither freed nor recycled? See [`Signal::is_alive`].
+    pub fn is_alive(&self) -> bool {
+        effect_is_alive(self.world, self.slot, self.gen)
+    }
+}
+
 // ============================================================================
 // Signal operations. All routing goes handle → registry → the signal's OWN
 // arena. The storage box is temporarily moved OUT of the arena for any
@@ -922,27 +1011,44 @@ fn with_signal_data<T: PartialEq + 'static, R>(
     gen: u32,
     f: impl FnOnce(&mut SignalData<T>) -> R,
 ) -> R {
-    let mut boxed: Box<dyn AnySignal> = {
+    // Decide under the borrow, panic OUTSIDE it. Both diagnostics below are
+    // fatal, and on a `panic = "abort"` target (wasm) there is no unwinding
+    // to run the `RefCell` guard's `Drop` — so panicking with `signals`
+    // still borrowed leaves the borrow flag set forever. Every later signal
+    // operation in the module then dies with "already borrowed" from
+    // whatever event or promise happens to touch the world next, burying
+    // the one diagnostic that actually described the bug under a cascade of
+    // ones that don't. Formatting the message needs the arena too, so the
+    // panic has to happen after the guard is dropped, not merely on a
+    // different line.
+    enum Taken {
+        Got(Box<dyn AnySignal>),
+        Stale,
+        Reentrant,
+    }
+    let taken = {
         let mut signals = arena.signals.borrow_mut();
-        let Some(s) = signals.get_mut(slot as usize) else {
-            stale_signal_panic(world, slot)
-        };
-        if s.gen != gen {
-            stale_signal_panic(world, slot);
+        match signals.get_mut(slot as usize) {
+            Some(s) if s.gen == gen => match s.data.take() {
+                Some(b) => Taken::Got(b),
+                None => Taken::Reentrant,
+            },
+            _ => Taken::Stale,
         }
-        match s.data.take() {
-            Some(b) => b,
-            None => diag_panic!(
-                "reentrant-signal-read",
-                "signal (world {}, slot {}) accessed re-entrantly while mid-operation: its \
-                 storage is moved out of the arena for the duration of its own \
-                 get/with/set/update, so an access reaching it from inside that window (e.g. \
-                 reading a signal from inside its own update() closure) finds the slot empty. \
-                 Read the value out first, then operate.",
-                world,
-                slot
-            ),
-        }
+    };
+    let mut boxed: Box<dyn AnySignal> = match taken {
+        Taken::Got(b) => b,
+        Taken::Stale => stale_signal_panic(world, slot),
+        Taken::Reentrant => diag_panic!(
+            "reentrant-signal-read",
+            "signal (world {}, slot {}) accessed re-entrantly while mid-operation: its \
+             storage is moved out of the arena for the duration of its own \
+             get/with/set/update, so an access reaching it from inside that window (e.g. \
+             reading a signal from inside its own update() closure) finds the slot empty. \
+             Read the value out first, then operate.",
+            world,
+            slot
+        ),
     };
     let result = f(boxed
         .as_any_mut()
@@ -1449,16 +1555,21 @@ pub fn untrack<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// Run `f` with the ownership-collector stack SUSPENDED, so every signal /
-/// effect / memo created inside is **world-root-owned** (freed only when its
-/// world drops) instead of being collected into whatever `collect_owned`
-/// scope happens to be active.
+/// effect / memo created inside — and every [`provide`]d context entry —
+/// is **world-root-owned** (freed only when its world drops) instead of
+/// being collected into whatever `collect_owned` scope happens to be
+/// active.
 ///
 /// The escape hatch for **world-lifetime services created lazily during a
 /// mount**: a per-world theme-version signal or cohort-driver effect is
 /// first needed inside some subtree's realization (a `collect_owned`
 /// scope), but must outlive that subtree — without suspension it would be
 /// collected into the subtree's `Owned` and freed on that subtree's
-/// unmount, leaving the service's `Copy` handles dangling. This is the
+/// unmount, leaving the service's `Copy` handles dangling. A service that
+/// publishes itself with `provide` must wrap the `provide` too, not just
+/// the signal: a world-root signal announced through a scope-owned entry
+/// stops being *findable* on that scope's unmount, and the service is
+/// silently rebuilt. This is the
 /// direct analogue of the old core's `reactive::unscope`, added for the
 /// exact same regression class (runtime-core `style.rs`'s token-registry
 /// "signal used after its scope was dropped" incident; the new-core style
@@ -1552,22 +1663,91 @@ impl<F: FnOnce() + 'static> IntoCleanup for Option<F> {
     }
 }
 
-/// Store a value in the ambient world's context. What components call.
-pub fn provide<T: Clone + 'static>(value: T) {
+/// Push `value` into the ambient world's context and return its entry id,
+/// which is what an owning scope later retracts.
+fn push_context<T: Clone + 'static>(value: T) -> (WorldId, TypeId, u64) {
     with_ambient(|arena| {
-        arena.context.borrow_mut().insert(TypeId::of::<T>(), Box::new(value));
+        let key = TypeId::of::<T>();
+        let id = arena.next_ctx_id.get();
+        arena.next_ctx_id.set(id.wrapping_add(1));
+        arena
+            .context
+            .borrow_mut()
+            .entry(key)
+            .or_default()
+            .push(CtxEntry { id, value: Box::new(value) });
+        (arena.id, key, id)
     })
+}
+
+/// Remove the context entry `id` (a no-op if already gone — double
+/// retraction is safe). The boxed value is dropped OUTSIDE the arena
+/// borrow: it may hold signal handles whose `Drop` re-enters the world,
+/// the same discipline `free_signal` follows.
+fn retract_context(arena: &WorldArena, key: TypeId, id: u64) {
+    let removed = {
+        let mut ctx = arena.context.borrow_mut();
+        let Some(stack) = ctx.get_mut(&key) else { return };
+        let Some(pos) = stack.iter().position(|e| e.id == id) else { return };
+        let entry = stack.remove(pos);
+        if stack.is_empty() {
+            ctx.remove(&key);
+        }
+        entry.value
+    };
+    drop(removed);
+}
+
+/// Store a value in the ambient world's context. What components call.
+///
+/// **The provision is owned by the ambient ownership scope**, exactly like
+/// a `signal()` or `effect()` created at the same point: when the
+/// [`collect_owned`] scope that ran this `provide` drops, the entry is
+/// retracted and whatever it shadowed becomes visible again. Called with
+/// no collector active it is world-root-owned, living until the world
+/// drops.
+///
+/// That ownership is the whole point. A `provide`d value routinely
+/// *contains* scope-owned handles (a navigator publishing its
+/// `active_route`), and a `Copy` handle carries no liveness of its own. An
+/// unowned entry therefore outlives its contents: the providing scope
+/// drops, its signal slots are freed, and the next `inject` hands out a
+/// handle onto a freed slot — whose first read aborts with
+/// `stale-signal-handle`. Tying the entry to the same scope as the handles
+/// inside it makes that shape unrepresentable.
+///
+/// For a **world-lifetime service** created lazily during a mount (a
+/// per-world theme context, a notifier registry) wrap the call in
+/// [`unscoped`] — `unscoped(|| provide(ctx))` — which is the same escape
+/// hatch, and for the same reason, as `unscoped(|| signal(0))`.
+///
+/// For a provision that should live only for a **bounded region** rather
+/// than for the ambient scope — a navigator screen publishing its
+/// `ScreenNav` from a driver effect, where there is no ambient collector
+/// at all — wrap the call in its own [`collect_owned`] and hold the
+/// returned `Owned` for exactly as long as the entry should be visible.
+/// Prefer that to the `let prev = inject(); provide(x); …; provide(prev)`
+/// idiom: restoring by re-providing publishes a *fresh, unowned* copy of
+/// `prev`, so a value whose own scope died in the meantime is reinstated
+/// as a live-looking entry full of freed handles.
+pub fn provide<T: Clone + 'static>(value: T) {
+    let (world, key, id) = push_context(value);
+    register_owned(OwnedItem::Context { world, key, id });
 }
 
 /// Fetch a value from the ambient world's context. What components call.
 /// (Framework naming: `provide`/`inject`.)
+///
+/// Returns the most recent live provision of `T` — see [`provide`] for
+/// what keeps one alive.
 pub fn inject<T: Clone + 'static>() -> Option<T> {
     with_ambient(|arena| {
         arena
             .context
             .borrow()
             .get(&TypeId::of::<T>())
-            .and_then(|boxed| boxed.downcast_ref::<T>())
+            .and_then(|stack| stack.last())
+            .and_then(|entry| entry.value.downcast_ref::<T>())
             .cloned()
     })
 }
@@ -1727,6 +1907,9 @@ fn effect_is_live(arena: &WorldArena, data: &EffectData) -> bool {
 enum OwnedItem {
     Signal { world: WorldId, slot: u32, gen: u32 },
     Effect { world: WorldId, slot: u32, gen: u32 },
+    /// A `provide`d context entry (see [`provide`]). Retracted on drop so
+    /// a provision cannot outlive the scope-owned handles it carries.
+    Context { world: WorldId, key: TypeId, id: u64 },
 }
 
 /// The owner of a batch of signal/effect slots (possibly spanning several
@@ -1743,7 +1926,7 @@ pub struct Owned {
 }
 
 impl Owned {
-    /// Number of collected slots (signals + effects).
+    /// Number of collected items (signals + effects + context provisions).
     pub fn len(&self) -> usize {
         self.items.len()
     }
@@ -1779,8 +1962,20 @@ impl std::fmt::Debug for Owned {
 impl Drop for Owned {
     fn drop(&mut self) {
         let items = std::mem::take(&mut self.items);
-        // Effects first, in creation order: every cleanup can still read the
-        // scope's sibling signals (freed only in the second pass).
+        // Context entries first, BEFORE any slot is freed: an effect
+        // cleanup (next pass) that injects must not be handed a provision
+        // whose signals this same drop is about to free. Retracted first,
+        // it gets `None` — or the outer scope's still-live provision — and
+        // can act on that. Retracted last, it would read freed slots.
+        for item in &items {
+            if let OwnedItem::Context { world, key, id } = *item {
+                if let Some(arena) = arena_of(world) {
+                    retract_context(&arena, key, id);
+                }
+            }
+        }
+        // Effects next, in creation order: every cleanup can still read the
+        // scope's sibling signals (freed only in the final pass).
         for item in &items {
             if let OwnedItem::Effect { world, slot, gen } = *item {
                 if let Some(arena) = arena_of(world) {

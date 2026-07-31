@@ -192,3 +192,150 @@ fn regression_builtin_registration_is_boot_only_and_declares_no_deferred_kinds()
     assert!(previous.is_none(), "first registration returns no predecessor");
     assert!(registry.has::<UnregisteredPayload>());
 }
+
+// ===========================================================================
+// BuiltinSet — per-primitive, opt-in bundle seam
+// ===========================================================================
+
+use runtime_vocabulary::{
+    builtin_set, register_builtins_with, AllBuiltins, BuiltinSet, CoreOnly,
+};
+
+/// `AllBuiltins` must be exactly what `register_builtins` has always
+/// installed. If these diverge, every existing backend boot silently changes
+/// behavior, because `register_builtins` IS
+/// `register_builtins_with::<_, AllBuiltins>`.
+///
+/// This also guards the `builtin_set!` primitive list: `AllBuiltins` is
+/// declared through the macro, so a primitive added to `BuiltinSet` but left
+/// out of that list would show up here as a count mismatch rather than
+/// silently never registering.
+#[test]
+fn all_builtins_is_identical_to_the_historical_set() {
+    let mut selected: Registry<host_mock::HostMock> = Registry::new();
+    register_builtins_with::<host_mock::HostMock, AllBuiltins>(&mut selected);
+
+    let legacy = builtins();
+    assert_eq!(selected.handler_count(), legacy.handler_count());
+    assert_eq!(selected.many_handler_count(), legacy.many_handler_count());
+    assert_eq!(selected.handler_count(), EXPECTED_SINGLE_HANDLERS);
+    assert_eq!(selected.many_handler_count(), EXPECTED_MANY_HANDLERS);
+}
+
+/// `CoreOnly` is the "just the core framework" floor: the reactive kernel,
+/// scene model, style engine and backend, with `view` + `text` and nothing
+/// else composable on top.
+#[test]
+fn core_only_registers_view_and_text_and_nothing_else() {
+    let mut registry: Registry<host_mock::HostMock> = Registry::new();
+    register_builtins_with::<host_mock::HostMock, CoreOnly>(&mut registry);
+
+    assert!(registry.has::<PrimCell<ViewPrim>>());
+    assert!(registry.has::<PrimCell<TextPrim>>());
+    assert_eq!(registry.handler_count(), 2, "view + text only");
+    assert_eq!(
+        registry.many_handler_count(),
+        0,
+        "`repeat` is opt-in too — a core-only app has no `for`"
+    );
+
+    // Nothing became late-bound: opting down is still boot-only registration.
+    assert_eq!(registry.deferred_kind_count(), 0);
+    assert_eq!(registry.late_handler_count(), 0);
+}
+
+/// A set declares what it KEEPS. Everything unlisted must be absent — that
+/// absence is what lets LLVM drop the handler and everything it reaches.
+#[test]
+fn builtin_set_keeps_exactly_what_it_lists() {
+    builtin_set!(Landing: view, text, image, link);
+
+    let mut registry: Registry<host_mock::HostMock> = Registry::new();
+    register_builtins_with::<host_mock::HostMock, Landing>(&mut registry);
+
+    assert!(registry.has::<PrimCell<ViewPrim>>());
+    assert!(registry.has::<PrimCell<TextPrim>>());
+    assert!(registry.has::<PrimCell<ImagePrim>>());
+    assert!(registry.has::<PrimCell<LinkPrim>>());
+    assert_eq!(registry.handler_count(), 4);
+
+    // The big-ticket drops the seam exists for.
+    assert!(!registry.has::<PrimCell<StackNavigatorPrim>>());
+    assert!(!registry.has::<PrimCell<SwapNavigatorPrim>>());
+    assert!(!registry.has::<PrimCell<NavigatorOutletPrim>>());
+    assert!(!registry.has::<PrimCell<VirtualizerPrim>>());
+    assert!(!registry.has::<PrimCell<GraphicsPrim>>());
+    assert!(!registry.has::<PrimCell<PortalPrim>>());
+    assert!(!registry.has::<PrimCell<ButtonPrim>>());
+    assert_eq!(registry.many_handler_count(), 0);
+}
+
+/// Dropping only the navigator — the single largest entry (~52 KB raw /
+/// ~13 KB brotli on web) and the motivating case for this seam.
+#[test]
+fn dropping_nav_removes_exactly_the_three_navigator_prims() {
+    builtin_set!(NoNav:
+        view, text, button, pressable, image, icon, link, toggle, slider,
+        activity_indicator, text_input, text_area, scroll_view, repeat, lazy,
+        virtualizer, graphics, portal, presence,
+    );
+
+    let mut registry: Registry<host_mock::HostMock> = Registry::new();
+    register_builtins_with::<host_mock::HostMock, NoNav>(&mut registry);
+
+    assert_eq!(
+        registry.handler_count(),
+        EXPECTED_SINGLE_HANDLERS - 3,
+        "swap + stack + outlet, and nothing else"
+    );
+    assert!(!registry.has::<PrimCell<StackNavigatorPrim>>());
+    assert!(!registry.has::<PrimCell<SwapNavigatorPrim>>());
+    assert!(!registry.has::<PrimCell<NavigatorOutletPrim>>());
+
+    // Everything else survives, including the multi-node `repeat`.
+    assert!(registry.has::<PrimCell<ViewPrim>>());
+    assert!(registry.has::<PrimCell<PortalPrim>>());
+    assert!(registry.has::<PrimCell<VirtualizerPrim>>());
+    assert_eq!(registry.many_handler_count(), EXPECTED_MANY_HANDLERS);
+}
+
+/// `nav_services` must ride the `nav` selection.
+///
+/// The web backend's URL-sync install reaches
+/// `runtime_shared::primitives::navigator`, so calling it unconditionally
+/// re-anchored navigator code in bundles that had dropped the nav prims —
+/// `NavigatorControl::dispatch` and its drop glue survived a
+/// `--primitives core` build until this hook existed (measured: 359,684 →
+/// 351,538 bytes of wasm once gated).
+///
+/// A `bool` would not do: the backend must never *name* the install for a
+/// set without nav, or the collector emits it regardless. Hence a closure
+/// the default simply never calls.
+#[test]
+fn nav_services_run_only_for_sets_that_keep_nav() {
+    use std::cell::Cell;
+
+    // A set WITH nav runs the backend's installer.
+    let ran = Cell::new(false);
+    AllBuiltins::nav_services(|| ran.set(true));
+    assert!(
+        ran.get(),
+        "AllBuiltins keeps `nav`, so navigator backend services must install"
+    );
+
+    // A set WITHOUT nav never invokes it — which is what lets the linker
+    // drop the closure body and everything it names.
+    let ran = Cell::new(false);
+    CoreOnly::nav_services(|| ran.set(true));
+    assert!(
+        !ran.get(),
+        "CoreOnly drops `nav`, so its backend services must not install — \
+         calling them would re-anchor navigator code the set excluded"
+    );
+
+    // Explicitly selecting nav opts back in.
+    builtin_set!(WithNav: view, text, nav);
+    let ran = Cell::new(false);
+    WithNav::nav_services(|| ran.set(true));
+    assert!(ran.get(), "an explicit `nav` keep must install its services");
+}

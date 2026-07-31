@@ -21,6 +21,7 @@
 use super::*;
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 fn counter() -> Rc<Cell<usize>> {
     Rc::new(Cell::new(0))
@@ -425,6 +426,256 @@ fn context_is_typed_and_per_world() {
     assert_eq!(w1.inject::<Theme>(), Some(Theme("dark")));
     w2.provide(Theme("light"));
     assert_eq!(w2.enter(inject::<Theme>), Some(Theme("light")));
+}
+
+// ============================================================================
+// Context ownership — the `mount_portal` stale-`ScreenNav` class.
+//
+// A `provide`d value routinely CONTAINS scope-owned `Copy` handles (a
+// navigator publishing its `active_route`). While context entries were an
+// unowned world-level `TypeId -> value` map, the providing scope's drop
+// freed those slots and left the entry behind, so the next `inject` handed
+// out handles onto freed slots and the first read aborted with
+// `stale-signal-handle` — reachable on ordinary navigation, unrecoverable.
+// Entries are now owned exactly like the signals inside them.
+// ============================================================================
+
+#[derive(Clone)]
+struct NavCtx(ReadSignal<u32>);
+
+#[test]
+fn regression_context_entry_is_retracted_when_its_scope_drops() {
+    let w = World::new();
+    let (route, owned) = w.enter(|| {
+        collect_owned(|| {
+            let route = signal(0u32);
+            provide(NavCtx(route.read_only()));
+            route
+        })
+    });
+    assert!(w.enter(inject::<NavCtx>).is_some(), "visible while its scope lives");
+
+    drop(owned);
+
+    // The signal died with the scope; the entry must not have survived it.
+    assert!(!route.is_alive(), "the scope's drop freed the signal slot");
+    assert!(
+        w.enter(inject::<NavCtx>).is_none(),
+        "a provision must not outlive the scope that made it — injecting one \
+         hands out handles onto freed slots, and reading those aborts"
+    );
+}
+
+#[test]
+fn regression_injected_handle_from_a_dead_scope_is_never_live() {
+    // The end-to-end consumer shape (`mount_portal`): inject, then read.
+    // Both halves of the fix are asserted, because either alone would
+    // carry this test: the provider stops publishing the entry, AND the
+    // consumer's `is_alive` probe would have caught it if it hadn't.
+    let w = World::new();
+    let owned = w.enter(|| {
+        let ((), owned) = collect_owned(|| {
+            let route = signal(7u32);
+            provide(NavCtx(route.read_only()));
+        });
+        owned
+    });
+    drop(owned);
+
+    let injected = w.enter(inject::<NavCtx>);
+    assert!(injected.is_none(), "provider side: the dead scope's entry is gone");
+    assert!(
+        injected.is_none_or(|c| !c.0.is_alive()),
+        "consumer side: anything still injectable must fail the liveness probe \
+         rather than reach `.get()` — that read is what aborts the app"
+    );
+}
+
+#[test]
+fn retracting_a_provision_re_exposes_the_one_it_shadowed() {
+    // Nested navigators: an inner screen shadows the outer's ScreenNav and
+    // must hand it back on teardown — what the old
+    // `let prev = inject(); …; provide(prev)` idiom approximated by
+    // re-publishing a possibly-dead snapshot.
+    let w = World::new();
+    let outer = w.enter(|| {
+        let ((), outer) = collect_owned(|| provide(Theme("outer")));
+        outer
+    });
+    let inner = w.enter(|| {
+        let ((), inner) = collect_owned(|| provide(Theme("inner")));
+        inner
+    });
+    assert_eq!(w.enter(inject::<Theme>), Some(Theme("inner")), "innermost wins");
+    drop(inner);
+    assert_eq!(w.enter(inject::<Theme>), Some(Theme("outer")), "shadowed entry returns");
+    drop(outer);
+    assert_eq!(w.enter(inject::<Theme>), None);
+}
+
+#[test]
+fn retracting_a_shadowed_provision_leaves_its_shadower_in_place() {
+    // Teardown order is not stack order — an outer scope can die first
+    // (an auth gate swapping out a navigator whose screen is still
+    // mounted). Retraction is by entry identity, not by popping.
+    let w = World::new();
+    let outer = w.enter(|| {
+        let ((), o) = collect_owned(|| provide(Theme("outer")));
+        o
+    });
+    let inner = w.enter(|| {
+        let ((), i) = collect_owned(|| provide(Theme("inner")));
+        i
+    });
+    drop(outer);
+    assert_eq!(w.enter(inject::<Theme>), Some(Theme("inner")));
+    drop(inner);
+    assert_eq!(w.enter(inject::<Theme>), None);
+}
+
+#[test]
+fn unscoped_provide_is_world_lifetime() {
+    // The escape hatch `theme_ctx` / `viewport_ctx` / the signal-notifier
+    // registry rely on: a world-lifetime service first touched inside some
+    // subtree's mount must not be retracted when that subtree unmounts.
+    let w = World::new();
+    let owned = w.enter(|| {
+        let ((), owned) = collect_owned(|| {
+            let version = unscoped(|| signal(0u32));
+            unscoped(|| provide(NavCtx(version.read_only())));
+        });
+        owned
+    });
+    drop(owned);
+    let ctx = w.enter(inject::<NavCtx>);
+    assert!(ctx.is_some(), "an unscoped provision survives the scope that made it");
+    assert_eq!(w.enter(|| ctx.unwrap().0.get()), 0, "and its signal is still live");
+}
+
+#[test]
+fn a_provision_can_be_bounded_to_a_region_with_its_own_collector() {
+    // The build-window shape, for a `provide` with no ambient collector
+    // of its own to belong to (a navigator screen realized from a driver
+    // effect). This is what replaces the old
+    // `let prev = inject(); provide(x); …; provide(prev)` idiom.
+    let w = World::new();
+    w.enter(|| {
+        let ((), region) = collect_owned(|| provide(Theme("build-window")));
+        assert_eq!(inject::<Theme>(), Some(Theme("build-window")));
+        drop(region);
+        assert_eq!(inject::<Theme>(), None, "the region bounds the provision");
+    });
+}
+
+// ============================================================================
+// Liveness probes
+// ============================================================================
+
+#[test]
+fn is_alive_tracks_scope_teardown_and_world_death() {
+    let w = World::new();
+    let (s, owned) = w.enter(|| collect_owned(|| signal(1u32)));
+    assert!(s.is_alive());
+    assert!(s.read_only().is_alive() && s.write_only().is_alive());
+    drop(owned);
+    assert!(!s.is_alive(), "a freed slot is dead through every handle half");
+    assert!(!s.read_only().is_alive() && !s.write_only().is_alive());
+
+    let w2 = World::new();
+    let s2 = w2.enter(|| signal(1u32));
+    assert!(s2.is_alive());
+    drop(w2);
+    assert!(!s2.is_alive(), "a handle into a dropped world is dead, not a panic");
+}
+
+#[test]
+fn is_alive_reports_a_recycled_slot_as_dead() {
+    // The generation check, not just bounds: slot indices are recycled, so
+    // a stale handle can point at a LIVE slot owned by someone else.
+    let w = World::new();
+    let (first, owned) = w.enter(|| collect_owned(|| signal(1u32)));
+    drop(owned);
+    let _second = w.enter(|| signal(2u32)); // reuses the freed index
+    assert!(!first.is_alive(), "same slot, new generation — the old handle is dead");
+}
+
+#[test]
+fn is_alive_does_not_subscribe_the_running_effect() {
+    // A probe must not create a dependency, or a portal's guard would
+    // resurrect the very re-run it is trying to avoid.
+    let w = World::new();
+    let s = w.enter(|| signal(0u32));
+    let runs = Rc::new(Cell::new(0));
+    let r = runs.clone();
+    let _e = w.enter(|| {
+        collect_owned(|| {
+            effect(move || {
+                r.set(r.get() + 1);
+                let _ = s.is_alive();
+            })
+        })
+    });
+    assert_eq!(runs.get(), 1);
+    s.set(1);
+    w.flush();
+    assert_eq!(runs.get(), 1, "is_alive is not a tracked read");
+}
+
+// ============================================================================
+// The stale-handle panic must not poison the arena.
+//
+// `with_signal_data` used to call `stale_signal_panic` while still holding
+// `arena.signals.borrow_mut()`. On wasm (`panic = "abort"`) there is no
+// unwinding to run the guard's `Drop`, so the borrow flag stayed set and
+// every later signal operation died with "already borrowed" from unrelated
+// entry points — burying the one diagnostic that described the bug. Native
+// tests unwind, which lets us assert the borrow is released.
+// ============================================================================
+
+#[test]
+fn regression_stale_handle_panic_releases_the_arena_borrow_before_panicking() {
+    // Asserting from a PANIC HOOK, not after `catch_unwind`, is the whole
+    // point: hooks run while the panic is being raised and before any
+    // unwinding. Checking afterwards would only prove that unwinding ran
+    // the `BorrowMut` guard's `Drop` — which is exactly what the crashing
+    // target (wasm, `panic = "abort"`) never does, so an after-the-fact
+    // assertion passes against the buggy code and proves nothing.
+    let w = World::new();
+    let arena = Rc::clone(&w.core.arena);
+    let (dead, owned) = w.enter(|| collect_owned(|| signal(1u32)));
+    let live = w.enter(|| signal(100u32));
+    drop(owned);
+
+    // A panic hook must be `Send + Sync`, and worlds are thread-local, so
+    // the hook carries no captures: it re-resolves the arena through the
+    // crate's own TLS lookup, which answers `None` on any other thread —
+    // making this safe against the suite's concurrently-panicking tests.
+    thread_local! {
+        static BORROW_WAS_FREE: Cell<Option<bool>> = const { Cell::new(None) };
+    }
+    static PROBE_WORLD: AtomicU32 = AtomicU32::new(0);
+    PROBE_WORLD.store(arena.id, Ordering::SeqCst);
+
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {
+        if let Some(a) = arena_of(PROBE_WORLD.load(Ordering::SeqCst)) {
+            BORROW_WAS_FREE.with(|c| c.set(Some(a.signals.try_borrow_mut().is_ok())));
+        }
+    }));
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dead.get()));
+    std::panic::set_hook(previous);
+
+    assert!(panicked.is_err(), "reading through a stale handle still aborts");
+    assert_eq!(
+        BORROW_WAS_FREE.with(|c| c.get()),
+        Some(true),
+        "the stale-handle panic fired while `arena.signals` was still borrowed — on an \
+         abort target nothing releases it, so every later signal op dies with \
+         'already borrowed' and buries the real diagnostic"
+    );
+
+    // And the world stays usable on unwinding targets.
+    assert_eq!(w.enter(|| live.get()), 100);
 }
 
 // ============================================================================

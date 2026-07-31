@@ -318,6 +318,11 @@ fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
     build_web::build(
         dir,
         build_web::BuildOptions {
+            // Dev reload always builds the full vocabulary: the flag is a
+            // release-bundle lever, and a dev rebuild that dropped a
+            // primitive would panic at mount mid-session.
+            primitives: None,
+            premint_only: false,
             release: false,
             source: opts.source.clone(),
             user_features: opts.features.clone(),

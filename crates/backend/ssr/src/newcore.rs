@@ -147,8 +147,29 @@ where
 /// realizes (the new-core analogue of the old `setup(&mut SsrBackend)`
 /// hook, which existed to register navigator chrome handlers — those are
 /// vocabulary built-ins now).
+#[inline]
 pub fn render_path_with<S, F>(path: &str, register: S, build: F) -> RenderedPage
 where
+    S: FnOnce(&mut Registry<SsrBackend>),
+    F: FnOnce() -> Element,
+{
+    render_path_with_builtins::<runtime_vocabulary::AllBuiltins, S, F>(path, register, build)
+}
+
+/// [`render_path_with`], registering only the builtin primitives `B`
+/// selects.
+///
+/// **Must be given the same set as the client bundle that hydrates this
+/// HTML.** SSR rendering a primitive the client did not register produces
+/// server DOM the client cannot adopt — it takes the mismatch/remount path
+/// instead of hydrating, silently losing the point of SSR. The CLI passes
+/// `--primitives` to both sides for exactly this reason.
+///
+/// (`B` rather than `S`: `S` is already this function's registration-seam
+/// closure.)
+pub fn render_path_with_builtins<B, S, F>(path: &str, register: S, build: F) -> RenderedPage
+where
+    B: runtime_vocabulary::BuiltinSet,
     S: FnOnce(&mut Registry<SsrBackend>),
     F: FnOnce() -> Element,
 {
@@ -167,7 +188,7 @@ where
 
     let backend = Rc::new(RefCell::new(SsrBackend::new()));
     let mut registry: Registry<SsrBackend> = Registry::new();
-    runtime_vocabulary::register_builtins(&mut registry);
+    runtime_vocabulary::register_builtins_with::<_, B>(&mut registry);
     register(&mut registry);
     let registry = Rc::new(registry);
 

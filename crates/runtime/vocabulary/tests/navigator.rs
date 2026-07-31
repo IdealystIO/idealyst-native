@@ -546,6 +546,44 @@ fn robot_nav_registry_swap_snapshot_is_depthless() {
     robot.reset();
 }
 
+/// A navigator's published context must not outlive the navigator.
+///
+/// `StackNav` / `SwapNav` / `ScreenNav` all carry the navigator's OWN
+/// signals (`active_route`, `depth`, the dispatch `tick`), which die with
+/// its mount scope. While context entries were unowned, a navigator
+/// destroyed by a route gate or an auth swap left its entry published;
+/// the next `inject` — a portal's `ScreenNav` lookup, a chrome rebuild —
+/// handed out handles onto freed slots and the first read aborted the app
+/// with `stale-signal-handle`.
+#[test]
+fn regression_navigator_context_dies_with_the_navigator() {
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let fx = mount_stack(&h, StackRetention::Retain);
+        world.flush();
+
+        // Alive: chrome rebuilding after mount still resolves the nav.
+        let live = inject::<StackNav>().expect("StackNav injectable while the navigator lives");
+        assert!(live.active_route.is_alive());
+
+        // The gate fires — the whole navigator subtree is dropped.
+        drop(fx);
+        world.flush();
+
+        assert!(
+            inject::<StackNav>().is_none(),
+            "the navigator's provision must be retracted with its scope — an entry \
+             holding its freed signals is the stale-handle crash"
+        );
+        assert!(
+            inject::<runtime_vocabulary::prims::ScreenNav>().is_none(),
+            "the screen's ScreenNav goes too: it is what portals inject"
+        );
+        assert!(!live.active_route.is_alive(), "and the signals it carried are gone");
+    });
+}
+
 // ===========================================================================
 // P6: header-options carrier (Screen + ScreenChrome) + link activator
 // ===========================================================================
@@ -568,6 +606,11 @@ fn stack_chrome_republishes_on_every_navigation() {
         let fires = Rc::new(Cell::new(0u32));
         {
             let fires = fires.clone();
+            // `StackNav` stays injectable for the navigator's LIFETIME
+            // (its provision is owned by the navigator's mount scope), so
+            // chrome that rebuilds reactively after mount still resolves
+            // it. It is retracted when the navigator unmounts — see
+            // `regression_navigator_context_dies_with_the_navigator`.
             let chrome: runtime_world::Signal<ScreenChrome> =
                 inject::<StackNav>().expect("StackNav ambient").screen_chrome;
             runtime_world::effect(move || {

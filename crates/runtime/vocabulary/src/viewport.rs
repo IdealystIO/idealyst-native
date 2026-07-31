@@ -143,7 +143,9 @@ pub fn viewport_ctx() -> ViewportCtx {
         let breakpoint = memo(move || table.classify(size.get().width));
         ViewportCtx { size, breakpoint }
     });
-    provide(ctx.clone());
+    // World-root provision to match the world-root signals inside it —
+    // see `theme_ctx` for the failure mode a scope-owned entry produces.
+    unscoped(|| provide(ctx.clone()));
     LAST_CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
     ctx
 }

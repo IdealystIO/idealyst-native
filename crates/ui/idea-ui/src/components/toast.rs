@@ -137,8 +137,16 @@ fn queue() -> Signal<Vec<ToastEntry>> {
     if let Some(q) = runtime_core::inject::<ToastQueue>() {
         return q.0;
     }
-    let sig = unscope(|| runtime_core::signal(Vec::new()));
-    runtime_core::provide(ToastQueue(sig));
+    // Both the signal and its provision are world-root: a context entry is
+    // owned by the scope that made it, and this runs from whichever render
+    // scope first raised a toast. Scope-owned, the queue would stop being
+    // injectable on that subtree's unmount and the next toast would build a
+    // second queue that no mounted ToastHost is rendering.
+    let sig = unscope(|| {
+        let sig = runtime_core::signal(Vec::new());
+        runtime_core::provide(ToastQueue(sig));
+        sig
+    });
     sig
 }
 

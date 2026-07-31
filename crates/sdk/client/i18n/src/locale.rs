@@ -78,11 +78,16 @@ fn ctx() -> I18nCtx {
         return found;
     }
     let seed = seed_code();
-    let fresh = unscope(|| I18nCtx {
-        code: signal(seed),
-        epoch: signal(0u64),
+    // The provision is world-root alongside the signals it carries — a
+    // context entry belongs to the scope that made it, and first-touch
+    // happens in whatever subtree localized a string first. Scope-owned,
+    // the ctx would vanish on that subtree's unmount and the next `ctx()`
+    // would build a second one, orphaning every locale subscriber.
+    let fresh = unscope(|| {
+        let fresh = I18nCtx { code: signal(seed), epoch: signal(0u64) };
+        provide(fresh);
+        fresh
     });
-    provide(fresh);
     LAST_CTX.with(|c| c.set(Some(fresh)));
     fresh
 }

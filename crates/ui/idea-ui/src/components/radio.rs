@@ -23,14 +23,17 @@
 //! ```
 //!
 //! Like Checkbox, drawn from primitives so it shares `tone` × `variant`
-//! × `size`. The selected indicator is a filled dot inside a
+//! × `size`, and likewise the ring — not the label row — is the
+//! `pressable` that takes focus and wears the focus ring. The selected
+//! indicator is a filled dot inside a
 //! tone-colored ring; override the appearance via
 //! `install_radio_sheets(RadioSheetBuilder::new().add_tone(Hype).build())`.
 
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, Element, IdealystSchema, IntoElement, Reactive, Signal, StyleApplication,
+    accessibility::Role, component, tap, ui, Element, IdealystSchema, IntoElement, Reactive,
+    Signal, StyleApplication, TapRecognizer,
 };
 
 use idea_theme::extensible::{installed_radio_sheets, RadioSheets, ToneRef, VariantRef};
@@ -47,8 +50,14 @@ use crate::stylesheets::{ControlRow, FieldLabel};
 /// the ring re-tints and the dot mounts/unmounts as selection changes.
 /// `appearance`/`size_key` are CLOSURES read live inside each style sink so
 /// a reactive tone/variant/size re-styles the indicator in place.
+///
+/// The ring is the `pressable` (the row around it is a plain view), so it
+/// is the keyboard-focusable host and the outer sheet's `__state_focused`
+/// ring draws around the indicator alone — not around indicator + label.
 fn radio_indicator(
     is_selected: impl Fn() -> bool + Clone + 'static,
+    on_select: Rc<dyn Fn()>,
+    a11y_label: Option<String>,
     appearance: impl Fn() -> String + Clone + 'static,
     size_key: impl Fn() -> String + Clone + 'static,
     sheets: RadioSheets,
@@ -78,36 +87,56 @@ fn radio_indicator(
         },
     );
 
-    // Outer ring.
+    // Outer ring — the pressable host.
     let outer_sheet = sheets.outer_sheet.clone();
     let sel_for_ring = is_selected;
-    runtime_core::view(vec![dot])
+    let ring = runtime_core::pressable(vec![dot], move || (on_select)())
         .with_style(move || {
             StyleApplication::new(outer_sheet.clone())
                 .with("appearance", appearance())
                 .with("checked", if sel_for_ring() { "on" } else { "off" }.to_string())
                 .with("size", size_key())
         })
-        .into_element()
+        .a11y_role(Role::RadioButton);
+    // The label sits outside the pressable, so the ring can't derive its
+    // accessible name from child content — name it explicitly. Snapshot: a
+    // `Reactive` label's later values don't re-announce (the a11y prop bag
+    // is plain data, not reactive).
+    let ring = match a11y_label {
+        Some(text) => ring.a11y_label(text),
+        None => ring,
+    };
+    ring.into_element()
 }
 
-/// A clickable indicator + optional label row.
+/// A clickable indicator + optional label row. The indicator owns the
+/// press (and the focus ring); the row carries a tap handler so clicking
+/// the label selects too — the indicator's own recognizer consumes its
+/// taps first, so a tap on the ring fires exactly once.
 fn radio_row(
     is_selected: impl Fn() -> bool + Clone + 'static,
-    label: Option<Element>,
+    label: Option<(Element, Option<String>)>,
     on_select: Rc<dyn Fn()>,
     appearance: impl Fn() -> String + Clone + 'static,
     size_key: impl Fn() -> String + Clone + 'static,
     sheets: RadioSheets,
 ) -> Element {
-    let indicator = radio_indicator(is_selected, appearance, size_key, sheets);
-    let mut kids: Vec<Element> = Vec::with_capacity(2);
-    kids.push(indicator);
-    if let Some(l) = label {
-        kids.push(l);
-    }
-    runtime_core::pressable(kids, move || (on_select)())
+    let (label_el, label_text) = match label {
+        Some((el, text)) => (Some(el), text),
+        None => (None, None),
+    };
+    let indicator =
+        radio_indicator(is_selected, on_select.clone(), label_text, appearance, size_key, sheets);
+    // No label — the indicator IS the whole control; skip the wrapper row.
+    let Some(label_el) = label_el else { return indicator };
+
+    // Builder form, not `ui!`: the `ui!` `view` emitter takes only
+    // `style`/`test_id`/a11y props and DROPS anything else, so an
+    // `on_touch = …` attribute there would silently never attach.
+    let row_tap = tap(TapRecognizer::new(), move || (on_select)());
+    runtime_core::view(vec![indicator, label_el])
         .with_style(|| StyleApplication::new(ControlRow::sheet()))
+        .on_touch(move |ev| row_tap(ev))
         .into_element()
 }
 
@@ -168,7 +197,8 @@ pub fn Radio(props: &RadioProps) -> Element {
     };
     let size = props.size.clone();
     let size_key = move || size.get().as_variant_str().to_string();
-    let label = crate::components::optional_reactive_text(props.label.clone(), FieldLabel());
+    let label = crate::components::optional_reactive_text(props.label.clone(), FieldLabel())
+        .map(|el| (el, props.label.get()));
     radio_row(
         move || selected.get(),
         label,
@@ -184,8 +214,7 @@ pub fn Radio(props: &RadioProps) -> Element {
 // =============================================================================
 
 /// One option in a [`RadioGroup`]. `RadioOption::new(id, label)`.
-#[derive(Clone)]
-#[derive(IdealystSchema)]
+#[derive(Clone, IdealystSchema)]
 pub struct RadioOption {
     /// Stable identity for this option; matched against the group's
     /// `value` to decide selection and handed to `on_change` on tap.
@@ -290,13 +319,14 @@ pub fn RadioGroup(props: RadioGroupProps) -> Element {
         let on_change_for_row = on_change.clone();
         let on_select: Rc<dyn Fn()> = Rc::new(move || (on_change_for_row)(id_for_select.clone()));
 
+        let a11y_label = option.label.get();
         let label = runtime_core::text(option.label)
             .with_style(|| StyleApplication::new(FieldLabel::sheet()))
             .into_element();
 
         rows.push(radio_row(
             move || value.get() == id,
-            Some(label),
+            Some((label, Some(a11y_label))),
             on_select,
             appearance.clone(),
             size_key.clone(),
@@ -311,5 +341,106 @@ pub fn RadioGroup(props: RadioGroupProps) -> Element {
     match props.axis.get() {
         RadioAxis::Column => ui! { Stack(gap = gap, axis = StackAxis::Column) { rows } },
         RadioAxis::Row => ui! { Stack(gap = gap, axis = StackAxis::Row) { rows } },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{classify, P};
+    use idea_theme::testing::with_test_world;
+    use idea_theme::theme::{install_idea_theme, light_theme};
+    use runtime_core::StyleApplication as App;
+
+    fn has_focus_arm(app: &App) -> bool {
+        app.sheet
+            .variant_keys()
+            .iter()
+            .any(|(axis, _)| axis == "__state_focused")
+    }
+
+    /// Mirror of the Checkbox regression: the focus ring rings the RING,
+    /// not the ring+label row. Before this, the row was the `pressable` and
+    /// `ControlRow` carried the `state focused` border, so tabbing to a
+    /// radio drew a border around its label text too.
+    #[test]
+    fn regression_focus_ring_rings_the_indicator_not_the_label_row() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let props = RadioProps {
+                label: Reactive::Static(Some("Email".into())),
+                ..Default::default()
+            };
+            let (children, row_style, row_tap) = match classify(Radio(&props)) {
+                P::View {
+                    children,
+                    style,
+                    on_touch,
+                    ..
+                } => (children, style, on_touch),
+                _ => panic!("a labelled Radio renders a plain View row"),
+            };
+            assert!(row_tap, "the row still selects when the label is clicked");
+            assert!(
+                !has_focus_arm(&row_style.expect("row is styled").application()),
+                "the label row declares no focus overlay — it is not the focus target"
+            );
+
+            let (ring_style, a11y) = match classify(children.into_iter().next().unwrap()) {
+                P::Pressable {
+                    style,
+                    accessibility,
+                    ..
+                } => (style, accessibility),
+                _ => panic!("the ring is the Pressable (the focusable host)"),
+            };
+            assert!(
+                has_focus_arm(&ring_style.expect("ring is styled").application()),
+                "the ring's own sheet carries the focus ring"
+            );
+            assert_eq!(
+                a11y.role,
+                Some(runtime_core::accessibility::Role::RadioButton)
+            );
+            assert_eq!(a11y.label.as_deref(), Some("Email"));
+        });
+    }
+
+    /// Pressing the ring reports the selection exactly once.
+    #[test]
+    fn pressing_the_ring_selects() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let hits = Rc::new(std::cell::Cell::new(0u32));
+            let sink = hits.clone();
+            let props = RadioProps {
+                label: Reactive::Static(Some("Email".into())),
+                on_select: Rc::new(move || sink.set(sink.get() + 1)),
+                ..Default::default()
+            };
+            let children = match classify(Radio(&props)) {
+                P::View { children, .. } => children,
+                _ => panic!("labelled Radio renders a row"),
+            };
+            match classify(children.into_iter().next().unwrap()) {
+                P::Pressable { on_click, .. } => on_click(),
+                _ => panic!("the ring is the Pressable"),
+            }
+            assert_eq!(hits.get(), 1);
+        });
+    }
+
+    /// With no label there is nothing to lay out beside the ring, so the
+    /// wrapper row is skipped entirely.
+    #[test]
+    fn unlabelled_radio_is_the_bare_ring() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let props = RadioProps::default();
+            assert!(
+                matches!(classify(Radio(&props)), P::Pressable { .. }),
+                "an unlabelled Radio is the ring pressable itself"
+            );
+        });
     }
 }

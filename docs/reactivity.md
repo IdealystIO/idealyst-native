@@ -279,6 +279,54 @@ subtree's build — a per-world theme-version signal collected into that
 subtree's scope would be freed on the subtree's unmount, leaving its
 `Copy` handles dangling (`tests.rs::unscoped_creations_survive_the_enclosing_collector`).
 
+That covers `provide`d context entries too, which are collected like any
+other creation (see [Context](#context--provide--inject)). A service that
+publishes itself must wrap the `provide` as well as the signal —
+`unscope(|| { let s = signal(0); provide(Ctx(s)); s })` — or the
+world-root signal ends up announced through a scope-owned entry and stops
+being *findable* on that subtree's unmount
+(`tests.rs::unscoped_provide_is_world_lifetime`).
+
+### Context — `provide` / `inject`
+
+`provide(v)` stores `v` in the ambient world's context keyed by
+`TypeId`; `inject::<T>()` returns the most recent live provision.
+Newtype-wrap to disambiguate values of the same underlying type.
+
+**A provision is owned by the scope that made it**, exactly like a signal
+created at the same point: when that `collect_owned` scope drops, the
+entry is retracted and whatever it shadowed becomes visible again
+(`tests.rs::regression_context_entry_is_retracted_when_its_scope_drops`,
+`retracting_a_provision_re_exposes_the_one_it_shadowed`).
+
+That ownership is load-bearing, not hygiene. Context values routinely
+*contain* scope-owned `Copy` handles — a navigator publishing its
+`active_route` — and a handle carries no liveness of its own. An unowned
+entry outlives its own contents: the providing scope drops, its slots are
+freed, and the next `inject` hands out handles onto freed slots whose
+first read aborts with `stale-signal-handle`. Retraction makes that
+unrepresentable. Two variants for when scope ownership isn't what you
+want:
+
+| Need | Form |
+| --- | --- |
+| World-lifetime service (theme ctx, i18n ctx, toast queue) | `unscope(\|\| provide(v))` |
+| Visible only for a bounded region, with no ambient scope to use | wrap the `provide` in its own `collect_owned` and hold the `Owned` |
+
+Prefer either to the `let prev = inject(); provide(x); …; provide(prev)`
+save/restore idiom. Restoring by re-providing publishes a *fresh,
+unowned* copy of `prev`, so a value whose own scope died in the meantime
+gets reinstated as a live-looking entry full of freed handles — which is
+how the navigator/portal crash reproduced.
+
+Context is a per-type stack, not a tree: `inject` sees the newest live
+provision regardless of where the reader sits. Navigator contexts
+(`SwapNav`, `StackNav`, `LinkActivator`) are owned by the navigator's
+mount scope and `ScreenNav` by its screen's, so each stays injectable for
+exactly as long as the signals it carries — including from regions that
+rebuild reactively after mount — and is retracted the moment that
+navigator or screen unmounts.
+
 ### `Ref<H>` — the imperative handle slot
 
 `Ref<H>` slots live in the shared substrate's legacy arena
@@ -504,7 +552,10 @@ inflate per-op cost.
 - **Reading a stale handle panics.** Look for a handle that outlived its
   owning scope — typically a closure handed to a platform API that fired
   after the scope dropped. Fix by registering a cleanup that detaches the
-  listener.
+  listener. When the handle arrived from `inject`, the reader legitimately
+  has no lifetime relationship with the provider; `handle.is_alive()` is a
+  non-panicking, non-subscribing probe to gate the read on. Treat it as a
+  guard for that case, not a substitute for real ownership.
 - **`touch()` on a `match` scrutinee does nothing.** The reactive
   `match` dedupes equal scrutinees; change the value instead.
 - **Re-entrant `RefCell::borrow_mut`.** Common with backends holding

@@ -49,7 +49,18 @@ where
     // by the nearest navigator's screen mount; absent (a portal outside
     // any navigator) there's nothing to track, so we skip — the walker's
     // exact gating.
-    if let Some(nav) = inject::<ScreenNav>() {
+    //
+    // The `is_alive` probe is the consumer-side half of the stale-context
+    // fix (`realize_screen`'s owned `ctx_scope` is the other). `ScreenNav`
+    // arrives by `inject`, so its `active_route` is a `Copy` handle from a
+    // scope this portal has no relationship with, and `effect` runs its
+    // body immediately — a dead handle here aborts the app during this
+    // portal's own mount rather than at some later read. Provider-side
+    // ownership should mean we never see one; probing anyway costs a
+    // bounds+generation check at mount and downgrades any residual
+    // provider bug from "app dies" to "this portal doesn't hide when its
+    // screen goes inactive".
+    if let Some(nav) = inject::<ScreenNav>().filter(|n| n.active_route.is_alive()) {
         let backend_c = backend.clone();
         let node_c = node.clone();
         let _visibility = effect(move || {

@@ -433,8 +433,22 @@ provide(Theme { accent: color::parse("#7c3aed").unwrap() });
 let theme = inject::<Theme>();
 ```
 
-Provisions live on the scope, so a `when`/`switch` branch that re-provides
-shadows its parent for its own subtree and unwinds on dispose.
+A provision is **owned by the scope that made it**: a `when`/`switch`
+branch that re-provides shadows its parent, and the shadow is retracted
+when the branch disposes, re-exposing the parent's value. That ownership
+is what keeps a context value from outliving scope-owned handles it
+carries — an entry holding a freed `Signal` would abort on the next
+reader's first `get()`.
+
+When scope ownership isn't the lifetime you want: `unscope(|| provide(v))`
+pins a world-lifetime service (a theme or i18n context created lazily on
+first use), and wrapping the `provide` in its own `collect_owned` bounds
+it to a region — for code with no ambient scope of its own to belong to.
+
+Context is keyed by type in a per-type *stack*, not a scope tree:
+`inject` returns the newest live provision, wherever the reader sits. Own
+the provision deliberately rather than relying on the reader's position
+in the tree.
 
 ## 8. A worked example: search-filtered list
 

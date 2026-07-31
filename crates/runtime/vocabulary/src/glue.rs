@@ -668,6 +668,12 @@ pub use runtime_world::Value as __Value;
 // are transient on the new core (one per SSR request), so an SDK's
 // "global" (e.g. idea-theme's active-theme signal) must live with the
 // world, exactly like the vocabulary's own ThemeCtx.
+//
+// A provision is owned by the scope that made it, like a signal: it is
+// retracted when that scope drops, so a context value can never outlive
+// the handles it carries. `unscope(|| provide(v))` opts a genuinely
+// world-lifetime service out of that; a bounded region wraps the
+// `provide` in its own `collect_owned` — see `provide`'s docs.
 pub use runtime_world::{inject, provide};
 
 // The handler-safety probe for aliased crates' per-core fork modules

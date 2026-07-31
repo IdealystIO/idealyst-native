@@ -210,7 +210,15 @@ pub use builders::{
     text, text_area, text_input, toggle, view, virtualizer, SceneChild, TextContent,
 };
 pub use caps::AllCaps;
-pub use handlers::register_builtins;
+pub use handlers::{
+    register_builtins, register_builtins_with, AllBuiltins, BuiltinSet, CoreOnly,
+};
+
+/// Re-export so the `builtin_set!` / `builtin_set_keep!` expansions can
+/// spell `Registry` without the caller having to depend on `runtime-scene`
+/// directly or import it under that name.
+#[doc(hidden)]
+pub use runtime_scene as __scene;
 pub use style_attach::{
     attach_style, on_teardown, signal_class, IntoStyleProp, StyleProp, StyleServices,
 };

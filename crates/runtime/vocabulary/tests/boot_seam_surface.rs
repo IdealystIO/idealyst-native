@@ -1,0 +1,186 @@
+//! Every backend boot entry must offer a `BuiltinSet` seam.
+//!
+//! The bundle-size lever only works if the app can choose its primitive set
+//! at the boot seam, and it silently no-ops the moment ONE reachable entry
+//! still names `AllBuiltins` — that straggler re-anchors the whole
+//! vocabulary and nothing shrinks. Three separate instances of this were
+//! measured while the seam was built:
+//!
+//!  1. `start_in` converted but `hydrate_in` not (0.4% instead of 35%),
+//!  2. `hydrate_in_with`'s no-server-DOM fallback calling the non-generic
+//!     `start_in` — which was also a correctness bug, since the fallback
+//!     registered a different set than the caller asked for,
+//!  3. the non-generic convenience entries being codegen'd into their rlib
+//!     (hence `#[inline]` on every one of them).
+//!
+//! Those are linker-level properties a unit test cannot observe, so this
+//! guards the reachable proxy: the source of every backend that boots a
+//! registry must expose a `_with`-style entry and must not call the
+//! non-generic `register_builtins` outside of tests. A new backend that
+//! copies an old one's boot fn fails here rather than quietly costing every
+//! app on that platform ~65 KB.
+
+use std::path::{Path, PathBuf};
+
+/// Backend boot files that construct a `Registry` and register builtins.
+const BOOT_FILES: &[&str] = &[
+    "crates/backend/web/src/newcore.rs",
+    "crates/backend/web/src/newcore_hydrate.rs",
+    "crates/backend/macos/src/newcore.rs",
+    "crates/backend/cpu/src/newcore.rs",
+    "crates/backend/terminal/src/newcore.rs",
+    "crates/backend/linux/src/newcore.rs",
+    "crates/backend/windows/src/newcore.rs",
+    "crates/backend/roku/src/newcore.rs",
+    "crates/backend/ios/mobile/src/newcore.rs",
+    "crates/backend/android/mobile/src/newcore.rs",
+    "crates/backend/ssr/src/newcore.rs",
+    "crates/gpu-backend/engine/src/newcore.rs",
+];
+
+fn repo_root() -> PathBuf {
+    // <root>/crates/runtime/vocabulary
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .expect("repo root")
+        .to_path_buf()
+}
+
+/// Strip `#[cfg(test)]` modules so test-only `register_builtins` calls (of
+/// which there are many, and which are fine) don't trip the scan.
+fn without_test_modules(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut lines = src.lines().peekable();
+    while let Some(line) = lines.next() {
+        if line.trim_start().starts_with("#[cfg(test)]") {
+            // Skip the attribute and, if the next line opens a module,
+            // everything through its matching brace.
+            if let Some(next) = lines.peek() {
+                if next.contains("mod ") {
+                    let mut depth = 0usize;
+                    let mut started = false;
+                    for inner in lines.by_ref() {
+                        depth += inner.matches('{').count();
+                        started |= depth > 0;
+                        depth = depth.saturating_sub(inner.matches('}').count());
+                        if started && depth == 0 {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+            }
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+#[test]
+fn every_backend_boot_offers_a_builtin_set_seam() {
+    let root = repo_root();
+    let mut missing: Vec<String> = Vec::new();
+
+    for rel in BOOT_FILES {
+        let path = root.join(rel);
+        let src = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            // A backend that isn't checked out (or was renamed) should not
+            // fail the suite; the list is the contract, not the filesystem.
+            Err(_) => continue,
+        };
+        let src = without_test_modules(&src);
+
+        if !src.contains("BuiltinSet") {
+            missing.push(format!("{rel}: no `BuiltinSet` seam"));
+        }
+        if !src.contains("register_builtins_with") {
+            missing.push(format!("{rel}: does not forward a set to the registry"));
+        }
+        // The non-generic `register_builtins` hardcodes `AllBuiltins`.
+        for (i, line) in src.lines().enumerate() {
+            let t = line.trim_start();
+            if t.starts_with("//") || t.starts_with("///") {
+                continue;
+            }
+            if t.contains("register_builtins(") {
+                missing.push(format!(
+                    "{rel}:{}: calls the non-generic `register_builtins`, which \
+                     pins `AllBuiltins` and re-anchors every handler — forward \
+                     the caller's `S` instead",
+                    i + 1
+                ));
+            }
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "backend boot seams missing the BuiltinSet lever:\n  {}",
+        missing.join("\n  "),
+    );
+}
+
+/// The convenience entries (`start`, `hydrate`, …) delegate with
+/// `AllBuiltins`. As plain non-generic `pub` fns they get codegen'd into
+/// their rlib and can survive to the final link, instantiating the full
+/// vocabulary even for an app that selected a smaller set. `#[inline]` is
+/// what stops that, so it is load-bearing rather than a perf hint.
+#[test]
+fn all_builtins_delegates_are_inline() {
+    let root = repo_root();
+    let mut bad: Vec<String> = Vec::new();
+
+    for rel in BOOT_FILES {
+        let path = root.join(rel);
+        let Ok(src) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let lines: Vec<&str> = src.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains("::<runtime_vocabulary::AllBuiltins") {
+                continue;
+            }
+            // Walk back past the enclosing fn's own signature (which may
+            // span several lines) into its attribute block, and require
+            // `#[inline]` there. Stopping at the first `pub fn` would stop
+            // at the signature we are inside.
+            let mut inline = false;
+            let mut passed_signature = false;
+            for back in lines[..i].iter().rev().take(60) {
+                let t = back.trim_start();
+                if t.starts_with("pub fn ") || t.starts_with("fn ") {
+                    if passed_signature {
+                        break; // reached the PREVIOUS item
+                    }
+                    passed_signature = true;
+                    continue;
+                }
+                if passed_signature {
+                    if t.starts_with("#[inline]") {
+                        inline = true;
+                        break;
+                    }
+                    // Only attributes and comments may sit between a fn and
+                    // its `#[inline]`; anything else means we left the block.
+                    if !(t.starts_with("//") || t.starts_with("#[") || t.is_empty()) {
+                        break;
+                    }
+                }
+            }
+            if !inline {
+                bad.push(format!("{rel}:{}", i + 1));
+            }
+        }
+    }
+
+    assert!(
+        bad.is_empty(),
+        "these AllBuiltins delegates are missing `#[inline]`, so they emit a \
+         standalone symbol that re-anchors the whole vocabulary:\n  {}",
+        bad.join("\n  "),
+    );
+}

@@ -119,6 +119,16 @@ use crate::WebBackend;
 /// Boot the new core by adopting server-rendered DOM under `#app`.
 /// Falls back to a fresh [`super::start`]-style mount when `#app` holds
 /// no server DOM. See the module docs for the full sequence.
+// `#[inline]` is load-bearing, not a perf hint: as a plain `pub` non-generic
+// fn this is codegen'd into backend-web's rlib and survives to the final
+// link (the pipeline passes `--keep-lld-exports`, and the wrapper builds
+// with `lto = "off"`), which instantiates `register_builtins_with::<_,
+// AllBuiltins>` and re-anchors the WHOLE builtin vocabulary even for an app
+// that selected a smaller set through the `_with` entry. Measured: a
+// `--primitives core` build stayed at 560,997 bytes instead of 357,581.
+// `#[inline]` makes it available for cross-crate inlining without emitting a
+// standalone symbol, so an unused default set is never instantiated.
+#[inline]
 pub fn hydrate(build: impl FnOnce() -> Element) {
     hydrate_in("#app", |_| {}, build)
 }
@@ -126,7 +136,33 @@ pub fn hydrate(build: impl FnOnce() -> Element) {
 /// [`hydrate`] with an explicit mount selector and the same registration
 /// seam as [`super::start_in`]: `register` runs after
 /// [`runtime_vocabulary::register_builtins`], before the tree realizes.
+// `#[inline]` is load-bearing, not a perf hint: as a plain `pub` non-generic
+// fn this is codegen'd into backend-web's rlib and survives to the final
+// link (the pipeline passes `--keep-lld-exports`, and the wrapper builds
+// with `lto = "off"`), which instantiates `register_builtins_with::<_,
+// AllBuiltins>` and re-anchors the WHOLE builtin vocabulary even for an app
+// that selected a smaller set through the `_with` entry. Measured: a
+// `--primitives core` build stayed at 560,997 bytes instead of 357,581.
+// `#[inline]` makes it available for cross-crate inlining without emitting a
+// standalone symbol, so an unused default set is never instantiated.
+#[inline]
 pub fn hydrate_in(
+    selector: &str,
+    register: impl FnOnce(&mut Registry<WebBackend>),
+    build: impl FnOnce() -> Element,
+) {
+    hydrate_in_with::<runtime_vocabulary::AllBuiltins>(selector, register, build)
+}
+
+/// [`hydrate_in`], booting only the builtin families `S` selects.
+///
+/// Must be given the SAME set as the app's [`super::start_in_with`] call.
+/// A CLI-generated wrapper compiles in both boot paths and picks one at
+/// runtime, so if either still names [`runtime_vocabulary::AllBuiltins`]
+/// the full handler set stays reachable from the boot entry and *neither*
+/// path shrinks — this was measured: converting `start_in` alone moved a
+/// hello-world by 0.4%, because `hydrate_in` was re-anchoring everything.
+pub fn hydrate_in_with<S: runtime_vocabulary::BuiltinSet>(
     selector: &str,
     register: impl FnOnce(&mut Registry<WebBackend>),
     build: impl FnOnce() -> Element,
@@ -142,8 +178,16 @@ pub fn hydrate_in(
 
     // No server DOM → nothing to adopt; plain fresh boot. Same
     // prerendered/fresh dispatch the old CLI wrapper's `start_local` does.
+    //
+    // MUST forward `S`, not call the non-generic `start_in`. Correctness:
+    // the fallback would otherwise register a DIFFERENT builtin set than
+    // the path the caller selected. Size: `start_in` is
+    // `start_in_with::<AllBuiltins>`, so naming it here instantiates the
+    // full vocabulary and re-anchors every handler — a `--primitives core`
+    // build measured 560,997 bytes instead of 357,581 because of this one
+    // call.
     if !crate::page_is_prerendered(selector) {
-        return super::start_in(selector, register, build);
+        return super::start_in_with::<S>(selector, register, build);
     }
 
     // Adoption-mode backend: cursor on the SSR root, microtask buffering
@@ -160,7 +204,7 @@ pub fn hydrate_in(
     }
 
     let mut registry: Registry<WebBackend> = Registry::new();
-    runtime_vocabulary::register_builtins(&mut registry);
+    runtime_vocabulary::register_builtins_with::<WebBackend, S>(&mut registry);
     register(&mut registry);
     let registry = Rc::new(registry);
 

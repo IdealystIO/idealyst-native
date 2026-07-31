@@ -40,14 +40,21 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_shared::{resolve_style, BackendBatch, BatchOp, StyleApplication};
+use runtime_shared::{BackendBatch, BatchOp, StyleApplication};
+// Only the static-sheet batching arm resolves styles, and it is compiled
+// out under `--premint-only` (no engine to resolve against).
+#[cfg(not(idealyst_premint_only))]
+use runtime_shared::resolve_style;
+// Both are named only by the gated-out batching arm.
+#[cfg(not(idealyst_premint_only))]
+use crate::style_attach::{resolve_state_overlays, StyleProp};
 use runtime_scene::{Element, LiveNode, MountCx, Registry};
 use runtime_world::Value;
 
 use crate::caps::BatchOps;
 use crate::prims::{PrimCell, RepeatPrim, TextPrim, TextSourceProp, ViewPrim};
 use crate::style_attach::{
-    apply_sheet, on_teardown, resolve_state_overlays, StyleProp, StyleServices,
+    apply_sheet, on_teardown, StyleServices,
 };
 use crate::theme;
 
@@ -268,6 +275,15 @@ where
     let resolved_class: Option<(String, Rc<runtime_shared::StyleRules>, Box<StyleApplication>)> =
         match prim.style {
             None => None,
+            // Batching a static sheet needs sheet registration + class
+            // minting, i.e. the live style engine. A `--premint-only` build
+            // has none, and this is the ONE other place besides
+            // `attach_style` that reaches it — leaving it would keep
+            // `ensure_sheet_registered` (the largest single symbol in a web
+            // bundle) linked and undo the flag. Falling through to the
+            // per-call path is correct, not merely convenient: preminted and
+            // signal-class styles already take it here.
+            #[cfg(not(idealyst_premint_only))]
             Some(StyleProp::Sheet(app)) => {
                 // Registration fast path (identical to `apply_sheet`'s):
                 // 10k identical rows register once.

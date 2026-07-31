@@ -1481,6 +1481,11 @@ fn launch_ssr(
         let _ = build_web::build(
             dir,
             build_web::BuildOptions {
+            // Dev/docs/run builds keep the full vocabulary: `--primitives`
+            // is a release-bundle lever, and dropping one mid-session would
+            // panic at mount rather than degrade.
+            primitives: None,
+            premint_only: false,
                 release: false,
                 source: source.clone(),
                 user_features: Vec::new(),

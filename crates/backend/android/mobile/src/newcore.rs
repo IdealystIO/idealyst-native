@@ -524,11 +524,37 @@ mod native {
     /// `world.enter`, so free `signal()`/`effect()` calls work;
     /// top-level creations are world-root-owned (they live until
     /// [`stop`] / process teardown).
+    #[inline]
     pub fn start(
         backend: Rc<RefCell<AndroidBackend>>,
         register: impl FnOnce(&mut Registry<AndroidBackend>),
         build: impl FnOnce() -> Element,
     ) {
+        // `#[inline]` is load-bearing, not a perf hint: as a plain
+        // non-generic `pub` fn this is codegen'd into the rlib and can
+        // survive to the final link, instantiating
+        // `register_builtins_with::<_, AllBuiltins>` and re-anchoring
+        // the WHOLE builtin vocabulary even for an app that selected a
+        // smaller set through `start_with`.
+        start_with::<runtime_vocabulary::AllBuiltins, _, _>(backend, register, build)
+    }
+
+    /// [`start`], booting only the builtin primitives `S` selects.
+    ///
+    /// Compile-time selection: an unselected primitive's registration
+    /// folds away, nothing names its handler, and the linker drops it
+    /// along with the backend code it alone reached. See
+    /// [`runtime_vocabulary::BuiltinSet`]. Realizing a payload this set
+    /// omits panics at mount.
+    pub fn start_with<S, R, B>(
+        backend: Rc<RefCell<AndroidBackend>>,
+        register: R,
+        build: B,
+    ) where
+        S: runtime_vocabulary::BuiltinSet,
+        R: FnOnce(&mut Registry<AndroidBackend>),
+        B: FnOnce() -> Element,
+    {
         // Idempotent like the old attach's `OWNER.take()`: a re-attach
         // without an intervening detach tears the previous mount down
         // FIRST — otherwise the prior `Realized`/`World` would only
@@ -549,7 +575,7 @@ mod native {
         runtime_shared::time::install_default_time_source(platform);
 
         let mut registry: Registry<AndroidBackend> = Registry::new();
-        runtime_vocabulary::register_builtins(&mut registry);
+        runtime_vocabulary::register_builtins_with::<_, S>(&mut registry);
         register(&mut registry);
         let registry = Rc::new(registry);
 

@@ -40,7 +40,7 @@ Everything is re-exported under `runtime_core::…`, but `runtime-core` is now a
 | Coalesce several writes into one fan-out | nothing — it's automatic | Writes **stage** and commit in one `World::flush` at the end of the turn. There is no `batch(…)` on the author surface. |
 | Action-dispatched state | `reducer(init, \|&s,a\| next)` → `(Signal, dispatch)` | folds on the staged value (dispatches compose); always notifies; never subscribes the caller. |
 | Async data keyed on signals | `resource(deps, fetcher)` → `Resource<T,E>` | `Loading/Error/Success/Idle`. |
-| Pass a value down the scope tree | `provide(v)` / `inject::<T>()` / `inject_or` / `with_inject` | keyed by TYPE — newtype to disambiguate; panics outside a scope. |
+| Pass a value down the scope tree | `provide(v)` / `inject::<T>()` / `inject_or` / `with_inject` | keyed by TYPE — newtype to disambiguate; panics outside a scope. The entry is **owned by the providing scope** (retracted on its drop), like a signal. World-lifetime service ⇒ `unscoped(\|\| provide(v))`; bounded region ⇒ wrap the `provide` in its own `collect_owned`. |
 | Two-way reactive subtree | `when(cond, then, otherwise)` | dispose-on-hide. |
 | Multi-way reactive subtree | `switch(scrutinee, \|&k\| …)` | `ui!` `match` lowers to this; key is `PartialEq`. |
 | Several siblings from one `#[component]` | `fragment(children)` | layout-transparent, built once, not reconciled. |

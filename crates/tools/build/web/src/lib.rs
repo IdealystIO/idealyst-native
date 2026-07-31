@@ -30,7 +30,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use build_ios::{font_preload_tags, inject_into_head, parse_manifest, FrameworkSource, Manifest};
+use build_ios::{
+    font_preload_tags, inject_into_head, parse_manifest, remap_path_flags, FrameworkSource, Manifest,
+};
 
 mod premint;
 use flate2::write::GzEncoder;
@@ -45,6 +47,35 @@ pub struct BuildOptions {
     /// from. The CLI constructs this with `FrameworkSource::detect`
     /// before invoking `build()`.
     pub source: FrameworkSource,
+    /// Compile the runtime style engine OUT (`--premint-only`).
+    ///
+    /// Implies [`Self::premint`]. Sets `--cfg idealyst_premint_only`, which
+    /// strips `attach_style`'s live-engine arms and `repeat`'s sheet-batching
+    /// arm — the only two paths reaching sheet registration, the token
+    /// cohort, and `StyleRules` → CSS.
+    ///
+    /// `--premint` alone cannot drop the engine: the `stylesheet!` builder's
+    /// preminted fast path falls through to `Sheet`/`SheetDynamic` for any
+    /// reactive or override-carrying application, so the engine stays named
+    /// and linked even when every class preminted.
+    ///
+    /// A PROMISE, not something the build can verify: a style that still
+    /// needs the engine panics at mount naming the offending shape.
+    pub premint_only: bool,
+    /// Which builtin primitives the bundle registers (`--primitives`).
+    ///
+    /// `None` keeps `runtime_vocabulary::AllBuiltins`, the historical
+    /// behavior. `Some(list)` makes the wrapper declare a
+    /// `builtin_set!` of exactly those names, so every unlisted
+    /// primitive's handler is never reached from the boot entry and
+    /// LLVM drops it — along with the web-sys imports and JS glue it
+    /// alone reached. Measured on a `view`+`text` app: 195,255 →
+    /// 126,813 bytes brotli, 236 → 163 wasm imports.
+    ///
+    /// Validated by [`resolve_primitive_set`] before the wrapper is
+    /// written, so a typo is a CLI error rather than a macro error
+    /// inside generated code.
+    pub primitives: Option<Vec<String>>,
     /// Cargo features to enable on the **user crate** (e.g.
     /// `["dev-hot-reload"]` for runtime-server-mode hot reload). The wrapper's
     /// Cargo.toml grows a parallel `[features]` block that forwards
@@ -139,6 +170,102 @@ pub struct BuildArtifact {
     pub entry_js: Option<String>,
 }
 
+/// The primitives `--primitives` accepts — one per method on
+/// `runtime_vocabulary::BuiltinSet`.
+///
+/// Kept in sync with that trait (and with `builtin_set_keep!`'s arms) by
+/// `primitive_names_match_the_vocabulary_trait` below. Drift is not
+/// silent either way: a name here that the macro lacks fails to compile
+/// in the generated wrapper.
+pub const SELECTABLE_PRIMITIVES: &[&str] = &[
+    "view",
+    "text",
+    "button",
+    "pressable",
+    "image",
+    "icon",
+    "link",
+    "toggle",
+    "slider",
+    "activity_indicator",
+    "text_input",
+    "text_area",
+    "scroll_view",
+    "repeat",
+    "lazy",
+    "virtualizer",
+    "graphics",
+    "portal",
+    "presence",
+    "nav",
+];
+
+/// Presets accepted in place of an explicit list.
+const PRIMITIVE_PRESETS: &[(&str, &[&str])] = &[
+    // "Just the core framework": the reactive kernel, scene model, style
+    // engine and backend, with nothing composable on top.
+    ("core", &["view", "text"]),
+    ("all", SELECTABLE_PRIMITIVES),
+];
+
+/// Normalize `--primitives` into the concrete keep-list the wrapper
+/// declares, or `None` for "every builtin" (the flag's absence).
+///
+/// Accepts a preset (`core`, `all`) or an explicit comma-separated list.
+/// An unknown name is rejected here, with the valid set in the message —
+/// the alternative is a `no rules expected this token` error pointing
+/// into a generated file the user never wrote.
+pub fn resolve_primitive_set(spec: Option<&[String]>) -> Result<Option<Vec<String>>> {
+    let Some(spec) = spec else { return Ok(None) };
+
+    let requested: Vec<String> = spec
+        .iter()
+        .flat_map(|s| s.split(','))
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if requested.is_empty() {
+        anyhow::bail!(
+            "--primitives was given no names. Pass a preset (`core`, `all`) or a \
+             comma-separated list, e.g. `--primitives view,text,button`. Omit the \
+             flag entirely to register every builtin."
+        );
+    }
+
+    if requested.len() == 1 {
+        if let Some((_, preset)) = PRIMITIVE_PRESETS
+            .iter()
+            .find(|(name, _)| *name == requested[0])
+        {
+            return Ok(Some(preset.iter().map(|s| s.to_string()).collect()));
+        }
+    }
+
+    let mut keep: Vec<String> = Vec::new();
+    for name in requested {
+        if !SELECTABLE_PRIMITIVES.contains(&name.as_str()) {
+            anyhow::bail!(
+                "--primitives: `{name}` is not a builtin primitive.\n\n\
+                 Valid names: {}\n\
+                 Presets: {}\n\n\
+                 Note `overlay` / `anchored_overlay` are compositions over \
+                 `portal`, and `flat_list` is `virtualizer` — select those \
+                 spellings instead.",
+                SELECTABLE_PRIMITIVES.join(", "),
+                PRIMITIVE_PRESETS
+                    .iter()
+                    .map(|(n, _)| *n)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
+        if !keep.contains(&name) {
+            keep.push(name);
+        }
+    }
+    Ok(Some(keep))
+}
+
 /// Build the user's project at `project_dir` for the web target.
 /// Generates the wrapper, runs `wasm-pack build --target web`, and
 /// copies the resulting `pkg/` over to `project_dir/pkg/`.
@@ -146,6 +273,10 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     let project_dir = fs::canonicalize(project_dir)
         .with_context(|| format!("resolve project dir {}", project_dir.display()))?;
     let manifest = parse_manifest(&project_dir)?;
+    // Validate `--primitives` BEFORE anything is generated or compiled: a
+    // typo should be a one-line CLI error, not a macro error inside a
+    // generated file the user never wrote.
+    let resolved_primitives = resolve_primitive_set(opts.primitives.as_deref())?;
 
     let wrapper_dir = opts
         .source
@@ -159,14 +290,15 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         &manifest,
         &opts.user_features,
         opts.hydrate,
+        resolved_primitives.as_deref(),
     )?;
 
     // Direct pipeline (no wasm-pack), so we can hit the flag matrix
     // wasm-split-cli needs to actually extract chunks:
     //
-    //   1. `cargo build` with `RUSTFLAGS="-C link-args=--emit-relocs"`
-    //      so the rustc-emitted wasm has the relocation info wasm-split
-    //      needs to rewrite indirect calls.
+    //   1. `cargo build` with `-C link-args=--emit-relocs` (passed via
+    //      `CARGO_ENCODED_RUSTFLAGS`) so the rustc-emitted wasm has the
+    //      relocation info wasm-split needs to rewrite indirect calls.
     //   2. `wasm-bindgen --keep-lld-exports` so wasm-bindgen preserves
     //      the LLD-emitted exports wasm-split's reachability walker
     //      uses to identify chunk-only code.
@@ -196,7 +328,10 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         opts.release,
         opts.strip_panics,
         opts.premint,
+        opts.premint_only,
         &opts.user_features,
+        &opts.source,
+        &project_dir,
     )?;
     wasm_bindgen_build(&original_wasm, &wrapper_pkg, &manifest.lib_name)
         .with_context(|| "wasm-bindgen")?;
@@ -1069,6 +1204,7 @@ pub fn generate_wrapper(
     manifest: &Manifest,
     user_features: &[String],
     hydrate: bool,
+    primitives: Option<&[String]>,
 ) -> Result<()> {
     fs::create_dir_all(wrapper_dir.join("src"))
         .with_context(|| format!("create {}", wrapper_dir.display()))?;
@@ -1090,6 +1226,7 @@ pub fn generate_wrapper(
     // substrate name of its own — `install_scheduler` / the robot relay
     // client all come through backend-web.
     let runtime_core_dep = source.dep("crates/runtime/core", &[]);
+    let runtime_vocabulary_dep = source.dep("crates/runtime/vocabulary", &[]);
     // The wrapper always installs `backend_web::install_async_executor()`
     // so `runtime_core::driver::spawn_async` works inside any
     // wasm app — required by `resource()`, `mutation()`, and the
@@ -1181,6 +1318,10 @@ crate-type = ["cdylib"]
 # direct dependency. Production builds never enable it; see
 # `wrapper_does_not_enable_catalog_in_production` in build-web.
 runtime-core = {runtime_core_dep}
+# Named directly so the wrapper can spell `runtime_vocabulary::AllBuiltins`
+# / `builtin_set!` at the boot seam. Already in the graph via backend-web,
+# so this adds no compilation — it only makes the path nameable here.
+runtime-vocabulary = {runtime_vocabulary_dep}
 backend-web = {bweb_dep}
 # runtime-server-mode dep. Optional + gated by the `aas` feature so plain wasm
 # builds don't pull the `WireBackend` replay engine into their bundle.
@@ -1270,11 +1411,33 @@ opt-level = 3
         user_name = manifest.name,
         user_dep = user_dep,
         runtime_core_dep = runtime_core_dep,
+        runtime_vocabulary_dep = runtime_vocabulary_dep,
         bweb_dep = bweb_dep,
         dev_client_inner = dev_client_inner,
         user_feature_forwards = user_feature_forwards(&manifest.name, user_features),
         patch_block = source.patch_block(),
     );
+
+    // Which builtin primitives this bundle registers. `None` keeps the
+    // historical full vocabulary; a list declares a `builtin_set!` the two
+    // boot entries BOTH instantiate. They must agree: the wrapper compiles
+    // in `start_in_with` and `hydrate_in_with` and picks at runtime, so if
+    // either still named `AllBuiltins` the whole vocabulary would stay
+    // reachable and neither path would shrink (measured: 0.4% instead of
+    // 35%). `wrapper_boot_paths_share_one_builtin_set` pins that.
+    let (builtin_set_decl, boot_set_path) = match primitives {
+        None => (String::new(), "runtime_vocabulary::AllBuiltins".to_string()),
+        Some(keep) => (
+            format!(
+                "\n/// Builtin primitives this app registers (`--primitives`).\n\
+                 /// Everything unlisted is never named, so LLVM drops its handler\n\
+                 /// and the imports/JS glue it alone reached.\n\
+                 runtime_vocabulary::builtin_set!(pub AppBuiltins: {});\n",
+                keep.join(", "),
+            ),
+            "AppBuiltins".to_string(),
+        ),
+    };
 
     let start_local = format!(
         r##"/// Local mode: boots through `backend_web::newcore::{{start_in,
@@ -1289,9 +1452,9 @@ opt-level = 3
 fn start_local() {{
     let selector = "#app";
     if backend_web::page_is_prerendered(selector) {{
-        backend_web::newcore::hydrate_in(selector, {lib}::register_scene_extensions, || {lib}::app());
+        backend_web::newcore::hydrate_in_with::<{boot_set}>(selector, {lib}::register_scene_extensions, || {lib}::app());
     }} else {{
-        backend_web::newcore::start_in(selector, {lib}::register_scene_extensions, || {lib}::app());
+        backend_web::newcore::start_in_with::<{boot_set}>(selector, {lib}::register_scene_extensions, || {lib}::app());
     }}
 
     // Robot-on-web (local/static only): dial the relay so this
@@ -1309,6 +1472,7 @@ fn start_local() {{
     }}
 }}"##,
         lib = manifest.lib_name,
+        boot_set = boot_set_path,
     );
 
     let lib_rs = format!(
@@ -1341,7 +1505,7 @@ use std::rc::Rc;
 #[cfg(feature = "runtime-server")]
 use backend_web::WebBackend;
 use wasm_bindgen::prelude::*;
-
+{builtin_set_decl}
 // Smaller WASM allocator — trades a few cycles per allocation for a
 // few KB shaved off the bundle.
 #[global_allocator]
@@ -1527,6 +1691,7 @@ fn read_robot_relay_url() -> Option<String> {{
 "##,
         lib = manifest.lib_name,
         start_local = start_local,
+        builtin_set_decl = builtin_set_decl,
     );
 
     fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;
@@ -1563,17 +1728,26 @@ fn default_nightly_toolchain() -> String {
 }
 
 /// Run `cargo build --target wasm32-unknown-unknown` against the
-/// wrapper crate. `RUSTFLAGS="-C link-args=--emit-relocs"` is set
-/// (composing with any user-supplied RUSTFLAGS) so the rustc-emitted
+/// wrapper crate. `-C link-args=--emit-relocs` is set so the rustc-emitted
 /// wasm carries the relocation info wasm-split-cli needs to identify
 /// indirect-call targets per chunk. Cost is a few KB of metadata
 /// pre-bindgen; stripped from the final bundle by wasm-opt.
+///
+/// Flags reach cargo through `CARGO_ENCODED_RUSTFLAGS` (`\x1f`-separated)
+/// rather than the space-separated `RUSTFLAGS`, because release builds add
+/// `--remap-path-prefix` flags that embed filesystem paths — a space in one
+/// would otherwise split it into two garbage arguments. Any user-supplied
+/// `RUSTFLAGS` is folded in, since cargo ignores it once the encoded form
+/// is set.
 fn cargo_build_wasm(
     wrapper_dir: &Path,
     release: bool,
     strip_panics: bool,
     premint: bool,
+    premint_only: bool,
     user_features: &[String],
+    source: &FrameworkSource,
+    project_root: &Path,
 ) -> Result<()> {
     let mut cmd = Command::new("cargo");
     // `panic_immediate_abort` lives in std/core, so stripping panics
@@ -1608,35 +1782,73 @@ fn cargo_build_wasm(
     if !user_features.is_empty() {
         cmd.arg("--features").arg(user_features.join(","));
     }
-    let existing_rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
+    // Flags are assembled as a LIST and handed to cargo via
+    // `CARGO_ENCODED_RUSTFLAGS` (`\x1f`-separated) rather than the
+    // space-separated `RUSTFLAGS`. The remap flags below embed filesystem
+    // paths, and a space anywhere in them (`/Users/Jane Smith/...`) would
+    // split one flag into two garbage arguments under `RUSTFLAGS`.
+    //
+    // Setting the encoded form makes cargo ignore `RUSTFLAGS` entirely, so
+    // whatever the user supplied is folded in here to preserve today's
+    // behavior. Cargo prefers `CARGO_ENCODED_RUSTFLAGS` over `RUSTFLAGS`
+    // when both are set; mirror that precedence rather than clobbering an
+    // already-encoded value (its `\x1f` fields are taken verbatim, so
+    // fields containing spaces survive).
+    let mut flags: Vec<String> = match std::env::var("CARGO_ENCODED_RUSTFLAGS") {
+        Ok(encoded) if !encoded.is_empty() => {
+            encoded.split('\x1f').map(str::to_string).collect()
+        }
+        _ => std::env::var("RUSTFLAGS")
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_string)
+            .collect(),
+    };
     // `+simd128`: enable wasm SIMD so SIMD-centric deps (e.g. `vello_cpu`/
     // `fearless_simd`, behind `hayro`'s PDF rasterization) take their vectorized
     // path instead of the scalar fallback — a large speedup for CPU rasterization.
     // No `SharedArrayBuffer` / cross-origin isolation involved (that's wasm
     // *threads*); this is pure codegen and orthogonal to wasm-split. Supported by
     // all evergreen browsers (Chrome/Firefox 2021+, Safari 16.4+).
-    let mut base_flags =
-        String::from("-C target-feature=+simd128 -C link-args=--emit-relocs");
+    flags.push("-C".into());
+    flags.push("target-feature=+simd128".into());
+    flags.push("-C".into());
+    flags.push("link-args=--emit-relocs".into());
     if premint {
         // Flip the `stylesheet!`-generated builders to their preminted
         // fast path (`StyleSource::Preminted` for all-constant
         // applications). Paired with the native dump build that emits
         // the matching `pkg/premint.css` — see the `premint` module.
-        base_flags.push_str(" --cfg idealyst_premint");
+        flags.push("--cfg".into());
+        flags.push("idealyst_premint".into());
     }
     if strip_panics {
         // Select the `immediate-abort` panic strategy (the modern replacement
         // for the removed `panic_immediate_abort` build-std feature). Applies to
         // every crate incl. the `-Z build-std` core/std rebuild above, so panic
         // paths + their `#[track_caller]` location strings are dropped bundle-wide.
-        base_flags.push_str(" -Zunstable-options -Cpanic=immediate-abort");
+        flags.push("-Zunstable-options".into());
+        flags.push("-Cpanic=immediate-abort".into());
     }
-    let combined = if existing_rustflags.is_empty() {
-        base_flags.clone()
-    } else {
-        format!("{existing_rustflags} {base_flags}")
-    };
-    cmd.env("RUSTFLAGS", combined);
+    if premint_only {
+        // Strip the runtime style engine. Paired with `--cfg
+        // idealyst_premint` (set above) — without that this would remove the
+        // engine AND leave nothing to render styles with.
+        flags.push("--cfg".into());
+        flags.push("idealyst_premint_only".into());
+    }
+    if release {
+        // Keep the build machine's absolute paths out of the shipped wasm.
+        // These are NOT debug info — they are panic `Location` strings in live
+        // `.rodata` that `wasm-opt --strip-debug` cannot reach — so without
+        // this a deployed bundle discloses the builder's home directory,
+        // username, toolchain version, and dependency inventory. See
+        // `build_ios::remap_path_flags` for the mechanism and the ordering
+        // rule. Release only: dev builds keep real paths so panics stay
+        // clickable in the terminal and devtools.
+        flags.extend(remap_path_flags(source, project_root));
+    }
+    cmd.env("CARGO_ENCODED_RUSTFLAGS", flags.join("\x1f"));
 
     eprintln!(
         "[build-web] cargo build --target wasm32-unknown-unknown{}{} (in {})",
@@ -2065,8 +2277,34 @@ mod regression_tests {
         let source = FrameworkSource::Workspace {
             root: workspace_root,
         };
-        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &[], false)
+        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &[], false, None)
             .expect("generate wrapper");
+        (wrapper_dir, tmp)
+    }
+
+    /// `run_generator` with an explicit `--primitives` keep-list.
+    fn run_generator_with(keep: &[&str]) -> (std::path::PathBuf, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("project");
+        let wrapper_dir = tmp.path().join("wrapper");
+        let workspace_root = tmp.path().join("workspace");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        let manifest = fake_manifest();
+        let source = FrameworkSource::Workspace {
+            root: workspace_root,
+        };
+        let keep: Vec<String> = keep.iter().map(|s| s.to_string()).collect();
+        generate_wrapper(
+            &wrapper_dir,
+            &project_dir,
+            &source,
+            &manifest,
+            &[],
+            false,
+            Some(&keep),
+        )
+        .expect("generate wrapper");
         (wrapper_dir, tmp)
     }
 
@@ -2113,6 +2351,106 @@ mod regression_tests {
             "web wrapper missing runtime-core dep — launcher's \
              `--features runtime-core/dev` will fail. Got:\n{cargo}",
         );
+    }
+
+    // -----------------------------------------------------------------
+    // --primitives → builtin_set! wrapper codegen
+    // -----------------------------------------------------------------
+
+    /// THE trap this seam has. The wrapper compiles in BOTH boot entries
+    /// (`start_in_with` for a fresh mount, `hydrate_in_with` for prerendered
+    /// DOM) and picks at runtime, so both must instantiate the SAME set. If
+    /// either still named `AllBuiltins` it would re-anchor the entire
+    /// vocabulary and NEITHER path would shrink — measured as 0.4% instead
+    /// of 35% when only `start_in` had been converted.
+    #[test]
+    fn wrapper_boot_paths_share_one_builtin_set() {
+        let (wrapper_dir, _tmp) = run_generator_with(&["view", "text"]);
+        let lib = std::fs::read_to_string(wrapper_dir.join("src/lib.rs")).unwrap();
+
+        assert!(
+            lib.contains("start_in_with::<AppBuiltins>"),
+            "fresh-mount boot must take the selected set:\n{lib}",
+        );
+        assert!(
+            lib.contains("hydrate_in_with::<AppBuiltins>"),
+            "hydration boot must take the SAME set — otherwise it re-anchors \
+             every handler and the selection buys nothing:\n{lib}",
+        );
+        assert!(
+            !lib.contains("AllBuiltins"),
+            "no boot path may fall back to AllBuiltins once a set is selected:\n{lib}",
+        );
+        assert!(
+            lib.contains("runtime_vocabulary::builtin_set!(pub AppBuiltins: view, text);"),
+            "wrapper must declare the set it instantiates:\n{lib}",
+        );
+    }
+
+    /// Absent `--primitives` must keep the historical full vocabulary, and
+    /// must not emit a set declaration at all.
+    #[test]
+    fn wrapper_without_primitives_flag_boots_all_builtins() {
+        let (wrapper_dir, _tmp) = run_generator();
+        let lib = std::fs::read_to_string(wrapper_dir.join("src/lib.rs")).unwrap();
+
+        assert!(lib.contains("start_in_with::<runtime_vocabulary::AllBuiltins>"), "{lib}");
+        assert!(lib.contains("hydrate_in_with::<runtime_vocabulary::AllBuiltins>"), "{lib}");
+        assert!(!lib.contains("builtin_set!"), "no set declared:\n{lib}");
+    }
+
+    /// The wrapper spells `runtime_vocabulary::…` at the boot seam, so the
+    /// path has to be nameable from the wrapper crate.
+    #[test]
+    fn wrapper_has_runtime_vocabulary_dep() {
+        let (wrapper_dir, _tmp) = run_generator();
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
+        assert!(
+            parsed
+                .get("dependencies")
+                .and_then(|d| d.get("runtime-vocabulary"))
+                .is_some(),
+            "wrapper names `runtime_vocabulary::AllBuiltins` but does not depend \
+             on it:\n{cargo}",
+        );
+    }
+
+    #[test]
+    fn primitive_set_presets_and_lists_resolve() {
+        assert_eq!(resolve_primitive_set(None).unwrap(), None);
+
+        let core = resolve_primitive_set(Some(&["core".to_string()])).unwrap();
+        assert_eq!(core, Some(vec!["view".to_string(), "text".to_string()]));
+
+        let all = resolve_primitive_set(Some(&["all".to_string()])).unwrap();
+        assert_eq!(all.unwrap().len(), SELECTABLE_PRIMITIVES.len());
+
+        // Explicit list: order preserved, duplicates collapsed, case and
+        // whitespace normalized.
+        let list = resolve_primitive_set(Some(&[
+            "View".to_string(),
+            " text ".to_string(),
+            "view".to_string(),
+        ]))
+        .unwrap();
+        assert_eq!(list, Some(vec!["view".to_string(), "text".to_string()]));
+    }
+
+    /// A typo must fail at the CLI with the valid names, not as a
+    /// `no rules expected this token` deep inside a generated file.
+    #[test]
+    fn unknown_primitive_is_rejected_with_the_valid_set() {
+        let err = resolve_primitive_set(Some(&["flat_list".to_string()]))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("`flat_list` is not a builtin primitive"), "{err}");
+        assert!(err.contains("virtualizer"), "message must list valid names: {err}");
+
+        let empty = resolve_primitive_set(Some(&["".to_string()]))
+            .unwrap_err()
+            .to_string();
+        assert!(empty.contains("no names"), "{empty}");
     }
 
     /// Production-bundle guard: the generated web wrapper must NOT enable
@@ -2217,7 +2555,7 @@ mod regression_tests {
             "runtime-server".to_string(),
             "runtime-core/dev".to_string(),
         ];
-        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &user_features, false)
+        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &user_features, false, None)
             .expect("generate wrapper");
         let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
 

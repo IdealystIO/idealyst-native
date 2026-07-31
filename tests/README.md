@@ -83,12 +83,21 @@ artifacts exist. In order, it performs:
    and a matching `{stem}[.hash].js` shim must exist in `dist/web/pkg`
    (matched by prefix/suffix, since release bundles are
    content-addressed).
-3. **Browser smoke** (`--browser`, needs a system Chrome/Chromium) —
+3. **No build-machine paths** — the shipped `.wasm` must not contain
+   `$HOME` or the framework workspace root. Panic `Location`s (`file!()`
+   behind every `unwrap`/`expect`/bounds check) are live `.rodata`, not
+   debug info, so `wasm-opt --strip-debug` cannot remove them; without
+   `--remap-path-prefix` a deployed bundle discloses the builder's home
+   directory, username, toolchain version, and dependency inventory.
+   Release builds pass the remaps via `build_ios::remap_path_flags`.
+   Note this checks the binary produced by whichever `idealyst` is on
+   `PATH` — a stale installed CLI will fail here until reinstalled.
+4. **Browser smoke** (`--browser`, needs a system Chrome/Chromium) —
    serves `dist/web` on an ephemeral port, waits for each app's
    `expected_marker` text, and fails on any `console.error`, on
    `RuntimeError: null function` from a zeroed vtable byte, or on
    `panicked at :` with an empty message from a zeroed panic string.
-4. **Handler-registration `main.wasm` delta** — for the
+5. **Handler-registration `main.wasm` delta** — for the
    `lazy-payload-split` pair only, once both variants built in the same
    run. Requires the late-registering variant's main bundle to be at
    least 400 KiB smaller (`MIN_MAIN_SHRINK_BYTES`). This is the runner's

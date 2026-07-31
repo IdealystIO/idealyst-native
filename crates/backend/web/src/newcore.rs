@@ -151,7 +151,7 @@ use crate::WebBackend;
 // file flat in `src/` alongside this one.
 #[path = "newcore_hydrate.rs"]
 mod newcore_hydrate;
-pub use newcore_hydrate::{hydrate, hydrate_in};
+pub use newcore_hydrate::{hydrate, hydrate_in, hydrate_in_with};
 
 // ===========================================================================
 // Boot path
@@ -192,6 +192,16 @@ struct App {
 /// hydration — see the module docs). The build closure runs inside
 /// `world.enter`, so free `signal()`/`effect()` calls work; top-level
 /// creations are world-root-owned (they live until page teardown).
+// `#[inline]` is load-bearing, not a perf hint: as a plain `pub` non-generic
+// fn this is codegen'd into backend-web's rlib and survives to the final
+// link (the pipeline passes `--keep-lld-exports`, and the wrapper builds
+// with `lto = "off"`), which instantiates `register_builtins_with::<_,
+// AllBuiltins>` and re-anchors the WHOLE builtin vocabulary even for an app
+// that selected a smaller set through the `_with` entry. Measured: a
+// `--primitives core` build stayed at 560,997 bytes instead of 357,581.
+// `#[inline]` makes it available for cross-crate inlining without emitting a
+// standalone symbol, so an unused default set is never instantiated.
+#[inline]
 pub fn start(build: impl FnOnce() -> Element) {
     start_in("#app", |_| {}, build)
 }
@@ -200,7 +210,35 @@ pub fn start(build: impl FnOnce() -> Element) {
 /// `register` runs after [`runtime_vocabulary::register_builtins`], so
 /// apps/SDKs can register their own payload handlers on the same
 /// registry before the tree realizes.
+// `#[inline]` is load-bearing, not a perf hint: as a plain `pub` non-generic
+// fn this is codegen'd into backend-web's rlib and survives to the final
+// link (the pipeline passes `--keep-lld-exports`, and the wrapper builds
+// with `lto = "off"`), which instantiates `register_builtins_with::<_,
+// AllBuiltins>` and re-anchors the WHOLE builtin vocabulary even for an app
+// that selected a smaller set through the `_with` entry. Measured: a
+// `--primitives core` build stayed at 560,997 bytes instead of 357,581.
+// `#[inline]` makes it available for cross-crate inlining without emitting a
+// standalone symbol, so an unused default set is never instantiated.
+#[inline]
 pub fn start_in(
+    selector: &str,
+    register: impl FnOnce(&mut Registry<WebBackend>),
+    build: impl FnOnce() -> Element,
+) {
+    start_in_with::<runtime_vocabulary::AllBuiltins>(selector, register, build)
+}
+
+/// [`start_in`], booting only the builtin primitive families `S` selects.
+///
+/// The selector is a type parameter so the choice is made at compile time:
+/// an unselected family's `register_*` call folds away, nothing names its
+/// handlers, and LLVM drops them along with the web-sys imports and JS glue
+/// they reached. A runtime flag could not do this — it would still link
+/// every handler. See [`runtime_vocabulary::BuiltinSet`].
+///
+/// Realizing a payload from a family that was not selected panics at mount,
+/// the same loud failure an unregistered third-party payload gets.
+pub fn start_in_with<S: runtime_vocabulary::BuiltinSet>(
     selector: &str,
     register: impl FnOnce(&mut Registry<WebBackend>),
     build: impl FnOnce() -> Element,
@@ -209,9 +247,16 @@ pub fn start_in(
     // driver below rides the scheduler, so it must exist first.
     crate::install_scheduler();
     crate::install_time_source();
-    // URL sync service for the vocabulary navigator handlers (before
-    // the build, so every navigator registers) — see newcore_url_sync.
-    crate::newcore_url_sync::install();
+    // URL sync service for the vocabulary navigator handlers (before the
+    // build, so every navigator registers) — see newcore_url_sync.
+    //
+    // Routed through the set rather than called directly: this reaches
+    // `runtime_shared::primitives::navigator`, so an unconditional call
+    // re-anchored 16,153 bytes of navigator code in bundles that had
+    // dropped the nav prims entirely. A set without `nav` never invokes the
+    // closure, so its body — and `newcore_url_sync` with it — is never
+    // codegen'd.
+    S::nav_services(|| crate::newcore_url_sync::install());
     // Route `runtime_shared::driver::spawn` futures through the hooked
     // executor so future polls fire the post-dispatch flush hook.
     #[cfg(feature = "async-driver")]
@@ -223,7 +268,7 @@ pub fn start_in(
     crate::install_global_self(&backend);
 
     let mut registry: Registry<WebBackend> = Registry::new();
-    runtime_vocabulary::register_builtins(&mut registry);
+    runtime_vocabulary::register_builtins_with::<WebBackend, S>(&mut registry);
     register(&mut registry);
     let registry = Rc::new(registry);
 

@@ -137,6 +137,59 @@ fn portal_visibility_tracks_screen_nav_active_route() {
     assert_eq!(h.take_log(), ["set_portal_hidden n0 false"]);
 }
 
+/// A portal mounted AFTER the scope that provided `ScreenNav` has been
+/// torn down must not abort the app.
+///
+/// The reported crash: `provide`/`inject` was an unowned world-level
+/// map, so a navigator's `ScreenNav` — carrying `active_route`, a `Copy`
+/// handle owned by the NAVIGATOR's scope — outlived the navigator. An
+/// auth gate or route swap drops the navigator, freeing the slot; the
+/// next portal to mount (an anchored menu in a persistent shell) injects
+/// the surviving entry and `effect` runs its body immediately, so
+/// `active_route.get()` hits a freed slot and aborts with
+/// `stale-signal-handle` during that portal's own mount.
+///
+/// Both halves are pinned here: the entry must be retracted with its
+/// scope, and a portal must survive being handed a dead one anyway.
+#[test]
+fn regression_portal_mounts_after_screen_nav_scope_is_torn_down() {
+    let h = harness();
+
+    // A navigator scope: owns `active_route` and publishes it.
+    let (active, nav_scope) = h.world.enter(|| {
+        runtime_world::collect_owned(|| {
+            let active = signal("home");
+            provide(ScreenNav { active_route: active.read_only(), route: "home" });
+            active
+        })
+    });
+
+    // The gate fires: the navigator is destroyed, freeing `active_route`.
+    drop(nav_scope);
+    assert!(!active.read_only().is_alive(), "the navigator's scope freed the route signal");
+
+    // The shell (which outlived the navigator) now mounts a portal. This
+    // is the ~200ms-after-login crash.
+    let _root = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            portal(PortalTarget::Viewport(ViewportPlacement::Center))
+                .child(text().content("menu"))
+                .build(),
+        )
+    });
+
+    // It mounted, and it installed no visibility effect — with no live
+    // screen to track there is nothing to hide against.
+    let log = h.take_log();
+    assert!(
+        !log.iter().any(|l| l.starts_with("set_portal_hidden")),
+        "no visibility effect without a live ScreenNav: {log:?}"
+    );
+    assert!(log.iter().any(|l| l.ends_with("portal")), "the portal still mounts: {log:?}");
+}
+
 #[test]
 fn overlay_composition_backdrop_first_then_content_wrapper() {
     let h = harness();

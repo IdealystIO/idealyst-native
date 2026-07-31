@@ -119,6 +119,11 @@ pub fn run(args: Args) -> Result<()> {
     let artifact = build_web::build(
         &app_dir,
         build_web::BuildOptions {
+        // Dev/docs/run builds keep the full vocabulary: `--primitives`
+        // is a release-bundle lever, and dropping one mid-session would
+        // panic at mount rather than degrade.
+        primitives: None,
+            premint_only: false,
             release: args.release,
             source: source.clone(),
             user_features: Vec::new(),

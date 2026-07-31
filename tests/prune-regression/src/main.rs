@@ -315,7 +315,120 @@ fn verify_artifacts(app_dir: &Path, wasm_stem: &str) -> Result<(), String> {
     {
         return Err(format!("missing {wasm_stem}*.js in {}", pkg.display()));
     }
+    verify_no_build_machine_paths(&wasm)?;
     Ok(())
+}
+
+/// A release bundle must not disclose the build machine's filesystem.
+///
+/// Panic `Location`s (`file!()` behind every `unwrap`/`expect`/bounds check)
+/// live in the wasm's `.rodata` — they are NOT debug info, so `wasm-opt
+/// --strip-debug` leaves them intact. The generated wrapper spells framework
+/// deps as absolute paths, which used to promote every framework `file!()` to
+/// an absolute build-machine path; a deployed bundle then shipped the
+/// builder's home directory, username, toolchain version, and dependency
+/// inventory to every client. `cargo_build_wasm` now passes
+/// `--remap-path-prefix` on release builds (`build_ios::remap_path_flags`).
+///
+/// Checked on the wasm only: the wasm-bindgen JS shim, the `__wasm_split`
+/// loader, and `index.html` were all verified clean — the disclosure is
+/// specific to the wasm's data section.
+///
+/// `$HOME` catches the repo, `~/.cargo`, and `~/.rustup` in one needle; the
+/// framework workspace root is checked separately so a checkout outside
+/// `$HOME` is still covered.
+fn verify_no_build_machine_paths(wasm: &Path) -> Result<(), String> {
+    let bytes =
+        std::fs::read(wasm).map_err(|e| format!("reading {}: {}", wasm.display(), e))?;
+    match find_leaked_path(&bytes, &build_machine_needles()) {
+        Some(found) => Err(format!(
+            "{} leaks the build machine's absolute paths (found {:?} in the \
+             wasm data section). Release builds must pass --remap-path-prefix; \
+             see build_ios::remap_path_flags.",
+            wasm.display(),
+            found,
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Path prefixes that must never appear in a shipped bundle. `$HOME` covers
+/// the checkout, `~/.cargo`, and `~/.rustup` in one needle; the framework
+/// workspace root is added separately so a checkout outside `$HOME` is
+/// covered too.
+fn build_machine_needles() -> Vec<String> {
+    let mut needles: Vec<String> = Vec::new();
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = home.to_string_lossy().trim_end_matches('/').to_string();
+        // Guard against a degenerate `HOME` (`/`, or set-but-empty) matching
+        // essentially any path byte in the module.
+        if home.len() > 1 {
+            needles.push(home);
+        }
+    }
+    if let Some(root) = workspace_tests_dir().parent() {
+        let root = root.display().to_string();
+        if root.len() > 1 && !needles.iter().any(|n| root.starts_with(n.as_str())) {
+            needles.push(root);
+        }
+    }
+    needles
+}
+
+/// First needle occurring anywhere in `bytes`, if any.
+fn find_leaked_path<'a>(bytes: &[u8], needles: &'a [String]) -> Option<&'a str> {
+    needles.iter().find_map(|needle| {
+        let n = needle.as_bytes();
+        (!n.is_empty() && n.len() <= bytes.len() && bytes.windows(n.len()).any(|w| w == n))
+            .then_some(needle.as_str())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pins that the check actually fires. Before the `--remap-path-prefix`
+    /// fix, a release `baseline` bundle carried 80 absolute build-machine
+    /// paths; after it, zero. This reproduces both shapes over the same
+    /// matcher so the assertion can't silently degrade into a no-op.
+    #[test]
+    fn detects_leaked_build_machine_path() {
+        let needles = vec!["/Users/somebody".to_string()];
+
+        // Shape of a pre-fix bundle: a panic message followed by its
+        // `core::panic::Location` file string.
+        let leaky = b"wrap fragment trees in a view\0\
+                      /Users/somebody/idealyst-native/crates/runtime/scene/src/registry.rs";
+        assert_eq!(
+            find_leaked_path(leaky, &needles),
+            Some("/Users/somebody"),
+            "must catch an absolute build-machine path",
+        );
+
+        // Shape of a post-fix bundle: same data, remapped.
+        let clean = b"wrap fragment trees in a view\0\
+                      /idealyst/crates/runtime/scene/src/registry.rs";
+        assert_eq!(
+            find_leaked_path(clean, &needles),
+            None,
+            "remapped paths must pass",
+        );
+    }
+
+    /// A short or degenerate `$HOME` must not be turned into a needle that
+    /// matches arbitrary bytes — that would fail every bundle.
+    #[test]
+    fn degenerate_home_is_not_used_as_a_needle() {
+        let needles: Vec<String> = vec![];
+        assert_eq!(find_leaked_path(b"/anything/at/all", &needles), None);
+        // An empty needle must never count as a hit.
+        assert_eq!(
+            find_leaked_path(b"/anything", &["".to_string()]),
+            None,
+            "empty needle must not match",
+        );
+    }
 }
 
 /// First file in `pkg` whose name starts with `prefix` and ends with

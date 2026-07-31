@@ -205,7 +205,13 @@ pub fn theme_ctx() -> ThemeCtx {
         // mount scope first touched the theme (module docs).
         version: unscoped(|| signal(0u64)),
     };
-    provide(ctx.clone());
+    // The PROVISION is world-root too, not just the signal: `provide` binds
+    // an entry to the ambient collector, and first-touch happens inside
+    // whatever subtree's mount got here first. Scope-owned, the ctx would
+    // stop being injectable the moment that subtree unmounted and the next
+    // `theme_ctx()` would build a SECOND ctx around a fresh version signal
+    // — silently orphaning every effect subscribed to the first.
+    unscoped(|| provide(ctx.clone()));
     LAST_CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
     ctx
 }

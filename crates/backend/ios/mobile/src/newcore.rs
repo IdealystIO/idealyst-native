@@ -536,11 +536,37 @@ mod ios_impl {
     /// `world.enter`, so free `signal()`/`effect()` calls work;
     /// top-level creations are world-root-owned (they live until app
     /// teardown).
+    #[inline]
     pub fn start(
         backend: Rc<RefCell<IosBackend>>,
         register: impl FnOnce(&mut Registry<IosBackend>),
         build: impl FnOnce() -> Element,
     ) -> NewCoreApp {
+        // `#[inline]` is load-bearing, not a perf hint: as a plain
+        // non-generic `pub` fn this is codegen'd into the rlib and can
+        // survive to the final link, instantiating
+        // `register_builtins_with::<_, AllBuiltins>` and re-anchoring
+        // the WHOLE builtin vocabulary even for an app that selected a
+        // smaller set through `start_with`.
+        start_with::<runtime_vocabulary::AllBuiltins, _, _>(backend, register, build)
+    }
+
+    /// [`start`], booting only the builtin primitives `S` selects.
+    ///
+    /// Compile-time selection: an unselected primitive's registration
+    /// folds away, nothing names its handler, and the linker drops it
+    /// along with the backend code it alone reached. See
+    /// [`runtime_vocabulary::BuiltinSet`]. Realizing a payload this set
+    /// omits panics at mount.
+    pub fn start_with<S, R, B>(
+        backend: Rc<RefCell<IosBackend>>,
+        register: R,
+        build: B,
+    ) -> NewCoreApp where
+        S: runtime_vocabulary::BuiltinSet,
+        R: FnOnce(&mut Registry<IosBackend>),
+        B: FnOnce() -> Element,
+    {
         // Monotonic clock (step 1) — idempotent, first install wins.
         // The old `mount` preamble's other ambient installs are
         // runtime-core-private and skipped, same as web/macOS.
@@ -548,7 +574,7 @@ mod ios_impl {
         runtime_shared::time::install_default_time_source(platform);
 
         let mut registry: Registry<IosBackend> = Registry::new();
-        runtime_vocabulary::register_builtins(&mut registry);
+        runtime_vocabulary::register_builtins_with::<_, S>(&mut registry);
         register(&mut registry);
         let registry = Rc::new(registry);
 

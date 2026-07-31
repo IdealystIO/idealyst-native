@@ -297,11 +297,36 @@ impl NewCoreApp {
 /// registry before the tree realizes. The build closure runs inside
 /// `world.enter`, so free `signal()`/`effect()` calls work; top-level
 /// creations are world-root-owned (they live until app teardown).
+#[inline]
 pub fn start(
     backend: Rc<RefCell<WgpuBackend>>,
     register: impl FnOnce(&mut Registry<WgpuBackend>),
     build: impl FnOnce() -> Element,
 ) -> NewCoreApp {
+    // `#[inline]` is load-bearing: a plain non-generic `pub` fn is
+    // codegen'd into the rlib and can survive to the final link,
+    // instantiating `register_builtins_with::<_, AllBuiltins>` and
+    // re-anchoring the WHOLE builtin vocabulary even for an app that
+    // selected a smaller set through `start_with`.
+    start_with::<runtime_vocabulary::AllBuiltins, _, _>(backend, register, build)
+}
+
+/// [`start`], booting only the builtin primitives `S` selects.
+///
+/// Compile-time selection: an unselected primitive's registration folds
+/// away, nothing names its handler, and the linker drops it along with
+/// the backend code it alone reached. See
+/// [`runtime_vocabulary::BuiltinSet`]. Realizing a payload this set
+/// omits panics at mount.
+pub fn start_with<S, R, B>(
+    backend: Rc<RefCell<WgpuBackend>>,
+    register: R,
+    build: B,
+) -> NewCoreApp where
+    S: runtime_vocabulary::BuiltinSet,
+    R: FnOnce(&mut Registry<WgpuBackend>),
+    B: FnOnce() -> Element,
+{
     // Monotonic clock (step 1 in the module docs). Idempotent, first
     // install wins. The platform identity comes from the active skin
     // (`NativeSkin` reports the real host OS; sim skins report their
@@ -310,7 +335,7 @@ pub fn start(
     runtime_shared::time::install_default_time_source(platform);
 
     let mut registry: Registry<WgpuBackend> = Registry::new();
-    runtime_vocabulary::register_builtins(&mut registry);
+    runtime_vocabulary::register_builtins_with::<_, S>(&mut registry);
     register(&mut registry);
     let registry = Rc::new(registry);
 
@@ -413,14 +438,40 @@ pub fn start(
 /// The host must have constructed the backend (via [`crate::Host::new`],
 /// which installs the global self-handle) and a scheduler + time source
 /// must be installed (the embedding page host's boot did both).
+#[inline]
 pub fn start_in_world(
     backend: Rc<RefCell<WgpuBackend>>,
     register: impl FnOnce(&mut Registry<WgpuBackend>),
     build: impl FnOnce() -> Element,
     world: World,
 ) -> NewCoreApp {
+    // `#[inline]` is load-bearing: a plain non-generic `pub` fn is
+    // codegen'd into the rlib and can survive to the final link,
+    // instantiating `register_builtins_with::<_, AllBuiltins>` and
+    // re-anchoring the WHOLE builtin vocabulary even for an app that
+    // selected a smaller set through `start_in_world_with`.
+    start_in_world_with::<runtime_vocabulary::AllBuiltins, _, _>(backend, register, build, world)
+}
+
+/// [`start_in_world`], booting only the builtin primitives `S` selects.
+///
+/// Compile-time selection: an unselected primitive's registration folds
+/// away, nothing names its handler, and the linker drops it along with
+/// the backend code it alone reached. See
+/// [`runtime_vocabulary::BuiltinSet`]. Realizing a payload this set
+/// omits panics at mount.
+pub fn start_in_world_with<S, R, B>(
+    backend: Rc<RefCell<WgpuBackend>>,
+    register: R,
+    build: B,
+    world: World,
+) -> NewCoreApp where
+    S: runtime_vocabulary::BuiltinSet,
+    R: FnOnce(&mut Registry<WgpuBackend>),
+    B: FnOnce() -> Element,
+{
     let mut registry: Registry<WgpuBackend> = Registry::new();
-    runtime_vocabulary::register_builtins(&mut registry);
+    runtime_vocabulary::register_builtins_with::<_, S>(&mut registry);
     register(&mut registry);
     let registry = Rc::new(registry);
 

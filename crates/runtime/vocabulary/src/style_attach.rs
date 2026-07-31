@@ -329,6 +329,26 @@ pub fn on_teardown(f: impl FnOnce() + 'static) {
 /// the owning world ambient): the binding effect, the state signal, and
 /// the teardown probe all register into the ambient collector and die
 /// with the subtree.
+/// What a `--premint-only` build says when it meets a style it cannot
+/// render.
+///
+/// Deliberately verbose: the flag is a promise the author made at build time
+/// ("every style in this app is preminted"), and the failure surfaces far
+/// from the call that broke it, so the message carries the whole diagnosis
+/// and both exits.
+#[cfg(idealyst_premint_only)]
+const PREMINT_ONLY_VIOLATION: &str = "\
+this bundle was built with --premint-only, which compiles OUT the runtime \
+style engine, but a style reached `attach_style` that needs it.\n\n\
+--premint mints a class at BUILD time only for an all-constant, \
+override-free stylesheet BUILDER application — `style = Card()`. Passing the \
+raw sheet instead (`style = card_style()`), a reactive input, a runtime slot \
+override, `signal_class`, or a raw `StyleRules` closure all fall through to \
+the live engine, which this build does not contain.\n\n\
+Either move the offending style onto the builder form so its whole variant \
+space premints, or drop --premint-only and keep the engine. --premint on its \
+own is always safe.";
+
 pub fn attach_style<H: StyleServices>(
     backend: &Rc<RefCell<H>>,
     node: &H::Node,
@@ -360,9 +380,35 @@ pub fn attach_style<H: StyleServices>(
             });
             noop_setter()
         }
+        // ---- live-engine arms ----
+        //
+        // Under `--cfg idealyst_premint_only` these are the only paths that
+        // reach the runtime style engine (sheet registration, the token
+        // cohort, `StyleRules` → CSS), so compiling them out is what drops
+        // it — ~76 KB raw / ~23 KB brotli on a web build.
+        //
+        // `--premint` alone cannot: the `stylesheet!` macro's preminted fast
+        // path FALLS THROUGH to `Sheet`/`SheetDynamic` for any reactive or
+        // override-carrying application, so the engine stays named and
+        // therefore linked even in an app whose every class preminted. That
+        // fallthrough is why this has to be a separate, explicit promise
+        // rather than something `--premint` implies.
+        #[cfg(not(idealyst_premint_only))]
         StyleProp::Dynamic(f) => attach_rules_dynamic(backend, node, f),
+        #[cfg(not(idealyst_premint_only))]
         StyleProp::Sheet(app) => attach_sheet_static(backend, node, *app),
+        #[cfg(not(idealyst_premint_only))]
         StyleProp::SheetDynamic(f) => attach_sheet_dynamic(backend, node, f),
+        // The promise was wrong: this build has no engine to fall back to.
+        // Panic loudly rather than render the node unstyled — a silently
+        // unstyled subtree is far harder to diagnose than a stack trace, and
+        // it matches the loud-failure policy an unregistered payload gets at
+        // realize.
+        #[cfg(idealyst_premint_only)]
+        StyleProp::Dynamic(_) | StyleProp::Sheet(_) | StyleProp::SheetDynamic(_) => {
+            panic!("{}", PREMINT_ONLY_VIOLATION)
+        }
+        #[cfg(not(idealyst_premint_only))]
         StyleProp::SignalClass(spec) => {
             let spec = *spec;
             // JS fast path (web): pre-minted per-value classes + JS-side
@@ -388,6 +434,8 @@ pub fn attach_style<H: StyleServices>(
                 }),
             )
         }
+        #[cfg(idealyst_premint_only)]
+        StyleProp::SignalClass(_) => panic!("{}", PREMINT_ONLY_VIOLATION),
         StyleProp::Preminted { class, overrides } => {
             debug_assert!(
                 backend.borrow().supports_preminted_styles(),
@@ -411,6 +459,20 @@ pub fn attach_style<H: StyleServices>(
                     b.attach_html_class(node, cls);
                 }
             }
+            // A preminted class carrying RUNTIME slot overrides layers a
+            // real sheet application on top, which reaches the engine. The
+            // `stylesheet!` macro never emits this shape — its preminted
+            // fast path bails to the live path whenever any override is
+            // set, so `overrides` is always `None` in generated code (only
+            // hand-built `StyleProp`s in tests construct `Some`). Compiling
+            // it out is therefore not a behavior change for real apps, and
+            // it is what finally unanchors `attach_sheet_static` →
+            // `ensure_sheet_registered`.
+            #[cfg(idealyst_premint_only)]
+            if overrides.is_some() {
+                panic!("{}", PREMINT_ONLY_VIOLATION);
+            }
+            #[cfg(not(idealyst_premint_only))]
             if let Some(rules) = overrides {
                 // Runtime slot overrides layer a normal static sheet
                 // application on top of the preminted class — same
@@ -481,6 +543,7 @@ pub(crate) fn ensure_signal_notifier_installed(signal_id: u64, install: impl FnO
     install();
 }
 
+#[cfg(not(idealyst_premint_only))]
 /// Ensure ONE world-root effect exists for `signal_id` that ships the
 /// signal's committed value to the backend's JS CLASS dispatcher
 /// (`StyleOps::notify_signal_value_js`).
@@ -502,6 +565,7 @@ fn ensure_signal_notifier<H: StyleServices>(
     });
 }
 
+#[cfg(not(idealyst_premint_only))]
 /// The JS fast path: mint one class per declared value, register the
 /// (signal → value → class) table with the backend's JS dispatcher,
 /// ensure the per-signal notifier, release on teardown. Zero per-node
@@ -558,6 +622,7 @@ fn attach_signal_class_js<H: StyleServices>(
 // P2 dynamic resolved-rules path (unchanged behavior, now returns setter)
 // ===========================================================================
 
+#[cfg(not(idealyst_premint_only))]
 fn attach_rules_dynamic<H: StyleServices>(
     backend: &Rc<RefCell<H>>,
     node: &H::Node,
@@ -595,6 +660,7 @@ fn attach_rules_dynamic<H: StyleServices>(
 // Sheet paths (P3c)
 // ===========================================================================
 
+#[cfg(not(idealyst_premint_only))]
 /// Static sheet application — port of `attach_style_static`.
 fn attach_sheet_static<H: StyleServices>(
     backend: &Rc<RefCell<H>>,
@@ -665,6 +731,7 @@ fn attach_sheet_static<H: StyleServices>(
     noop_setter()
 }
 
+#[cfg(not(idealyst_premint_only))]
 /// Dynamic sheet application — port of `attach_style_reactive`.
 fn attach_sheet_dynamic<H: StyleServices>(
     backend: &Rc<RefCell<H>>,
@@ -850,6 +917,7 @@ pub(crate) fn apply_sheet<H: StyleServices>(
 // so the vocabulary scans `variant_keys()` by the reserved prefixes).
 // ===========================================================================
 
+#[cfg(not(idealyst_premint_only))]
 /// The sheet's declared state-overlay axes — the CACHED per-sheet
 /// slice (empty for the common no-`state`-block case). Scanning
 /// `variant_keys()` here allocated the full key list per styled node

@@ -817,19 +817,12 @@ stylesheet! {
             // no-op. Mirrors Button/IconButton.
             cursor: Cursor::Pointer,
         }
-        // Keyboard/pointer focus rings the whole control row with the themed
-        // indigo focus ring — the cross-platform indicator that replaces the
-        // native ring (suppressed on the pressable host; browser outline killed
-        // by the web `:focus` rule). Mirrors Button: the row reserves no base
-        // border, so `border_width: 1` on focus draws it inside the bounds
-        // (border-box keeps the outer size fixed; no content nudge).
-        state focused(t) {
-            border_width: 1.0,
-            border_color: Tokenized::token("color-focus-ring", Color("#5b6cff".into())),
-        }
-        transitions {
-            border_color: 150ms EaseOut,
-        }
+        // NO `state focused` here. The row is a plain layout view whose
+        // focusable host is the CONTROL inside it (the Switch track, the
+        // Checkbox box, the Radio ring — each a `pressable` carrying its
+        // sheet's `__state_focused` ring). Ringing the row instead drew a
+        // border around control *and* label, which reads as a stray box
+        // around the text rather than a focus indicator on the control.
     }
 }
 

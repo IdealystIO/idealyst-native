@@ -111,7 +111,12 @@ mod active_slot {
     }
 
     pub(super) fn store(sig: Signal<ThemeSlot>) {
-        runtime_core::provide(ActiveTheme(sig));
+        // `unscope` the PROVISION too, not just the signal: a context
+        // entry is owned by the scope that made it, and `store` runs from
+        // whichever render scope first installed a theme. Scope-owned, the
+        // slot would stop being injectable on that subtree's unmount and
+        // the next `current()` would fall back to a fresh theme.
+        runtime_core::unscope(|| runtime_core::provide(ActiveTheme(sig)));
         LAST_ACTIVE.with(|t| *t.borrow_mut() = Some(sig));
     }
 }

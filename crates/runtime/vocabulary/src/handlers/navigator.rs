@@ -100,7 +100,7 @@ use runtime_shared::primitives::navigator::{
 };
 use runtime_shared::StyleRules;
 use runtime_scene::{component_scope, realize, Element, MountCx, Realized, Registry};
-use runtime_world::{effect, inject, provide, signal, Signal};
+use runtime_world::{collect_owned, effect, provide, signal, Owned, Signal};
 
 use crate::caps::{IntrospectionOps, LifecycleOps, ViewOps};
 use crate::prims::{
@@ -280,6 +280,20 @@ fn fold_style_overrides(element: &mut Element, rules: &Rc<StyleRules>) {
 /// teardown — the `realized` field is never *read*; holding it is the
 /// whole point (Realized retention, module docs).
 struct LiveScreen<N> {
+    /// The screen's `provide`d context (`ScreenNav`, `LinkActivator`).
+    /// Declared FIRST so it is retracted before the subtree tears down —
+    /// a teardown cleanup that injects then sees the enclosing screen's
+    /// context, never this screen's half-dead one.
+    ///
+    /// Held here rather than bounded to the build window because a
+    /// reactive region INSIDE the screen (a `when` holding a `link`, a
+    /// modal's portal) rebuilds long after `realize_screen` returns and
+    /// must still resolve its screen's nav — while a `provide` from the
+    /// driver-effect path has no ambient collector of its own to belong
+    /// to. The screen is the correct owner: exactly as long as the
+    /// handles the entries carry.
+    #[allow(dead_code)]
+    ctx_scope: Owned,
     node: N,
     #[allow(dead_code)]
     realized: Realized<N>,
@@ -292,14 +306,28 @@ struct LiveScreen<N> {
 /// thread-local guards held across BOTH the builder and the realize —
 /// the old `mount_screen`'s `with_scope(|| builder() … build())` shape.
 ///
-/// [`crate::prims::ScreenNav`] is `provide`d for the build window (and
-/// the previous value restored after) so any portal in the subtree can
+/// [`crate::prims::ScreenNav`] is `provide`d into a scope THIS SCREEN
+/// owns (`LiveScreen::ctx_scope`) so any portal in the subtree can
 /// install its hide-when-inactive visibility effect — the old
-/// `mount_screen`'s `reactive::provide(ScreenNav …)`. World context has
-/// no scoping, so a `Dyn` region rebuilt LATER injects whatever was
-/// provided last — same class of limitation the old core patched with
-/// `AmbientNavContext` recapture; that recapture rides the P3 driver
-/// work, not this port.
+/// `mount_screen`'s `reactive::provide(ScreenNav …)`.
+///
+/// The ownership is load-bearing, not tidiness. `ScreenNav` carries
+/// `active_route`, a `Copy` handle owned by the NAVIGATOR's scope, and
+/// this fn runs both at mount and later from the driver effect — where
+/// there is no ambient collector for a plain `provide` to belong to.
+/// Unowned, the entry outlives the navigator that a route gate or an
+/// auth swap tore down, and the next portal to mount injects it and
+/// aborts with `stale-signal-handle` on its first `active_route.get()`.
+/// Screen ownership also replaces the old save/restore-`prev` idiom,
+/// which could *reinstate* a dead `ScreenNav` by re-providing a snapshot
+/// taken before the teardown.
+///
+/// World context is a per-type stack, not a tree, so with two screens
+/// retained at once a `Dyn` region rebuilt LATER injects whichever
+/// screen provided most recently rather than its own. That is the old
+/// core's `AmbientNavContext` recapture, which rides the P3 driver work
+/// — it is a wrong-value limitation now, no longer a crash, because
+/// every entry on the stack is backed by live signals.
 ///
 /// Must run with the owning world ambient (mount handlers and driver
 /// effects both qualify) — the handler-safety invariant in the module
@@ -324,18 +352,24 @@ fn realize_screen<H: NavCaps + 'static>(
     let _base_guard = NavBaseGuard::push(join_path(base, entry.path));
     let _state_guard = ScreenStateGuard::push(state);
     let _route_guard = ScreenRouteGuard::push(name);
-    let prev_screen_nav = inject::<crate::prims::ScreenNav>();
-    provide(crate::prims::ScreenNav {
-        active_route: active_route.read_only(),
-        route: name,
+    // Both provisions are collected into a scope this screen OWNS (it
+    // rides in the returned `LiveScreen`), so they die exactly when the
+    // screen does — see `LiveScreen::ctx_scope`. The `collect_owned`
+    // wraps only the provides: everything the builder creates belongs to
+    // `component_scope`'s nested collector below.
+    let ((), ctx_scope) = collect_owned(|| {
+        provide(crate::prims::ScreenNav {
+            active_route: active_route.read_only(),
+            route: name,
+        });
+        // The ambient route-link seam (P6): a `link(route = …)` mounted
+        // in THIS screen's subtree resolves to THIS navigator's dispatch
+        // — push-vs-select decided by the navigator kind, the old
+        // `install_link_activator` contract. Owned by the screen so a
+        // nested navigator's screens re-shadow correctly, and so the
+        // entry cannot outlive the dispatch signals it closes over.
+        provide(link_activator.clone());
     });
-    // The ambient route-link seam (P6): a `link(route = …)` mounted in
-    // THIS screen's subtree resolves to THIS navigator's dispatch —
-    // push-vs-select decided by the navigator kind, the old
-    // `install_link_activator` contract. Save/restore so a nested
-    // navigator's screens re-shadow correctly.
-    let prev_activator = inject::<LinkActivator>();
-    provide(link_activator.clone());
     let build = entry.build.clone();
     // `component_scope` wraps one Element; the Screen's options ride
     // out through a side slot (they're plain data, not scope-owned).
@@ -356,15 +390,10 @@ fn realize_screen<H: NavCaps + 'static>(
         fold_style_overrides(&mut element, rules);
     }
     let realized = realize(backend, registry, element);
-    if let Some(prev) = prev_screen_nav {
-        provide(prev);
-    }
-    if let Some(prev) = prev_activator {
-        provide(prev);
-    }
     let mut nodes = realized.collect_nodes();
     match nodes.len() {
         1 => LiveScreen {
+            ctx_scope,
             node: nodes.pop().expect("len checked"),
             realized,
             options,
@@ -1027,11 +1056,17 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
             dispatch(NavCommand::Select { name, url, params, state: None });
         })
     };
-    let prev_ctx = inject::<SwapNav>();
+    // Owned by the navigator's own mount scope — this handler runs inside
+    // the navigator's `Realized` collector, so the entry is retracted
+    // when the navigator unmounts. That is the lifetime the contents
+    // demand (`SwapNav` carries this navigator's `active_route` /
+    // `active_path`), and it keeps the context resolvable for chrome that
+    // rebuilds reactively after mount. The old save/restore-`prev` idiom
+    // left it published FOREVER at the top level, which is how a
+    // destroyed navigator's signals stayed reachable through `inject`.
     provide(SwapNav { active_route, active_path, on_select });
     // Chrome links target this navigator too (a nav bar of
-    // `link(route = …)`s) — same save/restore discipline.
-    let prev_activator = inject::<LinkActivator>();
+    // `link(route = …)`s) — same ownership.
     provide(link_activator.clone());
     let guard = OutletCaptureGuard::<H::Node>::push();
     let layout_element = match &prim.layout {
@@ -1040,12 +1075,6 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     };
     let (layout_root, chrome) = cx.realize_detached(layout_element);
     let outlet = guard.take();
-    if let Some(prev) = prev_ctx {
-        provide(prev);
-    }
-    if let Some(prev) = prev_activator {
-        provide(prev);
-    }
     debug_assert!(
         outlet.is_some(),
         "swap_navigator: the author layout must splat `navigator_outlet()` exactly once — \
@@ -1514,7 +1543,7 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         let dispatch = dispatch.clone();
         Rc::new(move || dispatch(NavCommand::Pop))
     };
-    let prev_ctx = inject::<StackNav>();
+    // Owned by the navigator's mount scope — see `mount_swap_navigator`.
     provide(StackNav {
         active_route,
         active_path,
@@ -1523,8 +1552,7 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         pop,
         screen_chrome: shared.screen_chrome,
     });
-    // Chrome links target this navigator too — same save/restore.
-    let prev_activator = inject::<LinkActivator>();
+    // Chrome links target this navigator too — same ownership.
     provide(link_activator.clone());
     let guard = OutletCaptureGuard::<H::Node>::push();
     let layout_element = match &prim.layout {
@@ -1533,12 +1561,6 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
     };
     let (layout_root, chrome) = cx.realize_detached(layout_element);
     let outlet = guard.take();
-    if let Some(prev) = prev_ctx {
-        provide(prev);
-    }
-    if let Some(prev) = prev_activator {
-        provide(prev);
-    }
     debug_assert!(
         outlet.is_some(),
         "stack_navigator: the author layout must splat `navigator_outlet()`"
