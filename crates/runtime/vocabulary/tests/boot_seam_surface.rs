@@ -184,3 +184,113 @@ fn all_builtins_delegates_are_inline() {
         bad.join("\n  "),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Navigator services must ride the set, not the scheduler
+// ---------------------------------------------------------------------------
+
+/// Web boot files that must gate the URL provider behind `nav_services`.
+const WEB_BOOT_FILES: &[&str] = &[
+    "crates/backend/web/src/newcore.rs",
+    "crates/backend/web/src/newcore_hydrate.rs",
+];
+
+/// Return the body of the first `nav_services(` call in `src`, brace-matched
+/// from the `(` that opens it. `None` when the file makes no such call.
+fn nav_services_body(src: &str) -> Option<&str> {
+    let at = src.find("nav_services(")?;
+    let open = at + "nav_services".len();
+    let bytes = src.as_bytes();
+    let mut depth = 0usize;
+    for (i, b) in bytes.iter().enumerate().skip(open) {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&src[open + 1..i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Regression: a nav-less bundle still paid for the navigator.
+///
+/// `install_scheduler()` used to install the browser URL provider as a
+/// convenience ("every web host calls it anyway"). That made it
+/// unconditional, and its popstate listener calls `nav::handle_popstate` —
+/// so `NavigatorControl::dispatch` plus the `Rc` drop glue for it stayed
+/// reachable from boot in bundles that had dropped the navigator primitives
+/// entirely. Measured on a `--primitives view,text` hello-world: 10,827
+/// bytes of navigator code, 351,522 → 333,472 wasm / 124,659 → 118,850
+/// brotli once the call moved behind the set.
+///
+/// The failure mode is invisible at the type level — everything compiles
+/// either way and the app behaves identically — so this pins the shape:
+/// the install may only appear inside the `nav_services` closure, whose body
+/// a set without `nav` never runs and therefore never codegens.
+#[test]
+fn url_provider_install_is_gated_on_nav_services() {
+    let root = repo_root();
+    let mut bad: Vec<String> = Vec::new();
+
+    // 1. The scheduler must not carry it. This is the exact regression.
+    let sched_rel = "crates/backend/web/src/scheduler.rs";
+    if let Ok(src) = std::fs::read_to_string(root.join(sched_rel)) {
+        for (i, line) in src.lines().enumerate() {
+            let t = line.trim_start();
+            if t.starts_with("//") {
+                continue;
+            }
+            if t.contains("install_url_provider(") {
+                bad.push(format!(
+                    "{sched_rel}:{}: installs the URL provider from the \
+                     scheduler, which is unconditional and re-anchors \
+                     `NavigatorControl` in nav-less bundles — move it into \
+                     the boot seam's `nav_services` closure",
+                    i + 1
+                ));
+            }
+        }
+    }
+
+    // 2. Both web boot paths must install it, and only inside the closure.
+    for rel in WEB_BOOT_FILES {
+        let Ok(src) = std::fs::read_to_string(root.join(rel)) else {
+            continue;
+        };
+        let src = without_test_modules(&src);
+        let body = nav_services_body(&src);
+        match body {
+            None => bad.push(format!("{rel}: makes no `nav_services` call")),
+            Some(body) => {
+                if !body.contains("install_url_provider()") {
+                    bad.push(format!(
+                        "{rel}: `nav_services` closure does not install the URL \
+                         provider — a hydrated navigator loses its deep-link \
+                         seed and pushState/popstate mirroring"
+                    ));
+                }
+            }
+        }
+        // Any occurrence outside the closure defeats the gate.
+        let inside = body.map(|b| b.matches("install_url_provider(").count()).unwrap_or(0);
+        let total = src.matches("install_url_provider(").count();
+        if total > inside {
+            bad.push(format!(
+                "{rel}: {} ungated `install_url_provider(` call(s) outside the \
+                 `nav_services` closure",
+                total - inside
+            ));
+        }
+    }
+
+    assert!(
+        bad.is_empty(),
+        "navigator URL services escaped the BuiltinSet gate:\n  {}",
+        bad.join("\n  "),
+    );
+}

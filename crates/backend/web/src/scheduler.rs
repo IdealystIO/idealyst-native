@@ -87,14 +87,19 @@ fn dispatch_via_promise(f: Box<dyn FnOnce() + 'static>) {
 /// Register this backend's scheduler with `runtime-core`. Idempotent —
 /// first install wins.
 ///
-/// Also installs the browser URL provider for the navigator substrate's
-/// URL sync (pushState/popstate mirroring + cold-start deep-link seed)
-/// — piggybacked here because every web host already calls
-/// `install_scheduler()` at startup, so outlet-model navigators get URL
-/// routing with zero extra host wiring. Idempotent + headless-safe.
+/// Deliberately does NOT install the browser URL provider. That used to
+/// be piggybacked here ("every web host calls `install_scheduler()`
+/// anyway"), which made it unconditional — and
+/// `url_provider::install_url_provider`'s popstate listener calls
+/// `nav::handle_popstate`, so it kept `NavigatorControl::dispatch` plus
+/// its `Rc` drop glue (10,827 bytes measured) alive in bundles that had
+/// dropped the navigator primitives entirely. The install now rides
+/// `BuiltinSet::nav_services` at the boot seam
+/// ([`crate::newcore::start_in_with`] / [`crate::newcore_hydrate::hydrate_in_with`]),
+/// next to `newcore_url_sync::install`, so a set without `nav` never
+/// names it and LLVM drops the whole chain.
 pub fn install_scheduler() {
     runtime_shared::scheduling::install_scheduler(Box::new(WebScheduler));
-    crate::url_provider::install_url_provider();
 }
 
 struct WebScheduler;

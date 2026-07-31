@@ -171,6 +171,23 @@ pub fn hydrate_in_with<S: runtime_vocabulary::BuiltinSet>(
     // hydration buffering both ride the scheduler, so it must exist first.
     crate::install_scheduler();
     crate::install_time_source();
+    // Navigator URL services, gated on the set exactly as in
+    // `start_in_with` — see the comment there for why this can't be an
+    // unconditional call (it anchors `NavigatorControl` + drop glue,
+    // 10,827 bytes, in nav-less bundles).
+    //
+    // `install_url_provider` used to reach this path by riding
+    // `install_scheduler`; `newcore_url_sync::install` never did, so a
+    // PRERENDERED page's outlet navigators registered no URL sync service
+    // at all and pushState/popstate silently did nothing. (The
+    // non-prerendered branch below forwards to `start_in_with`, which
+    // installs both — so only true hydration was affected.) Both run
+    // before the build, which is what the handlers' `resolve_initial`
+    // deep-link seed requires.
+    S::nav_services(|| {
+        crate::url_provider::install_url_provider();
+        crate::newcore_url_sync::install();
+    });
     // Route `runtime_shared::driver::spawn` futures through the hooked
     // executor so future polls fire the post-dispatch flush hook.
     #[cfg(feature = "async-driver")]

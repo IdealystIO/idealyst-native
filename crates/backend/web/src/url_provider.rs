@@ -35,9 +35,17 @@ fn pathname() -> String {
 }
 
 /// Install the browser URL provider + popstate wiring + initial-path
-/// seed. Idempotent; called from [`crate::install_scheduler`] so every
-/// web host gets it without extra wiring. Safe headless (no `window` ⇒
-/// no-op).
+/// seed. Idempotent, safe headless (no `window` ⇒ no-op).
+///
+/// Called from the boot seam's `BuiltinSet::nav_services` closure
+/// ([`crate::newcore::start_in_with`] /
+/// [`crate::newcore_hydrate::hydrate_in_with`]), NOT from
+/// `install_scheduler` — it used to ride the scheduler so every web host
+/// got it for free, but the popstate listener below calls
+/// `nav::handle_popstate`, which kept `NavigatorControl` reachable from
+/// boot in bundles that had dropped the navigator primitives (10,827
+/// bytes on a `--primitives view,text` hello-world). Behind the set, an
+/// app without `nav` never names this fn at all.
 pub fn install_url_provider() {
     if INSTALLED.with(|c| c.get()) {
         return;

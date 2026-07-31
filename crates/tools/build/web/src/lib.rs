@@ -1225,7 +1225,23 @@ pub fn generate_wrapper(
     // built). No `runtime-shared` here: the web wrapper spells no
     // substrate name of its own — `install_scheduler` / the robot relay
     // client all come through backend-web.
-    let runtime_core_dep = source.dep("crates/runtime/core", &[]);
+    // `async-driver` is REQUIRED, not optional polish. `runtime-vocabulary`'s
+    // lazy handler gates its entire load path on its OWN `async-driver`
+    // feature; without it `mount_lazy` compiles to "paint the placeholder and
+    // return", so a `lazy! {}` / `#[component(lazy)]` boundary renders its
+    // loading UI forever and the chunk is never even fetched.
+    //
+    // `backend-web/async-driver` does NOT cover this: it forwards to
+    // `runtime-shared/async-driver` (plus `wasm-bindgen-futures`), and
+    // `runtime-shared`'s flag is a different feature from the vocabulary's
+    // own. Only `runtime-core/async-driver` forwards to
+    // `runtime-vocabulary/async-driver`, so the wrapper has to ask for it
+    // here — which is also why the failure was silent: every crate compiled,
+    // the chunk was emitted and content-addressed, and only the runtime fetch
+    // was missing. `tests/lazy-payload-split`'s build tier passes on artifact
+    // shape + size delta and cannot see it; the `--browser` tier is what
+    // catches it.
+    let runtime_core_dep = source.dep("crates/runtime/core", &["async-driver"]);
     let runtime_vocabulary_dep = source.dep("crates/runtime/vocabulary", &[]);
     // The wrapper always installs `backend_web::install_async_executor()`
     // so `runtime_core::driver::spawn_async` works inside any
@@ -2397,6 +2413,52 @@ mod regression_tests {
         assert!(lib.contains("start_in_with::<runtime_vocabulary::AllBuiltins>"), "{lib}");
         assert!(lib.contains("hydrate_in_with::<runtime_vocabulary::AllBuiltins>"), "{lib}");
         assert!(!lib.contains("builtin_set!"), "no set declared:\n{lib}");
+    }
+
+    /// Regression: `lazy! {}` / `#[component(lazy)]` never loaded its chunk.
+    ///
+    /// `runtime-vocabulary`'s lazy handler gates its ENTIRE load path on that
+    /// crate's own `async-driver` feature. Without it `mount_lazy` compiles to
+    /// "paint the placeholder and return", so a lazy boundary showed its
+    /// loading UI forever and the chunk was never fetched — verified in a
+    /// browser: only index.html, the JS shim, `__wasm_split.js` and the main
+    /// wasm were requested, never `module_0___lazy_body.wasm`.
+    ///
+    /// `backend-web/async-driver` does NOT cover it: that forwards to
+    /// `runtime-shared/async-driver`, a different feature from the
+    /// vocabulary's. Only `runtime-core/async-driver` reaches
+    /// `runtime-vocabulary/async-driver`.
+    ///
+    /// Silent by construction — every crate compiled, the chunk was emitted,
+    /// split and content-addressed, and `tests/lazy-payload-split`'s build
+    /// tier (artifact shape + eager-vs-lazy size delta) passes on a chunk
+    /// nobody ever fetches. Only the `--browser` tier can see it, which is
+    /// why this asserts the feature at codegen time instead.
+    #[test]
+    fn wrapper_enables_async_driver_so_lazy_chunks_actually_load() {
+        let (wrapper_dir, _tmp) = run_generator();
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
+
+        let feats = parsed
+            .get("dependencies")
+            .and_then(|d| d.get("runtime-core"))
+            .and_then(|d| d.get("features"))
+            .and_then(|f| f.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        assert!(
+            feats.contains(&"async-driver"),
+            "web wrapper must enable `runtime-core/async-driver` — it is the \
+             ONLY path to `runtime-vocabulary/async-driver`, and without it \
+             every lazy boundary renders its placeholder forever while the \
+             chunk is never fetched. Got runtime-core features {feats:?} in:\n{cargo}",
+        );
     }
 
     /// The wrapper spells `runtime_vocabulary::…` at the boot seam, so the

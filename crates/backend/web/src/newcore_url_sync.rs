@@ -22,10 +22,12 @@
 //! - The old register deferred its history seed a microtask (the old
 //!   handler's initial mount was deferred); the new handlers mount
 //!   synchronously, so the seed runs inline at registration.
-//! - Deep-link boot needs nothing here: `install_scheduler` already
+//! - Deep-link boot needs nothing here: `url_provider::install_url_provider`
 //!   seeds `runtime_shared`'s initial-path slot from
-//!   `window.location.pathname` (url_provider.rs), and the new-core
-//!   navigator handlers peek it during `resolve_initial`.
+//!   `window.location.pathname`, and the new-core navigator handlers peek
+//!   it during `resolve_initial`. Both installs sit in the same
+//!   `BuiltinSet::nav_services` closure at the boot seam and both run
+//!   before the app builds, so that ordering holds.
 //! - Popstate dispatch only STAGES commands, so the listener calls
 //!   [`crate::newcore::schedule_flush`] afterwards — popstate is a raw
 //!   DOM event outside every wrapped author callback (the residual the
@@ -739,9 +741,9 @@ mod tests {
     /// Cold-start deep link: the initial-path slot resolves the URL's
     /// screen at boot, and the registration seeds browser history with
     /// the index entry BELOW it so back works immediately. The slot is
-    /// seeded manually here — in a real boot `install_scheduler`'s URL
-    /// provider does it from `location.pathname`, but that install is
-    /// page-once and this test binary shares one page.
+    /// seeded manually here — in a real boot the `nav_services` closure's
+    /// `install_url_provider` does it from `location.pathname`, but that
+    /// install is page-once and this test binary shares one page.
     #[wasm_bindgen_test]
     async fn regression_deep_link_boot_resolves_and_seeds_history() {
         let mount = setup_mount();

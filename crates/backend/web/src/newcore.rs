@@ -256,7 +256,17 @@ pub fn start_in_with<S: runtime_vocabulary::BuiltinSet>(
     // dropped the nav prims entirely. A set without `nav` never invokes the
     // closure, so its body — and `newcore_url_sync` with it — is never
     // codegen'd.
-    S::nav_services(|| crate::newcore_url_sync::install());
+    //
+    // `install_url_provider` rides the same gate for the same reason: its
+    // popstate listener calls `nav::handle_popstate`, which anchors
+    // `NavigatorControl::dispatch` + drop glue. It seeds the cold-start
+    // deep-link path that the navigator handlers read during
+    // `resolve_initial`, so it must run BEFORE the build below — which it
+    // does, same as when `install_scheduler` piggybacked it.
+    S::nav_services(|| {
+        crate::url_provider::install_url_provider();
+        crate::newcore_url_sync::install();
+    });
     // Route `runtime_shared::driver::spawn` futures through the hooked
     // executor so future polls fire the post-dispatch flush hook.
     #[cfg(feature = "async-driver")]
