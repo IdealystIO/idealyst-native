@@ -234,3 +234,57 @@ fn macro_premint_branches_share_one_class_assembly() {
         "the macro must emit the reactive preminted shape"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Rule closures are stripped from --premint-only bundles
+// ---------------------------------------------------------------------------
+
+/// Under `--premint-only` a `StyleSheet` must carry NO author rule
+/// closures — that is what drops the per-arm `StyleRules` bodies from the
+/// wasm (86,630 bytes measured on login-demo, most of it idea-theme's
+/// eleven component sheets: Button alone declares 28 tone×variant arms).
+///
+/// The gate lives in `StyleSheet::new` / `::variant` rather than in each
+/// of the eleven builders, so it covers macro sheets and app sheets too.
+/// Both must DROP the incoming closure — merely not calling it is not
+/// enough, since a stored `Box<dyn Fn>` keeps the body reachable through
+/// its vtable and LLVM emits it.
+///
+/// And the replacement must PANIC, not return empty rules: a handful of
+/// call sites read a resolved `StyleRules` back in Rust (`Icon` tints its
+/// SVG from the resolved `color`), and empty rules would tint those
+/// silently wrong. Resolving a sheet at runtime IS the engine, so an app
+/// doing it under this flag was already outside the contract — it should
+/// hear about it.
+#[test]
+fn premint_only_strips_rule_closures_loudly() {
+    let src = std::fs::read_to_string(repo_root().join("crates/runtime/shared/src/style.rs"))
+        .expect("read style.rs");
+
+    assert!(
+        src.contains("fn premint_only_stripped_rules"),
+        "the stripped-rules stub is gone; --premint-only bundles are back to \
+         shipping every arm's StyleRules body"
+    );
+    // Loud, not empty.
+    let stub_at = src.find("fn premint_only_stripped_rules").unwrap();
+    let stub_end = src[stub_at..].find("\n}").unwrap();
+    let stub = &src[stub_at..stub_at + stub_end];
+    assert!(
+        stub.contains("panic!"),
+        "the stub must panic — returning StyleRules::default() would tint \
+         Icon/Tabs silently wrong instead of naming the constraint:\n{stub}"
+    );
+
+    // Both closure sinks must drop their argument under the flag.
+    for (sink, needle) in [
+        ("StyleSheet::new", "            #[cfg(idealyst_premint_only)]\n            base: {\n                drop(f);"),
+        ("StyleSheet::variant", "        #[cfg(idealyst_premint_only)]\n        {\n            drop(f);"),
+    ] {
+        assert!(
+            src.contains(needle),
+            "{sink} must drop its rules closure under --premint-only; storing \
+             it keeps the body reachable and the flag stops paying"
+        );
+    }
+}

@@ -1865,6 +1865,37 @@ pub struct StyleSheet {
     premint_class: Option<Rc<str>>,
 }
 
+
+/// The rule closure a `--premint-only` build stores in place of a real
+/// one — see [`StyleSheet::variant`].
+///
+/// Under that flag the bundle ships build-time CSS and no style engine,
+/// so no arm is ever resolved: the class list comes from the sheet's
+/// premint class plus its author axes, none of which needs a `StyleRules`
+/// body. Dropping the real closures is what removes them from the wasm
+/// (78,813 bytes of idea-theme arms alone, measured on login-demo).
+///
+/// It PANICS rather than returning `StyleRules::default()` because a few
+/// call sites resolve a sheet at runtime for a value they need in Rust —
+/// `Icon` reads the resolved `color` to tint its SVG, `Tabs` likewise.
+/// Empty rules would tint those silently wrong; this names the constraint
+/// instead. Resolving a sheet at runtime IS the engine, so an app doing it
+/// was already outside `--premint-only`'s contract.
+#[cfg(idealyst_premint_only)]
+fn premint_only_stripped_rules(_vs: &VariantSet) -> StyleRules {
+    panic!(
+        "this bundle was built with --premint-only, which ships build-time \
+         CSS and NO style engine, so stylesheets carry no rule closures — \
+         but something resolved one at runtime.\n\n\
+         Styles that only get APPLIED to a node are fine: they resolve to a \
+         preminted class. This is a style whose resolved `StyleRules` were \
+         read back in Rust — `Icon` reading the resolved color to tint its \
+         SVG is the usual source.\n\n\
+         Drop --premint-only (--premint alone is always safe), or move the \
+         value off style resolution (an icon can inherit `currentColor`)."
+    )
+}
+
 impl StyleSheet {
     /// Constructs a stylesheet whose base rules are produced by `f`.
     pub fn new<F>(f: F) -> Self
@@ -1872,6 +1903,15 @@ impl StyleSheet {
         F: Fn(&VariantSet) -> StyleRules + 'static,
     {
         Self {
+            // `--premint-only`: drop the author's closure so its body is
+            // never named and LLVM removes it. See
+            // `premint_only_stripped_rules`.
+            #[cfg(idealyst_premint_only)]
+            base: {
+                drop(f);
+                Box::new(premint_only_stripped_rules)
+            },
+            #[cfg(not(idealyst_premint_only))]
             base: Box::new(f),
             variants: BTreeMap::new(),
             compounds: Vec::new(),
@@ -1949,6 +1989,15 @@ impl StyleSheet {
             default: None,
             values: BTreeMap::new(),
         });
+        // The arm's VALUE still registers — `premint_variant_axes` (dump)
+        // and the class assembly both read the axis/value metadata. Only
+        // the rules BODY goes.
+        #[cfg(idealyst_premint_only)]
+        {
+            drop(f);
+            entry.values.insert(value, Box::new(premint_only_stripped_rules));
+        }
+        #[cfg(not(idealyst_premint_only))]
         entry.values.insert(value, Box::new(f));
         self
     }
