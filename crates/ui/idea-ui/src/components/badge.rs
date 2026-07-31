@@ -65,7 +65,6 @@ pub fn Badge(props: &BadgeProps) -> Element {
         let appearance_key = format!("{}_{}", tone.get().key(), variant.get().key());
         StyleApplication::new(installed_badge_sheet())
             .with("appearance", appearance_key)
-            .with_computed("hug", crate::components::hug_self)
     };
 
     if style_is_reactive {

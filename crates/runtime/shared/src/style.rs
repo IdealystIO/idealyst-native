@@ -1808,10 +1808,39 @@ pub fn cached_stylesheet(
 /// 3. For each declared compound variant, layer its closure iff every
 ///    `(axis, value)` in `when` matches the *effective* variant set
 ///    (defaults included).
-/// 4. Any `StyleApplication::overrides` field.
+/// 4. Any [`StyleApplication::with_computed`] layer.
+/// 5. Any `StyleApplication::overrides` field.
+///
+/// ## Axes merge in ALPHABETICAL axis-name order
+///
+/// Step 2 walks [`Self::variants`], which is a [`BTreeMap`] — so when two
+/// axes set the SAME property, the alphabetically later axis name wins,
+/// regardless of the order the axes were declared in. A `"tone"` arm and a
+/// `"variant"` arm that both set `background` resolve to the `"variant"`
+/// one, because `"tone" < "variant"`.
+///
+/// This is load-bearing and easy to trip over. Two ways to get a
+/// deterministic winner without depending on the names:
+///
+/// - **Fold the conflicting axes into one.** idea-theme's Badge/Tag/Alert
+///   sheets key a single `appearance` axis as `{tone}_{variant}` for exactly
+///   this reason — one axis, no cross-axis ordering to reason about.
+/// - **Use a later resolution step.** A computed layer (step 4) resolves
+///   after every axis. idea-ui's `Card` tints via a computed layer because
+///   its tint must beat the `variant` axis' surface background.
+///
+/// Compound variants (step 3) also resolve after all axes, but they are
+/// runtime-API-only and the premint dump rejects them — reach for one only
+/// on a sheet that never premints.
 pub struct StyleSheet {
     base: RulesFn,
-    /// axis → axis definition (default + per-value closures)
+    /// axis → axis definition (default + per-value closures).
+    ///
+    /// `BTreeMap`, so iteration — and therefore merge precedence between
+    /// axes that touch the same property — is alphabetical by axis name.
+    /// See the type-level "Axes merge in ALPHABETICAL axis-name order"
+    /// section; `axis_merge_precedence_is_alphabetical_not_declaration_order`
+    /// pins it.
     variants: BTreeMap<VariantAxis, VariantAxisDef>,
     /// Compound variants are stored as a list (order-preserving).
     compounds: Vec<CompoundVariant>,

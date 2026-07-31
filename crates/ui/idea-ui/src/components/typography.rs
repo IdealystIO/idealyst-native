@@ -153,29 +153,31 @@ pub fn Typography(props: &TypographyProps) -> Element {
             }
             .to_string();
 
+            // Per-instance weight override, layered over the kind's baked-in
+            // weight. An axis rather than a computed layer: `FontWeight` is a
+            // closed enum, so it premints — and `StyleApplication` has only
+            // ONE computed slot, so while both `font` and `weight` rode
+            // computed layers the second silently overwrote the first and a
+            // Typography with both set lost its font.
+            let weight_key = match weight.get() {
+                Some(w) => idea_theme::extensible::font_weight_key(w),
+                None => "inherit",
+            };
+
             let mut style = StyleApplication::new(installed_typography_sheet())
                 .with("kind", kind_key)
                 .with("color", color_key)
+                .with("weight", weight_key.to_string())
                 .with("align", align_key);
 
-            // Per-instance font override, layered over the sheet base. The
-            // cache key encodes the family identity so identical faces share
-            // one resolved class.
+            // Per-instance font override, layered over the sheet base. Still a
+            // computed layer: a typeface is an app-supplied asset, not a closed
+            // set the sheet could enumerate. The cache key encodes the family
+            // identity so identical faces share one resolved class.
             if let Some(font) = font.get() {
                 let key = format!("font:{}", font_override_key(&font));
                 style = style.with_computed(key, move || StyleRules {
                     font_family: Some(font.clone()),
-                    ..Default::default()
-                });
-            }
-
-            // Per-instance weight override, layered over the kind's baked-in
-            // weight (added AFTER `kind` so it wins). The cache key encodes the
-            // weight so identical overrides share one resolved class.
-            if let Some(w) = weight.get() {
-                let key = format!("weight:{w:?}");
-                style = style.with_computed(key, move || StyleRules {
-                    font_weight: Some(w),
                     ..Default::default()
                 });
             }
@@ -387,5 +389,50 @@ mod tests {
             };
             assert_eq!(a11y_role(Typography(&opted_out)), Some(Role::Text));
     });
+    }
+
+    /// Setting BOTH `font` and `weight` must apply both.
+    ///
+    /// `StyleApplication` has exactly one computed slot — `with_computed`
+    /// assigns rather than stacks. While `font` and `weight` each rode a
+    /// computed layer, the weight layer (added second) silently overwrote the
+    /// font layer, so a Typography with both set rendered the theme font at
+    /// the requested weight. `weight` is now a sheet axis, which leaves `font`
+    /// as the sole computed layer.
+    #[test]
+    fn regression_font_and_weight_overrides_both_apply() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let rules = resolve(Typography(&TypographyProps {
+                content: Reactive::Static("Hi".to_string()),
+                font: Reactive::Static(Some(FontFamily::System("Courier New".to_string()))),
+                weight: Reactive::Static(Some(FontWeight::Bold)),
+                ..Default::default()
+            }));
+            assert_eq!(rules.font_weight, Some(FontWeight::Bold));
+            assert_eq!(
+                rules.font_family,
+                Some(FontFamily::System("Courier New".to_string())),
+                "the font override must survive alongside a weight override"
+            );
+        });
+    }
+
+    /// Each `weight` value must reach the resolved rules through the sheet's
+    /// axis — a weight missing an arm would silently fall back to the kind's
+    /// baked-in weight.
+    #[test]
+    fn every_font_weight_resolves_through_the_axis() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            for (_, w) in idea_theme::extensible::FONT_WEIGHT_KEYS {
+                let rules = resolve(Typography(&TypographyProps {
+                    content: Reactive::Static("Hi".to_string()),
+                    weight: Reactive::Static(Some(w)),
+                    ..Default::default()
+                }));
+                assert_eq!(rules.font_weight, Some(w), "weight {w:?} did not resolve");
+            }
+        });
     }
 }

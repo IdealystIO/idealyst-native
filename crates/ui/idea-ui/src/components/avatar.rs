@@ -83,10 +83,6 @@ pub fn Avatar(props: &AvatarProps) -> Element {
             StyleApplication::new(AvatarStyle::sheet())
                 .with("size", size.get().as_variant_str().to_string())
                 .with("color", color.get().as_variant_str().to_string())
-                // Hug + center on the cross axis so a row of mixed-size avatars
-                // centers instead of top-aligning under the parent's default
-                // align-items: stretch (see `components::hug_self`).
-                .with_computed("hug", crate::components::hug_self)
         }
     };
 

@@ -1717,3 +1717,103 @@ fn clone_round_trips_a_fully_populated_struct() {
     };
     assert_eq!(rules.clone(), rules);
 }
+
+// --- Cross-axis merge precedence ---------------------------------------
+
+/// Axes that set the SAME property merge in alphabetical axis-name order,
+/// NOT declaration order — `StyleSheet::variants` is a `BTreeMap`.
+///
+/// This surfaced converting idea-ui's `Card` intent tint from a computed
+/// layer to a `tone` axis: the tint vanished, because Card's `variant` axis
+/// also sets `background` and `"tone" < "variant"`. Declaring `tone` last
+/// changed nothing. A sheet that needs a specific winner must either fold
+/// the axes into one (Badge/Tag/Alert key a single `appearance` axis as
+/// `{tone}_{variant}`) or use a later resolution step.
+#[test]
+fn axis_merge_precedence_is_alphabetical_not_declaration_order() {
+    let red = || Color("#ff0000".into());
+    let blue = || Color("#0000ff".into());
+
+    // Declare `variant` FIRST and `tone` SECOND. If precedence followed
+    // declaration order, `tone` (declared later) would win.
+    let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules::default())
+        .variant("variant", "flat", move |_vs| StyleRules {
+            background: Some(Tokenized::Literal(red())),
+            ..Default::default()
+        })
+        .variant("tone", "danger", move |_vs| StyleRules {
+            background: Some(Tokenized::Literal(blue())),
+            ..Default::default()
+        });
+
+    let vs = VariantSet::new().with("variant", "flat").with("tone", "danger");
+    let resolved = sheet.resolve(&vs);
+
+    // "variant" sorts after "tone", so the variant arm wins.
+    assert_eq!(
+        resolved.background,
+        Some(Tokenized::Literal(red())),
+        "alphabetically-later axis name must win a same-property conflict"
+    );
+}
+
+/// The companion half: rename the winning axis so it sorts EARLIER and the
+/// other side wins. Pins that the ordering really is by name — nothing
+/// about `tone`/`variant` specifically.
+#[test]
+fn renaming_an_axis_flips_cross_axis_precedence() {
+    let red = || Color("#ff0000".into());
+    let blue = || Color("#0000ff".into());
+
+    // Same two arms, but the surface axis is now named "a_surface", which
+    // sorts BEFORE "tone".
+    let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules::default())
+        .variant("a_surface", "flat", move |_vs| StyleRules {
+            background: Some(Tokenized::Literal(red())),
+            ..Default::default()
+        })
+        .variant("tone", "danger", move |_vs| StyleRules {
+            background: Some(Tokenized::Literal(blue())),
+            ..Default::default()
+        });
+
+    let vs = VariantSet::new().with("a_surface", "flat").with("tone", "danger");
+    assert_eq!(
+        sheet.resolve(&vs).background,
+        Some(Tokenized::Literal(blue())),
+        "with the surface axis renamed to sort first, the tone arm must win"
+    );
+}
+
+/// A computed layer resolves AFTER every axis, which is the escape hatch a
+/// sheet uses when a rule must beat an axis it can't outrank by name. This
+/// is why idea-ui's `Card` tint stayed a computed layer.
+#[test]
+fn computed_layer_beats_every_axis_regardless_of_name() {
+    let red = || Color("#ff0000".into());
+    let green = || Color("#00ff00".into());
+
+    let sheet = Rc::new(
+        StyleSheet::new(|_vs: &VariantSet| StyleRules::default()).variant(
+            "zzz_last_axis",
+            "on",
+            move |_vs| StyleRules {
+                background: Some(Tokenized::Literal(red())),
+                ..Default::default()
+            },
+        ),
+    );
+
+    let app = StyleApplication::new(sheet)
+        .with("zzz_last_axis", "on")
+        .with_computed("tint", move || StyleRules {
+            background: Some(Tokenized::Literal(green())),
+            ..Default::default()
+        });
+
+    assert_eq!(
+        crate::resolve_style(&app).background,
+        Some(Tokenized::Literal(green())),
+        "the computed layer must beat even the alphabetically-last axis"
+    );
+}

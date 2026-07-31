@@ -43,7 +43,9 @@ use crate::components::icon::Icon;
 const FIELD_BARE_H_PAD: f32 = 2.0;
 
 use idea_theme::active_theme;
-use idea_theme::extensible::{tone as tones, RefBuiltins, ResolutionCtx, ToneRef};
+use idea_theme::extensible::{
+    premint_identity, tone as tones, tone_keys, RefBuiltins, ResolutionCtx, ToneRef,
+};
 use idea_theme::theme::{IdeaTheme, IdeaThemeRef};
 
 use crate::stylesheets::{FieldGroup, FieldLabel};
@@ -394,6 +396,44 @@ pub fn build_field_input_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
             ..Default::default()
         });
 
+    // `slot` — where this input sits. `standalone` (the default) is the plain
+    // Field/TextArea. `shell` is the input nested inside an ADORNED field's
+    // row wrapper, which owns the chrome (border, horizontal padding, focus
+    // ring) so the input itself must go flat and fill the row.
+    //
+    // A variant arm and not a call-site `with_computed` layer: every rule here
+    // is constant, and a constant closure blocks premint for the whole sheet.
+    // It can't ride the `bare` appearance arm either — `FieldAppearance::Bare`
+    // is an author-facing prop value, and these rules would then leak onto a
+    // standalone bare field (losing its 1px transparent border spacing and
+    // overriding its size-derived horizontal padding).
+    sheet = sheet.variant("slot", "standalone", |_vs| StyleRules::default());
+    sheet = sheet.variant("slot", "shell", |_vs| StyleRules {
+        // NB: do NOT add `flex_basis: 0` / `min_width: 0`. The shell fills the
+        // column via `width: 100%`, and that percent resolves through the
+        // shell's CONTENT size on macOS — collapse the input's content
+        // contribution to zero and the shell hugs the lone icon (it regressed
+        // to an icon-only box). Letting the input keep its auto basis is what
+        // makes `width: 100%` resolve to the full field width; `flex_grow: 1`
+        // then fills the row.
+        flex_grow: Some(Tokenized::Literal(1.0)),
+        // KEEP the size-derived VERTICAL padding on the input: it's what
+        // establishes the field's height, so adornments center within it
+        // instead of stretching the row (an Element adornment shouldn't
+        // inflate the field — only the auto-sized Icon adapts the other way).
+        // Horizontal padding moves to the shell; a 2px inset stays so the
+        // glyph's bearing doesn't clip the edge.
+        padding_left: Some(Tokenized::Literal(Length::Px(FIELD_BARE_H_PAD))),
+        padding_right: Some(Tokenized::Literal(Length::Px(FIELD_BARE_H_PAD))),
+        border_top_width: Some(Tokenized::Literal(0.0)),
+        border_right_width: Some(Tokenized::Literal(0.0)),
+        border_bottom_width: Some(Tokenized::Literal(0.0)),
+        border_left_width: Some(Tokenized::Literal(0.0)),
+        background: Some(Tokenized::Literal(Color("transparent".into()))),
+        ..Default::default()
+    });
+    sheet = sheet.variant_default("slot", "standalone");
+
     // Tone arms — "default" = neutral base border; each tone overrides
     // the border color with its stroke color.
     sheet = sheet.variant("tone", "default", |_vs| StyleRules::default());
@@ -443,7 +483,11 @@ pub fn build_field_input_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
         .variant_default("tone", "default")
         .variant_default("appearance", "outline");
 
-    Rc::new(sheet)
+    // Premint identity, like the idea-theme sibling builders. Without it
+    // `premint_class()` is `None`, the premint dump skips the sheet, and every
+    // Field/TextArea input falls through to the runtime engine no matter how
+    // static its styling is.
+    sheet.premint_as(&premint_identity("field_input", [tone_keys(&tones)]))
 }
 
 /// Build the Field help-text sheet — a tone axis driving the text
@@ -477,7 +521,8 @@ pub fn build_field_help_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
         });
     }
     sheet = sheet.variant_default("tone", "default");
-    Rc::new(sheet)
+    // See `build_field_input_sheet` for why this identity is required.
+    sheet.premint_as(&premint_identity("field_help", [tone_keys(&tones)]))
 }
 
 fn size_key(size: FieldSize) -> &'static str {
@@ -625,34 +670,13 @@ pub fn Field(props: &FieldProps) -> Element {
         // ring the non-adorned branch gets natively, now on the shell.
         let focused = runtime_core::signal(false);
         let size_str = size_key(size).to_string();
+        // The shell owns the chrome; the input goes flat and fills the row.
+        // See the sheet's `slot` axis for why those rules live on the arm.
         let bare_style = StyleApplication::new(field_input_sheet())
             .with("size", size_str)
             .with("appearance", "bare")
             .with("tone", "default")
-            .with_computed("field-input-bare", || StyleRules {
-                flex_grow: Some(Tokenized::Literal(1.0)),
-                // NB: do NOT add `flex_basis: 0` / `min_width: 0` here. The
-                // shell fills the column via `width: 100%`, and that percent is
-                // resolved through the shell's CONTENT size on macOS — collapse
-                // the input's content contribution to zero and the shell hugs
-                // the lone icon (regressed to an icon-only box). Letting the
-                // input keep its auto basis is what makes `width: 100%` resolve
-                // to the full field width; `flex_grow: 1` then fills the row.
-                // KEEP the size-derived VERTICAL padding on the input: it's
-                // what establishes the field's height, so adornments center
-                // within it instead of stretching the row (an Element adornment
-                // shouldn't inflate the field — only the auto-sized Icon adapts
-                // the other way). Horizontal padding moves to the shell; a 2px
-                // inset stays so the glyph's bearing doesn't clip the edge.
-                padding_left: Some(Tokenized::Literal(Length::Px(FIELD_BARE_H_PAD))),
-                padding_right: Some(Tokenized::Literal(Length::Px(FIELD_BARE_H_PAD))),
-                border_top_width: Some(Tokenized::Literal(0.0)),
-                border_right_width: Some(Tokenized::Literal(0.0)),
-                border_bottom_width: Some(Tokenized::Literal(0.0)),
-                border_left_width: Some(Tokenized::Literal(0.0)),
-                background: Some(Tokenized::Literal(Color("transparent".into()))),
-                ..Default::default()
-            });
+            .with("slot", "shell");
         let input_node = input
             .on_focus(move |f| focused.set(f))
             .with_style(bare_style)

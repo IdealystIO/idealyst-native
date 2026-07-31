@@ -157,10 +157,7 @@ pub fn Progress(props: &ProgressProps) -> Element {
                 .with_style(move || {
                     StyleApplication::new(fill_sheet.clone())
                         .with("appearance", appearance_for())
-                        .with_computed("progress-w-100", || StyleRules {
-                            width: Some(Tokenized::Literal(Length::pct(100.0))),
-                            ..Default::default()
-                        })
+                        .with("mode", "indeterminate".to_string())
                 })
                 .bind(fill_ref)
                 .into_element()

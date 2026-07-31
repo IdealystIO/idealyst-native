@@ -23,7 +23,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::{
-    Cursor, Easing, FontWeight, StyleRules, StyleSheet, TextAlign, Tokenized, Transition,
+    AlignSelf, Cursor, Easing, FontWeight, StyleRules, StyleSheet, TextAlign, Tokenized, Transition,
     UserSelect, VariantSet,
 };
 
@@ -31,6 +31,33 @@ use crate::theme::{IdeaTheme, IdeaThemeRef};
 use crate::theme_runtime::active_theme;
 
 use super::variant::{variant_state_overlay, InteractState};
+
+/// Every `FontWeight` arm, paired with its stable variant key. Drives
+/// Typography's `weight` axis — the axis exists so a per-instance weight
+/// override premints instead of riding a runtime-computed layer, so this table
+/// must stay exhaustive over the enum (a missing arm silently degrades that
+/// weight to `inherit`).
+pub const FONT_WEIGHT_KEYS: [(&str, FontWeight); 9] = [
+    ("thin", FontWeight::Thin),
+    ("extra_light", FontWeight::ExtraLight),
+    ("light", FontWeight::Light),
+    ("normal", FontWeight::Normal),
+    ("medium", FontWeight::Medium),
+    ("semi_bold", FontWeight::SemiBold),
+    ("bold", FontWeight::Bold),
+    ("extra_bold", FontWeight::ExtraBold),
+    ("black", FontWeight::Black),
+];
+
+/// The variant key for a `FontWeight`. Panics only if [`FONT_WEIGHT_KEYS`]
+/// drifts out of sync with the enum, which the exhaustiveness test catches.
+pub fn font_weight_key(w: FontWeight) -> &'static str {
+    FONT_WEIGHT_KEYS
+        .iter()
+        .find(|(_, candidate)| *candidate == w)
+        .map(|(key, _)| *key)
+        .expect("FONT_WEIGHT_KEYS is exhaustive over FontWeight")
+}
 use super::{
     ButtonSizeRef, RefBuiltins, ResolutionCtx, ShapeRef, ToneRef, TypographyKindRef, VariantRef,
 };
@@ -425,6 +452,25 @@ where
     // `:focus` rule kills the browser outline and macOS suppresses its native
     // ring, so this is the sole indicator.
     sheet = sheet.variant("__state_focused", "on", |_vs| focus_ring_rules(1.0, "Sheet closure"));
+    // Pointer cursor for the interactive consumer (Chip with an `on_select`);
+    // inert `off` default leaves Badge/Tag/Alert untouched, same rationale as
+    // the focus ring above.
+    //
+    // This is a VARIANT and not a call-site `with_computed` layer for two
+    // reasons. It premints (a constant closure blocks premint for the whole
+    // sheet), and — the bug that motivated the move — the computed layer's
+    // cache key is caller-supplied, so Chip's constant `"chip-box"` key did
+    // not carry its `clickable` flag. Two chips with the same tone+variant
+    // but different `on_select` collided on
+    // `(sheet, variants, computed_key, overrides)` and shared one resolved
+    // `StyleRules`, so whichever resolved first decided the cursor for both.
+    // A variant is part of the cache identity by construction.
+    sheet = sheet.variant("interactive", "off", |_vs| StyleRules::default());
+    sheet = sheet.variant("interactive", "on", |_vs| StyleRules {
+        cursor: Some(Cursor::Pointer),
+        ..Default::default()
+    });
+    sheet = sheet.variant_default("interactive", "off");
     let identity = premint_identity(
         component,
         [
@@ -457,6 +503,12 @@ impl BadgeSheetBuilder {
     }
     pub fn build(self) -> Rc<StyleSheet> {
         build_tone_variant_sheet("badge", self.tones, self.variants, |_vs: &VariantSet| StyleRules {
+            // Hug: keep the pill sized to content instead of stretching to a
+            // flex parent's cross axis (which would grow it to the row height
+            // and float its label to the top). Lives in the base rather than
+            // a `with_computed` layer at the call site — it's a constant, and
+            // a constant closure blocks premint for the whole sheet.
+            align_self: Some(AlignSelf::Center),
             padding_top: Some(Tokenized::Literal(runtime_core::Length::Px(2.0))),
             padding_bottom: Some(Tokenized::Literal(runtime_core::Length::Px(2.0))),
             padding_left: Some(Tokenized::token(
@@ -529,6 +581,9 @@ impl TagSheetBuilder {
     }
     pub fn build(self) -> Rc<StyleSheet> {
         build_tone_variant_sheet("tag", self.tones, self.variants, |_vs: &VariantSet| StyleRules {
+            // Hug — see the Badge sheet's base for why this isn't a computed
+            // layer. Shared by Tag and Chip (both resolve the tag sheet).
+            align_self: Some(AlignSelf::Center),
             padding_top: Some(Tokenized::Literal(runtime_core::Length::Px(2.0))),
             padding_bottom: Some(Tokenized::Literal(runtime_core::Length::Px(2.0))),
             padding_left: Some(Tokenized::token(
@@ -771,9 +826,28 @@ impl TypographySheetBuilder {
                 ..Default::default()
             });
 
+        // `weight` — the per-instance weight override, layered over the kind's
+        // baked-in weight. `FontWeight` is a closed enum, so it enumerates as
+        // variant arms and premints.
+        //
+        // It used to ride a `with_computed` layer, which was also a latent
+        // correctness bug: `StyleApplication` has exactly ONE computed slot
+        // (`with_computed` assigns, it doesn't stack), so a Typography with
+        // BOTH `font` and `weight` set had its font layer silently overwritten
+        // by the weight layer. Moving weight to an axis leaves `font` as the
+        // sole computed layer and the override survives.
+        sheet = sheet.variant("weight", "inherit", |_vs| StyleRules::default());
+        for (key, w) in FONT_WEIGHT_KEYS {
+            sheet = sheet.variant("weight", key, move |_vs| StyleRules {
+                font_weight: Some(w),
+                ..Default::default()
+            });
+        }
+
         sheet = sheet
             .variant_default("kind", "body")
             .variant_default("color", "default")
+            .variant_default("weight", "inherit")
             .variant_default("align", "left");
 
         sheet.premint_as(&premint_identity("typography", [self.kinds_key(), self.tones_key()]))
@@ -807,15 +881,15 @@ impl TypographySheetBuilder {
 /// Comma-joined current keys of a modifier set — the part of a sheet's
 /// premint identity an app can change by registering an extra tone or
 /// variant before `install_idea_theme`.
-fn tone_keys(tones: &[ToneRef]) -> String {
+pub fn tone_keys(tones: &[ToneRef]) -> String {
     tones.iter().map(|t| t.current_key()).collect::<Vec<_>>().join(",")
 }
 
-fn variant_keys(variants: &[VariantRef]) -> String {
+pub fn variant_keys(variants: &[VariantRef]) -> String {
     variants.iter().map(|v| v.current_key()).collect::<Vec<_>>().join(",")
 }
 
-fn premint_identity(component: &str, parts: impl IntoIterator<Item = String>) -> String {
+pub fn premint_identity(component: &str, parts: impl IntoIterator<Item = String>) -> String {
     let mut id = format!("idea-theme.v1.{component}");
     for part in parts {
         id.push('|');
@@ -993,7 +1067,14 @@ impl IconButtonSheetBuilder {
             .variant_default("size", "md")
             .variant_default("selected", "off");
 
-        Rc::new(sheet)
+        // Premint identity, like every sibling builder. Without it
+        // `premint_class()` is `None`, `dump_sheet_parts` skips the sheet
+        // entirely, and every IconButton falls through to the runtime engine
+        // no matter how static its styling is.
+        sheet.premint_as(&premint_identity(
+            "icon_button",
+            [tone_keys(&self.tones), variant_keys(&self.variants)],
+        ))
     }
 }
 impl Default for IconButtonSheetBuilder {
@@ -1723,6 +1804,19 @@ impl ProgressSheetBuilder {
         }
         fill = fill.variant_default("appearance", "primary_filled");
 
+        // `mode` — the indeterminate bar spans the whole track and animates by
+        // transform, so its width is a CONSTANT 100%. (The determinate bar's
+        // width comes from the live value and stays off the sheet.) A variant
+        // arm rather than a call-site computed layer: a constant closure
+        // blocks premint for the whole sheet without expressing anything a
+        // variant can't.
+        fill = fill.variant("mode", "determinate", |_vs| StyleRules::default());
+        fill = fill.variant("mode", "indeterminate", |_vs| StyleRules {
+            width: Some(Tokenized::Literal(Length::pct(100.0))),
+            ..Default::default()
+        });
+        fill = fill.variant_default("mode", "determinate");
+
         let id = premint_identity("progress", [tone_keys(&self.tones), variant_keys(&self.variants)]);
         ProgressSheets {
             track_sheet: track.premint_as(&format!("{id}|track")),
@@ -2023,5 +2117,38 @@ mod selection_sheet_tests {
         assert!(has(&sheet, "__state_hovered", "on"));
         // hover + press + selected = 3 compounds per appearance arm.
         assert_eq!(sheet.compound_keys().len(), BUILTIN_APPEARANCE_ARMS * 3);
+    }
+
+    /// `FONT_WEIGHT_KEYS` drives Typography's `weight` axis. A weight missing
+    /// from the table resolves to no arm and silently degrades to `inherit`,
+    /// so the table must stay exhaustive over the enum. Matching on every
+    /// variant makes adding a `FontWeight` a compile error here rather than a
+    /// silent styling regression.
+    #[test]
+    fn font_weight_keys_cover_every_weight() {
+        use runtime_core::FontWeight::*;
+        let all = [
+            Thin, ExtraLight, Light, Normal, Medium, SemiBold, Bold, ExtraBold, Black,
+        ];
+        // Exhaustiveness against the enum itself: if a variant is added, this
+        // match stops compiling until `all` (and the table) grow with it.
+        for w in all {
+            let _: () = match w {
+                Thin | ExtraLight | Light | Normal | Medium | SemiBold | Bold | ExtraBold
+                | Black => (),
+            };
+            assert!(
+                FONT_WEIGHT_KEYS.iter().any(|(_, candidate)| *candidate == w),
+                "FONT_WEIGHT_KEYS is missing {w:?}"
+            );
+        }
+        assert_eq!(FONT_WEIGHT_KEYS.len(), all.len());
+        // Keys must be distinct — a duplicate would collapse two weights onto
+        // one arm.
+        let mut keys: Vec<&str> = FONT_WEIGHT_KEYS.iter().map(|(k, _)| *k).collect();
+        keys.sort_unstable();
+        let before = keys.len();
+        keys.dedup();
+        assert_eq!(keys.len(), before, "duplicate key in FONT_WEIGHT_KEYS");
     }
 }

@@ -27,7 +27,10 @@ use runtime_core::{
 };
 
 use idea_theme::active_theme;
-use idea_theme::extensible::{tone as tones, ResolutionCtx, ToneRef, VariantRef};
+use idea_theme::extensible::{
+    premint_identity, tone as tones, variant_keys, RefBuiltins, ResolutionCtx, ToneRef,
+    VariantRef,
+};
 use idea_theme::theme::IdeaThemeRef;
 
 use crate::slot_override::apply_override;
@@ -112,7 +115,9 @@ pub fn install_card_sheet(sheet: Rc<StyleSheet>) {
 fn card_sheet() -> Rc<StyleSheet> {
     CARD_SHEET.with(|s| {
         if s.borrow().is_none() {
-            let built = build_card_sheet(vec![variant::Flat.into(), variant::Elevated.into()]);
+            let tones: Vec<ToneRef> = ToneRef::builtins().into_iter().map(|(_, t)| t).collect();
+            let built =
+                build_card_sheet(vec![variant::Flat.into(), variant::Elevated.into()], tones);
             *s.borrow_mut() = Some(built);
         }
         s.borrow().as_ref().cloned().unwrap()
@@ -123,7 +128,7 @@ fn card_sheet() -> Rc<StyleSheet> {
 /// is fixed (none/sm/md/lg → theme spacing tokens). Each variant arm
 /// pulls its background/shadow from `variant.render(ctx)` (Card
 /// variants ignore the tone, so a placeholder Neutral is passed).
-pub fn build_card_sheet(variants: Vec<VariantRef>) -> Rc<StyleSheet> {
+pub fn build_card_sheet(variants: Vec<VariantRef>, tones: Vec<ToneRef>) -> Rc<StyleSheet> {
     let radius = || Tokenized::token("radius-lg", Length::Px(12.0));
 
     let mut sheet = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
@@ -207,7 +212,26 @@ pub fn build_card_sheet(variants: Vec<VariantRef>) -> Rc<StyleSheet> {
         .variant_default("variant", "flat")
         .variant_default("padding", "md");
 
-    Rc::new(sheet)
+    // NOTE: the intent tint deliberately does NOT live on a `tone` axis here,
+    // even though every sibling sheet enumerates its tones. `StyleSheet`
+    // stores axes in a `BTreeMap`, so per-axis arms merge in ALPHABETICAL axis
+    // order — `"tone"` merges before `"variant"`, and Card's `variant` arms
+    // set `background` (the Flat/Elevated surface), which would overwrite the
+    // tint. The tint has to resolve after the surface, and the computed layer
+    // is the only slot that does (base → axes → computed → overrides).
+    //
+    // The sheets that DO enumerate tones (Badge/Tag/Alert) dodge this by
+    // folding both into ONE `appearance` axis keyed `{tone}_{variant}`, so
+    // there's no cross-axis conflict to order. Card could follow suit — it's a
+    // tones × variants arm expansion — but that's a behavioral restructure of
+    // the public axis, not a mechanical conversion.
+    //
+    // Consequence: a TONED Card still resolves live. An untoned one (the
+    // common case) premints, which is what the identity below unlocks.
+
+    // Premint identity — without it the sheet has no premint class and every
+    // Card falls through to the runtime engine.
+    sheet.premint_as(&premint_identity("card", [variant_keys(&variants)]))
 }
 
 // Reactive-by-default: `#[props]` wraps each scalar-DATA field → `Reactive<…>`
@@ -288,14 +312,11 @@ pub fn Card(props: CardProps) -> Element {
                 .with("variant", variant_key)
                 .with("padding", padding_key);
 
-            // Intent tint — when a tone is set, overlay the variant's surface
-            // bg/border with the tone's Soft slots (the same tint Alert's Soft
-            // variant uses). Rides a computed layer keyed on the tone so the
-            // framework caches one resolved StyleRules per tone. Without a tone
-            // the layer is absent and Flat/Elevated keep their surface look.
+            // Intent tint — overlays the variant's surface bg/border with the
+            // tone's Soft slots. Stays a COMPUTED layer (not an axis) because
+            // it must resolve after the `variant` axis; see `build_card_sheet`.
             if let Some(tone) = tone.get() {
-                let tone_for_key = tone.clone();
-                style = style.with_computed(format!("tone_{}", tone_for_key.key()), move || {
+                style = style.with_computed(format!("tone_{}", tone.key()), move || {
                     let theme_rc = active_theme();
                     let theme_ref = theme_rc
                         .downcast_ref::<IdeaThemeRef>()

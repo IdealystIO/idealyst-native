@@ -125,7 +125,6 @@ pub fn Tag(props: &TagProps) -> Element {
             let appearance_key = format!("{}_{}", tone.get().key(), variant.get().key());
             StyleApplication::new(installed_tag_sheet())
                 .with("appearance", appearance_key)
-                .with_computed("hug", crate::components::hug_self)
         }
     };
 

@@ -17,8 +17,8 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, icon, ui, Color, Cursor, Element, IconData, IdealystSchema, IntoElement, Reactive,
-    StyleApplication, StyleRules, Tokenized,
+    component, icon, ui, Color, Element, IconData, IdealystSchema, IntoElement, Reactive,
+    StyleApplication, Tokenized,
 };
 
 use crate::stylesheets::{BreadcrumbItem, BreadcrumbRow, BreadcrumbSeparator};
@@ -113,12 +113,7 @@ pub fn Breadcrumbs(props: BreadcrumbsProps) -> Element {
                 vec![runtime_core::text(crumb.label).into_element()],
                 move || (cb)(),
             )
-            .with_style(|| {
-                crumb_style(false)().with_computed("bc-link-cursor", || StyleRules {
-                    cursor: Some(Cursor::Pointer),
-                    ..Default::default()
-                })
-            })
+            .with_style(|| crumb_style(false)().with("interactive", "on".to_string()))
             .into_element(),
             _ => runtime_core::text(crumb.label)
                 .with_style(crumb_style(is_current))

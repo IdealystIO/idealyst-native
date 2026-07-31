@@ -1356,6 +1356,11 @@ stylesheet! {
             border_radius: Tokenized::token("radius-pill", Length::Px(999.0)),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
+            // Hug: a row of mixed-size avatars centers rather than
+            // top-aligning under the parent's default `align-items: stretch`.
+            // Base rule, not a computed layer — it's constant, and a constant
+            // closure blocks premint for the whole sheet.
+            align_self: runtime_core::AlignSelf::Center,
             overflow: runtime_core::Overflow::Hidden,
             // Default to neutral wash so a no-prop Avatar reads as a
             // generic placeholder rather than a colored chip.
@@ -2459,6 +2464,13 @@ stylesheet! {
                 font_weight: FontWeight::SemiBold,
             }
         }
+        // A linked (non-current) crumb shows a pointer. Variant rather than a
+        // computed layer so the rule premints — see `ListItemRow::interactive`.
+        variant interactive {
+            #[default]
+            off(_t) {}
+            on(_t) { cursor: Cursor::Pointer }
+        }
         state hovered(t) { color: Tokenized::token("color-text", Color("#1a1a1f".into())) }
         // Focus mirrors hover (text brighten) — replaces the native macOS ring.
         state focused(t) { color: Tokenized::token("color-text", Color("#1a1a1f".into())) }
@@ -2572,6 +2584,15 @@ stylesheet! {
             #[default]
             off(_t) {}
             on(t) { background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())) }
+        }
+        // A row with an `on_press` shows a pointer (the "anything pressable
+        // shows a pointer" rule). A variant arm rather than a computed layer
+        // so the rule premints — a constant closure defeats premint for the
+        // whole sheet without expressing anything a variant can't.
+        variant interactive {
+            #[default]
+            off(_t) {}
+            on(_t) { cursor: Cursor::Pointer }
         }
         state hovered(t) { background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())) }
         // Focus mirrors hover (row wash) — replaces the native macOS ring.
