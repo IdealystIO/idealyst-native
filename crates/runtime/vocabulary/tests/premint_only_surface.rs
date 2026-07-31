@@ -204,12 +204,80 @@ fn preminted_dynamic_arm_is_ungated_and_engine_free() {
         );
     }
 
+    // The swap itself lives in the shared helper (see
+    // `both_dynamic_preminted_paths_share_one_class_swap`); the arm must
+    // delegate to it rather than growing a second copy.
+    assert!(
+        body.contains("attach_preminted_dynamic(backend, node, class_of)"),
+        "the arm must delegate to the shared class-swap helper:\n{body}"
+    );
+}
+
+/// The reactive class swap must exist exactly ONCE, and both dynamic
+/// preminted paths must go through it.
+///
+/// Two paths need it: `PremintedDynamic` (the macro's reactive preminted
+/// form) and, under `--premint-only`, the `SheetDynamic` arm — which is
+/// where every reactive application over one of idea-theme's
+/// runtime-assembled component sheets lands, because the blanket
+/// `Fn() -> StyleApplication` impl has no expansion site to premint at.
+/// A second copy of the swap is how the two drift into stamping different
+/// class lists for the same sheet.
+#[test]
+fn both_dynamic_preminted_paths_share_one_class_swap() {
+    let src = std::fs::read_to_string(
+        repo_root().join("crates/runtime/vocabulary/src/style_attach.rs"),
+    )
+    .expect("read style_attach.rs");
+
+    assert_eq!(
+        src.matches("fn attach_preminted_dynamic").count(),
+        1,
+        "the class swap must have exactly one definition"
+    );
+
+    let helper_at = src.find("fn attach_preminted_dynamic").expect("helper present");
+    let helper_end = src[helper_at..].find("\n}\n").expect("helper body ends") + helper_at;
+    let helper = &src[helper_at..helper_end];
+
     // The class swap needs BOTH halves; add-only would accumulate every
     // value a node ever wore (`-active-on` never coming off).
     assert!(
-        body.contains("detach_html_class") && body.contains("attach_html_class"),
+        helper.contains("detach_html_class") && helper.contains("attach_html_class"),
         "the swap must detach the outgoing class as well as attach the \
-         incoming one:\n{body}"
+         incoming one:\n{helper}"
+    );
+    // And nothing else — the whole point is that it needs no engine.
+    for engine_call in ["ensure_sheet_registered", "apply_style", "mint_class_for_app"] {
+        assert!(
+            !helper.contains(engine_call),
+            "the class swap reaches the engine via `{engine_call}`:\n{helper}"
+        );
+    }
+
+    // `SheetDynamic` under --premint-only must route here, NOT panic
+    // outright. The blanket panic it replaced took down every reactive
+    // idea-theme component style, which is most of a real app.
+    assert!(
+        src.contains(
+            "StyleProp::SheetDynamic(f) => attach_sheet_dynamic_preminted(backend, node, f)"
+        ),
+        "SheetDynamic must premint under --premint-only rather than panic \
+         unconditionally"
+    );
+    let preminted_at =
+        src.find("fn attach_sheet_dynamic_preminted").expect("premint-only dynamic path");
+    let preminted_end =
+        src[preminted_at..].find("\n}\n").expect("body ends") + preminted_at;
+    let preminted = &src[preminted_at..preminted_end];
+    // Decided PER EVALUATION. A probe at attach time would be unsound: a
+    // closure may legally return a premintable application on one run and
+    // an override-carrying one on the next.
+    assert!(
+        preminted.contains("preminted_class_list()")
+            && preminted.contains("PREMINT_ONLY_VIOLATION"),
+        "each evaluation must re-derive the class list and panic loudly when \
+         it cannot:\n{preminted}"
     );
 }
 

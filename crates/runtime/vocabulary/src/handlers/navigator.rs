@@ -1631,24 +1631,32 @@ pub fn mount_navigator_outlet<H: NavCaps + 'static>(
     backend.borrow_mut().mark_container(&node);
     cx.realize_children_into(&mut node, children);
     // The default rides the STATIC-SHEET path (not a raw
-    // `StyleProp::Static` apply) to mirror the old walker's
-    // `default_outlet_style` exactly: a cached empty sheet plus a
-    // computed `outlet_fill_rules` layer, resolved through `apply_sheet`
-    // — which enrolls the outlet in the theme cohort AND fills the
-    // theme's default text font, so the minted class is byte-identical
-    // to old-core SSR (raw-apply skipped the fill and hashed
-    // differently).
+    // `StyleProp::Static` apply) so it resolves through `apply_sheet` —
+    // which enrolls the outlet in the theme cohort AND fills the theme's
+    // default text font.
+    //
+    // The rules sit in the sheet's BASE layer, not behind
+    // `with_computed("__navigator_outlet_fill", …)`. `outlet_fill_rules`
+    // is a pure constant — no theme read, no runtime input — and the
+    // computed wrapper existed only to keep the minted class
+    // byte-identical to old-core SSR, a core that no longer exists. What
+    // the wrapper still cost was real: `computed.is_some()` is a premint
+    // disqualifier (the dump cannot enumerate an arbitrary closure's
+    // key), so EVERY navigator outlet in every app fell through to the
+    // live style engine. As a plain constant sheet it premints, and the
+    // class it wears is identical on SSR and on the client because both
+    // mint it from this one definition.
     let style = prim.style.unwrap_or_else(|| {
-        fn empty_sheet() -> Rc<runtime_shared::StyleSheet> {
+        fn outlet_sheet() -> Rc<runtime_shared::StyleSheet> {
             static KEY: u8 = 0;
             runtime_shared::cached_stylesheet(&KEY as *const u8 as usize, || {
-                Rc::new(runtime_shared::StyleSheet::r#static(StyleRules::default()))
+                runtime_shared::StyleSheet::r#static(outlet_fill_rules())
+                    .premint_as("__navigator_outlet_fill")
             })
         }
-        StyleProp::Sheet(Box::new(
-            runtime_shared::StyleApplication::new(empty_sheet())
-                .with_computed("__navigator_outlet_fill", outlet_fill_rules),
-        ))
+        crate::style_attach::IntoStyleProp::into_style_prop(
+            runtime_shared::StyleApplication::new(outlet_sheet()),
+        )
     });
     attach_style(&backend, &node, style);
     // Record into the innermost active capture cell so the enclosing

@@ -572,9 +572,17 @@ pub fn attach_style<H: StyleServices>(
         // it matches the loud-failure policy an unregistered payload gets at
         // realize.
         #[cfg(idealyst_premint_only)]
-        StyleProp::Dynamic(_) | StyleProp::Sheet(_) | StyleProp::SheetDynamic(_) => {
+        StyleProp::Dynamic(_) | StyleProp::Sheet(_) => {
             panic!("{}", PREMINT_ONLY_VIOLATION)
         }
+        // NOT a blanket panic like its two neighbours: a reactive
+        // application whose sheet premints needs no engine, and this arm
+        // is where every one of idea-theme's runtime-assembled component
+        // sheets lands (the blanket `Fn() -> StyleApplication` impl has no
+        // expansion site to premint at). The panic moves inside, to the
+        // evaluations that genuinely can't premint.
+        #[cfg(idealyst_premint_only)]
+        StyleProp::SheetDynamic(f) => attach_sheet_dynamic_preminted(backend, node, f),
         #[cfg(not(idealyst_premint_only))]
         StyleProp::SignalClass(spec) => {
             let spec = *spec;
@@ -609,45 +617,7 @@ pub fn attach_style<H: StyleServices>(
                 "StyleProp::PremintedDynamic reached a backend with no \
                  preminted support"
             );
-            // Same host-state wiring as the static preminted arm: a
-            // preminted class bypasses sheet registration, so tokens /
-            // app background / default font ride the theme driver.
-            theme::mark_premint_used();
-            theme::ensure_theme_driver(backend);
-            theme::flush_pending_host_state(backend);
-
-            let b = backend.clone();
-            let n = node.clone();
-            // Classes stamped by the previous run, so the next one can take
-            // them off. Held OUTSIDE the backend borrow — swapping needs
-            // both the list and the backend, and nesting a RefCell borrow
-            // inside a backend borrow is how this file's other paths have
-            // deadlocked before.
-            let stamped: RefCell<Vec<String>> = RefCell::new(Vec::new());
-            let _binding = effect(move || {
-                // Read FIRST: this is the tracked call, and it must run
-                // before any borrow so a panic inside author code can't
-                // leave a borrow outstanding.
-                let class = class_of();
-
-                let previous: Vec<String> = stamped.borrow_mut().drain(..).collect();
-                let next: Vec<String> =
-                    class.split_whitespace().map(|c| c.to_string()).collect();
-                if previous != next {
-                    let bb = b.borrow();
-                    for old in &previous {
-                        if !next.iter().any(|c| c == old) {
-                            bb.detach_html_class(&n, old);
-                        }
-                    }
-                    for c in &next {
-                        if !previous.iter().any(|p| p == c) {
-                            bb.attach_html_class(&n, c);
-                        }
-                    }
-                }
-                *stamped.borrow_mut() = next;
-            });
+            attach_preminted_dynamic(backend, node, class_of);
             // Overrides reach the engine, same as on the static arm.
             #[cfg(idealyst_premint_only)]
             if overrides.is_some() {
@@ -953,6 +923,93 @@ fn attach_sheet_static<H: StyleServices>(
     // No state signal on the cohort path (the divert above handles
     // state-bearing sheets on event-driven backends; natively-handling
     // backends put states in CSS).
+    noop_setter()
+}
+
+/// Stamp a reactive preminted class list onto `node`, swapping the
+/// outgoing classes for the incoming ones on every re-evaluation.
+///
+/// Shared by [`StyleProp::PremintedDynamic`] (the macro's reactive
+/// preminted form) and, under `--premint-only`, by the `SheetDynamic`
+/// arm — a reactive application over a runtime-assembled sheet
+/// (idea-theme's component sheets) lands there, and it needs the exact
+/// same treatment.
+fn attach_preminted_dynamic<H: StyleServices>(
+    backend: &Rc<RefCell<H>>,
+    node: &H::Node,
+    class_of: Box<dyn Fn() -> String>,
+) {
+    // Same host-state wiring as the static preminted arm: a preminted
+    // class bypasses sheet registration, so tokens / app background /
+    // default font ride the theme driver.
+    theme::mark_premint_used();
+    theme::ensure_theme_driver(backend);
+    theme::flush_pending_host_state(backend);
+
+    let b = backend.clone();
+    let n = node.clone();
+    // Classes stamped by the previous run, so the next one can take them
+    // off. Held OUTSIDE the backend borrow — swapping needs both the list
+    // and the backend, and nesting a RefCell borrow inside a backend
+    // borrow is how this file's other paths have deadlocked before.
+    let stamped: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    let _binding = effect(move || {
+        // Read FIRST: this is the tracked call, and it must run before any
+        // borrow so a panic inside author code can't leave a borrow
+        // outstanding.
+        let class = class_of();
+
+        let previous: Vec<String> = stamped.borrow_mut().drain(..).collect();
+        let next: Vec<String> = class.split_whitespace().map(|c| c.to_string()).collect();
+        if previous != next {
+            let bb = b.borrow();
+            for old in &previous {
+                if !next.iter().any(|c| c == old) {
+                    bb.detach_html_class(&n, old);
+                }
+            }
+            for c in &next {
+                if !previous.iter().any(|p| p == c) {
+                    bb.attach_html_class(&n, c);
+                }
+            }
+        }
+        *stamped.borrow_mut() = next;
+    });
+}
+
+/// `SheetDynamic` under `--premint-only`: a reactive application whose
+/// sheet DOES premint, re-derived per evaluation.
+///
+/// The blanket "SheetDynamic → panic" this replaces was too coarse. The
+/// arm is where every reactive application over a runtime-assembled
+/// sheet lands — idea-theme's component sheets reach it through the
+/// blanket `Fn() -> StyleApplication` impl, which has no expansion site
+/// to premint at and so cannot decide statically. But a *reactive*
+/// selection over a preminted sheet is exactly the delta model's home
+/// case: each evaluation picks variant arms, and each arm is already its
+/// own CSS rule. Stamping the class list per evaluation needs no engine.
+///
+/// Deciding per evaluation rather than once is the load-bearing part: a
+/// closure may legally return a premintable application on one run and an
+/// override-carrying one on the next, so a probe at attach time would be
+/// unsound. Non-premintable evaluations panic with the same violation
+/// message the static arm uses — loud, and only when actually reached.
+#[cfg(idealyst_premint_only)]
+fn attach_sheet_dynamic_preminted<H: StyleServices>(
+    backend: &Rc<RefCell<H>>,
+    node: &H::Node,
+    style: Box<dyn Fn() -> StyleApplication>,
+) -> Rc<dyn Fn(StateBits, bool)> {
+    attach_preminted_dynamic(
+        backend,
+        node,
+        Box::new(move || {
+            style().preminted_class_list().unwrap_or_else(|| panic!("{}", PREMINT_ONLY_VIOLATION))
+        }),
+    );
+    // No state setter: interaction states ride the preminted pseudo-class
+    // CSS, exactly as on the static preminted path.
     noop_setter()
 }
 

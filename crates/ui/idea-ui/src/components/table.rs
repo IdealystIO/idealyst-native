@@ -44,6 +44,7 @@ use runtime_core::{
     component, signal, text as text_node, ui, ChildList, Color, Cursor, Element, IdealystSchema,
     IntoElement, Reactive, Signal, StyleRules, Tokenized,
 };
+use runtime_vocabulary::StyleProp;
 use table::{table as sdk_table, table_cell as sdk_cell, table_row as sdk_row};
 use table::{TableCellProps as SdkTableCellProps, TableProps as SdkTableProps, TableRowProps as SdkTableRowProps};
 
@@ -289,16 +290,34 @@ pub fn TableCell(props: TableCellProps) -> Element {
     // `<th>` itself. Branching here keeps each style concrete so
     // `IntoStyleSource` resolves on the call (not on a `Box<dyn>`,
     // which the trait doesn't support).
+    // A cell's style is handed over as an EXPLICIT `StyleProp::Sheet`, not
+    // as a bare application. A clickable row re-derives each cell's
+    // `StyleApplication` from the built element
+    // (`table::cell_base_application`) to layer the pointer cursor + hover
+    // highlight over it, and a `--premint` build's opaque `Preminted` class
+    // cannot provide one. Cells are compose-happy by design, so they
+    // deliberately stay on the live engine.
+    //
+    // `.into_style_application()` alone used to say that and stopped:
+    // `IntoStyleProp for StyleApplication` gained a preminted fast path, so
+    // the application preminted anyway, `cell_base_application` returned
+    // `None`, and `make_row_cell_interactive` silently skipped the whole
+    // overlay — clickable rows lost their pointer cursor and their hover
+    // highlight in every `--premint` build, with nothing logged. Naming the
+    // variant is what actually pins the intent, and
+    // `regression_premint_keeps_table_cells_on_the_live_engine` holds it
+    // there.
+    //
+    // Branching here (rather than boxing) keeps each style concrete so
+    // `IntoStyleSource` resolves on the call, which the trait requires.
     if header {
-        // `.into_style_application()` (→ `StyleSource::Static`), NOT the
-        // bare builder: a clickable row's hover highlight re-derives the
-        // cell's `StyleApplication` from the built element
-        // (`apply_row_hover_style`), which a `--premint` build's opaque
-        // `Preminted` class can't provide. Cells are compose-happy by
-        // design, so they deliberately stay on the live engine.
-        bound.with_style(TableHeadCell().into_style_application()).into_element()
+        bound
+            .with_style(StyleProp::Sheet(Box::new(TableHeadCell().into_style_application())))
+            .into_element()
     } else {
-        bound.with_style(TableBodyCell().into_style_application()).into_element()
+        bound
+            .with_style(StyleProp::Sheet(Box::new(TableBodyCell().into_style_application())))
+            .into_element()
     }
 }
 
@@ -359,6 +378,67 @@ mod tests {
     /// or stops highlighting. (The wiring goes through the table SDK's
     /// `set_cell_style`/`set_cell_interaction` helpers — this test is what
     /// fails if that seam regresses.)
+    /// Regression: a `--premint` build must not premint a table cell's
+    /// style.
+    ///
+    /// A clickable row layers the pointer cursor + hover highlight over
+    /// each cell by re-deriving the cell's `StyleApplication` from the
+    /// built element. A preminted cell is an opaque class string with no
+    /// application behind it, so the derivation returns `None` and
+    /// `make_row_cell_interactive` silently skips the overlay — the row
+    /// stays clickable but loses its cursor and its highlight, with
+    /// nothing logged.
+    ///
+    /// That shipped: `.into_style_application()` was written to keep cells
+    /// off the premint path, then `IntoStyleProp for StyleApplication`
+    /// gained a preminted fast path and preminted the application anyway.
+    /// Caught by a computed-style A/B of the catalog against a live build
+    /// (54 differing `cursor` properties across the table pages), not by a
+    /// test — which is why there are now two.
+    ///
+    /// This half asserts the SEAM: the application must be recoverable.
+    /// Under the default (non-premint) cfg it passes either way, so
+    /// `premint_must_not_reach_table_cell_styles` guards the actual
+    /// spelling.
+    #[test]
+    fn regression_premint_keeps_table_cells_on_the_live_engine() {
+        with_test_world(|| {
+            let cell = body_cell("x");
+            assert!(
+                table::cell_base_application(&cell).is_some(),
+                "a clickable row re-derives the cell's StyleApplication to \
+                 layer the pointer cursor + hover highlight over it; without \
+                 one the overlay is skipped silently"
+            );
+        });
+    }
+
+    /// The source-level half of the guard above.
+    ///
+    /// Whether a style preminted is decided by a `--cfg` this test binary
+    /// is not built with, so no assertion on a value can observe the
+    /// regression here (same limitation `premint_only_surface.rs`
+    /// documents). What IS observable is the spelling: cells must hand
+    /// over an explicit `StyleProp::Sheet`, which no `IntoStyleProp` fast
+    /// path can reinterpret. A bare application can, and did.
+    #[test]
+    fn premint_must_not_reach_table_cell_styles() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/components/table.rs"),
+        )
+        .expect("read table.rs");
+        for sheet in ["TableHeadCell", "TableBodyCell"] {
+            let needle =
+                format!("StyleProp::Sheet(Box::new({sheet}().into_style_application()))");
+            assert!(
+                src.contains(&needle),
+                "the {sheet} cell style must be handed over as an explicit \
+                 `StyleProp::Sheet` — a bare application premints, and the \
+                 clickable-row overlay is then dropped without a word"
+            );
+        }
+    }
+
     #[test]
     fn clickable_row_makes_every_cell_interactive() {
         with_test_world(|| {

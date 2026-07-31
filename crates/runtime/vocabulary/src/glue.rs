@@ -3370,12 +3370,21 @@ impl GlueIcon {
             if let Some(s) = m.borrow().get(&key) {
                 return s.clone();
             }
-            let sheet = Rc::new(StyleSheet::r#static(StyleRules {
+            // Identity carries the size, so each distinct px gets its own
+            // build-time class. The dump MOUNTS the app, so it mints exactly
+            // the sizes the app actually renders — the same trick
+            // `icon_button.rs`'s per-size sheet plays. Without an identity
+            // this sheet has no preminted CSS, and every sized icon on the
+            // page fell through to the live style engine and kept it linked
+            // (two of the eleven fall-throughs on the catalog's landing
+            // route were this one sheet at 18px and 19px).
+            let sheet = StyleSheet::r#static(StyleRules {
                 width: Some(Tokenized::Literal(Length::Px(size))),
                 height: Some(Tokenized::Literal(Length::Px(size))),
                 flex_shrink: Some(Tokenized::Literal(0.0)),
                 ..Default::default()
-            }));
+            })
+            .premint_as(&format!("runtime.v1.icon.size.{key}"));
             m.borrow_mut().insert(key, sheet.clone());
             sheet
         });
