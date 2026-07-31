@@ -78,7 +78,15 @@ pub fn Grid(props: GridProps) -> Element {
                 // `grid_template_columns` is a `Vec` (not a string-keyed variant
                 // value), so it rides a computed layer keyed by the count — the
                 // key changes with `n`, re-resolving the tracks on a live change.
-                .with_computed(format!("grid-cols-{n}"), move || StyleRules {
+                // The track list is per-instance and unbounded — `columns` is
+                // any `usize`. As a computed layer it was keyed
+                // `grid-cols-{n}`, so every distinct column count minted its
+                // own resolution-cache entry and its own CSS class, and the
+                // whole application stopped preminting. As an INLINE layer it
+                // stays out of the cache identity, so the sheet's base/gap
+                // arms ship as build-time CSS and only the tracks are
+                // per-node. See `StyleApplication::with_inline`.
+                .with_inline(StyleRules {
                     display: Some(DisplayKind::Grid),
                     grid_template_columns: Some(vec![TrackSize::Fr(1.0); n]),
                     ..Default::default()

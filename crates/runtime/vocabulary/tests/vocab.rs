@@ -721,10 +721,12 @@ fn preminted_stamps_classes_and_layers_overrides() {
                 .child(view().style(StyleProp::Preminted {
                     class: "iy-abc iy-abc-size-large".into(),
                     overrides: None,
+                    inline: None,
                 }))
                 .child(view().style(StyleProp::Preminted {
                     class: "iy-def".into(),
                     overrides: Some(Rc::new(px(50.0))),
+                    inline: None,
                 }))
                 .build(),
         )
@@ -756,7 +758,7 @@ fn preminted_world_still_delivers_tokens() {
             &h.backend,
             &h.registry,
             view()
-                .style(StyleProp::Preminted { class: "iy-abc".into(), overrides: None })
+                .style(StyleProp::Preminted { class: "iy-abc".into(), overrides: None, inline: None })
                 .build(),
         )
     });

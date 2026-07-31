@@ -1272,6 +1272,10 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
     // on `::runtime_vocabulary::glue::StyleProp` post-retarget.
     let premint_return = quote! {
         return ::runtime_core::StyleProp::Preminted {
+            // The generated builder has no inline-layer surface yet; an
+            // author reaching for one uses `StyleApplication::with_inline`
+            // directly. (This fast path already bails on any override.)
+            inline: ::core::option::Option::None,
             class: ::std::borrow::Cow::Owned(__class),
             overrides: ::std::option::Option::None,
         };

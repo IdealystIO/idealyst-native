@@ -1424,6 +1424,11 @@ impl caps::StyleOps for WebBackend {
         WebBackend::apply_style_impl(self, node, style)
     }
 
+    fn apply_inline_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
+        let _t = crate::phase_timer::PhaseTimer::start("nc_apply_inline_style");
+        WebBackend::apply_inline_style_impl(self, node, style)
+    }
+
     fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
         WebBackend::mint_style_class_impl(self, style)
     }

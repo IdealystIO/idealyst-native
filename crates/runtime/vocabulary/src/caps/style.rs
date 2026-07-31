@@ -17,6 +17,33 @@ pub trait StyleOps: Host {
     /// Apply resolved, concrete `StyleRules` to a node.
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>);
 
+    /// Apply per-instance rules as an INLINE style, layered ON TOP of any
+    /// classes the node already carries — the backend half of
+    /// [`StyleApplication::with_inline`].
+    ///
+    /// Distinct from [`Self::apply_style`], which on a class-model backend
+    /// REPLACES the node's style class. This one must not disturb the
+    /// stamped preminted classes; it only sets the properties it is given,
+    /// and they must win over those classes (on web that is what an inline
+    /// `style` attribute already does).
+    ///
+    /// Only ever called on backends that report
+    /// [`Self::supports_preminted_styles`], because that is the only path
+    /// where classes and per-instance values are applied separately —
+    /// everywhere else the live engine folds the inline layer into the
+    /// resolved rules before `apply_style`. The default therefore panics
+    /// rather than silently dropping the values: a backend that opts into
+    /// preminted styles owns this too.
+    #[allow(unused_variables)]
+    fn apply_inline_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
+        unreachable!(
+            "apply_inline_style reached a backend that does not override it; \
+             a backend reporting supports_preminted_styles() = true must \
+             implement it, and one reporting false should never receive an \
+             inline layer (the engine folds it in during resolve)"
+        )
+    }
+
     /// Mint (or look up) a backend-side class for a resolved style
     /// without touching any node (batched-Repeat path). `None` = no
     /// named-class model; the walker falls back to per-call applies.

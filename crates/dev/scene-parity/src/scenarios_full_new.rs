@@ -484,10 +484,12 @@ fn full_style_preminted(cx: &mut FullNewCx) {
             .child(view().style(StyleProp::Preminted {
                 class: Cow::Borrowed("iy-fixed iy-fixed-size-large"),
                 overrides: None,
+                inline: None,
             }))
             .child(view().style(StyleProp::Preminted {
                 class: Cow::Borrowed("iy-over"),
                 overrides: Some(Rc::new(test_rules(50.0, "#0000ff"))),
+                inline: None,
             }))
             .build(),
     );

@@ -191,7 +191,7 @@ fn preminted_dynamic_arm_is_ungated_and_engine_free() {
 
     // The arm body (to the next top-level arm) must not call the engine.
     let body_end = src[arm_at..]
-        .find("StyleProp::Preminted { class, overrides } => {")
+        .find("StyleProp::Preminted { class, overrides, inline } => {")
         .expect("Preminted arm follows");
     let body = &src[arm_at..arm_at + body_end];
     for engine_call in

@@ -669,7 +669,7 @@ mod tests {
             Chip().tone(ChipTone::Danger).into_style_prop(),
         ] {
             match src {
-                StyleProp::Preminted { class, overrides } => {
+                StyleProp::Preminted { class, overrides, .. } => {
                     assert!(overrides.is_none());
                     let classes: Vec<&str> = class.split_whitespace().collect();
                     assert!(classes.len() >= 2, "base + one class per axis; got {class}");

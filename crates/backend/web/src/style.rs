@@ -632,6 +632,52 @@ impl WebBackend {
     ///   `className` to it and clear any dynamic slot the node had.
     /// - Else, mint a fresh per-node dynamic class, replacing this
     ///   node's previous dynamic class atomically.
+    /// Apply per-instance rules as an inline `style` attribute, layered on
+    /// top of whatever classes the node already carries — the web half of
+    /// `StyleApplication::with_inline`.
+    ///
+    /// Deliberately NOT `impl_apply_style`: that one mints (or looks up) a
+    /// CLASS for the whole rule set and swaps the node's class slot, which
+    /// would both defeat the purpose — a continuously-varying value would
+    /// mint a class per value — and clobber the preminted classes stamped
+    /// alongside it.
+    ///
+    /// Inline declarations beat any class rule in the CSS cascade
+    /// regardless of specificity or source order, which is exactly the
+    /// merge position the inline layer has in `resolve` (last, after
+    /// overrides). So the two halves agree without any ordering work.
+    ///
+    /// Properties are set individually rather than by assigning
+    /// `style.cssText`: the animation paths already write inline
+    /// properties on these nodes (`background-image` for animated
+    /// gradients, transforms), and replacing `cssText` would wipe them.
+    pub(crate) fn apply_inline_style_impl(
+        &mut self,
+        node: &web_sys::Node,
+        style: &std::rc::Rc<StyleRules>,
+    ) {
+        use wasm_bindgen::JsCast;
+        let Some(element) = node.dyn_ref::<web_sys::HtmlElement>() else {
+            return;
+        };
+        let decl = element.style();
+        // `rules_to_css_delta` lowers ONLY the properties this layer sets —
+        // the delta form, not the full `rules_to_css` (which would also
+        // apply framework defaults like the flex-direction pin and stomp
+        // the classes underneath).
+        let css = css::rules_to_css_delta(style);
+        for declaration in css.split(';') {
+            let declaration = declaration.trim();
+            if declaration.is_empty() {
+                continue;
+            }
+            let Some((prop, value)) = declaration.split_once(':') else {
+                continue;
+            };
+            let _ = decl.set_property(prop.trim(), value.trim());
+        }
+    }
+
     pub(crate) fn impl_apply_style(
         &mut self,
         node: &web_sys::Node,

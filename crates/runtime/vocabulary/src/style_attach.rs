@@ -130,6 +130,12 @@ pub enum StyleProp {
     Preminted {
         class: Cow<'static, str>,
         overrides: Option<Rc<StyleRules>>,
+        /// Per-instance rules applied as an INLINE style alongside the
+        /// class list — see `StyleApplication::with_inline`. Unlike
+        /// `overrides` this does NOT drag the engine back in: it is
+        /// applied directly to the node, and it wins over the classes in
+        /// the cascade the same way the merge order says it does.
+        inline: Option<Rc<StyleRules>>,
     },
     /// A build-time-minted class list that CHANGES — the reactive
     /// counterpart of [`StyleProp::Preminted`].
@@ -280,7 +286,11 @@ impl IntoStyleProp for StyleApplication {
         #[cfg(idealyst_premint)]
         {
             if let Some(class) = self.preminted_class_list() {
-                return StyleProp::Preminted { class: Cow::Owned(class), overrides: None };
+                return StyleProp::Preminted {
+                    class: Cow::Owned(class),
+                    overrides: None,
+                    inline: self.inline().cloned(),
+                };
             }
         }
         StyleProp::Sheet(Box::new(self))
@@ -310,7 +320,11 @@ impl IntoStyleProp for Box<StyleApplication> {
         #[cfg(idealyst_premint)]
         {
             if let Some(class) = self.preminted_class_list() {
-                return StyleProp::Preminted { class: Cow::Owned(class), overrides: None };
+                return StyleProp::Preminted {
+                    class: Cow::Owned(class),
+                    overrides: None,
+                    inline: self.inline().cloned(),
+                };
             }
         }
         StyleProp::Sheet(self)
@@ -646,7 +660,7 @@ pub fn attach_style<H: StyleServices>(
             // pseudo-class CSS, exactly as on the static preminted path.
             noop_setter()
         }
-        StyleProp::Preminted { class, overrides } => {
+        StyleProp::Preminted { class, overrides, inline } => {
             debug_assert!(
                 backend.borrow().supports_preminted_styles(),
                 "StyleProp::Preminted reached a backend with no preminted \
@@ -668,6 +682,14 @@ pub fn attach_style<H: StyleServices>(
                 for cls in class.split_whitespace() {
                     b.attach_html_class(node, cls);
                 }
+            }
+            // The inline layer rides ON TOP of the stamped classes, applied
+            // straight to the node. It carries only per-instance values the
+            // build-time CSS could not name (see
+            // `StyleApplication::with_inline`), so it needs no sheet, no
+            // registration, and — the point — no engine.
+            if let Some(rules) = &inline {
+                backend.borrow_mut().apply_inline_style(node, rules);
             }
             // A preminted class carrying RUNTIME slot overrides layers a
             // real sheet application on top, which reaches the engine. The

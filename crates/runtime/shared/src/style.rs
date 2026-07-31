@@ -2549,6 +2549,15 @@ pub struct StyleApplication {
     /// becomes part of the resolution cache key so identical modifier
     /// sets across instances share a single class.
     computed: Option<ComputedLayer>,
+    /// Per-instance values that are NOT part of the resolution cache
+    /// identity — see [`Self::with_inline`].
+    ///
+    /// Deliberately last in the merge and deliberately absent from
+    /// [`ResolutionKey`]: this is the layer for continuously-varying
+    /// geometry (a slider thumb's `left`, a grid's track count), where
+    /// every distinct value would otherwise mint its own cache entry and
+    /// its own CSS class.
+    inline: Option<Rc<StyleRules>>,
 }
 
 /// A runtime-evaluated `StyleRules` contribution, paired with a stable
@@ -2581,7 +2590,47 @@ impl StyleApplication {
             overrides: StyleRules::default(),
             has_overrides: false,
             computed: None,
+            inline: None,
         }
+    }
+
+    /// Attach per-instance rules that bypass the resolution cache and are
+    /// applied as an INLINE style rather than a class.
+    ///
+    /// This is the layer for values that vary continuously per instance —
+    /// a slider thumb's `left`, a progress bar's `width`, a grid's track
+    /// count, a modal's measured `max_height`. Those cannot be keyed:
+    /// [`ResolutionKey`] is `(sheet, variants, computed_key, overrides)`,
+    /// so a `with_computed` layer keyed on the value, or an `override_*`
+    /// carrying it, mints a fresh cache entry — and on web a fresh CSS
+    /// class — for EVERY distinct value. Dragging a slider across a 300px
+    /// track that way generates on the order of 300 classes, none of which
+    /// can ever be reused, and the cache it populates can never hit.
+    ///
+    /// The inline layer is excluded from the cache identity precisely so
+    /// that doesn't happen. The consequences follow from that:
+    ///
+    /// - The application stays PREMINTABLE. `preminted_class_list` ignores
+    ///   this layer, so the sheet's arms still ship as build-time CSS and
+    ///   the node gets the preminted classes plus an inline style.
+    /// - It resolves LAST, after overrides — matching CSS, where an inline
+    ///   `style` attribute beats any class rule.
+    /// - Two applications differing only here share a cache entry. That is
+    ///   the point, and it is why the values must be applied OUT of band
+    ///   rather than merged into the cached rules.
+    ///
+    /// Use a variant arm for anything enumerable, `with_computed` for a
+    /// bounded set of expensive-to-derive rules, and this for values drawn
+    /// from a continuum.
+    pub fn with_inline(mut self, rules: StyleRules) -> Self {
+        self.inline = Some(Rc::new(rules));
+        self
+    }
+
+    /// The inline layer, if any. Backends that stamp preminted classes
+    /// apply this separately; the live engine folds it in during `resolve`.
+    pub fn inline(&self) -> Option<&Rc<StyleRules>> {
+        self.inline.as_ref()
     }
 
     /// Lookup-friendly accessor for the overrides flag. Used by
@@ -2614,6 +2663,14 @@ impl StyleApplication {
         // not have seen: `overrides` are per-call-site rules and
         // `computed` is an arbitrary closure, so this application's
         // resolved rules are not the ones any build-time class names.
+        //
+        // The INLINE layer is deliberately NOT a disqualifier. It is also
+        // runtime-valued, but it never claims to be part of a class: the
+        // caller stamps these classes AND applies the inline rules as an
+        // inline style, which beats them in the cascade exactly as the
+        // merge order says it should. That is what lets a slider or a grid
+        // ship its sheet as build-time CSS while its one continuous value
+        // stays per-instance.
         if self.has_overrides || self.computed.is_some() {
             return None;
         }
@@ -3941,6 +3998,26 @@ pub(crate) fn pregenerate_keyed(sheet: &StyleSheet) -> Vec<(VariantSet, Rc<Style
 /// Cache entries are strong `Rc`s — that's what makes back-to-back
 /// applies of the same style hit the cache.
 pub fn resolve(app: &StyleApplication) -> Rc<StyleRules> {
+    let cached = resolve_cached(app);
+    // The inline layer merges AFTER the cache, never into it. Two
+    // applications that differ only here share the cached entry — which is
+    // the entire reason this layer exists (see
+    // `StyleApplication::with_inline`): a slider thumb keyed on its pixel
+    // position would otherwise mint a cache entry, and a CSS class, per
+    // pixel dragged.
+    //
+    // The cost is a fresh `Rc` per resolve for inline-carrying nodes. That
+    // is inherent — the values differ per instance — and it is bounded by
+    // the number of such nodes, not by the number of distinct values.
+    match &app.inline {
+        None => cached,
+        Some(inline) => Rc::new((*cached).clone().merge(inline)),
+    }
+}
+
+/// The cached half of [`resolve`] — everything through the override layer.
+/// Split out so the inline layer can sit outside the memo.
+fn resolve_cached(app: &StyleApplication) -> Rc<StyleRules> {
     // Fast path: no overrides, no computed layer, pre-registered
     // variants. Skips the full ResolutionKey hash and goes straight
     // to the stylesheet's pre-resolved arm map.

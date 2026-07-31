@@ -223,12 +223,16 @@ fn fold_prop(prop: Option<StyleProp>, rules: &Rc<StyleRules>) -> StyleProp {
                 }),
             }
         }
-        Some(StyleProp::Preminted { class, overrides }) => StyleProp::Preminted {
+        // The navigator's screen-option fold layers its rules as OVERRIDES.
+        // The inline layer passes through untouched: it sits above overrides
+        // in the merge order, so folding here must not disturb it.
+        Some(StyleProp::Preminted { class, overrides, inline }) => StyleProp::Preminted {
             class,
             overrides: Some(match overrides {
                 Some(prev) => Rc::new((*prev).clone().merge(&rules)),
                 None => rules,
             }),
+            inline,
         },
     }
 }

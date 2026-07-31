@@ -1817,3 +1817,122 @@ fn computed_layer_beats_every_axis_regardless_of_name() {
         "the computed layer must beat even the alphabetically-last axis"
     );
 }
+
+// --- The inline layer -------------------------------------------------
+
+fn inline_sheet() -> Rc<StyleSheet> {
+    Rc::new(
+        StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            background: Some(Tokenized::Literal(Color("#111111".into()))),
+            ..Default::default()
+        })
+        .variant("gap", "md", |_vs| StyleRules::default())
+        .variant_default("gap", "md"),
+    )
+    .clone()
+}
+
+/// The inline layer resolves LAST — after overrides — matching CSS, where
+/// an inline `style` attribute beats any class rule.
+#[test]
+fn inline_layer_resolves_after_overrides() {
+    let app = StyleApplication::new(inline_sheet())
+        .with_overrides(StyleRules {
+            background: Some(Tokenized::Literal(Color("#222222".into()))),
+            ..Default::default()
+        })
+        .with_inline(StyleRules {
+            background: Some(Tokenized::Literal(Color("#333333".into()))),
+            ..Default::default()
+        });
+    assert_eq!(
+        crate::resolve_style(&app).background,
+        Some(Tokenized::Literal(Color("#333333".into()))),
+        "inline must beat overrides"
+    );
+}
+
+/// THE reason this layer exists: two applications differing ONLY in their
+/// inline rules share one resolution-cache entry.
+///
+/// A `with_computed` layer keyed on the value, or an `override_*` carrying
+/// it, puts the value in `ResolutionKey` — so a slider thumb keyed on its
+/// pixel position mints an entry, and on web a CSS class, per pixel
+/// dragged. Cache identity is pointer-compared here: same `Rc` means the
+/// second resolve hit the memo rather than re-resolving.
+#[test]
+fn inline_layer_is_not_part_of_the_cache_identity() {
+    let sheet = inline_sheet();
+    let a = StyleApplication::new(sheet.clone()).with_inline(StyleRules {
+        width: Some(Tokenized::Literal(Length::Px(10.0))),
+        ..Default::default()
+    });
+    let b = StyleApplication::new(sheet.clone()).with_inline(StyleRules {
+        width: Some(Tokenized::Literal(Length::Px(9999.0))),
+        ..Default::default()
+    });
+
+    // Different inline values reach the node...
+    assert_eq!(
+        crate::resolve_style(&a).width,
+        Some(Tokenized::Literal(Length::Px(10.0)))
+    );
+    assert_eq!(
+        crate::resolve_style(&b).width,
+        Some(Tokenized::Literal(Length::Px(9999.0)))
+    );
+
+    // ...while the CACHED half is one shared entry. Compare against a
+    // third application with no inline layer at all: it must be the very
+    // same `Rc` the other two were built from.
+    let plain = StyleApplication::new(sheet);
+    let first = crate::resolve_style(&plain);
+    let second = crate::resolve_style(&plain);
+    assert!(
+        Rc::ptr_eq(&first, &second),
+        "the cached half must memoize"
+    );
+    assert_eq!(
+        first.background,
+        Some(Tokenized::Literal(Color("#111111".into()))),
+        "and it must be the sheet's own resolution"
+    );
+}
+
+/// An inline layer does NOT disqualify preminting — unlike `overrides` and
+/// `computed`, which do. The classes still ship from the dump; the inline
+/// values ride the node.
+#[test]
+fn inline_layer_does_not_disqualify_preminting() {
+    let sheet = Rc::new(
+        StyleSheet::new(|_vs: &VariantSet| StyleRules::default())
+            .variant("gap", "md", |_vs| StyleRules::default())
+            .variant_default("gap", "md"),
+    );
+    let sheet = StyleSheet::premint_as(
+        Rc::try_unwrap(sheet).unwrap_or_else(|_| panic!("sole owner")),
+        "test.inline.v1",
+    );
+
+    let plain = StyleApplication::new(sheet.clone());
+    let with_inline = StyleApplication::new(sheet.clone()).with_inline(StyleRules {
+        width: Some(Tokenized::Literal(Length::Px(42.0))),
+        ..Default::default()
+    });
+    assert_eq!(
+        plain.preminted_class_list(),
+        with_inline.preminted_class_list(),
+        "an inline layer must not change — or block — the class list"
+    );
+    assert!(with_inline.preminted_class_list().is_some());
+
+    // Overrides and computed layers still DO disqualify.
+    let with_override = StyleApplication::new(sheet.clone()).with_overrides(StyleRules {
+        width: Some(Tokenized::Literal(Length::Px(42.0))),
+        ..Default::default()
+    });
+    assert!(with_override.preminted_class_list().is_none());
+    let with_computed =
+        StyleApplication::new(sheet).with_computed("k", || StyleRules::default());
+    assert!(with_computed.preminted_class_list().is_none());
+}
