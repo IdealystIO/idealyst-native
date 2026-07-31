@@ -331,6 +331,100 @@ fn on_cleanup_runs_before_rerun_and_on_drop() {
     assert_eq!(cleaned.get(), 2);
 }
 
+/// Regression: `on_cleanup` outside an effect is a PANIC, and the shapes
+/// that hit it are the everyday ones — a `#[component]` body, a registry
+/// mount handler, the initial `realize`. idea-ui's measured `Collapsible`
+/// and the video SDK's `build_video` both called it from exactly there, so
+/// deep-linking to the Collapsible page aborted the app (found by the
+/// premint dump's route crawl, which mounts every route directly instead of
+/// swapping to it). `on_scope_drop` is the legal hook for that position.
+#[test]
+fn on_scope_drop_anchors_to_the_scope_when_no_effect_is_running() {
+    let world = World::new();
+    let cleaned = counter();
+    let ((), owned) = world.enter(|| {
+        collect_owned(|| {
+            // No enclosing effect — the position that panics through
+            // `on_cleanup`.
+            assert!(!in_effect(), "this test is only meaningful outside an effect");
+            let cleaned = Rc::clone(&cleaned);
+            on_scope_drop(move || bump(&cleaned));
+        })
+    });
+    assert_eq!(cleaned.get(), 0, "must not fire at registration");
+    drop(owned);
+    assert_eq!(cleaned.get(), 1, "fires when the owning scope drops");
+}
+
+/// The keepalive effect reads nothing, so it must never re-run — a
+/// scope-drop teardown that fired on every flush would tear down a live
+/// resource (the `Collapsible` case: its ResizeObserver and its pending
+/// setup task).
+#[test]
+fn on_scope_drop_does_not_fire_on_unrelated_flushes() {
+    let world = World::new();
+    let cleaned = counter();
+    let s = world.enter(|| signal(0));
+    let ((), owned) = world.enter(|| {
+        collect_owned(|| {
+            let cleaned = Rc::clone(&cleaned);
+            on_scope_drop(move || bump(&cleaned));
+        })
+    });
+    for i in 1..4 {
+        s.set(i);
+        world.flush();
+    }
+    assert_eq!(cleaned.get(), 0, "no dependency was read; nothing should re-run");
+    drop(owned);
+    assert_eq!(cleaned.get(), 1);
+}
+
+/// Inside a running effect it defers to `on_cleanup`, so a resource
+/// acquired during a run also dies on that run's re-run — the rule
+/// `scoped_scheduling::current_anchor` already follows.
+#[test]
+fn on_scope_drop_inside_an_effect_behaves_like_on_cleanup() {
+    let world = World::new();
+    let cleaned = counter();
+    let s = world.enter(|| signal(0));
+    let ((), owned) = world.enter(|| {
+        collect_owned(|| {
+            let cleaned = Rc::clone(&cleaned);
+            effect(move || {
+                s.get();
+                let cleaned = Rc::clone(&cleaned);
+                on_scope_drop(move || bump(&cleaned));
+            });
+        })
+    });
+    assert_eq!(cleaned.get(), 0);
+    s.set(1);
+    world.flush();
+    assert_eq!(cleaned.get(), 1, "fires before the re-run, like on_cleanup");
+    drop(owned);
+    assert_eq!(cleaned.get(), 2);
+}
+
+/// Outside any world there is no scope to anchor to, so the registration is
+/// inert rather than a panic — `f` is dropped (releasing its captures) and
+/// never runs. Mirrors `after_ms_scoped`'s documented no-world posture.
+#[test]
+fn on_scope_drop_outside_a_world_is_inert() {
+    let cleaned = counter();
+    let held = Rc::new(());
+    let weak = Rc::downgrade(&held);
+    {
+        let cleaned = Rc::clone(&cleaned);
+        on_scope_drop(move || {
+            let _ = &held;
+            bump(&cleaned);
+        });
+    }
+    assert_eq!(cleaned.get(), 0, "nothing owns it; it must not run");
+    assert!(weak.upgrade().is_none(), "the closure's captures must be released");
+}
+
 #[test]
 fn returned_closures_are_cleanups() {
     let world = World::new();

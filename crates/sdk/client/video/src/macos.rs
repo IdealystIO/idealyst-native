@@ -206,13 +206,14 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> Macos
         // by Discard OR the back button OR any other navigation). Without this
         // the AVPlayer keeps playing in the background — audible after the
         // preview is gone — and the PLAYER_TABLE entry + its loop observer leak.
-        // `on_cleanup` fires on scope drop, same hook `raf_loop_scoped` uses
-        // above. Pausing halts the rate; nil-ing the current item releases the
+        // `on_scope_drop` fires on scope drop, the same anchor
+        // `raf_loop_scoped` picks above (NOT `on_cleanup` — this is a mount
+        // handler, and `on_cleanup` panics outside a running effect). Pausing halts the rate; nil-ing the current item releases the
         // decode/audio pipeline immediately; removing the notification observer
         // is required because the center retains the token (dropping our
         // `Retained` alone wouldn't unregister it, and its block retains the
         // player → a stray loop-seek could even restart playback).
-        runtime_world::on_cleanup(move || {
+        runtime_world::on_scope_drop(move || {
             let Some(entry) = PLAYER_TABLE.with(|t| t.borrow_mut().remove(&key)) else {
                 return;
             };

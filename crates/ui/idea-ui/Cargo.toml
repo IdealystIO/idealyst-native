@@ -82,3 +82,11 @@ idea-ui-docs-derive = { workspace = true, optional = true }
 # and `toggle` (as `Switch`). Optional so a size-restricted build can
 # drop it (the `table` feature).
 table = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Integration tests that MOUNT a component (not just resolve its
+# stylesheets) need a native `Host`. `host-mock` implements `Host` plus
+# every capability trait over a recording op log — it exists for exactly
+# this. Used by `collapsible_direct_mount.rs`.
+host-mock = { workspace = true }
+runtime-scene = { workspace = true }

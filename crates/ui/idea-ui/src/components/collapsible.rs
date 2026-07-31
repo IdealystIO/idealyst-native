@@ -46,7 +46,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, derived, on_cleanup, pressable, signal, switch, text, ui, ChildList, Element,
+    component, derived, on_scope_drop, pressable, signal, switch, text, ui, ChildList, Element,
     IdealystSchema, IntoElement, LayoutSubscription, Reactive, Ref, Signal, StyleApplication,
     VariantEnum, ViewHandle,
 };
@@ -343,10 +343,17 @@ fn measured_body(value: Signal<bool>, duration_ms: u32, kids: Vec<Element>) -> E
     // detaching this subtree) a late layout callback still fired and read
     // `natural_height` after its `Signal<f32>` slot was freed —
     // "signal used after its scope was dropped" → abort. Anchoring to the
-    // scope via `on_cleanup` drops the ScheduledTask (cancels a not-yet-run
-    // setup) and the subscription (unsubscribes the observer) during scope
-    // teardown, before the scope's signals are freed.
-    on_cleanup(move || {
+    // scope drops the ScheduledTask (cancels a not-yet-run setup) and the
+    // subscription (unsubscribes the observer) during scope teardown,
+    // before the scope's signals are freed.
+    //
+    // `on_scope_drop`, NOT `on_cleanup`: this is a component body, and
+    // `on_cleanup` panics unless an effect is running. It happened to
+    // survive when a reactive re-render swapped this subtree in (the swap
+    // runs inside an effect) and aborted on a direct mount — so
+    // deep-linking straight to a page containing a measured Collapsible
+    // took the app down.
+    on_scope_drop(move || {
         drop(setup_task);
         drop(layout_sub_holder);
     });

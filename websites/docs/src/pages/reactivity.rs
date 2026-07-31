@@ -18,7 +18,7 @@ docs! {
     related = ["overview", "primitives", "styles", "components", "refs"],
     concepts = [
         Signal, Effect, Scope, Mount, TrackedContext, Derived, Untrack,
-        Action, Memo, OnCleanup, Reducer, Resource, Context,
+        Action, Memo, OnCleanup, OnScopeDrop, Reducer, Resource, Context,
     ],
 
     section(heading = "Intro") {
@@ -302,8 +302,10 @@ docs! {
           code("#[component]"), " body panics with ",
           code("\"on_cleanup called outside an effect\""),
           " — wrap it in an ", code("effect!"),
-          " as above, or return the cleanup from the effect body, which is \
-           the shorter form of the same thing:"),
+          " as above, return the cleanup from the effect body (the shorter \
+           form of the same thing), or, when the resource really belongs to \
+           the component rather than to a reactive run, reach for ",
+          code("on_scope_drop"), " instead:"),
         code(rust, r##"
             effect!({
                 let t = start_timer();
@@ -317,6 +319,36 @@ docs! {
            disposal — exactly once per resource lifetime. Multiple ",
           code("on_cleanup"),
           " calls within a single Effect run fire in registration order."),
+    },
+
+    section(heading = "on_scope_drop — release when the component goes away") {
+        p(code("on_scope_drop(callback)"),
+          " is the same idea anchored one level out: it fires when the \
+           surrounding OWNERSHIP SCOPE drops — a ", code("#[component]"),
+          " body, a registry mount handler, any ", code("collect_owned"),
+          " region. Use it for a resource acquired while BUILDING the tree, \
+           where there is no running effect for ", code("on_cleanup"),
+          " to attach to:"),
+        code(rust, r##"
+            use runtime_core::{on_scope_drop, after_animation_frame};
+
+            #[component]
+            fn Measured() -> Element {
+                // Acquired during the build — no effect is running here.
+                let setup = after_animation_frame(move || observe());
+                on_scope_drop(move || drop(setup));
+                ui! { view() }
+            }
+        "##),
+        p("Inside a running effect it defers to ", code("on_cleanup"),
+          ", so a resource acquired during a run still dies on that run's \
+           re-run. Outside any world it is inert: nothing owns the scope, so \
+           the callback is dropped without firing."),
+        p("Pick by ownership, not by convenience. If the resource is \
+           re-acquired on every run of an effect, it belongs to the effect (",
+          code("on_cleanup"), "). If it is acquired once while the component \
+           is built, it belongs to the component (", code("on_scope_drop"),
+          ")."),
     },
 
     section(heading = "memo() — cached derived values") {

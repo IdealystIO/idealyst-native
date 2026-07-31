@@ -5769,9 +5769,11 @@ dependencies = [
 name = "idea-ui"
 version = "1.1.1"
 dependencies = [
+ "host-mock",
  "idea-theme",
  "idea-ui-docs-derive",
  "runtime-core",
+ "runtime-scene",
  "runtime-vocabulary",
  "table",
 ]

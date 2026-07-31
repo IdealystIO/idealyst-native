@@ -123,6 +123,11 @@ runtime-core = {fcore_dep}
 # signals — which resolve the AMBIENT world. The entry below wraps the
 # build in an explicit `World`.
 runtime-world = {world_dep}
+# The route crawl (see main.rs) drives the navigator's headless
+# deep-link slot + route collector, and seeds the viewport. All three are
+# `runtime-shared` thread-level state that the facade does not re-export
+# — SSG reaches them the same way, straight off the substrate crate.
+runtime-shared = {shared_dep}
 premint-dump = {pdump_dep}
 # The dump MOUNTS the app (see main.rs) and needs a native `Host` to mount
 # against. `host-mock` implements `Host` + all 30 capability traits over a
@@ -144,6 +149,7 @@ incremental = false
         name = manifest.name,
         fcore_dep = source.dep("crates/runtime/core", &["style-dump"]),
         world_dep = source.dep("crates/runtime/world", &[]),
+        shared_dep = source.dep("crates/runtime/shared", &[]),
         pdump_dep = source.dep("crates/tools/premint-dump", &[]),
         hostmock_dep = source.dep("crates/dev/host-mock", &[]),
         user_name = manifest.name,
@@ -155,52 +161,128 @@ incremental = false
         r#"// GENERATED premint dump entry. Emits every registered sheet's
 // preminted CSS to the path given as argv[1].
 
+use runtime_shared::primitives::navigator::{{
+    enable_route_collector, set_initial_path, take_route_collector,
+}};
+use std::collections::{{HashSet, VecDeque}};
+
+/// Build + MOUNT the app once, with `path` as the deep-link the root
+/// navigator opens to. Returns the literal routes discovered during the
+/// mount (nested navigators publish theirs as their parent screen mounts,
+/// so the caller loops until the queue drains).
+///
+/// MOUNT, don't just build. Building alone reaches only the sheets
+/// constructed during `app()`; a sheet created at MOUNT — inside a
+/// component body, or behind a `move ||` style closure that runs when a
+/// node attaches — stays invisible, gets no CSS, and the shipped bundle
+/// then stamps a build-time class with nothing behind it. That is a
+/// silently unstyled node, and it happened four times before the dump
+/// learned to mount: AppShell's scrim/panel/content (144 of 400 catalog
+/// elements broken), plus Tooltip's and Spinner's sheets.
+///
+/// Failures are NOT fatal. A mount can hit anything an app does on
+/// attach, and a build step must not start failing because one route
+/// dislikes the mock backend. On a panic we keep whatever registered
+/// before it and carry on with the next route.
+fn visit(path: &str) -> Vec<&'static str> {{
+    // Seeded OUTSIDE the world, like the SSR/SSG renderer does: both are
+    // thread-level state the navigator handlers peek during mount. The
+    // viewport matches SSR's so responsive branches fold the same way
+    // here as they do on the server's first paint.
+    set_initial_path(Some(path.to_string()));
+    runtime_shared::set_viewport_size(runtime_shared::ViewportSize::new(1280.0, 800.0));
+    enable_route_collector();
+
+    let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{
+        // The app runs inside a `World` because `signal()` / `effect()`
+        // resolve the ambient world and abort with "called outside
+        // World::enter" otherwise, and essentially every real app body
+        // creates a signal while building.
+        //
+        // A fresh harness (and so a fresh World) per route: route N's
+        // reactive state must not leak into route N+1's mount.
+        let harness = host_mock::Harness::with_registry({lib}::register_scene_extensions);
+        let tree = harness.world.enter(|| {lib}::app());
+        let realized = harness.mount(tree);
+        // Commit anything staged during mount (write-backs, driver-effect
+        // state) — driver effects are where several navigators publish
+        // their nested routes.
+        harness.flush();
+        // Skip destructors. The tree and its world reference reactive
+        // thread-locals whose teardown order is unspecified, and this
+        // process is thrown away the moment the CSS is written — leaking
+        // N route-trees is strictly cheaper than an abort in a build step.
+        // The sheets themselves survive regardless: the premint registry
+        // holds its own `Rc<StyleSheet>`.
+        std::mem::forget(realized);
+        std::mem::forget(harness);
+    }}))
+    .is_ok();
+
+    let discovered = take_route_collector().unwrap_or_default();
+    set_initial_path(None);
+    if !ok {{
+        eprintln!(
+            "[premint-dump] warning: mounting route {{path:?}} failed; styles \
+             reached only on that route will have no CSS — check for unstyled \
+             nodes there, or build with --premint-report."
+        );
+    }}
+    discovered
+}}
+
 fn main() {{
     let out = std::env::args().nth(1).expect("usage: premint-dump <out.css>");
-    // Force-link the app crate (and, transitively, its component-library
-    // deps): a distributed-slice registration only survives the link if
-    // the object file carrying it is pulled in, and an otherwise
-    // unreferenced rlib can be dropped wholesale.
-    //
-    // The app runs inside a `World` because `signal()` / `effect()`
-    // resolve the ambient world and abort with "called outside
-    // World::enter" otherwise, and essentially every real app body creates
-    // a signal while building.
-    let harness = host_mock::Harness::with_registry({lib}::register_scene_extensions);
-    let tree = harness.world.enter(|| {lib}::app());
 
-    // MOUNT, don't just build. Building alone reaches only the sheets
-    // constructed during `app()`; a sheet created at MOUNT — inside a
-    // component body, or behind a `move ||` style closure that runs when a
-    // node attaches — stays invisible, gets no CSS, and the shipped bundle
-    // then stamps a build-time class with nothing behind it. That is a
-    // silently unstyled node, and it happened four times before the dump
-    // learned to mount: AppShell's scrim/panel/content (144 of 400 catalog
-    // elements broken), plus Tooltip's and Spinner's sheets.
+    // Walk EVERY literal route, not just `/`. Mounting the initial route
+    // reaches the app chrome and that route's screen — a component that
+    // first appears on a later page (a Tooltip on /components/tooltip, a
+    // Spinner on /components/spinner) registers no sheet, gets no CSS, and
+    // ships a dangling class. Same crawl contract as `--ssg`: the route
+    // collector harvests each mounting navigator's screen paths, we queue
+    // the unrendered literals, and nested navigators fall out of the loop.
     //
-    // Failures are NOT fatal. A mount can hit anything an app does on
-    // attach, and a build step must not start failing because a component
-    // dislikes the mock backend. On a panic we keep whatever registered
-    // during the build and emit that — exactly the pre-mount behaviour —
-    // with a warning naming the consequence.
-    let mounted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| harness.mount(tree)));
-    match mounted {{
-        Ok(realized) => std::mem::forget(realized),
-        Err(_) => eprintln!(
-            "[premint-dump] warning: mounting the app failed; only styles \
-             reached while BUILDING the tree were collected. Styles created \
-             at mount will have no CSS — check for unstyled nodes, or build \
-             with --premint-report."
-        ),
+    // Force-linking the app crate is a side effect worth naming: a
+    // distributed-slice registration only survives the link if the object
+    // file carrying it is pulled in, and an otherwise unreferenced rlib can
+    // be dropped wholesale.
+    let mut queue: VecDeque<String> = VecDeque::from(["/".to_string()]);
+    let mut seen: HashSet<String> = HashSet::from(["/".to_string()]);
+    let mut skipped: Vec<&'static str> = Vec::new();
+    let mut visited = 0usize;
+
+    while let Some(path) = queue.pop_front() {{
+        visited += 1;
+        for p in visit(&path) {{
+            // Parameterized routes need param values the crawl cannot
+            // invent — same limitation `--ssg` reports. Their screens'
+            // styles are only reached if some literal route mounts them.
+            if p.contains(':') {{
+                if !skipped.contains(&p) {{
+                    skipped.push(p);
+                }}
+                continue;
+            }}
+            if seen.insert(p.to_string()) {{
+                queue.push_back(p.to_string());
+            }}
+        }}
     }}
 
     let css = premint_dump::dump_all_css();
     std::fs::write(&out, &css).expect("write premint css");
+    eprintln!("[premint-dump] mounted {{visited}} route(s)");
+    if !skipped.is_empty() {{
+        eprintln!(
+            "[premint-dump] skipped {{}} parameterized route(s); styles unique to \
+             them are not preminted: {{:?}}",
+            skipped.len(),
+            skipped,
+        );
+    }}
     eprintln!("[premint-dump] {{}} bytes of preminted CSS", css.len());
-    // Skip destructors: the tree (and any signals it created) reference
-    // reactive thread-locals whose teardown order at process exit is
-    // unspecified; `exit` sidesteps the whole class of TLS-drop aborts.
-    std::mem::forget(harness);
+    // Same reason as the per-route forgets: unspecified TLS teardown order
+    // at process exit.
     std::process::exit(0);
 }}
 "#,
@@ -299,6 +381,46 @@ mod dump_wrapper_template_tests {
         assert!(
             cargo.contains("debug = false"),
             "dump wrapper must strip debuginfo (target-dir disk blowup):\n{cargo}"
+        );
+    }
+
+    #[test]
+    fn dump_wrapper_crawls_every_literal_route() {
+        let (_tmp, cargo, main) = generate_into_temp();
+        // Mounting only `/` reaches the app chrome and the initial screen.
+        // A component that first appears on a later page registers no
+        // sheet, gets no CSS, and the shipped bundle stamps a class with
+        // nothing behind it — verified against Spinner, whose class stayed
+        // absent from the CSS until the dump learned to crawl.
+        assert!(
+            main.contains("set_initial_path(Some(path.to_string()))"),
+            "each route must be mounted as the navigator's deep-link:\n{main}"
+        );
+        assert!(
+            main.contains("enable_route_collector()") && main.contains("take_route_collector()"),
+            "route discovery reuses the SSG collector:\n{main}"
+        );
+        assert!(
+            main.contains("queue.push_back"),
+            "discovered routes must be queued so nested navigators are \
+             reached too:\n{main}"
+        );
+        // The collector yields patterns, not paths; `/user/:id` cannot be
+        // mounted without a param value the crawl has no way to invent.
+        assert!(
+            main.contains("p.contains(':')"),
+            "parameterized routes must be skipped, not mounted:\n{main}"
+        );
+        // A fresh World per route — route N's reactive state must not
+        // leak into route N+1's mount.
+        assert!(
+            main.contains("Harness::with_registry") && main.contains("fn visit(path: &str)"),
+            "each route mounts on its own harness:\n{main}"
+        );
+        assert!(
+            cargo.contains("runtime-shared = "),
+            "the crawl reaches the navigator slot + viewport off the \
+             substrate crate, which the facade does not re-export:\n{cargo}"
         );
     }
 }

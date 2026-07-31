@@ -272,8 +272,14 @@ pub enum DocConcept {
     /// the surrounding Effect re-runs or drops. The cleanup hook for
     /// resources (timers, sockets, native handles) created during a
     /// reactive run. Requires a RUNNING effect — calling it from a
-    /// component body panics.
+    /// component body panics; use `OnScopeDrop` there instead.
     OnCleanup,
+    /// `on_scope_drop(callback)` — registers a callback that fires when
+    /// the surrounding OWNERSHIP SCOPE drops (a component body, a
+    /// registry mount handler, a `collect_owned` region). The cleanup
+    /// hook for resources acquired while BUILDING the tree, where no
+    /// effect is running. Defers to `on_cleanup` inside an effect run.
+    OnScopeDrop,
     /// Action-driven state: a signal plus an `update`-based dispatch
     /// closure holding every transition. Pairs with
     /// `Action` for round-tripping through generator backends.

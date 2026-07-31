@@ -215,7 +215,9 @@ pub fn effects() -> Element {
                     cleanup from the body: it runs before each re-run and again when the owning \
                     scope drops. on_cleanup(f) does the same from inside a running effect, and \
                     panics anywhere else \u{2014} the placement is what guarantees a timer can't \
-                    outlive the component that started it.".to_string()
+                    outlive the component that started it. For a resource acquired while the \
+                    component is BUILT, where no effect is running, on_scope_drop(f) is the \
+                    hook: it fires when the component's scope drops.".to_string()
             )
             CodePanel(src = include_str!("../samples/rx_effects_cleanup.rs").to_string())
 

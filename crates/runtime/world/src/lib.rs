@@ -1626,6 +1626,56 @@ pub fn on_cleanup(f: impl FnOnce() + 'static) {
     }
 }
 
+/// Register a teardown for the innermost OWNERSHIP SCOPE — a component
+/// body, a registry mount handler, a `collect_owned` region — rather than
+/// for a running effect. Runs when that scope's [`Owned`] drops.
+///
+/// This is the counterpart [`on_cleanup`] cannot be. `on_cleanup` reads the
+/// effect stack and panics when it is empty, which is the normal state
+/// everywhere a tree is BUILT: a `#[component]` body, a `Registry` mount
+/// handler, the initial `realize`. Code that acquires a resource while
+/// building and wants it released at unmount had no legal hook, and three
+/// call sites reached for `on_cleanup` anyway — idea-ui's measured
+/// `Collapsible` and the video SDK's iOS/macOS `build_video`. All three
+/// aborted the moment their subtree was mounted directly instead of being
+/// swapped in by a reactive re-render (the effect-run case that happens to
+/// satisfy `on_cleanup`): deep-linking to the Collapsible page took the
+/// whole app down.
+///
+/// Anchoring rules, matching `runtime_vocabulary::scoped_scheduling`'s
+/// `current_anchor`:
+///
+/// - **Inside an effect run** — defers to [`on_cleanup`], so the teardown
+///   also fires before the effect's next re-run. A resource acquired during
+///   a run belongs to that run.
+/// - **Outside one, inside a world** — anchors to a dependency-free
+///   keepalive effect. It reads nothing, so it never re-runs; it is owned by
+///   the enclosing collector (component subtree → mount → world root), and
+///   its teardown is the scope's teardown.
+/// - **Outside any world** — inert. `f` is dropped without running, which
+///   releases whatever it captured. Nothing owns the scope, so there is no
+///   moment to fire at.
+pub fn on_scope_drop(f: impl FnOnce() + 'static) {
+    if in_effect() {
+        on_cleanup(f);
+        return;
+    }
+    if !is_entered() {
+        return;
+    }
+    // Registered from INSIDE the keepalive's first run, where the effect
+    // stack is non-empty and `on_cleanup` is legal — rather than relying on
+    // the body closure's own drop, which only fires if nothing else is
+    // holding the effect's `Rc<EffectData>` at free time. `cleanups` is
+    // drained explicitly by `free_effect`, so the timing is exact.
+    let mut once = Some(f);
+    let _ = effect(move || {
+        if let Some(f) = once.take() {
+            on_cleanup(f);
+        }
+    });
+}
+
 /// What an effect body is allowed to return. Sealed: exactly three forms —
 /// nothing, a cleanup closure, or `Option` of one (conditional cleanup). A
 /// returned cleanup is registered through the same [`on_cleanup`] mechanism,

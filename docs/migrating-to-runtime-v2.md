@@ -42,7 +42,7 @@ test or source comment; the pinning path is cited inline.
 | `sig.update_if_changed(…)` | removed (guarded `set` subsumes it) | compile error |
 | `signal(v)` for any `T: Clone` | **`T: PartialEq`** is a bound on the whole `Signal<T>`/`ReadSignal<T>`/`WriteSignal<T>` surface — creation, `get`, `set_always`, `touch`, not just guarded `set` | compile error: `can't compare T with T` / "method exists but its trait bounds were not satisfied". Derive `PartialEq`; for a payload with no value equality, give it a pointer-identity impl (see below) |
 | `Signal::new(v)` | removed — the free `signal(v)` is the constructor | compile error: no associated function `new` |
-| `on_cleanup(f)` in a component body | panics `"on_cleanup called outside an effect"` — return the cleanup from an effect instead | runtime panic at build |
+| `on_cleanup(f)` in a component body | panics `"on_cleanup called outside an effect"` — use `on_scope_drop(f)`, or return the cleanup from an effect | runtime panic at build |
 | creating `signal`/`effect`/`memo` inside an event handler | panics (handlers run outside the world) | runtime panic on the event |
 | free theme fns (`install_tokens(…)`, …) in a handler | panic outside `World::enter` — capture `ThemeCtx` at build, call its methods | runtime panic on the event |
 | `presence` re-shown mid-exit reuses the exiting child | builds a **fresh** child (crossfade); child-local state does not survive | visual/state difference, see below |
@@ -588,7 +588,15 @@ it requires a **running effect** and panics otherwise:
 // Old: component-body cleanup.
 on_cleanup(move || timer.cancel());
 
-// New — either register inside an effect…
+// New — `on_scope_drop` is the direct replacement. It anchors to the
+// surrounding OWNERSHIP SCOPE (component body, registry mount handler,
+// any `collect_owned` region), which is what the old `on_cleanup` did
+// here. Inside a running effect it defers to `on_cleanup`, so one call
+// is correct in both positions.
+on_scope_drop(move || timer.cancel());
+
+// Or, when the resource is re-acquired on every run, it belongs to the
+// effect — register inside it…
 effect!({
     on_cleanup(move || timer.cancel());
 });
@@ -601,9 +609,23 @@ effect!({
 });
 ```
 
-The effect-owned shape also fixes a real bug class: a cleanup owned by
-the scope cancels its timers when the component unmounts, so detached
-callbacks can't outlive a remounted world.
+Pick by ownership. A resource acquired once while the component is
+BUILT belongs to the component (`on_scope_drop`); one re-acquired on
+every run of an effect belongs to that effect (`on_cleanup`).
+
+Either shape fixes a real bug class: a cleanup owned by the scope
+cancels its timers when the component unmounts, so detached callbacks
+can't outlive a remounted world.
+
+`on_scope_drop` arrived later than the rest of runtime v2, after the
+premint dump's route crawl started mounting every route directly and
+found three ports that had kept the old placement and shipped —
+idea-ui's measured `Collapsible` and the video SDK's iOS/macOS
+`build_video`. All three survived only because the usual way into their
+subtree is a reactive route swap, which runs inside an effect and
+happens to satisfy `on_cleanup`; a direct mount (a deep link, SSG) took
+the app down. If you ported a component body cleanup into an effect
+purely to silence the panic, `on_scope_drop` is the shape you wanted.
 
 ---
 

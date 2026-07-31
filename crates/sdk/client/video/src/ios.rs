@@ -232,7 +232,7 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode
     // drop. Pause halts the rate; nil-ing the item releases the audio/decode
     // pipeline; removing the notification observer is required (the center
     // retains the token, and its block retains the player). Mirrors macOS.
-    runtime_world::on_cleanup(move || {
+    runtime_world::on_scope_drop(move || {
         let Some(entry) = PLAYER_TABLE.with(|t| t.borrow_mut().remove(&key)) else {
             return;
         };

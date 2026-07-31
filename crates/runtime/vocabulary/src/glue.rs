@@ -128,7 +128,8 @@ use crate::builders::{self, TextContent};
 // the macro (and app preludes) reach for.
 pub use runtime_scene::{component_scope, Element};
 pub use runtime_world::{
-    effect, memo, on_cleanup, signal, untrack, Effect, Memo, ReadSignal, Signal, WriteSignal,
+    effect, memo, on_cleanup, on_scope_drop, signal, untrack, Effect, Memo, ReadSignal, Signal,
+    WriteSignal,
 };
 
 // The escape hatch for the `T: PartialEq` bound those signal handles
@@ -3152,8 +3153,8 @@ pub fn __component_build_probe(_name: &'static str) -> BuildProbeGuard {
 /// subset.
 pub mod prelude {
     pub use super::{
-        component_scope, effect, memo, on_cleanup, signal, untrack, BuildElement, ChildList,
-        Element, IntoElement, Memo, Reactive, ReadSignal, Signal, WriteSignal,
+        component_scope, effect, memo, on_cleanup, on_scope_drop, signal, untrack, BuildElement,
+        ChildList, Element, IntoElement, Memo, Reactive, ReadSignal, Signal, WriteSignal,
     };
     pub use runtime_shared::StyleRules;
     pub use runtime_world::{IntoValue, Value};
