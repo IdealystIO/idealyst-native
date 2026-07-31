@@ -1687,6 +1687,52 @@ type RulesFn = Box<dyn Fn(&VariantSet) -> StyleRules>;
 pub type VariantAxis = String;
 pub type VariantValue = String;
 
+/// Insert (or update the default of) an author axis in the premint
+/// cache, keeping it sorted by axis name.
+///
+/// Sorted, not declaration-ordered, because this list has to match the
+/// order `premint-dump` emits author-axis rules in — and that order is
+/// `BTreeMap`-alphabetical, because the dump walks `variants` directly.
+/// Class-list order does not decide the CSS cascade (every emitted
+/// selector is specificity (0,1,0), so source order in the STYLESHEET
+/// wins), but keeping the two sides literally identical makes the
+/// agreement checkable, which is what
+/// `every_runtime_stamped_class_has_a_dumped_rule` checks. It also keeps
+/// the stamped attribute byte-stable for SSR/SSG diffing.
+fn insert_author_axis(
+    axes: &mut Vec<(VariantAxis, Option<VariantValue>)>,
+    axis: &str,
+    default: Option<VariantValue>,
+) {
+    match axes.binary_search_by(|(a, _)| a.as_str().cmp(axis)) {
+        Ok(i) => {
+            if default.is_some() {
+                axes[i].1 = default;
+            }
+        }
+        Err(i) => axes.insert(i, (axis.to_string(), default)),
+    }
+}
+
+/// The preminted base class for a sheet identity — `iy-` plus the low
+/// 48 bits of FNV-1a 64 over `identity`, hex.
+///
+/// Byte-for-byte the scheme `stylesheet!` uses over its own source text
+/// (`macros::stylesheet::content_hash` + the `iy-{:012x}` format), so
+/// macro sheets and runtime-assembled ones share one namespace and one
+/// CSS file. FNV rather than `DefaultHasher` because the value has to
+/// mean the same thing in two separately-compiled binaries — the dump
+/// and the shipped bundle — and `DefaultHasher`'s output is explicitly
+/// not guaranteed stable across toolchain versions.
+pub fn premint_class_name(identity: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in identity.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("iy-{:012x}", h & 0xffff_ffff_ffff)
+}
+
 /// One axis of variants on a stylesheet — its declared values and the
 /// optional default value used when the call site doesn't pick a value.
 pub struct VariantAxisDef {
@@ -1800,6 +1846,23 @@ pub struct StyleSheet {
     /// `StyleRules` carry token *names* (not values) so the rule
     /// content is token-stable.
     variant_cache: std::cell::RefCell<FxHashMap<VariantSet, Rc<StyleRules>>>,
+    /// Cached list of AUTHOR variant axes (the `__`-prefixed overlay
+    /// axes excluded), each paired with its declared default. Populated
+    /// in `.variant(...)` / `.variant_default(...)` like the overlay
+    /// caches beside it, but kept SORTED by axis name rather than in
+    /// declaration order — see [`insert_author_axis`].
+    ///
+    /// Exists for the preminted class assembly, which must name one
+    /// class per author axis — including axes the call site left unset,
+    /// whose default arm the live resolver would have applied. The
+    /// `style-dump`-only `premint_variant_axes()` can't serve that: it
+    /// allocates a `Vec<(String, Vec<String>, Option<String>)>` per
+    /// call, and shipped premint builds hit this per styled node.
+    author_axes: Vec<(VariantAxis, Option<VariantValue>)>,
+    /// Base class for a sheet that premints (see
+    /// [`Self::premint_as`]). `None` — the default — means the sheet
+    /// only ever resolves through the live engine.
+    premint_class: Option<Rc<str>>,
 }
 
 impl StyleSheet {
@@ -1815,6 +1878,8 @@ impl StyleSheet {
             state_axes: Vec::new(),
             breakpoint_axes: Vec::new(),
             container_axes: Vec::new(),
+            author_axes: Vec::new(),
+            premint_class: None,
             variant_cache: std::cell::RefCell::new(FxHashMap::default()),
         }
     }
@@ -1828,6 +1893,8 @@ impl StyleSheet {
             state_axes: Vec::new(),
             breakpoint_axes: Vec::new(),
             container_axes: Vec::new(),
+            author_axes: Vec::new(),
+            premint_class: None,
             variant_cache: std::cell::RefCell::new(FxHashMap::default()),
         }
     }
@@ -1870,6 +1937,13 @@ impl StyleSheet {
             if !self.container_axes.iter().any(|(_, a)| a == &axis) {
                 self.container_axes.push((threshold, axis.clone()));
             }
+        }
+        // Author axes (everything not `__state_*` / `__bp_*` / `__cq_*`)
+        // cached for preminted class assembly — see `author_axes`. The
+        // default is filled in later by `variant_default`, which may run
+        // before or after the arm that declares the value.
+        if !axis.starts_with("__") {
+            insert_author_axis(&mut self.author_axes, &axis, None);
         }
         let entry = self.variants.entry(axis).or_insert_with(|| VariantAxisDef {
             default: None,
@@ -1938,12 +2012,107 @@ impl StyleSheet {
     ) -> Self {
         let axis = axis.into();
         let value = value.into();
+        // Keep the premint author-axis cache in step. `variant_default`
+        // may run before ANY `.variant(...)` arm for the axis, so the
+        // axis is registered here too rather than only there.
+        if !axis.starts_with("__") {
+            insert_author_axis(&mut self.author_axes, &axis, Some(value.clone()));
+        }
         let entry = self.variants.entry(axis).or_insert_with(|| VariantAxisDef {
             default: None,
             values: BTreeMap::new(),
         });
         entry.default = Some(value);
         self
+    }
+
+    /// The cached author variant axes, each with its declared default —
+    /// the axes a preminted class must name. See [`Self::author_axes`].
+    pub fn premint_author_axes(&self) -> &[(VariantAxis, Option<VariantValue>)] {
+        &self.author_axes
+    }
+
+    /// This sheet's preminted base class, or `None` when it has no
+    /// build-time CSS and must resolve through the live engine.
+    pub fn premint_class(&self) -> Option<&str> {
+        self.premint_class.as_deref()
+    }
+
+    /// Finish an assembled sheet with a stable premint identity, so its
+    /// applications can resolve to a build-time class instead of the
+    /// runtime style engine.
+    ///
+    /// `identity` must describe the sheet's CONTENT: two runs that
+    /// produce the same rules must pass the same string, and any change
+    /// to the assembled rules must change it. The build-time dump and
+    /// the shipped bundle both derive the class from this string, and
+    /// they only agree because they run this same code over the same
+    /// app — there is no manifest tying the halves together (the
+    /// `stylesheet!` macro plays the identical trick with a hash of its
+    /// own source tokens).
+    ///
+    /// This exists because premint was previously reachable only from
+    /// the macro, whose whole variant space is known at expansion. A
+    /// sheet assembled at RUNTIME — idea-theme's `TypographySheetBuilder`
+    /// and friends, whose kinds/tones an app extends before
+    /// `install_idea_theme` — has no such expansion site, so every one
+    /// of those components fell through to the live engine and kept it
+    /// linked. The dump build already runs `app()`, so by the time it
+    /// asks for CSS the assembled sheets exist; registering here is what
+    /// lets it see them.
+    /// # Eligibility
+    ///
+    /// A sheet with COMPOUND variants silently declines and stays on the
+    /// live engine — the same shape as the `stylesheet!` macro's
+    /// `premintable` check (a sheet with a `shadow` layer quietly keeps
+    /// minting live). A compound applies only when several axes coincide,
+    /// and the delta model emits one rule per axis arm, so no per-axis
+    /// class can carry that condition. Declining rather than erroring
+    /// means a caller can opt a whole family in — idea-theme installs
+    /// eleven component sheets from one call — and the ones that cannot
+    /// premint just keep working. `premint_class()` reports the outcome.
+    ///
+    /// Callers are still responsible for the property-level rule: a layer
+    /// that varies with the theme must be `Tokenized`, so the emitted CSS
+    /// says `var(--token)` and a theme swap re-resolves it. Baking a
+    /// concrete theme value (a `FontFamily`, an `f32` from
+    /// `Spacing`/`Radius`) freezes whichever theme the dump build
+    /// installed.
+    /// Stamp a PRE-COMPUTED premint class — the `stylesheet!` macro's
+    /// content hash, which it already spells into its own builder fast
+    /// path and into `PREMINT_SHEETS`.
+    ///
+    /// Unlike [`Self::premint_as`] this does NOT register for the dump:
+    /// macro sheets register at link time through the distributed slice,
+    /// so their CSS is emitted either way. What stamping adds is the
+    /// RUNTIME half. `StyleApplication::new(Foo::sheet())` — 112 call
+    /// sites across idea-ui and the websites, and the dominant idiom by
+    /// a wide margin — bypasses the generated builder, so it never
+    /// reached the macro's premint branch and fell through to the live
+    /// engine even though the class it needed was already sitting in the
+    /// shipped `.css`. With the class on the sheet, the
+    /// `IntoStyleProp for StyleApplication` path picks it up.
+    ///
+    /// Only called for macro-premintable sheets (no `shadow` layer, no
+    /// non-literal `font_family`), because only those register CSS.
+    /// Compound-bearing sheets still decline, same as `premint_as`.
+    pub fn premint_with_class(mut self, class: &'static str) -> Rc<StyleSheet> {
+        if self.compounds.is_empty() {
+            self.premint_class = Some(class.into());
+        }
+        Rc::new(self)
+    }
+
+    pub fn premint_as(mut self, identity: &str) -> Rc<StyleSheet> {
+        if self.compounds.is_empty() {
+            self.premint_class = Some(crate::premint_class_name(identity).into());
+        }
+        let sheet = Rc::new(self);
+        #[cfg(feature = "style-dump")]
+        if sheet.premint_class.is_some() {
+            crate::premint::register_assembled_sheet(&sheet);
+        }
+        sheet
     }
 
     /// Adds a compound variant: an overlay applied only when every
@@ -2231,6 +2400,53 @@ impl StyleApplication {
     /// Lookup-friendly accessor for the overrides flag. Used by
     /// `resolve()` to pick between the empty-overrides key (just an
     /// empty string) and the full content-keyed path.
+    /// The preminted class list for this application: the sheet's base
+    /// class, then one class per AUTHOR axis — or `None` when the sheet
+    /// has no build-time CSS, or this application carries runtime-valued
+    /// layers no build-time class could have named.
+    ///
+    /// Lives here, beside the sheet, because two independently-compiled
+    /// binaries have to agree on it: `premint-dump` emits `{base}` and
+    /// `{base}-{axis}-{value}` selectors, and the shipped bundle stamps
+    /// the classes. Nothing but the string format tied those halves
+    /// together, so they share this one function rather than each
+    /// spelling the format out.
+    ///
+    /// Axis order is the sheet's cached author-axis order, which is
+    /// `BTreeMap`-alphabetical, which is the order [`StyleSheet::resolve`]
+    /// merges arms in and the order the dump emits them in — so the
+    /// equal-specificity CSS cascade lands on the same winner the live
+    /// resolver picks.
+    ///
+    /// Axes the call site left unset contribute their DECLARED DEFAULT,
+    /// because that is the arm `resolve` would apply; omitting it would
+    /// silently drop a layer. An axis with neither a set value nor a
+    /// default contributes nothing, also matching `resolve`.
+    pub fn preminted_class_list(&self) -> Option<String> {
+        // Both disqualifiers are runtime-valued layers the dump could
+        // not have seen: `overrides` are per-call-site rules and
+        // `computed` is an arbitrary closure, so this application's
+        // resolved rules are not the ones any build-time class names.
+        if self.has_overrides || self.computed.is_some() {
+            return None;
+        }
+        let base = self.sheet.premint_class()?;
+        let mut class = String::with_capacity(base.len());
+        class.push_str(base);
+        for (axis, default) in self.sheet.premint_author_axes() {
+            let Some(value) = self.variants.0.get(axis).or(default.as_ref()) else {
+                continue;
+            };
+            class.push(' ');
+            class.push_str(base);
+            class.push('-');
+            class.push_str(axis);
+            class.push('-');
+            class.push_str(value);
+        }
+        Some(class)
+    }
+
     pub fn has_overrides(&self) -> bool {
         self.has_overrides
     }
@@ -3743,3 +3959,62 @@ impl<T: Clone + 'static> IntoOverrideSource<T> for crate::Signal<T> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod premint_identity_tests {
+    use super::*;
+
+    /// The class name is the ONLY thing joining the dump binary to the
+    /// shipped bundle, so its scheme is a wire format: `iy-` + 12 hex.
+    /// It must also match what `stylesheet!` produces for macro sheets,
+    /// since both land in one CSS file and one namespace.
+    #[test]
+    fn premint_class_name_shape_matches_the_macro_scheme() {
+        let c = premint_class_name("idea-theme.v1.badge|neutral,primary|filled");
+        assert!(c.starts_with("iy-"), "{c}");
+        assert_eq!(c.len(), 3 + 12, "{c}");
+        assert!(c[3..].chars().all(|ch| ch.is_ascii_hexdigit()), "{c}");
+        // Deterministic — two binaries derive it independently.
+        assert_eq!(c, premint_class_name("idea-theme.v1.badge|neutral,primary|filled"));
+        assert_ne!(c, premint_class_name("idea-theme.v1.badge|neutral,primary,brand|filled"));
+    }
+
+    /// A sheet with compound variants cannot be expressed as per-axis
+    /// classes, so it must decline rather than mint a class whose CSS
+    /// would be missing the compound layers (idea-theme's Button, whose
+    /// hover/press feedback is keyed on `(appearance, __state_*)`).
+    #[test]
+    fn compound_sheet_declines_to_premint() {
+        let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules::default())
+            .variant("appearance", "filled", |_vs| StyleRules::default())
+            .compound(vec![("appearance", "filled"), ("__state_hovered", "on")], |_vs| {
+                StyleRules::default()
+            })
+            .premint_as("test.compound.v1");
+        assert!(
+            sheet.premint_class().is_none(),
+            "a compound sheet must stay on the live engine"
+        );
+    }
+
+    /// The author-axis cache drives class assembly: overlay axes are
+    /// excluded (they ship as pseudo-class / `@media` CSS on the base
+    /// class), defaults are recorded whichever order they are declared
+    /// in, and the list is sorted to match the dump's emission order.
+    #[test]
+    fn author_axis_cache_excludes_overlays_and_sorts() {
+        let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules::default())
+            .variant("kind", "h1", |_vs| StyleRules::default())
+            .variant_default("align", "left")
+            .variant("align", "left", |_vs| StyleRules::default())
+            .variant("__state_hovered", "on", |_vs| StyleRules::default())
+            .variant("__bp_md", "on", |_vs| StyleRules::default())
+            .variant_default("kind", "body");
+        let axes: Vec<_> = sheet
+            .premint_author_axes()
+            .iter()
+            .map(|(a, d)| (a.as_str(), d.as_deref()))
+            .collect();
+        assert_eq!(axes, vec![("align", Some("left")), ("kind", Some("body"))]);
+    }
+}

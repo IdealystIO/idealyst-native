@@ -244,20 +244,50 @@ mod tests {
     }
 
     /// Field report 3.1(b): with the default theme and no per-instance
-    /// override, Typography must still carry a font_family — the theme's
-    /// sans stack — so web text isn't left in the browser serif fallback.
+    /// override, Typography text must still land on the theme's sans
+    /// stack, so web text isn't left in the browser serif fallback.
+    ///
+    /// The sheet deliberately does NOT carry the family (it used to —
+    /// see `TypographySheetBuilder::build`). A baked `FontFamily` is not
+    /// `Tokenized`, so it is exactly the shape premint cannot honour: a
+    /// build-time class would freeze whichever theme the dump installed.
+    /// The guarantee now rides the framework's default-text-font channel
+    /// instead, which BOTH style paths already consume — the live path
+    /// via `fill_default_text_font` at apply time, the preminted path via
+    /// the `--iy-default-font` custom property the dump emits into the
+    /// base rule.
+    ///
+    /// So this pins the two halves of the new chain that are reachable
+    /// from here: the theme feeds the channel on install, and the sheet
+    /// leaves the slot empty for the fill to occupy. (That the fill then
+    /// happens is `style_attach`'s contract, and the end-to-end result is
+    /// covered by the live-vs-preminted computed-style A/B, which found
+    /// `font-family` identical on all 400 catalog elements.)
     #[test]
     fn default_typography_inherits_theme_sans_font() {
         with_test_world(|| {
             install_idea_theme(light_theme());
-            let rules = resolve(Typography(&TypographyProps::default()));
-            match rules.font_family {
+
+            // 1. Installing the theme publishes its family on the channel
+            //    the fill reads.
+            match runtime_core::default_text_font() {
                 Some(FontFamily::System(stack)) => {
                     assert_eq!(stack, DEFAULT_FONT_STACK);
                     assert!(stack.contains("sans-serif"));
                 }
-                other => panic!("expected the theme's sans font_family, got {other:?}"),
+                other => panic!("theme did not publish its sans font: {other:?}"),
             }
+
+            // 2. The sheet leaves the slot empty, so nothing shadows the
+            //    fill and no stale family can be preminted.
+            let rules = resolve(Typography(&TypographyProps::default()));
+            assert!(
+                rules.font_family.is_none(),
+                "Typography's sheet must leave font_family to the \
+                 default-text-font channel; baking one breaks premint \
+                 across a theme swap (got {:?})",
+                rules.font_family,
+            );
     });
     }
 

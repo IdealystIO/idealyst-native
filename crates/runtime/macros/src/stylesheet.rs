@@ -513,7 +513,6 @@ pub fn emit(decl: StyleSheetDecl, content_hash: u64) -> TokenStream2 {
     if let Err(err) = check_no_theme_refs(&decl) {
         return err.to_compile_error();
     }
-    let stylesheet_fn = emit_stylesheet_fn(&decl);
     let enums = decl.variants.iter().map(|v| emit_variant_enum(&decl, v)).collect::<Vec<_>>();
 
     // Premint eligibility — two disqualifiers, both keeping the sheet on
@@ -532,6 +531,8 @@ pub fn emit(decl: StyleSheetDecl, content_hash: u64) -> TokenStream2 {
     //   stays eligible.
     let premintable = !sheet_has_shadow(&decl) && !sheet_has_dynamic_font(&decl);
     let base_class = format!("iy-{:012x}", content_hash & 0xffff_ffff_ffff);
+    let stylesheet_fn =
+        emit_stylesheet_fn(&decl, premintable.then_some(base_class.as_str()));
     let builder = emit_builder(&decl, &base_class, premintable);
     let registration = if premintable {
         emit_premint_registration(&decl, &base_class)
@@ -744,7 +745,7 @@ fn snake_case(ident: &Ident) -> Ident {
 /// emission: stylesheet closures now take `&VariantSet`, not a theme
 /// reference. Authors who relied on `theme.*` field reads will see a
 /// compile error from `check_no_theme_refs`.
-fn emit_stylesheet_fn(decl: &StyleSheetDecl) -> TokenStream2 {
+fn emit_stylesheet_fn(decl: &StyleSheetDecl, premint_class: Option<&str>) -> TokenStream2 {
     let fn_name = format_ident!("{}_style", snake_case(&decl.name));
     let vis = &decl.vis;
     // The base rules carry the transition declarations too. Transitions
@@ -821,6 +822,28 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl) -> TokenStream2 {
         }
     });
 
+    // A premintable sheet carries its class on the sheet OBJECT, not just
+    // in the generated builder's fast path. That is what lets the
+    // `StyleApplication::new(Foo::sheet())` idiom — which skips the
+    // builder entirely, and is how most of idea-ui and the websites style
+    // things — resolve to the build-time class instead of falling through
+    // to the live engine. The CSS was already being emitted for these
+    // sheets (they register in `PREMINT_SHEETS` whenever `premintable`);
+    // only the runtime half was missing.
+    let sheet_expr = quote! {
+        ::runtime_core::StyleSheet::new(
+            |_vs: &::runtime_core::VariantSet| #base_rules
+        )
+            #(#variant_chain)*
+            #(#state_chain)*
+            #(#breakpoint_chain)*
+            #(#container_chain)*
+    };
+    let finish_sheet = match premint_class {
+        Some(class) => quote! { #sheet_expr.premint_with_class(#class) },
+        None => quote! { ::std::rc::Rc::new(#sheet_expr) },
+    };
+
     quote! {
         #vis fn #fn_name() -> ::std::rc::Rc<::runtime_core::StyleSheet> {
             // Process-unique key for this stylesheet: the address of a
@@ -835,15 +858,7 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl) -> TokenStream2 {
             static __SHEET_KEY: u8 = 0;
             ::runtime_core::cached_stylesheet(
                 &__SHEET_KEY as *const u8 as usize,
-                || ::std::rc::Rc::new(
-                    ::runtime_core::StyleSheet::new(
-                        |_vs: &::runtime_core::VariantSet| #base_rules
-                    )
-                        #(#variant_chain)*
-                        #(#state_chain)*
-                        #(#breakpoint_chain)*
-                        #(#container_chain)*
-                ),
+                || #finish_sheet,
             )
         }
     }

@@ -546,6 +546,13 @@ impl IntoElement for StyledText {
 // seeds per install/update.
 pub use runtime_shared::resolve_style;
 
+// The preminted-class naming scheme. Author code never calls this;
+// it is spelled here so `idea-theme`'s assembled sheets and the
+// `premint-dump` tool reach the same function through the facade —
+// the class name is the only thing joining the dump binary to the
+// shipped bundle, so both must derive it from one implementation.
+pub use runtime_shared::premint_class_name;
+
 // --- 3. New-core reimplementations ------------------------------------------
 
 /// Install the app's theme tokens. New-core routing: the ambient world's
@@ -575,6 +582,15 @@ pub fn set_app_background(color: runtime_shared::Tokenized<runtime_shared::Color
 /// See [`crate::theme::set_default_text_font`].
 pub fn set_default_text_font(font: Option<FontFamily>) {
     theme::set_default_text_font(font);
+}
+
+/// See [`crate::theme::default_text_font`] — the read side of the
+/// channel above. Both the live apply path (`fill_default_text_font`)
+/// and the preminted one (the dump's `--iy-default-font` custom
+/// property) consume it, so a sheet that wants its family to survive a
+/// theme swap leaves `font_family` unset and lets this fill it.
+pub fn default_text_font() -> Option<FontFamily> {
+    theme::default_text_font()
 }
 
 /// See [`crate::theme::set_scrollbar_theme`].

@@ -309,7 +309,15 @@ impl ButtonSheetBuilder {
             .variant_default("size", "md")
             .variant_default("shape", "md");
 
-        Rc::new(sheet)
+        sheet.premint_as(&premint_identity(
+            "button",
+            [
+                self.tones.iter().map(|t| t.current_key()).collect::<Vec<_>>().join(","),
+                self.variants.iter().map(|v| v.current_key()).collect::<Vec<_>>().join(","),
+                self.sizes.iter().map(|z| z.current_key()).collect::<Vec<_>>().join(","),
+                self.shapes.iter().map(|h| h.current_key()).collect::<Vec<_>>().join(","),
+            ],
+        ))
     }
 }
 
@@ -382,6 +390,7 @@ pub fn installed_alert_sheet() -> Rc<StyleSheet> {
 /// padding/font/radius). The builder generates `appearance` arms for
 /// each `(tone, variant)` pair.
 fn build_tone_variant_sheet<B>(
+    component: &str,
     tones: Vec<ToneRef>,
     variants: Vec<VariantRef>,
     base: B,
@@ -416,7 +425,14 @@ where
     // `:focus` rule kills the browser outline and macOS suppresses its native
     // ring, so this is the sole indicator.
     sheet = sheet.variant("__state_focused", "on", |_vs| focus_ring_rules(1.0, "Sheet closure"));
-    Rc::new(sheet)
+    let identity = premint_identity(
+        component,
+        [
+            tones.iter().map(|t| t.current_key()).collect::<Vec<_>>().join(","),
+            variants.iter().map(|v| v.current_key()).collect::<Vec<_>>().join(","),
+        ],
+    );
+    sheet.premint_as(&identity)
 }
 
 /// Builder for the Badge component's stylesheet.
@@ -440,7 +456,7 @@ impl BadgeSheetBuilder {
         self
     }
     pub fn build(self) -> Rc<StyleSheet> {
-        build_tone_variant_sheet(self.tones, self.variants, |_vs: &VariantSet| StyleRules {
+        build_tone_variant_sheet("badge", self.tones, self.variants, |_vs: &VariantSet| StyleRules {
             padding_top: Some(Tokenized::Literal(runtime_core::Length::Px(2.0))),
             padding_bottom: Some(Tokenized::Literal(runtime_core::Length::Px(2.0))),
             padding_left: Some(Tokenized::token(
@@ -512,7 +528,7 @@ impl TagSheetBuilder {
         self
     }
     pub fn build(self) -> Rc<StyleSheet> {
-        build_tone_variant_sheet(self.tones, self.variants, |_vs: &VariantSet| StyleRules {
+        build_tone_variant_sheet("tag", self.tones, self.variants, |_vs: &VariantSet| StyleRules {
             padding_top: Some(Tokenized::Literal(runtime_core::Length::Px(2.0))),
             padding_bottom: Some(Tokenized::Literal(runtime_core::Length::Px(2.0))),
             padding_left: Some(Tokenized::token(
@@ -584,7 +600,7 @@ impl AlertSheetBuilder {
         self
     }
     pub fn build(self) -> Rc<StyleSheet> {
-        build_tone_variant_sheet(self.tones, self.variants, |_vs: &VariantSet| StyleRules {
+        build_tone_variant_sheet("alert", self.tones, self.variants, |_vs: &VariantSet| StyleRules {
             padding_top: Some(Tokenized::token("spacing-md", runtime_core::Length::Px(12.0))),
             padding_bottom: Some(Tokenized::token("spacing-md", runtime_core::Length::Px(12.0))),
             padding_left: Some(Tokenized::token("spacing-lg", runtime_core::Length::Px(16.0))),
@@ -672,18 +688,23 @@ impl TypographySheetBuilder {
     }
     pub fn build(self) -> Rc<StyleSheet> {
         let mut sheet = StyleSheet::new(|_vs: &VariantSet| {
-            // The theme's default font family lands on the base so every
-            // Typography instance inherits it. Reads `active_theme()` so
-            // a theme swap (which wipes the resolution cache) re-runs
-            // this and re-applies the new font. Critically, this keeps
-            // web text out of the browser's serif fallback — native
-            // backends already default to a system sans.
-            let theme_rc = active_theme();
-            let theme_ref = theme_rc
-                .downcast_ref::<IdeaThemeRef>()
-                .expect("Typography sheet: install_idea_theme(...) first");
+            // Deliberately sets NO `font_family`. The theme's font
+            // reaches every Typography instance through the framework's
+            // default-text-font channel instead: `install_idea_theme` /
+            // `set_idea_theme` both call `sync_default_text_font`, the
+            // live path fills an absent family at apply time
+            // (`fill_default_text_font`), and the preminted path emits
+            // `font-family: var(--iy-default-font, inherit)` which the
+            // host driver redefines on every theme swap.
+            //
+            // Baking `theme_ref.font_family()` here instead — which this
+            // used to do — is exactly the shape premint cannot honour: a
+            // theme-varying value that is NOT a token, so a build-time
+            // class would freeze the font of whichever theme the dump
+            // build happened to install. Both paths still keep web text
+            // out of the browser's serif fallback, which was the original
+            // point.
             StyleRules {
-                font_family: Some(theme_ref.font_family()),
                 // Color transitions for theme swap.
                 color_transition: Some(Transition::new(250, Easing::EaseInOut)),
                 ..Default::default()
@@ -755,8 +776,41 @@ impl TypographySheetBuilder {
             .variant_default("color", "default")
             .variant_default("align", "left");
 
-        Rc::new(sheet)
+        sheet.premint_as(&premint_identity("typography", [self.kinds_key(), self.tones_key()]))
     }
+
+    /// The kind axis' declared values, in declaration order — half of
+    /// this sheet's premint identity (an app that registers an extra
+    /// kind gets a different sheet and must get a different class).
+    fn kinds_key(&self) -> String {
+        self.kinds.iter().map(|k| k.current_key()).collect::<Vec<_>>().join(",")
+    }
+
+    fn tones_key(&self) -> String {
+        self.tones.iter().map(|t| t.current_key()).collect::<Vec<_>>().join(",")
+    }
+}
+
+/// Compose a premint identity for one of this crate's assembled sheets.
+///
+/// The identity has to describe the sheet's CONTENT, because the dump
+/// build and the shipped bundle derive the CSS class from it
+/// independently (see [`StyleSheet::premint_as`]). `component` names the
+/// sheet; `parts` carry whatever the app can vary — the registered kind
+/// and tone keys — so an app that calls `add_kind(...)` gets a distinct
+/// class rather than silently wearing the builtin sheet's CSS.
+///
+/// `V1` is a manual epoch: bump it when a sheet's RULES change in a way
+/// its `parts` don't capture (a restyled arm, a new axis). Stale CSS
+/// would otherwise survive a framework upgrade, since the class name is
+/// all that ties the two halves together.
+fn premint_identity(component: &str, parts: impl IntoIterator<Item = String>) -> String {
+    let mut id = format!("idea-theme.v1.{component}");
+    for part in parts {
+        id.push('|');
+        id.push_str(&part);
+    }
+    id
 }
 impl Default for TypographySheetBuilder {
     fn default() -> Self {
@@ -1212,7 +1266,13 @@ impl SwitchSheetBuilder {
             .variant_default("appearance", "primary_filled")
             .variant_default("checked", "off")
             .variant_default("size", "md");
-        Rc::new(sheet)
+        sheet.premint_as(&premint_identity(
+            "switch",
+            [
+                self.tones.iter().map(|t| t.current_key()).collect::<Vec<_>>().join(","),
+                self.variants.iter().map(|v| v.current_key()).collect::<Vec<_>>().join(","),
+            ],
+        ))
     }
 }
 impl Default for SwitchSheetBuilder {

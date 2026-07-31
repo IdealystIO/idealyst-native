@@ -35,7 +35,7 @@
 //! is always macro-generated, so this cannot fire.
 
 use runtime_core::premint::{PremintSheet, PREMINT_SHEETS};
-use runtime_core::StyleRules;
+use runtime_core::{StyleRules, StyleSheet};
 
 /// Assemble the full preminted stylesheet for every registered sheet.
 /// Deterministic given the same binary — the CLI fingerprints the
@@ -45,6 +45,21 @@ pub fn dump_all_css() -> String {
     let mut fonts = FontCollector::default();
     for sheet in PREMINT_SHEETS {
         dump_sheet(sheet, &mut rules, &mut fonts);
+    }
+    // Runtime-assembled sheets (`StyleSheet::premint_as` — idea-theme's
+    // component sheets). These have no `stylesheet!` expansion site to
+    // hang a link-time registration on, so they register as the app
+    // installs them; the caller has already run `app()`, so by now they
+    // exist. Deduped on the base class: an app that reinstalls a theme
+    // registers the same identity twice, and emitting its rules twice
+    // would double the CSS for no cascade difference.
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for sheet in runtime_core::premint::assembled_sheets() {
+        let Some(base_class) = sheet.premint_class() else { continue };
+        if !seen.insert(base_class.to_string()) {
+            continue;
+        }
+        dump_sheet_parts(base_class, &sheet, &mut rules, &mut fonts);
     }
     // `@font-face` first — parse order doesn't matter to the browser,
     // but faces-before-users reads sanely and matches the SSR head's
@@ -114,11 +129,27 @@ fn push_rule(out: &mut String, rule: String) {
 
 fn dump_sheet(entry: &PremintSheet, out: &mut String, fonts: &mut FontCollector) {
     let sheet = (entry.sheet)();
-    let base_class = entry.base_class;
+    dump_sheet_parts(entry.base_class, &sheet, out, fonts);
+}
+
+/// The per-sheet emission, shared by the link-time (`stylesheet!`) and
+/// runtime-assembled (`premint_as`) registration paths. Split out so the
+/// two entry points cannot drift: a selector emitted here is the one the
+/// runtime's `preminted_class_list` stamps, and the halves agree by
+/// construction rather than by convention.
+fn dump_sheet_parts(
+    base_class: &str,
+    sheet: &StyleSheet,
+    out: &mut String,
+    fonts: &mut FontCollector,
+) {
     assert!(
         !sheet.has_compounds(),
-        "premint sheet {base_class} declares compound variants — only \
-         `stylesheet!`-generated sheets may register for preminting"
+        "premint sheet {base_class} declares compound variants, which the \
+         delta model cannot express — a compound applies only when several \
+         axes coincide, and a per-axis class carries no such condition. \
+         Drop the compound or leave the sheet on the live engine (no \
+         `premint_as`)."
     );
 
     let base = sheet.premint_base();
@@ -582,5 +613,154 @@ mod tests {
                 _ => panic!("builder must emit Preminted under --cfg idealyst_premint"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod assembled_sheet_tests {
+    //! Runtime-assembled sheets (`StyleSheet::premint_as`) — the path
+    //! idea-theme's component sheets take, which has no `stylesheet!`
+    //! expansion site to hang a link-time registration on.
+
+    use super::*;
+    use runtime_core::{Color, StyleApplication, StyleRules, TextAlign, VariantSet};
+    use std::rc::Rc;
+
+    /// A sheet shaped like idea-theme's: assembled at runtime, two
+    /// author axes with defaults, one state overlay.
+    fn assembled() -> Rc<StyleSheet> {
+        StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            color: Some(Color("#111111".into()).into()),
+            ..Default::default()
+        })
+        .variant("kind", "h1", |_vs| StyleRules {
+            font_weight: Some(runtime_core::FontWeight::Bold),
+            ..Default::default()
+        })
+        .variant("kind", "body", |_vs| StyleRules::default())
+        .variant("align", "left", |_vs| StyleRules {
+            text_align: Some(TextAlign::Left),
+            ..Default::default()
+        })
+        .variant("align", "center", |_vs| StyleRules {
+            text_align: Some(TextAlign::Center),
+            ..Default::default()
+        })
+        .variant("__state_hovered", "on", |_vs| StyleRules {
+            color: Some(Color("#222222".into()).into()),
+            ..Default::default()
+        })
+        .variant_default("kind", "body")
+        .variant_default("align", "left")
+        .premint_as("test.assembled.v1")
+    }
+
+    /// THE cross-half invariant: every class the shipped runtime stamps
+    /// must have a rule in the CSS the dump emitted.
+    ///
+    /// The two halves are separately-compiled binaries joined by nothing
+    /// but the class-name format, so a drift here is invisible until an
+    /// app renders unstyled in production. Both sides go through
+    /// `StyleApplication::preminted_class_list` / `dump_sheet_parts`, and
+    /// this asserts they actually meet.
+    #[test]
+    fn every_runtime_stamped_class_has_a_dumped_rule() {
+        let sheet = assembled();
+        let mut css = String::new();
+        let mut fonts = FontCollector::default();
+        dump_sheet_parts(sheet.premint_class().unwrap(), &sheet, &mut css, &mut fonts);
+
+        // Two call sites: one setting both axes, one relying on defaults.
+        let apps = [
+            StyleApplication::new(Rc::clone(&sheet)).with("kind", "h1").with("align", "center"),
+            StyleApplication::new(Rc::clone(&sheet)),
+        ];
+        for app in apps {
+            let class_list = app.preminted_class_list().expect("sheet premints");
+            for class in class_list.split(' ') {
+                assert!(
+                    css.contains(&format!(".{class} ")) || css.contains(&format!(".{class}:")),
+                    "runtime stamps `{class}` but the dump emitted no rule for it.\n\
+                     class list: {class_list}\nCSS:\n{css}"
+                );
+            }
+        }
+    }
+
+    /// An axis the call site omits still contributes its DEFAULT class —
+    /// the live resolver applies the default arm, so dropping it here
+    /// would silently lose a layer (the `align-left` / `kind-body` rules
+    /// on every unset Typography).
+    #[test]
+    fn unset_axes_contribute_their_declared_default() {
+        let sheet = assembled();
+        let base = sheet.premint_class().unwrap();
+        let class = StyleApplication::new(Rc::clone(&sheet))
+            .with("kind", "h1")
+            .preminted_class_list()
+            .unwrap();
+        assert_eq!(class, format!("{base} {base}-align-left {base}-kind-h1"));
+    }
+
+    /// Overlay axes are stamped as pseudo-class CSS on the BASE class,
+    /// never as their own class — `__state_hovered` must not appear.
+    #[test]
+    fn overlay_axes_are_not_stamped_as_classes() {
+        let sheet = assembled();
+        let class = StyleApplication::new(Rc::clone(&sheet)).preminted_class_list().unwrap();
+        assert!(!class.contains("__state"), "overlay axis leaked into the class list: {class}");
+        let mut css = String::new();
+        dump_sheet_parts(
+            sheet.premint_class().unwrap(),
+            &sheet,
+            &mut css,
+            &mut FontCollector::default(),
+        );
+        assert!(css.contains(":where(:hover)"), "state overlay missing from CSS:\n{css}");
+    }
+
+    /// Runtime-valued layers have no build-time class: an application
+    /// carrying overrides or a `with_computed` closure must fall through
+    /// to the live engine rather than wear a class that names rules the
+    /// dump never saw.
+    #[test]
+    fn runtime_valued_layers_refuse_to_premint() {
+        let sheet = assembled();
+        assert!(
+            StyleApplication::new(Rc::clone(&sheet))
+                .with_overrides(StyleRules {
+                    color: Some(Color("#abcdef".into()).into()),
+                    ..Default::default()
+                })
+                .preminted_class_list()
+                .is_none(),
+            "an application with overrides must not premint"
+        );
+        assert!(
+            StyleApplication::new(Rc::clone(&sheet))
+                .with_computed("k", || StyleRules::default())
+                .preminted_class_list()
+                .is_none(),
+            "an application with a computed layer must not premint"
+        );
+    }
+
+    /// A sheet that never opted in has no build-time CSS, so it must not
+    /// produce a class at all.
+    #[test]
+    fn sheet_without_premint_as_produces_no_class() {
+        let plain = Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules::default()));
+        assert!(StyleApplication::new(plain).preminted_class_list().is_none());
+    }
+
+    /// The identity is the ONLY thing tying the dump's class names to the
+    /// runtime's, so distinct content must not collide — an app that
+    /// registers an extra kind has to get its own CSS.
+    #[test]
+    fn distinct_identities_produce_distinct_classes() {
+        let a = runtime_core::premint_class_name("idea-theme.v1.typography|h1,body|");
+        let b = runtime_core::premint_class_name("idea-theme.v1.typography|h1,body,hero|");
+        assert_ne!(a, b);
+        assert!(a.starts_with("iy-") && a.len() == 15, "unexpected class shape: {a}");
     }
 }

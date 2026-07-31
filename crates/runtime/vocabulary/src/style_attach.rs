@@ -230,15 +230,37 @@ impl IntoStyleProp for Rc<StyleRules> {
 
 impl IntoStyleProp for StyleApplication {
     fn into_style_prop(self) -> StyleProp {
+        // Preminted fast path for a RUNTIME-ASSEMBLED sheet (idea-theme's
+        // component sheets — see `StyleSheet::premint_as`). The macro
+        // plays the same trick on its generated builder, but these sheets
+        // have no expansion site, so without this every idea-ui component
+        // built on one fell through to `Sheet` and kept the live engine
+        // linked.
+        //
+        // Both disqualifiers are runtime-valued layers the dump could not
+        // have seen: `overrides` are per-call-site rules, and `computed`
+        // is an arbitrary closure. Either one means this application's
+        // resolved rules are not the ones any build-time class names.
+        #[cfg(idealyst_premint)]
+        {
+            if let Some(class) = self.preminted_class_list() {
+                return StyleProp::Preminted { class: Cow::Owned(class), overrides: None };
+            }
+        }
         StyleProp::Sheet(Box::new(self))
     }
 }
 
 /// A bare sheet applies with no variant selection (the old
 /// `IntoStyleSource for Rc<StyleSheet>` convenience).
+///
+/// Routed through the `StyleApplication` impl rather than constructing
+/// `Sheet` directly so a premintable sheet premints here too — the raw
+/// sheet is one of the fall-through shapes the `--premint-only` panic
+/// names, and it does not have to be.
 impl IntoStyleProp for Rc<StyleSheet> {
     fn into_style_prop(self) -> StyleProp {
-        StyleProp::Sheet(Box::new(StyleApplication::new(self)))
+        StyleApplication::new(self).into_style_prop()
     }
 }
 
@@ -247,6 +269,14 @@ impl IntoStyleProp for Rc<StyleSheet> {
 /// fold) avoid an unbox/rebox round-trip.
 impl IntoStyleProp for Box<StyleApplication> {
     fn into_style_prop(self) -> StyleProp {
+        // Premint check first (same conditions as the unboxed impl); the
+        // box is kept, not round-tripped, on the live-engine fall-through.
+        #[cfg(idealyst_premint)]
+        {
+            if let Some(class) = self.preminted_class_list() {
+                return StyleProp::Preminted { class: Cow::Owned(class), overrides: None };
+            }
+        }
         StyleProp::Sheet(self)
     }
 }

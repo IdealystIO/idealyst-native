@@ -40,3 +40,46 @@ pub struct PremintSheet {
 
 #[linkme::distributed_slice]
 pub static PREMINT_SHEETS: [PremintSheet] = [..];
+
+// ---------------------------------------------------------------------------
+// Runtime-assembled sheets
+// ---------------------------------------------------------------------------
+//
+// The link-time slice above only reaches sheets with a `stylesheet!`
+// expansion site. idea-theme's component sheets have none: they are
+// assembled at runtime from builtin kinds/tones PLUS whatever the app
+// registers before `install_idea_theme`, so their variant space simply
+// does not exist until the app runs. That is why nine idea-ui
+// components — button, badge, chip, tag, alert, toast, switch,
+// icon_button, typography — never preminted and kept the live style
+// engine linked in every bundle that used one.
+//
+// They can still be collected, because the dump binary BUILDS THE APP
+// (`world.enter(|| app())`) before asking for CSS: by then the theme is
+// installed and the sheets are fully assembled. `StyleSheet::premint_as`
+// registers here as it hands out the `Rc`, so the dump sees every sheet
+// the app installs, including ones no screen it renders would touch.
+//
+// A `Vec`, not a set: `premint_as` is called once per sheet per install
+// and installs are not idempotent-by-identity (an app may reinstall a
+// theme). `dump_all_css` dedups on the base class, which is derived from
+// the identity, so a reinstall of identical content collapses to one
+// rule set.
+
+thread_local! {
+    static ASSEMBLED: std::cell::RefCell<Vec<Rc<StyleSheet>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Record a runtime-assembled sheet for the dump. Called by
+/// [`StyleSheet::premint_as`](crate::StyleSheet::premint_as); never by
+/// app code.
+pub fn register_assembled_sheet(sheet: &Rc<StyleSheet>) {
+    ASSEMBLED.with(|s| s.borrow_mut().push(Rc::clone(sheet)));
+}
+
+/// Every runtime-assembled sheet registered so far, in registration
+/// order. The dump calls this after building the app tree.
+pub fn assembled_sheets() -> Vec<Rc<StyleSheet>> {
+    ASSEMBLED.with(|s| s.borrow().clone())
+}
