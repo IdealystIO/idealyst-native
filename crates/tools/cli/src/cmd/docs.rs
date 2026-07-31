@@ -124,6 +124,7 @@ pub fn run(args: Args) -> Result<()> {
         // panic at mount rather than degrade.
         primitives: None,
             premint_only: false,
+            premint_report: false,
             release: args.release,
             source: source.clone(),
             user_features: Vec::new(),

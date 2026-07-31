@@ -426,11 +426,101 @@ Either move the offending style onto the builder form so its whole variant \
 space premints, or drop --premint-only and keep the engine. --premint on its \
 own is always safe.";
 
+
+// ---------------------------------------------------------------------------
+// --premint-report
+// ---------------------------------------------------------------------------
+
+/// Build-time diagnostic: report every style that reaches the LIVE ENGINE.
+///
+/// `--premint-only` pays off only when an app's every style premints, and
+/// one straggler forfeits the whole saving with a boot panic that names
+/// the variant but not the source. Finding the stragglers used to mean
+/// hand-patching this file to log instead of panic — done four separate
+/// times while building this feature, twice from stale results. This is
+/// that patch, made a real flag.
+///
+/// It rides `--premint` rather than `--premint-only`, so the engine is
+/// still present and **the app renders normally** — you get a complete
+/// list from one working page load instead of a panic at the first
+/// offender.
+///
+/// Each distinct fall-through logs ONCE (keyed on its own report line), so
+/// 46 nav items produce one entry rather than 46. The line carries what
+/// you need to find it in source: which `StyleProp` shape, whether the
+/// sheet has build-time CSS at all, the runtime-valued layers that
+/// disqualified it, and a content fingerprint of the resolved rules.
+#[cfg(idealyst_premint_report)]
+pub(crate) mod report {
+    use super::{resolve_style, StyleApplication, StyleProp};
+    use std::cell::RefCell;
+
+    thread_local! {
+        static SEEN: RefCell<std::collections::BTreeSet<String>> =
+            RefCell::new(std::collections::BTreeSet::new());
+    }
+
+    fn describe_app(kind: &str, app: &StyleApplication) -> String {
+        let axes = app
+            .variants
+            .0
+            .iter()
+            .map(|(a, v)| format!("{a}={v}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        // The resolved-rules content key is the practical way to find the
+        // sheet in source when it has no premint class to name it by.
+        let fingerprint = resolve_style(app).content_key();
+        let fingerprint = fingerprint.chars().take(72).collect::<String>();
+        format!(
+            "{kind} css={} overrides={} computed={} axes=[{}] rules={}",
+            match app.sheet.premint_class() {
+                Some(c) => c,
+                None => "NONE-no-build-time-css",
+            },
+            app.has_overrides(),
+            app.computed().map(|c| c.key.as_str()).unwrap_or("-"),
+            axes,
+            fingerprint,
+        )
+    }
+
+    /// Called for every `attach_style`, before the arm runs.
+    pub(crate) fn note(style: &StyleProp) {
+        let line = match style {
+            // These two ARE preminted — the whole point. Nothing to report.
+            StyleProp::Preminted { .. } | StyleProp::PremintedDynamic { .. } => return,
+            StyleProp::Static(rules) => format!(
+                "Static (raw StyleRules — no stylesheet, so nothing to premint) rules={}",
+                rules.content_key().chars().take(72).collect::<String>(),
+            ),
+            StyleProp::Dynamic(_) => {
+                "Dynamic (raw StyleRules closure — no stylesheet to premint)".to_string()
+            }
+            StyleProp::Sheet(app) => describe_app("Sheet", app),
+            StyleProp::SheetDynamic(f) => describe_app("SheetDynamic", &f()),
+            StyleProp::SignalClass(spec) => {
+                describe_app("SignalClass", &(spec.pristine_compute)())
+            }
+        };
+        let fresh = SEEN.with(|s| s.borrow_mut().insert(line.clone()));
+        if !fresh {
+            return;
+        }
+        let n = SEEN.with(|s| s.borrow().len());
+        runtime_shared::log_warn!("[premint-report] #{n} {line}");
+    }
+}
+
 pub fn attach_style<H: StyleServices>(
     backend: &Rc<RefCell<H>>,
     node: &H::Node,
     style: StyleProp,
 ) -> Rc<dyn Fn(StateBits, bool)> {
+    // Diagnostic only (`--premint-report`); compiled out otherwise. Sits
+    // ahead of the match so it sees every shape without touching an arm.
+    #[cfg(idealyst_premint_report)]
+    report::note(&style);
     match style {
         StyleProp::Static(rules) => {
             // Old-core parity: every STATIC style there is a

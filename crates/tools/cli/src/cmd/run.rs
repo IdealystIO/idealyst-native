@@ -511,6 +511,7 @@ fn run_server(args: &Args) -> anyhow::Result<()> {
             // panic at mount rather than degrade.
             primitives: None,
             premint_only: false,
+            premint_report: false,
                 release: args.release,
                 source,
                 user_features: Vec::new(),

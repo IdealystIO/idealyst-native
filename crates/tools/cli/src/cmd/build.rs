@@ -234,6 +234,27 @@ pub struct Args {
     #[arg(long)]
     pub premint_only: bool,
 
+    /// Web only: report every style that still needs the runtime style
+    /// engine. The diagnostic for "why can't this app use
+    /// `--premint-only`?". Implies `--premint`.
+    ///
+    /// KEEPS the engine, so the app renders normally and one page load
+    /// lists everything that fell through — rather than the boot panic
+    /// `--premint-only` gives you at the first offender, which names the
+    /// shape but not the source.
+    ///
+    /// Each distinct fall-through logs once to the browser console as
+    /// `[premint-report] #N <shape> css=… overrides=… computed=… axes=…
+    /// rules=…`. `css=NONE-no-build-time-css` means the sheet never
+    /// preminted at all (give it an identity); a `computed=` key means a
+    /// `with_computed` layer, whose rules are produced at runtime under a
+    /// key the build cannot enumerate — that one needs the layer turned
+    /// into a bounded variant axis, or the app keeps the engine.
+    ///
+    /// Not a size flag: a `--premint-report` build is a debugging build.
+    #[arg(long)]
+    pub premint_report: bool,
+
     /// Web only: which builtin primitives the bundle registers. Omit to
     /// register every builtin (the default, and what every release before
     /// this did).
@@ -461,6 +482,7 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
         build_web::BuildOptions {
             primitives: args.primitives.clone(),
             premint_only: args.premint_only,
+            premint_report: args.premint_report,
             // `--strip-panics` is a release-only transform, so it implies
             // `--release` (panic_immediate_abort in a debug build would
             // just slow the build for no benefit).
@@ -496,7 +518,7 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
             // `--premint-only` strips the engine, so it MUST also premint —
             // otherwise the bundle has neither build-time classes nor a
             // runtime to mint them, and every styled node panics.
-            premint: args.premint || args.premint_only,
+            premint: args.premint || args.premint_only || args.premint_report,
         },
     )?;
     let bundle = artifact

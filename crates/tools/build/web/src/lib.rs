@@ -62,6 +62,19 @@ pub struct BuildOptions {
     /// A PROMISE, not something the build can verify: a style that still
     /// needs the engine panics at mount naming the offending shape.
     pub premint_only: bool,
+    /// Diagnose what blocks [`Self::premint_only`] (`--premint-report`).
+    ///
+    /// Implies [`Self::premint`] and sets `--cfg idealyst_premint_report`.
+    /// KEEPS the engine, so the app renders normally and one page load
+    /// lists every style that fell through to it — instead of the boot
+    /// panic `--premint-only` gives you at the first offender, which names
+    /// the shape but not the source.
+    ///
+    /// Each distinct fall-through logs once to the console, with the
+    /// sheet's premint class (or `NONE-no-build-time-css`), the
+    /// runtime-valued layers that disqualified it, and a content
+    /// fingerprint of the resolved rules to locate it in source.
+    pub premint_report: bool,
     /// Which builtin primitives the bundle registers (`--primitives`).
     ///
     /// `None` keeps `runtime_vocabulary::AllBuiltins`, the historical
@@ -329,6 +342,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         opts.strip_panics,
         opts.premint,
         opts.premint_only,
+        opts.premint_report,
         &opts.user_features,
         &opts.source,
         &project_dir,
@@ -1781,6 +1795,7 @@ fn cargo_build_wasm(
     strip_panics: bool,
     premint: bool,
     premint_only: bool,
+    premint_report: bool,
     user_features: &[String],
     source: &FrameworkSource,
     project_root: &Path,
@@ -1857,6 +1872,12 @@ fn cargo_build_wasm(
         // the matching `pkg/premint.css` — see the `premint` module.
         flags.push("--cfg".into());
         flags.push("idealyst_premint".into());
+    }
+    if premint_report {
+        // Diagnostic only — the engine STAYS, so the app renders while it
+        // reports. See `style_attach::report`.
+        flags.push("--cfg".into());
+        flags.push("idealyst_premint_report".into());
     }
     if strip_panics {
         // Select the `immediate-abort` panic strategy (the modern replacement

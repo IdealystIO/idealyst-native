@@ -1486,6 +1486,7 @@ fn launch_ssr(
             // panic at mount rather than degrade.
             primitives: None,
             premint_only: false,
+            premint_report: false,
                 release: false,
                 source: source.clone(),
                 user_features: Vec::new(),

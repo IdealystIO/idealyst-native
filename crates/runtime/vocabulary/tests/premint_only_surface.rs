@@ -288,3 +288,57 @@ fn premint_only_strips_rule_closures_loudly() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// --premint-report
+// ---------------------------------------------------------------------------
+
+/// The report hook must sit AHEAD of the match, and must skip the two
+/// preminted shapes.
+///
+/// Ahead of the match because that is what makes it see every `StyleProp`
+/// without an arm-by-arm edit — moved inside an arm it would silently stop
+/// reporting the shapes it no longer covers, which is exactly the failure
+/// the flag exists to prevent. (The hand-rolled versions of this patch,
+/// written four times while building the feature, each missed a shape.)
+///
+/// Skipping `Preminted` / `PremintedDynamic` because those ARE the goal —
+/// reporting them would bury the real fall-throughs. On the component
+/// catalog the signal is 12 distinct entries out of 68 attach calls.
+#[test]
+fn premint_report_hook_precedes_the_match_and_skips_preminted() {
+    let src = std::fs::read_to_string(
+        repo_root().join("crates/runtime/vocabulary/src/style_attach.rs"),
+    )
+    .expect("read style_attach.rs");
+
+    let hook = src
+        .find("report::note(&style);")
+        .expect("the --premint-report hook is gone; the flag reports nothing");
+    let match_at = src
+        .find("    match style {\n        StyleProp::Static(rules) => {")
+        .expect("attach_style's match");
+    assert!(
+        hook < match_at,
+        "the report hook must run BEFORE the match — inside an arm it only \
+         sees the shapes that arm covers"
+    );
+
+    // Diagnostic only: it must never be compiled into a normal build.
+    let gate_line = src[..hook].lines().rev().find(|l| l.trim().starts_with("#[cfg(")).unwrap_or("");
+    assert!(
+        gate_line.contains("idealyst_premint_report"),
+        "the hook must be gated on idealyst_premint_report so normal builds \
+         pay nothing; found `{}`",
+        gate_line.trim()
+    );
+
+    // The two preminted shapes are the goal, not a finding.
+    let note_at = src.find("pub(crate) fn note(style: &StyleProp)").expect("note()");
+    let note_body = &src[note_at..note_at + 900];
+    assert!(
+        note_body.contains("StyleProp::Preminted { .. } | StyleProp::PremintedDynamic { .. } => return"),
+        "note() must skip both preminted shapes, or the report buries the \
+         real fall-throughs in noise:\n{note_body}"
+    );
+}

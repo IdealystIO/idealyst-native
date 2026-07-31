@@ -19,4 +19,8 @@ fn main() {
     // Set only for the ephemeral native dump binary that collects every
     // `stylesheet!` into `PREMINT_SHEETS`.
     println!("cargo::rustc-check-cfg=cfg(idealyst_premint_dump)");
+    // `--premint-report`: keeps the engine (so the app renders normally)
+    // but logs every style that FELL THROUGH to it. The diagnostic for
+    // "why can't this app use --premint-only?".
+    println!("cargo::rustc-check-cfg=cfg(idealyst_premint_report)");
 }

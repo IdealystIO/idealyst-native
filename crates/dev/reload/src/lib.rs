@@ -323,6 +323,7 @@ fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
             // primitive would panic at mount mid-session.
             primitives: None,
             premint_only: false,
+            premint_report: false,
             release: false,
             source: opts.source.clone(),
             user_features: opts.features.clone(),
