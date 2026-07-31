@@ -23,7 +23,10 @@ thread_local! {
 fn spinner_hug_sheet() -> Rc<StyleSheet> {
     SPINNER_HUG_SHEET.with(|s| {
         if s.borrow().is_none() {
-            *s.borrow_mut() = Some(StyleSheet::r#static(crate::components::hug_self()).premint_as("idea-ui.v1.spinner.hug"));
+            // See the note on `premint_as`: this sheet is built at mount,
+            // so the dump never sees it and a preminted class would have
+            // no CSS.
+            *s.borrow_mut() = Some(Rc::new(StyleSheet::r#static(crate::components::hug_self())));
         }
         s.borrow().as_ref().cloned().unwrap()
     })

@@ -87,7 +87,9 @@ impl Default for TooltipProps {
 /// stretching across a flex parent's cross axis (see
 /// [`crate::components::hug_self`]).
 fn hug_sheet() -> Rc<StyleSheet> {
-    StyleSheet::r#static(crate::components::hug_self()).premint_as("idea-ui.v1.tooltip.hug")
+    // Not preminted — built at mount, so the dump never sees it (see the
+    // `premint_as` docs on why that would render unstyled).
+    Rc::new(StyleSheet::r#static(crate::components::hug_self()))
 }
 
 /// Layout-neutral (out-of-flow) wrapper for the `when` bubble's *closed*
@@ -95,10 +97,10 @@ fn hug_sheet() -> Rc<StyleSheet> {
 /// trigger's siblings as it mounts/unmounts. Mirrors the `if`-without-else
 /// macro lowering and `Popover`'s wrapper.
 fn hidden_sheet() -> Rc<StyleSheet> {
-    StyleSheet::r#static(StyleRules {
+    Rc::new(StyleSheet::r#static(StyleRules {
         position: Some(Position::Absolute),
         ..Default::default()
-    }).premint_as("idea-ui.v1.tooltip.absolute")
+    }))
 }
 
 /// Renders the trigger wrapped in a hover/long-press anchor; shows a hint

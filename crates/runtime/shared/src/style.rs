@@ -2109,6 +2109,26 @@ impl StyleSheet {
     /// linked. The dump build already runs `app()`, so by the time it
     /// asks for CSS the assembled sheets exist; registering here is what
     /// lets it see them.
+    /// # The sheet MUST be constructed during the dump's build pass
+    ///
+    /// The dump binary runs `app()` — it BUILDS the element tree, it never
+    /// mounts it. So a sheet created lazily at mount time (inside a
+    /// component body, or behind a `move ||` style closure that only runs
+    /// when a node attaches) is never registered, the dump emits no CSS for
+    /// it, and the shipped bundle then stamps a build-time class with
+    /// nothing behind it — a silently unstyled node.
+    ///
+    /// This is not hypothetical: `AppShell`'s scrim/panel/content sheets
+    /// were converted and broke 144 of 400 elements on the component
+    /// catalog (the shell collapsed — no `position: relative`, no
+    /// `margin-left`), and Tooltip's and Spinner's were caught stamping
+    /// three classes with no rules. Both were reverted.
+    ///
+    /// Safe: anything reached from `install_idea_theme(...)` or otherwise
+    /// constructed while the tree is being built. Unsafe: anything created
+    /// on first mount. When in doubt, build with `--premint-report` and
+    /// check the page for stamped classes the stylesheet has no rule for.
+    ///
     /// # Eligibility
     ///
     /// A sheet with COMPOUND variants silently declines and stays on the
