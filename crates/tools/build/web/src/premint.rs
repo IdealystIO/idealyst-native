@@ -124,6 +124,12 @@ runtime-core = {fcore_dep}
 # build in an explicit `World`.
 runtime-world = {world_dep}
 premint-dump = {pdump_dep}
+# The dump MOUNTS the app (see main.rs) and needs a native `Host` to mount
+# against. `host-mock` implements `Host` + all 30 capability traits over a
+# recording op log — it exists for exactly this (unit-testing anything that
+# goes through `runtime_scene::realize`), so the dump reuses it rather than
+# growing a second headless backend.
+host-mock = {hostmock_dep}
 {user_name} = {{ path = "{user_path}" }}
 
 # The dump binary runs once per build and is thrown away — debuginfo
@@ -139,6 +145,7 @@ incremental = false
         fcore_dep = source.dep("crates/runtime/core", &["style-dump"]),
         world_dep = source.dep("crates/runtime/world", &[]),
         pdump_dep = source.dep("crates/tools/premint-dump", &[]),
+        hostmock_dep = source.dep("crates/dev/host-mock", &[]),
         user_name = manifest.name,
         user_path = project_dir.display(),
         patch_block = source.patch_block(),
@@ -153,28 +160,47 @@ fn main() {{
     // Force-link the app crate (and, transitively, its component-library
     // deps): a distributed-slice registration only survives the link if
     // the object file carrying it is pulled in, and an otherwise
-    // unreferenced rlib can be dropped wholesale. Constructing the app's
-    // element tree references the app + UI crates without mounting
-    // anything — the same force-link trick as the serverless-lambda
-    // wrapper. Signals created during construction leak until process
-    // exit, which is fine for a build step.
+    // unreferenced rlib can be dropped wholesale.
     //
-    // The build MUST run inside a `World`: on runtime v2 `signal()` /
-    // `effect()` resolve the ambient world and abort with
-    // "called outside World::enter" otherwise, and essentially every
-    // real app body creates a signal while building. We never flush or
-    // realize — registration happens during `stylesheet!` evaluation,
-    // which the build triggers — so a bare world is enough.
-    let world = runtime_world::World::new();
-    let tree = world.enter(|| {lib}::app());
+    // The app runs inside a `World` because `signal()` / `effect()`
+    // resolve the ambient world and abort with "called outside
+    // World::enter" otherwise, and essentially every real app body creates
+    // a signal while building.
+    let harness = host_mock::Harness::with_registry({lib}::register_scene_extensions);
+    let tree = harness.world.enter(|| {lib}::app());
+
+    // MOUNT, don't just build. Building alone reaches only the sheets
+    // constructed during `app()`; a sheet created at MOUNT — inside a
+    // component body, or behind a `move ||` style closure that runs when a
+    // node attaches — stays invisible, gets no CSS, and the shipped bundle
+    // then stamps a build-time class with nothing behind it. That is a
+    // silently unstyled node, and it happened four times before the dump
+    // learned to mount: AppShell's scrim/panel/content (144 of 400 catalog
+    // elements broken), plus Tooltip's and Spinner's sheets.
+    //
+    // Failures are NOT fatal. A mount can hit anything an app does on
+    // attach, and a build step must not start failing because a component
+    // dislikes the mock backend. On a panic we keep whatever registered
+    // during the build and emit that — exactly the pre-mount behaviour —
+    // with a warning naming the consequence.
+    let mounted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| harness.mount(tree)));
+    match mounted {{
+        Ok(realized) => std::mem::forget(realized),
+        Err(_) => eprintln!(
+            "[premint-dump] warning: mounting the app failed; only styles \
+             reached while BUILDING the tree were collected. Styles created \
+             at mount will have no CSS — check for unstyled nodes, or build \
+             with --premint-report."
+        ),
+    }}
+
     let css = premint_dump::dump_all_css();
     std::fs::write(&out, &css).expect("write premint css");
     eprintln!("[premint-dump] {{}} bytes of preminted CSS", css.len());
     // Skip destructors: the tree (and any signals it created) reference
     // reactive thread-locals whose teardown order at process exit is
     // unspecified; `exit` sidesteps the whole class of TLS-drop aborts.
-    std::mem::forget(tree);
-    std::mem::forget(world);
+    std::mem::forget(harness);
     std::process::exit(0);
 }}
 "#,
@@ -234,6 +260,7 @@ mod dump_wrapper_template_tests {
             "dump wrapper must depend on runtime-core:\n{cargo}"
         );
         assert!(cargo.contains("premint-dump = "), "dump assembly crate dep:\n{cargo}");
+        assert!(cargo.contains("host-mock = "), "dump needs a Host to mount against:\n{cargo}");
         assert!(cargo.contains("demo-app = { path = "), "app dep line:\n{cargo}");
         assert!(
             main.contains("demo_app::app()"),
@@ -242,8 +269,31 @@ mod dump_wrapper_template_tests {
         // Building outside a world aborts the dump the moment the app
         // body creates a signal.
         assert!(
-            main.contains("runtime_world::World::new()") && main.contains("world.enter("),
+            main.contains("harness.world.enter("),
             "the app tree must be built inside a World:\n{main}"
+        );
+        // THE load-bearing one. Building the tree reaches only the sheets
+        // constructed during `app()`; a sheet created at MOUNT gets no CSS,
+        // and the shipped bundle then stamps a build-time class with
+        // nothing behind it — a silently unstyled node. Four real
+        // breakages before the dump learned to mount (AppShell's
+        // scrim/panel/content, Tooltip, Spinner), and none of them failed
+        // a build or logged anything.
+        assert!(
+            main.contains("harness.mount(tree)"),
+            "the dump must MOUNT the app, not just build it:\n{main}"
+        );
+        assert!(
+            main.contains("Harness::with_registry(demo_app::register_scene_extensions)"),
+            "the mount must install the app's own scene extensions, or a \
+             third-party payload panics at realize and takes the dump with \
+             it:\n{main}"
+        );
+        // A build step must not start failing because a component dislikes
+        // the mock backend; degrade to build-only collection instead.
+        assert!(
+            main.contains("catch_unwind"),
+            "a mount failure must not fail the build:\n{main}"
         );
         assert!(main.contains("premint_dump::dump_all_css()"), "dump call:\n{main}");
         assert!(

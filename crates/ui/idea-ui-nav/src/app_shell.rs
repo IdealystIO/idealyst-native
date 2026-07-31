@@ -133,16 +133,42 @@ pub fn AppShell(props: AppShellProps) -> Element {
         k.wrapping_mul(31).wrapping_add(which as usize)
     }
 
-    let container_style = {
+    /// Build-time identity for the same sheet `cache_key` addresses.
+    /// Deliberately NOT `cache_key`: that folds in `pin_axis.as_ptr()`, a
+    /// runtime address that differs between the dump binary and the
+    /// shipped wasm, so the two halves would derive different classes and
+    /// every shell style would silently miss its CSS.
+    ///
+    /// Safe to premint because the shell mounts on the INITIAL route — the
+    /// dump mounts the app, so these sheets are constructed while it is
+    /// collecting. A sheet that only appears on a later route would not be
+    /// (see `StyleSheet::premint_as`).
+    fn premint_id(width: f32, pin_axis: Option<&'static str>, which: &str) -> String {
+        format!(
+            "idea-ui-nav.v1.app_shell.{which}|w={}|pin={}",
+            width.to_bits(),
+            pin_axis.unwrap_or("-"),
+        )
+    }
+
+    // The container's rules are CONSTANT, so they belong in a sheet, not a
+    // `with_computed` layer over an empty one. A computed layer produces
+    // rules at runtime under a key the dump cannot enumerate, so it can
+    // never premint — `--premint-report` flagged this as
+    // `computed=app_shell_container`.
+    let container_sheet = runtime_core::cached_stylesheet(
+        cache_key(width, pin_axis, 5),
         move || {
-            StyleApplication::new(base_sheet()).with_computed("app_shell_container", || StyleRules {
+            StyleSheet::r#static(StyleRules {
                 position: Some(Position::Relative),
                 width: Some(Length::Percent(100.0).into()),
                 height: Some(Length::Percent(100.0).into()),
                 ..Default::default()
             })
-        }
-    };
+            .premint_as(&premint_id(width, pin_axis, "container"))
+        },
+    );
+    let container_style = move || StyleApplication::new(container_sheet.clone());
 
     // Main content: fills the shell; the pinned-sidebar offset is a
     // margin applied by the breakpoint overlay (the panel itself stays
@@ -165,7 +191,7 @@ pub fn AppShell(props: AppShellProps) -> Element {
                     ..Default::default()
                 });
             }
-            Rc::new(sheet)
+            sheet.premint_as(&premint_id(width, pin_axis, "content"))
         },
     );
     let content_style = StyleApplication::new(content_sheet);
@@ -195,7 +221,11 @@ pub fn AppShell(props: AppShellProps) -> Element {
                         ..Default::default()
                     });
                 }
-                Rc::new(sheet)
+                sheet.premint_as(&premint_id(
+                    width,
+                    pin_axis,
+                    if open { "scrim.open" } else { "scrim.closed" },
+                ))
             },
         )
     };
@@ -240,7 +270,11 @@ pub fn AppShell(props: AppShellProps) -> Element {
                         ..Default::default()
                     });
                 }
-                Rc::new(sheet)
+                sheet.premint_as(&premint_id(
+                    width,
+                    pin_axis,
+                    if open { "panel.open" } else { "panel.closed" },
+                ))
             },
         )
     };
