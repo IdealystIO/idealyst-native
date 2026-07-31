@@ -2227,10 +2227,26 @@ impl StyleSheet {
         Rc::new(self)
     }
 
+    /// Give this sheet a build-time class identity so the premint dump can
+    /// emit its CSS and the runtime can stamp classes instead of resolving.
+    ///
+    /// Compound variants are premintable. A compound fires when several
+    /// axes coincide, and since the runtime stamps ONE CLASS PER AXIS, that
+    /// condition is just a CSS compound selector over those classes
+    /// (`.iy-abc-appearance-solid.iy-abc-size-md`, or
+    /// `.iy-abc-appearance-solid:hover` when one leg is a state axis). It
+    /// needs no extra stamped class — the selector does the matching — and
+    /// it lands at specificity (0,2,0), above the (0,1,0) single-axis arms,
+    /// which reproduces `resolve`'s "compounds merge after every axis".
+    ///
+    /// This used to bail out (`if self.compounds.is_empty()`) and silently
+    /// leave the sheet classless, which sent every application of it to the
+    /// live engine. That silently disqualified Button and IconButton — the
+    /// state-overlay helpers attach a hover and a press compound per
+    /// appearance arm — and the failure was invisible: `premint_as` returned
+    /// a sheet that simply had no class.
     pub fn premint_as(mut self, identity: &str) -> Rc<StyleSheet> {
-        if self.compounds.is_empty() {
-            self.premint_class = Some(crate::premint_class_name(identity).into());
-        }
+        self.premint_class = Some(crate::premint_class_name(identity).into());
         let sheet = Rc::new(self);
         #[cfg(feature = "style-dump")]
         if sheet.premint_class.is_some() {
@@ -2358,6 +2374,39 @@ impl StyleSheet {
             .map(|f| f(&vs))
     }
 
+    /// Every compound variant, in declaration order (the order
+    /// [`resolve`](Self::resolve) applies them), as
+    /// `(when, rules)`.
+    ///
+    /// `rules` is the compound's own contribution — the resolver merges
+    /// exactly this on top of the already-merged base+axes, so it IS the
+    /// delta and needs no subtraction.
+    ///
+    /// The closure is evaluated against the compound's own condition
+    /// filled in over the sheet's defaults, matching what `resolve` would
+    /// pass when that compound fires. (Like [`Self::premint_delta`], this
+    /// is exact for `stylesheet!`-authored sheets, whose arm closures do
+    /// not read the variant set.)
+    #[cfg(feature = "style-dump")]
+    pub fn premint_compounds(&self) -> Vec<(Vec<(String, String)>, StyleRules)> {
+        self.compounds
+            .iter()
+            .map(|c| {
+                let mut sel = VariantSet::default();
+                for (axis, value) in &c.when {
+                    sel = sel.with(axis.clone(), value.clone());
+                }
+                let vs = self.effective_variants(&sel);
+                let when = c
+                    .when
+                    .iter()
+                    .map(|(a, v)| (a.to_string(), v.to_string()))
+                    .collect();
+                (when, (c.rules)(&vs))
+            })
+            .collect()
+    }
+
     /// The REGULAR variant axes (author `variant` blocks — state /
     /// breakpoint / container axes excluded), in the same
     /// alphabetical-`BTreeMap` order [`resolve`](Self::resolve) merges
@@ -2389,6 +2438,20 @@ impl StyleSheet {
     #[cfg(feature = "style-dump")]
     pub fn premint_state_axes(&self) -> &[(crate::StateBits, VariantAxis)] {
         self.state_axes()
+    }
+
+    /// The [`StateBits`](crate::StateBits) an axis name denotes, if it is one
+    /// of this sheet's declared `__state_*` axes.
+    ///
+    /// The dump needs this to lower a compound variant: a compound leg naming
+    /// a state axis becomes that state's pseudo-class rather than a stamped
+    /// class, because states are never stamped as classes.
+    #[cfg(feature = "style-dump")]
+    pub fn premint_state_axis_bit(&self, axis: &str) -> Option<crate::StateBits> {
+        self.state_axes()
+            .iter()
+            .find(|(_, declared)| declared.as_str() == axis)
+            .map(|(bit, _)| *bit)
     }
 
     #[cfg(feature = "style-dump")]
@@ -4133,12 +4196,24 @@ mod premint_identity_tests {
         assert_ne!(c, premint_class_name("idea-theme.v1.badge|neutral,primary,brand|filled"));
     }
 
-    /// A sheet with compound variants cannot be expressed as per-axis
-    /// classes, so it must decline rather than mint a class whose CSS
-    /// would be missing the compound layers (idea-theme's Button, whose
-    /// hover/press feedback is keyed on `(appearance, __state_*)`).
+    /// A sheet with compound variants DOES premint.
+    ///
+    /// This test previously asserted the opposite — that a compound sheet
+    /// declines, on the reasoning that "a compound cannot be expressed as
+    /// per-axis classes." That reasoning was wrong. The runtime stamps one
+    /// class per axis, so "these axes coincide" is precisely a CSS compound
+    /// selector over those classes (`.iy-x-appearance-filled:hover`), which
+    /// needs no extra stamped class and lands at (0,2,0) — above the (0,1,0)
+    /// arms, reproducing `resolve`'s base → axes → compounds order.
+    ///
+    /// The old behavior was also silent: `premint_as` returned a sheet with
+    /// no class, so idea-theme's Button and IconButton — whose hover/press
+    /// feedback is keyed on `(appearance, __state_*)` — sent every
+    /// application to the live engine with nothing to indicate why.
+    /// `premint-dump`'s `compound_*` tests cover the lowering; this pins that
+    /// the sheet is not disqualified up front.
     #[test]
-    fn compound_sheet_declines_to_premint() {
+    fn compound_sheet_premints() {
         let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules::default())
             .variant("appearance", "filled", |_vs| StyleRules::default())
             .compound(vec![("appearance", "filled"), ("__state_hovered", "on")], |_vs| {
@@ -4146,8 +4221,8 @@ mod premint_identity_tests {
             })
             .premint_as("test.compound.v1");
         assert!(
-            sheet.premint_class().is_none(),
-            "a compound sheet must stay on the live engine"
+            sheet.premint_class().is_some(),
+            "a compound sheet must premint — its condition is a compound selector"
         );
     }
 

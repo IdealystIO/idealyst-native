@@ -30,9 +30,24 @@
 //! specificity quirks of the per-combo model resolve pairwise to the
 //! same winners; verified by the A/B computed-style harness).
 //!
-//! Compound variants (runtime-API-only; the `stylesheet!` grammar
-//! cannot express them) are rejected defensively — a registered sheet
-//! is always macro-generated, so this cannot fire.
+//! # Compound variants
+//!
+//! Compounds (runtime-API-only; the `stylesheet!` grammar cannot express
+//! them) lower to CSS COMPOUND SELECTORS and are emitted last, after the
+//! single-axis arms. Since the runtime stamps one class per axis, "these
+//! axes coincide" is directly `.iy-x-a-1.iy-x-b-2` — a leg naming a
+//! `__state_*` axis becomes that state's pseudo/attribute instead, because
+//! states are never stamped as classes.
+//!
+//! These are the one deliberate exception to the flat-(0,1,0) rule above:
+//! a two-leg compound is (0,2,0), and it is NOT `:where()`-wrapped. That is
+//! required, not incidental — `resolve` merges compounds after every axis,
+//! so the compound has to outrank the arms it overlaps, and shedding its
+//! specificity would hand the win back to the later-emitted arm rules.
+//!
+//! A compound with a state leg on its `off` arm cannot be expressed (there
+//! is no "not hovered" pseudo in this model) and is skipped; such a sheet
+//! keeps that overlay only on the live engine.
 
 use runtime_core::premint::{PremintSheet, PREMINT_SHEETS};
 use runtime_core::{StyleRules, StyleSheet};
@@ -143,15 +158,6 @@ fn dump_sheet_parts(
     out: &mut String,
     fonts: &mut FontCollector,
 ) {
-    assert!(
-        !sheet.has_compounds(),
-        "premint sheet {base_class} declares compound variants, which the \
-         delta model cannot express — a compound applies only when several \
-         axes coincide, and a per-axis class carries no such condition. \
-         Drop the compound or leave the sheet on the live engine (no \
-         `premint_as`)."
-    );
-
     let base = sheet.premint_base();
     fonts.collect(&base);
 
@@ -266,6 +272,70 @@ fn dump_sheet_parts(
                     format!(":where(.{base_class}-{axis}-{value}) {{ flex-direction: column }}"),
                 );
             }
+        }
+    }
+
+    // 6. Compound variants, declaration order (the order `resolve` merges
+    //    them, after every axis).
+    //
+    //    A compound fires when several axes coincide. The runtime stamps one
+    //    class per axis, so that condition IS a CSS compound selector over
+    //    those classes — no extra stamped class is needed, the selector does
+    //    the matching. A leg naming a `__state_*` axis becomes that state's
+    //    pseudo-class/attribute instead, because states are never stamped as
+    //    classes (see step 4).
+    //
+    //    Specificity falls out right: two class legs are (0,2,0) and a
+    //    class+pseudo leg is (0,2,0), both above the (0,1,0) single-axis arms
+    //    emitted in step 5 — which is exactly `resolve`'s ordering
+    //    (base → axes → compounds). Note this does NOT use `:where()`: the
+    //    state deltas in step 4 wrap their pseudo to *shed* specificity so
+    //    later author-axis rules still win, but a compound is supposed to
+    //    beat those arms, so its specificity has to stand.
+    for (when, rules) in sheet.premint_compounds() {
+        fonts.collect(&rules);
+        // Class legs first, then pseudo legs — a CSS compound selector must
+        // lead with the type/class part (`.cls:hover`, never `:hover.cls`…
+        // which is legal but reads wrong and breaks the `[disabled]` form).
+        // `when` is a BTreeMap, so its own order is alphabetical by axis and
+        // would otherwise put `__state_*` first.
+        let mut classes = String::new();
+        let mut pseudos = String::new();
+        let mut skip = false;
+        for (axis, value) in &when {
+            if let Some(bit) = sheet.premint_state_axis_bit(axis) {
+                // A state leg only matches on its "on" arm; "off" has no
+                // pseudo to hang the condition on, so such a compound cannot
+                // be expressed and stays live.
+                match (css::state_pseudo(bit), value.as_str()) {
+                    (Some(pseudo), "on") => pseudos.push_str(pseudo),
+                    _ => {
+                        skip = true;
+                        break;
+                    }
+                }
+            } else {
+                classes.push_str(&format!(".{base_class}-{axis}-{value}"));
+            }
+        }
+        if skip || (classes.is_empty() && pseudos.is_empty()) {
+            continue;
+        }
+        // A compound whose legs are ALL state axes has no class anchor of its
+        // own; anchor it on the base class so it can't match other elements.
+        if classes.is_empty() {
+            classes.push_str(&format!(".{base_class}"));
+        }
+        let selector = format!("{classes}{pseudos}");
+        let body = css::rules_to_css_delta(&rules);
+        if body.is_empty() {
+            continue;
+        }
+        // `class_rule` prepends the leading `.`; the selector already carries
+        // its own, so emit the rule directly.
+        push_rule(out, format!("{selector} {{ {body} }}"));
+        if css::flex_promoted(&rules) && rules.flex_direction.is_none() {
+            push_rule(out, format!(":where({selector}) {{ flex-direction: column }}"));
         }
     }
 }
@@ -762,5 +832,144 @@ mod assembled_sheet_tests {
         let b = runtime_core::premint_class_name("idea-theme.v1.typography|h1,body,hero|");
         assert_ne!(a, b);
         assert!(a.starts_with("iy-") && a.len() == 15, "unexpected class shape: {a}");
+    }
+
+    /// A sheet shaped like idea-theme's Button: an appearance axis plus the
+    /// per-appearance hover/press COMPOUND overlays `add_state_overlay_compounds`
+    /// attaches.
+    fn assembled_with_compounds() -> Rc<StyleSheet> {
+        StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            color: Some(Color("#111111".into()).into()),
+            ..Default::default()
+        })
+        .variant("appearance", "solid", |_vs| StyleRules {
+            background: Some(Color("#0000ff".into()).into()),
+            ..Default::default()
+        })
+        .variant("appearance", "ghost", |_vs| StyleRules {
+            background: Some(Color("transparent".into()).into()),
+            ..Default::default()
+        })
+        .variant("__state_hovered", "on", |_vs| StyleRules::default())
+        .variant_default("appearance", "solid")
+        .compound(
+            vec![("appearance", "solid"), ("__state_hovered", "on")],
+            |_vs| StyleRules {
+                background: Some(Color("#000088".into()).into()),
+                ..Default::default()
+            },
+        )
+        .compound(
+            vec![("appearance", "ghost"), ("__state_hovered", "on")],
+            |_vs| StyleRules {
+                background: Some(Color("#eeeeee".into()).into()),
+                ..Default::default()
+            },
+        )
+        .premint_as("test.compounds.v1")
+    }
+
+    /// A sheet with compounds must GET a premint class.
+    ///
+    /// `premint_as` used to bail on `!self.compounds.is_empty()` and return a
+    /// classless sheet, which silently sent every application to the live
+    /// engine. Button and IconButton were disqualified that way — the
+    /// state-overlay helper attaches a hover and a press compound per
+    /// appearance arm — and nothing surfaced it, because the sheet came back
+    /// looking fine.
+    #[test]
+    fn regression_compound_sheet_still_gets_a_premint_class() {
+        let sheet = assembled_with_compounds();
+        assert!(
+            sheet.premint_class().is_some(),
+            "a sheet with compound variants must still premint"
+        );
+    }
+
+    /// A compound lowers to a CSS COMPOUND SELECTOR over the per-axis classes
+    /// the runtime already stamps — a state leg becoming that state's pseudo.
+    #[test]
+    fn compound_lowers_to_a_compound_selector() {
+        let sheet = assembled_with_compounds();
+        let base = sheet.premint_class().unwrap().to_string();
+        let mut out = String::new();
+        let mut fonts = FontCollector::default();
+        dump_sheet_parts(&base, &sheet, &mut out, &mut fonts);
+
+        assert!(
+            out.contains(&format!(".{base}-appearance-solid:hover {{")),
+            "solid+hover compound must lower to `.<base>-appearance-solid:hover`; got:\n{out}"
+        );
+        assert!(
+            out.contains(&format!(".{base}-appearance-ghost:hover {{")),
+            "ghost+hover compound must lower too; got:\n{out}"
+        );
+        assert!(
+            out.contains("#000088"),
+            "the compound's own rules must be emitted; got:\n{out}"
+        );
+    }
+
+    /// The compound rule must come AFTER the single-axis arm rules, matching
+    /// `resolve` (base → axes → compounds). Combined with its higher
+    /// specificity — `.cls:hover` is (0,2,0) vs the arm's (0,1,0) — that makes
+    /// the compound win its conflicting properties in the browser exactly as
+    /// it does in the engine.
+    #[test]
+    fn compound_rules_follow_axis_rules_in_source_order() {
+        let sheet = assembled_with_compounds();
+        let base = sheet.premint_class().unwrap().to_string();
+        let mut out = String::new();
+        let mut fonts = FontCollector::default();
+        dump_sheet_parts(&base, &sheet, &mut out, &mut fonts);
+
+        let arm = out
+            .find(&format!(".{base}-appearance-solid {{"))
+            .expect("arm rule present");
+        let compound = out
+            .find(&format!(".{base}-appearance-solid:hover {{"))
+            .expect("compound rule present");
+        assert!(
+            compound > arm,
+            "compound must be emitted after the arm it overrides; got:\n{out}"
+        );
+    }
+
+    /// THE cross-half invariant for compounds: the browser's winner for a
+    /// (appearance=solid, hovered) element must be the engine's winner.
+    ///
+    /// Checked by resolving through the live engine and confirming the
+    /// compound's value — not the arm's — is what CSS would also select,
+    /// since the compound rule is both later in source order and higher in
+    /// specificity.
+    #[test]
+    fn compound_winner_matches_the_live_engine() {
+        let sheet = assembled_with_compounds();
+        let vs = VariantSet::new()
+            .with("appearance", "solid")
+            .with("__state_hovered", "on");
+        let resolved = sheet.resolve(&vs);
+        assert_eq!(
+            resolved.background,
+            Some(Color("#000088".into()).into()),
+            "engine: the compound beats the appearance arm"
+        );
+
+        // And the emitted CSS gives the compound both later source order and
+        // higher specificity, so the browser reaches the same value.
+        let base = sheet.premint_class().unwrap().to_string();
+        let mut out = String::new();
+        let mut fonts = FontCollector::default();
+        dump_sheet_parts(&base, &sheet, &mut out, &mut fonts);
+        let arm_rule = format!(".{base}-appearance-solid {{");
+        let compound_rule = format!(".{base}-appearance-solid:hover {{");
+        assert!(out.find(&compound_rule) > out.find(&arm_rule));
+        // (0,2,0) vs (0,1,0): the compound selector carries one class + one
+        // pseudo, and — unlike the plain state delta — is NOT :where()-wrapped.
+        assert!(
+            !out.contains(&format!(".{base}-appearance-solid:where(:hover)")),
+            "the compound must keep its specificity; :where() would shed it \
+             and let the later arm rules win instead. got:\n{out}"
+        );
     }
 }

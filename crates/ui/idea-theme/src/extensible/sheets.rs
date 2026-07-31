@@ -233,6 +233,15 @@ impl ButtonSheetBuilder {
             font_weight: Some(FontWeight::SemiBold),
             letter_spacing: Some(Tokenized::Literal(0.2)),
             text_align: Some(TextAlign::Center),
+            // Center the content on BOTH axes. Web centers the label "for
+            // free" via the box's `text-align: center` + inline flow; native
+            // flex needs it explicit or the label lands at the box's top-left
+            // (the macOS "not centered" bug). Applies to the plain
+            // single-label case AND the icon row — without `justify_content`
+            // even icon buttons were only vertically centered, left-packed
+            // horizontally.
+            align_items: Some(runtime_core::AlignItems::Center),
+            justify_content: Some(runtime_core::JustifyContent::Center),
             // Interaction affordances every button wants: a pointer cursor on
             // desktop/web, and a label that can't be drag-selected. The
             // framework imposes neither on the bare `pressable` primitive — a
@@ -330,11 +339,52 @@ impl ButtonSheetBuilder {
             .variant("__state_hovered", "on", |_vs| StyleRules::default())
             .variant("__state_pressed", "on", |_vs| StyleRules::default());
 
+        // Layout axes. These were one `with_computed("layout_{row}_{block}_{
+        // disabled}")` layer on the component, which is three independent
+        // booleans — so they enumerate as three axes and premint. (The
+        // unconditional half of that layer, centering on both axes, moved to
+        // the base above.)
+        //
+        // The three set disjoint properties, and none collides with
+        // appearance/size/shape, so the alphabetical cross-axis merge order
+        // is not load-bearing here.
+        sheet = sheet
+            // Icon+label buttons lay their content out in a row with a gap;
+            // the plain single-label button stays a column.
+            .variant("layout", "column", |_vs| StyleRules::default())
+            .variant("layout", "row", |_vs| StyleRules {
+                flex_direction: Some(runtime_core::FlexDirection::Row),
+                gap: Some(Tokenized::token("spacing-xs", runtime_core::Length::Px(6.0))),
+                ..Default::default()
+            })
+            // `block` fills the container; otherwise the button hugs.
+            .variant("block", "off", |_vs| StyleRules {
+                align_self: Some(AlignSelf::Center),
+                ..Default::default()
+            })
+            .variant("block", "on", |_vs| StyleRules {
+                width: Some(Tokenized::Literal(runtime_core::Length::Percent(100.0))),
+                align_self: Some(AlignSelf::Stretch),
+                ..Default::default()
+            })
+            // Deterministic dim so a disabled button reads as off on every
+            // backend. Distinct from the `__state_disabled` overlay: this is
+            // the AUTHOR's `disabled` prop, applied whether or not the host
+            // marks the node with the platform disabled state.
+            .variant("dimmed", "off", |_vs| StyleRules::default())
+            .variant("dimmed", "on", |_vs| StyleRules {
+                opacity: Some(Tokenized::Literal(0.45)),
+                ..Default::default()
+            });
+
         // Defaults so an unset axis applies the most common arm.
         sheet = sheet
             .variant_default("appearance", "primary_filled")
             .variant_default("size", "md")
-            .variant_default("shape", "md");
+            .variant_default("shape", "md")
+            .variant_default("layout", "column")
+            .variant_default("block", "off")
+            .variant_default("dimmed", "off");
 
         sheet.premint_as(&premint_identity(
             "button",

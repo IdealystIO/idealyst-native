@@ -260,42 +260,18 @@ pub fn Button(props: &ButtonProps) -> Element {
             let shape = shape.clone();
             move || {
                 let appearance_key = format!("{}_{}", tone.get().key(), variant.get().key());
-                let style = StyleApplication::new(installed_button_sheet())
+                // Layout rides three sheet axes rather than one computed
+                // layer keyed `layout_{row}_{block}_{disabled}`. They're three
+                // independent booleans, so they enumerate — and a computed
+                // layer is opaque to premint, which disqualified every Button
+                // on the page. See `ButtonSheetBuilder::build`.
+                StyleApplication::new(installed_button_sheet())
                     .with("appearance", appearance_key)
                     .with("size", size.get().key().to_string())
-                    .with("shape", shape.get().key().to_string());
-                let layer_key = format!(
-                    "layout_{}_{}_{}",
-                    row_layout as u8, block as u8, disabled as u8
-                );
-                style.with_computed(layer_key, move || {
-                    let mut rules = StyleRules::default();
-                    // Center the content on BOTH axes. Web centers the button
-                    // label "for free" via the box's `text-align: center` + inline
-                    // flow; native flex needs it explicit or the label lands at
-                    // the box's top-left (the macOS "not centered" bug). Applies to
-                    // the plain single-label case AND the icon row — without
-                    // `justify_content` even icon buttons were only vertically
-                    // centered, left-packed horizontally.
-                    rules.align_items = Some(runtime_core::AlignItems::Center);
-                    rules.justify_content = Some(runtime_core::JustifyContent::Center);
-                    if row_layout {
-                        rules.flex_direction = Some(FlexDirection::Row);
-                        rules.gap = Some(Tokenized::token("spacing-xs", Length::Px(6.0)));
-                    }
-                    if block {
-                        rules.width = Some(Tokenized::Literal(Length::Percent(100.0)));
-                        rules.align_self = Some(AlignSelf::Stretch);
-                    } else {
-                        rules.align_self = Some(AlignSelf::Center);
-                    }
-                    if disabled {
-                        // Deterministic dim so a disabled button reads as off on
-                        // every backend.
-                        rules.opacity = Some(Tokenized::Literal(0.45));
-                    }
-                    rules
-                })
+                    .with("shape", shape.get().key().to_string())
+                    .with("layout", if row_layout { "row" } else { "column" }.to_string())
+                    .with("block", if block { "on" } else { "off" }.to_string())
+                    .with("dimmed", if disabled { "on" } else { "off" }.to_string())
             }
         }
     };
