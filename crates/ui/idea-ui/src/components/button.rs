@@ -167,7 +167,10 @@ fn button_icon_sheet() -> Rc<runtime_core::StyleSheet> {
                 flex_shrink: Some(Tokenized::Literal(0.0)),
                 ..Default::default()
             });
-            *s.borrow_mut() = Some(Rc::new(sheet));
+            // Constant square → a build-time class. Without an identity this
+            // sheet has no preminted CSS, so every Button with an icon fell
+            // through to the live engine and kept it linked.
+            *s.borrow_mut() = Some(sheet.premint_as("idea-ui.v1.button.icon"));
         }
         s.borrow().as_ref().cloned().unwrap()
     })

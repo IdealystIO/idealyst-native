@@ -1276,18 +1276,49 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
             overrides: ::std::option::Option::None,
         };
     };
+    // The REACTIVE preminted path. Every arm of every axis already has a
+    // rule in the shipped `.css` (the dump emits `-active-on` AND
+    // `-active-off`), so an axis driven by a signal is a CLASS SWAP, not a
+    // rule mint — the closure below re-reads the axis sources, and the
+    // per-node effect behind `PremintedDynamic` re-stamps. This is what
+    // makes selection UI premintable: 46 of 68 fall-throughs measured on
+    // the component catalog were one nav-item sheet whose only reactivity
+    // was `active`, and each of them dragged in the whole style engine.
+    //
+    // Note the axis reads happen INSIDE the closure, so the effect
+    // subscribes to exactly the signals the author's sources touch —
+    // including a `derived(...)` reading several at once, which
+    // `SignalClass` (one signal id) cannot express.
+    let premint_dynamic_return = quote! {
+        return ::runtime_core::StyleProp::PremintedDynamic {
+            class_of: ::std::boxed::Box::new(move || {
+                let mut __class = ::std::string::String::from(#base_class);
+                #(#premint_axis_pushes)*
+                __class
+            }),
+            overrides: ::std::option::Option::None,
+        };
+    };
     let premint_branch = if premintable {
         quote! {
             // Preminted fast path (web builds with build-time CSS):
-            // an all-constant builder with no overrides resolves to a
-            // class name that the CLI's style-dump pass already wrote
-            // into the shipped `.css` — no StyleRules work at runtime.
-            // Reactive inputs or runtime overrides fall through to
-            // the live engine below.
+            // a builder with no runtime slot overrides resolves to class
+            // names the CLI's style-dump pass already wrote into the
+            // shipped `.css` — no StyleRules work at runtime, constant or
+            // reactive. Only an override falls through to the live engine.
+            //
+            // With no `override` slots declared — the overwhelming case —
+            // `__any_override` folds to a literal `false`, both branches
+            // return, and the live path below becomes provably dead. That
+            // is what lets LLVM drop this sheet's entire arm tree, not
+            // just skip it at runtime.
             #[cfg(idealyst_premint)]
             {
                 let __any_override = false #(|| self.#premint_override_fields.is_some())*;
-                if !self.__reactive && !__any_override {
+                if !__any_override {
+                    if self.__reactive {
+                        #premint_dynamic_return
+                    }
                     let mut __class = ::std::string::String::from(#base_class);
                     #(#premint_axis_pushes)*
                     #premint_return

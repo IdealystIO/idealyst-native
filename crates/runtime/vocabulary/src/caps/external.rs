@@ -86,6 +86,20 @@ pub trait DocumentOps: ViewOps {
     #[allow(unused_variables)]
     fn attach_html_class(&self, node: &Self::Node, class: &str) {}
 
+    /// Remove a class previously stamped by
+    /// [`attach_html_class`](Self::attach_html_class).
+    ///
+    /// Needed by [`StyleProp::PremintedDynamic`](crate::style_attach::StyleProp::PremintedDynamic):
+    /// a reactive preminted style swaps one build-time class for another
+    /// as its axis signal changes, so the outgoing class has to come off.
+    /// Every other preminted use is add-once, which is why this arrived
+    /// later than its sibling.
+    ///
+    /// Default no-op, matching `attach_html_class` — a backend with no
+    /// class concept never stamped one to begin with.
+    #[allow(unused_variables)]
+    fn detach_html_class(&self, node: &Self::Node, class: &str) {}
+
     /// Set an inline CSS custom-property / declaration on `node`.
     #[allow(unused_variables)]
     fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {}

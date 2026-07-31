@@ -138,3 +138,99 @@ fn premint_only_violation_is_loud_and_actionable() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The reactive preminted path
+// ---------------------------------------------------------------------------
+
+/// `StyleProp::PremintedDynamic` must NOT be gated, and must not reach the
+/// engine.
+///
+/// It is the reactive peer of `Preminted`: a class-list closure re-stamped
+/// by a per-node effect. Every arm of a discrete axis already has CSS in the
+/// shipped asset, so flipping one is a `classList` swap — no sheet
+/// registration, no `StyleRules` → CSS, nothing the engine owns. That is the
+/// whole point of the variant: before it existed, a `stylesheet!` builder
+/// with ONE reactive axis fell through to `SheetDynamic` and re-anchored the
+/// engine. Measured on the component catalog, 46 of 68 fall-throughs were a
+/// single nav-item sheet whose only reactivity was `active`.
+///
+/// So if this arm ever grows a `#[cfg(not(idealyst_premint_only))]`, or
+/// starts calling an engine entry point, the flag stops being reachable for
+/// any app with a selection UI — which is most of them.
+#[test]
+fn preminted_dynamic_arm_is_ungated_and_engine_free() {
+    let src = std::fs::read_to_string(
+        repo_root().join("crates/runtime/vocabulary/src/style_attach.rs"),
+    )
+    .expect("read style_attach.rs");
+
+    let arm_at = src
+        .find("StyleProp::PremintedDynamic { class_of, overrides } => {")
+        .expect("PremintedDynamic arm present");
+
+    // Nothing gates the arm ITSELF. Walk back over the doc comments
+    // attached to the arm and require that the first real line above it is
+    // not a cfg attribute. A fixed-size window was tried first and gave the
+    // exact false positive this file's header warns about: it reached past
+    // the arm into the PRECEDING arm's `#[cfg(idealyst_premint_only)]` and
+    // failed on a correctly-ungated arm.
+    let lines: Vec<&str> = src[..arm_at].lines().collect();
+    let guard = lines
+        .iter()
+        .rev()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty() && !l.starts_with("//"))
+        .unwrap_or("");
+    assert!(
+        !guard.starts_with("#[cfg("),
+        "the PremintedDynamic arm must stay ungated — gating it puts every \
+         reactive-axis style back on the live engine; found `{guard}` \
+         directly above it"
+    );
+
+    // The arm body (to the next top-level arm) must not call the engine.
+    let body_end = src[arm_at..]
+        .find("StyleProp::Preminted { class, overrides } => {")
+        .expect("Preminted arm follows");
+    let body = &src[arm_at..arm_at + body_end];
+    for engine_call in
+        ["ensure_sheet_registered", "attach_sheet_dynamic", "apply_style", "mint_class_for_app"]
+    {
+        assert!(
+            !body.contains(engine_call),
+            "PremintedDynamic reaches the engine via `{engine_call}` — the \
+             class swap must need nothing but attach/detach_html_class:\n{body}"
+        );
+    }
+
+    // The class swap needs BOTH halves; add-only would accumulate every
+    // value a node ever wore (`-active-on` never coming off).
+    assert!(
+        body.contains("detach_html_class") && body.contains("attach_html_class"),
+        "the swap must detach the outgoing class as well as attach the \
+         incoming one:\n{body}"
+    );
+}
+
+/// Both preminted branches must assemble the class list from the SAME
+/// emission, so a static and a reactive call site on one sheet can never
+/// disagree about the class it wears — which would silently render one of
+/// them against CSS meant for the other.
+#[test]
+fn macro_premint_branches_share_one_class_assembly() {
+    let src =
+        std::fs::read_to_string(repo_root().join("crates/runtime/macros/src/stylesheet.rs"))
+            .expect("read stylesheet.rs");
+    assert_eq!(
+        src.matches("#(#premint_axis_pushes)*").count(),
+        2,
+        "expected exactly two uses of the axis-push emission (the constant \
+         branch and the reactive closure); a hand-rolled second copy is how \
+         the two paths drift apart"
+    );
+    assert!(
+        src.contains("StyleProp::PremintedDynamic {"),
+        "the macro must emit the reactive preminted shape"
+    );
+}

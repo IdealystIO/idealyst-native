@@ -2054,6 +2054,17 @@ impl WebBackend {
         }
     }
 
+    pub(crate) fn detach_html_class_impl(&self, node: &Node, class: &str) {
+        // `classList.remove` — the inverse of `attach_html_class_impl`, so
+        // a reactive preminted style can swap its axis class without
+        // touching the classes hydration or the style engine stamped.
+        // Removing an absent class is a no-op in the DOM, so the first
+        // run of a `PremintedDynamic` effect (nothing stamped yet) is safe.
+        if let Some(el) = node.dyn_ref::<web_sys::Element>() {
+            let _ = el.class_list().remove_1(class);
+        }
+    }
+
     pub(crate) fn supports_preminted_styles_impl(&self) -> bool {
         true
     }

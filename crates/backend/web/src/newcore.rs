@@ -1405,6 +1405,10 @@ impl caps::DocumentOps for WebBackend {
         WebBackend::attach_html_class_impl(self, node, class)
     }
 
+    fn detach_html_class(&self, node: &Self::Node, class: &str) {
+        WebBackend::detach_html_class_impl(self, node, class)
+    }
+
     fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
         WebBackend::attach_html_style_impl(self, node, prop, value)
     }

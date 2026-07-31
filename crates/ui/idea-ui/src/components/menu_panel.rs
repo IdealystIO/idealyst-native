@@ -52,13 +52,13 @@ pub(crate) fn menu_max_height(viewport_height: f32) -> f32 {
 /// scroller instead of shrinking to fit it — without this there'd be nothing to
 /// scroll (same reason as `modal.rs::modal_body_sheet`).
 fn menu_body_sheet() -> Rc<StyleSheet> {
-    Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+    StyleSheet::new(|_vs: &VariantSet| StyleRules {
         flex_direction: Some(FlexDirection::Column),
         flex_shrink: Some(Tokenized::Literal(0.0)),
         // Matches `SelectMenu`'s base `gap` (2px) so row spacing is unchanged.
         gap: Some(Tokenized::Literal(Length::Px(2.0))),
         ..Default::default()
-    }))
+    }).premint_as("idea-ui.v1.menu_panel")
 }
 
 /// The `scroll_view` sheet: content-sized until it hits `max_height` (applied
@@ -75,13 +75,13 @@ fn menu_body_sheet() -> Rc<StyleSheet> {
 ///   reactive `max_height` clamp the scroller BELOW its content height so a long
 ///   list scrolls internally instead of overflowing the viewport.
 fn menu_scroll_sheet() -> Rc<StyleSheet> {
-    Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+    StyleSheet::new(|_vs: &VariantSet| StyleRules {
         flex_grow: Some(Tokenized::Literal(0.0)),
         flex_basis: Some(Tokenized::Literal(Length::Auto)),
         min_height: Some(Tokenized::Literal(Length::Px(0.0))),
         flex_direction: Some(FlexDirection::Column),
         ..Default::default()
-    }))
+    }).premint_as("idea-ui.v1.menu_panel.1")
 }
 
 /// Wraps `rows` in a viewport-capped, scrolling [`SelectMenu`] panel. This is

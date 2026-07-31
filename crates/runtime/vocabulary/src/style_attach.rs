@@ -2,7 +2,7 @@
 //! vocabulary-level port of `walker/style.rs` (P2b resolved-rules paths
 //! + the P3c sheet engine).
 //!
-//! # The six [`StyleProp`] paths
+//! # The seven [`StyleProp`] paths
 //!
 //! - **`Static`** — fully resolved [`StyleRules`], applied once at mount
 //!   (`StyleOps::apply_style`), `on_node_unstyled` at teardown. The P2
@@ -27,6 +27,11 @@
 //! - **`Preminted`** — a build-time-minted class stamped via
 //!   `attach_html_class`; no `StyleRules` work, state overlays ship as
 //!   pseudo-class CSS in the same asset (walker `Preminted` arm).
+//! - **`PremintedDynamic`** — the reactive peer of `Preminted`: a
+//!   closure returning the class LIST, re-stamped by a per-node effect
+//!   when its axis signals change. Still no engine — every arm's CSS is
+//!   already in the shipped asset, so a discrete axis flip is a class
+//!   swap.
 //!
 //! # Ported invariants (each names its old-core source)
 //!
@@ -124,6 +129,37 @@ pub enum StyleProp {
     /// A build-time-minted class (+ optional runtime slot overrides).
     Preminted {
         class: Cow<'static, str>,
+        overrides: Option<Rc<StyleRules>>,
+    },
+    /// A build-time-minted class list that CHANGES — the reactive
+    /// counterpart of [`StyleProp::Preminted`].
+    ///
+    /// The closure returns the whole space-separated class list and
+    /// subscribes to whatever it reads, so a per-node effect re-stamps on
+    /// change. Emitted by the `stylesheet!` builder when a variant axis
+    /// got a reactive source (`Signal<E>` / `derived`) but nothing else
+    /// forces the live engine.
+    ///
+    /// This is the shape that makes a selection UI premintable. Every arm
+    /// of a discrete axis already has CSS in the shipped asset — the dump
+    /// emits `-active-on` AND `-active-off` — so switching between them is
+    /// a class swap, not a rule mint. Before this existed those styles
+    /// fell through to `SheetDynamic` and dragged the whole style engine
+    /// in: 46 of 68 fall-throughs on the component catalog were one
+    /// nav-item sheet whose only reactivity was `active`.
+    ///
+    /// Unlike [`StyleProp::SignalClass`] this needs no single driving
+    /// signal id, so it covers `derived(...)` closures reading several
+    /// signals — which is what author code actually writes.
+    ///
+    /// `overrides` mirrors [`StyleProp::Preminted`]'s slot and exists for
+    /// the same reason: a navigator screen-style fold layers runtime
+    /// rules onto whatever the screen's style is, and no class list can
+    /// carry those. The `stylesheet!` builder never emits it — its
+    /// premint branch bails to the live path the moment any override is
+    /// set — so in generated code this is always `None`.
+    PremintedDynamic {
+        class_of: Box<dyn Fn() -> String>,
         overrides: Option<Rc<StyleRules>>,
     },
 }
@@ -325,6 +361,17 @@ where
     }
 }
 
+/// ONE cached empty sheet shared by every preminted-with-overrides site
+/// (the old walker's trick — not one sheet per node). Only reachable from
+/// the override branches, which `--premint-only` compiles out.
+#[cfg(not(idealyst_premint_only))]
+fn preminted_override_sheet() -> Rc<StyleSheet> {
+    static KEY: u8 = 0;
+    runtime_shared::cached_stylesheet(&KEY as *const u8 as usize, || {
+        Rc::new(StyleSheet::r#static(StyleRules::default()))
+    })
+}
+
 /// Register `f` to run when the enclosing realized subtree tears down
 /// (its [`Owned`](runtime_world::Owned) drops) — the new-core analogue of
 /// the old walker's scope-level `on_cleanup`.
@@ -466,6 +513,69 @@ pub fn attach_style<H: StyleServices>(
         }
         #[cfg(idealyst_premint_only)]
         StyleProp::SignalClass(_) => panic!("{}", PREMINT_ONLY_VIOLATION),
+        StyleProp::PremintedDynamic { class_of, overrides } => {
+            debug_assert!(
+                backend.borrow().supports_preminted_styles(),
+                "StyleProp::PremintedDynamic reached a backend with no \
+                 preminted support"
+            );
+            // Same host-state wiring as the static preminted arm: a
+            // preminted class bypasses sheet registration, so tokens /
+            // app background / default font ride the theme driver.
+            theme::mark_premint_used();
+            theme::ensure_theme_driver(backend);
+            theme::flush_pending_host_state(backend);
+
+            let b = backend.clone();
+            let n = node.clone();
+            // Classes stamped by the previous run, so the next one can take
+            // them off. Held OUTSIDE the backend borrow — swapping needs
+            // both the list and the backend, and nesting a RefCell borrow
+            // inside a backend borrow is how this file's other paths have
+            // deadlocked before.
+            let stamped: RefCell<Vec<String>> = RefCell::new(Vec::new());
+            let _binding = effect(move || {
+                // Read FIRST: this is the tracked call, and it must run
+                // before any borrow so a panic inside author code can't
+                // leave a borrow outstanding.
+                let class = class_of();
+
+                let previous: Vec<String> = stamped.borrow_mut().drain(..).collect();
+                let next: Vec<String> =
+                    class.split_whitespace().map(|c| c.to_string()).collect();
+                if previous != next {
+                    let bb = b.borrow();
+                    for old in &previous {
+                        if !next.iter().any(|c| c == old) {
+                            bb.detach_html_class(&n, old);
+                        }
+                    }
+                    for c in &next {
+                        if !previous.iter().any(|p| p == c) {
+                            bb.attach_html_class(&n, c);
+                        }
+                    }
+                }
+                *stamped.borrow_mut() = next;
+            });
+            // Overrides reach the engine, same as on the static arm.
+            #[cfg(idealyst_premint_only)]
+            if overrides.is_some() {
+                panic!("{}", PREMINT_ONLY_VIOLATION);
+            }
+            #[cfg(not(idealyst_premint_only))]
+            if let Some(rules) = overrides {
+                return attach_sheet_static(
+                    backend,
+                    node,
+                    StyleApplication::new(preminted_override_sheet())
+                        .with_overrides((*rules).clone()),
+                );
+            }
+            // No state setter: interaction states ride the preminted
+            // pseudo-class CSS, exactly as on the static preminted path.
+            noop_setter()
+        }
         StyleProp::Preminted { class, overrides } => {
             debug_assert!(
                 backend.borrow().supports_preminted_styles(),
@@ -508,16 +618,11 @@ pub fn attach_style<H: StyleServices>(
                 // application on top of the preminted class — same
                 // shared-empty-sheet trick as the old walker (ONE cached
                 // sheet for every override site, not one per node).
-                fn empty_sheet() -> Rc<StyleSheet> {
-                    static KEY: u8 = 0;
-                    runtime_shared::cached_stylesheet(&KEY as *const u8 as usize, || {
-                        Rc::new(StyleSheet::r#static(StyleRules::default()))
-                    })
-                }
                 return attach_sheet_static(
                     backend,
                     node,
-                    StyleApplication::new(empty_sheet()).with_overrides((*rules).clone()),
+                    StyleApplication::new(preminted_override_sheet())
+                        .with_overrides((*rules).clone()),
                 );
             }
             noop_setter()

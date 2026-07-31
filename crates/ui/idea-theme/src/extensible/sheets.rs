@@ -804,6 +804,17 @@ impl TypographySheetBuilder {
 /// its `parts` don't capture (a restyled arm, a new axis). Stale CSS
 /// would otherwise survive a framework upgrade, since the class name is
 /// all that ties the two halves together.
+/// Comma-joined current keys of a modifier set — the part of a sheet's
+/// premint identity an app can change by registering an extra tone or
+/// variant before `install_idea_theme`.
+fn tone_keys(tones: &[ToneRef]) -> String {
+    tones.iter().map(|t| t.current_key()).collect::<Vec<_>>().join(",")
+}
+
+fn variant_keys(variants: &[VariantRef]) -> String {
+    variants.iter().map(|v| v.current_key()).collect::<Vec<_>>().join(",")
+}
+
 fn premint_identity(component: &str, parts: impl IntoIterator<Item = String>) -> String {
     let mut id = format!("idea-theme.v1.{component}");
     for part in parts {
@@ -1400,9 +1411,10 @@ impl CheckboxSheetBuilder {
             .variant_default("appearance", "primary_filled")
             .variant_default("size", "md");
 
+        let id = premint_identity("checkbox", [tone_keys(&self.tones), variant_keys(&self.variants)]);
         CheckboxSheets {
-            box_sheet: Rc::new(box_sheet),
-            glyph_sheet: Rc::new(glyph_sheet),
+            box_sheet: box_sheet.premint_as(&format!("{id}|box")),
+            glyph_sheet: glyph_sheet.premint_as(&format!("{id}|glyph")),
         }
     }
 }
@@ -1579,9 +1591,10 @@ impl RadioSheetBuilder {
             .variant_default("appearance", "primary_filled")
             .variant_default("size", "md");
 
+        let id = premint_identity("radio", [tone_keys(&self.tones), variant_keys(&self.variants)]);
         RadioSheets {
-            outer_sheet: Rc::new(outer),
-            dot_sheet: Rc::new(dot),
+            outer_sheet: outer.premint_as(&format!("{id}|outer")),
+            dot_sheet: dot.premint_as(&format!("{id}|dot")),
         }
     }
 }
@@ -1710,9 +1723,10 @@ impl ProgressSheetBuilder {
         }
         fill = fill.variant_default("appearance", "primary_filled");
 
+        let id = premint_identity("progress", [tone_keys(&self.tones), variant_keys(&self.variants)]);
         ProgressSheets {
-            track_sheet: Rc::new(track),
-            fill_sheet: Rc::new(fill),
+            track_sheet: track.premint_as(&format!("{id}|track")),
+            fill_sheet: fill.premint_as(&format!("{id}|fill")),
         }
     }
 }

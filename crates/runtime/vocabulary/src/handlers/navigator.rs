@@ -214,6 +214,15 @@ fn fold_prop(prop: Option<StyleProp>, rules: &Rc<StyleRules>) -> StyleProp {
             spec.compute = Rc::new(move || inner().with_overrides((*rules_for_compute).clone()));
             StyleProp::SignalClass(spec)
         }
+        Some(StyleProp::PremintedDynamic { class_of, overrides }) => {
+            StyleProp::PremintedDynamic {
+                class_of,
+                overrides: Some(match overrides {
+                    Some(prev) => Rc::new((*prev).clone().merge(&rules)),
+                    None => rules,
+                }),
+            }
+        }
         Some(StyleProp::Preminted { class, overrides }) => StyleProp::Preminted {
             class,
             overrides: Some(match overrides {

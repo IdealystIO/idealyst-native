@@ -72,7 +72,7 @@ thread_local! {
 fn tab_label_base_sheet() -> Rc<StyleSheet> {
     TAB_LABEL_BASE_SHEET.with(|s| {
         if s.borrow().is_none() {
-            *s.borrow_mut() = Some(Rc::new(StyleSheet::r#static(StyleRules::default())));
+            *s.borrow_mut() = Some(StyleSheet::r#static(StyleRules::default()).premint_as("idea-ui.v1.tabs.empty"));
         }
         s.borrow().as_ref().cloned().unwrap()
     })

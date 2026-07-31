@@ -874,13 +874,29 @@ pub fn fingerprint_pkg(pkg_dir: &Path, lib_name: &str) -> Result<PkgFingerprint>
         let Some((stem, ext)) = rel.rsplit_once('.') else {
             continue;
         };
-        // `.css` covers the preminted stylesheet — it's a fetch URL
-        // referenced only from index.html (rewritten separately), so it
-        // renames like `.wasm`: no intra-pkg references to fix up.
         if ext != "js" && ext != "wasm" && ext != "css" {
             continue;
         }
-        renames.push((rel.clone(), format!("{stem}.{hash}.{ext}")));
+        // The preminted stylesheet is a LEAF: nothing inside pkg/ links to
+        // it (index.html is rewritten separately) and it links to nothing.
+        // So it gets its OWN content hash rather than the build-wide one.
+        //
+        // Sharing the build hash made the CSS URL rotate on every deploy
+        // that touched a single line of Rust, evicting a byte-identical
+        // stylesheet from every browser cache. That defeats the point of
+        // shipping styles as a separate asset: app code changes far more
+        // often than styles, and the whole reason premint moves rules out
+        // of the wasm is so they can be cached — and re-used — on their
+        // own schedule.
+        let file_hash = if ext == "css" {
+            let bytes = fs::read(pkg_dir.join(rel))
+                .with_context(|| format!("read {rel} for content hash"))?;
+            let d = Sha256::digest(&bytes);
+            d[..8].iter().map(|b| format!("{b:02x}")).collect::<String>()
+        } else {
+            hash.clone()
+        };
+        renames.push((rel.clone(), format!("{stem}.{file_hash}.{ext}")));
     }
 
     // Rewrite references inside each top-level JS file, writing the
@@ -929,8 +945,12 @@ pub fn fingerprint_pkg(pkg_dir: &Path, lib_name: &str) -> Result<PkgFingerprint>
         .find(|(o, _)| *o == premint::PREMINT_CSS_NAME)
         .map(|(_, n)| n.clone());
     eprintln!(
-        "[build-web] fingerprint {hash}: {} pkg file(s) content-addressed (entry {entry_js})",
+        "[build-web] fingerprint {hash}: {} pkg file(s) content-addressed (entry {entry_js}{})",
         renames.len(),
+        premint_css
+            .as_deref()
+            .map(|c| format!(", stylesheet {c} — hashed on its own bytes"))
+            .unwrap_or_default(),
     );
     Ok(PkgFingerprint { hash, entry_js, premint_css })
 }
@@ -3270,6 +3290,66 @@ mod fingerprint_tests {
     fn hashed(name: &str, hash: &str) -> String {
         let (stem, ext) = name.rsplit_once('.').unwrap();
         format!("{stem}.{hash}.{ext}")
+    }
+
+    /// The preminted stylesheet must keep its URL across a code-only
+    /// deploy.
+    ///
+    /// It used to share the build-wide digest, so editing one line of Rust
+    /// rotated `premint.<hash>.css` even though the CSS bytes were
+    /// identical — every browser re-downloaded a stylesheet it already
+    /// had. That defeats the reason premint moves rules out of the wasm in
+    /// the first place: styles change on a different (much slower)
+    /// schedule than app code, and shipping them separately is only worth
+    /// anything if they can be cached separately.
+    #[test]
+    fn stylesheet_url_survives_a_code_only_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = fake_pkg(tmp.path());
+        fs::write(pkg.join("premint.css"), b".iy-abc { color: red }").unwrap();
+        let first = fingerprint_pkg(&pkg, "demo").unwrap();
+        let css_first = first.premint_css.clone().expect("stylesheet fingerprinted");
+
+        // Rebuild with CHANGED wasm but byte-identical CSS.
+        let pkg2 = fake_pkg(tmp.path().join("second").as_path());
+        fs::write(pkg2.join("demo_bg.wasm"), b"\0asm-main-CHANGED").unwrap();
+        fs::write(pkg2.join("premint.css"), b".iy-abc { color: red }").unwrap();
+        let second = fingerprint_pkg(&pkg2, "demo").unwrap();
+        let css_second = second.premint_css.clone().expect("stylesheet fingerprinted");
+
+        assert_ne!(
+            first.hash, second.hash,
+            "the code change must rotate the build hash, or this test proves nothing"
+        );
+        assert_eq!(
+            css_first, css_second,
+            "byte-identical CSS must keep its URL when only code changed \
+             ({css_first} → {css_second})"
+        );
+        assert_ne!(
+            first.entry_js, second.entry_js,
+            "the entry shim must still rotate — it references the new wasm"
+        );
+    }
+
+    /// The flip side: a CSS edit MUST rotate the stylesheet URL, or a
+    /// restyle silently serves stale cached rules.
+    #[test]
+    fn stylesheet_url_rotates_when_the_css_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = fake_pkg(tmp.path());
+        fs::write(pkg.join("premint.css"), b".iy-abc { color: red }").unwrap();
+        let first = fingerprint_pkg(&pkg, "demo").unwrap();
+
+        let pkg2 = fake_pkg(tmp.path().join("second").as_path());
+        fs::write(pkg2.join("premint.css"), b".iy-abc { color: blue }").unwrap();
+        let second = fingerprint_pkg(&pkg2, "demo").unwrap();
+
+        assert_ne!(
+            first.premint_css.unwrap(),
+            second.premint_css.unwrap(),
+            "a restyle must produce a new stylesheet URL"
+        );
     }
 
     #[test]

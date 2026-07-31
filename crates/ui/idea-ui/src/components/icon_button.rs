@@ -59,12 +59,16 @@ fn icon_button_icon_sheet(px: f32) -> Rc<StyleSheet> {
         if let Some(s) = m.borrow().get(&key) {
             return s.clone();
         }
-        let sheet = Rc::new(StyleSheet::r#static(StyleRules {
+        // Identity carries the size, so each distinct px gets its own
+        // build-time class — the dump runs the app, so it mints exactly the
+        // sizes the app actually uses.
+        let sheet = StyleSheet::r#static(StyleRules {
             width: Some(Tokenized::Literal(Length::Px(px))),
             height: Some(Tokenized::Literal(Length::Px(px))),
             flex_shrink: Some(Tokenized::Literal(0.0)),
             ..Default::default()
-        }));
+        })
+        .premint_as(&format!("idea-ui.v1.icon_button.icon.{key}"));
         m.borrow_mut().insert(key, sheet.clone());
         sheet
     })

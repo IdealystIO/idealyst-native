@@ -56,7 +56,7 @@ thread_local! {
 fn seg_label_base_sheet() -> Rc<StyleSheet> {
     SEG_LABEL_BASE_SHEET.with(|s| {
         if s.borrow().is_none() {
-            *s.borrow_mut() = Some(Rc::new(StyleSheet::r#static(StyleRules::default())));
+            *s.borrow_mut() = Some(StyleSheet::r#static(StyleRules::default()).premint_as("idea-ui.v1.segmented_control.empty"));
         }
         s.borrow().as_ref().cloned().unwrap()
     })

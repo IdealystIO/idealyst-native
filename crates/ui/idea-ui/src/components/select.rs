@@ -44,7 +44,7 @@ use crate::stylesheets::{SelectOption as SelectOptionStyle, SelectTrigger};
 /// *replaces* the backdrop's styling, so this must set the full-viewport inset
 /// itself — a background-only sheet would collapse to zero and catch nothing.
 fn transparent_backdrop_sheet() -> std::rc::Rc<StyleSheet> {
-    std::rc::Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+    StyleSheet::new(|_vs: &VariantSet| StyleRules {
         position: Some(Position::Absolute),
         top: Some(Tokenized::Literal(Length::Px(0.0))),
         left: Some(Tokenized::Literal(Length::Px(0.0))),
@@ -52,7 +52,7 @@ fn transparent_backdrop_sheet() -> std::rc::Rc<StyleSheet> {
         bottom: Some(Tokenized::Literal(Length::Px(0.0))),
         background: Some(Tokenized::Literal(Color("transparent".into()))),
         ..Default::default()
-    }))
+    }).premint_as("idea-ui.v1.select")
 }
 
 pub use crate::stylesheets::SelectTriggerSize as SelectSize;

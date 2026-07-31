@@ -78,14 +78,14 @@ use crate::stylesheets::Popover as PopoverStyle;
 /// the trigger stays put. (Same fix the `if`-without-else macro lowering
 /// applies to its empty branch.)
 pub(crate) fn out_of_flow_wrapper_sheet() -> Rc<StyleSheet> {
-    Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+    StyleSheet::new(|_vs: &VariantSet| StyleRules {
         position: Some(Position::Absolute),
         ..Default::default()
-    }))
+    }).premint_as("idea-ui.v1.popover")
 }
 
 fn transparent_backdrop_sheet() -> Rc<StyleSheet> {
-    Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+    StyleSheet::new(|_vs: &VariantSet| StyleRules {
         position: Some(Position::Absolute),
         top: Some(Tokenized::Literal(Length::Px(0.0))),
         left: Some(Tokenized::Literal(Length::Px(0.0))),
@@ -93,7 +93,7 @@ fn transparent_backdrop_sheet() -> Rc<StyleSheet> {
         bottom: Some(Tokenized::Literal(Length::Px(0.0))),
         background: Some(Tokenized::Literal(Color("transparent".into()))),
         ..Default::default()
-    }))
+    }).premint_as("idea-ui.v1.popover.1")
 }
 
 /// A FULLSCREEN, transparent outside-click catcher portal. Rendered *behind*

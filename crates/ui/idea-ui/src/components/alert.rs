@@ -72,7 +72,7 @@ fn label_color_only(color: Tokenized<Color>) -> Rc<StyleSheet> {
 /// foreground path: the color is layered on as a per-call `override_color`
 /// (re-resolved live), so the base carries no rules of its own.
 fn empty_sheet() -> Rc<StyleSheet> {
-    Rc::new(StyleSheet::r#static(StyleRules::default()))
+    StyleSheet::r#static(StyleRules::default()).premint_as("idea-ui.v1.alert.empty")
 }
 
 /// The close affordance shown at an [`Alert`]'s trailing edge.
