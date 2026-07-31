@@ -1863,6 +1863,19 @@ pub struct StyleSheet {
     /// [`Self::premint_as`]). `None` — the default — means the sheet
     /// only ever resolves through the live engine.
     premint_class: Option<Rc<str>>,
+    /// Source location this sheet was constructed at — `--premint-report`
+    /// only, and the whole reason that flag is usable.
+    ///
+    /// The report's job is to name every style that falls through to the
+    /// live engine, so an author can decide whether to convert it. Without
+    /// an origin it printed a hash and a hex dump of resolved rules, which
+    /// identifies a sheet only to whoever already knows the codebase — the
+    /// three framework-owned fall-throughs found on the catalog took a
+    /// property-by-property decode of that dump to locate. Captured via
+    /// `#[track_caller]` on the constructors, so it points at the author's
+    /// line, not at this file.
+    #[cfg(idealyst_premint_report)]
+    origin: Option<&'static std::panic::Location<'static>>,
 }
 
 
@@ -1898,6 +1911,7 @@ fn premint_only_stripped_rules(_vs: &VariantSet) -> StyleRules {
 
 impl StyleSheet {
     /// Constructs a stylesheet whose base rules are produced by `f`.
+    #[cfg_attr(idealyst_premint_report, track_caller)]
     pub fn new<F>(f: F) -> Self
     where
         F: Fn(&VariantSet) -> StyleRules + 'static,
@@ -1920,11 +1934,14 @@ impl StyleSheet {
             container_axes: Vec::new(),
             author_axes: Vec::new(),
             premint_class: None,
+            #[cfg(idealyst_premint_report)]
+            origin: Some(std::panic::Location::caller()),
             variant_cache: std::cell::RefCell::new(FxHashMap::default()),
         }
     }
 
     /// A stylesheet whose base rules ignore the variant set.
+    #[cfg_attr(idealyst_premint_report, track_caller)]
     pub fn r#static(rules: StyleRules) -> Self {
         Self {
             base: Box::new(move |_vs: &VariantSet| rules.clone()),
@@ -1935,6 +1952,8 @@ impl StyleSheet {
             container_axes: Vec::new(),
             author_axes: Vec::new(),
             premint_class: None,
+            #[cfg(idealyst_premint_report)]
+            origin: Some(std::panic::Location::caller()),
             variant_cache: std::cell::RefCell::new(FxHashMap::default()),
         }
     }
@@ -2085,6 +2104,13 @@ impl StyleSheet {
     /// build-time CSS and must resolve through the live engine.
     pub fn premint_class(&self) -> Option<&str> {
         self.premint_class.as_deref()
+    }
+
+    /// Where this sheet was constructed (`--premint-report` builds only).
+    /// See the [`origin`](Self::origin) field.
+    #[cfg(idealyst_premint_report)]
+    pub fn origin(&self) -> Option<&'static std::panic::Location<'static>> {
+        self.origin
     }
 
     /// Finish an assembled sheet with a stable premint identity, so its
@@ -4032,6 +4058,36 @@ mod tests;
 #[cfg(test)]
 mod premint_identity_tests {
     use super::*;
+
+    /// `--premint-report`'s origin capture must stay on BOTH stylesheet
+    /// constructors.
+    ///
+    /// The cfg that turns the field on is not one this test binary is
+    /// built with, so no assertion on a value can observe a regression
+    /// here (the same limitation `premint_only_surface.rs` documents).
+    /// The spelling is what is observable, and it is load-bearing: without
+    /// `#[track_caller]` the captured location is this file's constructor
+    /// line for every sheet in the program, which is worse than no field
+    /// at all — it looks like an answer.
+    #[test]
+    fn premint_report_origin_capture_stays_on_both_constructors() {
+        let src = include_str!("style.rs");
+        // Needles are assembled rather than written whole: this test lives
+        // in the file it scans, so a literal would match itself.
+        let track = concat!("#[cfg_attr(idealyst_premint_report, ", "track_caller)]");
+        assert_eq!(
+            src.matches(track).count(),
+            2,
+            "both `StyleSheet::new` and `StyleSheet::r#static` must capture \
+             the author's line, not this file's"
+        );
+        let capture = concat!("origin: Some(std::panic::", "Location::caller())");
+        assert_eq!(
+            src.matches(capture).count(),
+            2,
+            "every StyleSheet constructor must fill the origin field"
+        );
+    }
 
     /// The class name is the ONLY thing joining the dump binary to the
     /// shipped bundle, so its scheme is a wire format: `iy-` + 12 hex.

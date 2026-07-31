@@ -468,12 +468,22 @@ pub(crate) mod report {
             .map(|(a, v)| format!("{a}={v}"))
             .collect::<Vec<_>>()
             .join(",");
-        // The resolved-rules content key is the practical way to find the
-        // sheet in source when it has no premint class to name it by.
+        // WHERE the sheet was constructed. This is the field that makes the
+        // report actionable: everything else identifies a sheet only to
+        // someone who already knows the codebase, and locating the three
+        // framework-owned fall-throughs on the catalog took a
+        // property-by-property decode of the rules dump below.
+        let origin = app
+            .sheet
+            .origin()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "origin-unknown".to_string());
+        // The resolved-rules content key disambiguates two sheets built at
+        // one site (a per-size cache, a `match` over variants).
         let fingerprint = resolve_style(app).content_key();
         let fingerprint = fingerprint.chars().take(72).collect::<String>();
         format!(
-            "{kind} css={} overrides={} computed={} axes=[{}] rules={}",
+            "{kind} at {origin} css={} overrides={} computed={} axes=[{}] rules={}",
             match app.sheet.premint_class() {
                 Some(c) => c,
                 None => "NONE-no-build-time-css",

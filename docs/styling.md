@@ -336,6 +336,26 @@ shared naming scheme:
    emits the result as CSS. The output lands in the bundle as a
    content-addressed `pkg/premint.<hash>.css`, linked from
    `index.html`.
+
+   The dump does not just BUILD the app — it **mounts it, on every
+   literal route**, reusing the SSG crawl (the navigator's headless
+   deep-link slot plus the shared route collector, one fresh `World`
+   per route). Both halves of that are load-bearing, and each was
+   learned from a silent breakage:
+
+   - A sheet assembled at MOUNT rather than during `app()` — inside a
+     component body, or behind a style closure that runs when a node
+     attaches — is invisible to a build-only pass. It gets no CSS, and
+     the shipped bundle then stamps a build-time class with nothing
+     behind it: a silently unstyled node. AppShell's scrim/panel/content
+     broke 144 of 400 catalog elements this way.
+   - A sheet that first appears on a LATER route is invisible to a
+     pass that only mounts `/`. Same failure, one level out.
+
+   Parameterized routes (`/user/:id`) are reported and skipped — the
+   crawl cannot invent a param value, the same limitation `--ssg` has.
+   Styles reachable only through one of those, or only after an
+   interaction, are still not seen.
 2. **Shipped build.** The wasm compiles with `--cfg idealyst_premint`,
    which flips each `stylesheet!` builder's `into_style_prop` to a
    fast path: an all-constant application (plain variant values, no
@@ -465,6 +485,29 @@ one home, one decision, instead of a feature threaded through every
 backend crate. Until that lands, treat preminting as a resolution-cost
 optimization rather than a size lever.
 
+### Finding what didn't premint: `--premint-report`
+
+`idealyst build --web --premint-report` builds exactly like `--premint`
+— the engine is present, everything still works — but logs one warning
+per DISTINCT style that fell through to the live engine, deduped across
+the session:
+
+```
+[premint-report] #7 SheetDynamic at crates/ui/idea-theme/src/extensible/sheets.rs:401:21 \
+  css=iy-167c896b0df2 overrides=false computed=hug axes=[appearance=primary_soft] rules=bg=T:…
+```
+
+The **origin** is the field that makes it usable: `#[track_caller]` on
+the `StyleSheet` constructors captures the author's line, so a
+fall-through names itself. Everything after it says WHY — `css=NONE…`
+means the sheet was never given a `premint_as` identity, `overrides=true`
+and `computed=<key>` are the two disqualifiers above, and `SheetDynamic`
+means the application is reactive.
+
+Walk the app's routes with the console open; the deduped set is the work
+list. On the idea-ui catalog it is 218 entries across 47 routes, of which
+99 are `with_computed` layers and 43 carry overrides.
+
 ### Current limits
 
 - `--premint` refuses to combine with `--ssg`/`--ssr`: server-rendered
@@ -475,13 +518,25 @@ optimization rather than a size lever.
   `Rc<StyleSheet>` passed directly (e.g. `card_style()`) stays live.
 - A component that COMPOSES or INTROSPECTS a builder's styles (merging
   an inherited color onto a label sheet, re-deriving a cell's
-  application to layer a hover) must call the builder's
-  `into_style_application()` instead of `into_style_prop()`: under
-  premint the latter returns an opaque class, and pattern-matching it
-  as `Sheet` panics. `into_style_application()` names the requirement
-  in its type — composition needs the live engine, so anything derived
-  from it stays live-minted (idea-ui's `Tag`/`Alert` label coloring and
-  `Table`'s clickable-row cells work this way).
+  application to layer a hover) must hand the style over as an explicit
+  **`StyleProp::Sheet`**:
+
+  ```rust
+  bound.with_style(StyleProp::Sheet(Box::new(TableBodyCell().into_style_application())))
+  ```
+
+  `into_style_application()` alone is NOT enough, despite reading like
+  it should be. `IntoStyleProp for StyleApplication` has a preminted
+  fast path, so a bare application premints anyway and the introspection
+  silently finds nothing. That shipped: `Table`'s clickable rows lost
+  their pointer cursor and their hover highlight in every `--premint`
+  build, because `cell_base_application` returned `None` and the overlay
+  was skipped without a word. Naming the variant is what actually pins
+  it (idea-ui's `Tag`/`Alert` label coloring and `Table`'s cells).
+- Anything with **runtime slot overrides** or a **`with_computed`
+  layer** falls through to the live engine by construction. Overrides
+  are per-call-site rules and a computed key maps to an arbitrary
+  closure, so neither is a layer the dump could have enumerated.
 - Native backends never see either cfg — they keep the full rules
   closures and the apply-time default-font fill. The observable
   styling is identical everywhere; premint changes only *when* the
