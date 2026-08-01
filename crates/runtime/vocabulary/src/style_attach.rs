@@ -1080,6 +1080,13 @@ fn attach_sheet_dynamic<H: StyleServices>(
 
     let backend_for_effect = backend.clone();
     let node_for_effect = node.clone();
+    // Classes stamped by the previous PREMINTED fire, so the next one
+    // can take them off. Only ever non-empty on a `--premint` build
+    // whose applications actually premint; a live-engine node leaves it
+    // empty and pays nothing. Held OUTSIDE any backend borrow — see
+    // `attach_preminted_dynamic` for the deadlock this shape avoids.
+    #[cfg(idealyst_premint)]
+    let stamped: RefCell<Vec<String>> = RefCell::new(Vec::new());
     // Sheet pin (module docs): holds the latest Rc<StyleSheet> so its
     // registration Weak stays upgradeable for this effect's lifetime.
     let mut _pinned_sheet: Option<Rc<StyleSheet>> = None;
@@ -1092,6 +1099,76 @@ fn attach_sheet_dynamic<H: StyleServices>(
         let _ = ctx.version().get();
 
         let app = style();
+
+        // ---- Preminted diversion (`--premint` builds only) ----
+        //
+        // A reactive application over a premintable sheet needs no live
+        // resolution: every arm of every discrete axis already has CSS in
+        // the shipped asset, so a variant flip is a class SWAP. This is
+        // what takes idea-theme's runtime-assembled component sheets off
+        // the live engine — they have no macro expansion site, so they
+        // reach this closure rather than `PremintedDynamic`.
+        //
+        // Decided PER EVALUATION, not probed once at attach: a closure
+        // may legally return a premintable application on one run and an
+        // override-carrying one on the next (see
+        // `attach_sheet_dynamic_preminted`'s note). Unlike the
+        // `--premint-only` arm this does not panic on a non-premintable
+        // evaluation — it falls through to the live engine below, which
+        // is exactly what a plain `--premint` build keeps the engine for.
+        #[cfg(idealyst_premint)]
+        {
+            if let Some(class) = app.preminted_class_list() {
+                // Host-state wiring, same as the static preminted arm: a
+                // preminted class bypasses sheet registration, so tokens /
+                // app background / default document font ride the theme
+                // driver instead. (`ensure_theme_driver` already ran for
+                // this node above; the other two are idempotent.)
+                theme::mark_premint_used();
+                theme::flush_pending_host_state(&backend_for_effect);
+
+                let previous: Vec<String> = stamped.borrow_mut().drain(..).collect();
+                let next: Vec<String> =
+                    class.split_whitespace().map(|c| c.to_string()).collect();
+                if previous != next {
+                    let bb = backend_for_effect.borrow();
+                    for old in &previous {
+                        if !next.iter().any(|c| c == old) {
+                            bb.detach_html_class(&node_for_effect, old);
+                        }
+                    }
+                    for c in &next {
+                        if !previous.iter().any(|p| p == c) {
+                            bb.attach_html_class(&node_for_effect, c);
+                        }
+                    }
+                }
+                *stamped.borrow_mut() = next;
+
+                // The inline layer rides alongside the classes rather than
+                // through the engine — that is the whole point of
+                // `with_inline` (continuously-varying per-instance values
+                // like a progress fill width stay out of the cache
+                // identity and off the class list).
+                if let Some(rules) = app.inline() {
+                    backend_for_effect
+                        .borrow_mut()
+                        .apply_inline_style(&node_for_effect, rules);
+                }
+                return;
+            }
+            // Not premintable this fire — fall through to the live
+            // engine. Any classes a PREVIOUS premintable fire stamped
+            // must come off first, or they would keep applying underneath
+            // the engine-minted style.
+            let previous: Vec<String> = stamped.borrow_mut().drain(..).collect();
+            if !previous.is_empty() {
+                let bb = backend_for_effect.borrow();
+                for old in &previous {
+                    bb.detach_html_class(&node_for_effect, old);
+                }
+            }
+        }
 
         // Registration fast path: steady-state re-fires skip the
         // sweep/flush prologue (`is_registered` contract).
@@ -1749,6 +1826,9 @@ mod tests {
     #[derive(Default)]
     struct FontHost {
         applied: Vec<(u32, Rc<StyleRules>)>,
+        /// Classes currently stamped, in attach order (the preminted
+        /// diversion's surface). `&self` methods, hence the RefCell.
+        classes: RefCell<Vec<String>>,
     }
     impl Host for FontHost {
         type Node = u32;
@@ -1768,10 +1848,20 @@ mod tests {
             0
         }
     }
-    impl crate::caps::DocumentOps for FontHost {}
+    impl crate::caps::DocumentOps for FontHost {
+        fn attach_html_class(&self, _node: &u32, class: &str) {
+            self.classes.borrow_mut().push(class.to_string());
+        }
+        fn detach_html_class(&self, _node: &u32, class: &str) {
+            self.classes.borrow_mut().retain(|c| c != class);
+        }
+    }
     impl crate::caps::AssetOps for FontHost {}
     impl crate::caps::AppEnvOps for FontHost {}
     impl crate::caps::StyleOps for FontHost {
+        fn supports_preminted_styles(&self) -> bool {
+            true
+        }
         fn apply_style(&mut self, node: &u32, style: &Rc<StyleRules>) {
             self.applied.push((*node, style.clone()));
         }
@@ -1863,6 +1953,140 @@ mod tests {
              nodes get the font by INHERITANCE from the document root instead \
              (see apply_default_text_font)."
         );
+    }
+
+    /// A sheet shaped like idea-theme's runtime-assembled component
+    /// sheets: premintable, one discrete axis with a declared default.
+    #[cfg(idealyst_premint)]
+    fn premintable_sheet() -> Rc<StyleSheet> {
+        use runtime_shared::VariantSet;
+        StyleSheet::new(|_vs: &VariantSet| StyleRules::default())
+            .variant("kind", "a", |_vs| StyleRules::default())
+            .variant("kind", "b", |_vs| StyleRules::default())
+            .variant_default("kind", "a")
+            .premint_as("test.reactive.premint.v1")
+    }
+
+    /// A REACTIVE application over a premintable sheet must swap CLASSES,
+    /// never reach the live style engine.
+    ///
+    /// idea-theme's component sheets are assembled at runtime, so they
+    /// have no macro expansion site and cannot be lowered to
+    /// `PremintedDynamic` by the `stylesheet!` builder — they arrive here
+    /// as a `Fn() -> StyleApplication`. Before the diversion every one of
+    /// them fell through to the live engine, which is what kept the
+    /// engine linked into a `--premint` build even when every arm of
+    /// every axis already had build-time CSS.
+    ///
+    /// Both halves matter: classes are stamped AND `apply_style` /
+    /// `apply_styled_variants` are never called, because reaching the
+    /// engine at all is the cost this exists to avoid.
+    #[cfg(idealyst_premint)]
+    #[test]
+    fn reactive_premintable_sheet_swaps_classes_without_touching_the_engine() {
+        let world = World::new();
+        let backend = Rc::new(RefCell::new(FontHost::default()));
+        let sheet = premintable_sheet();
+        let base = sheet.premint_class().expect("sheet premints").to_string();
+
+        let kind = world.enter(|| runtime_world::signal(0u32));
+        let _owned = world.enter(|| {
+            let sheet = sheet.clone();
+            let ((), owned) = collect_owned(|| {
+                let sheet = sheet.clone();
+                let _s = attach_style(
+                    &backend,
+                    &1u32,
+                    StyleProp::SheetDynamic(Box::new(move || {
+                        let arm = if kind.get() == 0 { "a" } else { "b" };
+                        StyleApplication::new(sheet.clone()).with("kind", arm)
+                    })),
+                );
+            });
+            owned
+        });
+
+        assert_eq!(
+            backend.borrow().classes.borrow().clone(),
+            vec![base.clone(), format!("{base}-kind-a")],
+            "the reactive application stamped its preminted class list"
+        );
+        assert!(
+            backend.borrow().applied.is_empty(),
+            "the live style engine must not be reached for a premintable \
+             reactive application — that is the whole point of the diversion"
+        );
+
+        // A variant flip is a class SWAP: the outgoing arm comes off, the
+        // incoming arm goes on, and the base class stays put.
+        world.enter(|| kind.set(1));
+        world.flush();
+        assert_eq!(
+            backend.borrow().classes.borrow().clone(),
+            vec![base.clone(), format!("{base}-kind-b")],
+            "a variant flip swaps the arm class and keeps the base"
+        );
+        assert!(
+            backend.borrow().applied.is_empty(),
+            "the flip must not reach the engine either"
+        );
+    }
+
+    /// The diversion decides PER EVALUATION, not once at attach. A
+    /// closure that returns an override-carrying application — which no
+    /// class list can express — must fall through to the live engine, and
+    /// must first take off any classes an earlier premintable fire
+    /// stamped, or they keep applying underneath the engine's style.
+    #[cfg(idealyst_premint)]
+    #[test]
+    fn reactive_application_that_stops_preminting_falls_back_and_unstamps() {
+        let world = World::new();
+        let backend = Rc::new(RefCell::new(FontHost::default()));
+        let sheet = premintable_sheet();
+        let base = sheet.premint_class().expect("sheet premints").to_string();
+
+        // 0 → premintable; 1 → carries overrides, so it cannot premint.
+        let mode = world.enter(|| runtime_world::signal(0u32));
+        let _owned = world.enter(|| {
+            let sheet = sheet.clone();
+            let ((), owned) = collect_owned(|| {
+                let sheet = sheet.clone();
+                let _s = attach_style(
+                    &backend,
+                    &1u32,
+                    StyleProp::SheetDynamic(Box::new(move || {
+                        let app = StyleApplication::new(sheet.clone());
+                        if mode.get() == 0 {
+                            app
+                        } else {
+                            app.with_overrides(StyleRules {
+                                opacity: Some(runtime_shared::Tokenized::Literal(0.5)),
+                                ..Default::default()
+                            })
+                        }
+                    })),
+                );
+            });
+            owned
+        });
+
+        assert!(!backend.borrow().classes.borrow().is_empty(), "premintable first fire stamped");
+        assert!(backend.borrow().applied.is_empty(), "…and skipped the engine");
+
+        world.enter(|| mode.set(1));
+        world.flush();
+
+        assert!(
+            backend.borrow().classes.borrow().is_empty(),
+            "classes from the premintable fire must come OFF when the \
+             application stops preminting — otherwise they keep applying \
+             underneath the engine-minted style"
+        );
+        assert!(
+            !backend.borrow().applied.is_empty(),
+            "the non-premintable evaluation falls through to the live engine"
+        );
+        let _ = base;
     }
 
     /// A spec whose `compute` was wrapped after construction (the
