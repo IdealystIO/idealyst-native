@@ -383,10 +383,30 @@ impl SsrBackend {
         out.push_str(&self.font_faces.concat());
         out.push_str(&css::tokens_to_root_css(&self.tokens));
         if let Some(ff) = &self.default_text_font {
+            // BOTH the variable and a real, INHERITABLE `font-family`.
+            //
+            // The variable alone is what preminted rule bodies read
+            // (`font-family: var(--iy-default-font, inherit)`), but only
+            // STATIC style applications get the theme font folded into
+            // their own rules (`fill_default_text_font`). A reactively
+            // styled node deliberately skips that fold, so with the
+            // variable alone it received no `font-family` from anywhere
+            // and inherited — falling back to the browser's serif when no
+            // ancestor set one, while an identically-styled static
+            // sibling rendered in the theme font.
+            //
+            // Declaring `font-family` on `:root` is what makes the
+            // "reactive nodes ride the document channel" contract in
+            // `style_attach`'s dynamic branch actually true. It is
+            // deliberately NOT a fold into the node's rules: folding
+            // would change the minted class hash for every reactive node
+            // and break SSR/live class-name parity, which is exactly why
+            // the dynamic path doesn't fold. Inheritance costs no hash.
+            let value = css::font_family_css_value(ff);
             out.push_str(&format!(
-                ":root {{ {}: {}; }}",
+                ":root {{ {}: {value}; font-family: var({}); }}",
                 css::DEFAULT_TEXT_FONT_VAR,
-                css::font_family_css_value(ff),
+                css::DEFAULT_TEXT_FONT_VAR,
             ));
         }
         if let Some(color) = &self.app_bg {
@@ -1424,7 +1444,7 @@ mod tests {
         b.apply_default_text_font(Some(&runtime_shared::FontFamily::System("Inter".into())));
         let head = b.head_css();
         assert!(
-            head.contains(":root { --iy-default-font: Inter; }"),
+            head.contains("--iy-default-font: Inter;"),
             "default font var missing from head css: {head}"
         );
 
@@ -1433,6 +1453,64 @@ mod tests {
         assert!(
             !head.contains("--iy-default-font"),
             "cleared default font must not emit: {head}"
+        );
+    }
+
+    /// A node whose style is attached REACTIVELY never gets the theme
+    /// font folded into its own rules — `style_attach`'s dynamic branch
+    /// deliberately skips `fill_default_text_font`, because folding
+    /// would change the minted class hash and break SSR/live class-name
+    /// parity. Its only supply is CSS inheritance from the document
+    /// root.
+    ///
+    /// Publishing only the `--iy-default-font` VARIABLE does not supply
+    /// it: the variable is read exclusively by PREMINTED rule bodies
+    /// (`font-family: var(--iy-default-font, inherit)`), and the base
+    /// reset declares `font-family` only on `:where(input, textarea)`.
+    /// So with the variable alone these nodes inherited past the root
+    /// and rendered in the browser's serif fallback, while an
+    /// identically-styled STATIC sibling — whose class carries the
+    /// folded font — rendered in the theme font.
+    ///
+    /// The document root must therefore declare a real, inheritable
+    /// `font-family`, not just the variable. See the dynamic-branch
+    /// comment in `runtime_vocabulary::style_attach`.
+    #[test]
+    fn regression_reactive_styled_node_inherits_theme_font() {
+        let mut b = SsrBackend::new();
+        b.apply_default_text_font(Some(&runtime_shared::FontFamily::System(
+            "Inter, sans-serif".into(),
+        )));
+        let head = b.head_css();
+
+        // The `:root` block must declare an inheritable font-family, not
+        // merely define the custom property.
+        let root_block = head
+            .split(":root {")
+            .find(|s| s.contains("--iy-default-font"))
+            .and_then(|s| s.split('}').next())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            root_block.contains("font-family:"),
+            "the :root block must declare an inheritable font-family so \
+             reactively-styled nodes (which never fold it) inherit the theme \
+             font instead of the browser serif fallback; got: {head}"
+        );
+
+        // And it must resolve to the theme font, not some other stack.
+        assert!(
+            root_block.contains("Inter, sans-serif"),
+            "the inherited font must be the theme's: {head}"
+        );
+
+        // Clearing removes the declaration too — otherwise the root keeps
+        // pointing at an undefined variable.
+        b.apply_default_text_font(None);
+        let head = b.head_css();
+        assert!(
+            !head.contains("--iy-default-font"),
+            "cleared default font must not leave a dangling declaration: {head}"
         );
     }
 

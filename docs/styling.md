@@ -452,6 +452,27 @@ that variable from the installed theme
 element, SSR emits it in the head CSS). With no default font
 installed the `inherit` fallback reproduces the plain cascade.
 
+`apply_default_text_font` publishes the font **two** ways, and both are
+load-bearing:
+
+1. the `--iy-default-font` **variable**, which preminted rule bodies
+   read as above; and
+2. a real `font-family` declaration **on the document root**, which
+   every other node inherits.
+
+The second exists because the two live apply paths treat the default
+font asymmetrically. A **static** style application folds the theme
+font into the node's own resolved rules (`fill_default_text_font`). A
+**reactive** one deliberately does not — folding there would change the
+minted class hash for every reactive-styled node and break SSR/live
+class-name parity. So a reactively-styled node has no `font-family` of
+its own and inheritance is its only supply; with the variable alone it
+inherited past the root into the browser's serif fallback while an
+identically-styled static sibling rendered in the theme font. The two
+halves are pinned by `dynamic_sheet_path_does_not_fold_default_font`
+(runtime-vocabulary) and
+`regression_reactive_styled_node_inherits_theme_font` (backend-ssr).
+
 ### Dropping the engine — not available, and the old lever is removed
 
 Preminting changes *when* rules are made, not the bundle size: the

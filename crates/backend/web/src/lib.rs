@@ -2085,9 +2085,25 @@ impl WebBackend {
             Some(ff) => {
                 let _ = style
                     .set_property(css::DEFAULT_TEXT_FONT_VAR, &css::font_family_css_value(ff));
+                // …and a real, INHERITABLE `font-family`. The variable
+                // alone only reaches PREMINTED rule bodies (which read
+                // `var(--iy-default-font, inherit)`); nothing on the live
+                // path reads it. Static applications get the theme font
+                // folded into their own rules by `fill_default_text_font`,
+                // but reactive ones deliberately skip that fold — so with
+                // the variable alone they received no `font-family` at all
+                // and inherited, hitting the browser's serif fallback when
+                // no ancestor set one. Declaring it here supplies them by
+                // inheritance without changing any minted class hash
+                // (which is why the dynamic path must not fold it).
+                let _ = style.set_property(
+                    "font-family",
+                    &format!("var({})", css::DEFAULT_TEXT_FONT_VAR),
+                );
             }
             None => {
                 let _ = style.remove_property(css::DEFAULT_TEXT_FONT_VAR);
+                let _ = style.remove_property("font-family");
             }
         }
     }

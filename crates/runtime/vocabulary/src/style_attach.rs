@@ -1108,12 +1108,22 @@ fn attach_sheet_dynamic<H: StyleServices>(
             // NO default-font fill on this path (unlike `apply_sheet`):
             // the old core's `attach_style_reactive` resolves the base
             // WITHOUT `with_default_text_font` on both branches — only
-            // the static `apply_one` fills. Reactive nodes inherit the
-            // document default through the `apply_default_text_font`
-            // channel instead. Filling here minted DIFFERENT class
-            // hashes than old-core SSR for every reactive-styled node
-            // (visually inert, but it broke SSG byte-parity — pinned by
-            // `dynamic_sheet_path_does_not_fold_default_font`).
+            // the static `apply_one` fills. Filling here would mint
+            // DIFFERENT class hashes than SSR does for every
+            // reactive-styled node, breaking SSR/live class-name parity.
+            //
+            // Reactive nodes get the theme font by INHERITANCE instead:
+            // the backend declares `font-family` at the document root in
+            // `apply_default_text_font` (web sets it on `<html>`, SSR
+            // emits it in the `:root` block). That is a real dependency,
+            // not a nicety — a backend that publishes only the
+            // `--iy-default-font` VARIABLE leaves these nodes with no
+            // font-family at all, so they inherit past the root and hit
+            // the browser's serif fallback while an identically-styled
+            // STATIC sibling renders in the theme font. Pinned by
+            // `regression_reactive_styled_node_inherits_theme_font`
+            // (backend-ssr) and
+            // `dynamic_sheet_path_does_not_fold_default_font` below.
             #[cfg(feature = "debug-stats")]
             let _t_resolve = runtime_shared::debug::now_micros();
             let base = resolve_style(&app);
@@ -1726,6 +1736,133 @@ mod tests {
         drop(owned);
         let released = backend.borrow().released.clone();
         assert_eq!(released.len(), 3, "each node's binding released");
+    }
+
+    /// Host capturing the rules each apply path actually ships, so a
+    /// test can compare the STATIC (`apply_style`) and DYNAMIC
+    /// (`apply_styled_variants`) branches of the same sheet.
+    /// `handles_states_natively` = true selects the dynamic branch that
+    /// web/SSR take.
+    /// Both paths land in `apply_styled_variants` on a native-states
+    /// backend — the ONLY difference is the default-font fold — so
+    /// applications are keyed by node id, not by method.
+    #[derive(Default)]
+    struct FontHost {
+        applied: Vec<(u32, Rc<StyleRules>)>,
+    }
+    impl Host for FontHost {
+        type Node = u32;
+        fn insert(&mut self, _p: &mut u32, _c: u32) {}
+        fn insert_at(&mut self, _p: &mut u32, _c: u32, _i: usize) {}
+        fn remove_child(&mut self, _p: &u32, _c: &u32) {}
+        fn clear_children(&mut self, _n: &u32) {}
+        fn create_anchor(&mut self) -> u32 {
+            0
+        }
+        fn supports_splice(&self) -> bool {
+            true
+        }
+    }
+    impl crate::caps::ViewOps for FontHost {
+        fn create_view(&mut self, _a11y: &AccessibilityProps) -> u32 {
+            0
+        }
+    }
+    impl crate::caps::DocumentOps for FontHost {}
+    impl crate::caps::AssetOps for FontHost {}
+    impl crate::caps::AppEnvOps for FontHost {}
+    impl crate::caps::StyleOps for FontHost {
+        fn apply_style(&mut self, node: &u32, style: &Rc<StyleRules>) {
+            self.applied.push((*node, style.clone()));
+        }
+        fn handles_states_natively(&self) -> bool {
+            true
+        }
+        fn apply_styled_variants(
+            &mut self,
+            node: &u32,
+            base: &Rc<StyleRules>,
+            _s: &[(runtime_shared::StateBits, Rc<StyleRules>)],
+            _b: &[(Breakpoint, Rc<StyleRules>)],
+            _c: &[(f32, Rc<StyleRules>)],
+        ) {
+            self.applied.push((*node, base.clone()));
+        }
+    }
+
+    /// The two apply paths treat the theme default font ASYMMETRICALLY,
+    /// and that asymmetry is deliberate:
+    ///
+    /// - STATIC (`apply_sheet`) FOLDS the theme font into the node's own
+    ///   resolved rules via `fill_default_text_font`.
+    /// - DYNAMIC does NOT. Folding there would change the minted class
+    ///   hash for every reactive-styled node and break SSR/live
+    ///   class-name parity.
+    ///
+    /// This test pins the non-fold so nobody "fixes" the asymmetry by
+    /// folding on both paths. The consequence — that a reactive node has
+    /// NO font-family of its own and must inherit one — is what makes
+    /// the document-root `font-family` declaration in
+    /// `apply_default_text_font` load-bearing rather than decorative.
+    /// Without it those nodes inherit past the root into the browser's
+    /// serif fallback. See
+    /// `regression_reactive_styled_node_inherits_theme_font`
+    /// (backend-ssr) for the other half of the contract.
+    #[test]
+    fn dynamic_sheet_path_does_not_fold_default_font() {
+        let world = World::new();
+        let backend = Rc::new(RefCell::new(FontHost::default()));
+        let sheet = Rc::new(StyleSheet::r#static(StyleRules::default()));
+        let theme_font = runtime_shared::FontFamily::System("Test Sans".into());
+
+        world.enter(|| {
+            crate::theme::set_default_text_font(Some(theme_font.clone()));
+            let ((), _owned) = collect_owned(|| {
+                // Static application of the sheet.
+                let _s = attach_style(
+                    &backend,
+                    &1u32,
+                    StyleProp::Sheet(Box::new(StyleApplication::new(sheet.clone()))),
+                );
+                // The SAME sheet, applied reactively.
+                let sheet_dyn = sheet.clone();
+                let _d = attach_style(
+                    &backend,
+                    &2u32,
+                    StyleProp::SheetDynamic(Box::new(move || {
+                        StyleApplication::new(sheet_dyn.clone())
+                    })),
+                );
+            });
+        });
+        world.flush();
+
+        let b = backend.borrow();
+        let font_for = |node: u32| {
+            b.applied
+                .iter()
+                .rev()
+                .find(|(n, _)| *n == node)
+                .unwrap_or_else(|| panic!("node {node} never had a style applied"))
+                .1
+                .font_family
+                .clone()
+        };
+        let static_font = font_for(1);
+        let dynamic_font = font_for(2);
+
+        assert_eq!(
+            static_font,
+            Some(theme_font),
+            "the static path folds the theme default into the node's own rules"
+        );
+        assert_eq!(
+            dynamic_font, None,
+            "the dynamic path must NOT fold the default font — folding changes \
+             the minted class hash and breaks SSR/live class-name parity. These \
+             nodes get the font by INHERITANCE from the document root instead \
+             (see apply_default_text_font)."
+        );
     }
 
     /// A spec whose `compute` was wrapped after construction (the
