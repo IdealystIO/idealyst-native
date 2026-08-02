@@ -1823,6 +1823,35 @@ thread_local! {
 ///
 /// Reentrancy-safe: `build` runs with no borrow of the cache held, so a
 /// stylesheet whose construction references another `*_style()` (nested
+/// Class for the `if`-empty-branch anchor sheet
+/// ([`empty_absolute_sheet`]) — a hand-picked literal rather than a
+/// content hash because the runtime and the dump share it as a plain
+/// constant (same trick as the macro's source-hash classes, minus the
+/// hashing: there is exactly one of these).
+pub const EMPTY_ABSOLUTE_CLASS: &str = "iy-empty-absolute";
+
+/// The layout-neutral empty-branch sheet: `position: absolute`, so a
+/// false `if` contributes no flex slot (see the vocabulary's
+/// `empty_absolute_view`). A NAMED, link-time-registered sheet rather
+/// than raw `StyleRules` so the one style the FRAMEWORK itself emits
+/// premints — as the last un-preminted style on the website corpus it
+/// single-handedly kept the live engine reachable under
+/// `--premint-only`. Registered below via the same distributed slice
+/// the `stylesheet!` macro uses, because an `if` may be true throughout
+/// the dump crawl and false for the first time at runtime — first-use
+/// registration would leave the class without CSS exactly then.
+pub fn empty_absolute_sheet() -> Rc<StyleSheet> {
+    static KEY: u8 = 0;
+    cached_stylesheet(&KEY as *const u8 as usize, || {
+        StyleSheet::r#static(StyleRules {
+            position: Some(Position::Absolute),
+            ..Default::default()
+        })
+        .premint_with_class(EMPTY_ABSOLUTE_CLASS)
+    })
+}
+
+
 /// sheet reference) cannot double-borrow the registry.
 pub fn cached_stylesheet(
     key: usize,

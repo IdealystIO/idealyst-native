@@ -379,7 +379,8 @@ pub use logging::{install_logger, is_logger_installed, log, LogLevel, Logger, St
 pub use style::{
     cached_stylesheet, default_text_font, derived, install_tokens, pregenerate,
     pregenerate_and_seed, reset_for_ssg_render,
-    premint_class_name, resolve as resolve_style, set_app_background, set_app_key_handler,
+    empty_absolute_sheet, premint_class_name, resolve as resolve_style, set_app_background,
+    set_app_key_handler, EMPTY_ABSOLUTE_CLASS,
     PREMINT_FONT_INHERIT_CLASS,
     set_default_text_font, set_scrollbar_theme, take_pending_token_updates, update_tokens,
     AlignContent, AlignItems, AlignSelf, Color, Cursor, Derive, DisplayKind, Easing, FlexDirection, FlexWrap,

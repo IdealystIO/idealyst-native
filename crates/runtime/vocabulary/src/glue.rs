@@ -1290,12 +1290,18 @@ pub fn __static_repeat(
 /// The layout-neutral empty branch: `position: absolute`, so a false
 /// `if` contributes no flex slot (port of the old
 /// `empty_view_primitive` emission — see the overlay-if-toggle memory).
+///
+/// Styled by the NAMED, link-time-registered
+/// [`runtime_shared::empty_absolute_sheet`] rather than raw
+/// `StyleRules`: this was the last un-preminted style on the website
+/// corpus — the one the framework itself emits — and raw rules have
+/// nothing to premint by definition.
 pub fn empty_absolute_view() -> Element {
-    let rules = runtime_shared::StyleRules {
-        position: Some(runtime_shared::Position::Absolute),
-        ..Default::default()
-    };
-    builders::view().style(rules).build()
+    builders::view()
+        .style(runtime_shared::StyleApplication::new(
+            runtime_shared::empty_absolute_sheet(),
+        ))
+        .build()
 }
 
 // ============================================================================

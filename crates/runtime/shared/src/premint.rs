@@ -42,6 +42,21 @@ pub struct PremintSheet {
 pub static PREMINT_SHEETS: [PremintSheet] = [..];
 
 // ---------------------------------------------------------------------------
+// Framework-owned sheets
+// ---------------------------------------------------------------------------
+
+// The `if`-empty-branch anchor sheet itself lives in `crate::style`
+// (`empty_absolute_sheet`) — it must exist in EVERY build, while this
+// module only compiles under the dump's `style-dump` feature. Only the
+// link-time registration lives here.
+#[cfg(idealyst_premint_dump)]
+#[linkme::distributed_slice(PREMINT_SHEETS)]
+static EMPTY_ABSOLUTE_SHEET: PremintSheet = PremintSheet {
+    base_class: crate::style::EMPTY_ABSOLUTE_CLASS,
+    sheet: crate::style::empty_absolute_sheet,
+};
+
+// ---------------------------------------------------------------------------
 // Runtime-assembled sheets
 // ---------------------------------------------------------------------------
 //

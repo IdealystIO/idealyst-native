@@ -1937,3 +1937,31 @@ fn inline_layer_does_not_disqualify_preminting() {
         StyleApplication::new(sheet).with_computed("k", || StyleRules::default());
     assert!(with_computed.preminted_class_list().is_none());
 }
+
+/// The `if`-empty-branch anchor sheet — the ONE style the framework
+/// itself emits — must premint: it was the last un-preminted style on
+/// the website corpus (a raw `StyleRules` has nothing to premint by
+/// definition), and it is link-time registered because an `if` can be
+/// true throughout the dump crawl and false for the first time at
+/// runtime.
+#[test]
+fn regression_empty_absolute_sheet_premints() {
+    let sheet = crate::empty_absolute_sheet();
+    assert_eq!(
+        sheet.premint_class(),
+        Some(crate::EMPTY_ABSOLUTE_CLASS),
+        "the anchor sheet carries its constant class"
+    );
+    let app = crate::StyleApplication::new(sheet);
+    assert_eq!(
+        app.preminted_class_list().as_deref(),
+        Some(crate::EMPTY_ABSOLUTE_CLASS),
+        "a bare application premints to exactly that class"
+    );
+    let rules = crate::style::resolve(&app);
+    assert_eq!(
+        rules.position,
+        Some(crate::Position::Absolute),
+        "and still resolves to the layout-neutral absolute position"
+    );
+}
