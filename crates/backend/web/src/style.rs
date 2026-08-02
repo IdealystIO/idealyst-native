@@ -20,7 +20,7 @@ use crate::{DynamicPtrEntry, DynamicRule, DynamicSlot, PregenEntry, WebBackend};
 use runtime_shared::{Easing, StyleRules};
 // CSS conversion lives in the shared, platform-neutral `css` crate so
 // the web backend and the SSR backend emit byte-identical declarations.
-use css::{hash_class_name, rules_to_css, rules_to_css_text};
+use css::{hash_class_name, rules_to_css};
 use wasm_bindgen::JsCast;
 
 /// Is this the text primitive's node? Detected by tag: the text
@@ -697,15 +697,6 @@ impl WebBackend {
         // CSS precedence resolves in favor of inline.
         self.snapshot_gradient_for_animation(id, style.background_gradient.as_ref());
 
-        // A text node's `shadow` lowers to `text-shadow` (hugging the
-        // glyphs), not `box-shadow`. Gated on `shadow.is_some()` so the
-        // overwhelmingly common no-shadow path pays nothing — no tag
-        // check, no divergence. See `apply_text_shadow`.
-        if style.shadow.is_some() && is_text_span(node) {
-            self.apply_text_shadow(node, id, style, &[], &[], &[]);
-            return;
-        }
-
         // Path 1: pre-generated cache hit.
         if let Some(entry) = self.pregen.get(&key) {
             let class_name = entry.name.clone();
@@ -820,18 +811,6 @@ impl WebBackend {
         self.snapshot_gradient_for_animation(id, base.background_gradient.as_ref());
 
         // Text node with a shadow on any layer → route to the
-        // `text-shadow` mint (distinct class, glyph-hugging shadow) and
-        // skip all the box-shadow fast paths below. Gated on a shadow
-        // being present so the common case is untouched.
-        if is_text_span(node)
-            && (base.shadow.is_some()
-                || overlays.iter().any(|(_, o)| o.shadow.is_some())
-                || breakpoint_overlays.iter().any(|(_, o)| o.shadow.is_some())
-                || container_overlays.iter().any(|(_, o)| o.shadow.is_some()))
-        {
-            self.apply_text_shadow(node, id, base, overlays, breakpoint_overlays, container_overlays);
-            return;
-        }
 
         // Fast-fast path: pointer-keyed pregen hit. When the
         // framework's resolution cache returns the same
@@ -1045,84 +1024,6 @@ impl WebBackend {
                 self.dynamic_by_ptr
                     .insert(std::rc::Rc::as_ptr(base), shared.clone());
             }
-            shared
-        };
-
-        let class_for_queue = shared.class_name.clone();
-        let prev = self.dynamic.insert(id, DynamicSlot { shared });
-        if let Some(old) = prev {
-            self.release_dynamic_rule(&old.shared);
-        }
-        self.queue_class_apply(node, &class_for_queue);
-    }
-
-    /// Mint + apply a `text-shadow` class for a text node whose `shadow`
-    /// style must hug the glyphs rather than box the inline span. The
-    /// class is keyed via `css::text_shadow_class_key` so it never
-    /// collides with the `box-shadow` class a box element with the
-    /// identical `StyleRules` would mint, and every layer (base + state /
-    /// breakpoint / container overlays) is lowered with `rules_to_css_text`
-    /// so `shadow` becomes `text-shadow` throughout. Deduped by content
-    /// key across text nodes (same as the box slow path); NOT mirrored
-    /// into `dynamic_by_ptr` because the base Rc may be shared with a box
-    /// element that needs the box-shadow class for the same pointer.
-    ///
-    /// This is the rare path (only shadowed text reaches it), so it favors
-    /// clarity over the box path's pointer-cache fast lanes.
-    fn apply_text_shadow(
-        &mut self,
-        node: &web_sys::Node,
-        id: u32,
-        base: &std::rc::Rc<StyleRules>,
-        overlays: &[(runtime_shared::StateBits, std::rc::Rc<StyleRules>)],
-        breakpoint_overlays: &[(runtime_shared::Breakpoint, std::rc::Rc<StyleRules>)],
-        container_overlays: &[(f32, std::rc::Rc<StyleRules>)],
-    ) {
-        let combined = css::variant_class_key(
-            &base.content_key(),
-            overlays,
-            breakpoint_overlays,
-            container_overlays,
-        );
-        let key = css::text_shadow_class_key(&combined);
-
-        let shared = if let Some(entry) = self.dynamic_by_content.get(&key) {
-            entry.shared.refcount.set(entry.shared.refcount.get() + 1);
-            entry.shared.clone()
-        } else {
-            let class_name = hash_class_name(&key);
-            // Ordered group insert, mirroring the box path: the base
-            // rule must physically precede its equal-specificity
-            // `@media` / `@container` overlays, and per-rule inserts
-            // through the LIFO slot recycler can invert that on
-            // re-mint (see `insert_rule_group`). Shared builder with
-            // `rules_to_css_text` so every layer lowers shadows as
-            // `text-shadow`.
-            let group_rules = css::class_rule_group_with(
-                &class_name,
-                base,
-                overlays,
-                breakpoint_overlays,
-                container_overlays,
-                rules_to_css_text,
-            );
-            let indices = self.insert_rule_group(&group_rules);
-            let base_idx = indices[0];
-            let overlay_indices: Vec<u32> = indices[1..].to_vec();
-
-            let shared = std::rc::Rc::new(DynamicPtrEntry {
-                class_name,
-                content_key: key.clone(),
-                refcount: std::cell::Cell::new(1),
-            });
-            self.dynamic_by_content.insert(
-                key,
-                DynamicRule {
-                    shared: shared.clone(),
-                    rule_index: base_idx,
-                    state_rule_indices: overlay_indices,
-                },
-            );
             shared
         };
 

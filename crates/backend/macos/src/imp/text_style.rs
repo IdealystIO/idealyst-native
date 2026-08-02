@@ -97,19 +97,19 @@ pub(crate) fn apply_text_style(
     let _ = is_label;
 }
 
-/// Apply (or clear) the text primitive's drop shadow. A `shadow` on a
-/// text node is a GLYPH shadow — web lowers it to `text-shadow`, and the
-/// framework converges the *output* across backends (Rule #7). Here it's
-/// a CALayer shadow on the label's backing layer: an `NSTextField`'s
-/// layer content is the drawn glyphs over a transparent background, so
-/// the layer shadow takes the glyph silhouette rather than the box.
+/// Apply (or clear) the text primitive's GLYPH shadow — the
+/// `text_shadow` field (web lowers it to `text-shadow`; the framework
+/// converges the output across backends, Rule #7). Here it's a CALayer
+/// shadow on the label's backing layer: an `NSTextField`'s layer
+/// content is the drawn glyphs over a transparent background, so the
+/// layer shadow takes the glyph silhouette rather than the box.
 /// Mirrors `backend_ios_core`'s text-shadow path.
 fn apply_text_shadow(view: &NSView, style: &StyleRules) {
     // Label views are layer-backed (`apply_style_to_view` sets
     // `wantsLayer` before this runs); fetch that same layer.
     let _: () = unsafe { msg_send![view, setWantsLayer: true] };
     let layer: Retained<NSObject> = unsafe { msg_send_id![view, layer] };
-    match &style.shadow {
+    match &style.text_shadow {
         Some(sh) => {
             // `shadowColor` carries the alpha; `shadowOpacity` is a plain
             // enable multiplier at 1.0 (CALayer multiplies the two, so the

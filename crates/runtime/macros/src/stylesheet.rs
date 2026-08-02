@@ -515,13 +515,9 @@ pub fn emit(decl: StyleSheetDecl, content_hash: u64) -> TokenStream2 {
     }
     let enums = decl.variants.iter().map(|v| emit_variant_enum(&decl, v)).collect::<Vec<_>>();
 
-    // Premint eligibility — two disqualifiers, both keeping the sheet on
-    // the live-minting path everywhere (correct, just not preminted):
+    // Premint eligibility — one disqualifier, keeping the sheet on the
+    // live-minting path everywhere (correct, just not preminted):
     //
-    // - a `shadow` on any layer: shadows lower differently per node kind
-    //   (`text-shadow` on text, `box-shadow` on boxes) and a preminted
-    //   class name carries no node-kind information, so the dump couldn't
-    //   emit one correct rule body.
     // - a `font_family` whose value is not a string literal: a non-literal
     //   value (`&INTER`, `active_font_family()`) can be a `Typeface`,
     //   whose `@font-face` + face-asset registration rides sheet
@@ -529,7 +525,13 @@ pub fn emit(decl: StyleSheetDecl, content_hash: u64) -> TokenStream2 {
     //   step a preminted class skips. A string literal is always
     //   `FontFamily::System` (plain family names, no registration), so it
     //   stays eligible.
-    let premintable = !sheet_has_shadow(&decl) && !sheet_has_dynamic_font(&decl);
+    //
+    // (`shadow` used to disqualify too — the old single field lowered
+    // per node kind, `text-shadow` on text vs `box-shadow` on boxes, and
+    // a class name carries no kind. Since the `shadow`/`text_shadow`
+    // split each field lowers to exactly one property, so shadowed
+    // sheets premint like any other.)
+    let premintable = !sheet_has_dynamic_font(&decl);
     let base_class = format!("iy-{:012x}", content_hash & 0xffff_ffff_ffff);
     let stylesheet_fn =
         emit_stylesheet_fn(&decl, premintable.then_some(base_class.as_str()));
@@ -546,12 +548,6 @@ pub fn emit(decl: StyleSheetDecl, content_hash: u64) -> TokenStream2 {
         #builder
         #registration
     }
-}
-
-/// `true` if any rules block on any layer declares a `shadow` — see the
-/// premint-eligibility note in [`emit`].
-fn sheet_has_shadow(decl: &StyleSheetDecl) -> bool {
-    any_rules_block(decl, |b| b.fields.iter().any(|(name, _)| name == "shadow"))
 }
 
 /// `true` if any rules block sets `font_family` to a value the premint

@@ -914,21 +914,12 @@ impl caps::StyleOps for SsrBackend {
         // `hash_class_name` + `rules_to_css` as web, so a given style gets
         // the same class name and declarations on both. Dedupe by class so
         // N nodes sharing a style emit one rule (as web's `pregen` does).
-        // A text node carrying a `shadow` lowers it to `text-shadow` and
-        // mints a distinct class (keyed via `text_shadow_class_key`) so it
-        // never reuses a box element's `box-shadow` class. Web mirrors this
-        // exactly, so the class name matches on hydration.
-        let is_text_shadow = node.borrow().is_text && css::text_needs_shadow_variant(style);
-        let (class, body): (String, fn(&StyleRules) -> String) = if is_text_shadow {
-            (
-                css::hash_class_name(&css::text_shadow_class_key(&style.content_key())),
-                css::rules_to_css_text,
-            )
-        } else {
-            (css::hash_class_name(&style.content_key()), css::rules_to_css)
-        };
+        // (`shadow` is always box-shadow and `text_shadow` always
+        // text-shadow now — one field per property, so text and box
+        // nodes with equal rules share one class by construction.)
+        let class = css::hash_class_name(&style.content_key());
         if !self.style_rules.contains_key(&class) {
-            self.style_rules.insert(class.clone(), body(style));
+            self.style_rules.insert(class.clone(), css::rules_to_css(style));
         }
         let change = set_styled_class(node, &class);
         self.book_styled_class(&class, change);
@@ -962,29 +953,16 @@ impl caps::StyleOps for SsrBackend {
         // DIFFERENT classes on server vs client and hydration couldn't
         // reuse the server's styling. Sharing the builder guarantees
         // byte-identical classes.
-        let mut combined = css::variant_class_key(
+        let combined = css::variant_class_key(
             &base.content_key(),
             overlays,
             breakpoint_overlays,
             container_overlays,
         );
-        // If this is a text node and any layer (base or overlay) carries a
-        // shadow, the whole class renders shadows as `text-shadow` and mints
-        // a distinct key (matching the web backend). `emit` picks the lowering.
-        let text_shadow = node.borrow().is_text
-            && (css::text_needs_shadow_variant(base)
-                || overlays.iter().any(|(_, o)| css::text_needs_shadow_variant(o))
-                || breakpoint_overlays.iter().any(|(_, o)| css::text_needs_shadow_variant(o))
-                || container_overlays.iter().any(|(_, o)| css::text_needs_shadow_variant(o)));
-        if text_shadow {
-            combined = css::text_shadow_class_key(&combined);
-        }
-        let emit: fn(&StyleRules) -> String =
-            if text_shadow { css::rules_to_css_text } else { css::rules_to_css };
         let class = css::hash_class_name(&combined);
         self.style_rules
             .entry(class.clone())
-            .or_insert_with(|| emit(base));
+            .or_insert_with(|| css::rules_to_css(base));
         for (state, overlay) in overlays {
             if let Some(pseudo) = css::state_pseudo(*state) {
                 // Key carries the pseudo so head_css emits
@@ -992,7 +970,7 @@ impl caps::StyleOps for SsrBackend {
                 self.style_rules
                     .entry(format!("{class}{pseudo}"))
                     .or_insert_with(|| {
-                        let body = emit(overlay);
+                        let body = css::rules_to_css(overlay);
                         // Component-owned focus overlay suppresses the UA
                         // ring, matching the web backend's minted rule —
                         // without this the SSR first paint double-draws the
@@ -1010,7 +988,7 @@ impl caps::StyleOps for SsrBackend {
         // them ascending by rank (mobile-first cascade). `None` only for Xs,
         // which the walker never sends as an overlay.
         for (bp, overlay) in breakpoint_overlays {
-            let body = emit(overlay);
+            let body = css::rules_to_css(overlay);
             if let Some(rule) = css::breakpoint_media_rule(&class, *bp, &body) {
                 self.media_rules
                     .entry(format!("{class}@{}", bp.rank()))
@@ -1023,7 +1001,7 @@ impl caps::StyleOps for SsrBackend {
         // `container-type` ancestor (set by `mark_container`). Stacking by
         // source order reproduces the mobile-first cascade.
         for (threshold, overlay) in container_overlays {
-            let body = emit(overlay);
+            let body = css::rules_to_css(overlay);
             let rule = css::container_query_rule(&class, *threshold, &body);
             self.media_rules
                 .entry(format!("{class}@cq{:08x}", threshold.to_bits()))

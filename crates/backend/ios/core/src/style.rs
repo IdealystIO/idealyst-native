@@ -842,6 +842,30 @@ pub fn apply_text_style(
         let _: () = unsafe { msg_send![view, setNumberOfLines: 0isize] };
         let _: () = unsafe { msg_send![view, setLineBreakMode: 0isize] };
     }
+
+    // Glyph shadow — the `text_shadow` field (web `text-shadow`; the
+    // framework converges the output, CLAUDE.md §7). A CALayer shadow on
+    // the label's layer takes the glyph silhouette (the label's layer
+    // content is drawn glyphs over a transparent background) — the same
+    // mechanism macOS's `apply_text_shadow` uses. Cleared when absent so
+    // a reactively-removed shadow actually turns off.
+    let layer = unsafe { view.layer() };
+    match &style.text_shadow {
+        Some(sh) => {
+            let shadow_color = color_to_uicolor(&sh.color);
+            let cg: CGColorRef = unsafe { msg_send![&shadow_color, CGColor] };
+            if !cg.0.is_null() {
+                let _: () = unsafe { msg_send![&layer, setShadowColor: cg] };
+            }
+            let offset = CGSize { width: sh.x as CGFloat, height: sh.y as CGFloat };
+            let _: () = unsafe { msg_send![&layer, setShadowOffset: offset] };
+            let _: () = unsafe { msg_send![&layer, setShadowRadius: (sh.blur as CGFloat / 2.0)] };
+            let _: () = unsafe { msg_send![&layer, setShadowOpacity: 1.0_f32] };
+        }
+        None => {
+            let _: () = unsafe { msg_send![&layer, setShadowOpacity: 0.0_f32] };
+        }
+    }
 }
 
 /// Apply the theme-resolved background + text color to an editable text control

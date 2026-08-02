@@ -201,26 +201,6 @@ pub fn variant_class_key(
 }
 
 /// Whether a text node's style must mint a text-shadow class variant.
-/// A `shadow` renders as `text-shadow` on text (see [`rules_to_css_text`])
-/// but `box-shadow` on box elements, so a text node carrying a shadow can't
-/// safely share a box element's content-keyed class. Callers that already
-/// know the node is text gate on this so the ONLY divergence is the rare
-/// shadowed-text case — an unshadowed text node keeps sharing view classes.
-pub fn text_needs_shadow_variant(rules: &StyleRules) -> bool {
-    rules.shadow.is_some()
-}
-
-/// Disambiguate a text node's class key from the box element that shares its
-/// `StyleRules`, so the `text-shadow` variant mints a distinct class. Applied
-/// identically on web and SSR (over the full [`variant_class_key`] output)
-/// so the minted class name matches for SSR→web hydration. Only used when
-/// [`text_needs_shadow_variant`] holds.
-pub fn text_shadow_class_key(base_or_variant_key: &str) -> String {
-    // `@t` mirrors the `@`-prefixed axis markers `variant_class_key` already
-    // appends, keeping the key grammar uniform.
-    format!("{base_or_variant_key};@t")
-}
-
 /// The CSS pseudo-class suffix for an interaction-state bit, so a state
 /// overlay becomes `.ui-<hash><pseudo> { … }`. Shared by the web backend
 /// (`apply_styled_states`) and SSR so hover/press/focus/disabled styles
@@ -299,35 +279,14 @@ pub fn class_rule_group(
     breakpoint_overlays: &[(runtime_shared::Breakpoint, std::rc::Rc<StyleRules>)],
     container_overlays: &[(f32, std::rc::Rc<StyleRules>)],
 ) -> Vec<String> {
-    class_rule_group_with(
-        class_name,
-        base,
-        state_overlays,
-        breakpoint_overlays,
-        container_overlays,
-        rules_to_css,
-    )
-}
-
-/// [`class_rule_group`] with a caller-chosen per-layer lowering — the
-/// text-shadow variant passes [`rules_to_css_text`] so every layer
-/// renders shadows as `text-shadow` instead of `box-shadow`.
-pub fn class_rule_group_with(
-    class_name: &str,
-    base: &StyleRules,
-    state_overlays: &[(runtime_shared::StateBits, std::rc::Rc<StyleRules>)],
-    breakpoint_overlays: &[(runtime_shared::Breakpoint, std::rc::Rc<StyleRules>)],
-    container_overlays: &[(f32, std::rc::Rc<StyleRules>)],
-    emit: fn(&StyleRules) -> String,
-) -> Vec<String> {
     let mut group_rules: Vec<String> = Vec::with_capacity(
         1 + state_overlays.len() + breakpoint_overlays.len() + container_overlays.len(),
     );
-    group_rules.push(class_rule(class_name, &emit(base)));
+    group_rules.push(class_rule(class_name, &rules_to_css(base)));
     for (bit, overlay) in state_overlays {
         let Some(pseudo) = state_pseudo(*bit) else { continue };
         let selector = format!("{class_name}{pseudo}");
-        let body = emit(overlay);
+        let body = rules_to_css(overlay);
         // A component that declares its own `__state_focused` overlay
         // owns the focus indicator, so suppress the browser's default
         // `outline` on that `:focus` rule — otherwise the native ring
@@ -343,12 +302,12 @@ pub fn class_rule_group_with(
     for (bp, overlay) in breakpoint_overlays {
         // `None` only for `Breakpoint::Xs` (the base, no media query) —
         // which the walker never emits as an overlay.
-        if let Some(rule) = breakpoint_media_rule(class_name, *bp, &emit(overlay)) {
+        if let Some(rule) = breakpoint_media_rule(class_name, *bp, &rules_to_css(overlay)) {
             group_rules.push(rule);
         }
     }
     for (threshold, overlay) in container_overlays {
-        group_rules.push(container_query_rule(class_name, *threshold, &emit(overlay)));
+        group_rules.push(container_query_rule(class_name, *threshold, &rules_to_css(overlay)));
     }
     group_rules
 }
@@ -968,20 +927,6 @@ pub fn easing_css(e: runtime_shared::Easing) -> String {
     }
 }
 
-/// How the `shadow` style field lowers to CSS. A box-shaped element
-/// (view/image/pressable) renders it as `box-shadow`; the text
-/// primitive renders it as `text-shadow` so the shadow follows the
-/// glyph outlines rather than the inline box. Both CSS properties take
-/// the identical `<x> <y> <blur> <color>` syntax (neither uses spread),
-/// so `Shadow { x, y, blur, color }` maps onto each with no loss.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ShadowKind {
-    /// `box-shadow` — the default for box elements.
-    Box,
-    /// `text-shadow` — for the text primitive.
-    Text,
-}
-
 /// Compile a `StyleRules` to a CSS declaration body (`;`-joined,
 /// no surrounding braces). Suitable for a class body or an inline
 /// `style="…"` attribute.
@@ -997,16 +942,13 @@ pub enum ShadowKind {
 /// mobile-first default). Nodes with no `display` and no flex property
 /// stay normal blocks — no flex-tracker cost for unstyled rows.
 ///
-/// The `shadow` field lowers to `box-shadow`. For text nodes call
-/// [`rules_to_css_text`], which lowers it to `text-shadow` instead.
+/// `shadow` lowers to `box-shadow` and `text_shadow` to `text-shadow` —
+/// one field per CSS property on every node kind. (The old single
+/// `shadow` field lowered per node kind, which forced shadowed text
+/// nodes onto distinct class keys and disqualified every shadowed
+/// sheet from preminting.)
 pub fn rules_to_css(rules: &StyleRules) -> String {
-    rules_to_css_with_shadow(rules, ShadowKind::Box)
-}
-
-/// Like [`rules_to_css`] but lowers the `shadow` field to `text-shadow`
-/// so it hugs the glyphs — the correct rendering for the text primitive.
-pub fn rules_to_css_text(rules: &StyleRules) -> String {
-    rules_to_css_with_shadow(rules, ShadowKind::Text)
+    rules_to_css_impl(rules, true)
 }
 
 /// Append one `name: value` declaration, `"; "`-separated — the direct-write
@@ -1023,9 +965,6 @@ fn push_decl(out: &mut String, name: &str, value: &str) {
     out.push_str(value);
 }
 
-/// [`rules_to_css`] with an explicit [`ShadowKind`] for the `shadow`
-/// field. All other declarations are identical regardless of kind.
-///
 /// **Size note.** This is the framework's largest single wasm function,
 /// so it's written as a tag-dispatched property table in emission order
 /// rather than ~85 straight-line `if let … parts.push(format!(…))`
@@ -1036,9 +975,7 @@ fn push_decl(out: &mut String, name: &str, value: &str) {
 /// is byte-identical — pinned by `tests/golden_rules_to_css.rs`, which
 /// matters beyond size: class names are minted from this output, so a
 /// byte change splits web/SSR class identity.
-pub fn rules_to_css_with_shadow(rules: &StyleRules, shadow_kind: ShadowKind) -> String {
-    rules_to_css_impl(rules, shadow_kind, true)
-}
+
 
 /// DELTA lowering for premint arm/overlay rules: identical to
 /// [`rules_to_css`] except the `flex-direction: column` framework
@@ -1058,7 +995,7 @@ pub fn rules_to_css_with_shadow(rules: &StyleRules, shadow_kind: ShadowKind) -> 
 /// merged set flex-promoted, and repeated `display: flex` declarations
 /// are idempotent.
 pub fn rules_to_css_delta(rules: &StyleRules) -> String {
-    rules_to_css_impl(rules, ShadowKind::Box, false)
+    rules_to_css_impl(rules, false)
 }
 
 /// `true` when this rules layer, applied to an element, makes it a flex
@@ -1085,7 +1022,7 @@ pub fn flex_promoted(rules: &StyleRules) -> bool {
     }
 }
 
-fn rules_to_css_impl(rules: &StyleRules, shadow_kind: ShadowKind, pin_flex_direction: bool) -> String {
+fn rules_to_css_impl(rules: &StyleRules, pin_flex_direction: bool) -> String {
     use runtime_shared::{Color, Length, Tokenized};
 
     /// One property's value slot. Borrowing tags defer formatting to the
@@ -1166,15 +1103,6 @@ fn rules_to_css_impl(rules: &StyleRules, shadow_kind: ShadowKind, pin_flex_direc
         None
     };
 
-    // `text-shadow` and `box-shadow` share the same `<x> <y> <blur>
-    // <color>` value grammar (text-shadow simply has no spread term,
-    // which our `Shadow` doesn't carry either), so only the property
-    // name differs by node kind.
-    let shadow_prop = match shadow_kind {
-        ShadowKind::Box => "box-shadow",
-        ShadowKind::Text => "text-shadow",
-    };
-
     // Every remaining property in emission order. `Typeface`
     // family-names are quoted so the CSS engine never confuses them with
     // generic keywords; `System` strings pass through verbatim (they
@@ -1241,7 +1169,13 @@ fn rules_to_css_impl(rules: &StyleRules, shadow_kind: ShadowKind, pin_flex_direc
         ("opacity", V::Num(&rules.opacity)),
         ("overflow", V::Kw(rules.overflow.map(overflow_css))),
         ("object-fit", V::Kw(rules.object_fit.map(object_fit_css))),
-        (shadow_prop, V::Owned(rules.shadow.as_ref().map(|sh| {
+        ("box-shadow", V::Owned(rules.shadow.as_ref().map(|sh| {
+            format!("{}px {}px {}px {}", css_num(sh.x), css_num(sh.y), css_num(sh.blur), sh.color.0)
+        }))),
+        // `text-shadow` shares the `<x> <y> <blur> <color>` grammar
+        // (neither carries spread); one field per property, no node-kind
+        // dispatch.
+        ("text-shadow", V::Owned(rules.text_shadow.as_ref().map(|sh| {
             format!("{}px {}px {}px {}", css_num(sh.x), css_num(sh.y), css_num(sh.blur), sh.color.0)
         }))),
         ("transform", V::Owned(rules.transform.as_deref().filter(|xs| !xs.is_empty()).map(|xs| {
@@ -1331,13 +1265,6 @@ fn rules_to_css_impl(rules: &StyleRules, shadow_kind: ShadowKind, pin_flex_direc
 /// unavailable.
 pub fn rules_to_css_resolved(rules: &StyleRules, tokens: &[runtime_shared::TokenEntry]) -> String {
     rules_to_css(&resolve_style_tokens(rules, tokens))
-}
-
-/// Text-primitive counterpart of [`rules_to_css_resolved`]: bakes tokens
-/// to literals and lowers `shadow` to `text-shadow`. Used by the
-/// email/static renderers when emitting a text node's style.
-pub fn rules_to_css_resolved_text(rules: &StyleRules, tokens: &[runtime_shared::TokenEntry]) -> String {
-    rules_to_css_text(&resolve_style_tokens(rules, tokens))
 }
 
 /// Clone `rules`, replacing every `Tokenized::Token` field with a
@@ -1549,26 +1476,6 @@ mod tests {
 
     // A `shadow` on a box element lowers to `box-shadow`; the SAME shadow on
     // the text primitive lowers to `text-shadow` so it hugs the glyphs. Both
-    // share the `<x> <y> <blur> <color>` grammar, so only the property name
-    // differs — the numbers and color are byte-identical.
-    #[test]
-    fn shadow_lowers_to_box_or_text_by_node_kind() {
-        use runtime_shared::{Color, Shadow, StyleRules};
-        let rules = StyleRules {
-            shadow: Some(Shadow { x: 1.0, y: 2.0, blur: 3.0, color: Color("#00000080".to_string()) }),
-            ..Default::default()
-        };
-        let boxed = rules_to_css(&rules);
-        let text = rules_to_css_text(&rules);
-        assert!(boxed.contains("box-shadow: 1px 2px 3px #00000080"), "box: {boxed}");
-        assert!(!boxed.contains("text-shadow"));
-        assert!(text.contains("text-shadow: 1px 2px 3px #00000080"), "text: {text}");
-        assert!(!text.contains("box-shadow"));
-        // No `shadow` → neither property, regardless of kind.
-        let empty = StyleRules::default();
-        assert!(!rules_to_css(&empty).contains("shadow"));
-        assert!(!rules_to_css_text(&empty).contains("shadow"));
-    }
 
     // `object_fit` emits the matching CSS `object-fit` keyword. Cover is the
     // one that fixes the tile "fill + center-crop" pattern; only an explicit
@@ -1651,6 +1558,23 @@ mod tests {
     // `-webkit-` form (Safari still needs it) and the unprefixed form, sharing
     // one keyword. This is what makes "buttons use a pointer + their label
     // can't be drag-selected" real on web.
+    /// One field per shadow property, on every node kind: `shadow` is
+    /// always `box-shadow` and `text_shadow` always `text-shadow`. (The
+    /// old single field lowered per node kind, which forced shadowed
+    /// text onto distinct class keys and disqualified every shadowed
+    /// sheet from preminting.)
+    #[test]
+    fn shadow_and_text_shadow_lower_to_their_own_properties() {
+        use runtime_shared::{Shadow, StyleRules};
+        let css = rules_to_css(&StyleRules {
+            shadow: Some(Shadow { x: 1.0, y: 2.0, blur: 3.0, color: runtime_shared::Color("#000000".into()) }),
+            text_shadow: Some(Shadow { x: 4.0, y: 5.0, blur: 6.0, color: runtime_shared::Color("#111111".into()) }),
+            ..Default::default()
+        });
+        assert!(css.contains("box-shadow: 1px 2px 3px #000000"), "got: {css}");
+        assert!(css.contains("text-shadow: 4px 5px 6px #111111"), "got: {css}");
+    }
+
     #[test]
     fn rules_to_css_emits_cursor_and_user_select() {
         use runtime_shared::{Cursor, StyleRules, UserSelect};
@@ -1808,81 +1732,11 @@ mod tests {
         );
     }
 
-    /// REGRESSION — Issue B of the "duplicated SSG nav" bug: SSR and web
-    /// must mint the BYTE-IDENTICAL `ui-<hash>` class for a text node that
-    /// carries a `shadow`, or the client's first render diverges from the
-    /// (correct) SSR DOM at that span and the hydrator remounts the subtree.
-    ///
-    /// The two backends reach the class name by DIFFERENT expressions, and
-    /// this test pins that they still agree:
-    ///
-    /// - SSR (`backend-ssr`'s `apply_style`, the no-overlay path) feeds the
-    ///   content key STRAIGHT into `text_shadow_class_key`:
-    ///     `hash_class_name(text_shadow_class_key(rules.content_key()))`
-    /// - web (`backend-web`'s `apply_text_shadow`) routes through
-    ///   `variant_class_key` first (it also handles state/breakpoint/
-    ///   container overlays):
-    ///     `hash_class_name(text_shadow_class_key(variant_class_key(k, &[], &[], &[])))`
-    ///
-    /// They match ONLY because `variant_class_key(k, &[], &[], &[]) == k`
-    /// (no overlays ⇒ no appended segments). That identity is the linchpin;
-    /// the first assertion locks it down so a future change to
-    /// `variant_class_key` (e.g. unconditionally appending a marker) can't
-    /// silently re-diverge SSR from web and reintroduce the double-nav.
-    #[test]
-    fn ssr_and_web_mint_identical_text_shadow_class() {
-        use runtime_shared::{Color, Shadow, StyleRules};
-
-        // The linchpin identity both derivations rest on.
-        let base_key = "fg=T:color-text;fs=L:1234";
-        assert_eq!(
-            variant_class_key(base_key, &[], &[], &[]),
-            base_key,
-            "variant_class_key with no overlays MUST be the identity on the base key — \
-             web's text-shadow path depends on this to match SSR's content-key path",
-        );
-
-        // End-to-end over a real shadowed text `StyleRules`: compute the
-        // class both backends' ways and assert they're byte-identical.
-        let rules = StyleRules {
-            shadow: Some(Shadow {
-                x: 0.0,
-                y: 2.0,
-                blur: 4.0,
-                // `Color` is a newtype over a CSS color string.
-                color: Color("rgba(0,0,0,0.5)".to_string()),
-            }),
-            ..Default::default()
-        };
-        assert!(
-            text_needs_shadow_variant(&rules),
-            "a StyleRules carrying a shadow must route through the text-shadow variant",
-        );
-
-        let content_key = rules.content_key();
-        let ssr_class = hash_class_name(&text_shadow_class_key(&content_key));
-        let web_class = hash_class_name(&text_shadow_class_key(&variant_class_key(
-            &content_key,
-            &[],
-            &[],
-            &[],
-        )));
-        assert_eq!(
-            ssr_class, web_class,
-            "SSR and web must mint the same text-shadow class for identical StyleRules; \
-             a mismatch diverges hydration at the shadowed span (Issue B / double-nav)",
-        );
-
-        // And the text-shadow key is genuinely DISTINCT from the plain
-        // box-shadow class the same content key would mint on a view — so a
-        // shadowed text node never adopts a box element's class (the reason
-        // `text_shadow_class_key` exists at all).
-        assert_ne!(
-            hash_class_name(&text_shadow_class_key(&content_key)),
-            hash_class_name(&content_key),
-            "text-shadow class must not collide with the plain box-shadow class",
-        );
-    }
+    // (The former `ssr_and_web_mint_identical_text_shadow_class` — pinning
+    // the `@t` text-shadow class-key agreement between SSR and web — is
+    // gone with the `shadow`/`text_shadow` split: shadowed text and box
+    // nodes share one content-keyed class by construction, so there is no
+    // separate key to agree on.)
 
     #[test]
     fn breakpoint_media_rule_wraps_class_in_media_query() {

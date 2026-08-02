@@ -413,9 +413,6 @@ can't prove the CSS at build time:
 - **Reactive inputs** — a setter received a `Signal`/`derived`.
 - **Runtime overrides** — `.override_*` values at the call site, or
   `with_style_overrides` layers.
-- **Shadow-carrying sheets** — `shadow` lowers as `text-shadow` on
-  text and `box-shadow` on boxes, and a class name carries no
-  node-kind information.
 - **A `font_family` the build can't prove constant** — a call like
   `active_font_family()` can vary at runtime. String literals (system
   stacks) and path/`&`-reference expressions (`&INTER` — a `static`
@@ -601,21 +598,26 @@ list. On the idea-ui catalog it is 218 entries across 47 routes, of which
 
 ## Shadows: box vs. text
 
-`StyleRules::shadow` is a single `Shadow { x, y, blur, color }`. What it
-*renders* as depends on the node it lands on:
+Two fields, one CSS property each, on every node kind:
 
-- On a **box** element (`view`, `image`, `pressable`, …) it's a box
-  shadow — the shadow of the element's rectangle.
-- On the **text** primitive it's a *glyph* shadow — the shadow hugs the
-  letter outlines, not the inline box. There's no separate `text_shadow`
-  field; the text primitive reinterprets the one `shadow` field.
+- `StyleRules::shadow` — the **box** shadow (the element's rectangle).
+- `StyleRules::text_shadow` — the **glyph** shadow on a text node (hugs
+  the letter outlines). Ignored by non-text primitives.
 
-Each backend converges on that output through its own mechanism
+They used to be one field that lowered per node kind (`box-shadow` on
+boxes, `text-shadow` on text). That forced shadowed text nodes onto
+distinct class keys AND disqualified every shadowed sheet from
+preminting — a build-time rule body can't know what kind of node will
+wear the class. One field per property removes both: shadowed sheets
+premint like any other, and a text and box node with equal rules share
+one class.
+
+Each backend converges on the output through its own mechanism
 (CLAUDE.md §7):
 
-| Backend | Box element | Text primitive |
+| Backend | `shadow` (box) | `text_shadow` (glyphs) |
 | --- | --- | --- |
-| Web / SSR | `box-shadow` | `text-shadow` (`css::rules_to_css_text`) |
+| Web / SSR | `box-shadow` | `text-shadow` |
 | iOS / macOS | CALayer shadow | CALayer shadow on the label (layer content is the glyphs) |
 | Android | *(elevation, n/a in v1)* | `TextView.setShadowLayer` |
 

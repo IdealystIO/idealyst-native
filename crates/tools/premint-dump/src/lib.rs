@@ -465,6 +465,23 @@ mod tests {
 
     // A second sheet whose base SETS a font — the default-font var must
     // not override an explicit author font.
+    // A SHADOWED sheet — premintable since the `shadow`/`text_shadow`
+    // split (the old single field lowered per node kind and disqualified
+    // the whole sheet; the SwitchThumb was the measured fall-through).
+    stylesheet! {
+        Thumb<()> {
+            base(_t) {
+                background: Color("#ffffff".into()),
+                shadow: runtime_core::Shadow {
+                    x: 0.0,
+                    y: 1.0,
+                    blur: 3.0,
+                    color: Color("rgba(15, 17, 21, 0.30)".into()),
+                },
+            }
+        }
+    }
+
     stylesheet! {
         Mono<()> {
             base(_t) {
@@ -571,6 +588,29 @@ mod tests {
     /// order than a sibling axis's explicit `row` and stomp it. The
     /// framework default instead rides a specificity-(0,0,0) `:where`
     /// rule that loses to every explicit direction.
+    /// A sheet with a `shadow` premints and its rule carries `box-shadow`
+    /// — the field is the BOX shadow on every node kind now (glyph
+    /// shadows are the separate `text_shadow` field). Before the split
+    /// the macro disqualified shadowed sheets entirely (this was the
+    /// SwitchThumb fall-through in the website premint report).
+    #[test]
+    fn regression_shadowed_sheet_premints_with_box_shadow() {
+        let sheet = Thumb::sheet();
+        assert!(
+            sheet.premint_class().is_some(),
+            "a shadowed sheet must carry a premint class since the shadow/text_shadow split"
+        );
+        let out = dump_all_css();
+        let base = out
+            .lines()
+            .find(|l| l.starts_with(&format!(".{} {{", sheet.premint_class().unwrap())))
+            .expect("thumb base rule present");
+        assert!(
+            base.contains("box-shadow: 0px 1px 3px rgba(15, 17, 21, 0.30)"),
+            "shadow lowers to box-shadow in the preminted rule; got:\n{base}"
+        );
+    }
+
     #[test]
     fn regression_flex_pin_rides_where_rule_not_deltas() {
         let out = dump_all_css();

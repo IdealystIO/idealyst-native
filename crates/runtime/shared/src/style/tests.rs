@@ -1704,6 +1704,7 @@ fn clone_round_trips_a_fully_populated_struct() {
         overflow: Some(Overflow::Hidden),
         object_fit: Some(ObjectFit::Cover),
         shadow: Some(Shadow { x: 1.0, y: 2.0, blur: 3.0, color: Color("#s".into()) }),
+        text_shadow: Some(Shadow { x: 4.0, y: 5.0, blur: 6.0, color: Color("#ts".into()) }),
         background_gradient: Some(Gradient {
             kind: GradientKind::Radial { center: (0.1, 0.9), radius: 1.25, extent: RadialExtent::FarthestCorner },
             stops: vec![GradientStop { offset: 0.0, color: Color("#g0".into()) },

@@ -850,17 +850,20 @@ mod tests {
         assert!(head.contains("box-sizing: border-box"), "base reset present, got: {head}");
     }
 
-    /// Regression: a `shadow` on the text primitive lowers to
-    /// `text-shadow` (hugging the glyphs), while the SAME shadow on a box
-    /// element stays `box-shadow`. The two mint DISTINCT classes so they
-    /// can't collide in the content-keyed dedup cache even when their
-    /// `StyleRules` are otherwise identical.
+    /// `shadow` is the BOX shadow on every node kind, and `text_shadow`
+    /// is the glyph shadow — one field per CSS property. A text and a
+    /// box node with identical rules therefore SHARE one class (the old
+    /// single `shadow` field lowered per node kind, which forced
+    /// shadowed text onto distinct `@t`-keyed classes and disqualified
+    /// every shadowed sheet from preminting).
     #[test]
-    fn text_node_shadow_lowers_to_text_shadow_not_box_shadow() {
+    fn shadow_fields_lower_one_property_each_and_classes_are_shared() {
         use runtime_shared::Shadow;
         let mut b = SsrBackend::new();
         let mut rules = StyleRules::default();
         rules.shadow = Some(Shadow { x: 1.0, y: 2.0, blur: 3.0, color: Color("#000000".into()) });
+        rules.text_shadow =
+            Some(Shadow { x: 4.0, y: 5.0, blur: 6.0, color: Color("#111111".into()) });
         let rules = Rc::new(rules);
 
         let txt = b.create_text("hi", &AccessibilityProps::default());
@@ -868,25 +871,24 @@ mod tests {
         b.apply_style(&txt, &rules);
         b.apply_style(&boxed, &rules);
 
-        // The two nodes carry DIFFERENT classes (text variant is keyed apart).
+        // ONE shared content-keyed class for both node kinds.
+        let class = css::hash_class_name(&rules.content_key());
         let txt_html = { let mut s = String::new(); serialize(&txt, &mut s); s };
         let box_html = { let mut s = String::new(); serialize(&boxed, &mut s); s };
-        let txt_class = css::hash_class_name(&css::text_shadow_class_key(&rules.content_key()));
-        let box_class = css::hash_class_name(&rules.content_key());
-        assert_ne!(txt_class, box_class, "text + box must mint distinct classes");
-        assert!(txt_html.contains(&txt_class), "text node wears its variant class: {txt_html}");
-        assert!(box_html.contains(&box_class), "box node wears the box class: {box_html}");
+        assert!(txt_html.contains(&class), "text node shares the class: {txt_html}");
+        assert!(box_html.contains(&class), "box node shares the class: {box_html}");
 
-        // The head stylesheet lowers each to the right property.
+        // The one rule body carries BOTH properties, each from its own field.
         let head = b.head_css();
         assert!(
-            head.contains(&format!(".{txt_class}{{text-shadow: 1px 2px 3px #000000}}")),
-            "text node → text-shadow, got: {head}"
+            head.contains("box-shadow: 1px 2px 3px #000000"),
+            "shadow → box-shadow, got: {head}"
         );
         assert!(
-            head.contains(&format!(".{box_class}{{box-shadow: 1px 2px 3px #000000}}")),
-            "box node → box-shadow, got: {head}"
+            head.contains("text-shadow: 4px 5px 6px #111111"),
+            "text_shadow → text-shadow, got: {head}"
         );
+        assert_eq!(head.matches(&format!(".{class}{{")).count(), 1, "one shared rule");
     }
 
     /// `apply_styled_states` emits the base rule plus a `:hover` pseudo

@@ -1068,7 +1068,15 @@ pub struct StyleRules {
     /// Ignored by every primitive except `image` (no replaced content to
     /// fit). See [`ObjectFit`].
     pub object_fit: Option<ObjectFit>,
+    /// Drop shadow on the element's BOX (web `box-shadow`; native layer
+    /// shadows). Always the box on every node kind — a glyph shadow on
+    /// text is [`Self::text_shadow`]. The split is what makes shadowed
+    /// sheets premintable: one field per CSS property, no node-kind
+    /// dispatch at lowering time.
     pub shadow: Option<Shadow>,
+    /// Drop shadow on a text node's GLYPHS (web `text-shadow`; native
+    /// glyph/layer shadow on the label). Ignored by non-text primitives.
+    pub text_shadow: Option<Shadow>,
     /// Gradient background, rendered over (replacing) the solid
     /// `background` color when both are set. Each backend maps to its
     /// native gradient primitive — see [`Gradient`]'s doc for the
@@ -1218,6 +1226,7 @@ impl Clone for StyleRules {
             overflow: self.overflow.clone(),
             object_fit: self.object_fit.clone(),
             shadow: self.shadow.clone(),
+            text_shadow: self.text_shadow.clone(),
             background_gradient: self.background_gradient.clone(),
             transform: self.transform.clone(),
             transform_origin: self.transform_origin.clone(),
@@ -1292,7 +1301,8 @@ impl StyleRules {
             position, top, right, bottom, left,
             font_family, font_weight, font_style, line_height, letter_spacing,
             text_align, underline, strikethrough, text_transform,
-            opacity, overflow, object_fit, shadow, background_gradient, transform, transform_origin,
+            opacity, overflow, object_fit, shadow, text_shadow, background_gradient,
+            transform, transform_origin,
             cursor, user_select, pointer_events,
             background_transition, color_transition, caret_color_transition,
             opacity_transition,
@@ -1420,6 +1430,14 @@ impl StyleRules {
         write_enum(&mut s, "objf", self.object_fit.map(|x| x as u8));
         if let Some(sh) = &self.shadow {
             s.push_str("sh=");
+            push_u32_hex(&mut s, sh.x.to_bits());
+            push_u32_hex(&mut s, sh.y.to_bits());
+            push_u32_hex(&mut s, sh.blur.to_bits());
+            s.push_str(&sh.color.0);
+            s.push(';');
+        }
+        if let Some(sh) = &self.text_shadow {
+            s.push_str("tsh=");
             push_u32_hex(&mut s, sh.x.to_bits());
             push_u32_hex(&mut s, sh.y.to_bits());
             push_u32_hex(&mut s, sh.blur.to_bits());
@@ -2213,15 +2231,12 @@ impl StyleSheet {
     ///
     /// # Eligibility
     ///
-    /// A sheet with COMPOUND variants silently declines and stays on the
-    /// live engine — the same shape as the `stylesheet!` macro's
-    /// `premintable` check (a sheet with a `shadow` layer quietly keeps
-    /// minting live). A compound applies only when several axes coincide,
-    /// and the delta model emits one rule per axis arm, so no per-axis
-    /// class can carry that condition. Declining rather than erroring
-    /// means a caller can opt a whole family in — idea-theme installs
-    /// eleven component sheets from one call — and the ones that cannot
-    /// premint just keep working. `premint_class()` reports the outcome.
+    /// Compound variants premint (they lower to CSS compound selectors
+    /// over the per-axis classes — see [`Self::premint_as`]); shadows
+    /// premint too since the `shadow`/`text_shadow` split gave each
+    /// field exactly one CSS property. The remaining macro-side
+    /// disqualifier is a non-literal `font_family` (see the macro's
+    /// `premintable` check).
     ///
     /// Callers are still responsible for the property-level rule: a layer
     /// that varies with the theme must be `Tokenized`, so the emitted CSS
@@ -2244,13 +2259,12 @@ impl StyleSheet {
     /// shipped `.css`. With the class on the sheet, the
     /// `IntoStyleProp for StyleApplication` path picks it up.
     ///
-    /// Only called for macro-premintable sheets (no `shadow` layer, no
-    /// non-literal `font_family`), because only those register CSS.
-    /// Compound-bearing sheets still decline, same as `premint_as`.
+    /// Only called for macro-premintable sheets (no non-literal
+    /// `font_family`), because only those register CSS. Compounds are
+    /// fine — the dump emits them as compound selectors through the same
+    /// `dump_sheet_parts` both registration paths share.
     pub fn premint_with_class(mut self, class: &'static str) -> Rc<StyleSheet> {
-        if self.compounds.is_empty() {
-            self.premint_class = Some(class.into());
-        }
+        self.premint_class = Some(class.into());
         Rc::new(self)
     }
 
