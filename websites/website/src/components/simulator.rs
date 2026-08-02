@@ -156,7 +156,9 @@ fn screen_inner_radius() -> f32 {
 }
 
 fn chassis_sheet() -> Rc<StyleSheet> {
-    Rc::new(StyleSheet::r#static(StyleRules {
+    // Named so it premints (an anonymous static sheet has no build-time
+    // CSS; this was a website premint-report fall-through).
+    StyleSheet::r#static(StyleRules {
         background: Some(Color("#000000".into()).into()),
         border_top_left_radius: Some(Length::Px(CHASSIS_RADIUS_PX).into()),
         border_top_right_radius: Some(Length::Px(CHASSIS_RADIUS_PX).into()),
@@ -175,7 +177,8 @@ fn chassis_sheet() -> Rc<StyleSheet> {
         }),
         flex_shrink: Some(0.0_f32.into()),
         ..Default::default()
-    }))
+    })
+    .premint_as("website.v1.sim.chassis")
 }
 
 /// Outer device chassis — bezel + corner clip + drop shadow. Sits
@@ -232,7 +235,9 @@ pub fn simulator_placeholder(logical_size: Option<(u32, u32)>) -> Element {
     let logical = logical_size.unwrap_or((DEFAULT_LOGICAL_W, DEFAULT_LOGICAL_H));
     let (w, h) = preview_dimensions(logical);
 
-    let screen_style = Rc::new(StyleSheet::r#static(StyleRules {
+    // Dims parameterize the content, so they key the premint identity
+    // (whole-px dims; the preview sizes are a small fixed set per page).
+    let screen_style = StyleSheet::r#static(StyleRules {
         width: Some(Length::Px(w).into()),
         height: Some(Length::Px(h).into()),
         background: Some(Color(SCREEN_FILL.into()).into()),
@@ -241,7 +246,8 @@ pub fn simulator_placeholder(logical_size: Option<(u32, u32)>) -> Element {
         border_bottom_left_radius: Some(Length::Px(inner_radius).into()),
         border_bottom_right_radius: Some(Length::Px(inner_radius).into()),
         ..Default::default()
-    }));
+    })
+    .premint_as(&format!("website.v1.sim.screen.{w}x{h}x{inner_radius}"));
 
     let off_screen = view(Vec::new())
         .with_style(screen_style)
@@ -408,10 +414,16 @@ pub fn Simulator(props: SimulatorProps) -> Element {
         height: Some(Length::pct(100.0).into()),
         ..Default::default()
     };
+    // Named identities: the graphics fill is constant; the wrapper's
+    // content is keyed by its dims + whether the chassis rounds it.
+    let wrapper_id = format!(
+        "website.v1.sim.wrapper.{preview_w_px}x{preview_height_px}.{}",
+        if chassis { "chassis" } else { "bare" },
+    );
     let wrapper = view(vec![graphics
-        .with_style(Rc::new(StyleSheet::r#static(graphics_rules)))
+        .with_style(StyleSheet::r#static(graphics_rules).premint_as("website.v1.sim.graphics_fill"))
         .into_element()])
-        .with_style(Rc::new(StyleSheet::r#static(wrapper_rules)))
+        .with_style(StyleSheet::r#static(wrapper_rules).premint_as(&wrapper_id))
         .into_element();
 
     if chassis {

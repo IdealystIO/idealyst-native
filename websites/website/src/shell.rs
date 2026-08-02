@@ -624,13 +624,14 @@ fn install_scroll_spy(
 pub fn shell_column_style() -> runtime_core::StyleApplication {
     static KEY: u8 = 0;
     let sheet = runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
-        std::rc::Rc::new(runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
+        runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
             flex_direction: Some(runtime_core::FlexDirection::Column),
             width: Some(runtime_core::Length::Percent(100.0).into()),
             height: Some(runtime_core::Length::Percent(100.0).into()),
             min_height: Some(runtime_core::Length::Px(0.0).into()),
             ..Default::default()
-        }))
+        })
+        .premint_as("website.v1.shell_column")
     });
     runtime_core::StyleApplication::new(sheet)
 }
@@ -641,12 +642,13 @@ pub fn shell_column_style() -> runtime_core::StyleApplication {
 pub fn outlet_grow_style() -> runtime_core::StyleApplication {
     static KEY: u8 = 0;
     let sheet = runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
-        std::rc::Rc::new(runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
+        runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
             flex_direction: Some(runtime_core::FlexDirection::Column),
             flex_grow: Some(1.0f32.into()),
             min_height: Some(runtime_core::Length::Px(0.0).into()),
             ..Default::default()
-        }))
+        })
+        .premint_as("website.v1.outlet_grow")
     });
     runtime_core::StyleApplication::new(sheet)
 }

@@ -59,7 +59,7 @@ pub fn SunGlare(props: &SunGlareProps) -> Element {
 }
 
 fn wrapper_sheet() -> Rc<StyleSheet> {
-    static_sheet(StyleRules {
+    static_sheet("glare.wrapper", StyleRules {
         position: Some(Position::Absolute),
         top: Some(px(0.0)),
         right: Some(px(0.0)),
@@ -74,7 +74,7 @@ fn wrapper_sheet() -> Rc<StyleSheet> {
 }
 
 fn anchor_sheet() -> Rc<StyleSheet> {
-    static_sheet(StyleRules {
+    static_sheet("glare.anchor", StyleRules {
         position: Some(Position::Absolute),
         top: Some(px(0.0)),
         right: Some(px(0.0)),

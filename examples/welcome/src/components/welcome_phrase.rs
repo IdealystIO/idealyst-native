@@ -46,7 +46,7 @@ pub fn WelcomePhrase(props: &WelcomePhraseProps) -> Element {
 }
 
 fn wrapper_sheet() -> Rc<StyleSheet> {
-    static_sheet(StyleRules {
+    static_sheet("phrase.wrapper", StyleRules {
         flex_direction: Some(FlexDirection::Column),
         align_items: Some(AlignItems::Center),
         opacity: Some(Tokenized::Literal(0.0)),
@@ -56,7 +56,7 @@ fn wrapper_sheet() -> Rc<StyleSheet> {
 }
 
 fn headline_sheet() -> Rc<StyleSheet> {
-    static_sheet(StyleRules {
+    static_sheet("phrase.headline", StyleRules {
         font_family: Some((&INTER).into()),
         font_size: Some(px(HEADLINE_SIZE_PX)),
         font_weight: Some(FontWeight::Bold),

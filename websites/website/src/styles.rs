@@ -637,7 +637,7 @@ stylesheet! {
 /// so clicks on the hero text below pass through.
 pub fn hero_glare_sheet() -> std::rc::Rc<runtime_core::StyleSheet> {
     use runtime_core::StyleRules;
-    std::rc::Rc::new(runtime_core::StyleSheet::r#static(StyleRules {
+    runtime_core::StyleSheet::r#static(StyleRules {
         position: Some(Position::Absolute),
         top: Some(Tokenized::Literal(Length::Px(0.0))),
         right: Some(Tokenized::Literal(Length::Px(0.0))),
@@ -667,7 +667,8 @@ pub fn hero_glare_sheet() -> std::rc::Rc<runtime_core::StyleSheet> {
             ],
         }),
         ..Default::default()
-    }))
+    })
+    .premint_as("website.v1.hero_glare")
 }
 
 /// Headline wrapper so the text claims the column width without the

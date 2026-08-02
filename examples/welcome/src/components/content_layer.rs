@@ -31,7 +31,7 @@ pub fn ContentLayer(props: &ContentLayerProps) -> Element {
 }
 
 fn sheet() -> Rc<StyleSheet> {
-    static_sheet(StyleRules {
+    static_sheet("content_layer", StyleRules {
         position: Some(Position::Absolute),
         top: Some(px(0.0)),
         left: Some(px(0.0)),

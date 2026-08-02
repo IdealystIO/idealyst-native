@@ -826,6 +826,37 @@ stylesheet! {
     }
 }
 
+// Surface — the themed background container. Two closed axes (which
+// neutral token fills it, which spacing step pads it); the continuous
+// `grow` weight rides the INLINE layer at the call site
+// (`StyleApplication::with_inline`), so the sheet premints. This
+// replaces a per-instance `StyleSheet::new` in `surface.rs` that was
+// invisible to the premint dump.
+stylesheet! {
+    pub SurfaceSheet<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Column,
+            // Children fill the cross axis so inner content spans the surface.
+            align_items: AlignItems::Stretch,
+        }
+        variant bg {
+            background(_t) { background: Tokenized::token("color-background", Color("#f3f4f6".into())) }
+            #[default]
+            surface(_t) { background: Tokenized::token("color-surface", Color("#ffffff".into())) }
+            surface_alt(_t) { background: Tokenized::token("color-surface-alt", Color("#e5e7eb".into())) }
+        }
+        variant pad {
+            #[default]
+            none(_t) {}
+            xs(_t) { padding: Tokenized::token("spacing-xs", Length::Px(4.0)) }
+            sm(_t) { padding: Tokenized::token("spacing-sm", Length::Px(8.0)) }
+            md(_t) { padding: Tokenized::token("spacing-md", Length::Px(12.0)) }
+            lg(_t) { padding: Tokenized::token("spacing-lg", Length::Px(16.0)) }
+            xl(_t) { padding: Tokenized::token("spacing-xl", Length::Px(24.0)) }
+        }
+    }
+}
+
 // Toast stack — the column of floating toasts inside the ToastHost
 // overlay. Capped width so a long message wraps rather than spanning
 // the viewport.

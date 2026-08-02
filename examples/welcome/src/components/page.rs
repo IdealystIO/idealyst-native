@@ -11,7 +11,7 @@ pub const COLOR_LIGHT_BG: &str = "#f7f5ef";
 pub const COLOR_DARK_BG: &str = "#0a0c11";
 
 pub fn page_sheet() -> Rc<StyleSheet> {
-    static_sheet(StyleRules {
+    static_sheet("page", StyleRules {
         position: Some(Position::Relative),
         width: Some(pct(100.0)),
         height: Some(pct(100.0)),

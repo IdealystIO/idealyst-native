@@ -78,19 +78,21 @@ pub struct PlanetProps {
 #[component]
 pub fn Planet(props: &PlanetProps) -> Element {
     let cfg = &PLANETS[props.idx];
-    let sheet = sheet(cfg.size_dp, cfg.color);
+    let sheet = sheet(props.idx, cfg.size_dp, cfg.color);
     let target = props.refs.planets[props.idx];
     ui! {
         view(style = sheet) {}.bind(target)
     }
 }
 
-fn sheet(size_dp: f32, color: &'static str) -> Rc<StyleSheet> {
+fn sheet(idx: usize, size_dp: f32, color: &'static str) -> Rc<StyleSheet> {
     // CSS/iOS/Android all accept 8-digit hex `#rrggbbaa` so we can
     // synthesise the soft-edge falloff colours from the body colour.
     let edge_color = format!("{}00", color);
     let mid_color = format!("{}cc", color);
-    static_sheet(StyleRules {
+    // Parameterized: the planet index keys the id — each entry in the
+    // const `PLANETS` table has distinct size/color content.
+    static_sheet(&format!("planet.{idx}"), StyleRules {
         position: Some(Position::Absolute),
         top: Some(px(0.0)),
         right: Some(px(0.0)),
