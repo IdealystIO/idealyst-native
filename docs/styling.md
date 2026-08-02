@@ -444,13 +444,35 @@ token-version bump. Theme swap therefore works identically — preminted
 rules reference `var(--token, fallback)` like live-minted ones.
 
 The theme's *default text font* is the one apply-time fill a
-build-time rule can't reproduce, so preminted rule bodies whose sheet
-sets no `font_family` carry
-`font-family: var(--iy-default-font, inherit)` and the driver defines
-that variable from the installed theme
-(`StyleOps::apply_default_text_font`; web sets it on the document
-element, SSR emits it in the head CSS). With no default font
-installed the `inherit` fallback reproduces the plain cascade.
+build-time rule can't reproduce — and it is the one place the live
+engine's behavior differs **per attach path**, so the dump encodes it
+in cascade rank rather than in any rule body:
+
+- A sheet whose base names no `font_family` gets a specificity-(0,0,0)
+  companion — `:where(.iy-<hash>) { font-family:
+  var(--iy-default-font, inherit) }` — and the driver defines that
+  variable from the installed theme
+  (`StyleOps::apply_default_text_font`; web sets it on the document
+  element, SSR emits it in the head CSS). With no default font
+  installed the `inherit` fallback reproduces the plain cascade.
+- The asset's FIRST rule is `.iy-font-inherit { font-family: inherit }`
+  at (0,1,0). The **reactive** preminted attach paths
+  (`PremintedDynamic`, the runtime-assembled-sheet diversion, the
+  `--premint-only` dynamic arm) stamp that class alongside the sheet
+  classes; the static path never does.
+
+That sandwich reproduces both live behaviors from one static file: a
+STATIC application takes the hook — the theme-default fold
+(`fill_default_text_font`) — while a REACTIVE one takes `inherit`,
+because the live reactive engine never folds and under an author font
+on an ancestor (a brand `font_family: &TYPEFACE` on the root
+container) inheritance yields the *author's* font, not the theme
+default. Any `font-family` a sheet actually declares (base, arm, or
+overlay) beats both: arms are (0,1,0) after `.iy-font-inherit` in
+source order, overlays are (0,2,0), and the hook is (0,0,0) under
+everything. Measured before this encoding: every reactive-styled node
+on a brand-fonted site rendered the theme default under `--premint`
+while the live build rendered the brand font.
 
 `apply_default_text_font` publishes the font **two** ways, and both are
 load-bearing:

@@ -57,6 +57,21 @@ use runtime_core::{StyleRules, StyleSheet};
 /// output like any other asset.
 pub fn dump_all_css() -> String {
     let mut rules = String::new();
+    // The reactive-path font-inheritance rule, FIRST — before every
+    // sheet rule, deliberately. It is specificity (0,1,0): first
+    // position makes any sheet-declared `font-family` (base or arm,
+    // also (0,1,0)) beat it on source order, while the default-font
+    // hook below sits at (0,0,0) and loses to it on specificity. That
+    // ordering sandwich is what encodes the live engine's per-path
+    // semantics in one static asset — see
+    // `runtime_core::PREMINT_FONT_INHERIT_CLASS` for the full contract.
+    push_rule(
+        &mut rules,
+        format!(
+            ".{} {{ font-family: inherit }}",
+            runtime_core::PREMINT_FONT_INHERIT_CLASS
+        ),
+    );
     let mut fonts = FontCollector::default();
     for sheet in PREMINT_SHEETS {
         dump_sheet(sheet, &mut rules, &mut fonts);
@@ -161,12 +176,15 @@ fn dump_sheet_parts(
     let base = sheet.premint_base();
     fonts.collect(&base);
 
-    // 1. Base — the only layer that carries the theme default-font hook.
-    //    (Full lowering: the base rule pins the framework's
+    // 1. Base — full lowering (the base rule pins the framework's
     //    `flex-direction: column` default itself when it promotes — at
     //    (0,1,0), which every later-source explicit direction still
-    //    beats.)
-    push_rule(out, css::class_rule(base_class, &emit_base(&base)));
+    //    beats), plus the theme default-font hook as a (0,0,0)
+    //    companion when the base names no font (see `font_hook_rule`).
+    push_rule(out, css::class_rule(base_class, &css::rules_to_css(&base)));
+    if let Some(hook) = font_hook_rule(base_class, &base) {
+        push_rule(out, hook);
+    }
 
     // 2. Breakpoint deltas, rank ascending (the style engine's resolver sorts
     //    the same way; higher buckets win by stacking).
@@ -340,31 +358,35 @@ fn dump_sheet_parts(
     }
 }
 
-/// Base-rule lowering: [`css::rules_to_css`] plus the theme
-/// default-font hook. The live engine fills an absent `font_family`
-/// with the installed theme's default text font at apply time
-/// (`with_default_text_font`) — but the dump runs in a build step where
-/// no theme exists yet, so a fontless BASE gets
-/// `font-family: var(--iy-default-font, inherit)` instead. The premint
-/// host driver defines that variable from the live theme
+/// The theme default-font hook for a fontless BASE, as a standalone
+/// specificity-(0,0,0) rule. The live engine fills an absent
+/// `font_family` with the installed theme's default text font at apply
+/// time (`with_default_text_font`) — but the dump runs in a build step
+/// where no theme exists yet, so a fontless base gets
+/// `font-family: var(--iy-default-font, inherit)` and the premint host
+/// driver defines that variable from the live theme
 /// (`Backend::apply_default_text_font`); with no default installed the
 /// `inherit` fallback reproduces plain cascade. Delta layers never get
-/// the hook — a delta that sets a font overrides the base's declaration
-/// on the same element, and one that doesn't leaves it standing, which
-/// is exactly the live fill's semantics.
-fn emit_base(rules: &StyleRules) -> String {
-    let mut out = css::rules_to_css(rules);
-    if rules.font_family.is_none() {
-        // Match `rules_to_css`'s declaration convention exactly:
-        // `"; "`-separated, no trailing semicolon.
-        if !out.is_empty() {
-            out.push_str("; ");
-        }
-        out.push_str("font-family: var(");
-        out.push_str(css::DEFAULT_TEXT_FONT_VAR);
-        out.push_str(", inherit)");
+/// the hook — a delta that sets a font overrides the base's on the same
+/// element, and one that doesn't leaves it standing, which is exactly
+/// the live fill's semantics.
+///
+/// A COMPANION `:where()` rule rather than a declaration inside the base
+/// body, for cascade rank: at (0,0,0) it loses to any DECLARED
+/// `font-family` from any layer, and — the load-bearing part — to the
+/// (0,1,0) `.iy-font-inherit` rule the reactive attach paths stamp
+/// (emitted first in this asset). That is what lets one static asset
+/// carry both live semantics: static applications take the hook (the
+/// theme-default fold), reactive ones take `inherit` (the author's
+/// ancestor font). Same pattern as the flex-direction pin above.
+fn font_hook_rule(base_class: &str, rules: &StyleRules) -> Option<String> {
+    if rules.font_family.is_some() {
+        return None;
     }
-    out
+    Some(format!(
+        ":where(.{base_class}) {{ font-family: var({}, inherit) }}",
+        css::DEFAULT_TEXT_FONT_VAR
+    ))
 }
 
 #[cfg(test)]
@@ -462,13 +484,36 @@ mod tests {
     #[test]
     fn regression_fontless_base_references_default_font_var() {
         let out = dump_all_css();
+        // The hook is a standalone (0,0,0) companion, NOT a declaration in
+        // the base body — the base body at (0,1,0) would beat the
+        // (0,1,0) `.iy-font-inherit` re-rank on source order and reactive
+        // nodes could never restore inheritance.
+        assert!(
+            out.contains(":where(.iy-test) { font-family: var(--iy-default-font, inherit) }"),
+            "fontless base must get the default-font hook as a :where companion; got:\n{out}"
+        );
         let base = out
             .lines()
             .find(|l| l.starts_with(".iy-test { "))
             .expect("chip base rule present");
         assert!(
-            base.contains("; font-family: var(--iy-default-font, inherit)"),
-            "fontless base must reference the default-font var; got:\n{base}"
+            !base.contains("--iy-default-font"),
+            "the hook must NOT ride inside the (0,1,0) base body; got:\n{base}"
+        );
+        // The reactive re-rank rule exists and is the FIRST rule in the
+        // asset, so sheet-declared fonts (same specificity, later source)
+        // beat it while the (0,0,0) hook loses to it.
+        let first_rule = out
+            .lines()
+            .find(|l| l.starts_with('.') || l.starts_with(':'))
+            .expect("asset has rules");
+        assert_eq!(
+            first_rule,
+            &format!(
+                ".{} {{ font-family: inherit }}",
+                runtime_core::PREMINT_FONT_INHERIT_CLASS
+            ),
+            "the font-inherit re-rank must be the first rule in the asset"
         );
         // Deltas never get the hook.
         let danger = out
@@ -534,11 +579,15 @@ mod tests {
             "the promoting ARM gets a scoped zero-specificity pin; got:\n{out}"
         );
         assert!(
-            !out.lines().any(|l| l.starts_with(":where(.iy-rack) {")),
+            !out
+                .lines()
+                .any(|l| l.starts_with(":where(.iy-rack) {") && l.contains("flex-direction")),
             "no blanket UNCONDITIONAL per-sheet pin — it would set a computed \
              direction on elements whose merged rules never promote (and flip \
              real flex elements promoted by EXTERNAL sources); a pin may only \
-             appear scoped inside a promoting layer's own condition; got:\n{out}"
+             appear scoped inside a promoting layer's own condition (the \
+             font hook shares the :where(.iy-rack) shape but is not a flex \
+             pin); got:\n{out}"
         );
         let gap = out
             .lines()

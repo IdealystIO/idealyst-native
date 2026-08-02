@@ -992,7 +992,13 @@ fn attach_preminted_dynamic<H: StyleServices>(
         let class = class_of();
 
         let previous: Vec<String> = stamped.borrow_mut().drain(..).collect();
-        let next: Vec<String> = class.split_whitespace().map(|c| c.to_string()).collect();
+        let mut next: Vec<String> = class.split_whitespace().map(|c| c.to_string()).collect();
+        // Reactive path ⇒ font INHERITANCE, not the theme-default hook —
+        // the live reactive engine never folds the default font, so under
+        // an author font on an ancestor these nodes must inherit it. The
+        // class re-ranks the dump's (0,0,0) hook; see
+        // `runtime_shared::PREMINT_FONT_INHERIT_CLASS`.
+        next.push(runtime_shared::PREMINT_FONT_INHERIT_CLASS.to_string());
         if previous != next {
             let bb = b.borrow();
             for old in &previous {
@@ -1128,8 +1134,12 @@ fn attach_sheet_dynamic<H: StyleServices>(
                 theme::flush_pending_host_state(&backend_for_effect);
 
                 let previous: Vec<String> = stamped.borrow_mut().drain(..).collect();
-                let next: Vec<String> =
+                let mut next: Vec<String> =
                     class.split_whitespace().map(|c| c.to_string()).collect();
+                // Reactive path ⇒ font INHERITANCE (never the theme-default
+                // hook) — same contract as `attach_preminted_dynamic`; see
+                // `runtime_shared::PREMINT_FONT_INHERIT_CLASS`.
+                next.push(runtime_shared::PREMINT_FONT_INHERIT_CLASS.to_string());
                 if previous != next {
                     let bb = backend_for_effect.borrow();
                     for old in &previous {
@@ -2006,10 +2016,23 @@ mod tests {
             owned
         });
 
+        // Order-insensitive: the swap logic detaches/attaches diffs, so
+        // list POSITION varies across flips — and class order is
+        // meaningless to CSS anyway (specificity + source order decide).
+        let sorted = |v: &RefCell<Vec<String>>| {
+            let mut c = v.borrow().clone();
+            c.sort();
+            c
+        };
+        let inherit = runtime_shared::PREMINT_FONT_INHERIT_CLASS.to_string();
+        let mut expect_a = vec![base.clone(), format!("{base}-kind-a"), inherit.clone()];
+        expect_a.sort();
         assert_eq!(
-            backend.borrow().classes.borrow().clone(),
-            vec![base.clone(), format!("{base}-kind-a")],
-            "the reactive application stamped its preminted class list"
+            sorted(&backend.borrow().classes),
+            expect_a,
+            "the reactive application stamped its preminted class list plus \
+             the font-inherit re-rank (reactive = inherit, never the \
+             theme-default hook)"
         );
         assert!(
             backend.borrow().applied.is_empty(),
@@ -2021,9 +2044,11 @@ mod tests {
         // incoming arm goes on, and the base class stays put.
         world.enter(|| kind.set(1));
         world.flush();
+        let mut expect_b = vec![base.clone(), format!("{base}-kind-b"), inherit];
+        expect_b.sort();
         assert_eq!(
-            backend.borrow().classes.borrow().clone(),
-            vec![base.clone(), format!("{base}-kind-b")],
+            sorted(&backend.borrow().classes),
+            expect_b,
             "a variant flip swaps the arm class and keeps the base"
         );
         assert!(

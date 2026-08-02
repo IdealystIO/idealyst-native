@@ -1733,6 +1733,33 @@ pub fn premint_class_name(identity: &str) -> String {
     format!("iy-{:012x}", h & 0xffff_ffff_ffff)
 }
 
+/// Class the REACTIVE preminted attach paths stamp alongside the sheet's
+/// class list, restoring CSS font inheritance over the dump's default-font
+/// hook. Shared name between the dump (which emits its one rule,
+/// `.iy-font-inherit { font-family: inherit }`, FIRST in the asset) and
+/// the runtime (which stamps it).
+///
+/// Why it exists — the live engine's default-font semantics are
+/// per-PATH: a STATIC application folds the theme default into rules
+/// that name no `font_family`; a REACTIVE one deliberately doesn't, so
+/// the node inherits — and under an author font on an ancestor (a brand
+/// `font_family: &TYPEFACE` on the root container) inheritance yields
+/// the AUTHOR's font, not the theme default. One build-time rule body
+/// can't encode both, so the cascade does it:
+///
+/// - the dump's hook rides a specificity-(0,0,0) companion
+///   (`:where(.iy-<hash>) { font-family: var(--iy-default-font, inherit) }`),
+/// - this class is (0,1,0) and emitted before every sheet, so it beats
+///   the hook on specificity and loses to any DECLARED `font-family`
+///   (base, arm, or overlay) on order or specificity.
+///
+/// Static preminted nodes don't carry it → hook applies → theme default,
+/// exactly the live fold. Reactive preminted nodes do → inherit, exactly
+/// the live reactive path. Measured: without this, every reactive-styled
+/// node on a brand-fonted site rendered the theme default under
+/// `--premint` while the live build rendered the brand font.
+pub const PREMINT_FONT_INHERIT_CLASS: &str = "iy-font-inherit";
+
 /// One axis of variants on a stylesheet — its declared values and the
 /// optional default value used when the call site doesn't pick a value.
 pub struct VariantAxisDef {

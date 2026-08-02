@@ -553,6 +553,7 @@ pub use runtime_shared::resolve_style;
 // the class name is the only thing joining the dump binary to the
 // shipped bundle, so both must derive it from one implementation.
 pub use runtime_shared::premint_class_name;
+pub use runtime_shared::PREMINT_FONT_INHERIT_CLASS;
 
 // --- 3. New-core reimplementations ------------------------------------------
 
