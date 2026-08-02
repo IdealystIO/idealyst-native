@@ -34,6 +34,16 @@ pub enum TStyle {
     Rules(Rc<StyleRules>),
     /// A reactive resolved-rules closure.
     RulesFn(Box<dyn Fn() -> Rc<StyleRules>>),
+    /// A build-time-minted class stamp (premint-cfg builds only). Carries
+    /// no resolvable rules — assertions compare the class list and the
+    /// optional inline layer.
+    Preminted {
+        class: String,
+        inline: Option<Rc<StyleRules>>,
+    },
+    /// The reactive preminted counterpart — evaluate for the current
+    /// class list.
+    PremintedFn(Box<dyn Fn() -> String>),
 }
 
 impl TStyle {
@@ -45,6 +55,10 @@ impl TStyle {
             TStyle::AppFn(f) => resolve_style(&f()),
             TStyle::Rules(r) => r.clone(),
             TStyle::RulesFn(f) => f(),
+            TStyle::Preminted { .. } | TStyle::PremintedFn(_) => panic!(
+                "test_support: a preminted class stamp carries no resolvable \
+                 rules — assert on the class list instead"
+            ),
         }
     }
 
@@ -58,12 +72,15 @@ impl TStyle {
             TStyle::Rules(_) | TStyle::RulesFn(_) => {
                 panic!("test_support: style is raw rules, not a sheet application")
             }
+            TStyle::Preminted { .. } | TStyle::PremintedFn(_) => {
+                panic!("test_support: style is a preminted class stamp, not a sheet application")
+            }
         }
     }
 
     /// Whether this is one of the REACTIVE variants.
     pub fn is_reactive(&self) -> bool {
-        matches!(self, TStyle::AppFn(_) | TStyle::RulesFn(_))
+        matches!(self, TStyle::AppFn(_) | TStyle::RulesFn(_) | TStyle::PremintedFn(_))
     }
 }
 
@@ -119,7 +136,11 @@ pub enum P {
         children: Vec<Element>,
         style: Option<TStyle>,
     },
-    ActivityIndicator,
+    ActivityIndicator {
+        /// The explicit accent, `None` = the backend default (web:
+        /// `currentColor`).
+        color: Option<Color>,
+    },
     Portal {
         children: Vec<Element>,
         target: PortalTarget,
@@ -187,6 +208,10 @@ mod imp {
             SP::SheetDynamic(f) => TStyle::AppFn(f),
             SP::Static(rules) => TStyle::Rules(rules),
             SP::Dynamic(f) => TStyle::RulesFn(f),
+            SP::Preminted { class, inline, .. } => {
+                TStyle::Preminted { class: class.into_owned(), inline }
+            }
+            SP::PremintedDynamic { class_of, .. } => TStyle::PremintedFn(class_of),
             _ => panic!("test_support: style prop kind not modeled by the test mirror"),
         })
     }
@@ -282,8 +307,8 @@ mod imp {
             return P::ScrollView { children, style: style(p.style) };
         }
         if let Some(cell) = data.downcast_ref::<PrimCell<prims::ActivityIndicatorPrim>>() {
-            let _ = cell.take();
-            return P::ActivityIndicator;
+            let p = cell.take();
+            return P::ActivityIndicator { color: p.color };
         }
         if let Some(cell) = data.downcast_ref::<PrimCell<prims::PortalPrim>>() {
             let p = cell.take();

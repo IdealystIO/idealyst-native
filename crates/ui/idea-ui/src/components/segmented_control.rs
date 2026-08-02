@@ -166,9 +166,18 @@ pub fn SegmentedControl(props: SegmentedControlProps) -> Element {
             let on = value_label.get() == id_for_label;
             let variant = if on { "on" } else { "off" };
             let app = StyleApplication::new(TabButton::sheet()).with("active", variant.to_string());
+            let base = StyleApplication::new(seg_label_base_sheet());
+            if app.attaches_preminted() {
+                // Premint web build: the segment pressable's preminted class
+                // carries the on/off foreground and the label inherits it via
+                // the CSS cascade — the resolve-read below exists ONLY because
+                // native text doesn't inherit, and under `--premint-only` it
+                // would panic (sheets carry no rule closures). Mirrors `Tabs`.
+                return base;
+            }
             let color = resolve_style(&app).color.clone();
             let key = if on { "seg_label_on" } else { "seg_label_off" };
-            StyleApplication::new(seg_label_base_sheet()).with_computed(key, move || StyleRules {
+            base.with_computed(key, move || StyleRules {
                 color: color.clone(),
                 ..Default::default()
             })
@@ -239,6 +248,53 @@ mod tests {
             .clone()
             .expect("TabButton resolves a foreground")
             .resolve()
+    }
+
+    // The `--premint-only` read-back: same shape as `Tabs` — the segment
+    // label resolved the TabButton color into a `with_computed` layer, which
+    // disqualifies preminting and panics under `--premint-only`. On a premint
+    // build the label application must premint BARE (the segment pressable's
+    // preminted class carries the foreground; web inherits it); live/native
+    // builds keep the computed stamp.
+    #[test]
+    fn regression_premint_segment_label_application_premints() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let el = SegmentedControl(SegmentedControlProps {
+                options: vec![SegmentOption::new("a", "A")],
+                value: runtime_core::signal("a".to_string()).into(),
+                ..Default::default()
+            });
+            let mut children = match classify(el) {
+                P::View { children, .. } => children,
+                _ => panic!("SegmentedControl renders a row View"),
+            };
+            let label = match classify(children.remove(0)) {
+                P::Pressable { mut children, .. } => children.remove(0),
+                _ => panic!("a segment is a Pressable"),
+            };
+            let style = match classify(label) {
+                P::Text { style, .. } => style.expect("segment label carries a style"),
+                _ => panic!("a segment label is a Text node"),
+            };
+            let app = style.application();
+            #[cfg(idealyst_premint)]
+            assert!(
+                app.preminted_class_list().is_some(),
+                "premint build: the label application premints bare — no computed layer"
+            );
+            #[cfg(not(idealyst_premint))]
+            {
+                assert!(
+                    app.preminted_class_list().is_none(),
+                    "live/native build: the computed color layer rides the application"
+                );
+                assert!(
+                    resolve_style(&app).color.is_some(),
+                    "and it resolves the TabButton foreground for the label node"
+                );
+            }
+        });
     }
 
     // Regression: the segment label was a bare text node whose color lived only on

@@ -2765,6 +2765,35 @@ impl StyleApplication {
         self.has_overrides
     }
 
+    /// Whether ATTACHING this application stamps preminted classes
+    /// instead of resolving through the live engine — the exact
+    /// condition the attach paths (`IntoStyleProp for StyleApplication`,
+    /// the `SheetDynamic` per-evaluation divert) use: the build carries
+    /// build-time CSS (`--cfg idealyst_premint`, which `--premint-only`
+    /// implies) AND this application premints
+    /// ([`Self::preminted_class_list`]).
+    ///
+    /// This is the gate for components that read a resolved value back
+    /// in Rust (Button tints its icon with the resolved fill color).
+    /// When the application premints, the value already ships in the
+    /// build-time CSS — on web the icon inherits it as `currentColor` —
+    /// and under `--premint-only` the read-back would panic (sheets
+    /// carry no rule closures). When it doesn't (native builds, live
+    /// web builds, runtime-overridden applications), the resolved read
+    /// is both safe and required — native nodes don't inherit color.
+    ///
+    /// Checked per evaluation, not once per component: the same closure
+    /// can produce a preminting application on one evaluation and an
+    /// overridden (non-preminting) one on the next.
+    pub fn attaches_preminted(&self) -> bool {
+        #[cfg(idealyst_premint)]
+        {
+            self.preminted_class_list().is_some()
+        }
+        #[cfg(not(idealyst_premint))]
+        false
+    }
+
     /// Attach a computed layer — a closure that produces `StyleRules`
     /// at apply time, paired with a stable cache key. The framework
     /// invokes the closure between the variant and override merges and

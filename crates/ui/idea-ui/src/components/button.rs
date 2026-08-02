@@ -291,19 +291,38 @@ pub fn Button(props: &ButtonProps) -> Element {
             let inert = disabled || loading;
 
             let style_closure = make_style(row_layout, block, disabled);
-            // Snapshot the resolved container style for this build. The label +
-            // icons carry the fg on their OWN nodes (native doesn't inherit
-            // text/icon color), and the label additionally carries the box's
-            // typography (weight/size/align/…) for the same reason (see
-            // `label_typography_style`).
-            let resolved_container = resolve_style(&style_closure());
-            let fg = resolved_container.color.clone();
+            // Snapshot the resolved container foreground for this build. The
+            // icons + spinner carry the fg on their OWN nodes because native
+            // doesn't inherit text/icon color. When the container application
+            // ATTACHES PREMINTED (a `--premint`/`--premint-only` web build,
+            // no runtime override), skip the read-back: the fill's `color` is
+            // in the box's build-time CSS, so the web icon/spinner inherit it
+            // as `currentColor` — which also tracks `:hover`, something the
+            // snapshot never did — and under `--premint-only` a resolve here
+            // is the panic the stripped rule closure names. Native builds
+            // never premint, so they keep the resolved read.
+            let fg = {
+                let container_app = style_closure();
+                if container_app.attaches_preminted() {
+                    None
+                } else {
+                    resolve_style(&container_app).color.clone()
+                }
+            };
             // Re-resolves the container's foreground from the live tone/variant.
             // Used by the reactive icon `.color`/label-style closures so the
             // tint tracks the container in place when a style axis is live.
+            // Same premint gate, per evaluation.
             let resolve_fg = {
                 let style_closure = style_closure.clone();
-                move || resolve_style(&style_closure()).color.clone()
+                move || {
+                    let app = style_closure();
+                    if app.attaches_preminted() {
+                        None
+                    } else {
+                        resolve_style(&app).color.clone()
+                    }
+                }
             };
 
             // Icon-slot override: a `color` in `icon_style` wins over the theme
@@ -705,6 +724,70 @@ mod tests {
         }
     }
 
+    // THE `--premint-only` read-back (the stripped-closure panic in
+    // runtime-shared names this exact pattern): Button resolved the
+    // container's fill color in Rust to tint its leading icon and loading
+    // spinner. On a premint build the container attaches a preminted class
+    // whose CSS carries the fill's `color`, so the icon/spinner must ship
+    // with NO explicit color and inherit `currentColor` — stamping one
+    // requires the resolve-read that `--premint-only` panics on. On live/
+    // native builds the resolved snapshot must still be stamped, because
+    // native nodes don't inherit color.
+    #[test]
+    fn regression_premint_icon_and_spinner_tint_inherit_current_color() {
+        with_test_world(|| {
+            theme();
+            let icon_props = ButtonProps {
+                label: Reactive::Static("Save".into()),
+                leading_icon: Reactive::Static(Some(PLUS)),
+                ..Default::default()
+            };
+            let mut children = classify(Button(&icon_props)).children();
+            let icon_color = match classify(children.remove(0)) {
+                P::Icon { color, .. } => color,
+                _ => panic!("expected the leading icon at slot 0"),
+            };
+
+            let spinner_props = ButtonProps {
+                label: Reactive::Static("Save".into()),
+                loading: Reactive::Static(true),
+                ..Default::default()
+            };
+            let mut children = classify(Button(&spinner_props)).children();
+            let spinner_color = match classify(children.remove(0)) {
+                P::ActivityIndicator { color } => color,
+                _ => panic!("expected the loading spinner at slot 0"),
+            };
+
+            #[cfg(idealyst_premint)]
+            {
+                assert!(
+                    icon_color.is_none(),
+                    "premint build: the icon inherits the box class's color as \
+                     `currentColor`; a stamped color is the --premint-only panic"
+                );
+                assert!(
+                    spinner_color.is_none(),
+                    "premint build: the spinner inherits `currentColor` the same way"
+                );
+            }
+            #[cfg(not(idealyst_premint))]
+            {
+                assert_eq!(
+                    icon_color.map(|c| c.0.to_ascii_lowercase()),
+                    Some("#ffffff".into()),
+                    "live/native build: the icon carries the resolved primary-filled \
+                     foreground snapshot (native doesn't inherit)"
+                );
+                assert_eq!(
+                    spinner_color.map(|c| c.0.to_ascii_lowercase()),
+                    Some("#ffffff".into()),
+                    "live/native build: the spinner carries the same resolved foreground"
+                );
+            }
+        });
+    }
+
     // D3: the wrapper must pass leading/trailing icons through as icon
     // children (the primitive supported them; the wrapper dropped them).
     #[test]
@@ -854,7 +937,7 @@ mod tests {
             };
             let (mut children, app) = pressable_parts(Button(&mk()));
             assert!(
-                matches!(classify(children.remove(0)), P::ActivityIndicator),
+                matches!(classify(children.remove(0)), P::ActivityIndicator { .. }),
                 "loading renders a spinner as the leading child"
             );
             assert!(

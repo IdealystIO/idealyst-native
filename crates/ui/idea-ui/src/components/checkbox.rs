@@ -25,7 +25,8 @@ use std::rc::Rc;
 
 use runtime_core::{
     accessibility::Role, component, icon, resolve_style, tap, ui, Element, IconData,
-    IdealystSchema, IntoElement, Reactive, Signal, StyleApplication, TapRecognizer,
+    IdealystSchema, IntoElement, Length, Reactive, Signal, StyleApplication, StyleRules,
+    TapRecognizer, Tokenized,
 };
 
 use idea_theme::extensible::{installed_checkbox_sheets, ToneRef, VariantRef};
@@ -35,6 +36,43 @@ use crate::stylesheets::{ControlRow, FieldLabel};
 
 /// Unicode check mark glyph rendered in the box when checked.
 const CHECK_GLYPH: &str = "\u{2713}";
+
+/// Side length of a custom checked-state icon, in px — fits the box's
+/// content area across the Sm/Md/Lg steps.
+const CHECKMARK_ICON_PX: f32 = 14.0;
+
+/// Builds the checkmark node for a custom `IconData` glyph, tinted to the
+/// glyph sheet's per-appearance foreground.
+///
+/// When the glyph application ATTACHES PREMINTED (a `--premint`/
+/// `--premint-only` web build), the application itself is attached to the
+/// icon node: the sheet's preminted class carries the arm's `color`, and
+/// the SVG tints via `currentColor`. A resolve-read here would be the
+/// `--premint-only` panic (sheets carry no rule closures). Otherwise —
+/// native builds, live web builds — the foreground is resolved and stamped
+/// on the icon explicitly, because native icons don't inherit text color
+/// (see Button).
+fn checkmark_icon(data: IconData, app: StyleApplication) -> Element {
+    if app.attaches_preminted() {
+        // The icon builder's `.size()` occupies the same style slot the
+        // application needs (the setter replaces, not composes), so the
+        // square rides the application's INLINE layer instead — inline
+        // rules apply out-of-band and don't disqualify the premint.
+        return icon(data)
+            .with_style(app.with_inline(StyleRules {
+                width: Some(Tokenized::Literal(Length::Px(CHECKMARK_ICON_PX))),
+                height: Some(Tokenized::Literal(Length::Px(CHECKMARK_ICON_PX))),
+                flex_shrink: Some(Tokenized::Literal(0.0)),
+                ..Default::default()
+            }))
+            .into_element();
+    }
+    let el = icon(data).size(CHECKMARK_ICON_PX);
+    match resolve_style(&app).color.clone() {
+        Some(c) => el.color(move || c.resolve()).into_element(),
+        None => el.into_element(),
+    }
+}
 
 // Reactive-by-default: `#[props]` wraps each scalar-DATA field `T` →
 // `Reactive<T>` (tone/variant/size/icon), so a `ui!` call site can pass a
@@ -129,20 +167,10 @@ pub fn Checkbox(props: &CheckboxProps) -> Element {
             let ga = glyph_appearance_for.clone();
             let gz = glyph_size_for.clone();
             match glyph_icon.get() {
-                Some(data) => {
-                    // Resolve the checkmark foreground and stamp it on the icon
-                    // (native icons don't inherit text color — see Button).
-                    let fg = resolve_style(
-                        &StyleApplication::new(gs).with("appearance", ga()).with("size", gz()),
-                    )
-                    .color
-                    .clone();
-                    let el = icon(data).size(14.0);
-                    match fg {
-                        Some(c) => el.color(move || c.resolve()).into_element(),
-                        None => el.into_element(),
-                    }
-                }
+                Some(data) => checkmark_icon(
+                    data,
+                    StyleApplication::new(gs).with("appearance", ga()).with("size", gz()),
+                ),
                 None => runtime_core::text(CHECK_GLYPH)
                     .with_style(move || {
                         StyleApplication::new(gs.clone())
@@ -216,10 +244,76 @@ pub fn Checkbox(props: &CheckboxProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{classify, P};
+    use crate::test_support::{classify, P, TStyle};
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
     use runtime_core::accessibility::Role;
+    use runtime_core::FillRule;
+
+    const CUSTOM_MARK: IconData = IconData {
+        view_box: (24, 24),
+        paths: &["M20 6L9 17l-5-5"],
+        fill_rule: FillRule::NonZero,
+        filled: false,
+    };
+
+    // The `--premint-only` read-back: the custom checkmark icon resolved the
+    // glyph sheet's foreground in Rust and stamped it. On a premint build the
+    // glyph application must be ATTACHED to the icon instead — its preminted
+    // class carries the arm's `color` and the SVG tints via `currentColor`
+    // (a resolve-read is the --premint-only panic). On live/native builds the
+    // resolved stamp must remain, because native icons don't inherit color.
+    #[test]
+    fn regression_premint_checkmark_icon_tints_via_glyph_class() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let sheets = installed_checkbox_sheets();
+            let app = StyleApplication::new(sheets.glyph_sheet.clone())
+                .with("appearance", "primary_filled".to_string())
+                .with("size", "md".to_string());
+            let (color, style) = match classify(checkmark_icon(CUSTOM_MARK, app)) {
+                P::Icon { color, style, .. } => (color, style),
+                _ => panic!("checkmark_icon builds an Icon node"),
+            };
+            #[cfg(idealyst_premint)]
+            {
+                assert!(
+                    color.is_none(),
+                    "premint build: no stamped color — the tint is `currentColor`"
+                );
+                match style.expect("premint build: the glyph application rides the icon") {
+                    TStyle::Preminted { class, inline } => {
+                        assert!(
+                            class.contains("appearance-primary_filled"),
+                            "the stamped class list selects the appearance arm (got `{class}`)"
+                        );
+                        // The icon's square must survive: `.size()` and the
+                        // application share ONE style slot, so the px ride
+                        // the inline layer.
+                        let inline = inline.expect("the icon square rides the inline layer");
+                        assert_eq!(
+                            inline.width,
+                            Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(
+                                CHECKMARK_ICON_PX
+                            ))),
+                            "inline layer carries the checkmark square"
+                        );
+                    }
+                    _ => panic!("the glyph application attaches as a preminted class stamp"),
+                }
+            }
+            #[cfg(not(idealyst_premint))]
+            {
+                assert!(
+                    color.is_some(),
+                    "live/native build: the resolved foreground is stamped on the icon"
+                );
+                // (`style` is not asserted here: the icon builder's `.size()`
+                // occupies the style slot on its own.)
+                let _ = style;
+            }
+        });
+    }
 
     fn has_focus_arm(app: &StyleApplication) -> bool {
         app.sheet

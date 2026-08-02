@@ -1938,6 +1938,48 @@ fn inline_layer_does_not_disqualify_preminting() {
     assert!(with_computed.preminted_class_list().is_none());
 }
 
+/// `attaches_preminted` is the components' read-back gate (Button icon
+/// tint et al.): true exactly when the build ships build-time CSS
+/// (`--cfg idealyst_premint`) AND the application premints. Without the
+/// cfg it must be false even for a preminting application — native and
+/// live-web builds keep the resolved read. With the cfg it must track
+/// `preminted_class_list()` per evaluation, so a runtime override flips
+/// it off.
+#[test]
+fn attaches_preminted_requires_cfg_and_class_list() {
+    let sheet = Rc::new(
+        StyleSheet::new(|_vs: &VariantSet| StyleRules::default())
+            .variant("gap", "md", |_vs| StyleRules::default())
+            .variant_default("gap", "md"),
+    );
+    let sheet = StyleSheet::premint_as(
+        Rc::try_unwrap(sheet).unwrap_or_else(|_| panic!("sole owner")),
+        "test.attach_gate.v1",
+    );
+
+    let preminting = StyleApplication::new(sheet.clone());
+    assert!(preminting.preminted_class_list().is_some());
+    #[cfg(idealyst_premint)]
+    assert!(
+        preminting.attaches_preminted(),
+        "premint build + preminting application → the attach stamps classes"
+    );
+    #[cfg(not(idealyst_premint))]
+    assert!(
+        !preminting.attaches_preminted(),
+        "without build-time CSS the attach resolves through the engine, \
+         so the read-back gate must stay open"
+    );
+
+    // A runtime override disqualifies the class list, so the gate is
+    // false regardless of cfg — the engine resolves this application.
+    let overridden = StyleApplication::new(sheet).with_overrides(StyleRules {
+        width: Some(Tokenized::Literal(Length::Px(42.0))),
+        ..Default::default()
+    });
+    assert!(!overridden.attaches_preminted());
+}
+
 /// The `if`-empty-branch anchor sheet — the ONE style the framework
 /// itself emits — must premint: it was the last un-preminted style on
 /// the website corpus (a raw `StyleRules` has nothing to premint by

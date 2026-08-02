@@ -504,38 +504,55 @@ installs the theme driver. Pinned by
 `regression_live_world_publishes_the_default_text_font`
 (runtime-vocabulary).
 
-### Dropping the engine — not available, and the old lever is removed
+### Dropping the engine: `--premint-only`
 
-Preminting changes *when* rules are made, not the bundle size: the
-engine still ships for the fallback paths.
+`--premint` alone changes *when* rules are made, not what ships: the
+engine still compiles in for the fallback paths.
 
-The lever that used to remove it was the `style-dynamic` cargo feature,
-which gated the old walker's dynamic style arms so an all-preminted app
-could compile them out. **That feature has been deleted.** It was the
-last remnant of the `prim-*` bundle-size gating model that runtime v2
-removed by decision, and it had already stopped doing anything:
+`idealyst build --web --premint-only` (implies `--premint`) is the
+build that actually removes it — **the styles stop existing in the wasm
+code**. Under `--cfg idealyst_premint_only` the `StyleSheet`
+constructors drop the author's rule closures at construction, so their
+bodies are never named and LLVM removes them, together with the resolve
+machinery they fed. What replaces each closure is a stub that panics
+with the full explanation if anything resolves it at runtime. Measured
+on the website corpus: wire 762,361 → 737,386 br; on idea-ui-docs, raw
+wasm −34.6%.
 
-- `runtime_vocabulary::style_attach::attach_style` matches all six
-  `StyleProp` arms unconditionally, with no feature gate, so the engine
-  stays reachable and dead-code elimination cannot drop it;
-- `runtime-shared` contained **zero** `cfg(feature = "style-dynamic")`
-  blocks — only a dead-code lint `allow`;
-- `backend-web` had already dropped its forward, so the documented
-  instruction ("set `default-features = false` on BOTH runtime-core and
-  your backend crate") was an unknown-feature error, not a size win;
-- feature unification made it unturnoffable regardless: the workspace
-  dep spec for `runtime-shared` does not set
-  `default-features = false`, so any graph containing the vocabulary
-  force-enabled it.
+The contract: with no engine on board, two things become build errors
+in spirit (loud runtime panics in practice, at the first offender):
 
-`style-dump` (the CLI's ephemeral premint-dump build) no longer implies
-it. Nothing in the tree declares or forwards it any more.
+1. **Runtime rule composition.** Any application that can't premint —
+   runtime slot `overrides`, a `with_computed` layer, a plain
+   `Rc<StyleSheet>` with no `premint_as` identity — has nothing to fall
+   back to. Run `--premint-report` first and drive the fall-through
+   list to zero; `--premint` alone is always safe while offenders
+   remain.
+2. **Reading resolved `StyleRules` back in Rust.** A component that
+   resolves a sheet to *use a value* (tint an icon with the container's
+   fill color) is running the engine, even though it never attaches the
+   result.
 
-The structural successor, if the size lever is ever wanted back, is a
-gate inside `attach_style` itself, next to the arms it would remove —
-one home, one decision, instead of a feature threaded through every
-backend crate. Until that lands, treat preminting as a resolution-cost
-optimization rather than a size lever.
+Framework components satisfy (2) through
+`StyleApplication::attaches_preminted()` — true exactly when the build
+carries build-time CSS (`--cfg idealyst_premint`) and the application
+premints, checked per evaluation like the attach paths. On that path
+Button (icon + loading spinner), Checkbox (custom checkmark icon), and
+Tabs/SegmentedControl (label color) skip their resolve-reads: the
+foreground already ships in the box's preminted class, so the web node
+inherits it as `currentColor`/cascade color. That is strictly *more*
+correct on web — the tint follows `__state_hovered` compound arms,
+which the Rust-side snapshot never did. Native builds never see the
+cfg, so they keep the resolved reads (native nodes don't inherit
+color). Author code holding a resolve-read can apply the same gate, or
+drop `--premint-only`.
+
+**Recommendation:** `--premint-only` is the web production build to
+reach for once `--premint-report` is clean. Historical note: the old
+`style-dynamic` cargo feature that claimed this role is deleted — it
+had stopped gating anything, and feature unification made it
+unturnoffable. The cfg-at-construction approach above is its
+structural successor: one home (the sheet constructors), one decision.
 
 ### Finding what didn't premint: `--premint-report`
 

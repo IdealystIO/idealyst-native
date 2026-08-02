@@ -241,9 +241,18 @@ fn tab_button(
             let on = active.get() == id;
             let variant = if on { "on" } else { "off" };
             let app = StyleApplication::new(button_sheet()).with("active", variant.to_string());
+            let base = StyleApplication::new(tab_label_base_sheet());
+            if app.attaches_preminted() {
+                // Premint web build: the pressable's preminted class carries
+                // the on/off foreground and the label inherits it via the CSS
+                // cascade — the resolve-read below exists ONLY because native
+                // text doesn't inherit, and under `--premint-only` it would
+                // panic (sheets carry no rule closures).
+                return base;
+            }
             let color = resolve_style(&app).color.clone();
             let key = if on { "tab_label_on" } else { "tab_label_off" };
-            StyleApplication::new(tab_label_base_sheet()).with_computed(key, move || StyleRules {
+            base.with_computed(key, move || StyleRules {
                 color: color.clone(),
                 ..Default::default()
             })
@@ -328,6 +337,52 @@ mod tests {
             .clone()
             .expect("TabButton resolves a foreground")
             .resolve()
+    }
+
+    // The `--premint-only` read-back: the label style resolved the TabButton
+    // sheet's color in Rust and carried it via a `with_computed` layer — which
+    // both disqualifies preminting and panics under `--premint-only` (sheets
+    // carry no rule closures). On a premint build the label application must
+    // premint BARE — the pressable's preminted class carries the on/off
+    // foreground and the web label inherits it via the CSS cascade. On live/
+    // native builds the computed stamp must remain (native doesn't inherit).
+    #[test]
+    fn regression_premint_tab_label_application_premints() {
+        with_test_world(|| {
+            theme();
+            let on_change: Rc<dyn Fn(String)> = Rc::new(|_| {});
+            let tab = tab_button(
+                Tab::new("a", "A"),
+                Reactive::Static("a".to_string()),
+                on_change,
+                Reactive::Static(TabIndicator::Underline),
+            );
+            let label = match classify(tab) {
+                P::Pressable { mut children, .. } => children.remove(0),
+                _ => panic!("a tab is a Pressable"),
+            };
+            let style = match classify(label) {
+                P::Text { style, .. } => style.expect("tab label carries a style"),
+                _ => panic!("a tab label is a Text node"),
+            };
+            let app = style.application();
+            #[cfg(idealyst_premint)]
+            assert!(
+                app.preminted_class_list().is_some(),
+                "premint build: the label application premints bare — no computed layer"
+            );
+            #[cfg(not(idealyst_premint))]
+            {
+                assert!(
+                    app.preminted_class_list().is_none(),
+                    "live/native build: the computed color layer rides the application"
+                );
+                assert!(
+                    resolve_style(&app).color.is_some(),
+                    "and it resolves the TabButton foreground for the label node"
+                );
+            }
+        });
     }
 
     // Field report 3.1b (audit): the tab label was a bare text node whose
