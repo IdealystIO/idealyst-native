@@ -985,6 +985,20 @@ can only re-baseline against the new core** — permanently discarding the
 old core's testimony — so a mismatch is a bug to fix, not an artifact to
 rewrite.
 
+The narrow exception is a **sanctioned amendment**: when the frozen
+bytes themselves pin behavior later shown to be a bug (or deliberately
+changed, with its own regression tests), the corpus is re-baselined and
+the amendment is recorded in that directory's `README.md` — what moved,
+byte class by byte class, and the tests that pin the new behavior.
+Amendments so far: the website SSG corpus's copy-edit re-baseline plus
+its 2026-08-02 entry (the document-level default-font publication fix
+and the `ControlRow` focus-ring relocation), and the SSR corpus's
+matching `default_font_fill.head.css` amendment. The old core's frozen
+output rendered reactively-styled nodes in the browser serif — parity
+with a bug is not a goal, but every departure is enumerated, reviewed
+rule-by-rule, and pinned by its own regression tests before the freeze
+moves.
+
 The pre-deletion record — frozen corpora, per-backend
 default-resolved-method lists, green test counts, and the classification
 of tests that legitimately die — is

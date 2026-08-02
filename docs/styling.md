@@ -473,6 +473,18 @@ halves are pinned by `dynamic_sheet_path_does_not_fold_default_font`
 (runtime-vocabulary) and
 `regression_reactive_styled_node_inherits_theme_font` (backend-ssr).
 
+**Every world publishes this, not just preminted ones.** The delivery
+was originally gated on premint use, on the reasoning that only
+preminted rule bodies read the variable — which covered the variable
+but not the inheritance half: a live (non-preminted) build published no
+document font at all, so `<body>`, plain containers, and every
+reactively-styled node rendered in the browser serif. The font rides
+the pending host-state queue (like app background and scrollbar theme)
+so it reaches the backend even in a purely static app that never
+installs the theme driver. Pinned by
+`regression_live_world_publishes_the_default_text_font`
+(runtime-vocabulary).
+
 ### Dropping the engine — not available, and the old lever is removed
 
 Preminting changes *when* rules are made, not the bundle size: the

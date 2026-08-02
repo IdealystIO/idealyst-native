@@ -106,6 +106,13 @@ struct ThemeState {
     /// absent `font_family` at apply time (old `DEFAULT_TEXT_FONT`,
     /// per-world now).
     default_text_font: Option<FontFamily>,
+    /// Set by `set_default_text_font`, drained by
+    /// `flush_pending_host_state`. The font needs a PENDING slot like
+    /// the other host state (app background, scrollbar) because the
+    /// theme driver is only installed from the dynamic/preminted attach
+    /// paths — a purely static live app never installs one, so a
+    /// driver-only publish never reached the backend at all.
+    pending_default_font: Option<Option<FontFamily>>,
     /// Host-surface background pending delivery (old `PENDING_APP_BG`).
     pending_app_background: Option<Tokenized<Color>>,
     /// Scrollbar theme pending delivery (old `PENDING_SCROLLBAR`).
@@ -147,6 +154,7 @@ impl Default for ThemeState {
             pending_updates: Vec::new(),
             values: HashMap::new(),
             default_text_font: None,
+            pending_default_font: None,
             pending_app_background: None,
             pending_scrollbar: None,
             cohort: Vec::new(),
@@ -285,7 +293,9 @@ impl ThemeCtx {
 
     /// See [`set_default_text_font`]. Handler-safe.
     pub fn set_default_text_font(&self, font: Option<FontFamily>) {
-        self.state.borrow_mut().default_text_font = font;
+        let mut s = self.state.borrow_mut();
+        s.default_text_font = font.clone();
+        s.pending_default_font = Some(font);
         self.version.update(|v| v + 1);
     }
 
@@ -401,13 +411,14 @@ pub(crate) fn flush_pending_host_state<H: StyleOps + crate::caps::AppEnvOps>(
     let ctx = theme_ctx();
     // Take everything out of the borrow first — backend calls may
     // re-enter theme state (e.g. a recorder that styles something).
-    let (install, updates, app_bg, scrollbar) = {
+    let (install, updates, app_bg, scrollbar, default_font) = {
         let mut s = ctx.state.borrow_mut();
         (
             s.pending_install.take(),
             std::mem::take(&mut s.pending_updates),
             s.pending_app_background.take(),
             s.pending_scrollbar.take(),
+            s.pending_default_font.take(),
         )
     };
     if let Some(tokens) = install {
@@ -415,6 +426,9 @@ pub(crate) fn flush_pending_host_state<H: StyleOps + crate::caps::AppEnvOps>(
     }
     for batch in &updates {
         backend.borrow_mut().update_tokens(batch);
+    }
+    if let Some(font) = default_font {
+        backend.borrow_mut().apply_default_text_font(font.as_ref());
     }
     if let Some(color) = app_bg {
         backend.borrow_mut().set_app_background(&color);
@@ -591,16 +605,30 @@ pub(crate) fn ensure_theme_driver<H: StyleOps + crate::caps::AppEnvOps>(
             let Some(state) = state.upgrade() else {
                 return;
             };
-            // Premint worlds publish the theme's default font at the
-            // document level on every theme change (the var preminted
-            // classes reference).
-            let (premint_used, font) = {
-                let s = state.borrow();
-                (s.premint_used, s.default_text_font.clone())
-            };
-            if premint_used {
-                backend.borrow_mut().apply_default_text_font(font.as_ref());
-            }
+            // EVERY world publishes the theme's default font at the
+            // document level on every theme change — not just preminted
+            // ones.
+            //
+            // This used to be gated on `premint_used`, on the reasoning
+            // that only preminted rule bodies read the
+            // `--iy-default-font` variable. That reasoning covered the
+            // VARIABLE but not the font itself: only a STATIC style
+            // application gets the theme font folded into its own rules
+            // (`style_attach::fill_default_text_font`). A reactive one
+            // deliberately does not, and body / plain containers are
+            // never styled by the framework at all — so on a live build
+            // nothing published a document font and all of them fell back
+            // to the browser's serif (measured: `<body>` and every
+            // top-level container rendering in Times on a live docs
+            // build, while the preminted build rendered the theme sans).
+            //
+            // The backend half declares BOTH the variable and a real
+            // inheritable `font-family` (see `StyleOps::apply_default_text_font`),
+            // so publishing it unconditionally is what actually delivers
+            // the theme font to those nodes. Pinned by
+            // `regression_live_world_publishes_the_default_text_font`.
+            let font = state.borrow().default_text_font.clone();
+            backend.borrow_mut().apply_default_text_font(font.as_ref());
             // Cascade fast path (old BACKEND_CASCADE_TOKENS): web's
             // `var()` cascade re-tints without per-node fan-out.
             if backend.borrow().token_updates_propagate_via_cascade() {

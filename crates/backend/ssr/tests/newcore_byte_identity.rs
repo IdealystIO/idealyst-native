@@ -435,6 +435,16 @@ fn corpus_render_all_crawl_discovers_and_matches() {
 /// SSG byte-parity site-wide (every reactive-styled node hashed
 /// differently). Byte-comparing a static + dynamic pair with a default
 /// font installed is the regression net for that whole class of drift.
+///
+/// AMENDED GOLDEN (the one deliberate re-baseline in this corpus, see
+/// `goldens/README.md`): `default_font_fill.head.css` now carries the
+/// `:root` default-font block. The old core never emitted it because
+/// the document publication was gated on premint use — which was
+/// itself the bug: the "document channel" the dynamic path rides was
+/// switched off on live builds, so reactive nodes rendered in the
+/// browser serif. The `.html` golden is untouched old-core bytes (no
+/// class hash moved), and the `folds == 2` assertion below pins the
+/// fill asymmetry independent of the frozen artifact.
 #[test]
 fn corpus_default_font_fill_static_folds_dynamic_does_not() {
     let test_font = || runtime_shared::FontFamily::System("TestFont, serif".to_string());
@@ -454,11 +464,21 @@ fn corpus_default_font_fill_static_folds_dynamic_does_not() {
     assert_matches_frozen("default_font_fill", &new);
     // Sanity on the contract itself (not just old==new): the static
     // nodes' rules carry the folded font, the dynamic node's rule
-    // doesn't.
-    let folds = new.head_css.matches("TestFont, serif").count();
+    // doesn't. Count the FOLDED declaration form — the `:root` document
+    // publication also names the font, but as the variable's value
+    // (`--iy-default-font: TestFont, serif`) with `font-family:
+    // var(--iy-default-font)`, deliberately not a fold.
+    let folds = new.head_css.matches("font-family: TestFont, serif").count();
     assert_eq!(
         folds, 2,
         "exactly the two STATIC applications fold the default font: {}",
+        new.head_css
+    );
+    // And the document publication is present for the dynamic node to
+    // inherit — the amended half of the golden.
+    assert!(
+        new.head_css.contains("font-family: var(--iy-default-font)"),
+        "the :root block must declare the inheritable font-family: {}",
         new.head_css
     );
 }

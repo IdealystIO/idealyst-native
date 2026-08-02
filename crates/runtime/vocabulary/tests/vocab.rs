@@ -776,6 +776,47 @@ fn preminted_world_still_delivers_tokens() {
     );
 }
 
+/// A LIVE (non-preminted) world must publish the theme's default text
+/// font to the document, exactly like a preminted one.
+///
+/// This delivery used to be gated on `premint_used`, on the reasoning
+/// that only preminted rule bodies read the `--iy-default-font`
+/// variable. That covered the variable but not the font: only a STATIC
+/// style application gets the theme font folded into its own rules, a
+/// reactive one deliberately does not, and body / plain containers are
+/// never styled by the framework at all. With the gate on, a live web
+/// build published no document font and every one of those nodes fell
+/// back to the browser's serif — measured as `<body>` and all top-level
+/// containers rendering in Times on a live docs build while the
+/// preminted build rendered the theme's sans stack.
+#[test]
+fn regression_live_world_publishes_the_default_text_font() {
+    let h = Harness::new();
+    // NOT a preminted world — this is the case the gate excluded.
+    h.shared.preminted.set(false);
+    // `apply_default_text_font` is a `rec_v` (verbose) mock call.
+    h.shared.verbose.set(true);
+    let world = h.world.clone();
+    let _realized = world.enter(|| {
+        theme::set_default_text_font(Some(runtime_shared::FontFamily::System(
+            "Test Sans".into(),
+        )));
+        realize(
+            &h.backend,
+            &h.registry,
+            view().style(StyleApplication::new(themed_sheet())).build(),
+        )
+    });
+    world.flush();
+    let log = h.take_log().join("\n");
+    assert!(
+        log.contains("apply_default_text_font some"),
+        "a live world must publish the theme default font to the document \
+         — without it body, plain containers, and every reactively-styled \
+         node fall back to the browser serif:\n{log}"
+    );
+}
+
 /// The theme's default text font fills a resolved rule's absent
 /// font_family per world (native has no CSS inheritance).
 #[test]
