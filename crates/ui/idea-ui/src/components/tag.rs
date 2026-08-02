@@ -25,13 +25,14 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, resolve_style, ui, Color, Element, IdealystSchema, IntoElement,
-    Reactive, StyleApplication, StyleRules, StyleSheet, Tokenized,
+    component, ui, Element, IdealystSchema, IntoElement, Reactive, StyleApplication, StyleSheet,
 };
 
-use idea_theme::extensible::{installed_tag_sheet, tone, variant, ToneRef, VariantRef};
+use idea_theme::extensible::{
+    installed_tag_sheet, installed_tag_text_sheets, tone, variant, ToneRef, VariantRef,
+};
 
-use crate::stylesheets::{TagClose, TagLabel};
+use crate::stylesheets::TagClose;
 
 /// Resolves `text_style` and overlays the parent fill's foreground
 /// `color` onto its own node.
@@ -44,34 +45,15 @@ use crate::stylesheets::{TagClose, TagLabel};
 /// `Typography` uses (color lives on the text node). The merged
 /// `Tokenized` values keep their token references, so theme swaps still
 /// re-resolve in bulk via the cohort.
-// Takes the APPLICATION (`Builder().into_style_application()`), not an
-// `impl IntoStyleSource`: under `--premint` a constant builder's
-// `into_style_source` returns an opaque `Preminted` class, which
-// panicked the old `match Static` here (the website's Tag crash).
-// Composition needs the live engine by definition, so this helper's
-// input names that requirement in its type.
-fn with_inherited_color(app: StyleApplication, color: Tokenized<Color>) -> Rc<StyleSheet> {
-    let mut rules = (*resolve_style(&app)).clone();
-    rules.color = Some(color);
-    Rc::new(StyleSheet::r#static(rules))
-}
-
-/// A color-only static sheet for a bare leaf text node (the `×` glyph),
-/// which carries no sizing sheet of its own. Same native-inheritance
-/// rationale as [`with_inherited_color`].
-fn label_color_only(color: Tokenized<Color>) -> Rc<StyleSheet> {
-    Rc::new(StyleSheet::r#static(StyleRules {
-        color: Some(color),
-        ..Default::default()
-    }))
-}
-
-/// An empty base sheet for the bare `×` glyph, used by the REACTIVE
-/// foreground path: the color is layered on as a per-call `override_color`
-/// (re-resolved live), so the base carries no rules of its own.
-fn label_color_sheet() -> Rc<StyleSheet> {
-    StyleSheet::r#static(StyleRules::default()).premint_as("idea-ui.v1.tag.empty")
-}
+// The label/`×` text color used to be COMPOSED at the call site
+// (resolve the container fill, copy its foreground onto an anonymous
+// static sheet). Native needs the color on the text node itself, but
+// per-instance composition is invisible to the premint dump, so every
+// Tag text node dragged the live style engine into `--premint` builds.
+// The text sheets now carry their own enumerated `appearance` axis
+// (`installed_tag_text_sheets`, built by `TagSheetBuilder` alongside
+// the fill), so the component applies the same key it gives the
+// container.
 
 // Reactive-by-default: `#[props]` wraps `tone`/`variant` → `Reactive<…>`;
 // `label` is already reactive and `on_remove` (an `Rc<dyn Fn()>` handler) is
@@ -128,50 +110,31 @@ pub fn Tag(props: &TagProps) -> Element {
         }
     };
 
-    // The label + close glyph carry the container fill's foreground on
-    // their OWN text nodes (native doesn't inherit text color). This color
-    // is DERIVED from the resolved container style, so it tracks tone/variant.
-    //
-    // reactive-sweep DONE: when tone/variant are live the foreground COLOR
-    // now re-resolves IN PLACE on the label/close nodes via a reactive style
-    // closure (`make_label_fg_app` reads tone/variant `.get()` → re-runs the
-    // same container resolution → stamps the fresh fg as a color override on
-    // the label's base sheet). Same shape as Typography's color sink. The
-    // STATIC fast path (tone+variant both static — the common case, and the
-    // tests' default) keeps stamping the snapshot color directly: no per-node
-    // Effect, no first-paint flicker.
-    //
-    // `make_label_fg_app` builds a label `StyleApplication`: the named base
-    // sheet (so its sizing/weight stays), plus the container's resolved
-    // foreground as a color override. The fg `Tokenized` keeps its token
-    // reference inside, so theme swaps still re-resolve in bulk.
-    let make_label_fg_app = {
-        let make_container_style = make_container_style.clone();
-        move |base: Rc<StyleSheet>| -> StyleApplication {
-            let mut app = StyleApplication::new(base);
-            if let Some(c) = resolve_style(&make_container_style()).color.clone() {
-                app = app.override_color(c);
-            }
-            app
+    // The label + close glyph apply the SAME appearance key as the
+    // container, on their own text sheets (enumerated color-only axis —
+    // native doesn't inherit text color, and per-instance composition
+    // blocked preminting; see the module comment above). Reactive
+    // closure when tone/variant are live, snapshot key otherwise.
+    let texts = installed_tag_text_sheets();
+    let make_text_app = {
+        let tone = tone.clone();
+        let variant = variant.clone();
+        move |sheet: Rc<StyleSheet>| -> StyleApplication {
+            let key = format!("{}_{}", tone.get().key(), variant.get().key());
+            StyleApplication::new(sheet).with("appearance", key)
         }
     };
 
-    // Snapshot fg for the static path + the close-glyph static stamp.
     let container_style = make_container_style();
-    let fg = resolve_style(&container_style).color.clone();
 
-    // Label text node: reactive color closure when tone/variant are live,
-    // else the build-time snapshot (no flicker, resolved color stamped).
     let label_el: Element = if style_is_reactive {
-        let make_label_fg_app = make_label_fg_app.clone();
+        let make_text_app = make_text_app.clone();
+        let sheet = texts.label.clone();
         runtime_core::text(label)
-            .with_style(move || make_label_fg_app(TagLabel::sheet()))
+            .with_style(move || make_text_app(sheet.clone()))
             .into_element()
     } else {
-        let label_style: Rc<StyleSheet> = match fg.clone() {
-            Some(c) => with_inherited_color(TagLabel().into_style_application(), c),
-            None => TagLabel::sheet(),
-        };
+        let label_style = make_text_app(texts.label.clone());
         ui! { text(style = label_style) { label } }
     };
     let close_style = TagClose();
@@ -185,19 +148,15 @@ pub fn Tag(props: &TagProps) -> Element {
         // Reactive when tone/variant are live (re-resolves the fg in place),
         // else the static snapshot color.
         let close_text = if style_is_reactive {
-            let make_label_fg_app = make_label_fg_app.clone();
-            // A color-only base sheet for the bare glyph (carries no sizing
-            // of its own); the closure overlays the live fg as a color override.
+            let make_text_app = make_text_app.clone();
+            let sheet = texts.glyph.clone();
             runtime_core::text("×".to_string())
-                .with_style(move || make_label_fg_app(label_color_sheet()))
+                .with_style(move || make_text_app(sheet.clone()))
                 .into_element()
         } else {
-            match fg.clone() {
-                Some(c) => runtime_core::text("×".to_string())
-                    .with_style(label_color_only(c))
-                    .into_element(),
-                None => runtime_core::text("×".to_string()).into_element(),
-            }
+            runtime_core::text("×".to_string())
+                .with_style(make_text_app(texts.glyph.clone()))
+                .into_element()
         };
         let close = runtime_core::pressable(vec![close_text], move || (on_remove)())
             .with_style(close_style)
@@ -215,6 +174,26 @@ pub fn Tag(props: &TagProps) -> Element {
 
 #[cfg(test)]
 mod tests {
+
+    /// Mirror of the Alert regression: the label/glyph sheets must
+    /// premint — the point of replacing the call-site composition.
+    #[test]
+    fn regression_tag_text_slots_premint() {
+        use idea_theme::extensible::installed_tag_text_sheets;
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let texts = installed_tag_text_sheets();
+            for sheet in [&texts.label, &texts.glyph] {
+                let app = StyleApplication::new(sheet.clone())
+                    .with("appearance", "success_soft".to_string());
+                assert!(
+                    app.preminted_class_list().is_some(),
+                    "tag text sheet must premint (was call-site composition)"
+                );
+            }
+        });
+    }
+
     use super::*;
     use crate::test_support::{classify, P, TStyle};
     use idea_theme::testing::with_test_world;

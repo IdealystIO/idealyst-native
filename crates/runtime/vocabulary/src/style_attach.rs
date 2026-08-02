@@ -522,7 +522,21 @@ pub(crate) mod report {
                 "Dynamic (raw StyleRules closure — no stylesheet to premint)".to_string()
             }
             StyleProp::Sheet(app) => describe_app("Sheet", app),
-            StyleProp::SheetDynamic(f) => describe_app("SheetDynamic", &f()),
+            StyleProp::SheetDynamic(f) => {
+                let app = f();
+                // A premintable evaluation takes the reactive diversion in
+                // `attach_sheet_dynamic` — classes stamped, engine never
+                // reached — so it is NOT a fall-through (the report's
+                // contract is "styles that reach the live engine"). Only
+                // the closure's CURRENT value can be probed here; a
+                // closure that premints now but returns an
+                // override-carrying app later is caught by that later
+                // evaluation on the next attach of the same shape.
+                if app.preminted_class_list().is_some() {
+                    return;
+                }
+                describe_app("SheetDynamic", &app)
+            }
             StyleProp::SignalClass(spec) => {
                 describe_app("SignalClass", &(spec.pristine_compute)())
             }

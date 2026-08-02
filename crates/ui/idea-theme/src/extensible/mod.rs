@@ -50,7 +50,10 @@ pub mod variant;
 
 pub use sheets::{
     install_alert_sheet, install_badge_sheet, install_button_sheet, install_checkbox_sheets,
-    install_default_alert_sheet, install_default_badge_sheet, install_default_button_sheet,
+    install_alert_text_sheets, install_button_label_sheet, install_default_alert_sheet,
+    install_default_badge_sheet, installed_button_label_sheet,
+    install_default_button_sheet, install_tag_text_sheets, installed_alert_text_sheets,
+    installed_tag_text_sheets, AlertTextSheets, TagTextSheets,
     install_default_checkbox_sheet, install_default_icon_button_sheet, install_default_radio_sheet,
     install_default_switch_sheet, install_default_tag_sheet, install_default_typography_sheet,
     install_default_progress_sheet, install_default_slider_sheet, install_icon_button_sheet,

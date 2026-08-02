@@ -1744,24 +1744,10 @@ stylesheet! {
     }
 }
 
-stylesheet! {
-    pub AlertTitle<IdeaThemeRef> {
-        base(t) {
-            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
-            font_weight: FontWeight::SemiBold,
-            line_height: 20.0,
-        }
-    }
-}
-
-stylesheet! {
-    pub AlertBody<IdeaThemeRef> {
-        base(t) {
-            font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)),
-            line_height: 18.0,
-        }
-    }
-}
+// (AlertTitle/AlertBody moved into idea-theme's `AlertSheetBuilder::build_text`
+// — the title/body sheets need an enumerated per-tone `appearance` color
+// axis, which a compile-time `stylesheet!` cannot declare over the
+// runtime-extensible tone list.)
 
 // The title/body text column. `flex_grow: 1` + `min_width: 0` lets it
 // take the available width and shrink (wrapping text) so the trailing

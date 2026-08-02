@@ -34,7 +34,8 @@ use runtime_core::{
 };
 
 use idea_theme::extensible::{
-    installed_button_sheet, ButtonSizeRef, ShapeRef, ToneRef, VariantRef,
+    installed_button_label_sheet, installed_button_sheet, ButtonSizeRef, ShapeRef, ToneRef,
+    VariantRef,
 };
 
 use crate::slot_override::{apply_override, override_rules};
@@ -177,30 +178,12 @@ fn button_icon_sheet() -> Rc<runtime_core::StyleSheet> {
 }
 
 /// The text-typography subset the label must carry ON ITS OWN NODE.
-///
-/// The Button sheet sets `font_weight`/`font_size`/`text_align`/`letter_spacing`
-/// on the pressable BOX (so web's CSS cascade paints the label bold + centered).
-/// Native text leaves (`NSTextField`/`NSTextView`/`UILabel`/…) inherit NOTHING
-/// from the box — the same reason the label's *color* is stamped on its own node
-/// (native text doesn't inherit color either, only web's CSS cascade does).
-/// Weight/size/alignment need the same treatment or the native label renders at
-/// the backend default (the macOS "not bold / not centered" bug). We copy the
-/// resolved container typography onto the label so every backend matches web
-/// (Rule #7). Color is applied separately — it re-resolves reactively with
-/// tone/variant, whereas these track the (also-reactive) `size` axis and the
-/// constant base.
-fn label_typography_style(resolved: &StyleRules) -> Rc<StyleSheet> {
-    Rc::new(StyleSheet::r#static(StyleRules {
-        font_family: resolved.font_family.clone(),
-        font_size: resolved.font_size.clone(),
-        font_weight: resolved.font_weight,
-        font_style: resolved.font_style,
-        line_height: resolved.line_height.clone(),
-        letter_spacing: resolved.letter_spacing.clone(),
-        text_align: resolved.text_align,
-        ..Default::default()
-    }))
-}
+// (Former `label_typography_style` — a per-instance snapshot of the
+// container typography plus a color override — is replaced by the
+// installed Button LABEL sheet (`installed_button_label_sheet`), whose
+// enumerated `appearance`/`size` axes carry the same values and premint.
+// Native text still gets everything on its own node; see
+// `ButtonSheetBuilder::build_label`.)
 
 /// Renders a styled, clickable button whose appearance is driven by
 /// the tone × variant × size × shape axes of the installed Button sheet.
@@ -315,8 +298,6 @@ pub fn Button(props: &ButtonProps) -> Element {
             // `label_typography_style`).
             let resolved_container = resolve_style(&style_closure());
             let fg = resolved_container.color.clone();
-            // Static snapshot of the label typography for the non-reactive path.
-            let label_typo = label_typography_style(&resolved_container);
             // Re-resolves the container's foreground from the live tone/variant.
             // Used by the reactive icon `.color`/label-style closures so the
             // tint tracks the container in place when a style axis is live.
@@ -389,38 +370,33 @@ pub fn Button(props: &ButtonProps) -> Element {
             } else if has_lead {
                 children.push(icon_node(&leading_icon));
             }
-            // A label override applies on top of the theme fg (its `color`, if
-            // set, wins). When present it forces the styled path even if there's
-            // no theme fg to stamp.
-            let _ = label_ovr.is_some();
+            // The label applies the SAME appearance/size keys as the box, on
+            // the installed LABEL sheet (color + typography as enumerated
+            // arms — no per-instance snapshot, no color override, so it
+            // premints). A `label_style` slot override still layers on top
+            // and takes the live engine, as every runtime override does.
+            let label_app = {
+                let tone = tone.clone();
+                let variant = variant.clone();
+                let size = size.clone();
+                move || {
+                    StyleApplication::new(installed_button_label_sheet())
+                        .with(
+                            "appearance",
+                            format!("{}_{}", tone.get().key(), variant.get().key()),
+                        )
+                        .with("size", size.get().key().to_string())
+                }
+            };
             let label_node = if style_is_reactive {
-                // Live tone/variant/size: re-resolve the container INSIDE the
-                // style closure so the label's color (tone/variant) AND its
-                // typography (the `size` axis drives font_size) both track the
-                // box in place. Then layer the (static) label override on top.
-                let style_closure = style_closure.clone();
                 let label_ovr = label_ovr.clone();
+                let label_app = label_app.clone();
                 text(label.clone())
-                    .with_style(move || {
-                        let resolved = resolve_style(&style_closure());
-                        let mut app = StyleApplication::new(label_typography_style(&resolved));
-                        if let Some(c) = resolved.color.clone() {
-                            app = app.override_color(c);
-                        }
-                        apply_override(app, &label_ovr)
-                    })
+                    .with_style(move || apply_override(label_app(), &label_ovr))
                     .into_element()
             } else {
-                // Static: stamp the snapshot typography (weight/size/align/…),
-                // then the resolved fg color (if any), then the label override.
-                // Every label carries typography now — a transparent variant
-                // (Ghost, no fg) still needs the bold, centered text.
-                let mut app = StyleApplication::new(label_typo.clone());
-                if let Some(c) = fg.clone() {
-                    app = app.override_color(c);
-                }
                 text(label.clone())
-                    .with_style(apply_override(app, &label_ovr))
+                    .with_style(apply_override(label_app(), &label_ovr))
                     .into_element()
             };
             children.push(label_node);
@@ -547,6 +523,26 @@ fn finalize_switch(switch_el: Element, _props: &ButtonProps) -> Element {
 
 #[cfg(test)]
 mod tests {
+
+    /// The LABEL sheet must premint for every (appearance, size) the box
+    /// itself premints — it replaces the per-instance typography snapshot
+    /// + color override, which forced every Button label onto the live
+    /// engine under `--premint`.
+    #[test]
+    fn regression_button_label_sheet_premints() {
+        use idea_theme::extensible::installed_button_label_sheet;
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let app = StyleApplication::new(installed_button_label_sheet())
+                .with("appearance", "primary_filled".to_string())
+                .with("size", "lg".to_string());
+            assert!(
+                app.preminted_class_list().is_some(),
+                "button label sheet must premint (was snapshot + color override)"
+            );
+        });
+    }
+
     use super::*;
     use crate::test_support::{classify, P, TStyle};
     use idea_theme::testing::with_test_world;

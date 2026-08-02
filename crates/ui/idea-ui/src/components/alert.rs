@@ -36,44 +36,25 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, resolve_style, ui, Color, Element, IdealystSchema, IntoElement,
-    Reactive, StyleApplication, StyleRules, StyleSheet, Tokenized,
+    component, ui, Element, IdealystSchema, IntoElement, Reactive, StyleApplication, StyleSheet,
 };
 
-use idea_theme::extensible::{installed_alert_sheet, tone, variant, ToneRef, VariantRef};
+use idea_theme::extensible::{
+    installed_alert_sheet, installed_alert_text_sheets, tone, variant, ToneRef, VariantRef,
+};
 
-use crate::stylesheets::{AlertBody, AlertContent, AlertTitle, TagClose};
+use crate::stylesheets::{AlertContent, TagClose};
 
-/// Resolves `text_style` and overlays the parent fill's foreground
-/// `color` onto its own node. Native `UILabel`/`TextView` don't inherit
-/// text color from a parent (only web's CSS cascade does), so a label
-/// colored solely via its wrapping container vanishes on the fill on
-/// iOS/Android. Stamping the resolved `color` on the text node makes
-/// every backend match web — the pattern `Typography` uses. Tokens are
-/// preserved, so theme swaps still re-resolve in bulk.
-// Takes the APPLICATION (`Builder().into_style_application()`) — see the
-// identical helper in `tag.rs` for why (`--premint` made
-// `into_style_source` opaque for constant builders).
-fn with_inherited_color(app: StyleApplication, color: Tokenized<Color>) -> Rc<StyleSheet> {
-    let mut rules = (*resolve_style(&app)).clone();
-    rules.color = Some(color);
-    Rc::new(StyleSheet::r#static(rules))
-}
-
-/// A color-only static sheet for a bare leaf text node (the `×` glyph).
-fn label_color_only(color: Tokenized<Color>) -> Rc<StyleSheet> {
-    Rc::new(StyleSheet::r#static(StyleRules {
-        color: Some(color),
-        ..Default::default()
-    }))
-}
-
-/// An empty base sheet for the bare `×` glyph, used by the REACTIVE
-/// foreground path: the color is layered on as a per-call `override_color`
-/// (re-resolved live), so the base carries no rules of its own.
-fn empty_sheet() -> Rc<StyleSheet> {
-    StyleSheet::r#static(StyleRules::default()).premint_as("idea-ui.v1.alert.empty")
-}
+// The title/body/`×` text nodes used to COMPOSE their color at the call
+// site: resolve the container fill, copy its foreground onto a fresh
+// anonymous `StyleSheet::r#static`. Native needs the color on the text
+// node itself (no parent-color inheritance off web), but per-instance
+// composition is invisible to the premint dump, so every Alert text
+// node dragged the live style engine into `--premint` builds. The text
+// sheets now carry their own enumerated `appearance` axis
+// (`installed_alert_text_sheets`, built by `AlertSheetBuilder`
+// alongside the fill), so the component just applies the same key it
+// gives the container.
 
 /// The close affordance shown at an [`Alert`]'s trailing edge.
 ///
@@ -165,59 +146,46 @@ pub fn Alert(props: AlertProps) -> Element {
         }
     };
 
-    // reactive-sweep DONE: the title/body/`×` foreground COLOR is DERIVED from
-    // the resolved container fill and stamped on each text node (native doesn't
-    // inherit color). When tone/variant are live, the color now re-resolves IN
-    // PLACE via a reactive style closure (`make_text_fg_app` re-runs the same
-    // container resolution → stamps the fresh fg as a color override on the
-    // text node's base sheet). Same shape as Typography's color sink. The
-    // STATIC fast path (tone+variant both static — the common case + the tests'
-    // default) keeps stamping the snapshot color directly: no per-node Effect.
-    //
-    // `make_text_fg_app` builds a text `StyleApplication`: the named base sheet
-    // (keeps font/weight) + the container's resolved foreground as a color
-    // override. The fg `Tokenized` keeps its token reference, so theme swaps
-    // still re-resolve in bulk.
-    let make_text_fg_app = {
-        let make_container_style = make_container_style.clone();
-        move |base: Rc<StyleSheet>| -> StyleApplication {
-            let mut app = StyleApplication::new(base);
-            if let Some(c) = resolve_style(&make_container_style()).color.clone() {
-                app = app.override_color(c);
-            }
-            app
+    // The title/body/`×` text nodes apply the SAME appearance key as the
+    // container, on their own text sheets (an enumerated color-only axis —
+    // see the module comment above). When tone/variant are live the key is
+    // rebuilt inside a reactive style closure; the static fast path applies
+    // the snapshot key with no per-node Effect. Either way there is no
+    // per-instance sheet and no override, so both paths premint.
+    let texts = installed_alert_text_sheets();
+    let make_text_app = {
+        let tone = tone.clone();
+        let variant = variant.clone();
+        move |sheet: Rc<StyleSheet>| -> StyleApplication {
+            let key = format!("{}_{}", tone.get().key(), variant.get().key());
+            StyleApplication::new(sheet).with("appearance", key)
         }
     };
 
-    // Snapshot fg for the static path.
-    let fg = resolve_style(&make_container_style()).color.clone();
-
     let title = props.title.clone();
     let title_node: Element = if style_is_reactive {
-        let make_text_fg_app = make_text_fg_app.clone();
+        let make_text_app = make_text_app.clone();
+        let sheet = texts.title.clone();
         runtime_core::text(title)
-            .with_style(move || make_text_fg_app(AlertTitle::sheet()))
+            .with_style(move || make_text_app(sheet.clone()))
             .into_element()
     } else {
-        let title_style: Rc<StyleSheet> = match fg.clone() {
-            Some(c) => with_inherited_color(AlertTitle().into_style_application(), c),
-            None => AlertTitle::sheet(),
-        };
+        let title_style = make_text_app(texts.title.clone());
         ui! { text(style = title_style) { title } }
     };
 
     let body_node: Option<Element> = if style_is_reactive {
-        let make_text_fg_app = make_text_fg_app.clone();
+        let make_text_app = make_text_app.clone();
+        let sheet = texts.body.clone();
         crate::components::optional_reactive_text(
             props.body.clone(),
-            move || make_text_fg_app(AlertBody::sheet()),
+            move || make_text_app(sheet.clone()),
         )
     } else {
-        let body_style: Rc<StyleSheet> = match fg.clone() {
-            Some(c) => with_inherited_color(AlertBody().into_style_application(), c),
-            None => AlertBody::sheet(),
-        };
-        crate::components::optional_reactive_text(props.body.clone(), body_style)
+        crate::components::optional_reactive_text(
+            props.body.clone(),
+            make_text_app(texts.body.clone()),
+        )
     };
 
     // Trailing slots. The action element is used verbatim; the close
@@ -229,17 +197,15 @@ pub fn Alert(props: AlertProps) -> Element {
             // Bare `×` text node — color it directly so it shows on native.
             // Reactive when tone/variant are live; static snapshot otherwise.
             let close_text = if style_is_reactive {
-                let make_text_fg_app = make_text_fg_app.clone();
+                let make_text_app = make_text_app.clone();
+                let sheet = texts.glyph.clone();
                 runtime_core::text("×".to_string())
-                    .with_style(move || make_text_fg_app(empty_sheet()))
+                    .with_style(move || make_text_app(sheet.clone()))
                     .into_element()
             } else {
-                match fg.clone() {
-                    Some(c) => runtime_core::text("×".to_string())
-                        .with_style(label_color_only(c))
-                        .into_element(),
-                    None => runtime_core::text("×".to_string()).into_element(),
-                }
+                runtime_core::text("×".to_string())
+                    .with_style(make_text_app(texts.glyph.clone()))
+                    .into_element()
             };
             Some(
                 runtime_core::pressable(vec![close_text], move || (on_press)())
@@ -281,6 +247,30 @@ pub fn Alert(props: AlertProps) -> Element {
 
 #[cfg(test)]
 mod tests {
+
+    /// The text-slot sheets exist to take Alert's title/body/glyph OFF
+    /// the live style engine under `--premint`: the former call-site
+    /// composition (resolve container → copy color onto an anonymous
+    /// sheet) had no premint class by construction. Every text
+    /// application must therefore carry a preminted class list for
+    /// every appearance the container itself premints.
+    #[test]
+    fn regression_alert_text_slots_premint() {
+        use idea_theme::extensible::installed_alert_text_sheets;
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let texts = installed_alert_text_sheets();
+            for sheet in [&texts.title, &texts.body, &texts.glyph] {
+                let app = StyleApplication::new(sheet.clone())
+                    .with("appearance", "danger_filled".to_string());
+                assert!(
+                    app.preminted_class_list().is_some(),
+                    "alert text sheet must premint (was call-site composition)"
+                );
+            }
+        });
+    }
+
     use super::*;
     use crate::test_support::{classify, P, TStyle};
     use idea_theme::testing::with_test_world;

@@ -409,6 +409,7 @@ impl Default for ButtonSheetBuilder {
 /// modifiers don't have to touch sheet installation.
 pub fn install_default_button_sheet() {
     install_button_sheet(ButtonSheetBuilder::new().build());
+    install_button_label_sheet(ButtonSheetBuilder::new().build_label());
 }
 
 // =============================================================================
@@ -682,6 +683,7 @@ impl Default for TagSheetBuilder {
 
 pub fn install_default_tag_sheet() {
     install_tag_sheet(TagSheetBuilder::new().build());
+    install_tag_text_sheets(TagSheetBuilder::new().build_text());
 }
 
 /// Builder for the Alert component's stylesheet.
@@ -741,6 +743,264 @@ impl Default for AlertSheetBuilder {
 
 pub fn install_default_alert_sheet() {
     install_alert_sheet(AlertSheetBuilder::new().build());
+    install_alert_text_sheets(AlertSheetBuilder::new().build_text());
+}
+
+// ---------------------------------------------------------------------------
+// Text-slot sheets — the child TEXT nodes of tone×variant components
+// ---------------------------------------------------------------------------
+//
+// Native text nodes (`UILabel`/`NSTextField`/Android `TextView`) inherit
+// NOTHING from their container — only web's CSS cascade does — so a
+// component's label/title/body must carry the container fill's foreground
+// on its OWN node. These used to be composed at the call site: resolve
+// the container application, copy its `color` onto a fresh anonymous
+// `StyleSheet::r#static`. That composition is invisible to the premint
+// dump (the sheet's content depends on which appearance the instance
+// picked), so every Alert/Tag text node dragged the live style engine
+// into `--premint` builds.
+//
+// Instead the text sheets carry an `appearance` axis of their own,
+// mirroring the container's: one COLOR-ONLY arm per (tone, variant),
+// resolved from the same `variant.render(ctx)` the fill uses, built
+// up-front at install time. Enumerated arms premint; the component
+// just applies `.with("appearance", key)` on both its container and its
+// text nodes.
+
+/// Add the color-only `appearance` axis to a text-slot sheet — one arm
+/// per (tone, variant) carrying exactly the fill's resolved foreground.
+fn text_color_axis(
+    mut sheet: StyleSheet,
+    tones: &[ToneRef],
+    variants: &[VariantRef],
+) -> StyleSheet {
+    for tone in tones {
+        for variant in variants {
+            let key = format!("{}_{}", tone.current_key(), variant.current_key());
+            let tone_c = tone.clone();
+            let variant_c = variant.clone();
+            sheet = sheet.variant("appearance", key, move |_vs| {
+                let theme_rc = active_theme();
+                let theme_ref = theme_rc
+                    .downcast_ref::<IdeaThemeRef>()
+                    .expect("text sheet closure: install_idea_theme(...) first");
+                let ctx = ResolutionCtx {
+                    theme: theme_ref,
+                    tone: &*tone_c.0,
+                };
+                StyleRules {
+                    color: variant_c.0.render(&ctx).color,
+                    ..Default::default()
+                }
+            });
+        }
+    }
+    sheet
+}
+
+/// `premint_identity` parts for a tones×variants text sheet.
+fn tone_variant_parts(tones: &[ToneRef], variants: &[VariantRef]) -> [String; 2] {
+    [
+        tones.iter().map(|t| t.current_key()).collect::<Vec<_>>().join(","),
+        variants.iter().map(|v| v.current_key()).collect::<Vec<_>>().join(","),
+    ]
+}
+
+/// The Alert component's text-slot sheets (title / body / the bare `×`
+/// glyph), one `appearance` arm per (tone, variant). Install alongside
+/// the fill sheet — a custom `AlertSheetBuilder` (extra tones/variants)
+/// must install BOTH halves or its custom appearances fall back to the
+/// axis default on the text nodes.
+pub struct AlertTextSheets {
+    pub title: Rc<StyleSheet>,
+    pub body: Rc<StyleSheet>,
+    /// Color-only sheet for the bare `×` close glyph.
+    pub glyph: Rc<StyleSheet>,
+}
+
+impl AlertSheetBuilder {
+    /// Build the text-slot sheets for the SAME tones/variants as
+    /// [`Self::build`]. Typography mirrors the former `AlertTitle` /
+    /// `AlertBody` stylesheets; the color arms are what replaces the
+    /// call-site composition (see the module section comment above).
+    pub fn build_text(&self) -> AlertTextSheets {
+        let title = default_neutral_soft(text_color_axis(
+            StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                font_size: Some(Tokenized::token(
+                    "typography-body-size",
+                    runtime_core::Length::Px(14.0),
+                )),
+                font_weight: Some(FontWeight::SemiBold),
+                line_height: Some(Tokenized::Literal(20.0)),
+                ..Default::default()
+            }),
+            &self.tones,
+            &self.variants,
+        ))
+        .premint_as(&premint_identity(
+            "alert.title",
+            tone_variant_parts(&self.tones, &self.variants),
+        ));
+        let body = default_neutral_soft(text_color_axis(
+            StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                font_size: Some(Tokenized::token(
+                    "typography-body-sm-size",
+                    runtime_core::Length::Px(13.0),
+                )),
+                line_height: Some(Tokenized::Literal(18.0)),
+                ..Default::default()
+            }),
+            &self.tones,
+            &self.variants,
+        ))
+        .premint_as(&premint_identity(
+            "alert.body",
+            tone_variant_parts(&self.tones, &self.variants),
+        ));
+        let glyph = default_neutral_soft(text_color_axis(
+            StyleSheet::new(|_vs: &VariantSet| StyleRules::default()),
+            &self.tones,
+            &self.variants,
+        ))
+        .premint_as(&premint_identity(
+            "alert.glyph",
+            tone_variant_parts(&self.tones, &self.variants),
+        ));
+        AlertTextSheets { title, body, glyph }
+    }
+}
+
+/// The Tag component's text-slot sheets (label / the `×` glyph).
+pub struct TagTextSheets {
+    pub label: Rc<StyleSheet>,
+    /// Color-only sheet for the bare `×` remove glyph.
+    pub glyph: Rc<StyleSheet>,
+}
+
+impl TagSheetBuilder {
+    /// Text-slot sheets for the SAME tones/variants as [`Self::build`] —
+    /// see [`AlertSheetBuilder::build_text`] for the contract.
+    pub fn build_text(&self) -> TagTextSheets {
+        let label = default_neutral_soft(text_color_axis(
+            StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                font_size: Some(Tokenized::token(
+                    "typography-body-sm-size",
+                    runtime_core::Length::Px(13.0),
+                )),
+                font_weight: Some(FontWeight::SemiBold),
+                letter_spacing: Some(Tokenized::Literal(0.3)),
+                ..Default::default()
+            }),
+            &self.tones,
+            &self.variants,
+        ))
+        .premint_as(&premint_identity(
+            "tag.label",
+            tone_variant_parts(&self.tones, &self.variants),
+        ));
+        let glyph = default_neutral_soft(text_color_axis(
+            StyleSheet::new(|_vs: &VariantSet| StyleRules::default()),
+            &self.tones,
+            &self.variants,
+        ))
+        .premint_as(&premint_identity(
+            "tag.glyph",
+            tone_variant_parts(&self.tones, &self.variants),
+        ));
+        TagTextSheets { label, glyph }
+    }
+}
+
+/// Alert/Tag text sheets default to the container's own default arm.
+fn default_neutral_soft(sheet: StyleSheet) -> StyleSheet {
+    sheet.variant_default("appearance", "neutral_soft")
+}
+
+impl ButtonSheetBuilder {
+    /// The Button LABEL sheet: the container's typography split out onto
+    /// the text node (native text inherits neither color nor
+    /// weight/size/alignment from the box — the macOS "not bold / not
+    /// centered" bug), as enumerated axes instead of the former
+    /// per-instance snapshot (`label_typography_style` + a color
+    /// override), which was invisible to the premint dump.
+    ///
+    /// `appearance` arms carry the fill's foreground; `size` arms carry
+    /// the label-relevant half of the container's size arms (font-size
+    /// only — padding stays on the box). Defaults mirror the container's.
+    pub fn build_label(&self) -> Rc<StyleSheet> {
+        let mut sheet = text_color_axis(
+            StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                font_weight: Some(FontWeight::SemiBold),
+                letter_spacing: Some(Tokenized::Literal(0.2)),
+                text_align: Some(TextAlign::Center),
+                ..Default::default()
+            }),
+            &self.tones,
+            &self.variants,
+        );
+        for size in &self.sizes {
+            let sz = size.clone();
+            sheet = sheet.variant("size", size.current_key(), move |_vs| StyleRules {
+                font_size: Some(sz.0.font_size()),
+                ..Default::default()
+            });
+        }
+        sheet
+            .variant_default("appearance", "primary_filled")
+            .variant_default("size", "md")
+            .premint_as(&premint_identity(
+                "button.label",
+                [
+                    self.tones.iter().map(|t| t.current_key()).collect::<Vec<_>>().join(","),
+                    self.variants.iter().map(|v| v.current_key()).collect::<Vec<_>>().join(","),
+                    self.sizes.iter().map(|z| z.current_key()).collect::<Vec<_>>().join(","),
+                ],
+            ))
+    }
+}
+
+// ONE thread_local for every text-sheet slot (not one per sheet):
+// bionic caps pthread TLS keys at 128 and each `thread_local!` burns one
+// (see the Android TLS note in the repo docs).
+#[derive(Default)]
+struct TextSheetSlots {
+    alert: Option<Rc<AlertTextSheets>>,
+    tag: Option<Rc<TagTextSheets>>,
+    button_label: Option<Rc<StyleSheet>>,
+}
+thread_local! {
+    static TEXT_SHEETS: RefCell<TextSheetSlots> = RefCell::new(TextSheetSlots::default());
+}
+
+pub fn install_alert_text_sheets(sheets: AlertTextSheets) {
+    TEXT_SHEETS.with(|s| s.borrow_mut().alert = Some(Rc::new(sheets)));
+}
+pub fn installed_alert_text_sheets() -> Rc<AlertTextSheets> {
+    TEXT_SHEETS.with(|s| {
+        s.borrow().alert.clone().expect(
+            "no Alert text sheets installed; call install_idea_theme(...) before rendering",
+        )
+    })
+}
+pub fn install_button_label_sheet(sheet: Rc<StyleSheet>) {
+    TEXT_SHEETS.with(|s| s.borrow_mut().button_label = Some(sheet));
+}
+pub fn installed_button_label_sheet() -> Rc<StyleSheet> {
+    TEXT_SHEETS.with(|s| {
+        s.borrow().button_label.clone().expect(
+            "no Button label sheet installed; call install_idea_theme(...) before rendering",
+        )
+    })
+}
+pub fn install_tag_text_sheets(sheets: TagTextSheets) {
+    TEXT_SHEETS.with(|s| s.borrow_mut().tag = Some(Rc::new(sheets)));
+}
+pub fn installed_tag_text_sheets() -> Rc<TagTextSheets> {
+    TEXT_SHEETS.with(|s| {
+        s.borrow().tag.clone().expect(
+            "no Tag text sheets installed; call install_idea_theme(...) before rendering",
+        )
+    })
 }
 
 // =============================================================================
