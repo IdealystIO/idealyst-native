@@ -7,8 +7,8 @@
 
 use runtime_core::stylesheet;
 use runtime_core::{
-    AlignItems, Color, FlexDirection, FontWeight, JustifyContent, Length, Overflow, TextAlign,
-    TextTransform, Tokenized,
+    AlignItems, Color, Cursor, FlexDirection, FontWeight, JustifyContent, Length, Overflow,
+    TextAlign, TextTransform, Tokenized,
 };
 
 // ---- Page-level scroll surface --------------------------------------------
@@ -108,6 +108,7 @@ stylesheet! {
 stylesheet! {
     pub MenuButton<()> {
         base(_t) {
+            cursor: Cursor::Pointer,
             width: Length::Px(34.0),
             height: Length::Px(34.0),
             border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
@@ -582,6 +583,7 @@ stylesheet! {
             padding_vertical: 5.0,
             border_radius: 999.0,
             background: Color("transparent".into()),
+            cursor: Cursor::Pointer,
         }
         variant active {
             #[default]
@@ -645,6 +647,7 @@ stylesheet! {
 stylesheet! {
     pub SearchTrigger<()> {
         base(_t) {
+            cursor: Cursor::Pointer,
             width: Length::pct(100.0),
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
@@ -1382,5 +1385,49 @@ stylesheet! {
             padding_horizontal: 8.0,
             padding_vertical: 3.0,
         }
+    }
+}
+
+// A bare icon-sized pressable (the password-visibility eye toggles on the
+// forms pages). Exists so those pressables carry the pointer cursor —
+// a pressable with NO style renders the default arrow on web.
+stylesheet! {
+    pub IconToggleBtn<()> {
+        base(_t) {
+            cursor: Cursor::Pointer,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtime_core::{resolve_style, StyleApplication};
+
+    /// User-reported: the header's Light/Dark toggle rendered the default
+    /// arrow cursor. Root cause: none of this app's hand-rolled pressable
+    /// sheets set `cursor` (idea-ui components carry their own; bare
+    /// `pressable` + app sheet does not). Pin all four so the next custom
+    /// pressable surface copies a correct example.
+    #[test]
+    fn regression_custom_pressable_sheets_carry_pointer_cursor() {
+        let world = runtime_world::World::new();
+        world.enter(|| {
+            for (name, sheet) in [
+                ("SegBtn", SegBtn::sheet()),
+                ("MenuButton", MenuButton::sheet()),
+                ("SearchTrigger", SearchTrigger::sheet()),
+                ("IconToggleBtn", IconToggleBtn::sheet()),
+            ] {
+                let rules = resolve_style(&StyleApplication::new(sheet));
+                assert_eq!(
+                    rules.cursor,
+                    Some(Cursor::Pointer),
+                    "{name} styles a pressable and must show the pointer cursor"
+                );
+            }
+        });
     }
 }

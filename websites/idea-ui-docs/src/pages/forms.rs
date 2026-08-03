@@ -373,7 +373,9 @@ pub fn field() -> Element {
                         Icon(data = if shown { EYE_OFF } else { EYE }, size = 16.0)
                     },
                 );
-                pressable(vec![glyph], move || visible.set(!visible.get())).into_element()
+                pressable(vec![glyph], move || visible.set(!visible.get()))
+                    .with_style(crate::styles::IconToggleBtn())
+                    .into_element()
             }),
         )
     };
