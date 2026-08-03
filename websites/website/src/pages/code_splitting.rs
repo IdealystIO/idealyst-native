@@ -78,9 +78,11 @@ fn lazy_components() -> Element {
                  the first time the component mounts. Chunks are fetched once per \
                  session and cached \u{2014} later mounts resolve before the next \
                  paint.".to_string(),
-                "The chunk file is named after the component \
-                 (`\u{2026}_lazy_Editor.wasm`), so it's recognizable in the network \
-                 tab and in bundle-size reports.".to_string(),
+                "Chunk files are emitted as `module_<n>___lazy_body.wasm`; the \
+                 component's readable name lands in its loader symbol inside \
+                 `__wasm_split.js` (`__wasm_split_load___idealyst_lazy_Editor_\u{2026}`), \
+                 which maps any chunk in the network tab back to its \
+                 component.".to_string(),
             ],
             code = Some(example.to_string()),
         )

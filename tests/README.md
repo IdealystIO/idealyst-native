@@ -23,6 +23,18 @@ something regresses here, the surface area to bisect is small.
   verifies the main bundle ↔ chunk boundary survives release-mode
   pruning (chunks reach into main-bundle data symbols for shared
   vtables, statics, panic strings).
+- `lazy-many-splits/` — 30 `#[component(lazy)]` pages dispatched through
+  a static fn-pointer catalog (the idea-ui-docs shape). Guards the
+  many-split-point pipeline end-to-end; added for the splitter's
+  call-graph misclassification under duplicate mangled names (LLVM under
+  `opt-level=z` emits distinct functions sharing one name): edges
+  collided in name-keyed maps, a fmt shim main's data still referenced
+  got gutted, and release builds trapped at boot with `RuntimeError:
+  function signature mismatch`. One or two split points never triggered
+  it — dozens did. Which duplicate loses the collision is hash-order
+  luck, so the deterministic guard for a recurrence is the
+  `emit_main_module` tripwire (see the fixture's lib.rs); this app keeps
+  the shape exercised in a browser.
 - `lazy-payload-split/` — a **pair** (`eager/`, `lazy/`) plus a shared
   `heavy/` fake third-party SDK whose *mount handler* reaches a 512 KiB
   static. The two apps are identical — same `app()`, same rendered tree,

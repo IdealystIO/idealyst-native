@@ -3,6 +3,86 @@
 Notable changes per release. Upgrade instructions live in `docs/` —
 each entry links to its migration guide.
 
+## Unreleased
+
+### Added
+
+- **Wall clock (`runtime_core::time`)** — calendar-time counterpart to
+  the monotonic `TimeSource`: `WallClockSource { epoch_millis,
+  local_offset_minutes }`, installed per backend at mount. Native
+  defaults to a UTC `SystemTime` source via the same
+  `install_default_time_source` hook; the web backend installs a
+  `js Date`-backed source during bootstrap (real local offset,
+  DST-aware per call) and macOS an `NSTimeZone`-backed one. Exists so
+  UI can know the user's civil date ("today" in a date picker) —
+  something a monotonic delta can never provide.
+- **idea-ui date components** — `Calendar` / `RangeCalendar` (inline
+  month grids with month/year zoom navigation, min/max/per-day
+  disabling), `DatePicker` / `DateTimePicker` / `DateRangePicker`
+  (anchored popup pickers on a `Select`-shaped trigger), `DateInput` /
+  `DateTimeInput` (typed `Field` entry with lenient token parsing,
+  blur canonicalization, and a calendar-button popup), and `TimeInput`.
+  Backed by a new chrono-free `idea_ui::date` module: `CivilDate` /
+  `CivilTime` / `CivilDateTime` (Hinnant civil-day math), token
+  formatting/parsing (`YYYY-MM-DD`, `h:mm A`, …), and overridable
+  `DateLabels` for i18n.
+- **`Field.on_focus_change`** — optional `Rc<dyn Fn(bool)>` observing
+  the input's focus transitions (the Field already bridged `on_focus`
+  internally for its focus ring; this forwards the same signal to the
+  host). The typed date/time inputs use it to normalize on blur.
+- **Smart typing in the typed date/time inputs** — `DateInput` /
+  `DateTimeInput` / `TimeInput` now mask appended keystrokes against
+  their token format (`idea_ui::date_mask`): delimiters insert
+  themselves (`07031994` → `07/03/1994`), a digit no segment can
+  extend jumps ahead on its own (month `2` → `02/`), Tab completes an
+  ambiguous partial segment in place (month `1` + Tab → `01/`), and an
+  uncommittable partial (a bare `0` month) swallows the Tab. Deletions,
+  mid-string edits and pasted non-conforming text bypass the mask and
+  fall back to the lenient parser.
+- **`Field.on_key_down`** — optional `Rc<dyn Fn(&KeyEvent) ->
+  KeyOutcome>` forwarded to the inner `text_input`, so composed inputs
+  can intercept keys before the platform default (the smart-typing Tab
+  handling rides this).
+- **`idealyst serve --precompressed`** — serves the `.br` sidecars a
+  release `idealyst build --web` already stages (and `.gz` sidecars,
+  if present) with `Content-Encoding` + `Vary: Accept-Encoding` when
+  the browser accepts them, keeping the original file's Content-Type.
+  Mirrors nginx `brotli_static` / Caddy `precompressed`, so release
+  bundle transfer sizes and load times can be measured in a local
+  browser. Files without a sidecar (and clients without the encoding)
+  get the uncompressed bytes as before; the flag is off by default and
+  other `serve_static` consumers (`idealyst dev`, `idealyst docs`) are
+  unchanged.
+
+### Fixed
+
+- **wasm-split call-graph misclassification under duplicate mangled
+  names.** LLVM under `opt-level=z` emits distinct functions sharing one
+  mangled name (small alloc/core/hashbrown monomorphizations; the
+  idea-ui-docs release module carried 42 such names, including
+  `alloc::fmt::format`). `wasm-split-cli` correlated the
+  relocation-bearing pre-bindgen module with the bindgened module via
+  name-keyed maps, so same-named copies collided: call-graph edges landed
+  on an arbitrary copy, the other was classified chunk-only and gutted
+  from the main bundle even though main-resident fmt vtables (function
+  pointers in data segments) still referenced its table slot. Release
+  builds with enough `#[component(lazy)]` split points then trapped at
+  boot with `RuntimeError: function signature mismatch` before the first
+  chunk request. One or two split points (the existing fixtures) never
+  triggered it; the idea-ui-docs site with a lazy chunk per page did,
+  reliably. Relocation targets now resolve by function *index* from the
+  linking section (exact), the old→new function mapping unions all
+  same-named copies (over-approximating reachability — a duplicate stays
+  in main if any copy is main-reachable), and the reparented
+  recovered-children edges are actually merged into the call graph
+  (previously dropped). `emit_main_module` now also carries a tripwire —
+  it refuses to gut a function that a main-reachable data symbol still
+  points at, so any future classification regression fails the build
+  loudly instead of emitting corrupt output. New fixture:
+  `tests/lazy-many-splits` — 30 `#[component(lazy)]` pages behind a
+  static fn-pointer catalog, wired into the `prune-regression` browser
+  suite.
+
 ## 1.0.1
 
 ### Added

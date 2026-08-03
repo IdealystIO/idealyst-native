@@ -171,6 +171,7 @@ pub fn hydrate_in_with<S: runtime_vocabulary::BuiltinSet>(
     // hydration buffering both ride the scheduler, so it must exist first.
     crate::install_scheduler();
     crate::install_time_source();
+    crate::install_wall_clock_source();
     // Navigator URL services, gated on the set exactly as in
     // `start_in_with` — see the comment there for why this can't be an
     // unconditional call (it anchors `NavigatorControl` + drop glue,

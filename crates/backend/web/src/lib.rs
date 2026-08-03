@@ -80,7 +80,7 @@ pub use logger::install_logger;
 #[cfg(feature = "async-driver")]
 pub use render_loop::install_render_loop;
 pub use scheduler::install_scheduler;
-pub use time_source::install_time_source;
+pub use time_source::{install_time_source, install_wall_clock_source};
 pub use viewport_observer::{install_viewport_observer, page_is_prerendered, ssr_viewport};
 
 /// Install a `Weak` self-handle for the active `WebBackend`. Required

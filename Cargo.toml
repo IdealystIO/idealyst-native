@@ -349,6 +349,7 @@ members = [
     "tests/vtable-dispatch",
     "tests/theme-swap",
     "tests/lazy-chunk-handoff",
+    "tests/lazy-many-splits",
     "tests/lazy-payload-split/heavy",
     "tests/lazy-payload-split/eager",
     "tests/lazy-payload-split/lazy",

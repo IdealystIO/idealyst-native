@@ -8,7 +8,7 @@
 
 use std::cell::RefCell;
 
-use runtime_shared::time::TimeSource;
+use runtime_shared::time::{TimeSource, WallClockSource};
 use wasm_bindgen::prelude::*;
 
 /// Register this backend's time source with `runtime-core`.
@@ -16,6 +16,38 @@ use wasm_bindgen::prelude::*;
 /// `debug-stats` measurement starts.
 pub fn install_time_source() {
     runtime_shared::time::install_time_source(Box::new(WebTimeSource::new()));
+}
+
+/// Register this backend's wall clock (`js Date`) with `runtime-core`.
+/// Idempotent — first install wins. Required on web: the shared
+/// `SystemWallClockSource` default is never installed here
+/// (`SystemTime::now()` panics on wasm32-unknown-unknown), so without
+/// this install `runtime_core::time::epoch_millis()` reads `0` and
+/// every civil-date UI thinks it's 1970.
+pub fn install_wall_clock_source() {
+    runtime_shared::time::install_wall_clock_source(Box::new(WebWallClockSource));
+}
+
+/// `js Date`-backed [`WallClockSource`]: `Date.now()` for the epoch
+/// instant; `getTimezoneOffset()` (negated — JS reports UTC−local, the
+/// trait wants local−UTC) read off a fresh `Date` per call so DST
+/// transitions are honored mid-session. `js_sys::Date` is a direct
+/// binding, so no reflection is needed here (the reflection below is
+/// about avoiding a `web-sys` `Performance` dep, which has no `Date`
+/// analogue in `js-sys`).
+// (Unlike `WebTimeSource` it holds no cached `JsValue`s — each call
+// constructs its `Date` fresh — so the auto `Send`/`Sync` impls apply
+// and no unsafe assertion is needed.)
+struct WebWallClockSource;
+
+impl WallClockSource for WebWallClockSource {
+    fn epoch_millis(&self) -> i64 {
+        js_sys::Date::now() as i64
+    }
+
+    fn local_offset_minutes(&self) -> i32 {
+        -(js_sys::Date::new_0().get_timezone_offset() as i32)
+    }
 }
 
 struct WebTimeSource {

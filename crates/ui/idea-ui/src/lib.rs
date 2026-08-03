@@ -101,6 +101,12 @@ extern crate self as idea_ui;
 
 pub mod breakpoint;
 pub mod components;
+/// Civil date/time values + token formatting for the date components
+/// (`Calendar`, `DatePicker`, `DateInput`, …) — chrono-free by design.
+pub mod date;
+/// Smart-typing mask for the typed date/time inputs — auto-inserted
+/// delimiters + segment auto-advance, derived from the format tokens.
+pub(crate) mod date_mask;
 #[cfg(feature = "docs")]
 pub mod doc_controls;
 pub mod intent;
@@ -173,7 +179,16 @@ pub use components::avatar::{Avatar, AvatarColor, AvatarProps, AvatarSize};
 pub use components::badge::{Badge, BadgeProps};
 pub use components::button::{Button, ButtonProps};
 pub use components::breadcrumbs::{Breadcrumbs, BreadcrumbsProps, Crumb};
+pub use components::calendar::{Calendar, CalendarProps, RangeCalendar, RangeCalendarProps};
 pub use components::card::{Card, CardPadding, CardProps};
+pub use components::date_input::{DateInput, DateInputProps, DateTimeInput, DateTimeInputProps};
+pub use components::date_picker::{
+    DatePicker, DatePickerProps, DateRangePicker, DateRangePickerProps, DateTimePicker,
+    DateTimePickerProps,
+};
+pub use components::time_input::{TimeInput, TimeInputProps};
+// The date components' value vocabulary — apps hold these in their state.
+pub use date::{CivilDate, CivilDateTime, CivilTime, DateLabels, Weekday};
 pub use components::center::{Center, CenterProps};
 pub use components::checkbox::{Checkbox, CheckboxProps};
 pub use components::chip::{Chip, ChipProps};

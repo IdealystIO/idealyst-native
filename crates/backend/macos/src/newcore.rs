@@ -303,6 +303,32 @@ pub fn start(
     start_with::<runtime_vocabulary::AllBuiltins, _, _>(backend, register, build)
 }
 
+/// Wall clock for the macOS mount: `SystemTime` for the epoch instant
+/// (real on this target) + `NSTimeZone.localTimeZone.secondsFromGMT`
+/// for the local UTC offset. Both are read fresh per call so a system
+/// clock change or DST transition mid-process is honored — caching the
+/// offset at install is exactly what `WallClockSource`'s contract
+/// forbids. NSTimeZone is immutable and its class methods are
+/// thread-safe, so the `Send + Sync` bound holds without a lock.
+struct MacosWallClockSource;
+
+impl runtime_shared::time::WallClockSource for MacosWallClockSource {
+    fn epoch_millis(&self) -> i64 {
+        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => d.as_millis() as i64,
+            Err(e) => -(e.duration().as_millis() as i64),
+        }
+    }
+
+    fn local_offset_minutes(&self) -> i32 {
+        // SAFETY: `localTimeZone` / `secondsFromGMT` have no
+        // preconditions — the `unsafe` is objc2 0.2's blanket marking on
+        // generated Foundation methods, not a real invariant to uphold.
+        let seconds = unsafe { objc2_foundation::NSTimeZone::localTimeZone().secondsFromGMT() };
+        (seconds / 60) as i32
+    }
+}
+
 /// [`start`], booting only the builtin primitives `S` selects.
 ///
 /// The selector is a type parameter so the choice is made at compile time:
@@ -333,6 +359,11 @@ pub fn start_with<S, R, B>(
     // gets the uninstalled default until the migration gives those
     // installs a public seam (later-phase item, noted in module docs).
     let platform = backend.borrow().platform_impl();
+    // Wall clock BEFORE the defaults: `install_default_time_source`
+    // also installs the UTC-only `SystemWallClockSource`, and the
+    // OnceLock is first-install-wins — this NSTimeZone-backed source
+    // must land first so "today" respects the user's timezone.
+    runtime_shared::time::install_wall_clock_source(Box::new(MacosWallClockSource));
     runtime_shared::time::install_default_time_source(platform);
 
     let mut registry: Registry<MacosBackend> = Registry::new();

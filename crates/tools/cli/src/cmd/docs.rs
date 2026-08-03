@@ -153,7 +153,7 @@ pub fn run(args: Args) -> Result<()> {
     if args.open {
         open_browser(&url);
     }
-    serve_static(&args.host, args.port, &serve_dir, None, None, None, None, None, None)
+    serve_static(&args.host, args.port, &serve_dir, None, None, None, None, None, None, false)
 }
 
 /// Build + run the ephemeral `catalog` bin for `project` and write its

@@ -1,5 +1,6 @@
 //! Forms — Checkbox, Radio, Switch, Slider, Field, Textarea, Select,
-//! Autocomplete, SegmentedControl.
+//! Autocomplete, SegmentedControl, Calendar, DatePicker, DateInput,
+//! TimeInput.
 //!
 //! Each `pub fn name() -> Element` returns the page **body only** — a
 //! column of demo `Section`s wrapped by `crate::pages::body`. The central
@@ -10,11 +11,14 @@
 use std::rc::Rc;
 
 use icons_lucide::{CHECK, EYE, EYE_OFF, HEART, SEARCH, STAR};
-use runtime_core::{pressable, rx, signal, ui, Element, IntoElement};
+use runtime_core::{pressable, rx, signal, ui, Element, IntoElement, Signal};
 use idea_ui::{
-    tone, Adornment, Autocomplete, Checkbox, ControlSize, Field, FieldSize, Icon, RadioGroup,
-    RadioOption, SegmentOption, SegmentedControl, Select, SelectOption, Slider, Stack, StackGap,
-    Switch, Textarea, Typography,
+    date::{format_date, format_datetime, format_time},
+    tone, Adornment, Autocomplete, Calendar, Checkbox, CivilDate, CivilDateTime, CivilTime,
+    ControlSize, DateInput, DatePicker, DateRangePicker, DateTimeInput, DateTimePicker, Field,
+    FieldSize, Icon, RadioGroup, RadioOption, RangeCalendar, SegmentOption, SegmentedControl,
+    Select, SelectOption, Slider, Stack, StackGap, Switch, Textarea, TimeInput, Typography,
+    Weekday,
 };
 
 use crate::pages::body;
@@ -836,6 +840,395 @@ ui! {
                 Prop { name: "value",     ty: "Reactive<String>",   desc: "Selected segment's id — a Signal<String> or a model-derived rx!(...)." },
                 Prop { name: "on_change", ty: "Rc<dyn Fn(String)>", desc: "Fires with the chosen segment's id when the user taps a segment." },
                 Prop { name: "options",   ty: "Vec<SegmentOption>", desc: "Segments, left-to-right. SegmentOption::new(id, label)." },
+            ])
+        }
+    }])
+}
+
+// =============================================================================
+// Calendar
+// =============================================================================
+
+pub fn calendar() -> Element {
+    let picked: Signal<Option<CivilDate>> = signal(None);
+    let on_pick: Rc<dyn Fn(CivilDate)> = Rc::new(move |d| picked.set(Some(d)));
+    let picked_label = runtime_core::switch(
+        move || picked.get(),
+        |v: &Option<CivilDate>| {
+            let label = match v {
+                Some(d) => format!("Picked: {}", format_date(*d, "YYYY-MM-DD")),
+                None => "Nothing picked yet.".to_string(),
+            };
+            ui! { Typography(content = label, muted = true) }
+        },
+    );
+
+    let single = ui! {
+        Calendar(value = picked, on_change = on_pick)
+    };
+    let single_controls = ui! {
+        Stack(gap = StackGap::Sm) {
+            H3(content = "Notes".to_string())
+            P(content = "Press the month/year title to zoom out to a month grid, and \
+                again for a 12-year page — picking steps back down toward days.".to_string())
+            picked_label
+        }
+    };
+
+    let bounded: Signal<Option<CivilDate>> = signal(None);
+    let on_bounded: Rc<dyn Fn(CivilDate)> = Rc::new(move |d| bounded.set(Some(d)));
+    let weekends: Rc<dyn Fn(CivilDate) -> bool> =
+        Rc::new(|d| matches!(d.weekday(), Weekday::Saturday | Weekday::Sunday));
+
+    let range: Signal<Option<(CivilDate, CivilDate)>> = signal(None);
+    let on_range: Rc<dyn Fn(CivilDate, CivilDate)> = Rc::new(move |a, b| range.set(Some((a, b))));
+    let range_label = runtime_core::switch(
+        move || range.get(),
+        |v: &Option<(CivilDate, CivilDate)>| {
+            let label = match v {
+                Some((a, b)) => format!(
+                    "Range: {} – {}",
+                    format_date(*a, "YYYY-MM-DD"),
+                    format_date(*b, "YYYY-MM-DD")
+                ),
+                None => "Press once for the start, again for the end.".to_string(),
+            };
+            ui! { Typography(content = label, muted = true) }
+        },
+    );
+    let range_demo = ui! {
+        RangeCalendar(value = range, on_change = on_range)
+    };
+    let range_controls = ui! {
+        Stack(gap = StackGap::Sm) {
+            H3(content = "Notes".to_string())
+            range_label
+        }
+    };
+
+    body(vec![ui! {
+        Section(title = "Inline calendar".to_string()) {
+            P(content = "A controlled month grid over a `Signal<Option<CivilDate>>`. \
+                `CivilDate` is idea-ui's plain timezone-less calendar value — no chrono \
+                dependency; the host owns the signal and writes it from `on_change`.".to_string())
+            Demo(preview = Some(single), controls = Some(single_controls))
+        }
+    }, ui! {
+        Section(title = "Bounds and disabled days".to_string()) {
+            P(content = "`min`/`max` clamp the pickable window (earlier/later days render \
+                blocked), and `is_date_disabled` vetoes individual days — here, weekends. \
+                Blocked days dim and take no press handler.".to_string())
+            DemoSurface {
+                Calendar(
+                    value = bounded,
+                    on_change = on_bounded,
+                    min = CivilDate::today(),
+                    is_date_disabled = Some(weekends),
+                )
+            }
+            CodePanel(src = r##"let weekends: Rc<dyn Fn(CivilDate) -> bool> =
+    Rc::new(|d| matches!(d.weekday(), Weekday::Saturday | Weekday::Sunday));
+
+ui! {
+    Calendar(
+        value = date,
+        on_change = on_pick,
+        min = CivilDate::today(),        // bare dates coerce into Option props
+        is_date_disabled = Some(weekends),
+    )
+}"##.to_string())
+        }
+    }, ui! {
+        Section(title = "Range selection".to_string()) {
+            P(content = "`RangeCalendar` binds a `Signal<Option<(CivilDate, CivilDate)>>`. \
+                The first press anchors the start, the second commits the pair in \
+                chronological order; the interior renders as a soft band.".to_string())
+            Demo(preview = Some(range_demo), controls = Some(range_controls))
+        }
+    }, ui! {
+        Section(title = "Props".to_string()) {
+            PropsTable(rows = vec![
+                Prop { name: "value",            ty: "Signal<Option<CivilDate>>",         desc: "Controlled selection. The host owns the signal." },
+                Prop { name: "on_change",        ty: "Rc<dyn Fn(CivilDate)>",             desc: "Fires with the picked day; the host writes the signal." },
+                Prop { name: "min / max",        ty: "Option<CivilDate>",                 desc: "Inclusive pickable window. Bare CivilDate values coerce." },
+                Prop { name: "is_date_disabled", ty: "Option<Rc<dyn Fn(CivilDate)->bool>>", desc: "Per-day veto — blocked days dim and take no press." },
+                Prop { name: "first_weekday",    ty: "Weekday",                           desc: "First grid column. Default Monday (ISO)." },
+                Prop { name: "labels",           ty: "Option<Rc<DateLabels>>",            desc: "Month/weekday display names. Default English." },
+                Prop { name: "framed",           ty: "bool",                              desc: "Draw the panel border. Off inside picker popups." },
+            ])
+        }
+    }])
+}
+
+// =============================================================================
+// DatePicker
+// =============================================================================
+
+pub fn date_picker() -> Element {
+    let due: Signal<Option<CivilDate>> = signal(None);
+    let on_due: Rc<dyn Fn(Option<CivilDate>)> = Rc::new(move |d| due.set(d));
+    let due_label = runtime_core::switch(
+        move || due.get(),
+        |v: &Option<CivilDate>| {
+            let label = match v {
+                Some(d) => format!("Due: {}", format_date(*d, "YYYY-MM-DD")),
+                None => "No deadline set.".to_string(),
+            };
+            ui! { Typography(content = label, muted = true) }
+        },
+    );
+    let single = ui! {
+        DatePicker(
+            value = due,
+            on_change = on_due,
+            min = CivilDate::today(),
+            placeholder = Some("Pick a deadline".to_string()),
+            clearable = true,
+        )
+    };
+    let single_controls = ui! {
+        Stack(gap = StackGap::Sm) {
+            H3(content = "Notes".to_string())
+            P(content = "Picking a day commits and closes; `Clear` commits `None`. \
+                Outside click or Escape dismisses without committing.".to_string())
+            due_label
+        }
+    };
+
+    let stay: Signal<Option<(CivilDate, CivilDate)>> = signal(None);
+    let on_stay: Rc<dyn Fn(Option<(CivilDate, CivilDate)>)> = Rc::new(move |r| stay.set(r));
+
+    let meet: Signal<Option<CivilDateTime>> = signal(None);
+    let on_meet: Rc<dyn Fn(Option<CivilDateTime>)> = Rc::new(move |v| meet.set(v));
+    let meet_label = runtime_core::switch(
+        move || meet.get(),
+        |v: &Option<CivilDateTime>| {
+            let label = match v {
+                Some(dt) => format!("Meeting: {}", format_datetime(*dt, "YYYY-MM-DD HH:mm")),
+                None => "No meeting scheduled.".to_string(),
+            };
+            ui! { Typography(content = label, muted = true) }
+        },
+    );
+    let datetime = ui! {
+        DateTimePicker(
+            value = meet,
+            on_change = on_meet,
+            display_format = "YYYY-MM-DD h:mm A".to_string(),
+            time_format = "h:mm A".to_string(),
+            placeholder = Some("Schedule a meeting".to_string()),
+        )
+    };
+    let datetime_controls = ui! {
+        Stack(gap = StackGap::Sm) {
+            H3(content = "Notes".to_string())
+            P(content = "The panel stays open across picks so date and time can both be \
+                set; the trigger renders a 12-hour clock via the `h:mm A` tokens.".to_string())
+            meet_label
+        }
+    };
+
+    body(vec![ui! {
+        Section(title = "Single date".to_string()) {
+            P(content = "A Select-style trigger opening the Calendar in an anchored popup. \
+                Controlled by a `Signal<Option<CivilDate>>`; `on_change` fires `Some(day)` \
+                on pick and `None` from the Clear action.".to_string())
+            Demo(preview = Some(single), controls = Some(single_controls))
+        }
+    }, ui! {
+        Section(title = "Date range".to_string()) {
+            P(content = "`DateRangePicker` binds `Signal<Option<(CivilDate, CivilDate)>>` — \
+                first press anchors the start, the second commits the ordered pair and \
+                closes. The trigger renders `start – end`.".to_string())
+            DemoSurface {
+                DateRangePicker(
+                    value = stay,
+                    on_change = on_stay,
+                    placeholder = Some("Report period".to_string()),
+                    clearable = true,
+                )
+            }
+        }
+    }, ui! {
+        Section(title = "Date and time".to_string()) {
+            P(content = "`DateTimePicker` adds a time row under the calendar and binds \
+                `Signal<Option<CivilDateTime>>`. `default_time` seeds the time when a day \
+                is picked before any time is set.".to_string())
+            Demo(preview = Some(datetime), controls = Some(datetime_controls))
+        }
+    }, ui! {
+        Section(title = "Props".to_string()) {
+            PropsTable(rows = vec![
+                Prop { name: "value",          ty: "Signal<Option<CivilDate>>",       desc: "Controlled value. The host owns the signal." },
+                Prop { name: "on_change",      ty: "Rc<dyn Fn(Option<CivilDate>)>",   desc: "Some(day) on pick; None on an explicit clear." },
+                Prop { name: "placeholder",    ty: "Option<String>",                  desc: "Trigger text when no value is set." },
+                Prop { name: "display_format", ty: "String",                          desc: "Token format for the trigger text. Default YYYY-MM-DD." },
+                Prop { name: "min / max",      ty: "Option<CivilDate>",               desc: "Inclusive pickable window in the popup." },
+                Prop { name: "size",           ty: "SelectSize",                      desc: "Trigger height — shared scale with Select. Default Md." },
+                Prop { name: "clearable",      ty: "bool",                            desc: "Offer a Clear footer action that commits None." },
+            ])
+        }
+    }])
+}
+
+// =============================================================================
+// DateInput
+// =============================================================================
+
+pub fn date_input() -> Element {
+    let birthday: Signal<Option<CivilDate>> = signal(None);
+    let on_birthday: Rc<dyn Fn(Option<CivilDate>)> = Rc::new(move |d| birthday.set(d));
+    let birthday_label = runtime_core::switch(
+        move || birthday.get(),
+        |v: &Option<CivilDate>| {
+            let label = match v {
+                Some(d) => format!("Committed: {}", format_date(*d, "YYYY-MM-DD")),
+                None => "Nothing committed yet.".to_string(),
+            };
+            ui! { Typography(content = label, muted = true) }
+        },
+    );
+    let typed = ui! {
+        DateInput(
+            value = birthday,
+            on_change = on_birthday,
+            label = Some("Date of birth".to_string()),
+            format = "D/M/YYYY".to_string(),
+            help = Some("Just type 731994 — the delimiters insert themselves.".to_string()),
+            max = CivilDate::today(),
+        )
+    };
+    let typed_controls = ui! {
+        Stack(gap = StackGap::Sm) {
+            H3(content = "Notes".to_string())
+            P(content = "Smart typing: digits auto-insert the format's delimiters and jump \
+                to the next segment as soon as they're unambiguous (day 7 can't extend, so \
+                7 becomes 7/ on its own). Tab commits an ambiguous partial segment in \
+                place — 1 + Tab reads it as month 1 and moves on — while a partial no \
+                value can commit (a bare 0) swallows the Tab. The trailing calendar \
+                button opens the same popup Calendar as DatePicker.".to_string())
+            birthday_label
+        }
+    };
+
+    let appointment: Signal<Option<CivilDateTime>> = signal(None);
+    let on_appointment: Rc<dyn Fn(Option<CivilDateTime>)> = Rc::new(move |v| appointment.set(v));
+
+    body(vec![ui! {
+        Section(title = "Typed input with popup".to_string()) {
+            P(content = "A Field that parses typed text against a token format (`YYYY MM M \
+                DD D`, any other character a literal) and shows an inline error while the \
+                text doesn't parse. `min`/`max` gate the POPUP only — typed text is \
+                validated for shape, not range; wire the `error` prop for range \
+                feedback.".to_string())
+            Demo(preview = Some(typed), controls = Some(typed_controls))
+        }
+    }, ui! {
+        Section(title = "Date and time".to_string()) {
+            P(content = "`DateTimeInput` parses a combined format — date tokens plus time \
+                tokens in one string — and its popup adds the time row.".to_string())
+            DemoSurface {
+                DateTimeInput(
+                    value = appointment,
+                    on_change = on_appointment,
+                    label = Some("Appointment".to_string()),
+                    format = "YYYY-MM-DD HH:mm".to_string(),
+                )
+            }
+        }
+    }, ui! {
+        Section(title = "Props".to_string()) {
+            PropsTable(rows = vec![
+                Prop { name: "value",           ty: "Signal<Option<CivilDate>>",     desc: "Controlled value. The host owns the signal." },
+                Prop { name: "on_change",       ty: "Rc<dyn Fn(Option<CivilDate>)>", desc: "Some(date) on each valid commit; None when emptied." },
+                Prop { name: "format",          ty: "String",                        desc: "Token format for parsing AND display. Default YYYY-MM-DD." },
+                Prop { name: "label / help",    ty: "Option<String>",                desc: "Field label and helper text (see Field)." },
+                Prop { name: "error",           ty: "Option<String>",                desc: "Host-side error; a parse error takes precedence while present." },
+                Prop { name: "invalid_message", ty: "String",                        desc: "Error shown while the text doesn't parse. Default \"Invalid date\"." },
+                Prop { name: "picker",          ty: "bool",                          desc: "Show the trailing calendar button + popup. Default true." },
+                Prop { name: "min / max",       ty: "Option<CivilDate>",             desc: "Popup-only bounds — typed text is shape-validated, not range." },
+            ])
+        }
+    }])
+}
+
+// =============================================================================
+// TimeInput
+// =============================================================================
+
+pub fn time_input() -> Element {
+    let alarm: Signal<Option<CivilTime>> = signal(None);
+    let on_alarm: Rc<dyn Fn(Option<CivilTime>)> = Rc::new(move |t| alarm.set(t));
+    let alarm_label = runtime_core::switch(
+        move || alarm.get(),
+        |v: &Option<CivilTime>| {
+            let label = match v {
+                Some(t) => format!("Committed: {}", format_time(*t, "HH:mm")),
+                None => "Nothing committed yet.".to_string(),
+            };
+            ui! { Typography(content = label, muted = true) }
+        },
+    );
+    let twenty_four = ui! {
+        TimeInput(
+            value = alarm,
+            on_change = on_alarm,
+            label = Some("Alarm".to_string()),
+        )
+    };
+    let twenty_four_controls = ui! {
+        Stack(gap = StackGap::Sm) {
+            H3(content = "Notes".to_string())
+            P(content = "Type 730 — hour 7 can't extend past 23, so the colon inserts \
+                itself and the hour pads to 07:. Ambiguous starts (0, 1, 2) wait for a \
+                second digit; Tab commits them in place.".to_string())
+            alarm_label
+        }
+    };
+
+    let checkin: Signal<Option<CivilTime>> = signal(None);
+    let on_checkin: Rc<dyn Fn(Option<CivilTime>)> = Rc::new(move |t| checkin.set(t));
+
+    body(vec![ui! {
+        Section(title = "24-hour".to_string()) {
+            P(content = "A typed Field bound to `Signal<Option<CivilTime>>` — a plain \
+                timezone-less time of day. The default `HH:mm` format parses and renders \
+                a 24-hour clock; the leading clock glyph is built in.".to_string())
+            Demo(preview = Some(twenty_four), controls = Some(twenty_four_controls))
+        }
+    }, ui! {
+        Section(title = "12-hour".to_string()) {
+            P(content = "Pass `h:mm A` for a 12-hour clock with meridiem — typing `730p` \
+                completes to `7:30 PM` (a single a/p finishes the meridiem) and parses \
+                to 19:30. `12 am` maps to midnight and `12 pm` to noon.".to_string())
+            DemoSurface {
+                TimeInput(
+                    value = checkin,
+                    on_change = on_checkin,
+                    label = Some("Check-in".to_string()),
+                    format = "h:mm A".to_string(),
+                )
+            }
+            CodePanel(src = r##"let checkin = signal(None);
+let on_checkin: Rc<dyn Fn(Option<CivilTime>)> = Rc::new(move |t| checkin.set(t));
+
+ui! {
+    TimeInput(
+        value = checkin,
+        on_change = on_checkin,
+        format = "h:mm A".to_string(),
+    )
+}"##.to_string())
+        }
+    }, ui! {
+        Section(title = "Props".to_string()) {
+            PropsTable(rows = vec![
+                Prop { name: "value",           ty: "Signal<Option<CivilTime>>",     desc: "Controlled value. The host owns the signal." },
+                Prop { name: "on_change",       ty: "Rc<dyn Fn(Option<CivilTime>)>", desc: "Some(time) on each valid parse; None when emptied." },
+                Prop { name: "format",          ty: "String",                        desc: "Token format for parsing AND display. Default HH:mm." },
+                Prop { name: "label / help",    ty: "Option<String>",                desc: "Field label and helper text (see Field)." },
+                Prop { name: "invalid_message", ty: "String",                        desc: "Error shown while the text doesn't parse. Default \"Invalid time\"." },
+                Prop { name: "icon",            ty: "bool",                          desc: "Show the leading clock glyph. Default true." },
             ])
         }
     }])

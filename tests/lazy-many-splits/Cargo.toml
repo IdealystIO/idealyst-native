@@ -1,0 +1,28 @@
+[package]
+name = "lazy-many-splits-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Framework regression test: many #[component(lazy)] split points dispatched through a static fn-pointer catalog. Catches wasm-split call-graph misclassification under duplicate mangled names (the release-only 'function signature mismatch' boot trap)."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# The author surface, aliased to `runtime_core` at the crate root.
+# `runtime-vocabulary` because the `ui!` emission spells absolute
+# `::runtime_vocabulary::glue::…` paths; `runtime-scene` for the
+# `Registry`/`Host` in the `register_scene_extensions` seam.
+runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+idea-ui = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Lazy Many Splits Test"
+bundle_id = "ai.truday.idealyst.lazy_many_splits_test"
+version   = "0.0.1"
+targets   = ["web"]
+
+[package.metadata.idealyst.app.splash]
+duration_ms = 0

@@ -339,6 +339,34 @@ impl<'a> Splitter<'a> {
         // Perform some analysis of the module before we start messing with it
         let unused_symbols = self.unused_main_symbols();
 
+        // Tripwire: a function about to be gutted from main must never be
+        // referenced by a main-reachable DATA symbol (an fmt vtable, a
+        // fn-pointer table). With a correct call graph this is impossible —
+        // a main-reachable data symbol's function edges put the target in
+        // `main_graph`, which excludes it from `unused_main_symbols`. If it
+        // fires, classification regressed (the 2026-08 duplicate-mangled-
+        // name collision shipped a main.wasm whose fmt vtables pointed at
+        // gutted slots — "function signature mismatch" at boot), and
+        // failing the build here is strictly better than shipping silently
+        // corrupted output.
+        for sym in &unused_symbols {
+            let Node::Function(func) = sym else { continue };
+            let Some(parents) = self.parent_graph.get(sym) else {
+                continue;
+            };
+            for parent in parents {
+                if matches!(parent, Node::DataSymbol(_)) && self.main_graph.contains(parent) {
+                    anyhow::bail!(
+                        "wasm-split classification bug: function {:?} is about to be \
+                         removed from the main bundle but a main-reachable data symbol \
+                         ({parent:?}) still holds a pointer to it. Refusing to emit a \
+                         corrupt main module.",
+                        self.source_module.funcs.get(*func).name,
+                    );
+                }
+            }
+        }
+
         // Diagnostic (opt-in): report how much of main's data section is
         // chunk-only — i.e. data that some split module also carries and
         // re-initialises, so it's the theoretical ceiling for a future
@@ -1659,35 +1687,58 @@ impl<'a> Splitter<'a> {
     fn build_call_graph(&mut self) -> Result<()> {
         let original = ModuleWithRelocations::new(self.original)?;
 
-        let old_names: HashMap<String, FunctionId> = original
-            .module
-            .funcs
-            .iter()
-            .flat_map(|f| Some((f.name.clone()?, f.id())))
-            .collect();
-
-        let new_names: HashMap<String, FunctionId> = self
-            .source_module
-            .funcs
-            .iter()
-            .flat_map(|f| Some((f.name.clone()?, f.id())))
-            .collect();
-
-        let mut old_to_new = HashMap::new();
-        let mut new_call_graph: HashMap<Node, HashSet<Node>> = HashMap::new();
-
-        for (new_name, new_func) in new_names.iter() {
-            if let Some(old_func) = old_names.get(new_name) {
-                old_to_new.insert(*old_func, new_func);
-            } else {
-                new_call_graph.insert(Node::Function(*new_func), HashSet::new());
+        // Name → every function with that name. A name-keyed 1:1 map is
+        // WRONG here: LLVM under opt-level=z emits distinct functions
+        // sharing one mangled name (see `next_synthetic_export_name`), and
+        // letting them collide in a HashMap attributes call-graph edges to
+        // an arbitrary copy. The copy that lost its edges was then
+        // misclassified chunk-only and gutted from main even though
+        // main-resident data (fmt vtables) still pointed at its table slot
+        // — "function signature mismatch" at the first indirect call.
+        let mut old_names: HashMap<String, Vec<FunctionId>> = HashMap::new();
+        for f in original.module.funcs.iter() {
+            if let Some(name) = f.name.clone() {
+                old_names.entry(name).or_default().push(f.id());
             }
         }
 
-        let get_old = |old: &Node| -> Option<Node> {
+        let mut new_names: HashMap<String, Vec<FunctionId>> = HashMap::new();
+        for f in self.source_module.funcs.iter() {
+            if let Some(name) = f.name.clone() {
+                new_names.entry(name).or_default().push(f.id());
+            }
+        }
+
+        // Old copy → ALL same-named new copies. For a unique name this is
+        // the old 1:1 mapping; for duplicates every copy inherits every
+        // copy's edges, which over-approximates reachability — a duplicate
+        // stays in main if ANY same-named copy is main-reachable. That
+        // costs a handful of duplicated small fns in main, and can never
+        // gut a function whose table slot is still referenced.
+        let mut old_to_new: HashMap<FunctionId, Vec<FunctionId>> = HashMap::new();
+        let mut new_call_graph: HashMap<Node, HashSet<Node>> = HashMap::new();
+
+        for (new_name, new_funcs) in new_names.iter() {
+            if let Some(old_funcs) = old_names.get(new_name) {
+                for old_func in old_funcs {
+                    old_to_new
+                        .entry(*old_func)
+                        .or_default()
+                        .extend(new_funcs.iter().copied());
+                }
+            } else {
+                for new_func in new_funcs {
+                    new_call_graph.insert(Node::Function(*new_func), HashSet::new());
+                }
+            }
+        }
+
+        let get_old = |old: &Node| -> Option<Vec<Node>> {
             match old {
-                Node::Function(id) => old_to_new.get(id).map(|new_id| Node::Function(**new_id)),
-                Node::DataSymbol(id) => Some(Node::DataSymbol(*id)),
+                Node::Function(id) => old_to_new
+                    .get(id)
+                    .map(|new_ids| new_ids.iter().map(|n| Node::Function(*n)).collect()),
+                Node::DataSymbol(id) => Some(vec![Node::DataSymbol(*id)]),
             }
         };
 
@@ -1700,44 +1751,50 @@ impl<'a> Splitter<'a> {
         // wasm-bindgen will dissolve describe functions into the shim functions, but we don't have a
         // sense of lining up old to new, so we just assume everything ends up in the main chunk.
         let mut lost_children = HashSet::new();
-        self.call_graph = original
-            .call_graph
-            .iter()
-            .flat_map(|(old, children)| {
-                // If the old function isn't in the new module, we need to move all its descendents into the main chunk
-                let Some(new) = get_old(old) else {
-                    for child in children {
-                        fn descend(
-                            lost_children: &mut HashSet<Node>,
-                            old_graph: &HashMap<Node, HashSet<Node>>,
-                            node: Node,
-                        ) {
-                            if !lost_children.insert(node) {
-                                return;
-                            }
-
-                            if let Some(children) = old_graph.get(&node) {
-                                for child in children {
-                                    descend(lost_children, old_graph, *child);
-                                }
-                            }
+        let mut mapped_graph: HashMap<Node, HashSet<Node>> = HashMap::new();
+        for (old, children) in original.call_graph.iter() {
+            // If the old function isn't in the new module, we need to move all its descendents into the main chunk
+            let Some(new_parents) = get_old(old) else {
+                for child in children {
+                    fn descend(
+                        lost_children: &mut HashSet<Node>,
+                        old_graph: &HashMap<Node, HashSet<Node>>,
+                        node: Node,
+                    ) {
+                        if !lost_children.insert(node) {
+                            return;
                         }
 
-                        descend(&mut lost_children, &original.call_graph, *child);
+                        if let Some(children) = old_graph.get(&node) {
+                            for child in children {
+                                descend(lost_children, old_graph, *child);
+                            }
+                        }
                     }
-                    return None;
-                };
 
-                let mut new_children = HashSet::new();
-                for child in children {
-                    if let Some(new) = get_old(child) {
-                        new_children.insert(new);
-                    }
+                    descend(&mut lost_children, &original.call_graph, *child);
                 }
+                continue;
+            };
 
-                Some((new, new_children))
-            })
-            .collect();
+            let mut new_children = HashSet::new();
+            for child in children {
+                if let Some(new) = get_old(child) {
+                    new_children.extend(new);
+                }
+            }
+
+            // Merge rather than collect into the map: same-named old
+            // duplicates map onto the same new copies, and a plain
+            // `collect()` would keep only one of their edge sets.
+            for new_parent in new_parents {
+                mapped_graph
+                    .entry(new_parent)
+                    .or_default()
+                    .extend(new_children.iter().copied());
+            }
+        }
+        self.call_graph = mapped_graph;
 
         let mut recovered_children = HashSet::new();
         for lost in lost_children {
@@ -1746,8 +1803,11 @@ impl<'a> Splitter<'a> {
                 Node::Function(id) => {
                     let func = original.module.funcs.get(id);
                     let name = func.name.as_ref().unwrap();
-                    if let Some(entry) = new_names.get(name) {
-                        recovered_children.insert(Node::Function(*entry));
+                    if let Some(entries) = new_names.get(name) {
+                        // All same-named copies: attaching extras to main is
+                        // the conservative direction (see `old_to_new`).
+                        recovered_children
+                            .extend(entries.iter().map(|e| Node::Function(*e)));
                     }
                 }
 
@@ -1764,10 +1824,18 @@ impl<'a> Splitter<'a> {
         main_fn_entry.extend(recovered_children);
 
         // Also attach any truly new symbols to the main function. Usually these are the shim functions
-        for (name, new) in new_names.iter() {
+        for (name, new_funcs) in new_names.iter() {
             if !old_names.contains_key(name) {
-                main_fn_entry.insert(Node::Function(*new));
+                main_fn_entry.extend(new_funcs.iter().map(|f| Node::Function(*f)));
             }
+        }
+
+        // Merge the reparented entries into the real graph. This map was
+        // previously dropped on the floor, so the recovered children never
+        // actually attached to main — merging only ADDS main-side edges,
+        // which is the conservative direction.
+        for (node, children) in new_call_graph {
+            self.call_graph.entry(node).or_default().extend(children);
         }
 
         // Walk the functions and try to disconnect any holes manually
@@ -2131,7 +2199,12 @@ fn parse_module_with_ids(
 struct ModuleWithRelocations<'a> {
     module: Module,
     symbols: Vec<SymbolInfo<'a>>,
-    names_to_funcs: HashMap<String, FunctionId>,
+    /// Wasm function index → walrus id, in index order. Relocation targets
+    /// resolve through this (the linking section's `SymbolInfo::Func`
+    /// carries the exact index) — never by name, because mangled names are
+    /// NOT unique: LLVM under opt-level=z emits distinct functions sharing
+    /// one mangled name (see `next_synthetic_export_name`).
+    index_to_funcs: Vec<FunctionId>,
     call_graph: HashMap<Node, HashSet<Node>>,
     parents: HashMap<Node, HashSet<Node>>,
     relocation_map: HashMap<Node, Vec<RelocationEntry>>,
@@ -2141,20 +2214,15 @@ struct ModuleWithRelocations<'a> {
 
 impl<'a> ModuleWithRelocations<'a> {
     fn new(bytes: &'a [u8]) -> Result<Self> {
-        let module = Module::from_buffer(bytes)?;
+        let (module, index_to_funcs, _) = parse_module_with_ids(bytes)?;
         let raw_data = parse_bytes_to_data_segment(bytes)?;
-        let names_to_funcs = module
-            .funcs
-            .iter()
-            .flat_map(|f| Some((f.name.clone()?, f.id())))
-            .collect();
 
         let mut module = Self {
             module,
             data_symbols: raw_data.data_symbols,
             data_section_range: raw_data.data_range,
             symbols: raw_data.symbols,
-            names_to_funcs,
+            index_to_funcs,
             call_graph: Default::default(),
             relocation_map: Default::default(),
             parents: Default::default(),
@@ -2267,21 +2335,22 @@ impl<'a> ModuleWithRelocations<'a> {
     fn get_symbol_dep_node(&self, index: usize) -> Result<Option<Node>> {
         let res = match self.symbols[index] {
             SymbolInfo::Data { .. } => Some(Node::DataSymbol(index)),
-            SymbolInfo::Func { name, .. } => Some(Node::Function({
-                let name = name.context(
-                    "Function symbol has no name - did you forget to enable debug symbols",
-                )?;
-
-                let func_id = self.names_to_funcs.get(name);
-
-                // wbindgen will synthesize some functions that don't exist in the original module (eg describe functions)
-                // Previously this was a hard error, but now we just ignore it. It used to mean that the user
-                let Some(res) = func_id else {
-                    if !name.contains("__wbindgen_") {
-                        tracing::error!(
-                            "Could not find function symbol {name:?} in module - was this built with LTO, --emit-relocs, and debug symbols? Ignoring."
-                        );
-                    }
+            SymbolInfo::Func {
+                index: func_index,
+                name,
+                ..
+            } => Some(Node::Function({
+                // Resolve by function INDEX, never by name: mangled names
+                // are not unique under opt-level=z, and a name lookup here
+                // attributed data-segment fn-pointer relocations (fmt
+                // vtables and the like) to an arbitrary same-named copy —
+                // the other copy was then misclassified chunk-only and
+                // gutted out of main while main's vtable still pointed at
+                // its table slot ("function signature mismatch" at boot).
+                let Some(res) = self.index_to_funcs.get(func_index as usize) else {
+                    tracing::error!(
+                        "Function symbol {name:?} (index {func_index}) is outside the module's function index space - was this built with LTO, --emit-relocs, and debug symbols? Ignoring."
+                    );
                     return Ok(None);
                 };
 

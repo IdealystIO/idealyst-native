@@ -43,9 +43,11 @@ ui! {
 
 - **Props are the args.** `document_id` is captured and passed across the chunk
   boundary. Any runtime input the component needs is just a prop.
-- **The chunk is named after the component** — `Editor` produces a readable
-  `…_lazy_Editor.wasm`, not a content hash, so you can spot it in the network
-  tab.
+- **The component's name identifies its chunk** — the chunk files themselves
+  are emitted as `module_<n>___lazy_body.wasm`, and `Editor`'s readable name
+  lands in the loader symbol inside `__wasm_split.js`
+  (`__wasm_split_load___idealyst_lazy_Editor_…`), so searching that file maps
+  any chunk in the network tab back to its component.
 - **On native** there's no bundle to split, so the body is compiled inline and
   mounts synchronously — the placeholder never shows.
 

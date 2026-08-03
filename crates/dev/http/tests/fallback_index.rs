@@ -85,6 +85,7 @@ fn spawn_server(root: &Path, fallback: Option<String>) -> u16 {
             None,
             None,
             fallback,
+            false,
         );
     });
     port

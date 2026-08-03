@@ -2708,3 +2708,192 @@ stylesheet! {
         }
     }
 }
+
+// =============================================================================
+// Calendar family — month grid shared by Calendar / RangeCalendar and the
+// DatePicker/DateInput popups
+// =============================================================================
+//
+// `CalendarPanel` is the framed container (border off when embedded in a
+// popup panel that already draws chrome). `CalendarDay` styles one grid
+// cell across three composable axes: `sel` (selection/range role), `today`,
+// and `muted` (outside the visible month). Cells are fixed 36×36 so the
+// grid is stable across months and the range band reads as a continuous
+// row (the `mid` arm squares its corners; `edge`/`on` keep the radius).
+
+stylesheet! {
+    pub CalendarPanel<IdeaThemeRef> {
+        base(t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            flex_direction: FlexDirection::Column,
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            padding: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            align_self: runtime_core::AlignSelf::FlexStart,
+        }
+        // `framed` — standalone (inline) calendars draw their own border;
+        // popup embeddings turn it off (the menu panel already has one).
+        variant framed {
+            #[default]
+            on(t) {
+                border_width: 1.0,
+                border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            }
+            off(_t) {}
+        }
+    }
+}
+
+stylesheet! {
+    pub CalendarHeader<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+        }
+    }
+}
+
+// The pressable month/year title in the header — opens the month/year
+// picker view. Styled like a quiet button.
+stylesheet! {
+    pub CalendarTitleButton<IdeaThemeRef> {
+        base(t) {
+            background: Color("transparent".into()),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
+            font_weight: FontWeight::SemiBold,
+            padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            padding_horizontal: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            border_radius: Tokenized::token("radius-sm", Length::Px(4.0)),
+            cursor: Cursor::Pointer,
+        }
+        state hovered(t) {
+            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+        }
+        transitions { background: 150ms EaseOut }
+    }
+}
+
+stylesheet! {
+    pub CalendarWeekdayCell<IdeaThemeRef> {
+        base(t) {
+            width: 36.0,
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: Tokenized::token("typography-body-sm-size", Length::Px(12.0)),
+            font_weight: FontWeight::Medium,
+            text_align: TextAlign::Center,
+        }
+    }
+}
+
+stylesheet! {
+    pub CalendarWeekRow<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+        }
+    }
+}
+
+stylesheet! {
+    pub CalendarDay<IdeaThemeRef> {
+        base(t) {
+            width: 36.0,
+            height: 36.0,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            border_radius: Tokenized::token("radius-sm", Length::Px(4.0)),
+            background: Color("transparent".into()),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
+            cursor: Cursor::Pointer,
+        }
+        // Selection / range role of the cell.
+        variant sel {
+            #[default]
+            off(_t) {}
+            // The single selection, or a range endpoint.
+            on(t) {
+                background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
+                color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
+            }
+            // Interior of a selected range: soft wash, squared corners so
+            // consecutive cells read as one band.
+            mid(t) {
+                background: Tokenized::token("intent-primary-soft-bg", Color("#e8ebff".into())),
+                color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+                border_radius: Length::Px(0.0),
+            }
+        }
+        variant today {
+            #[default]
+            off(_t) {}
+            // Quiet marker that composes under every `sel` arm: a ring, not
+            // a fill, so "today + selected" still reads as selected.
+            on(t) {
+                border_width: 1.0,
+                border_color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+            }
+        }
+        // Leading/trailing days of the adjacent months.
+        variant muted {
+            #[default]
+            off(_t) {}
+            on(t) {
+                color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            }
+        }
+        // Un-pickable (min/max/disabled-fn). Rendered as a plain view (no
+        // press handler), so this is a variant, not a pressed-state overlay.
+        variant blocked {
+            #[default]
+            off(_t) {}
+            on(_t) {
+                opacity: 0.35,
+                cursor: Cursor::Default,
+            }
+        }
+        state hovered(t) {
+            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+        }
+        state focused(t) {
+            border_width: 1.0,
+            border_color: Tokenized::token("color-focus-ring", Color("#5b6cff".into())),
+        }
+        transitions {
+            background: 120ms EaseOut,
+            color: 120ms EaseOut,
+        }
+    }
+}
+
+// Month/year cells of the title-press zoomed-out view (3×4 month grid /
+// 4×4 year grid).
+stylesheet! {
+    pub CalendarZoomCell<IdeaThemeRef> {
+        base(t) {
+            width: 63.0,
+            height: 40.0,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            border_radius: Tokenized::token("radius-sm", Length::Px(4.0)),
+            background: Color("transparent".into()),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
+            cursor: Cursor::Pointer,
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(t) {
+                background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
+                color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
+            }
+        }
+        state hovered(t) {
+            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+        }
+        transitions { background: 120ms EaseOut, color: 120ms EaseOut }
+    }
+}

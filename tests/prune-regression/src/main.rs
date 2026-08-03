@@ -125,6 +125,20 @@ const APPS: &[AppCfg] = &[
         expected_marker: "Loaded from a separate wasm chunk",
         marker_wait_ms: 15_000,
     },
+    AppCfg {
+        dir: "lazy-many-splits",
+        wasm_stem: "lazy_many_splits_test",
+        // Rendered from INSIDE page 0's chunk, dispatched through the
+        // fixture's static fn-pointer catalog. Absent if main traps at
+        // boot or the chunk handoff breaks with dozens of split points.
+        // Shape coverage for the 2026-08 duplicate-mangled-name
+        // misclassification (see the fixture's lib.rs: the collision
+        // loser is hash-order luck, so the deterministic guard is the
+        // emit_main_module tripwire; this keeps the many-split
+        // fn-pointer shape exercised end-to-end).
+        expected_marker: "chunk page #0 mounted",
+        marker_wait_ms: 15_000,
+    },
     // The handler-registration pair. The point of these two is the
     // main.wasm SIZE DELTA asserted by `measure_chunk_split` after the
     // build loop — but the marker is load-bearing too: "heavy payload

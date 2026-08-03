@@ -163,6 +163,7 @@ pub fn serve_static(
     overlay: Option<OverlayContext>,
     head: Option<HeadInjectionContext>,
     fallback_index: Option<String>,
+    precompressed: bool,
 ) -> Result<()> {
     let addr = format!("{host}:{port}");
     let server = Server::http(&addr)
@@ -212,6 +213,9 @@ pub fn serve_static(
     if head.as_ref().map(|h| !h.html.is_empty()).unwrap_or(false) {
         extras.push("head-inject".to_string());
     }
+    if precompressed {
+        extras.push("precompressed".to_string());
+    }
     eprintln!(
         "[dev-http] serving {} on http://{}{}",
         root.display(),
@@ -232,6 +236,7 @@ pub fn serve_static(
             preload.as_ref(),
             head.as_ref(),
             fallback_index.as_deref(),
+            precompressed,
             request,
         ) {
             eprintln!("[dev-http] request error: {e}");
@@ -250,6 +255,7 @@ fn handle(
     preload: Option<&PreloadContext>,
     head: Option<&HeadInjectionContext>,
     fallback_index: Option<&str>,
+    precompressed: bool,
     request: Request,
 ) -> Result<()> {
     // GET / HEAD only. Anything else (POST, PUT, …) isn't meaningful
@@ -315,7 +321,7 @@ fn handle(
         Some(path) if path.is_dir() => {
             let index = path.join("index.html");
             if index.is_file() {
-                respond_with_file(request, &index, reload, aas, preload, head)
+                respond_with_file(request, &index, reload, aas, preload, head, precompressed)
             } else if let Some(html) = fallback_index {
                 // Project ships no index.html — serve the synthesized
                 // default so `idealyst dev --web` works without the user
@@ -326,7 +332,7 @@ fn handle(
             }
         }
         Some(path) if path.is_file() => {
-            respond_with_file(request, &path, reload, aas, preload, head)
+            respond_with_file(request, &path, reload, aas, preload, head, precompressed)
         }
         _ if wants_html => {
             // SPA fallback. Unknown route, but the browser is asking
@@ -337,7 +343,7 @@ fn handle(
             // get to shadow the user's application entry point.
             let index = root.join("index.html");
             if index.is_file() {
-                respond_with_file(request, &index, reload, aas, preload, head)
+                respond_with_file(request, &index, reload, aas, preload, head, precompressed)
             } else if let Some(html) = fallback_index {
                 respond_with_html_string(request, html, reload, aas, preload, head)
             } else {
@@ -467,6 +473,7 @@ fn respond_with_file(
     aas: Option<&AasContext>,
     preload: Option<&PreloadContext>,
     head: Option<&HeadInjectionContext>,
+    precompressed: bool,
 ) -> Result<()> {
     let ct = content_type(path);
     let is_html = matches!(ct, "text/html; charset=utf-8");
@@ -494,6 +501,40 @@ fn respond_with_file(
             .with_header(header("Cache-Control", "no-store"));
         request.respond(response).map_err(Into::into)
     } else {
+        // Precompressed-sidecar negotiation (`idealyst serve
+        // --precompressed`): release builds stage `<file>.br` next to
+        // every compressible file (and `.gz` works the same way if
+        // present). When the client accepts the encoding and the
+        // sidecar exists, stream it with the ORIGINAL's Content-Type
+        // plus Content-Encoding — that's what a production host with
+        // `brotli_static`/`precompressed` does, so bundle-performance
+        // numbers measured here match deployment. Injection-decorated
+        // HTML never reaches this branch (the mutated body can't come
+        // from a sidecar).
+        if precompressed {
+            let (br, gz) = accepted_encodings(&request);
+            for (accepted, encoding, ext) in [(br, "br", "br"), (gz, "gzip", "gz")] {
+                if !accepted {
+                    continue;
+                }
+                // `path` is canonicalized inside the serve root, so
+                // appending an extension cannot escape it.
+                let mut os = path.as_os_str().to_owned();
+                os.push(format!(".{ext}"));
+                let sidecar = PathBuf::from(os);
+                if !sidecar.is_file() {
+                    continue;
+                }
+                let file = fs::File::open(&sidecar)
+                    .with_context(|| format!("open {}", sidecar.display()))?;
+                let mut response = Response::from_file(file);
+                response.add_header(header("Content-Type", ct));
+                response.add_header(header("Content-Encoding", encoding));
+                response.add_header(header("Vary", "Accept-Encoding"));
+                response.add_header(header("Cache-Control", "no-store"));
+                return request.respond(response).map_err(Into::into);
+            }
+        }
         let file = fs::File::open(path)
             .with_context(|| format!("open {}", path.display()))?;
         let mut response = Response::from_file(file);
@@ -504,6 +545,46 @@ fn respond_with_file(
         response.add_header(header("Cache-Control", "no-store"));
         request.respond(response).map_err(Into::into)
     }
+}
+
+/// Which of (brotli, gzip) the request's `Accept-Encoding` accepts.
+/// Token-level parse honoring `;q=0` exclusions (`br;q=0` means "do
+/// NOT send brotli"); quality ORDERING beyond zero/non-zero is ignored
+/// — brotli sidecars are strictly smaller, so preferring them when
+/// both are acceptable is always right.
+fn accepted_encodings(request: &Request) -> (bool, bool) {
+    let mut br = false;
+    let mut gz = false;
+    let mut gz_explicit = false;
+    for h in request.headers() {
+        if !h.field.equiv("Accept-Encoding") {
+            continue;
+        }
+        for token in h.value.as_str().split(',') {
+            let mut parts = token.trim().split(';');
+            let name = parts.next().unwrap_or("").trim().to_ascii_lowercase();
+            let rejected = parts.any(|p| {
+                let p = p.trim();
+                p.strip_prefix("q=")
+                    .and_then(|q| q.parse::<f32>().ok())
+                    .is_some_and(|q| q == 0.0)
+            });
+            match name.as_str() {
+                "br" => br = !rejected,
+                "gzip" => {
+                    gz = !rejected;
+                    gz_explicit = true;
+                }
+                // `*` accepts anything not otherwise listed — an
+                // explicit `gzip` token beats it in either order.
+                // Treating the wildcard as gzip-only keeps us
+                // conservative (browsers list `br` outright).
+                "*" if !gz_explicit => gz = !rejected,
+                _ => {}
+            }
+        }
+    }
+    (br, gz)
 }
 
 /// Apply the dev-time `<head>`/script injections (runtime-server URL,

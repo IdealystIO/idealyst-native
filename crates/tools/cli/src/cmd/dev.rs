@@ -1266,6 +1266,7 @@ fn launch_web(
             overlay_ctx.clone(),
             head_ctx.clone(),
             Some(fallback_index.clone()),
+            false,
         )?;
         Ok(())
     } else {
@@ -1411,6 +1412,7 @@ fn launch_web(
             overlay_ctx,
             head_ctx,
             Some(fallback_index),
+            false,
         )?;
         Ok(())
     }

@@ -28,6 +28,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use runtime_core::primitives::key::{KeyEvent, KeyOutcome};
 use runtime_core::{
     component, pressable, recipe, ui, AlignItems, Color, Cursor, Easing, Element, FlexDirection,
     IconData, IdealystSchema, IntoElement, JustifyContent, Length, Reactive, Signal,
@@ -246,6 +247,18 @@ pub struct FieldProps {
     /// inner input either way).
     #[prop(static)]
     pub field_ref: Option<runtime_core::Ref<runtime_core::primitives::text_input::TextInputHandle>>,
+    /// Observe the input's focus transitions (`true` = gained focus,
+    /// `false` = blurred). The Field already bridges `on_focus` internally
+    /// for its focus ring; this forwards the same transitions to the host —
+    /// e.g. `DateInput` normalizes its text on blur. `None` (default)
+    /// forwards nothing.
+    pub on_focus_change: Option<Rc<dyn Fn(bool)>>,
+    /// Intercept key presses on the inner input before the platform's
+    /// default handling (see [`runtime_core::primitives::key`]). Return
+    /// [`KeyOutcome::PreventDefault`] to swallow a key — e.g.
+    /// `DateInput` turns Tab into "complete the current date segment".
+    /// `None` (default) attaches no handler.
+    pub on_key_down: Option<Rc<dyn Fn(&KeyEvent) -> KeyOutcome>>,
 }
 
 impl Default for FieldProps {
@@ -266,6 +279,8 @@ impl Default for FieldProps {
             min_height: Reactive::Static(None),
             width: Reactive::Static(None),
             field_ref: None,
+            on_focus_change: None,
+            on_key_down: None,
         }
     }
 }
@@ -693,6 +708,11 @@ pub fn Field(props: &FieldProps) -> Element {
     if let Some(field_ref) = props.field_ref.clone() {
         input = input.bind(field_ref);
     }
+    // Attached only when present (a silent no-op handler would still
+    // claim every key press on some backends).
+    if let Some(on_key) = props.on_key_down.clone() {
+        input = input.on_key_down(move |e| (on_key)(e));
+    }
 
     // The "field box" — either the bare input (no adornments) or a flex-row
     // SHELL wrapping a bare input with leading/trailing adornments.
@@ -715,8 +735,14 @@ pub fn Field(props: &FieldProps) -> Element {
             .with("appearance", "bare")
             .with("tone", "default")
             .with("slot", "shell");
+        let notify_focus = props.on_focus_change.clone();
         let input_node = input
-            .on_focus(move |f| focused.set(f))
+            .on_focus(move |f| {
+                focused.set(f);
+                if let Some(cb) = &notify_focus {
+                    cb(f);
+                }
+            })
             .with_style(bare_style)
             .into_element();
 
@@ -800,8 +826,14 @@ pub fn Field(props: &FieldProps) -> Element {
         // The focus ring is the sheet's `ring` axis; the dims ride the
         // inline layer — independent, unclobberable, premintable.
         let input_style = move || make_input_style(tone_key_for(), focused.get());
+        let notify_focus = props.on_focus_change.clone();
         input
-            .on_focus(move |f| focused.set(f))
+            .on_focus(move |f| {
+                focused.set(f);
+                if let Some(cb) = &notify_focus {
+                    cb(f);
+                }
+            })
             .with_style(input_style)
             .into_element()
     };

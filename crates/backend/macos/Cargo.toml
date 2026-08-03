@@ -66,6 +66,9 @@ objc2-foundation = { version = "0.2", features = [
     "NSGeometry",
     "NSValue",
     "NSDictionary",
+    # `NSTimeZone` — the newcore mount's wall-clock source reads the
+    # local UTC offset (DST-aware) for `runtime_shared::time`.
+    "NSTimeZone",
 ] }
 objc2-app-kit = { version = "0.2", features = [
     "NSResponder",

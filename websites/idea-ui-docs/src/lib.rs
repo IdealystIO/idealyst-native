@@ -20,11 +20,15 @@
 //! - `styles.rs` — local stylesheets for chrome only.
 //! - `pages/*.rs` — one module per design group; each exports body-only
 //!   `pub fn name() -> Element`.
+//! - `lazy_pages.rs` — the per-page `#[component(lazy)]` chunk
+//!   boundaries the catalog's `body` slots route through, so on web each
+//!   page ships as its own wasm chunk.
 
 use runtime_core::{effect, signal, ui, Breakpoint, Element, Signal};
 use idea_ui_nav::AppShell;
 use idea_ui::{install_idea_theme, light_theme};
 
+mod lazy_pages;
 mod pages;
 mod routes;
 mod shell;
