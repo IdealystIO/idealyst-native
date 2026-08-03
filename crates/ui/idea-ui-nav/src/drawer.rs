@@ -33,16 +33,112 @@ pub enum DrawerSide {
 
 const SLIDE_MS: u32 = 240;
 
-// One shared empty base sheet; the reactive per-state rules ride a
-// `with_computed` layer keyed by open/closed so the resolution cache stays
-// stable across renders. Cached via `cached_stylesheet` (NOT a per-file
-// `thread_local!`) — on Android every `thread_local!` burns one of bionic's
-// ~128 pthread TLS keys, and per-sheet thread_locals exhausted the table
-// (SIGABRT at mount); the shared registry keeps the key count flat.
-fn base_sheet() -> Rc<StyleSheet> {
+// Sheets are cached via `cached_stylesheet` (NOT per-file `thread_local!`s)
+// — on Android every `thread_local!` burns one of bionic's ~128 pthread TLS
+// keys, and per-sheet thread_locals exhausted the table (SIGABRT at mount);
+// the shared registry keeps the key count flat.
+//
+// They are real premintable sheets, NOT `with_computed` layers over an
+// empty base: a computed layer produces rules at runtime under a key the
+// premint dump cannot enumerate, so it can never premint — a Drawer in a
+// `--premint-only` app would panic at MOUNT. And the drawer's open state
+// is a variant AXIS on each sheet, never part of sheet identity: the dump
+// mounts the drawer CLOSED and never interacts, so an "open" sheet would
+// first construct on the user's tap — after the crawl — and its class
+// would have no CSS (the UNCRAWLED panic; `AppShell` had exactly this bug).
+
+/// Build-time identity shared by the dump binary and the shipped bundle.
+/// Runtime addresses must not leak into it (see `AppShell::premint_id`).
+fn premint_id(which: &str, width: f32, side: DrawerSide) -> String {
+    format!(
+        "idea-ui-nav.v1.drawer.{which}|w={}|side={}",
+        width.to_bits(),
+        match side {
+            DrawerSide::Start => "start",
+            DrawerSide::End => "end",
+        },
+    )
+}
+
+fn cache_key(width: f32, side: DrawerSide, which: u8) -> usize {
+    let mut k = width.to_bits() as usize;
+    k = k.wrapping_mul(31).wrapping_add(side as usize);
+    k.wrapping_mul(31).wrapping_add(which as usize)
+}
+
+fn container_sheet() -> Rc<StyleSheet> {
     static KEY: u8 = 0;
     runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
-        Rc::new(StyleSheet::r#static(StyleRules::default()))
+        // Constant rules, no variants — the auto-preminted `r#static`
+        // content class is binary-stable, so no explicit identity needed.
+        Rc::new(StyleSheet::r#static(StyleRules {
+            position: Some(Position::Relative),
+            width: Some(Length::Percent(100.0).into()),
+            height: Some(Length::Percent(100.0).into()),
+            ..Default::default()
+        }))
+    })
+}
+
+fn scrim_sheet() -> Rc<StyleSheet> {
+    static KEY: u8 = 0;
+    runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+        StyleSheet::r#static(StyleRules {
+            position: Some(Position::Absolute),
+            top: Some(Length::Px(0.0).into()),
+            left: Some(Length::Px(0.0).into()),
+            right: Some(Length::Px(0.0).into()),
+            bottom: Some(Length::Px(0.0).into()),
+            background: Some(Tokenized::Literal(Color("#000000".into()))),
+            opacity: Some(Tokenized::Literal(0.0)),
+            pointer_events: Some(PointerEvents::None),
+            opacity_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
+            ..Default::default()
+        })
+        .variant("open", "on", |_| StyleRules {
+            opacity: Some(Tokenized::Literal(0.45)),
+            pointer_events: Some(PointerEvents::Auto),
+            ..Default::default()
+        })
+        // Identity carries no parameters: every Drawer's scrim is the
+        // same full-bleed fade regardless of width/side.
+        .premint_as("idea-ui-nav.v1.drawer.scrim")
+    })
+}
+
+fn panel_sheet(width: f32, side: DrawerSide) -> Rc<StyleSheet> {
+    runtime_core::cached_stylesheet(cache_key(width, side, 0), move || {
+        let closed_dx = match side {
+            DrawerSide::Start => -width,
+            DrawerSide::End => width,
+        };
+        let (left, right) = match side {
+            DrawerSide::Start => (Some(Length::Px(0.0).into()), None),
+            DrawerSide::End => (None, Some(Length::Px(0.0).into())),
+        };
+        StyleSheet::r#static(StyleRules {
+            position: Some(Position::Absolute),
+            top: Some(Length::Px(0.0).into()),
+            bottom: Some(Length::Px(0.0).into()),
+            left,
+            right,
+            width: Some(Length::Px(width).into()),
+            // The panel must be a flex COLUMN: on web a node with no
+            // flex-container property stays `display: block`, which makes
+            // the inner `Surface(grow = 1)` (flex-basis: 0) inert — the
+            // sidebar collapses to zero height and the open drawer shows
+            // an empty panel. Native backends are flex-by-default, so
+            // this also keeps the two layouts identical.
+            flex_direction: Some(FlexDirection::Column),
+            transform: Some(vec![Transform::TranslateX(Length::Px(closed_dx))]),
+            transform_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
+            ..Default::default()
+        })
+        .variant("open", "on", |_| StyleRules {
+            transform: Some(vec![Transform::TranslateX(Length::Px(0.0))]),
+            ..Default::default()
+        })
+        .premint_as(&premint_id("panel", width, side))
     })
 }
 
@@ -90,71 +186,22 @@ pub fn Drawer(props: DrawerProps) -> Element {
     let content = props.children;
     let sidebar = props.sidebar;
 
-    // Off-screen offset when closed: negative for a leading panel, positive for
-    // a trailing one.
-    let closed_dx = match side {
-        DrawerSide::Start => -width,
-        DrawerSide::End => width,
+    let container_style = move || StyleApplication::new(container_sheet());
+
+    let scrim_style = move || {
+        let mut app = StyleApplication::new(scrim_sheet());
+        if is_open.get() {
+            app = app.with("open", "on");
+        }
+        app
     };
 
-    let container_style = {
-        move || {
-            StyleApplication::new(base_sheet()).with_computed("drawer_container", || StyleRules {
-                position: Some(Position::Relative),
-                width: Some(Length::Percent(100.0).into()),
-                height: Some(Length::Percent(100.0).into()),
-                ..Default::default()
-            })
+    let panel_style = move || {
+        let mut app = StyleApplication::new(panel_sheet(width, side));
+        if is_open.get() {
+            app = app.with("open", "on");
         }
-    };
-
-    let scrim_style = {
-        move || {
-            let open = is_open.get();
-            let key = if open { "drawer_scrim_open" } else { "drawer_scrim_closed" };
-            StyleApplication::new(base_sheet()).with_computed(key, move || StyleRules {
-                position: Some(Position::Absolute),
-                top: Some(Length::Px(0.0).into()),
-                left: Some(Length::Px(0.0).into()),
-                right: Some(Length::Px(0.0).into()),
-                bottom: Some(Length::Px(0.0).into()),
-                background: Some(Tokenized::Literal(Color("#000000".into()))),
-                opacity: Some(Tokenized::Literal(if open { 0.45 } else { 0.0 })),
-                pointer_events: Some(if open { PointerEvents::Auto } else { PointerEvents::None }),
-                opacity_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
-                ..Default::default()
-            })
-        }
-    };
-
-    let panel_style = {
-        move || {
-            let open = is_open.get();
-            let dx = if open { 0.0 } else { closed_dx };
-            let key = if open { "drawer_panel_open" } else { "drawer_panel_closed" };
-            let (left, right) = match side {
-                DrawerSide::Start => (Some(Length::Px(0.0).into()), None),
-                DrawerSide::End => (None, Some(Length::Px(0.0).into())),
-            };
-            StyleApplication::new(base_sheet()).with_computed(key, move || StyleRules {
-                position: Some(Position::Absolute),
-                top: Some(Length::Px(0.0).into()),
-                bottom: Some(Length::Px(0.0).into()),
-                left: left.clone(),
-                right: right.clone(),
-                width: Some(Length::Px(width).into()),
-                // The panel must be a flex COLUMN: on web a node with no
-                // flex-container property stays `display: block`, which makes
-                // the inner `Surface(grow = 1)` (flex-basis: 0) inert — the
-                // sidebar collapses to zero height and the open drawer shows
-                // an empty panel. Native backends are flex-by-default, so
-                // this also keeps the two layouts identical.
-                flex_direction: Some(FlexDirection::Column),
-                transform: Some(vec![Transform::TranslateX(Length::Px(dx))]),
-                transform_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
-                ..Default::default()
-            })
-        }
+        app
     };
 
     let close = move || is_open.set(false);
@@ -282,6 +329,49 @@ mod tests {
                 rules.flex_direction,
                 Some(FlexDirection::Column),
                 "panel must be a flex column so Surface(grow = 1) can fill it"
+            );
+        });
+    }
+
+    // Every Drawer style must PREMINT, in both open states, off ONE sheet.
+    // The old spelling was `with_computed` layers over an empty base — a
+    // premint disqualifier, so a Drawer in a `--premint-only` app panicked
+    // at MOUNT — and sheet identity keyed on open state would panic
+    // UNCRAWLED on first open instead (the dump mounts the drawer closed
+    // and never interacts; `AppShell` had exactly that bug). Fails against
+    // both wrong spellings: `preminted_class_list()` is `None` for a
+    // computed-carrying application, and the base classes differ across
+    // states for identity-keyed sheets.
+    #[test]
+    fn regression_drawer_premints_open_state_as_an_axis() {
+        with_test_world(|| {
+            let is_open = runtime_core::signal(false);
+            let drawer = Drawer(DrawerProps {
+                sidebar: vec![text("SIDEBAR").into()],
+                is_open,
+                side: Reactive::Static(DrawerSide::Start),
+                width: Reactive::Static(280.0),
+                children: vec![text("CONTENT").into()],
+            });
+            let style_fn = panel_style_fn(drawer);
+
+            let closed = style_fn()
+                .preminted_class_list()
+                .expect("closed panel premints");
+            is_open.set(true);
+            commit();
+            let open = style_fn()
+                .preminted_class_list()
+                .expect("open panel premints");
+            let base = closed.split(' ').next().unwrap();
+            assert_eq!(
+                open.split(' ').next().unwrap(),
+                base,
+                "one sheet, one base class across open states"
+            );
+            assert!(
+                open.contains(&format!("{base}-open-on")),
+                "opening adds only an arm class, got {open}"
             );
         });
     }

@@ -20,19 +20,38 @@
 use idea_ui::{Surface, SurfaceColor};
 use runtime_core::primitives::navigator::{HeaderButton, StackHeaderState};
 use runtime_core::{
-    component, dynamic, fragment, pressable, text, ui, ChildList, Element, IdealystSchema, Length,
-    Reactive, StyleApplication, StyleRules, StyleSheet,
+    component, dynamic, fragment, pressable, stylesheet, text, ui, Element, IdealystSchema,
+    Length, Reactive, StyleApplication,
 };
 use std::rc::Rc;
 
-// Shared empty base sheet via `cached_stylesheet` — a per-file `thread_local!`
-// would burn one of Android/bionic's ~128 pthread TLS keys per sheet (the
-// exact per-sheet-thread_local pattern that SIGABRT'd idea-ui-docs at mount).
-fn base_sheet() -> Rc<StyleSheet> {
-    static KEY: u8 = 0;
-    runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
-        Rc::new(StyleSheet::r#static(StyleRules::default()))
-    })
+// `stylesheet!` declarations, NOT `with_computed` layers over an empty
+// base: a computed layer can never premint, so a StackHeader in a
+// `--premint-only` app would panic. And the bar is rebuilt per NAVIGATION
+// (inside `dynamic`), which is exactly the open-on-demand shape the
+// premint dump's crawl never reaches — link-time registration is the only
+// construction-independent option (see the Modal sheets for the pattern).
+stylesheet! {
+    StackHeaderRowSheet<()> {
+        base(_t) {
+            flex_direction: runtime_core::FlexDirection::Row,
+            align_items: runtime_core::AlignItems::Center,
+            padding_left: Length::Px(12.0),
+            padding_right: Length::Px(12.0),
+            padding_top: Length::Px(10.0),
+            padding_bottom: Length::Px(10.0),
+            column_gap: Length::Px(8.0),
+        }
+    }
+}
+
+stylesheet! {
+    StackHeaderSlotSheet<()> {
+        base(_t) {
+            padding_left: Length::Px(4.0),
+            padding_right: Length::Px(4.0),
+        }
+    }
 }
 
 /// Props for [`StackHeader`].
@@ -140,22 +159,37 @@ fn build_bar(s: &StackHeaderState, show_back: bool, on_back: Option<Rc<dyn Fn()>
 }
 
 fn row_style() -> StyleApplication {
-    StyleApplication::new(base_sheet()).with_computed("stack_header_row", || StyleRules {
-        flex_direction: Some(runtime_core::FlexDirection::Row),
-        align_items: Some(runtime_core::AlignItems::Center),
-        padding_left: Some(Length::Px(12.0).into()),
-        padding_right: Some(Length::Px(12.0).into()),
-        padding_top: Some(Length::Px(10.0).into()),
-        padding_bottom: Some(Length::Px(10.0).into()),
-        column_gap: Some(Length::Px(8.0).into()),
-        ..Default::default()
-    })
+    StyleApplication::new(StackHeaderRowSheet::sheet())
 }
 
 fn slot_style() -> StyleApplication {
-    StyleApplication::new(base_sheet()).with_computed("stack_header_slot", || StyleRules {
-        padding_left: Some(Length::Px(4.0).into()),
-        padding_right: Some(Length::Px(4.0).into()),
-        ..Default::default()
-    })
+    StyleApplication::new(StackHeaderSlotSheet::sheet())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use idea_theme::testing::with_test_world;
+
+    // Both header styles must PREMINT. The old spelling was `with_computed`
+    // layers over an empty base — a premint disqualifier, so a StackHeader
+    // in a `--premint-only` app panicked. Worse, the bar is rebuilt per
+    // navigation inside `dynamic`, so even a construction-registered sheet
+    // could first construct after the premint dump's crawl; `stylesheet!`
+    // registers at LINK time, construction-independent. Fails against the
+    // computed spelling (`preminted_class_list()` is `None` for a
+    // computed-carrying application).
+    #[test]
+    fn regression_header_styles_premint() {
+        with_test_world(|| {
+            assert!(
+                row_style().preminted_class_list().is_some(),
+                "header row style must premint"
+            );
+            assert!(
+                slot_style().preminted_class_list().is_some(),
+                "header slot style must premint"
+            );
+        });
+    }
 }

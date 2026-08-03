@@ -313,26 +313,30 @@ pub fn Card(props: CardProps) -> Element {
                 .with("padding", padding_key);
 
             // Intent tint — overlays the variant's surface bg/border with the
-            // tone's Soft slots. Stays a COMPUTED layer (not an axis) because
-            // it must resolve after the `variant` axis; see `build_card_sheet`.
+            // tone's Soft slots. Rides the INLINE layer, which resolves after
+            // the `variant` axis (see `build_card_sheet`) — and, unlike the
+            // old `with_computed` spelling, does not disqualify the card
+            // from preminting (a `--premint-only` app panicked on any toned
+            // Card). Tones are an OPEN set (author-extensible via the tone
+            // macro), so an enumerated axis can't carry them; the slot
+            // values are theme TOKENS, so the tint stays live across theme
+            // swaps on every backend.
             if let Some(tone) = tone.get() {
-                style = style.with_computed(format!("tone_{}", tone.key()), move || {
-                    let theme_rc = active_theme();
-                    let theme_ref = theme_rc
-                        .downcast_ref::<IdeaThemeRef>()
-                        .expect("idea-ui: no IdeaTheme installed");
-                    let bg = tone.soft_bg(theme_ref);
-                    let border = tone.stroke_color(theme_ref);
-                    let fg = tone.soft_fg(theme_ref);
-                    StyleRules {
-                        background: Some(bg),
-                        color: Some(fg),
-                        border_top_color: Some(border.clone()),
-                        border_right_color: Some(border.clone()),
-                        border_bottom_color: Some(border.clone()),
-                        border_left_color: Some(border),
-                        ..Default::default()
-                    }
+                let theme_rc = active_theme();
+                let theme_ref = theme_rc
+                    .downcast_ref::<IdeaThemeRef>()
+                    .expect("idea-ui: no IdeaTheme installed");
+                let bg = tone.soft_bg(theme_ref);
+                let border = tone.stroke_color(theme_ref);
+                let fg = tone.soft_fg(theme_ref);
+                style = style.with_inline(StyleRules {
+                    background: Some(bg),
+                    color: Some(fg),
+                    border_top_color: Some(border.clone()),
+                    border_right_color: Some(border.clone()),
+                    border_bottom_color: Some(border.clone()),
+                    border_left_color: Some(border),
+                    ..Default::default()
                 });
             }
 
@@ -412,7 +416,7 @@ mod tests {
     }
 
     // D7: with no tone, Flat/Elevated keep their surface look unchanged —
-    // the computed tint layer is absent entirely.
+    // the tint layer is absent entirely.
     #[test]
     fn no_tone_keeps_surface_look() {
         with_test_world(|| {
@@ -420,10 +424,35 @@ mod tests {
             let plain = CardProps::default();
             let app = view_style(Card(plain));
             assert!(
-                app.computed().is_none(),
+                app.inline().is_none(),
                 "a tone-less Card attaches no tint layer"
             );
     });
+    }
+
+    // A toned Card must still PREMINT: the tint rides the INLINE layer
+    // (out-of-band, applied over the preminted classes), never a
+    // `with_computed` layer — a computed layer is a premint disqualifier,
+    // so the old spelling made any `Card(tone = …)` panic at mount in a
+    // `--premint-only` app. Fails against the computed spelling
+    // (`preminted_class_list()` is `None` for a computed-carrying
+    // application).
+    #[test]
+    fn regression_toned_card_premints_tint_via_inline_layer() {
+        with_test_world(|| {
+            theme();
+            let toned = CardProps {
+                tone: Reactive::Static(Some(tone::Danger.into())),
+                ..Default::default()
+            };
+            let app = view_style(Card(toned));
+            assert!(
+                app.preminted_class_list().is_some(),
+                "a toned Card must premint (tint rides the inline layer)"
+            );
+            let inline = app.inline().expect("tone tint rides the inline layer");
+            assert!(inline.background.is_some(), "tint carries the Soft bg");
+        });
     }
 
     // Clipping is a style attribute, not a bespoke prop: an `overflow: hidden`

@@ -2033,6 +2033,45 @@ fn minted_class_guard_gates_the_attach_class_list() {
     );
 }
 
+/// The guard veto WARNS, once per base class. Under plain `--premint`
+/// the engine fallback makes an uncrawled sheet invisible (it renders
+/// correctly), while `--premint-only` PANICS on the same condition —
+/// so without a dev-time signal the bug class ships silently and
+/// detonates in po (the Modal/Popover/Toast/AppShell sequence). The
+/// warning is that signal. Once per class: the veto fires on every
+/// evaluation of a reactive style, and a per-frame warn would bury the
+/// console.
+#[test]
+fn regression_minted_class_veto_warns_once_per_class() {
+    let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules::default())
+        .premint_as("test.guard.warn.v1");
+    let app = StyleApplication::new(sheet);
+
+    crate::install_minted_classes(["iy-someotherclass".to_string()]);
+    let before = crate::style::__unminted_class_warn_count();
+    assert_eq!(app.preminted_attach_class_list(), None);
+    assert_eq!(
+        crate::style::__unminted_class_warn_count(),
+        before + 1,
+        "first veto for a class warns"
+    );
+    assert_eq!(app.preminted_attach_class_list(), None);
+    assert_eq!(
+        crate::style::__unminted_class_warn_count(),
+        before + 1,
+        "repeat vetoes for the same class stay silent"
+    );
+
+    let other = StyleSheet::new(|_vs: &VariantSet| StyleRules::default())
+        .premint_as("test.guard.warn.v2");
+    assert_eq!(StyleApplication::new(other).preminted_attach_class_list(), None);
+    assert_eq!(
+        crate::style::__unminted_class_warn_count(),
+        before + 2,
+        "a different class warns on its own first veto"
+    );
+}
+
 /// `attaches_preminted` is the components' read-back gate (Button icon
 /// tint et al.): true exactly when the build ships build-time CSS
 /// (`--cfg idealyst_premint`) AND the application premints. Without the

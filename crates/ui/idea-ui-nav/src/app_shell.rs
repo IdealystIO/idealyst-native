@@ -43,15 +43,6 @@ use std::rc::Rc;
 
 const SLIDE_MS: u32 = 240;
 
-// Shared empty base sheet via `cached_stylesheet` — a per-file `thread_local!`
-// would burn one of Android/bionic's ~128 pthread TLS keys per sheet.
-fn base_sheet() -> Rc<StyleSheet> {
-    static KEY: u8 = 0;
-    runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
-        Rc::new(StyleSheet::r#static(StyleRules::default()))
-    })
-}
-
 /// Reactive read: is an [`AppShell`] sidebar with this pin threshold currently
 /// pinned in-flow? Call inside `rx!` / an effect so it re-fires on breakpoint
 /// change — e.g. to hide the hamburger, or to close the drawer after a
@@ -142,7 +133,12 @@ pub fn AppShell(props: AppShellProps) -> Element {
     /// Safe to premint because the shell mounts on the INITIAL route — the
     /// dump mounts the app, so these sheets are constructed while it is
     /// collecting. A sheet that only appears on a later route would not be
-    /// (see `StyleSheet::premint_as`).
+    /// (see `StyleSheet::premint_as`). The same contract is why NOTHING
+    /// here may key sheet identity on `is_open`: the dump mounts the shell
+    /// CLOSED and never interacts, so an "open" sheet would first construct
+    /// on the user's tap — after the crawl — and its class would have no
+    /// CSS (the UNCRAWLED panic under `--premint-only`). Open state is a
+    /// variant AXIS on one sheet, so both arms register during the crawl.
     fn premint_id(width: f32, pin_axis: Option<&'static str>, which: &str) -> String {
         format!(
             "idea-ui-nav.v1.app_shell.{which}|w={}|pin={}",
@@ -196,41 +192,61 @@ pub fn AppShell(props: AppShellProps) -> Element {
     );
     let content_style = StyleApplication::new(content_sheet);
 
-    // Scrim: reactive on `is_open` only; the pinned overlay forces it
+    // Scrim: base = closed (invisible, inert); opening is the `open` AXIS,
+    // never a second sheet (see `premint_id`). The pinned overlay forces it
     // inert at every width past the threshold (nothing to dismiss).
-    let scrim_sheet = |open: bool, width: f32, pin_axis: Option<&'static str>| {
-        runtime_core::cached_stylesheet(
-            cache_key(width, pin_axis, if open { 1 } else { 2 }),
-            move || {
-                let mut sheet = StyleSheet::r#static(StyleRules {
-                    position: Some(Position::Absolute),
-                    top: Some(Length::Px(0.0).into()),
-                    left: Some(Length::Px(0.0).into()),
-                    right: Some(Length::Px(0.0).into()),
-                    bottom: Some(Length::Px(0.0).into()),
-                    background: Some(Tokenized::Literal(Color("#000000".into()))),
-                    opacity: Some(Tokenized::Literal(if open { 0.45 } else { 0.0 })),
-                    pointer_events: Some(if open { PointerEvents::Auto } else { PointerEvents::None }),
-                    opacity_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
-                    ..Default::default()
-                });
-                if let Some(axis) = pin_axis {
-                    sheet = sheet.variant(axis, "on", |_| StyleRules {
+    //
+    // Precedence: single-axis arms merge in BTreeMap-alphabetical axis
+    // order, and `__bp_*` sorts before `open` — so a bare `open` arm would
+    // BEAT the pinned overlay, and an `is_open` left true across a resize
+    // past the threshold would dim and intercept a pinned layout. The
+    // pin-beats-open invariant therefore rides a COMPOUND arm
+    // (open=on ∧ pinned=on), which merges after all single-axis arms.
+    let scrim_sheet = runtime_core::cached_stylesheet(
+        cache_key(width, pin_axis, 1),
+        move || {
+            let mut sheet = StyleSheet::r#static(StyleRules {
+                position: Some(Position::Absolute),
+                top: Some(Length::Px(0.0).into()),
+                left: Some(Length::Px(0.0).into()),
+                right: Some(Length::Px(0.0).into()),
+                bottom: Some(Length::Px(0.0).into()),
+                background: Some(Tokenized::Literal(Color("#000000".into()))),
+                opacity: Some(Tokenized::Literal(0.0)),
+                pointer_events: Some(PointerEvents::None),
+                opacity_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
+                ..Default::default()
+            })
+            .variant("open", "on", |_| StyleRules {
+                opacity: Some(Tokenized::Literal(0.45)),
+                pointer_events: Some(PointerEvents::Auto),
+                ..Default::default()
+            });
+            if let Some(axis) = pin_axis {
+                sheet = sheet
+                    .variant(axis, "on", |_| StyleRules {
+                        opacity: Some(Tokenized::Literal(0.0)),
+                        pointer_events: Some(PointerEvents::None),
+                        ..Default::default()
+                    })
+                    .compound(vec![("open", "on"), (axis, "on")], |_| StyleRules {
                         opacity: Some(Tokenized::Literal(0.0)),
                         pointer_events: Some(PointerEvents::None),
                         ..Default::default()
                     });
-                }
-                sheet.premint_as(&premint_id(
-                    width,
-                    pin_axis,
-                    if open { "scrim.open" } else { "scrim.closed" },
-                ))
-            },
-        )
-    };
+            }
+            sheet.premint_as(&premint_id(width, pin_axis, "scrim"))
+        },
+    );
     let scrim_style = {
-        move || StyleApplication::new(scrim_sheet(is_open.get(), width, pin_axis))
+        let scrim_sheet = scrim_sheet.clone();
+        move || {
+            let mut app = StyleApplication::new(scrim_sheet.clone());
+            if is_open.get() {
+                app = app.with("open", "on");
+            }
+            app
+        }
     };
 
     // Panel: always absolute on the leading edge; the pinned overlay
@@ -238,48 +254,52 @@ pub fn AppShell(props: AppShellProps) -> Element {
     // than toggling in-flow/absolute) is what makes pin/unpin a pure
     // style flip with no remount, and — with no z-index in StyleRules —
     // the panel must stay the LAST sibling to paint above the scrim.
-    let panel_sheet = |open: bool, width: f32, pin_axis: Option<&'static str>| {
-        runtime_core::cached_stylesheet(
-            cache_key(width, pin_axis, if open { 3 } else { 4 }),
-            move || {
-                let mut sheet = StyleSheet::r#static(StyleRules {
-                    position: Some(Position::Absolute),
-                    top: Some(Length::Px(0.0).into()),
-                    bottom: Some(Length::Px(0.0).into()),
-                    left: Some(Length::Px(0.0).into()),
-                    width: Some(Length::Px(width).into()),
-                    // Explicit flex container: the web backend emits
-                    // `display: flex` only when a flex-container property
-                    // is present, and without it the inner `Surface(grow
-                    // = 1)` has no flex context — it sizes to content and
-                    // overflows the panel's bounded height, so an author
-                    // sidebar `scroll_view` never clamps and can't
-                    // scroll.
-                    flex_direction: Some(FlexDirection::Column),
-                    transform: Some(vec![Transform::TranslateX(Length::Px(if open {
-                        0.0
-                    } else {
-                        -width
-                    }))]),
-                    transform_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
+    // Open state is the `open` axis here too. No compound needed: the
+    // `open` arm and the pinned arm agree (translateX(0)), so merge order
+    // between them cannot matter.
+    let panel_sheet = runtime_core::cached_stylesheet(
+        cache_key(width, pin_axis, 2),
+        move || {
+            let mut sheet = StyleSheet::r#static(StyleRules {
+                position: Some(Position::Absolute),
+                top: Some(Length::Px(0.0).into()),
+                bottom: Some(Length::Px(0.0).into()),
+                left: Some(Length::Px(0.0).into()),
+                width: Some(Length::Px(width).into()),
+                // Explicit flex container: the web backend emits
+                // `display: flex` only when a flex-container property
+                // is present, and without it the inner `Surface(grow
+                // = 1)` has no flex context — it sizes to content and
+                // overflows the panel's bounded height, so an author
+                // sidebar `scroll_view` never clamps and can't
+                // scroll.
+                flex_direction: Some(FlexDirection::Column),
+                transform: Some(vec![Transform::TranslateX(Length::Px(-width))]),
+                transform_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
+                ..Default::default()
+            })
+            .variant("open", "on", |_| StyleRules {
+                transform: Some(vec![Transform::TranslateX(Length::Px(0.0))]),
+                ..Default::default()
+            });
+            if let Some(axis) = pin_axis {
+                sheet = sheet.variant(axis, "on", |_| StyleRules {
+                    transform: Some(vec![Transform::TranslateX(Length::Px(0.0))]),
                     ..Default::default()
                 });
-                if let Some(axis) = pin_axis {
-                    sheet = sheet.variant(axis, "on", |_| StyleRules {
-                        transform: Some(vec![Transform::TranslateX(Length::Px(0.0))]),
-                        ..Default::default()
-                    });
-                }
-                sheet.premint_as(&premint_id(
-                    width,
-                    pin_axis,
-                    if open { "panel.open" } else { "panel.closed" },
-                ))
-            },
-        )
-    };
+            }
+            sheet.premint_as(&premint_id(width, pin_axis, "panel"))
+        },
+    );
     let panel_style = {
-        move || StyleApplication::new(panel_sheet(is_open.get(), width, pin_axis))
+        let panel_sheet = panel_sheet.clone();
+        move || {
+            let mut app = StyleApplication::new(panel_sheet.clone());
+            if is_open.get() {
+                app = app.with("open", "on");
+            }
+            app
+        }
     };
 
     let close = move || is_open.set(false);
@@ -434,6 +454,71 @@ mod tests {
                     "panel declares itself a flex column (pinned = {pinned})"
                 );
             }
+        });
+    }
+
+    // THE PREMINT CRAWL CONTRACT: sheet identity must not depend on
+    // `is_open`. The dump mounts the shell CLOSED and never interacts, so
+    // a second "open" sheet would first construct on the user's tap —
+    // after the crawl — and its class would have no CSS (`--premint-only`
+    // panics UNCRAWLED; opening the mobile docs drawer was the repro).
+    // Open state must be an AXIS: the same base class in both states, the
+    // open state adding only an arm class minted alongside the base.
+    #[test]
+    fn regression_open_state_is_an_axis_not_a_second_sheet() {
+        with_test_world(|| {
+            let is_open = runtime_core::signal(false);
+            let (_, scrim, panel) = parts(shell(is_open));
+            let app_of = |s: &TStyle| match s {
+                TStyle::AppFn(f) => f(),
+                _ => panic!("scrim/panel styles are reactive closures"),
+            };
+            for (which, style) in [("scrim", &scrim), ("panel", &panel)] {
+                is_open.set(false);
+                commit();
+                let closed = app_of(style)
+                    .preminted_class_list()
+                    .unwrap_or_else(|| panic!("closed {which} premints"));
+                is_open.set(true);
+                commit();
+                let open = app_of(style)
+                    .preminted_class_list()
+                    .unwrap_or_else(|| panic!("open {which} premints"));
+                let base = closed.split(' ').next().unwrap();
+                assert_eq!(
+                    open.split(' ').next().unwrap(),
+                    base,
+                    "{which}: one sheet, one base class across open states"
+                );
+                assert!(
+                    open.contains(&format!("{base}-open-on")),
+                    "{which}: opening adds only an arm class, got {open}"
+                );
+            }
+        });
+    }
+
+    // An `is_open` left true across a resize past the pin threshold must
+    // NOT dim/intercept the pinned layout. Single-axis arms merge in
+    // alphabetical axis order and `__bp_*` sorts before `open`, so the
+    // open arm would win — the compound (open ∧ pinned) arm re-asserts
+    // the inert scrim after all single-axis arms.
+    #[test]
+    fn regression_pinned_wins_over_lingering_open_scrim() {
+        with_test_world(|| {
+            let is_open = runtime_core::signal(true);
+            let (_, scrim, _) = parts(shell(is_open));
+            let rules = resolve(&scrim, true);
+            assert_eq!(
+                rules.pointer_events,
+                Some(PointerEvents::None),
+                "pinned scrim never intercepts, even while is_open lingers true"
+            );
+            assert_eq!(
+                rules.opacity,
+                Some(Tokenized::Literal(0.0)),
+                "pinned scrim stays invisible, even while is_open lingers true"
+            );
         });
     }
 

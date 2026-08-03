@@ -1783,6 +1783,53 @@ pub fn minted_class_known(base: &str) -> bool {
     })
 }
 
+thread_local! {
+    static UNMINTED_WARNED: std::cell::RefCell<rustc_hash::FxHashSet<String>> =
+        std::cell::RefCell::new(rustc_hash::FxHashSet::default());
+    static UNMINTED_WARN_COUNT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Test hook: number of unminted-class warnings emitted on this thread.
+#[doc(hidden)]
+pub fn __unminted_class_warn_count() -> u32 {
+    UNMINTED_WARN_COUNT.with(|c| c.get())
+}
+
+/// Warn — once per base class — that a premintable sheet's class has no
+/// CSS in the shipped asset. Fired from the minted-class-guard veto in
+/// [`StyleApplication::preminted_attach_class_list`].
+///
+/// This is the DEV-TIME tripwire for the premint crawl contract: the
+/// dump mounts every route but never interacts, so a sheet registered at
+/// construction (`premint_as`, auto-preminted `r#static`) whose first
+/// construction happens on open/push/focus gets no build-time CSS. Under
+/// plain `--premint` the engine silently absorbs that (this warning is
+/// the only signal); under `--premint-only` the same condition PANICS on
+/// the user's first interaction. Warning in the safe build is what lets
+/// the bug be caught during ordinary development instead of shipping as
+/// a po landmine. Fix by making the sheet construction-independent: a
+/// `stylesheet!` declaration, enumerable state as a variant axis,
+/// continuous per-instance values on the inline layer.
+fn warn_unminted_class_once(base: &str) {
+    let fresh = UNMINTED_WARNED.with(|w| w.borrow_mut().insert(base.to_string()));
+    if !fresh {
+        return;
+    }
+    UNMINTED_WARN_COUNT.with(|c| c.set(c.get() + 1));
+    crate::logging::log(
+        crate::logging::LogLevel::Warn,
+        &format!(
+            "[idealyst] premint class `{base}` has no CSS in the shipped asset — the \
+             sheet was first constructed on a path the premint dump's crawl never reached \
+             (the crawl mounts routes but never opens/pushes/focuses anything). Falling back \
+             to the live style engine in this build, but the same sheet PANICS under \
+             --premint-only. Make it construction-independent: declare it with `stylesheet!`, \
+             move enumerable state onto a variant axis, or put continuous per-instance \
+             values on the inline layer."
+        ),
+    );
+}
+
 /// Class the REACTIVE preminted attach paths stamp alongside the sheet's
 /// class list, restoring CSS font inheritance over the dump's default-font
 /// hook. Shared name between the dump (which emits its one rule,
@@ -2885,6 +2932,11 @@ impl StyleApplication {
         let list = self.preminted_class_list()?;
         let base = list.split(' ').next().unwrap_or(list.as_str());
         if !crate::minted_class_known(base) {
+            // The dev-time tripwire for the premint crawl contract: under
+            // plain `--premint` the engine fallback hides the miss, and
+            // the SAME condition panics under `--premint-only` — warn so
+            // it's caught in ordinary development, not shipped.
+            warn_unminted_class_once(base);
             return None;
         }
         Some(list)

@@ -170,14 +170,15 @@ pub fn Typography(props: &TypographyProps) -> Element {
                 .with("weight", weight_key.to_string())
                 .with("align", align_key);
 
-            // Per-instance font override, layered over the sheet base. Still a
-            // computed layer: a typeface is an app-supplied asset, not a closed
-            // set the sheet could enumerate. The cache key encodes the family
-            // identity so identical faces share one resolved class.
+            // Per-instance font override, layered over the sheet base. Rides
+            // the INLINE layer: a typeface is an app-supplied asset, not a
+            // closed set the sheet could enumerate as an axis — and unlike
+            // the old `with_computed` spelling, inline does not disqualify
+            // the application from preminting (a `--premint-only` app
+            // panicked on any Typography with a `font` override).
             if let Some(font) = font.get() {
-                let key = format!("font:{}", font_override_key(&font));
-                style = style.with_computed(key, move || StyleRules {
-                    font_family: Some(font.clone()),
+                style = style.with_inline(StyleRules {
+                    font_family: Some(font),
                     ..Default::default()
                 });
             }
@@ -207,18 +208,6 @@ pub fn Typography(props: &TypographyProps) -> Element {
     match role {
         Some(r) => styled.a11y_role(r).into_element(),
         None => styled.into_element(),
-    }
-}
-
-/// Stable cache-key fragment for a font override. A `System` family is
-/// keyed by its stack string; a `Typeface` by its registry id (the same
-/// dedup key the framework's `FontFamily` equality uses). Two overrides
-/// with the same key MUST resolve to the same `font_family`, which holds
-/// because identical families produce identical keys here.
-fn font_override_key(font: &FontFamily) -> String {
-    match font {
-        FontFamily::System(name) => format!("sys:{name}"),
-        FontFamily::Typeface(tf) => format!("tf:{}", tf.id.0),
     }
 }
 
@@ -397,8 +386,8 @@ mod tests {
     /// assigns rather than stacks. While `font` and `weight` each rode a
     /// computed layer, the weight layer (added second) silently overwrote the
     /// font layer, so a Typography with both set rendered the theme font at
-    /// the requested weight. `weight` is now a sheet axis, which leaves `font`
-    /// as the sole computed layer.
+    /// the requested weight. `weight` is now a sheet axis and `font` rides
+    /// the inline layer, so nothing shares a slot.
     #[test]
     fn regression_font_and_weight_overrides_both_apply() {
         with_test_world(|| {
@@ -414,6 +403,39 @@ mod tests {
                 rules.font_family,
                 Some(FontFamily::System("Courier New".to_string())),
                 "the font override must survive alongside a weight override"
+            );
+        });
+    }
+
+    /// A Typography with a `font` override must still PREMINT: the typeface
+    /// rides the INLINE layer (out-of-band, applied over the preminted
+    /// classes) — the old `with_computed` spelling was a premint
+    /// disqualifier, so any `font = …` Typography panicked at mount in a
+    /// `--premint-only` app. Fails against the computed spelling
+    /// (`preminted_class_list()` is `None` for a computed-carrying
+    /// application).
+    #[test]
+    fn regression_font_override_premints_via_inline_layer() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let style = typography_style(Typography(&TypographyProps {
+                content: Reactive::Static("Hi".to_string()),
+                font: Reactive::Static(Some(FontFamily::System("Courier New".to_string()))),
+                ..Default::default()
+            }));
+            let app = match style {
+                TStyle::App(a) => a,
+                TStyle::AppFn(f) => f(),
+                _ => panic!("Typography style is an application"),
+            };
+            assert!(
+                app.preminted_class_list().is_some(),
+                "a font-overridden Typography must premint (font rides inline)"
+            );
+            let inline = app.inline().expect("font override rides the inline layer");
+            assert_eq!(
+                inline.font_family,
+                Some(FontFamily::System("Courier New".to_string()))
             );
         });
     }

@@ -361,9 +361,33 @@ shared naming scheme:
    `runtime_shared::install_minted_classes`), and the attach paths
    consult that set per evaluation. A sheet whose class has no CSS
    falls back to the live engine on `--premint` (correct rendering,
-   and `--premint-report` names it), or panics on `--premint-only`
-   with a message that says "constructed after the dump crawl" rather
-   than the generic violation.
+   plus a once-per-class console warning naming the class — the
+   dev-time tripwire, since the fallback would otherwise hide the bug
+   until a `--premint-only` build hits it; `--premint-report` also
+   names it), or panics on `--premint-only` with a message that says
+   "constructed after the dump crawl" rather than the generic
+   violation.
+
+   **The crawl contract**, in authoring terms: the crawl mounts routes
+   but never opens, pushes, or focuses anything, so a
+   construction-registered sheet (`premint_as`, auto-preminted
+   `r#static`) must be constructed by *mounting a route*. Anything
+   that first constructs on interaction — a modal's body, a toast
+   card, a drawer's open state — needs a construction-independent
+   spelling:
+
+   - a `stylesheet!` declaration (link-time registration) for the
+     subtree's sheets;
+   - a **variant axis** for enumerable state. Sheet *identity* must
+     never depend on runtime state: two sheets keyed by
+     `open`/`closed` mean the `open` one first constructs on the
+     user's tap, after the crawl (AppShell's drawer panel had exactly
+     this bug — the fix is one sheet with an `open` axis, both arms
+     registered while the crawl constructs the closed shell);
+   - the **inline layer** (`with_inline`) for continuous or open-set
+     per-instance values (safe-area insets, a per-instance typeface).
+     `with_computed` is a premint disqualifier and additionally has
+     only one slot — prefer the other three spellings in library code.
 2. **Shipped build.** The wasm compiles with `--cfg idealyst_premint`,
    which flips each `stylesheet!` builder's `into_style_prop` to a
    fast path: an all-constant application (plain variant values, no

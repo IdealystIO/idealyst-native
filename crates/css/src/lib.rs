@@ -368,9 +368,16 @@ pub const CONTAINER_TYPE_BODY: &str = "container-type: inline-size";
 /// already carries the container-responsive layout.
 pub fn container_query_rule(class_name: &str, threshold_px: f32, body: &str) -> String {
     format!(
-        "@container (min-width: {}) {{ .{class_name} {{ {body} }} }}",
-        px_value(threshold_px)
+        "{} {{ .{class_name} {{ {body} }} }}",
+        container_query_prelude(threshold_px)
     )
+}
+
+/// The `@container (min-width: …)` prelude alone — for callers that wrap
+/// a selector [`container_query_rule`] can't express (a compound with a
+/// `__cq_*` leg wraps its multi-class selector in this).
+pub fn container_query_prelude(threshold_px: f32) -> String {
+    format!("@container (min-width: {})", px_value(threshold_px))
 }
 
 /// Format a `min-width` threshold (always carried as `f32` dp) as a CSS

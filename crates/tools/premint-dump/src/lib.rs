@@ -354,6 +354,14 @@ fn dump_sheet_parts(
         // would otherwise put `__state_*` first.
         let mut classes = String::new();
         let mut pseudos = String::new();
+        // `__bp_*` / `__cq_*` legs become PRELUDES around the compound
+        // rule, never class legs: those axes are not stamped as classes
+        // (their single arms lower to `@media`/`@container` on the base
+        // class — steps 2–3), so a class leg would make the whole compound
+        // dead CSS that matches nothing. (AppShell's pin-beats-open
+        // compound, `(open=on ∧ __bp_lg=on)`, shipped exactly that way
+        // once.) Like states, only the "on" arm exists for an overlay leg.
+        let mut preludes: Vec<String> = Vec::new();
         let mut skip = false;
         for (axis, value) in &when {
             if let Some(bit) = sheet.premint_state_axis_bit(axis) {
@@ -367,15 +375,41 @@ fn dump_sheet_parts(
                         break;
                     }
                 }
+            } else if let Some(bp) = sheet
+                .premint_breakpoint_axes()
+                .iter()
+                .find(|(_, a)| a == axis)
+                .map(|(bp, _)| *bp)
+            {
+                match (css::breakpoint_media_query(bp), value.as_str()) {
+                    (Some(query), "on") => preludes.push(query),
+                    _ => {
+                        skip = true;
+                        break;
+                    }
+                }
+            } else if let Some(threshold) = sheet
+                .premint_container_axes()
+                .iter()
+                .find(|(_, a)| a == axis)
+                .map(|(t, _)| *t)
+            {
+                if value.as_str() == "on" {
+                    preludes.push(css::container_query_prelude(threshold));
+                } else {
+                    skip = true;
+                    break;
+                }
             } else {
                 classes.push_str(&format!(".{base_class}-{axis}-{value}"));
             }
         }
-        if skip || (classes.is_empty() && pseudos.is_empty()) {
+        if skip || (classes.is_empty() && pseudos.is_empty() && preludes.is_empty()) {
             continue;
         }
-        // A compound whose legs are ALL state axes has no class anchor of its
-        // own; anchor it on the base class so it can't match other elements.
+        // A compound whose legs are all states/overlays has no class anchor
+        // of its own; anchor it on the base class so it can't match other
+        // elements.
         if classes.is_empty() {
             classes.push_str(&format!(".{base_class}"));
         }
@@ -384,11 +418,20 @@ fn dump_sheet_parts(
         if body.is_empty() {
             continue;
         }
+        let wrap = |rule: String| {
+            preludes
+                .iter()
+                .rev()
+                .fold(rule, |r, p| format!("{p} {{ {r} }}"))
+        };
         // `class_rule` prepends the leading `.`; the selector already carries
         // its own, so emit the rule directly.
-        push_rule(out, format!("{selector} {{ {body} }}"));
+        push_rule(out, wrap(format!("{selector} {{ {body} }}")));
         if !display_locked && css::flex_promoted(&rules) && rules.flex_direction.is_none() {
-            push_rule(out, format!(":where({selector}) {{ flex-direction: column }}"));
+            push_rule(
+                out,
+                wrap(format!(":where({selector}) {{ flex-direction: column }}")),
+            );
         }
     }
 }
@@ -496,6 +539,64 @@ mod tests {
         assert!(
             out.contains("display: grid"),
             "the base still declares the grid; got:\n{out}"
+        );
+    }
+
+    /// A compound with a `__bp_*` leg must lower that leg to an `@media`
+    /// PRELUDE, not a class leg: breakpoint axes are never stamped as
+    /// classes (their single arms ride `@media` on the base class), so a
+    /// `.base-__bp_lg-on.base-open-on` selector matches nothing — dead
+    /// CSS, and the compound's semantics silently vanish on web while
+    /// native `resolve` still applies them. AppShell's pin-beats-open
+    /// compound (`open=on ∧ __bp_lg=on` re-asserting the inert scrim)
+    /// shipped exactly that way once: an open drawer resized past the
+    /// pin threshold kept dimming/intercepting the pinned layout.
+    #[test]
+    fn regression_bp_leg_compound_lowers_to_media_prelude() {
+        use runtime_core::{StyleRules, StyleSheet, Tokenized};
+        let sheet = StyleSheet::new(|_vs: &runtime_core::VariantSet| StyleRules {
+            opacity: Some(Tokenized::Literal(0.0)),
+            ..Default::default()
+        })
+        .variant("open", "on", |_vs| StyleRules {
+            opacity: Some(Tokenized::Literal(0.45)),
+            ..Default::default()
+        })
+        .variant("__bp_lg", "on", |_vs| StyleRules {
+            opacity: Some(Tokenized::Literal(0.0)),
+            ..Default::default()
+        })
+        .compound(vec![("open", "on"), ("__bp_lg", "on")], |_vs| StyleRules {
+            opacity: Some(Tokenized::Literal(0.0)),
+            ..Default::default()
+        })
+        .premint_as("dumptest.v1.bpcompound");
+
+        let mut out = String::new();
+        let mut fonts = FontCollector::default();
+        let base = sheet.premint_class().unwrap();
+        dump_sheet_parts(base, &sheet, &mut out, &mut fonts);
+
+        assert!(
+            !out.contains(&format!("{base}-__bp_lg-on.")),
+            "no dead class-pair selector for the bp leg; got:\n{out}"
+        );
+        let compound = out
+            .lines()
+            .find(|l| l.starts_with("@media") && l.contains(&format!(".{base}-open-on")))
+            .expect("bp-leg compound emitted as a media-wrapped author-class rule");
+        assert!(
+            compound.contains("opacity: 0"),
+            "the compound's own delta rides inside the prelude; got:\n{compound}"
+        );
+        // Emitted AFTER the plain open arm: same (0,1,0) specificity, so
+        // source order is what lets the pinned overlay win in-range —
+        // mirroring `resolve` merging compounds after every axis.
+        let open_arm = out.find(&format!(".{base}-open-on {{")).expect("open arm");
+        let wrapped = out.find(compound).unwrap();
+        assert!(
+            wrapped > open_arm,
+            "compound must follow the single-axis arm in source order"
         );
     }
 
