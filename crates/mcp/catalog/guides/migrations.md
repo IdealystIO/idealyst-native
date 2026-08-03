@@ -13,7 +13,7 @@ when writing a new one.
 
 ## Versioning policy
 
-Idealyst reached **1.0** — the current release is `1.0.1`. The guiding
+Idealyst reached **1.0** — the current release is `1.2.0`. The guiding
 principle is **one clean experience per version — no legacy-support hacks**:
 
 - **Breaking changes land in place.** When a design is wrong, we fix it at the
@@ -47,6 +47,7 @@ principle is **one clean experience per version — no legacy-support hacks**:
 | 0.4 → 0.5 | [[migration-0-4-0-to-0-5-0]] |
 | 0.5 → 1.0 | [[migration-0-5-0-to-1-0-0]] |
 | 1.0 → 1.1 | [[migration-1-0-0-to-1-1-0]] |
+| 1.1 → 1.2 | [[migration-1-1-0-to-1-2-0]] |
 
 ## Updating the dependency
 

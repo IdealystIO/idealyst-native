@@ -92,6 +92,11 @@ If you're new to the codebase, read the docs in this order:
 Guides are listed newest first. **Upgrading an app? Start with the
 version-pair guide for where you are** — each one links onward.
 
+- [`migration-1.1-to-1.2.md`](./migration-1.1-to-1.2.md). **The 1.2 front
+  door.** The build-time CSS release: the `shadow`/`text_shadow` split
+  (the one breaking change), the `--premint` / `--premint-report` /
+  `--premint-only` ladder, and what component-library authors need to
+  know about auto-preminting static sheets and the inline layer.
 - [`migration-0.5-to-1.0.md`](./migration-0.5-to-1.0.md). **The 1.0 front
   door.** The complete breaking-change inventory for 0.5.x → 1.0, derived
   by diffing the exported surface at the `0.5.2` tag against the tree:
