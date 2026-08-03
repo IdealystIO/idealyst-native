@@ -252,6 +252,10 @@ fn tab_button(
             }
             let color = resolve_style(&app).color.clone();
             let key = if on { "tab_label_on" } else { "tab_label_off" };
+            // ENGINE-PATH ONLY: the `attaches_preminted()` early return
+            // above guarantees this layer never runs on a premint build,
+            // so the computed-layer disqualifier can't fire.
+            // idealyst-lint-disable-next-line premint-computed-layer
             base.with_computed(key, move || StyleRules {
                 color: color.clone(),
                 ..Default::default()

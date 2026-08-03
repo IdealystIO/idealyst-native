@@ -26,6 +26,7 @@ mod component_case;
 mod keyed_list;
 mod prefer_macros;
 mod prefer_ui;
+mod premint_crawl;
 mod snapshot_condition;
 mod snapshot_loop;
 
@@ -89,6 +90,16 @@ pub fn all_rules() -> &'static [RuleInfo] {
             default_level: Level::Warn,
             summary: "`for … in <expr>.get()` inside `ui!`/`jsx!` — a build-time snapshot; iterate the Signal itself with `key = …`",
         },
+        RuleInfo {
+            id: premint_crawl::STATE_KEYED_RULE,
+            default_level: Level::Warn,
+            summary: "sheet identity/cache key selected by a runtime conditional — the arm not taken at mount gets no premint CSS (UNCRAWLED panic under --premint-only); make the state a variant axis",
+        },
+        RuleInfo {
+            id: premint_crawl::COMPUTED_RULE,
+            default_level: Level::Warn,
+            summary: "`with_computed` layer — a premint disqualifier with one slot; use a variant axis, the inline layer, or `stylesheet!`",
+        },
     ]
 }
 
@@ -114,6 +125,7 @@ impl<'ast> Visit<'ast> for Linter {
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
         prefer_macros::check_call(node, &mut self.diags);
         prefer_ui::check_call(node, &mut self.diags);
+        premint_crawl::check_call(node, &mut self.diags);
         syn::visit::visit_expr_call(self, node);
     }
 
@@ -124,6 +136,7 @@ impl<'ast> Visit<'ast> for Linter {
 
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
         keyed_list::check_method_call(node, &mut self.diags);
+        premint_crawl::check_method_call(node, &mut self.diags);
         syn::visit::visit_expr_method_call(self, node);
     }
 

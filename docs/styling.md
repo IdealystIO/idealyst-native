@@ -388,6 +388,12 @@ shared naming scheme:
      per-instance values (safe-area insets, a per-instance typeface).
      `with_computed` is a premint disqualifier and additionally has
      only one slot — prefer the other three spellings in library code.
+
+   Both traps are also caught statically: `idealyst lint` flags a sheet
+   identity or `cached_stylesheet` key selected by a runtime conditional
+   (`premint-state-keyed-sheet`) and any `with_computed` layer
+   (`premint-computed-layer`). The runtime warning only fires on paths a
+   dev actually exercises; the lint covers the untested ones.
 2. **Shipped build.** The wasm compiles with `--cfg idealyst_premint`,
    which flips each `stylesheet!` builder's `into_style_prop` to a
    fast path: an all-constant application (plain variant values, no
