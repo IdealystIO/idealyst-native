@@ -91,6 +91,22 @@ pub fn dump_all_css() -> String {
         }
         dump_sheet_parts(base_class, &sheet, &mut rules, &mut fonts);
     }
+    // AUTO-preminted static sheets (`StyleSheet::r#static` derives the
+    // class from the rules' content key — no hand-written identity).
+    // The registry stores raw (class, rules) parts because a bare
+    // `r#static` isn't `Rc`-wrapped at construction; rebuilding a
+    // transient sheet here reuses the exact same lowering (fonts, the
+    // default-font hook, token → var()) as every other registered
+    // sheet. Deduped on the class: content-equal sheets share one by
+    // construction. Entries whose sheet later took an explicit identity
+    // or grew layers were retracted at that point and never appear.
+    for (class, static_rules) in runtime_core::premint::static_rules() {
+        if !seen.insert(class.to_string()) {
+            continue;
+        }
+        let sheet = std::rc::Rc::new(runtime_core::StyleSheet::r#static(static_rules));
+        dump_sheet_parts(&class, &sheet, &mut rules, &mut fonts);
+    }
     // `@font-face` first — parse order doesn't matter to the browser,
     // but faces-before-users reads sanely and matches the SSR head's
     // cascade-order convention.
@@ -175,6 +191,25 @@ fn dump_sheet_parts(
 ) {
     let base = sheet.premint_base();
     fonts.collect(&base);
+    // The sheet's BASE declares a non-flex `display` (e.g. `grid`): no
+    // delta layer can flex-promote the MERGED set — the explicit display
+    // wins — so arm/overlay deltas lower promotion-suppressed and emit
+    // no `flex-direction: column` pin companions. Without this, a
+    // gap-only arm of a grid sheet emitted `display: flex` (stomping the
+    // base's `grid` from later source order) plus a column pin the live
+    // engine never mints (it decides on the merged rules). See
+    // `css::rules_to_css_delta_unpromoted`.
+    let display_locked = matches!(
+        base.display,
+        Some(d) if d != runtime_core::DisplayKind::Flex
+    );
+    let lower_delta = |r: &runtime_core::StyleRules| {
+        if display_locked {
+            css::rules_to_css_delta_unpromoted(r)
+        } else {
+            css::rules_to_css_delta(r)
+        }
+    };
 
     // 1. Base — full lowering (the base rule pins the framework's
     //    `flex-direction: column` default itself when it promotes — at
@@ -194,7 +229,7 @@ fn dump_sheet_parts(
         if let Some(delta) = sheet.premint_delta(axis, "on") {
             fonts.collect(&delta);
             if let Some(rule) =
-                css::breakpoint_media_rule(base_class, *bp, &css::rules_to_css_delta(&delta))
+                css::breakpoint_media_rule(base_class, *bp, &lower_delta(&delta))
             {
                 push_rule(out, rule);
             }
@@ -208,7 +243,7 @@ fn dump_sheet_parts(
             // when the layer does, and loses to every explicit
             // direction from any layer. Same pattern for containers,
             // states, and axis arms below.
-            if css::flex_promoted(&delta) && delta.flex_direction.is_none() {
+            if !display_locked && css::flex_promoted(&delta) && delta.flex_direction.is_none() {
                 if let Some(pin) = css::breakpoint_media_rule(
                     &format!(":where(.{base_class})"),
                     *bp,
@@ -230,9 +265,9 @@ fn dump_sheet_parts(
             fonts.collect(&delta);
             push_rule(
                 out,
-                css::container_query_rule(base_class, *threshold, &css::rules_to_css_delta(&delta)),
+                css::container_query_rule(base_class, *threshold, &lower_delta(&delta)),
             );
-            if css::flex_promoted(&delta) && delta.flex_direction.is_none() {
+            if !display_locked && css::flex_promoted(&delta) && delta.flex_direction.is_none() {
                 let pin =
                     css::container_query_rule(base_class, *threshold, "flex-direction: column");
                 push_rule(out, pin.replace(&format!(".{base_class} {{"), &format!(":where(.{base_class}) {{")));
@@ -248,7 +283,7 @@ fn dump_sheet_parts(
         let Some(pseudo) = css::state_pseudo(*bit) else { continue };
         let Some(delta) = sheet.premint_delta(axis, "on") else { continue };
         fonts.collect(&delta);
-        let mut body = css::rules_to_css_delta(&delta);
+        let mut body = lower_delta(&delta);
         // Same UA-ring suppression as the live engine's focus overlay
         // rule (see `class_rule_group_with`): a sheet that declares its
         // own focus indicator owns it.
@@ -259,7 +294,7 @@ fn dump_sheet_parts(
             out,
             css::class_rule(&format!("{base_class}:where({pseudo})"), &body),
         );
-        if css::flex_promoted(&delta) && delta.flex_direction.is_none() {
+        if !display_locked && css::flex_promoted(&delta) && delta.flex_direction.is_none() {
             push_rule(
                 out,
                 format!(":where(.{base_class}{pseudo}) {{ flex-direction: column }}"),
@@ -281,10 +316,10 @@ fn dump_sheet_parts(
                 out,
                 css::class_rule(
                     &format!("{base_class}-{axis}-{value}"),
-                    &css::rules_to_css_delta(&delta),
+                    &lower_delta(&delta),
                 ),
             );
-            if css::flex_promoted(&delta) && delta.flex_direction.is_none() {
+            if !display_locked && css::flex_promoted(&delta) && delta.flex_direction.is_none() {
                 push_rule(
                     out,
                     format!(":where(.{base_class}-{axis}-{value}) {{ flex-direction: column }}"),
@@ -345,14 +380,14 @@ fn dump_sheet_parts(
             classes.push_str(&format!(".{base_class}"));
         }
         let selector = format!("{classes}{pseudos}");
-        let body = css::rules_to_css_delta(&rules);
+        let body = lower_delta(&rules);
         if body.is_empty() {
             continue;
         }
         // `class_rule` prepends the leading `.`; the selector already carries
         // its own, so emit the rule directly.
         push_rule(out, format!("{selector} {{ {body} }}"));
-        if css::flex_promoted(&rules) && rules.flex_direction.is_none() {
+        if !display_locked && css::flex_promoted(&rules) && rules.flex_direction.is_none() {
             push_rule(out, format!(":where({selector}) {{ flex-direction: column }}"));
         }
     }
@@ -422,6 +457,92 @@ mod tests {
     #[linkme(crate = runtime_core::premint::linkme)]
     static TEST_SHEET: PremintSheet =
         PremintSheet { base_class: "iy-test", sheet: chip_style };
+
+    /// A sheet whose BASE declares `display: grid` must not have its arm
+    /// deltas flex-promote: a gap-only arm used to emit `display: flex`
+    /// (stomping the base's `grid` from later source order) plus a
+    /// `flex-direction: column` pin the live engine never mints for a
+    /// grid. Fails against the promoted lowering on both counts.
+    #[test]
+    fn regression_grid_sheet_arms_do_not_flex_promote() {
+        use runtime_core::{StyleRules, StyleSheet, Tokenized};
+        let sheet = StyleSheet::new(|_vs: &runtime_core::VariantSet| StyleRules {
+            display: Some(runtime_core::DisplayKind::Grid),
+            ..Default::default()
+        })
+        .variant("gap", "roomy", |_vs| StyleRules {
+            gap: Some(Tokenized::Literal(Length::Px(37.0))),
+            ..Default::default()
+        })
+        .variant_default("gap", "roomy")
+        .premint_as("dumptest.v1.gridsheet");
+
+        let mut out = String::new();
+        let mut fonts = FontCollector::default();
+        dump_sheet_parts(sheet.premint_class().unwrap(), &sheet, &mut out, &mut fonts);
+
+        let arm = out
+            .lines()
+            .find(|l| l.contains("-gap-roomy"))
+            .expect("gap arm rule emitted");
+        assert!(
+            !arm.contains("display: flex"),
+            "a grid sheet's gap arm must not auto-promote to flex; got:\n{arm}"
+        );
+        assert!(
+            !out.contains("flex-direction: column"),
+            "no column pin companion for a display-locked sheet; got:\n{out}"
+        );
+        assert!(
+            out.contains("display: grid"),
+            "the base still declares the grid; got:\n{out}"
+        );
+    }
+
+    /// `r#static` sheets auto-premint by content key: constructing one
+    /// registers (class, rules) and the dump emits its rule with NO
+    /// hand-written identity. Content-equal duplicates share one class
+    /// and one rule; a sheet that graduates to `premint_as` retracts its
+    /// auto entry, so the asset carries the identity class only.
+    #[test]
+    fn regression_static_sheets_auto_premint_without_identity() {
+        use runtime_core::{StyleRules, StyleSheet, Tokenized};
+        let rules = || StyleRules {
+            // Distinctive value so the assertions can't match another
+            // test's sheet in the shared thread-local registry.
+            min_width: Some(Tokenized::Literal(Length::Px(731.0))),
+            ..Default::default()
+        };
+        let a = StyleSheet::r#static(rules());
+        let auto_class = a.premint_class().expect("auto class").to_string();
+        let _b = StyleSheet::r#static(rules()); // content-equal duplicate
+
+        let out = dump_all_css();
+        assert!(
+            out.contains(&format!(".{auto_class} {{ min-width: 731px")),
+            "auto-preminted static rule emitted; got:\n{out}"
+        );
+        assert_eq!(
+            out.matches(&format!(".{auto_class} ")).count(),
+            1,
+            "content-equal duplicates collapse to ONE rule; got:\n{out}"
+        );
+
+        // Graduating to an explicit identity retracts the auto entry:
+        // exactly ONE rule carries the content (the identity class),
+        // not two (identity + retired auto class).
+        let named_rules = StyleRules {
+            min_width: Some(Tokenized::Literal(Length::Px(733.0))),
+            ..Default::default()
+        };
+        let _named = StyleSheet::r#static(named_rules).premint_as("dumptest.v1.named");
+        let out = dump_all_css();
+        assert_eq!(
+            out.matches("min-width: 733px").count(),
+            1,
+            "premint_as retracts the auto entry — one rule, under the identity class; got:\n{out}"
+        );
+    }
 
     #[test]
     fn dump_emits_base_plus_one_delta_per_arm() {

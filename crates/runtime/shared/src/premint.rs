@@ -98,3 +98,41 @@ pub fn register_assembled_sheet(sheet: &Rc<StyleSheet>) {
 pub fn assembled_sheets() -> Vec<Rc<StyleSheet>> {
     ASSEMBLED.with(|s| s.borrow().clone())
 }
+
+// ---------------------------------------------------------------------------
+// Auto-preminted STATIC sheets
+// ---------------------------------------------------------------------------
+//
+// `StyleSheet::r#static` derives its premint class from the rules'
+// content key, so the dump and the shipped bundle agree on the name with
+// no hand-written identity at all. The registry captures (class, rules)
+// at construction — the sheet itself is not yet `Rc`-wrapped there, so
+// unlike `ASSEMBLED` this stores the raw parts. A later
+// `premint_as`/`premint_with_class`/layer-adding call RETRACTS the entry
+// (see `StyleSheet::retract_auto_premint`), so a sheet that graduates to
+// an explicit identity doesn't also leave a dead auto-class rule in the
+// asset. Deduped by class at dump time: content-equal sheets share one
+// class by construction, and one rule serves them all.
+
+thread_local! {
+    static STATIC_RULES: std::cell::RefCell<Vec<(Rc<str>, crate::StyleRules)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Record an auto-preminted static sheet's parts for the dump. Called by
+/// [`StyleSheet::r#static`](crate::StyleSheet::r#static); never by app code.
+pub fn register_static_rules(class: Rc<str>, rules: crate::StyleRules) {
+    STATIC_RULES.with(|s| s.borrow_mut().push((class, rules)));
+}
+
+/// Retract a previously-registered auto entry (the sheet gained an
+/// explicit identity or a layer the auto class can't name).
+pub fn unregister_static_rules(class: &str) {
+    STATIC_RULES.with(|s| s.borrow_mut().retain(|(c, _)| &**c != class));
+}
+
+/// Every auto-preminted static sheet registered so far. The dump calls
+/// this after building the app tree, like [`assembled_sheets`].
+pub fn static_rules() -> Vec<(Rc<str>, crate::StyleRules)> {
+    STATIC_RULES.with(|s| s.borrow().clone())
+}

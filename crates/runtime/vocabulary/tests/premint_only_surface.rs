@@ -207,8 +207,13 @@ fn preminted_dynamic_arm_is_ungated_and_engine_free() {
     // The swap itself lives in the shared helper (see
     // `both_dynamic_preminted_paths_share_one_class_swap`); the arm must
     // delegate to it rather than growing a second copy.
+    // (The helper takes per-evaluation `(class list, inline layer)` parts
+    // since the inline-drop fix; this arm has no inline slot, so it
+    // passes `None`.)
     assert!(
-        body.contains("attach_preminted_dynamic(backend, node, class_of)"),
+        body.contains(
+            "attach_preminted_dynamic(backend, node, Box::new(move || (class_of(), None)))"
+        ),
         "the arm must delegate to the shared class-swap helper:\n{body}"
     );
 }

@@ -42,6 +42,8 @@ mod batch_queue;
 mod introspect;
 pub mod newcore;
 mod newcore_url_sync;
+#[cfg(idealyst_premint)]
+mod premint_guard;
 #[cfg(test)]
 mod tests;
 #[cfg(feature = "async-driver")]
@@ -378,6 +380,12 @@ pub struct WebBackend {
     /// pointerdown, pointerup, focusin, focusout) plus the
     /// pointer-event-type closures so the JS side keeps them alive.
     pub(crate) state_listeners: FxHashMap<u32, Vec<Closure<dyn FnMut(web_sys::Event)>>>,
+    /// Per-node CSS properties the LAST inline-layer application set
+    /// (`apply_inline_style`). CSSOM has no "replace layer" primitive —
+    /// only per-property set/remove — so without this record a property
+    /// the previous layer named but the current one doesn't (a cleared
+    /// `with_inline`) lingered on the node forever.
+    pub(crate) inline_props: FxHashMap<u32, Vec<String>>,
     /// Has the `@keyframes ui-spin` rule been injected? First
     /// ActivityIndicator creation injects it; later creations skip
     /// the work.
@@ -1171,6 +1179,7 @@ impl WebBackend {
             _link_click_closures: Vec::new(),
             _touch_closures: Vec::new(),
             state_listeners: FxHashMap::default(),
+            inline_props: FxHashMap::default(),
             spinner_keyframes_injected: false,
             virtualizer_shim_injected: false,
             batch_shim_injected: false,

@@ -948,7 +948,7 @@ pub fn easing_css(e: runtime_shared::Easing) -> String {
 /// nodes onto distinct class keys and disqualified every shadowed
 /// sheet from preminting.)
 pub fn rules_to_css(rules: &StyleRules) -> String {
-    rules_to_css_impl(rules, true)
+    rules_to_css_impl(rules, true, true)
 }
 
 /// Append one `name: value` declaration, `"; "`-separated — the direct-write
@@ -995,7 +995,20 @@ fn push_decl(out: &mut String, name: &str, value: &str) {
 /// merged set flex-promoted, and repeated `display: flex` declarations
 /// are idempotent.
 pub fn rules_to_css_delta(rules: &StyleRules) -> String {
-    rules_to_css_impl(rules, false)
+    rules_to_css_impl(rules, false, true)
+}
+
+/// [`rules_to_css_delta`] with the `display: flex` AUTO-PROMOTION also
+/// suppressed. For arm/overlay deltas of a sheet whose BASE declares a
+/// non-flex `display` (a `display: grid` container with per-arm `gap`,
+/// say): the promotion is a MERGED-SET decision, and the merged set's
+/// explicit display wins — a promoting delta would land later in source
+/// order and stomp the base's `grid` back to `flex` (and its
+/// `flex-direction: column` pin companion would diverge from the live
+/// engine, which never pins a grid). A delta that sets `display`
+/// EXPLICITLY still emits it — only the inference is off.
+pub fn rules_to_css_delta_unpromoted(rules: &StyleRules) -> String {
+    rules_to_css_impl(rules, false, false)
 }
 
 /// `true` when this rules layer, applied to an element, makes it a flex
@@ -1022,7 +1035,7 @@ pub fn flex_promoted(rules: &StyleRules) -> bool {
     }
 }
 
-fn rules_to_css_impl(rules: &StyleRules, pin_flex_direction: bool) -> String {
+fn rules_to_css_impl(rules: &StyleRules, pin_flex_direction: bool, promote_flex: bool) -> String {
     use runtime_shared::{Color, Length, Tokenized};
 
     /// One property's value slot. Borrowing tags defer formatting to the
@@ -1076,7 +1089,7 @@ fn rules_to_css_impl(rules: &StyleRules, pin_flex_direction: bool) -> String {
                 push_decl(&mut out, "flex-direction", "column");
             }
         }
-        None if uses_flex => {
+        None if uses_flex && promote_flex => {
             push_decl(&mut out, "display", "flex");
             if pin_flex_direction && rules.flex_direction.is_none() {
                 push_decl(&mut out, "flex-direction", "column");

@@ -285,7 +285,10 @@ impl IntoStyleProp for StyleApplication {
         // resolved rules are not the ones any build-time class names.
         #[cfg(idealyst_premint)]
         {
-            if let Some(class) = self.preminted_class_list() {
+            // Guard-aware (`preminted_attach_class_list`): a class with no
+            // CSS in the shipped asset falls through to the live engine
+            // rather than stamping a class nothing matches.
+            if let Some(class) = self.preminted_attach_class_list() {
                 return StyleProp::Preminted {
                     class: Cow::Owned(class),
                     overrides: None,
@@ -319,7 +322,8 @@ impl IntoStyleProp for Box<StyleApplication> {
         // box is kept, not round-tripped, on the live-engine fall-through.
         #[cfg(idealyst_premint)]
         {
-            if let Some(class) = self.preminted_class_list() {
+            // Guard-aware — see the unboxed impl.
+            if let Some(class) = self.preminted_attach_class_list() {
                 return StyleProp::Preminted {
                     class: Cow::Owned(class),
                     overrides: None,
@@ -440,6 +444,19 @@ Either move the offending style onto the builder form so its whole variant \
 space premints, or drop --premint-only and keep the engine. --premint on its \
 own is always safe.";
 
+/// The guard-specific `--premint-only` panic: the application premints —
+/// it has a class — but the loaded CSS asset contains no rule for it.
+#[cfg(idealyst_premint_only)]
+const PREMINT_ONLY_UNCRAWLED: &str = "\
+this bundle was built with --premint-only, and this style premints — but \
+the shipped CSS asset has no rule for its class. The sheet was constructed \
+on a code path the build-time dump never executed (a subtree first built \
+at runtime — a lazily-opened modal, a route the dump's crawl missed), so \
+its CSS was never emitted.\n\n\
+Construct the sheet on a path the dump reaches (module-level/cached \
+construction runs at first use — make sure that first use happens during \
+the dump's build pass), or drop --premint-only and keep the engine.";
+
 
 // ---------------------------------------------------------------------------
 // --premint-report
@@ -521,7 +538,17 @@ pub(crate) mod report {
             StyleProp::Dynamic(_) => {
                 "Dynamic (raw StyleRules closure — no stylesheet to premint)".to_string()
             }
-            StyleProp::Sheet(app) => describe_app("Sheet", app),
+            StyleProp::Sheet(app) => {
+                // An explicit `Sheet` whose application qualifies premints
+                // under `--premint-only` (the arm converts it), so it is
+                // not a fall-through the report should count — same
+                // contract as the `SheetDynamic` probe below. Table cells
+                // are the canonical shape.
+                if app.preminted_attach_class_list().is_some() {
+                    return;
+                }
+                describe_app("Sheet", app)
+            }
             StyleProp::SheetDynamic(f) => {
                 let app = f();
                 // A premintable evaluation takes the reactive diversion in
@@ -532,7 +559,7 @@ pub(crate) mod report {
                 // closure that premints now but returns an
                 // override-carrying app later is caught by that later
                 // evaluation on the next attach of the same shape.
-                if app.preminted_class_list().is_some() {
+                if app.preminted_attach_class_list().is_some() {
                     return;
                 }
                 describe_app("SheetDynamic", &app)
@@ -610,7 +637,33 @@ pub fn attach_style<H: StyleServices>(
         // it matches the loud-failure policy an unregistered payload gets at
         // realize.
         #[cfg(idealyst_premint_only)]
-        StyleProp::Dynamic(_) | StyleProp::Sheet(_) => {
+        StyleProp::Dynamic(_) => panic!("{}", PREMINT_ONLY_VIOLATION),
+        #[cfg(idealyst_premint_only)]
+        StyleProp::Sheet(app) => {
+            // An EXPLICIT `Sheet` (the compose/introspect handover —
+            // Table cells) bypasses the `IntoStyleProp` fast path by
+            // design, so premint it HERE when the application qualifies:
+            // under `--premint` the explicit spelling keeps the app on
+            // the live engine for introspection, but this build has no
+            // engine, and a qualifying application loses nothing by
+            // stamping its classes.
+            if let Some(class) = app.preminted_attach_class_list() {
+                return attach_style(
+                    backend,
+                    node,
+                    StyleProp::Preminted {
+                        class: Cow::Owned(class),
+                        overrides: None,
+                        inline: app.inline().cloned(),
+                    },
+                );
+            }
+            // Split the failure diagnosis: a sheet WITH a class whose CSS
+            // is missing was constructed after the dump's crawl; one
+            // without a class is the ordinary violation.
+            if app.preminted_class_list().is_some() {
+                panic!("{}", PREMINT_ONLY_UNCRAWLED);
+            }
             panic!("{}", PREMINT_ONLY_VIOLATION)
         }
         // NOT a blanket panic like its two neighbours: a reactive
@@ -655,7 +708,7 @@ pub fn attach_style<H: StyleServices>(
                 "StyleProp::PremintedDynamic reached a backend with no \
                  preminted support"
             );
-            attach_preminted_dynamic(backend, node, class_of);
+            attach_preminted_dynamic(backend, node, Box::new(move || (class_of(), None)));
             // Overrides reach the engine, same as on the static arm.
             #[cfg(idealyst_premint_only)]
             if overrides.is_some() {
@@ -983,7 +1036,14 @@ fn attach_sheet_static<H: StyleServices>(
 fn attach_preminted_dynamic<H: StyleServices>(
     backend: &Rc<RefCell<H>>,
     node: &H::Node,
-    class_of: Box<dyn Fn() -> String>,
+    // Per-evaluation parts: the class list to stamp plus the
+    // application's INLINE layer, which the class cannot carry (a Grid's
+    // `display:grid` + track list, a slider thumb's `left`). The static
+    // `Preminted` arm applies its inline slot; the reactive paths used to
+    // drop it — Grid rendered as a flex column in every premint build
+    // whose style arrived through the reactive diversion (which is ALL
+    // Grids: the component always styles via closure).
+    parts_of: Box<dyn Fn() -> (String, Option<Rc<StyleRules>>)>,
 ) {
     // Same host-state wiring as the static preminted arm: a preminted
     // class bypasses sheet registration, so tokens / app background /
@@ -999,11 +1059,15 @@ fn attach_preminted_dynamic<H: StyleServices>(
     // and the backend, and nesting a RefCell borrow inside a backend
     // borrow is how this file's other paths have deadlocked before.
     let stamped: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    // Whether the previous run applied an inline layer, so a run whose
+    // evaluation has none can CLEAR the stale one (empty rules overwrite
+    // the node's inline style) instead of leaving it behind.
+    let had_inline: RefCell<bool> = RefCell::new(false);
     let _binding = effect(move || {
         // Read FIRST: this is the tracked call, and it must run before any
         // borrow so a panic inside author code can't leave a borrow
         // outstanding.
-        let class = class_of();
+        let (class, inline) = parts_of();
 
         let previous: Vec<String> = stamped.borrow_mut().drain(..).collect();
         let mut next: Vec<String> = class.split_whitespace().map(|c| c.to_string()).collect();
@@ -1027,6 +1091,20 @@ fn attach_preminted_dynamic<H: StyleServices>(
             }
         }
         *stamped.borrow_mut() = next;
+        // Inline layer, AFTER the classes (it beats them in the cascade,
+        // matching the merge order — same contract as the static arm).
+        match inline {
+            Some(rules) => {
+                b.borrow_mut().apply_inline_style(&n, &rules);
+                *had_inline.borrow_mut() = true;
+            }
+            None => {
+                if *had_inline.borrow() {
+                    b.borrow_mut().apply_inline_style(&n, &Rc::new(StyleRules::default()));
+                    *had_inline.borrow_mut() = false;
+                }
+            }
+        }
     });
 }
 
@@ -1057,7 +1135,19 @@ fn attach_sheet_dynamic_preminted<H: StyleServices>(
         backend,
         node,
         Box::new(move || {
-            style().preminted_class_list().unwrap_or_else(|| panic!("{}", PREMINT_ONLY_VIOLATION))
+            let app = style();
+            match app.preminted_attach_class_list() {
+                Some(list) => (list, app.inline().cloned()),
+                // The sheet HAS a premint class but the loaded CSS asset
+                // has no rule for it: it was constructed on a path the
+                // dump's crawl never reached. Name that precisely — the
+                // generic violation text would send the author hunting
+                // for an override that doesn't exist.
+                None if app.preminted_class_list().is_some() => {
+                    panic!("{}", PREMINT_ONLY_UNCRAWLED)
+                }
+                None => panic!("{}", PREMINT_ONLY_VIOLATION),
+            }
         }),
     );
     // No state setter: interaction states ride the preminted pseudo-class
@@ -1107,6 +1197,11 @@ fn attach_sheet_dynamic<H: StyleServices>(
     // `attach_preminted_dynamic` for the deadlock this shape avoids.
     #[cfg(idealyst_premint)]
     let stamped: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    // Whether the previous PREMINTED fire applied an inline layer, so a
+    // fire without one clears the stale inline style (see
+    // `attach_preminted_dynamic`).
+    #[cfg(idealyst_premint)]
+    let had_inline: RefCell<bool> = RefCell::new(false);
     // Sheet pin (module docs): holds the latest Rc<StyleSheet> so its
     // registration Weak stays upgradeable for this effect's lifetime.
     let mut _pinned_sheet: Option<Rc<StyleSheet>> = None;
@@ -1138,7 +1233,7 @@ fn attach_sheet_dynamic<H: StyleServices>(
         // is exactly what a plain `--premint` build keeps the engine for.
         #[cfg(idealyst_premint)]
         {
-            if let Some(class) = app.preminted_class_list() {
+            if let Some(class) = app.preminted_attach_class_list() {
                 // Host-state wiring, same as the static preminted arm: a
                 // preminted class bypasses sheet registration, so tokens /
                 // app background / default document font ride the theme
@@ -1174,10 +1269,21 @@ fn attach_sheet_dynamic<H: StyleServices>(
                 // `with_inline` (continuously-varying per-instance values
                 // like a progress fill width stay out of the cache
                 // identity and off the class list).
-                if let Some(rules) = app.inline() {
-                    backend_for_effect
-                        .borrow_mut()
-                        .apply_inline_style(&node_for_effect, rules);
+                match app.inline() {
+                    Some(rules) => {
+                        backend_for_effect
+                            .borrow_mut()
+                            .apply_inline_style(&node_for_effect, rules);
+                        *had_inline.borrow_mut() = true;
+                    }
+                    None => {
+                        if *had_inline.borrow() {
+                            backend_for_effect
+                                .borrow_mut()
+                                .apply_inline_style(&node_for_effect, &Rc::new(StyleRules::default()));
+                            *had_inline.borrow_mut() = false;
+                        }
+                    }
                 }
                 return;
             }
@@ -1853,6 +1959,9 @@ mod tests {
         /// Classes currently stamped, in attach order (the preminted
         /// diversion's surface). `&self` methods, hence the RefCell.
         classes: RefCell<Vec<String>>,
+        /// Inline-layer applications, in order (the preminted paths'
+        /// out-of-band surface for `with_inline` values).
+        inlined: Vec<(u32, Rc<StyleRules>)>,
     }
     impl Host for FontHost {
         type Node = u32;
@@ -1888,6 +1997,9 @@ mod tests {
         }
         fn apply_style(&mut self, node: &u32, style: &Rc<StyleRules>) {
             self.applied.push((*node, style.clone()));
+        }
+        fn apply_inline_style(&mut self, node: &u32, style: &Rc<StyleRules>) {
+            self.inlined.push((*node, style.clone()));
         }
         fn handles_states_natively(&self) -> bool {
             true
@@ -1926,7 +2038,13 @@ mod tests {
     fn dynamic_sheet_path_does_not_fold_default_font() {
         let world = World::new();
         let backend = Rc::new(RefCell::new(FontHost::default()));
-        let sheet = Rc::new(StyleSheet::r#static(StyleRules::default()));
+        // A CLOSURE sheet, deliberately: `r#static` now auto-premints by
+        // content, and a preminting sheet takes the class diversion under
+        // the premint cfg — this test pins the LIVE ENGINE's font
+        // asymmetry, so its fixture must be one the engine resolves.
+        let sheet = Rc::new(StyleSheet::new(|_vs: &runtime_shared::VariantSet| {
+            StyleRules::default()
+        }));
         let theme_font = runtime_shared::FontFamily::System("Test Sans".into());
 
         world.enter(|| {
@@ -1989,6 +2107,111 @@ mod tests {
             .variant("kind", "b", |_vs| StyleRules::default())
             .variant_default("kind", "a")
             .premint_as("test.reactive.premint.v1")
+    }
+
+    /// The MINTED-CLASS GUARD at the conversion site: a preminting
+    /// application whose base class is ABSENT from the installed minted
+    /// set must not divert — the shipped CSS has no rule for it (the
+    /// sheet was constructed on a path the dump's crawl never reached),
+    /// so it falls back to `StyleProp::Sheet` and the live engine. With
+    /// the class present, or with no set installed (native, tests, a
+    /// failed asset load), the diversion proceeds as before.
+    #[cfg(idealyst_premint)]
+    #[test]
+    fn regression_unminted_class_falls_back_to_the_engine() {
+        let sheet = premintable_sheet();
+        let base = sheet.premint_class().expect("sheet premints").to_string();
+
+        assert!(
+            matches!(
+                StyleApplication::new(sheet.clone()).into_style_prop(),
+                StyleProp::Preminted { .. }
+            ),
+            "disarmed guard: the conversion premints"
+        );
+
+        runtime_shared::install_minted_classes(["iy-notthisone".to_string()]);
+        assert!(
+            matches!(
+                StyleApplication::new(sheet.clone()).into_style_prop(),
+                StyleProp::Sheet(_)
+            ),
+            "armed set without the class: the conversion falls back to the engine"
+        );
+
+        runtime_shared::install_minted_classes([base]);
+        assert!(
+            matches!(
+                StyleApplication::new(sheet).into_style_prop(),
+                StyleProp::Preminted { .. }
+            ),
+            "armed set with the class: the conversion premints again"
+        );
+    }
+
+    /// The reactive premint diversion must apply the application's
+    /// INLINE layer alongside the stamped classes — and CLEAR it when a
+    /// later evaluation carries none. The reactive paths used to drop
+    /// the layer entirely: `Grid` rendered as a flex column in premint
+    /// builds (its `display:grid` + track list ride `with_inline`, and
+    /// the component always styles via a closure, so every Grid took
+    /// this path).
+    #[cfg(idealyst_premint)]
+    #[test]
+    fn regression_reactive_premint_diversion_applies_inline_layer() {
+        let world = World::new();
+        let backend = Rc::new(RefCell::new(FontHost::default()));
+        let sheet = premintable_sheet();
+
+        let with_inline = world.enter(|| runtime_world::signal(true));
+        let _owned = world.enter(|| {
+            let sheet = sheet.clone();
+            let ((), owned) = collect_owned(|| {
+                let sheet = sheet.clone();
+                let _s = attach_style(
+                    &backend,
+                    &7u32,
+                    StyleProp::SheetDynamic(Box::new(move || {
+                        let app = StyleApplication::new(sheet.clone());
+                        if with_inline.get() {
+                            app.with_inline(StyleRules {
+                                flex_grow: Some(runtime_shared::Tokenized::Literal(1.0)),
+                                ..Default::default()
+                            })
+                        } else {
+                            app
+                        }
+                    })),
+                );
+            });
+            owned
+        });
+
+        {
+            let b = backend.borrow();
+            let (_, rules) = b.inlined.last().expect(
+                "the diversion must apply the inline layer alongside the classes",
+            );
+            assert_eq!(
+                rules.flex_grow,
+                Some(runtime_shared::Tokenized::Literal(1.0)),
+                "the inline rules reach the backend out-of-band"
+            );
+            assert!(b.applied.is_empty(), "the live engine is never touched");
+        }
+
+        // An evaluation WITHOUT the layer must clear the stale inline
+        // style (empty rules), not leave it behind.
+        world.enter(|| with_inline.set(false));
+        world.flush();
+        let b = backend.borrow();
+        let (_, rules) = b.inlined.last().expect("the clearing application");
+        assert_eq!(
+            **rules,
+            StyleRules::default(),
+            "a no-inline evaluation clears the previous inline layer"
+        );
+        assert!(b.applied.is_empty(), "still no engine involvement");
     }
 
     /// A REACTIVE application over a premintable sheet must swap CLASSES,

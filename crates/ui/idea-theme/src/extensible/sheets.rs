@@ -2274,10 +2274,17 @@ impl SliderSheetBuilder {
             .variant_default("appearance", "primary_filled")
             .variant_default("size", "md");
 
+        // Premint identities, like the checkbox/button sibling builders —
+        // without them every Slider track/fill/thumb fell through to the
+        // live engine (`--premint-report` on the docs corpus). The
+        // component's continuous values (fill `width`, thumb `left`)
+        // already ride the inline layer, so the sheets themselves are
+        // fully enumerable.
+        let id = premint_identity("slider", [tone_keys(&self.tones), variant_keys(&self.variants)]);
         SliderSheets {
-            track_sheet: Rc::new(track),
-            fill_sheet: Rc::new(fill),
-            thumb_sheet: Rc::new(thumb),
+            track_sheet: track.premint_as(&format!("{id}|track")),
+            fill_sheet: fill.premint_as(&format!("{id}|fill")),
+            thumb_sheet: thumb.premint_as(&format!("{id}|thumb")),
         }
     }
 }

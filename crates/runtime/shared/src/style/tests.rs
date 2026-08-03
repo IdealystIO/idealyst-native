@@ -1938,6 +1938,101 @@ fn inline_layer_does_not_disqualify_preminting() {
     assert!(with_computed.preminted_class_list().is_none());
 }
 
+/// A `r#static` sheet auto-premints: its class derives from the rules'
+/// CONTENT KEY, so the dump binary and the shipped bundle agree on the
+/// name with no hand-written `premint_as` identity ("extract the CSS
+/// from the build — that simple"). Content-equal sheets share a class;
+/// layer-adding mutators retract the auto class (its CSS would miss the
+/// added layer); an explicit identity replaces it.
+#[test]
+fn static_sheets_auto_premint_by_content_key() {
+    let rules = || StyleRules {
+        flex_grow: Some(Tokenized::Literal(1.0)),
+        min_height: Some(Tokenized::Literal(Length::Px(0.0))),
+        ..Default::default()
+    };
+    let other_rules = StyleRules {
+        width: Some(Tokenized::Literal(Length::Px(7.0))),
+        ..Default::default()
+    };
+
+    let a = StyleSheet::r#static(rules());
+    let b = StyleSheet::r#static(rules());
+    let c = StyleSheet::r#static(other_rules);
+    let a_class = a.premint_class().expect("static sheets carry an auto class").to_string();
+    assert!(a_class.starts_with("iy-"), "auto class uses the shared premint namespace");
+    assert_eq!(
+        Some(a_class.as_str()),
+        b.premint_class(),
+        "content-equal static sheets derive the SAME class"
+    );
+    assert_ne!(a.premint_class(), c.premint_class(), "different content, different class");
+
+    // A bare application of a static sheet premints with no ceremony.
+    assert_eq!(
+        StyleApplication::new(Rc::new(a)).preminted_class_list().as_deref(),
+        Some(a_class.as_str())
+    );
+
+    // Layer-adding mutators RETRACT the auto class: its CSS names only
+    // the base rules, so stamping it after a variant/default/compound
+    // was added would drop that layer on premint builds.
+    let grown = StyleSheet::r#static(rules()).variant("axis", "on", |_| StyleRules::default());
+    assert_eq!(grown.premint_class(), None, "variant() retracts the auto class");
+    let defaulted = StyleSheet::r#static(rules()).variant_default("axis", "on");
+    assert_eq!(defaulted.premint_class(), None, "variant_default() retracts the auto class");
+    let compounded = StyleSheet::r#static(rules())
+        .compound(vec![("axis", "on")], |_| StyleRules::default());
+    assert_eq!(compounded.premint_class(), None, "compound() retracts the auto class");
+
+    // An explicit identity replaces the auto class (stable names for
+    // parameterized sheets like per-px icon sizes).
+    let named = StyleSheet::r#static(rules()).premint_as("test.v1.named");
+    assert_eq!(
+        named.premint_class(),
+        Some(crate::premint_class_name("test.v1.named")).as_deref(),
+        "premint_as replaces the auto class with the identity-derived one"
+    );
+}
+
+/// The MINTED-CLASS GUARD: `preminted_attach_class_list` (what every
+/// attach path consults) vetoes a premint whose base class is absent
+/// from the installed minted set — the shipped CSS has no rule for it,
+/// so stamping it would render the node silently unstyled. Disarmed
+/// (no set installed) it assumes minted, the pre-guard behavior; the
+/// raw `preminted_class_list` is never gated (the dump generates FROM
+/// it). Thread-locals are per-test-thread, so arming the set here
+/// cannot leak into other tests.
+#[test]
+fn minted_class_guard_gates_the_attach_class_list() {
+    let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules::default())
+        .premint_as("test.guard.v1");
+    let base = sheet.premint_class().expect("sheet premints").to_string();
+    let app = StyleApplication::new(sheet);
+
+    assert!(
+        app.preminted_attach_class_list().is_some(),
+        "disarmed guard assumes classes are minted"
+    );
+
+    crate::install_minted_classes(["iy-someotherclass".to_string()]);
+    assert_eq!(
+        app.preminted_attach_class_list(),
+        None,
+        "armed set WITHOUT the class vetoes the premint attach"
+    );
+    assert!(
+        app.preminted_class_list().is_some(),
+        "the raw class list stays available — the dump generates from it"
+    );
+
+    crate::install_minted_classes([base]);
+    assert!(
+        app.preminted_attach_class_list().is_some(),
+        "armed set WITH the class lets the premint attach through"
+    );
+}
+
 /// `attaches_preminted` is the components' read-back gate (Button icon
 /// tint et al.): true exactly when the build ships build-time CSS
 /// (`--cfg idealyst_premint`) AND the application premints. Without the

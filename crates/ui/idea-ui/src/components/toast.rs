@@ -594,8 +594,11 @@ pub fn ToastHost(props: &ToastHostProps) -> Element {
     // A positioner fills the portal strip and pushes the stack into the
     // requested corner with `gap` px from the hugged edge(s). Built once —
     // placement/gap are static props, so no reactive style closure needed.
+    // `r#static` so the positioner auto-premints by content (one class
+    // per distinct placement/gap the app actually mounts) — a closure
+    // sheet here was a live-engine fall-through on the docs corpus.
     let positioner_sheet: Rc<StyleSheet> =
-        Rc::new(StyleSheet::new(move |_vs: &VariantSet| placement.positioner_rules(gap)));
+        Rc::new(StyleSheet::r#static(placement.positioner_rules(gap)));
     let positioner = runtime_core::view(vec![stack]).with_style(positioner_sheet).into_element();
 
     runtime_core::overlay(vec![positioner])

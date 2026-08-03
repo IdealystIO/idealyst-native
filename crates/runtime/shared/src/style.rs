@@ -1751,6 +1751,38 @@ pub fn premint_class_name(identity: &str) -> String {
     format!("iy-{:012x}", h & 0xffff_ffff_ffff)
 }
 
+thread_local! {
+    /// The set of premint base classes the LOADED CSS asset actually
+    /// contains — `None` until (unless) a backend installs it. See
+    /// [`install_minted_classes`].
+    static MINTED_CLASSES: std::cell::RefCell<Option<rustc_hash::FxHashSet<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install the set of premint classes the shipped CSS asset contains.
+/// The web backend scans the loaded stylesheets at boot and calls this,
+/// which arms the guard in [`StyleApplication::preminted_attach_class_list`]:
+/// a sheet whose class is NOT in the asset (it was constructed on a path
+/// the dump's crawl never reached) falls back to the live engine instead
+/// of silently stamping a class no CSS rule matches. Backends that never
+/// call this (native, tests, a build whose CSS failed to load) leave the
+/// guard disarmed — classes are assumed minted, which is exactly the
+/// pre-guard behavior.
+pub fn install_minted_classes(classes: impl IntoIterator<Item = String>) {
+    MINTED_CLASSES.with(|m| {
+        *m.borrow_mut() = Some(classes.into_iter().collect());
+    });
+}
+
+/// Whether `base` is known to have CSS in the shipped premint asset.
+/// `true` when the guard is disarmed (no set installed).
+pub fn minted_class_known(base: &str) -> bool {
+    MINTED_CLASSES.with(|m| match m.borrow().as_ref() {
+        Some(set) => set.contains(base),
+        None => true,
+    })
+}
+
 /// Class the REACTIVE preminted attach paths stamp alongside the sheet's
 /// class list, restoring CSS font inheritance over the dump's default-font
 /// hook. Shared name between the dump (which emits its one rule,
@@ -1966,6 +1998,14 @@ pub struct StyleSheet {
     /// [`Self::premint_as`]). `None` — the default — means the sheet
     /// only ever resolves through the live engine.
     premint_class: Option<Rc<str>>,
+    /// Whether `premint_class` is the CONTENT-DERIVED auto class a
+    /// [`Self::r#static`] constructor assigned (vs. an explicit
+    /// `premint_as`/`premint_with_class` identity). The auto class names
+    /// exactly the base rules, so any layer added afterwards
+    /// (`variant`/`variant_default`/`compound`) RETRACTS it — the sheet
+    /// falls back to explicit identity or the live engine rather than
+    /// stamping a class whose CSS misses the added layers.
+    auto_preminted: bool,
     /// Source location this sheet was constructed at — `--premint-report`
     /// only, and the whole reason that flag is usable.
     ///
@@ -2037,6 +2077,7 @@ impl StyleSheet {
             container_axes: Vec::new(),
             author_axes: Vec::new(),
             premint_class: None,
+            auto_preminted: false,
             #[cfg(idealyst_premint_report)]
             origin: Some(std::panic::Location::caller()),
             variant_cache: std::cell::RefCell::new(FxHashMap::default()),
@@ -2046,6 +2087,20 @@ impl StyleSheet {
     /// A stylesheet whose base rules ignore the variant set.
     #[cfg_attr(idealyst_premint_report, track_caller)]
     pub fn r#static(rules: StyleRules) -> Self {
+        // AUTO-PREMINT: a static sheet's whole identity IS its rules, so
+        // the build-time class derives from the content key — the dump
+        // binary and the shipped bundle compute the same name from the
+        // same rules independently, with no hand-written `premint_as`
+        // identity. Content-equal sheets share one class (the dump dedups
+        // on it). `.premint_as(...)` / `.premint_with_class(...)` still
+        // REPLACE this class for sheets that want a stable name (the
+        // parameterized identities like per-px icon sizes); they also
+        // retract the auto registration so the dump doesn't emit a dead
+        // duplicate rule under the auto class.
+        let auto_class: Rc<str> =
+            crate::premint_class_name(&format!("static|{}", rules.content_key())).into();
+        #[cfg(feature = "style-dump")]
+        crate::premint::register_static_rules(Rc::clone(&auto_class), rules.clone());
         Self {
             base: Box::new(move |_vs: &VariantSet| rules.clone()),
             variants: BTreeMap::new(),
@@ -2054,10 +2109,28 @@ impl StyleSheet {
             breakpoint_axes: Vec::new(),
             container_axes: Vec::new(),
             author_axes: Vec::new(),
-            premint_class: None,
+            premint_class: Some(auto_class),
+            auto_preminted: true,
             #[cfg(idealyst_premint_report)]
             origin: Some(std::panic::Location::caller()),
             variant_cache: std::cell::RefCell::new(FxHashMap::default()),
+        }
+    }
+
+    /// Drops a [`Self::r#static`]-assigned content-derived class. Called
+    /// by every layer-adding mutator: the auto class names exactly the
+    /// base rules, so once another layer exists the class's CSS would be
+    /// missing that layer — retract rather than stamp a lie. Explicit
+    /// `premint_as`/`premint_with_class` identities call this too, so the
+    /// dump doesn't also emit a dead rule under the retired auto class.
+    fn retract_auto_premint(&mut self) {
+        if self.auto_preminted {
+            #[cfg(feature = "style-dump")]
+            if let Some(class) = self.premint_class.as_ref() {
+                crate::premint::unregister_static_rules(class);
+            }
+            self.premint_class = None;
+            self.auto_preminted = false;
         }
     }
 
@@ -2072,6 +2145,7 @@ impl StyleSheet {
     where
         F: Fn(&VariantSet) -> StyleRules + 'static,
     {
+        self.retract_auto_premint();
         let axis = axis.into();
         let value = value.into();
         // Cache state-axis presence at construction so
@@ -2181,6 +2255,7 @@ impl StyleSheet {
         axis: impl Into<VariantAxis>,
         value: impl Into<VariantValue>,
     ) -> Self {
+        self.retract_auto_premint();
         let axis = axis.into();
         let value = value.into();
         // Keep the premint author-axis cache in step. `variant_default`
@@ -2293,6 +2368,7 @@ impl StyleSheet {
     /// fine — the dump emits them as compound selectors through the same
     /// `dump_sheet_parts` both registration paths share.
     pub fn premint_with_class(mut self, class: &'static str) -> Rc<StyleSheet> {
+        self.retract_auto_premint();
         self.premint_class = Some(class.into());
         Rc::new(self)
     }
@@ -2316,6 +2392,7 @@ impl StyleSheet {
     /// appearance arm — and the failure was invisible: `premint_as` returned
     /// a sheet that simply had no class.
     pub fn premint_as(mut self, identity: &str) -> Rc<StyleSheet> {
+        self.retract_auto_premint();
         self.premint_class = Some(crate::premint_class_name(identity).into());
         let sheet = Rc::new(self);
         #[cfg(feature = "style-dump")]
@@ -2335,6 +2412,7 @@ impl StyleSheet {
     where
         F: Fn(&VariantSet) -> StyleRules + 'static,
     {
+        self.retract_auto_premint();
         let when: BTreeMap<VariantAxis, VariantValue> =
             when.into_iter().map(|(a, v)| (a.into(), v.into())).collect();
         self.compounds.push(CompoundVariant {
@@ -2788,10 +2866,28 @@ impl StyleApplication {
     pub fn attaches_preminted(&self) -> bool {
         #[cfg(idealyst_premint)]
         {
-            self.preminted_class_list().is_some()
+            self.preminted_attach_class_list().is_some()
         }
         #[cfg(not(idealyst_premint))]
         false
+    }
+
+    /// [`Self::preminted_class_list`] with the MINTED-CLASS GUARD: the
+    /// attach paths use this, so a sheet whose class has no CSS in the
+    /// shipped asset (it was constructed on a path the dump's crawl
+    /// never reached — a modal opened for the first time at runtime,
+    /// say) resolves through the live engine instead of silently
+    /// stamping a class nothing matches. Only the BASE class is
+    /// checked: axis-arm rules ship in the same asset as their base.
+    /// The guard is disarmed (`None` installed) everywhere except web
+    /// premint boots — see [`install_minted_classes`].
+    pub fn preminted_attach_class_list(&self) -> Option<String> {
+        let list = self.preminted_class_list()?;
+        let base = list.split(' ').next().unwrap_or(list.as_str());
+        if !crate::minted_class_known(base) {
+            return None;
+        }
+        Some(list)
     }
 
     /// Attach a computed layer — a closure that produces `StyleRules`

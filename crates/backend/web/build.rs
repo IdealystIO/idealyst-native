@@ -10,6 +10,12 @@
 include!("build_support/js_min.rs");
 
 fn main() {
+    // The CLI's premint builds set these via RUSTFLAGS workspace-wide;
+    // declared here so the minted-class boot scan can gate on them
+    // without an unexpected_cfgs lint (same declarations as
+    // runtime-shared's build.rs).
+    println!("cargo::rustc-check-cfg=cfg(idealyst_premint)");
+    println!("cargo::rustc-check-cfg=cfg(idealyst_premint_only)");
     let js_dir = std::path::Path::new("runtime/js");
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("js-min");
     std::fs::create_dir_all(&out_dir).expect("create OUT_DIR/js-min");

@@ -2073,6 +2073,17 @@ stylesheet! {
             // text node's alignment already applies). See `TableBodyCell`.
             text_align: TextAlign::Left,
         }
+        // Clickable-row axes — see `TableBodyCell` for the rationale.
+        variant interactive {
+            #[default]
+            off(_t) {}
+            on(_t) { cursor: Cursor::Pointer }
+        }
+        variant row_hovered {
+            #[default]
+            off(_t) {}
+            on(_t) { background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())) }
+        }
         transitions {
             background: 250ms EaseInOut,
             border_bottom_color: 250ms EaseInOut,
@@ -2091,11 +2102,29 @@ stylesheet! {
             // share one alignment source of truth — see `TableHeadCell`.
             text_align: TextAlign::Left,
         }
+        // Clickable-row axes (`TableRow` with `on_row_click`). Enumerated
+        // variants rather than runtime `with_overrides` so every arm has
+        // build-time CSS and the flip is a preminted CLASS SWAP — the
+        // override form kept every table cell on the live engine, which
+        // was one of the last two `--premint-only` blockers on the docs
+        // corpus. `row_hovered` is a shared-signal axis, NOT a
+        // `state hovered` pseudo: hovering ANY cell highlights the WHOLE
+        // row via the row's one signal, which per-cell `:hover` cannot
+        // express — see `components::table::make_row_cell_interactive`.
+        variant interactive {
+            #[default]
+            off(_t) {}
+            on(_t) { cursor: Cursor::Pointer }
+        }
+        variant row_hovered {
+            #[default]
+            off(_t) {}
+            on(_t) { background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())) }
+        }
         transitions {
             border_bottom_color: 250ms EaseInOut,
-            // Fade the whole-row hover highlight that a clickable `TableRow`
-            // (`on_row_click`) layers onto the cell background — see
-            // `components::table::make_row_cell_interactive`.
+            // Fade the whole-row hover highlight the `row_hovered` axis
+            // flips on/off.
             background: 150ms EaseInOut,
         }
     }

@@ -133,6 +133,9 @@ features = [
     "HtmlAnchorElement",
     "HtmlElement",
     "HtmlHeadElement",
+    # Inline-layer application on icon nodes: an `<svg>` is NOT an
+    # HtmlElement, so `apply_inline_style` needs the SVG cast too.
+    "SvgElement",
     "HtmlCanvasElement",
     # Robot DOM screenshot: serialize #app → SVG <foreignObject> → <img> →
     # <canvas> 2d → PNG. `CanvasRenderingContext2d` draws the snapshot image,

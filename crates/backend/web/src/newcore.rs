@@ -247,6 +247,14 @@ pub fn start_in_with<S: runtime_vocabulary::BuiltinSet>(
     // driver below rides the scheduler, so it must exist first.
     crate::install_scheduler();
     crate::install_time_source();
+    // Premint builds: arm the minted-class guard BEFORE any style
+    // attaches, so a sheet whose class has no CSS in the shipped asset
+    // (constructed on a path the dump's crawl never reached) resolves
+    // through the engine instead of stamping a class nothing matches.
+    // cfg'd rather than feature'd: only premint builds carry classes to
+    // verify, and a non-premint bundle must not pay for the scan.
+    #[cfg(idealyst_premint)]
+    crate::premint_guard::install_minted_class_guard();
     // URL sync service for the vocabulary navigator handlers (before the
     // build, so every navigator registers) — see newcore_url_sync.
     //

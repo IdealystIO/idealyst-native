@@ -204,31 +204,23 @@ pub fn Slider(props: &SliderProps) -> Element {
             .into_element()
     };
 
-    // --- container: fixed-width relative box with the drag handler. The fixed
-    // layout/dims live on a static base sheet; the DIM (cursor + opacity) rides
-    // a `with_computed` layer read LIVE inside the style closure, so a reactive
-    // `disabled` dims/uncurses in place (the apply-style Effect subscribes to
-    // it). When `disabled` is static this collapses to one resolution. ---
-    let container_base = Rc::new(StyleSheet::new(move |_vs: &VariantSet| StyleRules {
-        position: Some(Position::Relative),
-        width: Some(Tokenized::Literal(Length::Px(w))),
-        height: Some(Tokenized::Literal(Length::Px(dia))),
-        flex_direction: Some(FlexDirection::Column),
-        justify_content: Some(JustifyContent::Center),
-        align_items: Some(AlignItems::Stretch),
-        ..Default::default()
-    }));
+    // --- container: fixed-width relative box with the drag handler. Layout
+    // lives on ONE shared, identified sheet; the DIM (cursor + opacity) is a
+    // `dimmed` on/off AXIS read LIVE inside the style closure, so a reactive
+    // `disabled` dims/uncurses in place; the per-instance dimensions (author
+    // `width`, size-derived thumb diameter) ride the INLINE layer. Every arm
+    // has build-time CSS, so the container premints — the former
+    // `with_computed` dim layer kept every Slider on the live engine, and the
+    // per-instance base sheet minted a class per (width, dia) pair. ---
     let disabled_dim = props.disabled.clone();
     let container_style = move || {
-        let disabled = disabled_dim.get();
-        StyleApplication::new(container_base.clone()).with_computed(
-            if disabled { "slider-disabled" } else { "slider-enabled" },
-            move || StyleRules {
-                cursor: Some(if disabled { Cursor::Default } else { Cursor::Pointer }),
-                opacity: disabled.then(|| Tokenized::Literal(0.45)),
+        StyleApplication::new(slider_container_sheet())
+            .with("dimmed", if disabled_dim.get() { "on" } else { "off" })
+            .with_inline(StyleRules {
+                width: Some(Tokenized::Literal(Length::Px(w))),
+                height: Some(Tokenized::Literal(Length::Px(dia))),
                 ..Default::default()
-            },
-        )
+            })
     };
 
     let slider = runtime_core::view(vec![track, thumb])
@@ -275,7 +267,9 @@ pub fn Slider(props: &SliderProps) -> Element {
     if let Some(d) = trailing_icon {
         kids.push(mk_icon(d));
     }
-    let row_style = Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+    // `r#static` so the row sheet auto-premints by content — a closure
+    // sheet here was a live-engine fall-through on the docs corpus.
+    let row_style = Rc::new(StyleSheet::r#static(StyleRules {
         flex_direction: Some(FlexDirection::Row),
         align_items: Some(AlignItems::Center),
         gap: Some(Tokenized::token("spacing-sm", Length::Px(8.0))),
@@ -283,6 +277,47 @@ pub fn Slider(props: &SliderProps) -> Element {
     }));
     runtime_core::view(kids).with_style(row_style).into_element()
 }
+
+thread_local! {
+    static SLIDER_CONTAINER_SHEET: std::cell::RefCell<Option<Rc<StyleSheet>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The shared Slider container sheet: relative column that centers the
+/// track, with a `dimmed` axis for the disabled look. Per-instance
+/// dimensions ride the application's inline layer (see the container
+/// style closure), so ONE sheet serves every Slider at every width.
+fn slider_container_sheet() -> Rc<StyleSheet> {
+    SLIDER_CONTAINER_SHEET.with(|s| {
+        if s.borrow().is_none() {
+            *s.borrow_mut() = Some(
+                StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                    position: Some(Position::Relative),
+                    flex_direction: Some(FlexDirection::Column),
+                    justify_content: Some(JustifyContent::Center),
+                    align_items: Some(AlignItems::Stretch),
+                    ..Default::default()
+                })
+                .variant("dimmed", "off", |_vs| StyleRules {
+                    cursor: Some(Cursor::Pointer),
+                    ..Default::default()
+                })
+                .variant("dimmed", "on", |_vs| StyleRules {
+                    cursor: Some(Cursor::Default),
+                    opacity: Some(Tokenized::Literal(SLIDER_DISABLED_OPACITY)),
+                    ..Default::default()
+                })
+                .variant_default("dimmed", "off")
+                .premint_as("idea-ui.v1.slider.container"),
+            );
+        }
+        s.borrow().as_ref().cloned().unwrap()
+    })
+}
+
+/// Opacity of a disabled Slider — matches the dim the old computed
+/// layer applied.
+const SLIDER_DISABLED_OPACITY: f32 = 0.45;
 
 #[cfg(test)]
 mod tests {

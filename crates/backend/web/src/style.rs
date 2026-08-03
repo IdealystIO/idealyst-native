@@ -657,15 +657,23 @@ impl WebBackend {
         style: &std::rc::Rc<StyleRules>,
     ) {
         use wasm_bindgen::JsCast;
-        let Some(element) = node.dyn_ref::<web_sys::HtmlElement>() else {
+        // Both casts, not just HtmlElement: an ICON node is an `<svg>`,
+        // which is an SVGElement — the HtmlElement-only cast silently
+        // no-op'd every inline layer on icons (the Checkbox checkmark's
+        // `flex_shrink: 0` never landed).
+        let decl = if let Some(element) = node.dyn_ref::<web_sys::HtmlElement>() {
+            element.style()
+        } else if let Some(element) = node.dyn_ref::<web_sys::SvgElement>() {
+            element.style()
+        } else {
             return;
         };
-        let decl = element.style();
         // `rules_to_css_delta` lowers ONLY the properties this layer sets —
         // the delta form, not the full `rules_to_css` (which would also
         // apply framework defaults like the flex-direction pin and stomp
         // the classes underneath).
         let css = css::rules_to_css_delta(style);
+        let mut set: Vec<String> = Vec::new();
         for declaration in css.split(';') {
             let declaration = declaration.trim();
             if declaration.is_empty() {
@@ -674,7 +682,23 @@ impl WebBackend {
             let Some((prop, value)) = declaration.split_once(':') else {
                 continue;
             };
-            let _ = decl.set_property(prop.trim(), value.trim());
+            let prop = prop.trim();
+            let _ = decl.set_property(prop, value.trim());
+            set.push(prop.to_string());
+        }
+        // The layer REPLACES the previous inline layer: remove properties
+        // the last application set that this one no longer names (a
+        // cleared/shrunk `with_inline`). Per-property rather than
+        // `set_css_text` so animation-driven inline writes (gradient
+        // rebuilds, transforms) on the same attribute survive.
+        let id = self.node_id(node);
+        if let Some(previous) = self.inline_props.insert(id, set) {
+            let current = self.inline_props.get(&id).expect("just inserted");
+            for old in &previous {
+                if !current.iter().any(|p| p == old) {
+                    let _ = decl.remove_property(old);
+                }
+            }
         }
     }
 

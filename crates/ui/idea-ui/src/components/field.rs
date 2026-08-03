@@ -478,6 +478,54 @@ pub fn build_field_input_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
             ..Default::default()
         });
 
+    // Adorned-shell axes (leading/trailing icon shells). Enumerated
+    // variants + compounds rather than the former single-slot
+    // `with_computed` layer, so every arm has build-time CSS and an
+    // adorned Field premints — the computed layer kept every Field on
+    // the live engine (a `--premint-only` blocker on the docs corpus).
+    //
+    // `adorned=on` turns the node into the row shell: horizontal flex,
+    // centered, full width, vertical padding zeroed (it lives on the
+    // inner input, which drives the box height). The size-dependent GAP
+    // rides (adorned, size) COMPOUNDS — compounds premint as compound
+    // selectors, and this is exactly the "value depends on two axes"
+    // shape they exist for. Gap = edge_pad(size) − FIELD_BARE_H_PAD so
+    // the icon↔input spacing visually equals the edge↔icon spacing (see
+    // the shell builder in `field_shell`).
+    sheet = sheet.variant("adorned", "on", |_vs| StyleRules {
+        flex_direction: Some(runtime_core::FlexDirection::Row),
+        align_items: Some(runtime_core::AlignItems::Center),
+        width: Some(Tokenized::Literal(Length::pct(100.0))),
+        padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
+        padding_bottom: Some(Tokenized::Literal(Length::Px(0.0))),
+        ..Default::default()
+    });
+    for (size_key, edge_pad) in [("sm", 8.0_f32), ("md", 12.0), ("lg", 16.0)] {
+        let gap = (edge_pad - FIELD_BARE_H_PAD).max(0.0);
+        sheet = sheet.compound(vec![("adorned", "on"), ("size", size_key)], move |_vs| {
+            StyleRules {
+                gap: Some(Tokenized::Literal(Length::Px(gap))),
+                ..Default::default()
+            }
+        });
+    }
+    // The adorned shell's focus ring. The shell is a plain view — the
+    // FOCUSED widget is the inner input — so `__state_focused` can never
+    // fire on it; the component forwards the input's `on_focus` into
+    // this author axis instead. Same ring the state overlay paints.
+    sheet = sheet.variant("ring", "on", |_vs| {
+        let theme_rc = active_theme();
+        let theme_ref = theme_rc.downcast_ref::<IdeaThemeRef>().expect("theme");
+        let ring = theme_ref.colors().focus_ring.clone();
+        StyleRules {
+            border_top_color: Some(ring.clone()),
+            border_right_color: Some(ring.clone()),
+            border_bottom_color: Some(ring.clone()),
+            border_left_color: Some(ring),
+            ..Default::default()
+        }
+    });
+
     sheet = sheet
         .variant_default("size", "md")
         .variant_default("tone", "default")
@@ -695,55 +743,36 @@ pub fn Field(props: &FieldProps) -> Element {
             "lg" => 16.0,
             _ => 12.0,
         };
-        let gap_px = (edge_pad - FIELD_BARE_H_PAD).max(0.0);
-        let size_key_str = size.as_variant_str().to_string();
-        // Reactive shell style: base chrome + tone border + row layout, plus a
-        // `focus_ring` border overlay while the inner input is focused (driven
-        // by `focused`, set from the input's `on_focus`). Reading `focused.get()`
-        // makes the apply-style Effect re-resolve on focus change, so the ring
-        // lights/clears in place — the adorned analogue of the sheet's
-        // `__state_focused` overlay the non-adorned input gets natively.
+        let _ = edge_pad; // gap now rides the sheet's (adorned, size) compounds
+        // Reactive shell style: base chrome + tone border + row layout via the
+        // sheet's `adorned` axis, plus its `ring` axis while the inner input
+        // is focused (driven by `focused`, set from the input's `on_focus`).
+        // Reading `focused.get()` makes the apply-style Effect re-resolve on
+        // focus change, so the ring lights/clears in place — the adorned
+        // analogue of the sheet's `__state_focused` overlay the non-adorned
+        // input gets natively.
         //
-        // CRITICAL: the row layout AND the focus border MUST live in ONE
-        // `with_computed`. `StyleApplication::with_computed` is single-slot —
-        // a second call OVERWRITES the first — so splitting them made focus drop
-        // the row layout's `padding_top/bottom: 0`, and the shell sprang back to
-        // the size variant's vertical padding (the field visibly grew ~16px
-        // taller on focus). One layer, keyed by size+focus, keeps both.
+        // AXES, not `with_computed`: every arm (row layout, per-size gap
+        // compounds, ring) has build-time CSS, so an adorned Field premints
+        // and a focus flip is a class swap — the former single-slot computed
+        // layer kept every Field on the live engine. The layout+ring
+        // single-layer pitfall the computed spelling had (splitting them
+        // dropped the row layout on focus) doesn't exist here: axes are
+        // independent layers by construction.
         let make_shell = make_input_style.clone();
         let tone_for_shell = tone_key_for.clone();
         let shell_style = move || {
-            let is_focused = focused.get();
-            let key = format!("field-shell-{}-{}", size_key_str, is_focused);
-            // `false`: the shell paints its OWN focus ring in the computed layer
-            // below; make_input_style's focus would just be overwritten here.
-            make_shell(tone_for_shell(), false).with_computed(key, move || {
-                let ring = if is_focused {
-                    let theme_rc = active_theme();
-                    let theme_ref = theme_rc.downcast_ref::<IdeaThemeRef>().expect("theme");
-                    Some(theme_ref.colors().focus_ring.clone())
-                } else {
-                    None
-                };
-                StyleRules {
-                    flex_direction: Some(FlexDirection::Row),
-                    align_items: Some(AlignItems::Center),
-                    gap: Some(Tokenized::Literal(Length::Px(gap_px))),
-                    // Fill the FieldGroup (it stretches to its container), so the
-                    // row spans the field and the input has room to grow.
-                    width: Some(Tokenized::Literal(Length::pct(100.0))),
-                    // Vertical padding lives on the INPUT (it drives the box
-                    // height); zeroing it here keeps the row from stretching.
-                    padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
-                    padding_bottom: Some(Tokenized::Literal(Length::Px(0.0))),
-                    // Focus ring (same layer — see CRITICAL note above).
-                    border_top_color: ring.clone(),
-                    border_right_color: ring.clone(),
-                    border_bottom_color: ring.clone(),
-                    border_left_color: ring,
-                    ..Default::default()
-                }
-            })
+            // `false`: the shell paints its OWN focus ring via the `ring`
+            // axis; make_input_style's focus handling targets the input.
+            // `ring` is only SET while focused — the axis declares no
+            // default and no `off` arm, so leaving it unset applies (and
+            // stamps) nothing, exactly like the resolver.
+            let app = make_shell(tone_for_shell(), false).with("adorned", "on");
+            if focused.get() {
+                app.with("ring", "on")
+            } else {
+                app
+            }
         };
 
         let mut shell_children: Vec<Element> = Vec::with_capacity(3);

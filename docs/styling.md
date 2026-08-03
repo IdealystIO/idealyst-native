@@ -355,7 +355,15 @@ shared naming scheme:
    Parameterized routes (`/user/:id`) are reported and skipped — the
    crawl cannot invent a param value, the same limitation `--ssg` has.
    Styles reachable only through one of those, or only after an
-   interaction, are still not seen.
+   interaction, are still not seen — but no longer silently: at boot a
+   premint build scans the loaded CSS asset for the classes it actually
+   contains (`backend-web`'s minted-class guard →
+   `runtime_shared::install_minted_classes`), and the attach paths
+   consult that set per evaluation. A sheet whose class has no CSS
+   falls back to the live engine on `--premint` (correct rendering,
+   and `--premint-report` names it), or panics on `--premint-only`
+   with a message that says "constructed after the dump crawl" rather
+   than the generic violation.
 2. **Shipped build.** The wasm compiles with `--cfg idealyst_premint`,
    which flips each `stylesheet!` builder's `into_style_prop` to a
    fast path: an all-constant application (plain variant values, no
@@ -369,6 +377,26 @@ shared naming scheme:
 Class names derive from an FNV-1a hash of each sheet's source text,
 computed inside the macro — the dump build and the shipped build agree
 byte-for-byte with no manifest or build coordination between them.
+
+Sheets with no macro expansion site register at runtime instead, and
+there are two kinds:
+
+- **Runtime-assembled builders** (idea-theme's component sheets) carry
+  an explicit `premint_as("identity")` — the identity string hashes to
+  the class, and the author owns keeping it content-descriptive.
+- **Static sheets need no identity at all.** `StyleSheet::r#static`
+  derives its class from the RULES' content key automatically — the
+  dump and the shipped bundle compute the same name from the same
+  rules independently, so "extract the CSS from the build" is the
+  default for every plain-rules sheet in every app, with zero
+  ceremony. Content-equal sheets share one class and one rule.
+  `premint_as`/`premint_with_class` still REPLACE the auto class when
+  a stable name matters (parameterized identities like per-px icon
+  sizes), and any layer-adding mutator (`variant`, `variant_default`,
+  `compound`) RETRACTS it — the auto class names exactly the base
+  rules, so a sheet that grows layers falls back to explicit identity
+  or the live engine rather than stamping a class whose CSS misses a
+  layer.
 
 ### The delta model
 
@@ -400,10 +428,19 @@ The equivalence rests on two facts, both load-bearing:
   beats a breakpoint overlay) — verified by the A/B computed-style
   harness against the live engine on the full website.
 
-Compound variants (`StyleSheet::compound`, a runtime-only API the
-`stylesheet!` grammar cannot express) have no delta encoding; the dump
-rejects a sheet carrying them, which cannot occur for macro-registered
-sheets.
+A sheet whose base declares a non-flex `display` (a `display: grid`
+container) is **display-locked**: its arm/overlay deltas lower with the
+`display: flex` auto-promotion suppressed and emit no
+`flex-direction: column` pin companions, because the merged set's
+explicit display wins and the live engine never pins a grid. (A
+gap-only arm of a grid sheet used to stomp the base's `grid` back to
+`flex` from later source order.)
+
+Compound variants premint as CSS compound selectors
+(`.iy-abc-appearance-solid.iy-abc-size-md`, specificity (0,2,0) —
+above the single-axis arms, reproducing "compounds merge after every
+axis"). No extra stamped class is needed; the selector does the
+matching.
 
 ### What stays on the live engine
 
@@ -574,8 +611,9 @@ and `computed=<key>` are the two disqualifiers above, and `SheetDynamic`
 means the application is reactive.
 
 Walk the app's routes with the console open; the deduped set is the work
-list. On the idea-ui catalog it is 218 entries across 47 routes, of which
-99 are `with_computed` layers and 43 carry overrides.
+list. (Historical scale: the idea-ui catalog started at 218 entries
+across 47 routes; after the text-slot sheets, the shadow split, the
+static auto-premint, and the Table axis conversion it reached zero.)
 
 ### Current limits
 
@@ -583,12 +621,14 @@ list. On the idea-ui catalog it is 218 entries across 47 routes, of which
   HTML would carry live-minted classes while the hydrating client
   stamps preminted ones, so adoption would diverge. SSR premint needs
   its own wiring.
-- Only `stylesheet!` *builder* applications premint. A plain
-  `Rc<StyleSheet>` passed directly (e.g. `card_style()`) stays live.
-- A component that COMPOSES or INTROSPECTS a builder's styles (merging
-  an inherited color onto a label sheet, re-deriving a cell's
-  application to layer a hover) must hand the style over as an explicit
-  **`StyleProp::Sheet`**:
+- What premints: `stylesheet!` builder applications (link-time
+  registration), runtime-assembled sheets with a `premint_as` identity,
+  and every plain `StyleSheet::r#static` (auto, by content key). A
+  closure-built `StyleSheet::new` with no identity is the shape that
+  stays live.
+- A component that INTROSPECTS a built element's style (re-deriving a
+  cell's application to select axes on it — `Table`'s clickable rows)
+  must hand the style over as an explicit **`StyleProp::Sheet`**:
 
   ```rust
   bound.with_style(StyleProp::Sheet(Box::new(TableBodyCell().into_style_application())))
@@ -596,12 +636,21 @@ list. On the idea-ui catalog it is 218 entries across 47 routes, of which
 
   `into_style_application()` alone is NOT enough, despite reading like
   it should be. `IntoStyleProp for StyleApplication` has a preminted
-  fast path, so a bare application premints anyway and the introspection
-  silently finds nothing. That shipped: `Table`'s clickable rows lost
-  their pointer cursor and their hover highlight in every `--premint`
-  build, because `cell_base_application` returned `None` and the overlay
-  was skipped without a word. Naming the variant is what actually pins
-  it (idea-ui's `Tag`/`Alert` label coloring and `Table`'s cells).
+  fast path, so a bare application premints to an OPAQUE class and the
+  introspection silently finds nothing. That shipped: `Table`'s
+  clickable rows lost their pointer cursor and their hover highlight in
+  every `--premint` build, because `cell_base_application` returned
+  `None` and the overlay was skipped without a word.
+
+  The explicit spelling costs the premint nothing, because what the
+  introspector COMPOSES must itself be premintable: `Table`'s row
+  overlay selects the cell sheet's `interactive`/`row_hovered` AXES
+  (every arm has build-time CSS; the whole-row hover is a class swap
+  through the reactive diversion), and the `--premint-only` attach
+  premints an explicit `Sheet` whose application qualifies. Composing
+  with `with_overrides` instead would drag the application back to the
+  live engine — which is exactly what the old override-based row
+  overlay did.
 - Anything with **runtime slot overrides** or a **`with_computed`
   layer** falls through to the live engine by construction. Overrides
   are per-call-site rules and a computed key maps to an arbitrary
@@ -644,12 +693,6 @@ offset is positive-**down** on every backend — the coordinate flips
 (AppKit's y-up layer, UIKit's y-down) are absorbed by the backend so a
 `shadow { y: 2 }` lands below the glyphs everywhere.
 
-Because a shadowed text node and a box element with an otherwise
-identical `StyleRules` must render different CSS, the web/SSR backends
-mint the text node a distinct class (`css::text_shadow_class_key`) so the
-two never collide in the content-keyed style cache. This only diverges
-when a shadow is actually present — unshadowed text still shares classes
-with views.
 
 ---
 

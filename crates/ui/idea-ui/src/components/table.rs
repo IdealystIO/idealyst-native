@@ -155,22 +155,6 @@ pub fn TableRow(props: TableRowProps) -> Element {
     sdk_row(SdkTableRowProps { children }).into_element()
 }
 
-/// The whole-row hover overlay: pointer cursor always, the themed
-/// `color-surface-alt` background while `hovered` is on. The override
-/// layer resolves last, so the `Some` background wins only while hovered
-/// and otherwise leaves the cell's base sheet (padding, border, head/body
-/// surface) untouched.
-fn row_hover_overlay(on: bool) -> StyleRules {
-    let mut overlay = StyleRules {
-        cursor: Some(Cursor::Pointer),
-        ..Default::default()
-    };
-    if on {
-        overlay.background = Some(Tokenized::token("color-surface-alt", Color("#eef0f7".into())));
-    }
-    overlay
-}
-
 /// Attach whole-row click + hover to a single cell.
 ///
 /// The reactive row-hover style is layered over the cell's existing themed
@@ -193,12 +177,19 @@ fn row_hover_overlay(on: bool) -> StyleRules {
 fn make_row_cell_interactive(cell: Element, hovered: Signal<bool>, cb: Rc<dyn Fn()>) -> Element {
     use runtime_core::{tap, TapRecognizer};
 
-    // Reactive whole-row hover style, layered over the cell's existing
-    // themed sheet. A cell without a static sheet application keeps its
-    // style untouched but stays clickable.
+    // Reactive whole-row hover style: select the cell sheet's
+    // `interactive`/`row_hovered` AXES instead of layering runtime
+    // overrides. Every arm has build-time CSS, so on a premint build the
+    // flip is a class swap through the reactive diversion — no engine —
+    // while native resolves the same arms through the engine as always.
+    // (The former `with_overrides` spelling disqualified every clickable
+    // cell from preminting.) A cell without a static sheet application
+    // keeps its style untouched but stays clickable.
     if let Some(base) = table::cell_base_application(&cell) {
         table::set_cell_style(&cell, move || {
-            base.clone().with_overrides(row_hover_overlay(hovered.get()))
+            base.clone()
+                .with("interactive", "on")
+                .with("row_hovered", if hovered.get() { "on" } else { "off" })
         });
     }
     // `tap(..)` yields the `TouchHandler` Rc directly; the hover reporter
@@ -293,10 +284,10 @@ pub fn TableCell(props: TableCellProps) -> Element {
     // A cell's style is handed over as an EXPLICIT `StyleProp::Sheet`, not
     // as a bare application. A clickable row re-derives each cell's
     // `StyleApplication` from the built element
-    // (`table::cell_base_application`) to layer the pointer cursor + hover
-    // highlight over it, and a `--premint` build's opaque `Preminted` class
-    // cannot provide one. Cells are compose-happy by design, so they
-    // deliberately stay on the live engine.
+    // (`table::cell_base_application`) to select the `interactive` /
+    // `row_hovered` axes on it, and a `--premint` build's opaque
+    // `Preminted` class cannot provide one — the app must stay
+    // introspectable in the payload.
     //
     // `.into_style_application()` alone used to say that and stopped:
     // `IntoStyleProp for StyleApplication` gained a preminted fast path, so
@@ -307,6 +298,11 @@ pub fn TableCell(props: TableCellProps) -> Element {
     // variant is what actually pins the intent, and
     // `regression_premint_keeps_table_cells_on_the_live_engine` holds it
     // there.
+    //
+    // This no longer costs the premint anything: the row overlay is axis
+    // SELECTION (build-time CSS per arm), not runtime overrides, and the
+    // `--premint-only` attach premints an explicit `Sheet` whose
+    // application qualifies — the spelling only pins introspectability.
     //
     // Branching here (rather than boxing) keeps each style concrete so
     // `IntoStyleSource` resolves on the call, which the trait requires.
@@ -437,6 +433,60 @@ mod tests {
                  clickable-row overlay is then dropped without a word"
             );
         }
+    }
+
+    /// The clickable-row overlay must PREMINT: it selects the cell
+    /// sheet's `interactive`/`row_hovered` AXES, whose every arm has
+    /// build-time CSS, instead of layering runtime overrides — the
+    /// override spelling disqualified every clickable cell from
+    /// preminting (one of the last two `--premint-only` blockers on the
+    /// docs corpus). Fails against the override form: an overridden
+    /// application's `preminted_class_list()` is `None` by construction.
+    /// The live engine must resolve the same arms to the same rules the
+    /// overrides produced (pointer cursor; themed hover background).
+    #[test]
+    fn regression_clickable_row_overlay_premints_via_axes() {
+        with_test_world(|| {
+            let row = TableRow(TableRowProps {
+                children: vec![body_cell("x")],
+                on_row_click: Some(Rc::new(|| {})),
+            });
+            let mut cells = row_cells(row);
+            let style = match classify(cells.remove(0)) {
+                P::View { style, .. } => style.expect("clickable cell keeps a style"),
+                _ => panic!("native cell must classify as a View"),
+            };
+            // Evaluate the reactive style at its resting state (not hovered).
+            let app = style.application();
+            assert!(
+                app.preminted_class_list().is_some(),
+                "the axis-selected cell application must premint (overrides would return None)"
+            );
+            let resting = runtime_core::resolve_style(&app);
+            assert_eq!(
+                resting.cursor,
+                Some(Cursor::Pointer),
+                "interactive arm carries the pointer cursor"
+            );
+            assert!(
+                resting.background.is_none(),
+                "resting (row_hovered=off) leaves the body cell's background untouched"
+            );
+
+            // The hovered arm resolves to the themed row highlight — same
+            // value the old override layer produced.
+            let hovered_app = TableBodyCell()
+                .into_style_application()
+                .with("interactive", "on")
+                .with("row_hovered", "on");
+            assert!(hovered_app.preminted_class_list().is_some());
+            let hovered = runtime_core::resolve_style(&hovered_app);
+            assert_eq!(
+                hovered.background.as_ref().map(|b| b.resolve().0.to_ascii_lowercase()),
+                Some("#eef0f7".into()),
+                "row_hovered arm resolves the themed surface-alt highlight"
+            );
+        });
     }
 
     #[test]
