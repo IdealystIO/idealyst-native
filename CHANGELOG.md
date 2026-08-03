@@ -56,6 +56,22 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **Premint dump now executes `#[component(lazy)]` bodies.** The
+  build-time CSS dump crawled every literal route but stopped at each
+  lazy boundary's loading placeholder: its generated wrapper never
+  enabled `async-driver` (so `mount_lazy` compiled the placeholder-only
+  SSR branch) and pumped no executor (and with the feature unified on by
+  an app dep, `spawn_async`'s `pollster::block_on` fallback could hang
+  the dump on a pending-forever mount-time future). Styles constructed
+  inside lazy screen bodies never minted, and `--premint-only` panicked
+  at the uncrawled-sheet diagnostic on first navigation — idea-ui-docs'
+  per-page splits hit this on all 50 pages. The dump wrapper now
+  enables `async-driver` (matching the shipped web wrapper's posture),
+  installs host-mock's queue executor, and pumps+flushes each route to
+  a fixed point, resolving lazy generations by nesting depth. Regression
+  pair: `premint-dump::lazy_body_styles_mint_after_pump` (mechanism) +
+  `build-web`'s `dump_wrapper_resolves_lazy_boundaries` (wiring).
+
 - **wasm-split call-graph misclassification under duplicate mangled
   names.** LLVM under `opt-level=z` emits distinct functions sharing one
   mangled name (small alloc/core/hashbrown monomorphizations; the

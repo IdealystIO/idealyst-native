@@ -8700,6 +8700,7 @@ name = "premint-dump"
 version = "1.2.2"
 dependencies = [
  "css",
+ "host-mock",
  "runtime-core",
  "runtime-vocabulary",
 ]

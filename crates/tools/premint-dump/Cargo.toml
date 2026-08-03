@@ -22,4 +22,13 @@ css = { workspace = true }
 # `cfg(idealyst_premint_dump)` linkme registration, which lands on
 # `glue::premint`), so the vocabulary must be nameable from the test
 # build. The lib itself only reaches the framework through the facade.
-runtime-vocabulary = { workspace = true }
+#
+# `async-driver` compiles `mount_lazy`'s real branch so
+# `lazy_body_styles_mint_after_pump` can exercise the exact path the
+# generated dump wrapper drives (the wrapper enables it via
+# `runtime-core/async-driver`; here the dev-dep unifies it onto the same
+# vocabulary instance the facade links).
+runtime-vocabulary = { workspace = true, features = ["async-driver"] }
+# The lazy-premint mechanism test mounts over the same recording Host +
+# manually-pumped executor the generated dump wrapper uses.
+host-mock = { workspace = true }

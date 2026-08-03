@@ -118,6 +118,14 @@ path = "src/main.rs"
 # `runtime-vocabulary/style-dump`: the `stylesheet!` expansion emits
 # `::runtime_core::premint::…`, and the macro retarget rewrites that
 # into glue, so the dump registry has to have a glue home.
+#
+# `async-driver` matches the SHIPPED web wrapper's posture (the wasm
+# wrapper enables `runtime-core/async-driver`): without it,
+# `mount_lazy` compiles its placeholder-only branch and every
+# `#[component(lazy)]` screen contributes nothing but its loading UI to
+# the dump — the body's styles never mint, and `--premint-only` panics
+# at the first runtime navigation to that screen. With it, the dump
+# drives the real lazy path (see main.rs's pump loop).
 runtime-core = {fcore_dep}
 # The dump builds the app's element tree, and building it creates
 # signals — which resolve the AMBIENT world. The entry below wraps the
@@ -147,7 +155,7 @@ debug = false
 incremental = false
 {patch_block}"#,
         name = manifest.name,
-        fcore_dep = source.dep("crates/runtime/core", &["style-dump"]),
+        fcore_dep = source.dep("crates/runtime/core", &["style-dump", "async-driver"]),
         world_dep = source.dep("crates/runtime/world", &[]),
         shared_dep = source.dep("crates/runtime/shared", &[]),
         pdump_dep = source.dep("crates/tools/premint-dump", &[]),
@@ -208,6 +216,58 @@ fn visit(path: &str) -> Vec<&'static str> {{
         // state) — driver effects are where several navigators publish
         // their nested routes.
         harness.flush();
+        // Resolve `#[component(lazy)]` boundaries to a fixed point. A lazy
+        // screen's body runs when its spawned load future resolves and the
+        // swap effect consumes the staged `tick` write at the next flush —
+        // so each pump+flush round realizes one lazy GENERATION (nesting
+        // depth, not sibling count: one pump polls every queued task, so
+        // 50 sibling boundaries resolve in a single round). Without this
+        // loop every lazy screen contributes only its loading placeholder
+        // and its styles never mint — under `--premint-only` that is a
+        // guaranteed runtime panic on first navigation.
+        //
+        // Termination is a fixed point, not `pending == 0`: a
+        // pending-forever future (mount-time network fetch) never
+        // completes, and stale tasks from earlier routes linger in the
+        // process-wide queue. Quiescent = nothing completed during the
+        // pump, nothing spawned during the flush, and the flush realized
+        // no backend ops (the ops leg catches a task that completes AND
+        // spawns a successor in one poll, which leaves the count even).
+        //
+        // Accepted degradations, all bounded by this being a throwaway
+        // build step: a stale task from a forgotten earlier route that
+        // panics on re-poll aborts this route's visit into the warning
+        // path (and drops the rest of that pump's taken queue); a stale
+        // task completing LATE writes into its own leaked world — staged,
+        // never flushed, never realized (the freed-slot hazard needs a
+        // drop that `mem::forget` below guarantees never happens). Lazy
+        // screens containing navigators publish their routes mid-loop and
+        // the collector harvests them — a coverage improvement over
+        // `--ssg`, which never pumps.
+        let mut rounds = 0usize;
+        loop {{
+            let before = host_mock::pump::pending_tasks();
+            let ops_before = harness.ops().len();
+            host_mock::pump::pump_tasks();
+            let after_pump = host_mock::pump::pending_tasks();
+            harness.flush();
+            let after_flush = host_mock::pump::pending_tasks();
+            if after_pump == before
+                && after_flush == after_pump
+                && harness.ops().len() == ops_before
+            {{
+                break;
+            }}
+            rounds += 1;
+            if rounds >= 32 {{
+                eprintln!(
+                    "[premint-dump] warning: route {{path:?}} did not settle after \
+                     32 pump rounds; styles behind still-loading lazy boundaries \
+                     may be missing from the CSS."
+                );
+                break;
+            }}
+        }}
         // Skip destructors. The tree and its world reference reactive
         // thread-locals whose teardown order is unspecified, and this
         // process is thrown away the moment the CSS is written — leaking
@@ -232,6 +292,17 @@ fn visit(path: &str) -> Vec<&'static str> {{
 }}
 
 fn main() {{
+    // Queue executor FIRST (OnceLock, first-install-wins): `mount_lazy`
+    // resolves `#[component(lazy)]` bodies through
+    // `runtime_shared::driver::spawn_async`, and without an installed
+    // executor that falls back to `pollster::block_on` — which would
+    // DEADLOCK the dump on any mount-time pending-forever future (a
+    // component kicking off a network fetch). The queue executor polls
+    // each task once per pump with a noop waker and retains pendings
+    // harmlessly; `visit()`'s pump loop drives the ready ones (native
+    // lazy-body futures are Ready on their first poll).
+    host_mock::pump::install_executor();
+
     let out = std::env::args().nth(1).expect("usage: premint-dump <out.css>");
 
     // Walk EVERY literal route, not just `/`. Mounting the initial route
@@ -325,8 +396,11 @@ mod dump_wrapper_template_tests {
     fn dump_wrapper_enables_style_dump_and_links_app() {
         let (_tmp, cargo, main) = generate_into_temp();
         assert!(
-            cargo.contains("features = [\"style-dump\"]"),
-            "runtime-core must carry style-dump so the registry exists:\n{cargo}"
+            cargo.contains("features = [\"style-dump\", \"async-driver\"]"),
+            "runtime-core must carry style-dump (so the registry exists) AND \
+             async-driver (so `mount_lazy` compiles its real branch instead of \
+             placeholder-only — without it every `#[component(lazy)]` screen's \
+             styles are silently missing from the CSS):\n{cargo}"
         );
         // The dep line itself. A generated Cargo.toml is not
         // type-checked, so this assertion is the only thing standing
@@ -421,6 +495,39 @@ mod dump_wrapper_template_tests {
             cargo.contains("runtime-shared = "),
             "the crawl reaches the navigator slot + viewport off the \
              substrate crate, which the facade does not re-export:\n{cargo}"
+        );
+    }
+
+    #[test]
+    fn dump_wrapper_resolves_lazy_boundaries() {
+        // The WIRING half of the lazy-premint regression pair: the
+        // MECHANISM (executor + pump + flush actually realizes a lazy
+        // body and registers its sheets) is pinned by
+        // `crates/tools/premint-dump`'s `lazy_body_styles_mint_after_pump`.
+        // Each half fails independently for the other's regression, so
+        // both must exist.
+        let (_tmp, _cargo, main) = generate_into_temp();
+        // Installed BEFORE the crawl: `spawn_async` without an executor
+        // falls back to `pollster::block_on`, which deadlocks the dump on
+        // any mount-time pending-forever future.
+        assert!(
+            main.contains("host_mock::pump::install_executor()"),
+            "the dump must install the queue executor so lazy loads are \
+             pumped, never block_on'd:\n{main}"
+        );
+        // The per-route fixed-point loop: without it a lazy screen
+        // contributes only its loading placeholder and its styles never
+        // mint — a guaranteed `--premint-only` runtime panic.
+        assert!(
+            main.contains("host_mock::pump::pump_tasks()"),
+            "each route's visit must pump the executor to resolve lazy \
+             bodies:\n{main}"
+        );
+        assert!(
+            main.contains("harness.ops().len()"),
+            "quiescence must include the ops-log leg (a task that \
+             completes and spawns a successor in one poll leaves the \
+             pending count even):\n{main}"
         );
     }
 }

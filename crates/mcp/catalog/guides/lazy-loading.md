@@ -50,6 +50,12 @@ ui! {
   any chunk in the network tab back to its component.
 - **On native** there's no bundle to split, so the body is compiled inline and
   mounts synchronously — the placeholder never shows.
+- **Premint composes.** The `--premint` build-time CSS dump resolves lazy
+  boundaries while crawling routes (it pumps its executor per route until the
+  bodies have mounted), so styles constructed inside a lazy body mint into the
+  shipped CSS like any other mount-time sheet — `--premint-only` works with
+  lazily-split screens. Interaction-gated styles inside a lazy body follow the
+  usual crawl contract (see the [[styling]] guide).
 
 > `#[component(lazy)]` currently requires **inline props** (declare the props as
 > `fn` parameters, as above; zero parameters is fine — the generated props

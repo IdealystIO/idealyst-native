@@ -542,6 +542,96 @@ mod tests {
         );
     }
 
+    /// MECHANISM half of the lazy-premint regression pair. (The WIRING
+    /// half — the generated dump wrapper enabling `async-driver`,
+    /// installing the queue executor, and running the per-route pump
+    /// loop — is pinned by `build-web`'s
+    /// `dump_wrapper_resolves_lazy_boundaries` template test. Each half
+    /// fails independently for the other's regression.)
+    ///
+    /// A `#[component(lazy)]` screen's runtime-assembled sheets only
+    /// exist after its body runs, and the body only runs when the
+    /// spawned load future resolves AND the swap effect consumes the
+    /// staged tick at a flush. Before the dump learned to pump
+    /// (2026-08), mount + flush alone left every lazy body unexecuted:
+    /// idea-ui-docs' 50 lazily-split pages shipped a premint.css with no
+    /// rules for their pages' sheets, and `--premint-only` panicked at
+    /// style_attach's uncrawled-sheet diagnostic on first navigation.
+    /// This mounts a lazy boundary over host-mock exactly as the dump
+    /// wrapper does and asserts the body's sheet is invisible to
+    /// `dump_all_css()` until one pump+flush round runs.
+    #[test]
+    fn lazy_body_styles_mint_after_pump() {
+        use host_mock::pump::{install_executor, pump_tasks};
+        use runtime_core::primitives::lazy::{lazy_split, LazyBodyThunk, LazyFuture};
+        use runtime_core::IntoElement as _;
+        use runtime_core::{StyleRules, StyleSheet, Tokenized, VariantSet};
+
+        install_executor();
+        let h = host_mock::Harness::new();
+
+        // Distinctive identity + literal so the assertions can't collide
+        // with the link-time sheets other tests in this binary register
+        // process-wide.
+        const IDENTITY: &str = "dumptest.lazy.bodysheet";
+        const MARKER_HEX: &str = "0b1355";
+
+        let el = lazy_split(|| -> LazyFuture {
+            Box::pin(async {
+                Ok(Box::new(|| {
+                    // Runtime-assembled sheet constructed AT BODY RUN —
+                    // the shape idea-theme's component sheets take.
+                    // `premint_as` registers into the assembled-sheet
+                    // registry here, so the registration is observable
+                    // iff the body executed.
+                    let _sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                        color: Some(Tokenized::Literal(runtime_core::Color(
+                            format!("#{MARKER_HEX}").into(),
+                        ))),
+                        ..Default::default()
+                    })
+                    .premint_as(IDENTITY);
+                    runtime_vocabulary::builders::text().content("lazy body").build()
+                }) as LazyBodyThunk)
+            })
+        })
+        .placeholder(|| runtime_vocabulary::builders::text().content("loading").build())
+        .into_element();
+
+        let realized = h.mount(el);
+        // The dump wrapper's pre-loop step: commit anything mount staged.
+        h.world.flush();
+
+        let class = runtime_core::premint_class_name(IDENTITY);
+        let css = dump_all_css();
+        assert!(
+            !css.contains(&*class) && !css.contains(MARKER_HEX),
+            "the lazy body must not have run yet — mount+flush alone \
+             realizes only the placeholder (this failing would mean the \
+             pump below is no longer what executes the body, and the \
+             wiring test's premise is stale)"
+        );
+
+        // One round of the dump wrapper's per-route quiescence loop:
+        // native lazy futures are Ready on their first poll, so a single
+        // pump resolves the load and the flush runs the swap effect that
+        // executes the body.
+        pump_tasks();
+        h.world.flush();
+
+        let css = dump_all_css();
+        assert!(
+            css.contains(&*class),
+            "pump+flush must execute the lazy body so its `premint_as` \
+             registration reaches the dump; class {class:?} missing from:\n{css}"
+        );
+        assert!(
+            css.contains(MARKER_HEX),
+            "the body sheet's rules must be emitted, not just its class:\n{css}"
+        );
+        drop(realized);
+    }
+
     /// A compound with a `__bp_*` leg must lower that leg to an `@media`
     /// PRELUDE, not a class leg: breakpoint axes are never stamped as
     /// classes (their single arms ride `@media` on the base class), so a

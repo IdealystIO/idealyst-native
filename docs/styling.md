@@ -389,6 +389,20 @@ shared naming scheme:
      `with_computed` is a premint disqualifier and additionally has
      only one slot — prefer the other three spellings in library code.
 
+   **Lazy boundaries are NOT interaction-gated.** A
+   `#[component(lazy)]` screen is route-reachable, so the crawl
+   resolves it: the dump installs host-mock's queue executor and, after
+   each route's mount + flush, pumps the executor and re-flushes to a
+   fixed point, which resolves every lazy load (native lazy bodies are
+   compiled inline and their futures are ready on the first poll) and
+   executes the bodies — one round per *nesting* generation, siblings
+   together. Styles constructed inside a lazy body therefore mint like
+   any other mount-time sheet. This was a real gap once: before the
+   dump pumped, every lazily-split screen contributed only its loading
+   placeholder, and a 50-page `--premint-only` catalog panicked on its
+   first navigation. Sheets a lazy body constructs *on interaction*
+   still follow the contract above.
+
    Both traps are also caught statically: `idealyst lint` flags a sheet
    identity or `cached_stylesheet` key selected by a runtime conditional
    (`premint-state-keyed-sheet`) and any `with_computed` layer
