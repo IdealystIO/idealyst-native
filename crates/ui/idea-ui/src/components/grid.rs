@@ -88,7 +88,21 @@ pub fn Grid(props: GridProps) -> Element {
                 // per-node. See `StyleApplication::with_inline`.
                 .with_inline(StyleRules {
                     display: Some(DisplayKind::Grid),
-                    grid_template_columns: Some(vec![TrackSize::Fr(1.0); n]),
+                    // `minmax(0, 1fr)`, not bare `1fr`: an `fr` track's
+                    // implied minimum is the column's min-content, so a
+                    // cell with unbreakable content (a long word, padded
+                    // card) forces the whole grid wider than its container
+                    // — the classic CSS-grid horizontal-overflow footgun,
+                    // hit by the docs' 4-up stat cards on a phone
+                    // viewport. A zero floor makes tracks genuinely equal
+                    // and lets content wrap/clip inside instead.
+                    grid_template_columns: Some(vec![
+                        TrackSize::Minmax(
+                            Box::new(TrackSize::Px(0.0)),
+                            Box::new(TrackSize::Fr(1.0)),
+                        );
+                        n
+                    ]),
                     ..Default::default()
                 })
         })
@@ -133,7 +147,16 @@ mod tests {
             assert_eq!(rules.display, Some(DisplayKind::Grid), "container is display:grid");
             assert_eq!(
                 rules.grid_template_columns.as_deref(),
-                Some([TrackSize::Fr(1.0), TrackSize::Fr(1.0), TrackSize::Fr(1.0)].as_slice()),
+                Some(
+                    vec![
+                        TrackSize::Minmax(
+                            Box::new(TrackSize::Px(0.0)),
+                            Box::new(TrackSize::Fr(1.0)),
+                        );
+                        3
+                    ]
+                    .as_slice()
+                ),
                 "3 columns → three equal 1fr tracks",
             );
     });

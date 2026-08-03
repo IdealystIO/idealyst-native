@@ -51,7 +51,7 @@ use runtime_core::primitives::portal::ViewportPlacement;
 use runtime_core::{
     after_ms_detached, component, presence, ui, unscope, AlignItems, Easing, FlexDirection,
     IdealystSchema, IntoElement, JustifyContent, Length, PointerEvents, PresenceAnim,
-    PresenceState, Element, Reactive, Signal, StyleRules, StyleSheet, Tokenized, VariantSet,
+    PresenceState, Element, Reactive, Signal, StyleRules, StyleSheet, Tokenized
 };
 
 use idea_theme::extensible::{ToneRef, VariantRef};
@@ -135,6 +135,7 @@ fn queue() -> Signal<Vec<ToastEntry>> {
     #[derive(Clone)]
     struct ToastQueue(Signal<Vec<ToastEntry>>);
     if let Some(q) = runtime_core::inject::<ToastQueue>() {
+        LAST_QUEUE.with(|h| h.set(Some(q.0)));
         return q.0;
     }
     // Both the signal and its provision are world-root: a context entry is
@@ -147,7 +148,42 @@ fn queue() -> Signal<Vec<ToastEntry>> {
         runtime_core::provide(ToastQueue(sig));
         sig
     });
+    // Park the HANDLE for the outside-enter push path (below).
+    LAST_QUEUE.with(|h| h.set(Some(sig)));
     sig
+}
+
+thread_local! {
+    /// The queue handle from the most recent in-world [`queue`] call
+    /// (`ToastHost`'s build parks it here). Exists because the imperative
+    /// `push_toast*`/`dismiss_toast` API is documented as callable "from
+    /// anywhere" — and on web, anywhere includes event handlers, which
+    /// the backend dispatches OUTSIDE `World::enter` by design (author
+    /// callbacks stage writes through CAPTURED handles; see
+    /// backend-web's dispatch-site glue). `queue()`'s `inject` lookup
+    /// needs the ambient world, so the first `push_toast` from a click
+    /// handler panicked with the kernel's outside-enter message. Writes
+    /// through this parked handle are the sanctioned staged-write shape,
+    /// and a handle from a dead world degrades to a safe no-op
+    /// (generational signal handles).
+    static LAST_QUEUE: Cell<Option<Signal<Vec<ToastEntry>>>> = const { Cell::new(None) };
+}
+
+/// The queue handle for the IMPERATIVE API (`push_toast*` /
+/// `dismiss_toast` / internal timers): the parked handle when one
+/// exists, else the in-world `queue()` (tests and in-render pushes that
+/// precede any `ToastHost`). Callers outside a reactive context before
+/// any host has built get `None` — there is nothing that could render
+/// the toast yet, so the push is dropped (with a dev log) rather than
+/// panicking.
+fn queue_for_push() -> Option<Signal<Vec<ToastEntry>>> {
+    if let Some(h) = LAST_QUEUE.with(|h| h.get()) {
+        return Some(h);
+    }
+    if runtime_core::world_is_entered() {
+        return Some(queue());
+    }
+    None
 }
 
 fn next_id() -> u64 {
@@ -323,7 +359,13 @@ pub fn push_toast_node(render: impl Fn(u64) -> Element + 'static) -> u64 {
 /// sweep away.
 fn enqueue(build: impl FnOnce(u64) -> ToastEntry) -> u64 {
     let id = next_id();
-    queue().modify(|v| v.push(build(id)));
+    let Some(q) = queue_for_push() else {
+        runtime_core::log_warn!(
+            "push_toast: no reactive context and no ToastHost has mounted yet — toast dropped"
+        );
+        return id;
+    };
+    q.modify(|v| v.push(build(id)));
     after_ms_detached(TOAST_SHOW_MS, move || begin_leaving(id));
     after_ms_detached(TOAST_SHOW_MS + TOAST_ANIM_MS as i32, move || remove_toast(id));
     id
@@ -332,7 +374,8 @@ fn enqueue(build: impl FnOnce(u64) -> ToastEntry) -> u64 {
 /// Begin dismissing a toast immediately (e.g. on a close click). The
 /// card animates out, then removes itself.
 pub fn dismiss_toast(id: u64) {
-    if queue().get().iter().any(|e| e.id == id) {
+    let Some(q) = queue_for_push() else { return };
+    if q.with_untracked(|v| v.iter().any(|e| e.id == id)) {
         begin_leaving(id);
         after_ms_detached(TOAST_ANIM_MS as i32, move || remove_toast(id));
     }
@@ -341,7 +384,9 @@ pub fn dismiss_toast(id: u64) {
 /// Flip an entry's `leaving` flag through the queue signal so every
 /// `ToastCard` reading the queue re-evaluates its `present()`.
 fn begin_leaving(id: u64) {
-    queue().modify(|v| {
+    // Timer callbacks (`after_ms_detached`) also fire outside enter.
+    let Some(q) = queue_for_push() else { return };
+    q.modify(|v| {
         if let Some(e) = v.iter_mut().find(|e| e.id == id) {
             e.leaving = true;
         }
@@ -349,7 +394,8 @@ fn begin_leaving(id: u64) {
 }
 
 fn remove_toast(id: u64) {
-    queue().modify(|v| v.retain(|e| e.id != id));
+    let Some(q) = queue_for_push() else { return };
+    q.modify(|v| v.retain(|e| e.id != id));
 }
 
 // =============================================================================
@@ -425,10 +471,19 @@ pub fn ToastCard(props: &ToastCardProps) -> Element {
 /// A card-local stylesheet whose sole job is to re-enable pointer events
 /// under the click-through toast host. See [`ToastCard`].
 fn interactive_card_sheet() -> Rc<StyleSheet> {
-    Rc::new(StyleSheet::r#static(StyleRules {
-        pointer_events: Some(PointerEvents::Auto),
-        ..Default::default()
-    }))
+    ToastCardHitSheet::sheet()
+}
+
+// `stylesheet!` (LINK-time), not `r#static`: a toast card first
+// constructs at PUSH time, after the premint dump's crawl, so a
+// construction-registered sheet (auto-preminted statics included) gets
+// no build-time CSS and the first push panics under `--premint-only`.
+runtime_core::stylesheet! {
+    ToastCardHitSheet<()> {
+        base(_t) {
+            pointer_events: PointerEvents::Auto,
+        }
+    }
 }
 
 // =============================================================================
@@ -621,6 +676,51 @@ mod tests {
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
     use runtime_core::{resolve_style, Color, StyleApplication};
+
+    /// User-reported (docs toast page, web): the FIRST `push_toast` from
+    /// a click handler panicked with the kernel's "signal()/effect()
+    /// called outside World::enter". Web dispatches author callbacks
+    /// OUTSIDE the world by design (staged writes through captured
+    /// handles), and the queue lookup was an in-world `inject`. The
+    /// imperative API must work from outside a reactive context once any
+    /// in-world caller (ToastHost's build) has parked the handle — and
+    /// must DROP a pre-host outside-world push instead of panicking.
+    /// Fails against the inject-only lookup: the outside-enter push
+    /// panics at the world's TLS check.
+    #[test]
+    fn regression_push_toast_outside_world_enter_does_not_panic() {
+        // A pre-host, out-of-world push has nowhere to render — dropped,
+        // not a panic. (Fresh test thread ⇒ no parked handle yet.)
+        let _ = push_toast("too early", tone::Neutral);
+
+        let world = runtime_core::__World::new();
+        world.enter(|| {
+            install_idea_theme(light_theme());
+            // ToastHost's build parks the queue handle in-world.
+            let _ = queue();
+        });
+
+        // OUTSIDE enter — the web click-handler shape. Pre-fix this line
+        // panicked at the kernel's outside-enter TLS check (the queue
+        // lookup was an in-world `inject`); the toast's lifecycle timers
+        // additionally run SYNCHRONOUSLY here (no scheduler in tests), so
+        // the entry is pushed and auto-removed in the same turn — the
+        // assertion below therefore drives the parked handle directly,
+        // timer-free, to pin that outside-enter writes land.
+        let _ = push_toast("hello", tone::Success);
+
+        let q = queue_for_push().expect("the in-world build parked the handle");
+        q.modify(|v| {
+            v.push(ToastEntry { id: 424242, ..Default::default() });
+        });
+        world.flush();
+        world.enter(|| {
+            assert!(
+                queue().get().iter().any(|e| e.id == 424242),
+                "an outside-enter write through the parked handle commits on flush"
+            );
+        });
+    }
 
     /// Regression (empty ToastHost swallowed clicks): the host overlay is
     /// click-through (`pointer-events: none` on web) so its viewport strip

@@ -954,13 +954,17 @@ stylesheet! {
 stylesheet! {
     pub SelectMenu<IdeaThemeRef> {
         base(t) {
-            // The menu renders inside a portal, which on web mounts under
-            // `<body>` — OUTSIDE the app tree's inherited `font-family`. Pin
-            // the theme font on the panel so every row label inherits it
-            // here, instead of falling back to the browser's serif default
-            // (the "dropdown options render in Times" bug). Free-fn call, not
-            // the `t` binding — the stylesheet macro rejects theme-ref reads.
-            font_family: idea_theme::active_font_family(),
+            // NO font_family pin, deliberately. The menu portals under
+            // `<body>` (outside the app tree's inherited font), which used
+            // to need an `active_font_family()` pin here against the
+            // browser-serif fallback — but a dynamic font is the one thing
+            // that disqualifies a sheet from preminting, and the pin is
+            // redundant now: the theme's default text font is DECLARED ON
+            // THE DOCUMENT ROOT on every build (live publication +
+            // premint's `--iy-default-font` hook), so a portal inherits it
+            // through `<body>`, and the live static path additionally
+            // folds it into fontless rules at apply. Pinned by
+            // `select_menu_sheet_premints_and_rides_the_default_font`.
             background: Tokenized::token("color-surface", Color("#ffffff".into())),
             border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
             border_width: 1.0,

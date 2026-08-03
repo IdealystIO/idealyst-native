@@ -147,25 +147,22 @@ fn render_adornment(adornment: &Adornment, size: FieldSize) -> Option<Element> {
 /// Lazy stylesheet for [`Adornment::Button`]: a pointer cursor, centered glyph,
 /// and a subtle hover/press dim. No padding — it stays icon-sized.
 fn adornment_button_sheet() -> Rc<StyleSheet> {
-    thread_local! {
-        static SHEET: Rc<StyleSheet> = Rc::new(
-            StyleSheet::new(|_| StyleRules {
-                cursor: Some(Cursor::Pointer),
-                align_items: Some(AlignItems::Center),
-                justify_content: Some(JustifyContent::Center),
-                ..Default::default()
-            })
-            .variant("__state_hovered", "on", |_| StyleRules {
-                opacity: Some(Tokenized::Literal(0.65)),
-                ..Default::default()
-            })
-            .variant("__state_pressed", "on", |_| StyleRules {
-                opacity: Some(Tokenized::Literal(0.4)),
-                ..Default::default()
-            }),
-        );
+    AdornmentButtonSheet::sheet()
+}
+
+// `stylesheet!` (LINK-time registration): an identity-less closure sheet
+// here kept every Button-adorned field on the live engine — the same
+// premint hazard class as the lazily-opened overlay sheets.
+runtime_core::stylesheet! {
+    AdornmentButtonSheet<()> {
+        base(_t) {
+            cursor: Cursor::Pointer,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+        }
+        state hovered(_t) { opacity: 0.65 }
+        state pressed(_t) { opacity: 0.4 }
     }
-    SHEET.with(|s| s.clone())
 }
 
 // Reactive-by-default: `#[props]` rewrites each scalar-DATA field `T` →
@@ -639,31 +636,24 @@ pub fn Field(props: &FieldProps) -> Element {
                 .with("size", size_str)
                 .with("appearance", appearance)
                 .with("tone", tone_key);
-            // Pin min-height / width AND the focus ring in ONE computed layer.
-            // `with_computed` is single-slot (a second call overwrites the
-            // first), so dims and the focus border MUST share one layer — else
-            // focusing a field with `min_height` would drop it (the same
-            // single-slot trap that made the adorned shell grow on focus).
-            if min_height.is_some() || width.is_some() || focused {
-                let ring = if focused {
-                    let theme_rc = active_theme();
-                    let theme_ref = theme_rc.downcast_ref::<IdeaThemeRef>().expect("theme");
-                    Some(theme_ref.colors().focus_ring.clone())
-                } else {
-                    None
-                };
-                app = app.with_computed(
-                    format!("field-dim-{:?}-{:?}-{}", min_height, width, focused),
-                    move || StyleRules {
-                        min_height: min_height.map(|h| Tokenized::Literal(Length::Px(h))),
-                        width: width.map(|w| Tokenized::Literal(Length::Px(w))),
-                        border_top_color: ring.clone(),
-                        border_right_color: ring.clone(),
-                        border_bottom_color: ring.clone(),
-                        border_left_color: ring.clone(),
-                        ..Default::default()
-                    },
-                );
+            // The focus ring rides the sheet's `ring` AXIS (an enumerated
+            // arm with build-time CSS) and the per-instance dims ride the
+            // INLINE layer — independent layers, so the single-slot
+            // `with_computed` trap (focusing a field with `min_height`
+            // dropped the height) can't recur, and BOTH evaluations of
+            // this closure premint. The former computed spelling made the
+            // FOCUSED evaluation non-premintable: focusing any text input
+            // panicked under `--premint-only` (user-reported on the docs
+            // catalog).
+            if focused {
+                app = app.with("ring", "on");
+            }
+            if min_height.is_some() || width.is_some() {
+                app = app.with_inline(StyleRules {
+                    min_height: min_height.map(|h| Tokenized::Literal(Length::Px(h))),
+                    width: width.map(|w| Tokenized::Literal(Length::Px(w))),
+                    ..Default::default()
+                });
             }
             app
         }
@@ -807,8 +797,8 @@ pub fn Field(props: &FieldProps) -> Element {
         let focused = runtime_core::signal(false);
         let make_input_style = make_input_style.clone();
         let tone_key_for = tone_key_for.clone();
-        // The focus ring is baked into `make_input_style`'s single computed
-        // layer (alongside any min_height/width), so it can't be clobbered.
+        // The focus ring is the sheet's `ring` axis; the dims ride the
+        // inline layer — independent, unclobberable, premintable.
         let input_style = move || make_input_style(tone_key_for(), focused.get());
         input
             .on_focus(move |f| focused.set(f))
@@ -876,6 +866,47 @@ mod tests {
     use idea_theme::theme::install_idea_theme;
     use idea_theme::theme::light_theme;
     use runtime_core::resolve_style;
+
+    /// User-reported `--premint-only` panic: FOCUSING any text input.
+    /// The input's style closure re-evaluates with `focused = true`, and
+    /// that evaluation carried a `with_computed` layer (ring + dims in
+    /// one slot) — non-premintable, so the reactive po arm panicked on
+    /// the focus flip. Both evaluations must premint: the ring is the
+    /// sheet's `ring` AXIS and per-instance dims ride the INLINE layer.
+    /// Fails against the computed spelling (`preminted_class_list()` is
+    /// `None` for a computed-carrying application).
+    #[test]
+    fn regression_focused_input_evaluation_premints() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let field = Field(&FieldProps {
+                label: Reactive::Static(Some("Email".into())),
+                min_height: Reactive::Static(Some(120.0)),
+                ..Default::default()
+            });
+            let style = input_style_source(field);
+            let app_of = |s: &TStyle| match s {
+                TStyle::AppFn(f) => f(),
+                _ => panic!("the Field input style is a reactive closure (INVARIANT D9)"),
+            };
+            // Resting evaluation (not focused).
+            let resting = app_of(&style);
+            assert!(
+                resting.preminted_class_list().is_some(),
+                "resting input evaluation must premint (dims ride inline)"
+            );
+            // The FOCUSED shape: same axes plus ring=on — build it the way
+            // the closure does and assert it premints too. (Flipping the
+            // component's internal focus signal isn't reachable from the
+            // mirror; the ring arm's premintability is the load-bearing
+            // half, and the closure's two branches differ only by it.)
+            let focused = resting.clone().with("ring", "on");
+            assert!(
+                focused.preminted_class_list().is_some(),
+                "focused input evaluation must premint (ring is an enumerated axis)"
+            );
+        });
+    }
 
     /// Pull the normalized style off the `text_input` node inside a built
     /// `Field` element tree (a `view` wrapping label/input/help).

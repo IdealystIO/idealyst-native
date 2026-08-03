@@ -57,6 +57,7 @@ pub fn header(
         },
     );
 
+    let toggle = header_theme_toggle(is_dark);
     ui! {
         view(style = DocHeader()) {
             menu_button(drawer_open)
@@ -70,9 +71,21 @@ pub fn header(
             text(style = HeaderMono()) { "component reference".to_string() }
             view(style = HeaderSpacer()) {}
             token_hint
-            theme_toggle(is_dark)
+            toggle
         }
     }
+}
+
+/// The header's Light/Dark toggle — desktop only. Below the sidebar's
+/// pin breakpoint it moves into the drawer sidebar (`sidebar`), because
+/// the narrow header can't fit brand + label + hint + toggle without
+/// overflowing the viewport into a horizontal scroll.
+fn header_theme_toggle(is_dark: Signal<bool>) -> Element {
+    when(
+        move || idea_ui_nav::sidebar_pinned(Breakpoint::Lg),
+        move || theme_toggle(is_dark),
+        || fragment(vec![]),
+    )
 }
 
 // The leading hamburger. The AppShell's sidebar pins in-flow at/above
@@ -143,7 +156,22 @@ fn seg_button(
 // shared `q` signal; `active_route` is the navigator's reactive mirror.
 // =============================================================================
 
-pub fn sidebar(active_route: Signal<&'static str>, q: Signal<String>) -> Element {
+pub fn sidebar(
+    active_route: Signal<&'static str>,
+    q: Signal<String>,
+    is_dark: Signal<bool>,
+) -> Element {
+    // The Light/Dark toggle's narrow-width home (the header hosts it
+    // while the sidebar is pinned — see `header_theme_toggle`). The
+    // sidebar serves BOTH the pinned column and the off-canvas drawer,
+    // so the toggle is gated to the drawer case to avoid two toggles
+    // on desktop.
+    let drawer_toggle = when(
+        move || !idea_ui_nav::sidebar_pinned(Breakpoint::Lg),
+        move || theme_toggle(is_dark),
+        || fragment(vec![]),
+    );
+
     // The search now lives in a dialog. This open-state drives the modal; the
     // sidebar shows a button that opens it.
     let open: Signal<bool> = signal(false);
@@ -182,6 +210,7 @@ pub fn sidebar(active_route: Signal<&'static str>, q: Signal<String>) -> Element
     ui! {
         scroll_view(style = SidebarScroll()) {
             view(style = SidebarBody()) {
+                drawer_toggle
                 search_button
                 nav
                 Modal(

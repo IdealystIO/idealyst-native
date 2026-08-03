@@ -87,8 +87,9 @@ impl Default for TooltipProps {
 /// stretching across a flex parent's cross axis (see
 /// [`crate::components::hug_self`]).
 fn hug_sheet() -> Rc<StyleSheet> {
-    // Not preminted — built at mount, so the dump never sees it (see the
-    // `premint_as` docs on why that would render unstyled).
+    // `r#static` auto-premints by content, and the wrapper builds with the
+    // TRIGGER (crawl-visible), not with the lazily-opened bubble — so the
+    // dump does see this construction and its CSS ships.
     Rc::new(StyleSheet::r#static(crate::components::hug_self()))
 }
 

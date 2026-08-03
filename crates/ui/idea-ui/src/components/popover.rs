@@ -56,8 +56,8 @@ use std::rc::Rc;
 use runtime_core::primitives::overlay::{overlay, BackdropMode};
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
 use runtime_core::{
-    component, ui, ChildList, Color, Element, IdealystSchema, IntoElement, Length, Position,
-    Reactive, StyleApplication, StyleRules, StyleSheet, Tokenized, VariantSet,
+    component, stylesheet, ui, ChildList, Color, Element, IdealystSchema, IntoElement, Length,
+    Position, Reactive, StyleApplication, StyleRules, StyleSheet, Tokenized
 };
 
 use crate::stylesheets::Popover as PopoverStyle;
@@ -78,22 +78,37 @@ use crate::stylesheets::Popover as PopoverStyle;
 /// the trigger stays put. (Same fix the `if`-without-else macro lowering
 /// applies to its empty branch.)
 pub(crate) fn out_of_flow_wrapper_sheet() -> Rc<StyleSheet> {
-    StyleSheet::new(|_vs: &VariantSet| StyleRules {
-        position: Some(Position::Absolute),
-        ..Default::default()
-    }).premint_as("idea-ui.v1.popover")
+    PopoverWrapperSheet::sheet()
+}
+
+// `stylesheet!` (LINK-time registration), not `premint_as`: a Popover's
+// sheets first construct when it OPENS, and the premint dump's crawl
+// mounts routes without opening anything — a runtime-registered identity
+// here got no build-time CSS and `--premint-only` panicked on the first
+// open (same category as Modal's search-dialog repro).
+stylesheet! {
+    PopoverWrapperSheet<()> {
+        base(_t) {
+            position: Position::Absolute,
+        }
+    }
 }
 
 fn transparent_backdrop_sheet() -> Rc<StyleSheet> {
-    StyleSheet::new(|_vs: &VariantSet| StyleRules {
-        position: Some(Position::Absolute),
-        top: Some(Tokenized::Literal(Length::Px(0.0))),
-        left: Some(Tokenized::Literal(Length::Px(0.0))),
-        right: Some(Tokenized::Literal(Length::Px(0.0))),
-        bottom: Some(Tokenized::Literal(Length::Px(0.0))),
-        background: Some(Tokenized::Literal(Color("transparent".into()))),
-        ..Default::default()
-    }).premint_as("idea-ui.v1.popover.1")
+    PopoverBackdropSheet::sheet()
+}
+
+stylesheet! {
+    PopoverBackdropSheet<()> {
+        base(_t) {
+            position: Position::Absolute,
+            top: Length::Px(0.0),
+            left: Length::Px(0.0),
+            right: Length::Px(0.0),
+            bottom: Length::Px(0.0),
+            background: Color("transparent".into()),
+        }
+    }
 }
 
 /// A FULLSCREEN, transparent outside-click catcher portal. Rendered *behind*

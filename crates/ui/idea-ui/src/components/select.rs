@@ -24,12 +24,13 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
+use runtime_core::stylesheet;
 use runtime_core::primitives::overlay::{overlay, BackdropMode};
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
 use runtime_core::{
     component, effect, signal, ui, Color, Element, FillRule, IconData, IdealystSchema,
     IntoElement, Length, Position, PressableHandle, Reactive, Ref, Signal, StyleApplication,
-    StyleRules, StyleSheet, Tokenized, VariantEnum, VariantSet, ViewHandle,
+    StyleRules, StyleSheet, Tokenized, VariantEnum, ViewHandle
 };
 
 use idea_theme::theme::IdeaThemeRef;
@@ -44,15 +45,22 @@ use crate::stylesheets::{SelectOption as SelectOptionStyle, SelectTrigger};
 /// *replaces* the backdrop's styling, so this must set the full-viewport inset
 /// itself — a background-only sheet would collapse to zero and catch nothing.
 fn transparent_backdrop_sheet() -> std::rc::Rc<StyleSheet> {
-    StyleSheet::new(|_vs: &VariantSet| StyleRules {
-        position: Some(Position::Absolute),
-        top: Some(Tokenized::Literal(Length::Px(0.0))),
-        left: Some(Tokenized::Literal(Length::Px(0.0))),
-        right: Some(Tokenized::Literal(Length::Px(0.0))),
-        bottom: Some(Tokenized::Literal(Length::Px(0.0))),
-        background: Some(Tokenized::Literal(Color("transparent".into()))),
-        ..Default::default()
-    }).premint_as("idea-ui.v1.select")
+    SelectBackdropSheet::sheet()
+}
+
+// `stylesheet!` (LINK-time), not `premint_as`: the dropdown constructs on
+// OPEN, which the premint dump's crawl never does — see `popover.rs`.
+stylesheet! {
+    SelectBackdropSheet<()> {
+        base(_t) {
+            position: Position::Absolute,
+            top: Length::Px(0.0),
+            left: Length::Px(0.0),
+            right: Length::Px(0.0),
+            bottom: Length::Px(0.0),
+            background: Color("transparent".into()),
+        }
+    }
 }
 
 pub use crate::stylesheets::SelectTriggerSize as SelectSize;
@@ -63,7 +71,7 @@ const CHEVRON_DOWN: IconData = IconData {
     view_box: (24, 24),
     paths: &["M6 9l6 6 6-6"],
     fill_rule: FillRule::NonZero,
-    filled: false,
+    filled: false
 };
 
 /// How fast the trigger chevron flips between its closed (0°) and open
@@ -373,31 +381,32 @@ mod tests {
     // theme font on the `SelectMenu` panel so the whole dropdown subtree
     // inherits it. This test fails before the fix (`font_family` is `None`).
     #[test]
-    fn regression_select_menu_pins_theme_font_for_portal() {
+    fn select_menu_sheet_premints_and_rides_the_default_font() {
         with_test_world(|| {
             install_idea_theme(light_theme());
 
+            // The contract INVERTED with the default-font root declaration:
+            // the sheet must NOT pin a font (a dynamic `font_family` is the
+            // one premint disqualifier — it kept SelectMenu off build-time
+            // CSS, and opening any Select panicked under `--premint-only`).
+            // The portal-font guarantee now rides the default-font
+            // machinery: the theme font is declared on the DOCUMENT ROOT on
+            // every build, so a `<body>`-mounted portal inherits it, and
+            // the live static path folds it at apply. That machinery is
+            // pinned by the runtime-vocabulary font tests and
+            // backend-ssr's `regression_reactive_styled_node_inherits_theme_font`.
             let resolved = resolve_style(&StyleApplication::new(SelectMenu::sheet()));
-            let family = resolved.font_family.clone().expect(
-                "the Select menu must pin a font_family so its portal'd options don't \
-                 fall back to the browser serif default",
+            assert!(
+                resolved.font_family.is_none(),
+                "the menu sheet must not pin a font — that disqualifies it \
+                 from preminting; portals get the theme font from the root"
             );
-
-            // It must be the theme's body font (a non-empty system sans stack),
-            // not an empty/serif fallback.
-            match (&family, &idea_theme::active_font_family()) {
-                (FontFamily::System(got), FontFamily::System(want)) => {
-                    assert_eq!(got, want, "menu font must match the active theme's body font");
-                    assert!(!got.is_empty(), "an empty family resolves to the browser serif default");
-                }
-                (FontFamily::Typeface(got), FontFamily::Typeface(want)) => {
-                    assert_eq!(
-                        got.family_name, want.family_name,
-                        "menu typeface must match the active theme's body typeface"
-                    );
-                }
-                (got, want) => panic!("menu font kind {got:?} differs from the theme font {want:?}"),
-            }
+            assert!(
+                StyleApplication::new(SelectMenu::sheet()).preminted_class_list().is_some(),
+                "the menu sheet must premint: it first constructs when a \
+                 Select OPENS, so only build-time CSS can style it under \
+                 --premint-only"
+            );
     });
     }
 }

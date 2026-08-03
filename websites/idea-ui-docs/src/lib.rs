@@ -157,7 +157,7 @@ pub fn app() -> Element {
                 }
             });
 
-            let sidebar_el = shell::sidebar(active_route, q);
+            let sidebar_el = shell::sidebar(active_route, q, is_dark);
             let header = shell::header(active_route, is_dark, drawer_open);
             let body: Element = ui! {
                 view(style = shell::outlet_grow_style) {

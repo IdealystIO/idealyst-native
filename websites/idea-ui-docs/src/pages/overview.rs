@@ -8,7 +8,7 @@
 //! `link`s (the idiomatic route-jump primitive) wrapping styled views —
 //! never nested interactive `Button`s.
 
-use runtime_core::{ui, Color, Element, IconData};
+use runtime_core::{rx, ui, Breakpoint, Color, Element, IconData};
 use idea_ui::{tone, typography_kind, Grid, Icon, StackGap, ToneRef, Typography};
 use icons_lucide::{ARROW_RIGHT, CHECK, FOLDER, SETTINGS, STAR};
 
@@ -28,8 +28,12 @@ const LANDING_GROUP: &str = "Get started";
 
 pub fn overview() -> Element {
     let hero = hero();
+    // 2-up below the sidebar's pin breakpoint: four cards of padded,
+    // wrap-resistant labels don't fit a phone width even with
+    // shrinkable tracks.
+    let stat_cols = rx!(if idea_ui_nav::sidebar_pinned(Breakpoint::Lg) { 4u32 } else { 2u32 });
     let stats = ui! {
-        Grid(columns = 4u32, gap = StackGap::Md) {
+        Grid(columns = stat_cols, gap = StackGap::Md) {
             stat("40", "Components", StatNumberTone::Primary)
             stat("7", "Intent palettes", StatNumberTone::Success)
             stat("2", "Built-in themes", StatNumberTone::Info)
