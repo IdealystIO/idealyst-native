@@ -30,7 +30,7 @@ use std::process::Command;
 
 /// Pre-fingerprint filename of the emitted stylesheet inside `pkg/`.
 /// `fingerprint_pkg` content-addresses it like every other pkg file.
-pub(crate) const PREMINT_CSS_NAME: &str = "premint.css";
+pub const PREMINT_CSS_NAME: &str = "premint.css";
 
 /// Generate the ephemeral dump wrapper, build it natively, run it, and
 /// return the emitted CSS. `wrapper_root` is the per-project web build

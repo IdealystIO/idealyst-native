@@ -215,6 +215,34 @@ pub struct Args {
     #[arg(long)]
     pub web: bool,
 
+    /// Web + `--local` only: premint static styles on every dev rebuild —
+    /// the dev loop serves the same premint bundle `idealyst build --web
+    /// --premint` ships (dump-emitted `pkg/premint.css`, wasm compiled
+    /// with `--cfg idealyst_premint`, the stylesheet `<link>` spliced
+    /// into served HTML). Use it to exercise the premint attach paths
+    /// live: the minted-class guard's once-per-class console warning
+    /// fires here for any sheet the dump's crawl missed. Requires
+    /// `--local` (runtime-server mode resolves styles server-side, so
+    /// there is nothing to premint client-side). Each rebuild re-runs
+    /// the native style dump; trades the `dev --ssr` hand-off away
+    /// (premint cannot combine with hydration).
+    #[arg(long)]
+    pub premint: bool,
+
+    /// Web + `--local` only: premint AND compile the style engine out —
+    /// the strict verification loop for `--premint-only` deploys. Any
+    /// style the dump's crawl missed panics in the browser on the
+    /// interaction that reaches it, exactly as the shipped po bundle
+    /// would. Implies `--premint`.
+    #[arg(long)]
+    pub premint_only: bool,
+
+    /// Web + `--local` only: premint and log every style that still
+    /// falls through to the live engine (`[premint-report] …` console
+    /// lines). Implies `--premint`.
+    #[arg(long)]
+    pub premint_report: bool,
+
     /// Disable the Robot bridge in dev mode. By DEFAULT `idealyst dev` hosts a
     /// `robot-relay` and wires the launched app to dial it (web-local injects
     /// the URL; desktop-native apps inherit it), so the MCP server / inspector /
@@ -353,6 +381,18 @@ pub fn run(args: Args) -> Result<()> {
 
     // One core: `--new-core` is a no-op, `--old-core` is a hard error.
     crate::core_mode::validate_flags(args.new_core, args.old_core)?;
+
+    // Premint dev mode renders in the browser from a locally-built wasm
+    // bundle; runtime-server mode resolves styles server-side and streams
+    // them over the wire, so there is nothing client-side to premint —
+    // refuse the pair rather than silently ignoring the flags.
+    if (args.premint || args.premint_only || args.premint_report) && !args.local {
+        anyhow::bail!(
+            "--premint/--premint-only/--premint-report need `--local`: the default \
+             runtime-server dev mode resolves styles server-side, so the premint attach \
+             paths never run. Retry as `idealyst dev --web --local --premint…`."
+        );
+    }
 
     // Resolve the active target set. Explicit flags win; if none are
     // passed, fall back to the manifest's `targets`. We parse the
@@ -1188,6 +1228,11 @@ fn launch_web(
                         "runtime-server".to_string(),
                     ],
                     bundle_out_dir: None,
+                    // Unreachable with premint flags set: run() bails on
+                    // premint without --local, and this is the !local arm.
+                    premint: false,
+                    premint_only: false,
+                    premint_report: false,
                 },
             )
             .context("web build failed (runtime-server)")?;
@@ -1262,6 +1307,9 @@ fn launch_web(
                         f
                     },
                     bundle_out_dir: None,
+                    premint: args.premint,
+                    premint_only: args.premint_only,
+                    premint_report: args.premint_report,
                 },
             )?;
             std::mem::forget(handle);
@@ -1270,6 +1318,51 @@ fn launch_web(
             // for the local-mode dev path. Splits the wasm-pack
             // output into base + chunks, emits chunks into
             // <project>/pkg/. Mirrors the build path; coming up next.
+        }
+
+        // ── Premint dev: the pkg-into-project path rewrites no
+        //    index.html, so splice the stylesheet <link> into served
+        //    HTML here — the same tag (incl. the font-families dedup
+        //    attribute) the staged deploy bundle gets. Injected once
+        //    from the initial build's CSS: the filename never changes
+        //    across rebuilds and dev-http serves everything no-store,
+        //    so each livereload refetches the fresh bytes. (Families
+        //    could in principle drift on a rebuild that adds a font;
+        //    worst case is one duplicate font fetch until the dev
+        //    server restarts — not worth per-reload HTML rewriting.)
+        if args.premint || args.premint_only || args.premint_report {
+            let css_path = dir.join("pkg").join(build_web::PREMINT_CSS_NAME);
+            match std::fs::read_to_string(&css_path) {
+                Ok(css) => {
+                    let tag = build_web::premint_css_link_tag(
+                        build_web::PREMINT_CSS_NAME,
+                        &build_web::premint_font_families(&css),
+                    );
+                    head_ctx = Some(match head_ctx.take() {
+                        Some(mut h) => {
+                            h.html.push('\n');
+                            h.html.push_str(&tag);
+                            h
+                        }
+                        None => dev_http::HeadInjectionContext { html: tag },
+                    });
+                    crate::dlog!(
+                        "dev web",
+                        "premint: linked pkg/{} into served HTML",
+                        build_web::PREMINT_CSS_NAME,
+                    );
+                }
+                // Reachable with --no-build and no prior premint build —
+                // the served page would boot with zero minted classes
+                // (guard disarms on an empty scan under --premint, or
+                // everything panics under --premint-only), so say why.
+                Err(e) => crate::dlog!(
+                    "dev web",
+                    "premint: cannot read {} ({e}) — with --no-build the CSS must \
+                     already exist from a previous premint build",
+                    css_path.display(),
+                ),
+            }
         }
         let ctx = ReloadContext { signal };
 
@@ -1630,6 +1723,12 @@ fn launch_web_with_backend(
                 // in-crate value) would sync `pkg/` into the project root
                 // instead, which no server reads → stale browser.
                 bundle_out_dir: Some(dist_web.clone()),
+                // Full-stack premint dev: the staged-bundle path injects
+                // the stylesheet <link> into the staged index.html itself,
+                // so threading the flags is the whole feature here.
+                premint: args.premint,
+                premint_only: args.premint_only,
+                premint_report: args.premint_report,
             },
         )
         .context("web bundle initial build + watcher start failed")?;
@@ -2228,6 +2327,9 @@ impl Args {
             dir: self.dir.clone(),
             local: self.local,
             web: self.web,
+            premint: self.premint,
+            premint_only: self.premint_only,
+            premint_report: self.premint_report,
             no_robot: self.no_robot,
             headless_client: self.headless_client,
             no_headless_client: self.no_headless_client,

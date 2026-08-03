@@ -35,6 +35,7 @@ use build_ios::{
 };
 
 mod premint;
+pub use premint::PREMINT_CSS_NAME;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
@@ -693,23 +694,32 @@ pub fn default_index_html(title: &str, lib_name: &str) -> String {
 fn inject_premint_css_link(index_path: &Path, css_name: &str, font_families: &str) -> Result<()> {
     let html = fs::read_to_string(index_path)
         .with_context(|| format!("read {}", index_path.display()))?;
+    let snippet = format!("\n    {}", premint_css_link_tag(css_name, font_families));
+    let out = inject_into_head(html, &snippet);
+    fs::write(index_path, out).with_context(|| format!("write {}", index_path.display()))?;
+    Ok(())
+}
+
+/// The premint stylesheet `<link>` tag itself — shared between the
+/// staged-bundle injector above and the dev server's head injection
+/// (`idealyst dev --web --local --premint`), so the served-HTML tag and
+/// the deployed one carry the same shape (incl. the
+/// `data-iy-font-families` dedup attribute; see
+/// [`inject_premint_css_link`] for why it's an attribute).
+pub fn premint_css_link_tag(css_name: &str, font_families: &str) -> String {
     let families_attr = if font_families.is_empty() {
         String::new()
     } else {
         format!(" data-iy-font-families=\"{font_families}\"")
     };
-    let snippet =
-        format!("\n    <link rel=\"stylesheet\" href=\"pkg/{css_name}\"{families_attr}>");
-    let out = inject_into_head(html, &snippet);
-    fs::write(index_path, out).with_context(|| format!("write {}", index_path.display()))?;
-    Ok(())
+    format!("<link rel=\"stylesheet\" href=\"pkg/{css_name}\"{families_attr}>")
 }
 
 /// The unique `@font-face` family names in an emitted premint
 /// stylesheet, comma-joined in appearance order. Scans for the exact
 /// prefix `css::font_face_css` emits — the dump and this parser share
 /// that format by construction.
-fn premint_font_families(css: &str) -> String {
+pub fn premint_font_families(css: &str) -> String {
     let mut seen: Vec<&str> = Vec::new();
     for chunk in css.split("@font-face{font-family:\"").skip(1) {
         if let Some(end) = chunk.find('"') {

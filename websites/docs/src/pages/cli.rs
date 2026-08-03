@@ -56,9 +56,14 @@ pub fn page() -> Element {
                         source line — drive that list to zero, then ship \
                         `--premint-only`, which compiles the style engine out of the \
                         wasm entirely. Web-only; native targets always keep the full \
-                        engine and render identically.".to_string(),
+                        engine and render identically. The same three flags work on \
+                        `idealyst dev --web --local`: the dev loop rebuilds the CSS \
+                        asset on every save and serves the real premint bundle, so \
+                        the guard warnings (and `--premint-only` panics) surface \
+                        while you iterate instead of after a deploy.".to_string(),
                 code = "idealyst build --release --web --premint-report\n\
-                        idealyst build --release --web --premint-only".to_string(),
+                        idealyst build --release --web --premint-only\n\
+                        idealyst dev --web --local --premint".to_string(),
             )
 
             SectionWithCode(

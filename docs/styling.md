@@ -394,6 +394,16 @@ shared naming scheme:
    (`premint-state-keyed-sheet`) and any `with_computed` layer
    (`premint-computed-layer`). The runtime warning only fires on paths a
    dev actually exercises; the lint covers the untested ones.
+
+   The whole pipeline also runs in the dev loop: `idealyst dev --web
+   --local --premint` (or `--premint-report` / `--premint-only`)
+   re-runs the dump on every save, serves the fresh `pkg/premint.css`
+   with the `<link>` spliced into the served HTML, and compiles the
+   wasm with the same cfgs the deploy build gets — so guard warnings
+   and po panics surface while iterating, not after a deploy. Requires
+   `--local` (runtime-server mode resolves styles server-side) and
+   trades away the `dev --ssr` hand-off (premint can't combine with
+   hydration).
 2. **Shipped build.** The wasm compiles with `--cfg idealyst_premint`,
    which flips each `stylesheet!` builder's `into_style_prop` to a
    fast path: an all-constant application (plain variant values, no
