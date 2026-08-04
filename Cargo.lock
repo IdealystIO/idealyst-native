@@ -5896,6 +5896,7 @@ name = "idealyst-config"
 version = "1.2.2"
 dependencies = [
  "aws-config",
+ "cache",
  "email",
  "jobs",
  "pubsub",
@@ -8826,6 +8827,7 @@ dependencies = [
  "redis",
  "serde",
  "serde_json",
+ "server",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",

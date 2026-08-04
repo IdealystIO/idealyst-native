@@ -49,6 +49,29 @@ pub struct DevConfig {
     /// ```
     #[serde(default)]
     pub pubsub: Option<PubsubConfig>,
+
+    /// Local cache backend for `idealyst dev`. Absent → the in-process
+    /// `memory` cache. Point at redis to share cached entries across
+    /// instances (and exercise the shared-cache path in dev).
+    ///
+    /// ```toml
+    /// [cache]
+    /// backend = "redis"
+    /// url = "redis://127.0.0.1:6379"
+    /// ```
+    #[serde(default)]
+    pub cache: Option<CacheConfig>,
+}
+
+/// The `[cache]` block in `dev.toml`.
+#[derive(Debug, Default, Deserialize, Clone)]
+pub struct CacheConfig {
+    /// `memory` (default) | `redis`.
+    #[serde(default)]
+    pub backend: Option<String>,
+    /// Redis URL. Unused for `memory`.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 /// The `[pubsub]` block in `dev.toml`.
@@ -130,7 +153,53 @@ impl DevConfig {
                 .ok();
             cfg.pubsub = Some(PubsubConfig { backend: pubsub.backend.clone(), url });
         }
+        if let Some(cache) = &unified.cache {
+            let url = unified
+                .url_for(cache.connection.as_deref(), cache.url.as_deref())
+                .ok();
+            cfg.cache = Some(CacheConfig { backend: cache.backend.clone(), url });
+        }
 
         Ok(cfg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// `idealyst.toml`'s `[cache]` overlays into DevConfig with its named
+    /// connection resolved to a URL, exactly like `[pubsub]` — so the
+    /// `IDEALYST_CACHE_*` env bridge to the spawned server/worker works.
+    #[test]
+    fn cache_section_resolves_connection_for_env_bridge() {
+        let dir = std::env::temp_dir().join("idealyst-devconfig-test-cache");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut f = std::fs::File::create(dir.join("idealyst.toml")).unwrap();
+        f.write_all(
+            br#"
+            [connections.main]
+            kind = "redis"
+            url = "redis://127.0.0.1:6379"
+
+            [cache]
+            backend = "redis"
+            connection = "main"
+
+            [pubsub]
+            backend = "redis"
+            connection = "main"
+            "#,
+        )
+        .unwrap();
+
+        let cfg = DevConfig::load(&dir).unwrap();
+        let cache = cfg.cache.expect("[cache] carried into DevConfig");
+        assert_eq!(cache.backend.as_deref(), Some("redis"));
+        assert_eq!(cache.url.as_deref(), Some("redis://127.0.0.1:6379"));
+        // Same profile, same URL as pubsub — the shared-connection contract.
+        assert_eq!(cfg.pubsub.unwrap().url.as_deref(), cache.url.as_deref());
     }
 }

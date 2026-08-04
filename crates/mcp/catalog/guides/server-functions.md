@@ -104,3 +104,14 @@ server-bin/  Depends on `api` with `features = ["server"]`; calls router().
 
 The reference implementation is `crates/api/server/examples/server-fn-demo`; the full v1 design is
 in `crates/api/server/DESIGN.md`.
+
+## Server-tier companions
+
+The server binary composes with the server-tier SDK crates — `cache`
+(centralized KV-with-TTL), `pubsub` (cross-instance fan-out; a `#[subscription]`
+body returns `TOPIC.subscribe()` for decentralized WebSocket notifications),
+`jobs` (background queue), `email`, and `idealyst-config` (one
+`configure_all().await` wiring them all from `idealyst.toml`). Policy —
+middleware, `Auth<T>`, sessions, rate limiting — lives in `server-kit`. The
+roster and the shared-Redis-connection pattern are in the [[sdks]] guide's
+"Server tier" section.

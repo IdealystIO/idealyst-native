@@ -1,7 +1,7 @@
 +++
 title = "SDKs & opt-in crates"
 order = 65
-tags = ["sdk", "crates", "net", "storage", "credentials", "discovery"]
+tags = ["sdk", "crates", "net", "storage", "credentials", "discovery", "cache", "pubsub", "jobs", "email", "server-tier"]
 +++
 
 # SDKs & opt-in crates
@@ -47,6 +47,95 @@ loading.
 | **`files`** | Cross-platform blob/file storage for **binary data** (recordings, downloads). |
 | **`file-export`** | Save a file to a user-chosen location through the platform's native "save" UI (no permission prompt). |
 | **`i18n`** | Localization / translation / multi-language — the internationalization SDK. Declare translations inline with the `i18n!` macro in a `mod t` (`locales: { En = "en" (default), Es = "es" } greeting(name) { En: "Hello, {name}", Es: "Hola, {name}" }`); a missing translation or bad `{placeholder}` is a COMPILE error. Each message is a fn returning `Reactive<String>` you pass to any reactive-text prop (`Typography(content = t::greeting("Ada"))`). Switch language live with `t::set_locale(t::Locale::Es)` / `i18n::set_locale_code("es")` — every visible translated string re-renders in place. Bundled locales compile in; `(lazy)` locales fetch a JSON pack (feature `lazy-fetch`). Full walkthrough in the [[i18n]] guide. |
+
+## Server tier (cache, pubsub, jobs, email, config)
+
+These crates run **only in the server binary** — they use tokio, redis, sqlx.
+Never make them unconditional dependencies of an app crate that also compiles to
+wasm: depend on them as **optional** deps enabled by the same `server` feature
+your `#[server]` bodies compile under:
+
+```toml
+[dependencies]
+cache  = { workspace = true, optional = true }
+pubsub = { workspace = true, optional = true }
+
+[features]
+server = ["dep:cache", "dep:pubsub", "server/server"]
+```
+
+| Crate | What it gives you |
+|---|---|
+| **`cache`** | Centralized KV cache with TTL, shared across server instances. `Cache` trait (`get`/`set`(+TTL)/`delete` over bytes) + `CacheExt::get_json`/`set_json`; `MemoryCache` always, `RedisCache` behind feature `redis`. NOT for atomic read-modify-write — rate limits / counters go through server-kit's `LimitStore`. |
+| **`pubsub`** | Cross-instance broadcast fan-out (at-most-once, ephemeral). `const ROOM: pubsub::Topic<Msg> = Topic::new("room")`; `ROOM.publish(&msg).await`; `ROOM.subscribe() -> impl Stream<Item = Msg>`. Backends: memory / redis (native Pub/Sub) / postgres (LISTEN/NOTIFY). |
+| **`jobs`** | Durable background job queue — each job delivered to ONE worker, with retries/backoff/dead-letter. `#[job]` mirrors `#[server]`; run handlers via `jobs::worker().run()`, `.spawn()`, or `idealyst worker`. Backends: memory / redis / postgres / sqs. |
+| **`email`** | Transactional email — fluent `Email` builder, or render an idealyst component to email-safe HTML via `.template(...)`. Providers: memory (dev/test capture), SES. |
+| **`idealyst-config`** | Unified boot config for all of the above: named `[connections.<name>]` profiles in `idealyst.toml`, one `configure_all().await` call. See below. |
+| **`server-kit`** | Policy layer over `server`: middleware, `Auth<T>`, CSRF, sessions (built on `cache`), rate limiting. See [[server-functions]]. |
+
+### One connection, many consumers
+
+The Redis connection is **app-provided context, like a database**: open one
+`redis::Client` at boot, and every consumer attaches to it — no per-SDK URLs.
+
+```rust
+// boot (server main), before serving:
+let client = redis::Client::open(cfg.redis_url)?;
+server::install_state(client.clone());
+
+cache::configure(cache::RedisCache::from_installed());          // KV cache
+pubsub::configure(pubsub::RedisBackend::from_installed().await?); // fan-out
+// server-kit sessions / RedisLimitStore read the same installed client.
+```
+
+`cache::configured()` hands the cache back anywhere server-side; to receive it
+as injected `#[ctx]` state instead, `server::install_state::<Arc<dyn Cache>>(...)`.
+
+### Configuring — `idealyst.toml` or env
+
+The default authoring surface is `idealyst.toml` + `idealyst_config::configure_all()`:
+
+```toml
+[connections.main]
+kind = "redis"
+url = "redis://127.0.0.1:6379"
+
+[cache]
+backend = "redis"
+connection = "main"     # same endpoint…
+
+[pubsub]
+backend = "redis"
+connection = "main"     # …shared by name
+```
+
+The flat env spelling (`IDEALYST_CACHE_BACKEND`/`_URL`, `IDEALYST_PUBSUB_*`,
+`IDEALYST_JOBS_*`) is the override layer; each SDK also has a
+`configure_from_env()`. `idealyst dev` forwards a project's `[cache]` /
+`[pubsub]` / `[jobs]` config to the spawned server + worker as those vars. For
+the redis backends, env config with **no URL set falls back to the installed
+`redis::Client`** — one URL configured at boot serves every consumer.
+
+### Decentralized WebSocket notifications (pubsub × `#[subscription]`)
+
+The headline pubsub use — no changes to the server crate needed, a
+`#[subscription]` body just returns the topic's stream:
+
+```rust
+const ROOM: pubsub::Topic<Msg> = pubsub::Topic::new("room");
+
+#[subscription]                    // client holds a socket on instance A
+async fn feed() -> impl Stream<Item = Msg> { ROOM.subscribe() }
+
+#[server]                          // any instance publishes
+async fn say(text: String) -> Result<(), ServerError> {
+    ROOM.publish(&Msg { text }).await.map_err(ServerError::failed)?;
+    Ok(())
+}
+```
+
+With a shared backend (redis/postgres), a client connected to one instance
+receives events produced on another.
 
 ## Media & capture
 

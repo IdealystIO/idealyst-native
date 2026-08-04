@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Unified configuration for the server-tier SDKs (jobs, pubsub, email).
+# Unified configuration for the server-tier SDKs (jobs, pubsub, email, cache).
 #
 # Replaces per-SDK flat `IDEALYST_<SDK>_*` env vars as the DEFAULT authoring
 # surface with a structured file model built around NAMED CONNECTION PROFILES:
@@ -34,11 +34,12 @@ default = []
 jobs = ["dep:jobs"]
 pubsub = ["dep:pubsub"]
 email = ["dep:email"]
+cache = ["dep:cache"]
 # Build a resolved AWS `SdkConfig` (region/profile/endpoint) from an
 # `[connections.<name>] kind = "aws"` block. Required by the `sqs`/`ses` paths.
 aws = ["dep:aws-config"]
 # Real broker/provider backends — forward to the tool crates' own features.
-redis = ["jobs?/redis", "pubsub?/redis"]
+redis = ["jobs?/redis", "pubsub?/redis", "cache?/redis"]
 postgres = ["jobs?/postgres", "pubsub?/postgres"]
 sqs = ["jobs?/sqs", "aws"]
 ses = ["email?/ses", "aws"]
@@ -52,6 +53,7 @@ thiserror = { workspace = true }
 jobs = { workspace = true, optional = true }
 pubsub = { workspace = true, optional = true }
 email = { workspace = true, optional = true }
+cache = { workspace = true, optional = true }
 
 # Builds the resolved AWS SdkConfig handed to the SES/SQS constructors.
 aws-config = { version = "1", optional = true }

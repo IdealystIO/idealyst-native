@@ -32,6 +32,16 @@ impl RedisCache {
         }
     }
 
+    /// Build from a Redis URL. Only validates the URL shape here — the
+    /// connection is established lazily on first use, like [`Self::new`].
+    /// The config-file / env spelling (`idealyst-config` `[cache]`,
+    /// `IDEALYST_CACHE_URL`); prefer [`Self::new`] / [`Self::from_installed`]
+    /// when the app already holds a shared client.
+    pub fn from_url(url: &str) -> Result<Self, CacheError> {
+        let client = redis::Client::open(url).map_err(|e| CacheError(format!("redis url: {e}")))?;
+        Ok(Self::new(client))
+    }
+
     /// Build over the `redis::Client` already installed via
     /// `server::install_state` — the "provided context" spelling.
     ///

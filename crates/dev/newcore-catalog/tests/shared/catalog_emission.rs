@@ -552,6 +552,21 @@ fn sdks_table_indexes_non_ui_capability_crates() {
     assert_eq!(by_name("idea-ui").category, catalog::SdkCategory::Ui);
     assert_eq!(by_name("webview").kind, catalog::SdkKind::External);
 
+    // Regression (2026-08): the server-tier crates existed in the workspace
+    // but had no SdkEntry, so an agent looking for centralized caching or
+    // cross-instance pub/sub couldn't discover them from the MCP at all.
+    for required in &["cache", "pubsub", "jobs", "email", "idealyst-config", "server-kit"] {
+        let s = by_name(required);
+        assert_eq!(s.category, catalog::SdkCategory::Server, "{required} is server-tier");
+        assert!(
+            s.dep_line.contains("optional = true"),
+            "{required}'s dep line must flag the optional/server-feature gating: {:?}",
+            s.dep_line
+        );
+    }
+    assert!(by_name("pubsub").summary.contains("Topic"), "pubsub summary shows the Topic API");
+    assert!(by_name("cache").summary.contains("TTL"), "cache summary names TTL");
+
     // Lookup helper resolves by crate name.
     assert!(catalog::lookup_sdk("net").is_some());
     assert!(catalog::lookup_sdk("no-such-crate").is_none());
@@ -562,7 +577,7 @@ fn sdks_guide_enumerates_the_data_crates() {
     // The structured slice's prose home: the `sdks` guide must exist and
     // name the data crates so `read_guide("sdks")` is a real fallback.
     let guide = catalog::lookup_guide("sdks").expect("sdks guide registered");
-    for required in &["net", "storage", "credentials", "server"] {
+    for required in &["net", "storage", "credentials", "server", "cache", "pubsub", "jobs"] {
         assert!(
             guide.body.contains(required),
             "sdks guide should mention `{required}`; body len {}",

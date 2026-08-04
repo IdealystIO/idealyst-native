@@ -29,6 +29,8 @@ pub struct Config {
     pub pubsub: Option<PubsubSection>,
     #[serde(default)]
     pub email: Option<EmailSection>,
+    #[serde(default)]
+    pub cache: Option<CacheSection>,
 }
 
 impl Config {
@@ -41,6 +43,7 @@ impl Config {
         overlay_section(&mut self.jobs, other.jobs);
         overlay_section(&mut self.pubsub, other.pubsub);
         overlay_section(&mut self.email, other.email);
+        overlay_section(&mut self.cache, other.cache);
         // `extends` is consumed by the loader before merge; nothing to carry.
     }
 
@@ -166,6 +169,21 @@ pub struct PubsubSection {
     pub url: Option<String>,
 }
 
+/// The `[cache]` section.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CacheSection {
+    /// `memory` | `redis`.
+    pub backend: Option<String>,
+    /// Reference to a `[connections.<name>]` redis connection.
+    pub connection: Option<String>,
+    /// Inline Redis URL when not using a `connection`.
+    pub url: Option<String>,
+    /// Key-prefix namespace (default `cache`) — set when several apps share
+    /// one Redis.
+    pub namespace: Option<String>,
+}
+
 /// The `[email]` section.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -219,6 +237,11 @@ impl Overlay for PubsubSection {
 impl Overlay for EmailSection {
     fn overlay(&mut self, other: Self) {
         overlay_fields!(self, other, provider, connection, from, region, profile, configuration_set);
+    }
+}
+impl Overlay for CacheSection {
+    fn overlay(&mut self, other: Self) {
+        overlay_fields!(self, other, backend, connection, url, namespace);
     }
 }
 

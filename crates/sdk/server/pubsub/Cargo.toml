@@ -36,8 +36,10 @@ license.workspace = true
 default = ["memory"]
 # In-process `tokio::broadcast` backend (single instance).
 memory = ["dep:tokio", "dep:tokio-stream"]
-# Redis Pub/Sub (cross-instance).
-redis = ["dep:redis", "dep:tokio"]
+# Redis Pub/Sub (cross-instance). Pulls `server` for the
+# `RedisBackend::from_installed` shared-client spelling (reads the
+# app-installed `redis::Client`), mirroring the `cache` crate.
+redis = ["dep:redis", "dep:tokio", "dep:server"]
 # Postgres LISTEN/NOTIFY (cross-instance).
 postgres = ["dep:sqlx", "dep:tokio"]
 
@@ -55,6 +57,8 @@ tokio = { version = "1", features = ["sync", "rt", "net"], optional = true }
 tokio-stream = { version = "0.1", features = ["sync"], optional = true }
 
 redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager"], optional = true }
+# For RedisBackend::from_installed (reads the app-installed client).
+server = { workspace = true, features = ["server"], optional = true }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
 
 [dev-dependencies]

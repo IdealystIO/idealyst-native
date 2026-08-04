@@ -16,6 +16,11 @@ license.workspace = true
 # Backends:
 #   - memory   always available (tests, single-instance dev)
 #   - redis    feature `redis` (shared across instances)
+#
+# Boot-time selection mirrors jobs/pubsub: `cache::configure(...)` /
+# `configure_from_env()` (IDEALYST_CACHE_BACKEND/_URL, forwarded by
+# `idealyst dev` from the `[cache]` section) or `idealyst-config`'s
+# `configure_all()` reading the same section from `idealyst.toml`.
 
 [features]
 default = []

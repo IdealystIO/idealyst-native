@@ -29,7 +29,11 @@
 //!
 //! [pubsub]
 //! backend = "redis"
-//! connection = "cache"             # …but pubsub is separate infra
+//! connection = "cache"             # …shares the redis endpoint with…
+//!
+//! [cache]
+//! backend = "redis"
+//! connection = "cache"             # …the KV cache: one endpoint, two tools
 //! ```
 
 mod error;
@@ -39,7 +43,8 @@ mod schema;
 pub use error::ConfigError;
 pub use loader::{load, load_from};
 pub use schema::{
-    AwsConnection, Config, Connection, EmailSection, JobsSection, PubsubSection, UrlConnection,
+    AwsConnection, CacheSection, Config, Connection, EmailSection, JobsSection, PubsubSection,
+    UrlConnection,
 };
 
 /// Build a resolved AWS [`SdkConfig`](aws_config::SdkConfig) from a connection
@@ -86,6 +91,10 @@ pub async fn configure_from(config: &Config) -> Result<(), ConfigError> {
     if let Some(section) = &config.email {
         wire::email(config, section).await?;
     }
+    #[cfg(feature = "cache")]
+    if let Some(section) = &config.cache {
+        wire::cache(config, section)?;
+    }
     // Suppress "unused" when no SDK feature is enabled.
     let _ = config;
     Ok(())
@@ -95,7 +104,7 @@ pub async fn configure_from(config: &Config) -> Result<(), ConfigError> {
 /// install it via the SDK's own `configure`. Each fn is gated on its SDK
 /// feature; a selected backend whose broker feature is off returns a clear
 /// [`ConfigError::FeatureOff`].
-#[cfg(any(feature = "jobs", feature = "pubsub", feature = "email"))]
+#[cfg(any(feature = "jobs", feature = "pubsub", feature = "email", feature = "cache"))]
 mod wire {
     use crate::error::ConfigError;
     use crate::schema::Config;
@@ -233,6 +242,38 @@ mod wire {
                 Err(feature_off("pubsub", "postgres"))
             }
             other => Err(unknown("pubsub", other, "memory|redis|postgres")),
+        }
+    }
+
+    #[cfg(feature = "cache")]
+    pub(super) fn cache(
+        config: &Config,
+        section: &crate::schema::CacheSection,
+    ) -> Result<(), ConfigError> {
+        match section.backend.as_deref().unwrap_or("memory") {
+            "memory" => {
+                cache::configure(cache::MemoryCache::new());
+                Ok(())
+            }
+            "redis" => {
+                #[cfg(feature = "redis")]
+                {
+                    let url = config
+                        .url_for(section.connection.as_deref(), section.url.as_deref())
+                        .map_err(resolve_err("cache"))?;
+                    // Connects lazily on first use, so wiring is sync.
+                    let mut backend = cache::RedisCache::from_url(&url)
+                        .map_err(|e| backend_err("cache")(e.to_string()))?;
+                    if let Some(ns) = &section.namespace {
+                        backend = backend.namespace(ns.clone());
+                    }
+                    cache::configure(backend);
+                    Ok(())
+                }
+                #[cfg(not(feature = "redis"))]
+                Err(feature_off("cache", "redis"))
+            }
+            other => Err(unknown("cache", other, "memory|redis")),
         }
     }
 
@@ -448,10 +489,46 @@ mod tests {
         assert_eq!(aws.region.as_deref(), Some("us-west-2"));
     }
 
+    /// A `[cache]` section parses, resolves its named redis connection, and
+    /// carries the namespace through — the same shape as `[pubsub]`, so cache
+    /// and pubsub can share one endpoint by name.
+    #[test]
+    fn cache_section_parses_and_resolves_connection() {
+        let dir = scratch(
+            "cache",
+            &[(
+                "idealyst.toml",
+                r#"
+                [connections.main]
+                kind = "redis"
+                url = "redis://localhost:6379"
+
+                [cache]
+                backend = "redis"
+                connection = "main"
+                namespace = "myapp"
+
+                [pubsub]
+                backend = "redis"
+                connection = "main"
+                "#,
+            )],
+        );
+        let cfg = load_from(&dir).unwrap();
+        let cache = cfg.cache.as_ref().unwrap();
+        assert_eq!(cache.backend.as_deref(), Some("redis"));
+        assert_eq!(cache.namespace.as_deref(), Some("myapp"));
+        // Cache and pubsub resolve the SAME endpoint through the one profile.
+        let cache_url = cfg.url_for(cache.connection.as_deref(), cache.url.as_deref()).unwrap();
+        let ps = cfg.pubsub.as_ref().unwrap();
+        let ps_url = cfg.url_for(ps.connection.as_deref(), ps.url.as_deref()).unwrap();
+        assert_eq!(cache_url, ps_url);
+    }
+
     /// End-to-end: `configure_from` wires the memory backends of every enabled
     /// SDK. Gated on the SDK features so the default test run stays dep-light;
-    /// run with `--features "email jobs pubsub"`.
-    #[cfg(all(feature = "email", feature = "jobs", feature = "pubsub"))]
+    /// run with `--features "email jobs pubsub cache"`.
+    #[cfg(all(feature = "email", feature = "jobs", feature = "pubsub", feature = "cache"))]
     #[tokio::test]
     async fn configure_from_wires_memory_backends() {
         let dir = scratch(
@@ -468,6 +545,9 @@ mod tests {
                 [email]
                 provider = "memory"
                 from = "no-reply@app.dev"
+
+                [cache]
+                backend = "memory"
                 "#,
             )],
         );
@@ -478,6 +558,7 @@ mod tests {
         assert!(jobs::configured_backend().is_some(), "jobs configured");
         assert!(pubsub::configured_backend().is_some(), "pubsub configured");
         assert!(email::configured_provider().is_some(), "email configured");
+        assert!(cache::configured().is_some(), "cache configured");
         // The email default sender flowed through.
         let provider = email::configured_provider().unwrap();
         assert_eq!(

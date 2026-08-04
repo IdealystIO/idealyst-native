@@ -1,6 +1,6 @@
 # `idealyst-config` — unified SDK configuration (server tier)
 
-Structured configuration for the server-tier SDKs (`jobs`, `pubsub`, `email`),
+Structured configuration for the server-tier SDKs (`jobs`, `pubsub`, `email`, `cache`),
 replacing per-SDK flat `IDEALYST_<SDK>_*` env vars as the **default authoring
 surface**. Built around **named connection profiles**: a credential/endpoint is
 defined once and referenced by name, so two tools can share one account — or
@@ -28,7 +28,11 @@ connection = "aws-main"       # …same account
 
 [pubsub]
 backend = "redis"
-connection = "cache"          # …but pubsub is separate infra
+connection = "cache"          # …pubsub and the KV cache share this…
+
+[cache]
+backend = "redis"
+connection = "cache"          # …one redis endpoint, referenced twice
 ```
 
 ```rust
@@ -47,8 +51,8 @@ doesn't." A named `[connections.<name>]` is defined once and referenced by
 
 Every file deserializes into the same `Config`; the loader merges them:
 
-- **`idealyst.toml`** — the base (`[connections.*]` + `[jobs]`/`[pubsub]`/`[email]`).
-- **`jobs.toml` / `pubsub.toml` / `email.toml`** (aka `mail.toml`) — per-tool
+- **`idealyst.toml`** — the base (`[connections.*]` + `[jobs]`/`[pubsub]`/`[email]`/`[cache]`).
+- **`jobs.toml` / `pubsub.toml` / `email.toml`** (aka `mail.toml`) / **`cache.toml`** — per-tool
   overrides, merged after the base. Each may define its own connections.
 - **`extends = "path"`** (a string or a list) — literal inheritance: the named
   parent file(s) merge first, then this file overlays. So `mail.toml` can
@@ -77,7 +81,7 @@ Wiring is opt-in per SDK, so an app pulls only what it uses.
 
 | Feature      | Effect |
 | ------------ | ------ |
-| `jobs` / `pubsub` / `email` | Wire that SDK from its section (pulls the SDK crate). |
+| `jobs` / `pubsub` / `email` / `cache` | Wire that SDK from its section (pulls the SDK crate). |
 | `redis` / `postgres`        | Forward to the tool crates so a `connection`/`url` can select that broker. |
 | `sqs`                        | Jobs over AWS SQS (implies `aws`). |
 | `ses`                        | Email over AWS SES (implies `aws`). |
@@ -110,12 +114,12 @@ resolution errors). The end-to-end wiring test runs under the SDK features.
 
 ```sh
 cargo test -p idealyst-config
-cargo test -p idealyst-config --features "email jobs pubsub"   # + configure_from wiring
+cargo test -p idealyst-config --features "email jobs pubsub cache"   # + configure_from wiring
 cargo check -p idealyst-config --features "ses sqs"            # AWS paths compile
 ```
 
 | Path | Tests | Verification |
 | ---- | ----- | ------------ |
 | loader / merge / `extends` / resolution | 🧪 unit | ✅ host-verified |
-| `configure_from` (memory backends)      | 🧪 unit (under `email jobs pubsub`) | ✅ host-verified |
+| `configure_from` (memory backends)      | 🧪 unit (under `email jobs pubsub cache`) | ✅ host-verified |
 | `ses` / `sqs` AWS wiring                 | — (compiles under the features) | ⚠️ **compile-checked only** — no live AWS run |

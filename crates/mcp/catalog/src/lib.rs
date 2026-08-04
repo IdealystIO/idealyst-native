@@ -610,6 +610,11 @@ pub enum SdkCategory {
     /// `location`, `share`, `deep-link`, `connectivity`, `haptics`, plus
     /// the gesture handles `pan` / `zoom`.
     Device,
+    /// Server-tier crates that run ONLY in the server binary (never the
+    /// wasm/native client): `cache`, `pubsub`, `jobs`, `email`,
+    /// `idealyst-config`, `server-kit`. Apps depend on them as OPTIONAL
+    /// deps enabled by their `server` feature.
+    Server,
 }
 
 impl SdkCategory {
@@ -619,6 +624,7 @@ impl SdkCategory {
             Self::Media => "media",
             Self::Ui => "ui",
             Self::Device => "device",
+            Self::Server => "server",
         }
     }
 }

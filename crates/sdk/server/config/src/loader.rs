@@ -1,7 +1,8 @@
 //! Loading + merging config files.
 //!
 //! Every file — `idealyst.toml` (the base) and the per-tool `jobs.toml` /
-//! `pubsub.toml` / `email.toml` (aka `mail.toml`) — deserializes into the same
+//! `pubsub.toml` / `email.toml` (aka `mail.toml`) / `cache.toml` —
+//! deserializes into the same
 //! [`Config`]. The loader merges them (base first, then each per-tool file),
 //! resolves `extends` inheritance, and finally overlays environment variables.
 
@@ -15,7 +16,7 @@ const BASE_FILE: &str = "idealyst.toml";
 
 /// Per-tool config files, merged after the base (in this order). `mail.toml`
 /// is an accepted alias for `email.toml`.
-const TOOL_FILES: &[&str] = &["jobs.toml", "pubsub.toml", "email.toml", "mail.toml"];
+const TOOL_FILES: &[&str] = &["jobs.toml", "pubsub.toml", "email.toml", "mail.toml", "cache.toml"];
 
 /// Load and merge configuration from the current working directory.
 pub fn load() -> Result<Config, ConfigError> {
@@ -86,7 +87,7 @@ fn read_with_extends(path: &Path, visiting: &mut HashSet<PathBuf>) -> Result<Con
 /// primary surface. Only the long-standing flat vars are honored; a set var
 /// wins over the file.
 fn apply_env_overrides(config: &mut Config) {
-    use crate::schema::{EmailSection, JobsSection, PubsubSection};
+    use crate::schema::{CacheSection, EmailSection, JobsSection, PubsubSection};
 
     if let Ok(v) = std::env::var("IDEALYST_JOBS_BACKEND") {
         config.jobs.get_or_insert_with(JobsSection::default).backend = Some(v);
@@ -99,6 +100,12 @@ fn apply_env_overrides(config: &mut Config) {
     }
     if let Ok(v) = std::env::var("IDEALYST_PUBSUB_URL") {
         config.pubsub.get_or_insert_with(PubsubSection::default).url = Some(v);
+    }
+    if let Ok(v) = std::env::var("IDEALYST_CACHE_BACKEND") {
+        config.cache.get_or_insert_with(CacheSection::default).backend = Some(v);
+    }
+    if let Ok(v) = std::env::var("IDEALYST_CACHE_URL") {
+        config.cache.get_or_insert_with(CacheSection::default).url = Some(v);
     }
     if let Ok(v) = std::env::var("IDEALYST_EMAIL_PROVIDER") {
         config.email.get_or_insert_with(EmailSection::default).provider = Some(v);

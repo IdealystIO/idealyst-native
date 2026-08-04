@@ -27,17 +27,38 @@ macro_rules! sdk {
     // `describe_sdk` points an agent at the guide that actually documents
     // the crate's API shape.
     ($name:literal, $cat:expr, $kind:expr, $summary:literal, guide = $guide:literal) => {
+        sdk!($name, $cat, $kind, $summary, guide = $guide,
+             dep = concat!($name, " = { workspace = true }"));
+    };
+    // Entries needing a non-default dependency line — the server-tier crates
+    // are OPTIONAL deps gated behind the app's `server` feature, and the
+    // default `{ workspace = true }` line would drag tokio into the wasm
+    // client build.
+    ($name:literal, $cat:expr, $kind:expr, $summary:literal, guide = $guide:literal, dep = $dep:expr) => {
         inventory::submit! {
             SdkEntry {
                 name: $name,
                 summary: $summary,
-                dep_line: concat!($name, " = { workspace = true }"),
+                dep_line: $dep,
                 category: $cat,
                 kind: $kind,
                 guide: $guide,
                 _seal: (),
             }
         }
+    };
+}
+
+/// The dependency line for a server-tier crate: optional, enabled from the
+/// app's `server` feature so the wasm/native client never compiles it.
+macro_rules! server_dep {
+    ($name:literal) => {
+        concat!(
+            $name,
+            " = { workspace = true, optional = true }  # + `server` feature: server = [\"dep:",
+            $name,
+            "\", ...]"
+        )
     };
 }
 
@@ -93,6 +114,63 @@ sdk!(
     SdkKind::Api,
     "Localization / translation / multi-language — the internationalization SDK (locale, language switcher, i18n). Declare translations inline with the `i18n!` macro inside a `mod t`: `i18n::i18n! { locales: { En = \"en\" (default), Es = \"es\" } greeting(name) { En: \"Hello, {name}\", Es: \"Hola, {name}\" } }` — a missing translation or bad `{placeholder}` is a COMPILE error. Each message becomes a fn returning `Reactive<String>`, so pass it straight to any reactive-text prop: `Typography(content = t::greeting(\"Ada\"))` / `text(t::tagline())`. Switch language live with the generated typed `t::set_locale(t::Locale::Es)` (or untyped `i18n::set_locale_code(\"es\")`) — every visible translated string re-renders in place, no manual refresh, every backend. Bundled locales compile into the binary; `(lazy)` locales fetch a JSON pack on demand (feature `lazy-fetch`). See the [[i18n]] guide.",
     guide = "i18n"
+);
+
+// ---------------------------------------------------------------------
+// Server tier — crates that run ONLY in the server binary. Apps depend
+// on them as OPTIONAL deps enabled by their `server` feature (the same
+// feature `#[server]` compiles under), so the wasm client never pulls
+// tokio/redis/sqlx. The `sdks` guide's "Server tier" section documents
+// the shared-connection + configuration story.
+// ---------------------------------------------------------------------
+
+sdk!(
+    "cache",
+    SdkCategory::Server,
+    SdkKind::Api,
+    "Server-tier KV cache with TTL — centralized memory storage shared across server instances. Object-safe `Cache` trait (`get`/`set`(+TTL)/`delete`, bytes) + blanket `CacheExt::get_json`/`set_json`; backends: `MemoryCache` (always), `RedisCache` (feature `redis`). Configure at boot via `cache::configure(...)` / `configure_from_env()` (`IDEALYST_CACHE_BACKEND`=memory|redis, `IDEALYST_CACHE_URL`) or the `[cache]` section in `idealyst.toml` (idealyst-config), then read anywhere server-side via `cache::configured()` — or install as `#[ctx]` state (`server::install_state(Arc<dyn Cache>)`). `RedisCache::from_installed()` reuses the app-installed `redis::Client`, so ONE client serves cache + sessions + rate-limit + pubsub. Deliberately excludes atomic read-modify-write — rate limits/counters belong in server-kit's `LimitStore`, not get/set races.",
+    guide = "sdks",
+    dep = server_dep!("cache")
+);
+sdk!(
+    "pubsub",
+    SdkCategory::Server,
+    SdkKind::Api,
+    "Server-tier publish/subscribe — cross-instance broadcast fan-out (at-most-once, ephemeral). Typed topics: `const ROOM: pubsub::Topic<Msg> = Topic::new(\"room\")`, then `ROOM.publish(&msg).await` from any instance and `ROOM.subscribe() -> impl Stream<Item = Msg>` dropped straight into a `#[subscription]` body — the decentralized WebSocket-notification bridge (client on instance A receives events produced on B). Backends: memory (`tokio::broadcast`, default), redis (native Pub/Sub), postgres (LISTEN/NOTIFY). Configure via `pubsub::configure`/`configure_from_env` (`IDEALYST_PUBSUB_*`) or `[pubsub]` in `idealyst.toml`; `RedisBackend::from_installed()` reuses the app-installed `redis::Client`. Sibling of `jobs`: jobs delivers each message to ONE consumer, pubsub to EVERY subscriber.",
+    guide = "sdks",
+    dep = server_dep!("pubsub")
+);
+sdk!(
+    "jobs",
+    SdkCategory::Server,
+    SdkKind::Api,
+    "Server-tier background job queue — durable one-consumer work delivery with retries, backoff, and dead-lettering. `#[job]` mirrors `#[server]`: it generates `name::enqueue(args)` (builder: `.delay`/`.queue`/`.max_attempts`/`.backoff`, awaitable) everywhere, and the handler body only under your `server` feature. Handlers run in a worker: `jobs::worker().run()` (dedicated bin / `idealyst worker`) or `.spawn()` (in-process). Backends: memory (default), redis, postgres, sqs. Configure via `jobs::configure`/`configure_from_env` (`IDEALYST_JOBS_*`) or `[jobs]` in `idealyst.toml`. Sibling of `pubsub`: jobs = one consumer per message, pubsub = fan-out.",
+    guide = "sdks",
+    dep = server_dep!("jobs")
+);
+sdk!(
+    "email",
+    SdkCategory::Server,
+    SdkKind::Api,
+    "Server-tier transactional email. Fluent builder — `Email::to(..).subject(..).text(..)` — or render an idealyst `#[component]` to email-safe HTML with `.template(|| Welcome(props))` (styles inlined, tokens resolved, no wasm). `email::configure(provider)` at boot, `email::send(...).await` anywhere server-side. Providers: `MemoryProvider` (in-process capture for dev/tests, default), `SesProvider` (feature `ses`). `[email]` section in `idealyst.toml` wires it via idealyst-config.",
+    guide = "sdks",
+    dep = server_dep!("email")
+);
+sdk!(
+    "idealyst-config",
+    SdkCategory::Server,
+    SdkKind::Api,
+    "Unified boot configuration for the server-tier SDKs (jobs, pubsub, email, cache). Named connection profiles — `[connections.<name>]` (kind = aws|redis|postgres) defined ONCE in `idealyst.toml`, referenced per tool (`connection = \"main\"`) so two SDKs share one AWS account or redis endpoint by name (flat env can't express that). Files compose: base + per-tool `jobs.toml`/`pubsub.toml`/`email.toml`/`cache.toml` + `extends`, env vars as the override layer. ONE call at startup — `idealyst_config::configure_all().await?` — wires every SDK whose cargo feature is enabled (`jobs`/`pubsub`/`email`/`cache`, backends via `redis`/`postgres`/`sqs`/`ses`).",
+    guide = "sdks",
+    dep = server_dep!("idealyst-config")
+);
+sdk!(
+    "server-kit",
+    SdkCategory::Server,
+    SdkKind::Api,
+    "The conventional policy layer over the `server` crate (which itself holds no policy): ordered middleware chain (`install_middleware`/`from_fn`), `Auth<T>` principal extractor (real 401 on missing), `csrf_guard` origin allow-list, path-prefix `require` guards, `Sessions` (ticket store built ON the `cache` crate's `Cache` trait), and rate limiting (`rate_limit` + `LimitStore`: `MemoryLimitStore`/`RedisLimitStore` — the atomic counters a get/set cache can't express). Occupies `server`'s single `DispatchHook` seam. See the [[server-functions]] guide.",
+    guide = "server-functions",
+    dep = server_dep!("server-kit")
 );
 
 // ---------------------------------------------------------------------

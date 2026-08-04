@@ -1864,16 +1864,28 @@ fn spawn_backend(
     cmd.spawn().context("spawn server (`cargo run`)")
 }
 
-/// Forward the local `[pubsub]` backend from `dev.toml` as `IDEALYST_PUBSUB_*`
-/// so a server/worker `main` calling `pubsub::configure_from_env()` connects to
-/// the same broker across instances.
+/// Forward the local `[pubsub]` + `[cache]` backends from `dev.toml` /
+/// `idealyst.toml` as `IDEALYST_PUBSUB_*` / `IDEALYST_CACHE_*` so a
+/// server/worker `main` calling `pubsub::configure_from_env()` /
+/// `cache::configure_from_env()` connects to the same shared backend across
+/// instances.
 fn apply_pubsub_env(cmd: &mut std::process::Command, dir: &Path) {
-    if let Ok(Some(ps)) = crate::dev_config::DevConfig::load(dir).map(|c| c.pubsub) {
-        if let Some(b) = &ps.backend {
-            cmd.env("IDEALYST_PUBSUB_BACKEND", b);
+    if let Ok(cfg) = crate::dev_config::DevConfig::load(dir) {
+        if let Some(ps) = &cfg.pubsub {
+            if let Some(b) = &ps.backend {
+                cmd.env("IDEALYST_PUBSUB_BACKEND", b);
+            }
+            if let Some(u) = &ps.url {
+                cmd.env("IDEALYST_PUBSUB_URL", u);
+            }
         }
-        if let Some(u) = &ps.url {
-            cmd.env("IDEALYST_PUBSUB_URL", u);
+        if let Some(cache) = &cfg.cache {
+            if let Some(b) = &cache.backend {
+                cmd.env("IDEALYST_CACHE_BACKEND", b);
+            }
+            if let Some(u) = &cache.url {
+                cmd.env("IDEALYST_CACHE_URL", u);
+            }
         }
     }
 }
