@@ -15,6 +15,7 @@
 
 use crate::compose::OverlayCompositor;
 use crate::compose_transform::TransformCompositor;
+use crate::anim::AnimTextures;
 use crate::encode::encode_scene;
 use crate::native_capture::{LayerCompositor, NativeCapture};
 use crate::plan::{plan_scene, CachedRef, ScenePlan};
@@ -246,6 +247,10 @@ struct RenderState {
     /// their own renderer means their atlas is never shrunk, so the cache stays
     /// valid. Lazily built on the first image bake (it compiles vello's shaders).
     image_renderer: Option<Renderer>,
+    /// Animated-image (video frame pump) override textures — one per animated
+    /// id, written per changed frame and read by vello via `override_image`.
+    /// See `anim.rs` / the animated branch of `encode::image_data_cached`.
+    anim: AnimTextures,
     scene: VelloScene,
     /// Intermediate Rgba8Unorm storage texture vello renders into (the
     /// surface itself can't be a compute storage target). Blitted to the
@@ -644,6 +649,7 @@ impl RenderState {
             config,
             renderer,
             image_renderer,
+            anim: AnimTextures::new(),
             scene: VelloScene::new(),
             target,
             target_view,
@@ -749,6 +755,14 @@ impl RenderState {
             if has_image && self.image_renderer.is_none() {
                 self.image_renderer = new_vello_renderer(&self.device);
             }
+            // Flush any animated-image frames this bake's encode staged into
+            // their override textures before rendering (see `anim.rs`).
+            self.anim.apply(
+                &self.device,
+                &self.queue,
+                &mut self.renderer,
+                self.image_renderer.as_mut(),
+            );
             let view = &self.cached_layers.get(&layer.id).unwrap().1;
             let renderer = match (has_image, self.image_renderer.as_mut()) {
                 (true, Some(r)) => r,
@@ -868,6 +882,14 @@ impl RenderState {
                 self.scene.reset();
                 encode_scene(ops, &mut self.scene, Affine::scale(self.scale));
             }
+            // Flush any animated-image frames this encode staged into their
+            // override textures before rendering (see `anim.rs`).
+            self.anim.apply(
+                &self.device,
+                &self.queue,
+                &mut self.renderer,
+                self.image_renderer.as_mut(),
+            );
             let renderer = match (has_image, self.image_renderer.as_mut()) {
                 (true, Some(r)) => r,
                 _ => &mut self.renderer,

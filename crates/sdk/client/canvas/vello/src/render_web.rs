@@ -36,6 +36,7 @@
 
 use crate::compose::OverlayCompositor;
 use crate::compose_transform::TransformCompositor;
+use crate::anim::AnimTextures;
 use crate::encode::encode_scene;
 use crate::plan::{plan_scene, CachedRef, ScenePlan};
 use crate::shape_pass::ShapePass;
@@ -430,6 +431,10 @@ struct GpuState {
     /// back WITHOUT re-uploading the cached image → the image renders blank.
     /// Image layers on their own renderer keep their atlas intact. Lazily built.
     image_renderer: Option<Renderer>,
+    /// Animated-image (video frame pump) override textures — one per animated
+    /// id, written per changed frame and read by vello via `override_image`.
+    /// See `anim.rs` / the animated branch of `encode::image_data_cached`.
+    anim: AnimTextures,
     scene: VelloScene,
     /// Intermediate Rgba8Unorm storage texture vello renders into (the surface
     /// can't be a compute storage target); blitted to the surface each frame.
@@ -615,6 +620,7 @@ impl GpuState {
             config,
             renderer,
             image_renderer,
+            anim: AnimTextures::new(),
             scene: VelloScene::new(),
             target,
             target_view,
@@ -699,6 +705,14 @@ impl GpuState {
                 )
                 .ok();
             }
+            // Flush any animated-image frames this bake's encode staged into
+            // their override textures before rendering (see `anim.rs`).
+            self.anim.apply(
+                &self.device,
+                &self.queue,
+                &mut self.renderer,
+                self.image_renderer.as_mut(),
+            );
             let view = &self.cached_layers.get(&layer.id).unwrap().1;
             let renderer = match (has_image, self.image_renderer.as_mut()) {
                 (true, Some(r)) => r,
@@ -809,6 +823,14 @@ impl GpuState {
                 )
                 .ok();
             }
+            // Flush any animated-image frames this encode staged into their
+            // override textures before rendering (see `anim.rs`).
+            self.anim.apply(
+                &self.device,
+                &self.queue,
+                &mut self.renderer,
+                self.image_renderer.as_mut(),
+            );
             let renderer = match (has_image, self.image_renderer.as_mut()) {
                 (true, Some(r)) => r,
                 _ => &mut self.renderer,

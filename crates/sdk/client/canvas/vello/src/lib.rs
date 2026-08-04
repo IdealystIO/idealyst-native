@@ -24,6 +24,10 @@
 // async — pure op-list walk). Identical output across targets (CLAUDE.md §7).
 mod encode;
 
+// Animated-image override textures (the renderer half of encode's stable-handle
+// scheme for `generation > 0` sources — the video frame pump).
+mod anim;
+
 // Native renderer: blocking wgpu init. macOS + iOS (objc2 0.6 Metal coexists
 // with the framework's 0.2 — see Cargo.toml; iOS sim/devices use host Metal,
 // which has f16/compute), Android (Vulkan), and desktop Linux/Windows.
