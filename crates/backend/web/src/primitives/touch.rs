@@ -144,7 +144,15 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
             .push(closure.into_js_value().unchecked_into());
     }
 
-    // pointermove — Moved (only when this pointer is in `active`).
+    // pointermove — Moved for pointers in `active`; `Hovered` for unpressed
+    // mouse/pen motion (touch never hovers — an inactive touch move is stray).
+    //
+    // Hover has no pointerdown to sample the element origin at, and reading
+    // `getBoundingClientRect` per move is the layout-flush cost the origin
+    // cache above exists to avoid — so hover keeps its own origin cache,
+    // refreshed at most every 200ms (a presence cursor doesn't need per-pixel
+    // rect freshness across scrolls).
+    let hover_origin: Rc<RefCell<Option<(f64, (f64, f64))>>> = Rc::new(RefCell::new(None));
     {
         let handler = handler.clone();
         let active = active.clone();
@@ -154,6 +162,32 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
         let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
             let pid = ev.pointer_id();
             if !active.borrow().contains(&pid) {
+                let ptype = ev.pointer_type();
+                if ptype != "mouse" && ptype != "pen" {
+                    return;
+                }
+                let now = ev.time_stamp();
+                let origin = {
+                    let mut cache = hover_origin.borrow_mut();
+                    match *cache {
+                        Some((ts, o)) if now - ts < 200.0 => o,
+                        _ => {
+                            let o = element_origin(&ev);
+                            *cache = Some((now, o));
+                            o
+                        }
+                    }
+                };
+                let local = local_from(&ev, origin);
+                let te = TouchEvent {
+                    id: TouchId(pid as u64),
+                    phase: TouchPhase::Hovered,
+                    position: TouchPoint::new(local.0, local.1),
+                    window_position: TouchPoint::new(ev.client_x() as f32, ev.client_y() as f32),
+                    timestamp_ns: timestamp_ns(&ev),
+                    force: None,
+                };
+                let _ = (handler)(&te);
                 return;
             }
             set_pointer_modifiers(PointerModifiers {

@@ -7,6 +7,19 @@ each entry links to its migration guide.
 
 ### Added
 
+- **`TouchPhase::Hovered`** — unpressed pointer motion (mouse/trackpad
+  hover) now flows through `on_touch`: the web backend forwards
+  unpressed mouse/pen `pointermove`s (with a throttled element-origin
+  cache, so the drag hot path's no-layout-read rule still holds), and
+  macOS opts touch-handler views into `NSTrackingMouseMoved` and
+  forwards `mouseMoved:`. Touch devices never produce it. Recognizers
+  (tap/pan/swipe/long-press/pinch/dnd) ignore it by construction — a
+  hover can never advance or reset gesture state. Exists for
+  presence-style consumers (e.g. broadcasting a live cursor while the
+  user merely points at a canvas).
+
+### Added
+
 - **Wall clock (`runtime_core::time`)** — calendar-time counterpart to
   the monotonic `TimeSource`: `WallClockSource { epoch_millis,
   local_offset_minutes }`, installed per backend at mount. Native

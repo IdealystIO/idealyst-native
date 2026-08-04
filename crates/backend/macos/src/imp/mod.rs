@@ -1219,6 +1219,8 @@ fn make_tap_handler(on_click: Rc<dyn Fn()>) -> runtime_shared::TouchHandler {
     let start = Rc::new(Cell::new((0.0f32, 0.0f32)));
     let armed = Rc::new(Cell::new(false));
     Rc::new(move |ev: &TouchEvent| match ev.phase {
+        // Hover isn't part of a tap.
+        TouchPhase::Hovered => TouchResponse::IGNORED,
         TouchPhase::Began => {
             start.set((ev.window_position.x, ev.window_position.y));
             armed.set(true);

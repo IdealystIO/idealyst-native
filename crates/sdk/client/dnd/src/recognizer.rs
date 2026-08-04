@@ -465,6 +465,8 @@ impl Recognizer for DragRecognizer {
         let activation = self.activation;
         let cur = *self.state.borrow();
         let (state, response): (GestureState, TouchResponse) = match (ev.phase, cur) {
+            // Hover is not part of any gesture — never advances or resets state.
+            (TouchPhase::Hovered, _) => (self.state(), TouchResponse::IGNORED),
             // ---- Began -------------------------------------------------
             (TouchPhase::Began, State::Idle) => {
                 *self.state.borrow_mut() = State::Tracking {

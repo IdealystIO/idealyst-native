@@ -107,6 +107,16 @@ pub enum TouchPhase {
     Moved,
     Ended,
     Cancelled,
+    /// Pointer motion with **no button down** — mouse/trackpad hover. Only
+    /// pointing devices produce it (touch never hovers): the web backend
+    /// forwards unpressed `pointermove`s, macOS forwards `mouseMoved:` via its
+    /// tracking area; iOS/Android never deliver it. It is NOT part of any
+    /// gesture: recognizers ignore it entirely (a hover must never advance,
+    /// reject, or cancel tap/pan/drag state), and handlers that only care
+    /// about presses can treat it like a no-op. Exists for presence-style
+    /// consumers — e.g. broadcasting a live cursor position while the user
+    /// merely points at a canvas.
+    Hovered,
 }
 
 /// One delivery of touch state to a subscribed handler. Multi-touch is

@@ -143,6 +143,8 @@ impl Recognizer for Tap {
         use GestureState as G;
         let config = self.config;
         let (state, response): (GestureState, TouchResponse) = match (ev.phase, self.state) {
+            // Hover is not part of any gesture — never advances or resets state.
+            (TouchPhase::Hovered, _) => (self.state(), TouchResponse::IGNORED),
             // New touch begins while idle: start tracking.
             (TouchPhase::Began, TapState::Idle) => {
                 self.state = TapState::Tracking {
@@ -389,6 +391,8 @@ impl Recognizer for Pan {
         use GestureState as G;
         let config = self.config;
         let (state, response): (GestureState, TouchResponse) = match (ev.phase, self.state) {
+            // Hover is not part of any gesture — never advances or resets state.
+            (TouchPhase::Hovered, _) => (self.state(), TouchResponse::IGNORED),
             (TouchPhase::Began, PanState::Idle) => {
                 self.state = PanState::Tracking {
                     id: ev.id,
@@ -661,6 +665,8 @@ impl Recognizer for LongPress {
         let ev_id = ev.id;
         let config = self.config;
         let response = match ev.phase {
+            // Hover is not part of any gesture.
+            TouchPhase::Hovered => TouchResponse::IGNORED,
             TouchPhase::Began => {
                 // Single-finger: ignore extras while we're armed.
                 if !matches!(*self.state.borrow(), LongPressState::Idle) {
@@ -959,6 +965,8 @@ impl Recognizer for Pinch {
         let config = self.config;
         let cur = self.state;
         let (state, response): (GestureState, TouchResponse) = match ev.phase {
+            // Hover is not part of any gesture.
+            TouchPhase::Hovered => (self.state(), TouchResponse::IGNORED),
             TouchPhase::Began => match cur {
                 PinchState::Idle => {
                     self.state = PinchState::One {
@@ -1325,6 +1333,8 @@ impl Recognizer for Swipe {
     fn update(&mut self, ev: &TouchEvent, ctx: &RecognizerCtx) -> RecognizerUpdate {
         use GestureState as G;
         let (state, response): (GestureState, TouchResponse) = match (ev.phase, self.state) {
+            // Hover is not part of any gesture — never advances or resets state.
+            (TouchPhase::Hovered, _) => (self.state(), TouchResponse::IGNORED),
             (TouchPhase::Began, SwipeState::Idle) => {
                 self.state = SwipeState::Tracking {
                     id: ev.id,
@@ -1551,6 +1561,8 @@ impl Recognizer for Rotate {
         let config = self.config;
         let cur = self.state;
         let (state, response): (GestureState, TouchResponse) = match ev.phase {
+            // Hover is not part of any gesture.
+            TouchPhase::Hovered => (self.state(), TouchResponse::IGNORED),
             TouchPhase::Began => match cur {
                 RotateState::Idle => {
                     self.state = RotateState::One {

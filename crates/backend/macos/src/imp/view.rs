@@ -310,6 +310,16 @@ declare_class!(
             }
         }
 
+        // Unpressed motion inside the tracking area (opted in per-view via
+        // `NSTrackingMouseMoved` above) → `TouchPhase::Hovered`, the presence
+        // channel (live cursor broadcast). Never part of a gesture.
+        #[method(mouseMoved:)]
+        fn mouse_moved(&self, event: &NSEvent) {
+            if !self.dispatch_mouse(event, TouchPhase::Hovered) {
+                let _: () = unsafe { msg_send![super(self), mouseMoved: event] };
+            }
+        }
+
         #[method(mouseUp:)]
         fn mouse_up(&self, event: &NSEvent) {
             self.flip_state(StateBits::PRESSED, false);
@@ -445,11 +455,15 @@ declare_class!(
             if crate::imp::dev_no_hover_tracking() {
                 return;
             }
-            // Track hover when the view needs it for EITHER styling
-            // (`state_setter`) or an `on_hover` handler. Skip the area
-            // entirely for the many views that need neither.
+            // Track hover when the view needs it for styling
+            // (`state_setter`), an `on_hover` handler, or an `on_touch`
+            // handler (which receives unpressed motion as
+            // `TouchPhase::Hovered`). Skip the area entirely for the many
+            // views that need none of them.
+            let wants_hover_moves = self.ivars().handler.borrow().is_some();
             if self.ivars().state_setter.borrow().is_none()
                 && self.ivars().hover_handler.borrow().is_none()
+                && !wants_hover_moves
             {
                 return;
             }
@@ -458,9 +472,14 @@ declare_class!(
             // across resizes/scrolls); `ActiveInActiveApp` tracks while our
             // app is frontmost; `MouseEnteredAndExited` delivers the two
             // methods above. Owner is `self`, so they route here.
-            let opts = NSTrackingAreaOptions::NSTrackingMouseEnteredAndExited
+            // `MouseMoved` (only for views with a touch handler — it's the
+            // chatty one) delivers `mouseMoved:` → `TouchPhase::Hovered`.
+            let mut opts = NSTrackingAreaOptions::NSTrackingMouseEnteredAndExited
                 | NSTrackingAreaOptions::NSTrackingActiveInActiveApp
                 | NSTrackingAreaOptions::NSTrackingInVisibleRect;
+            if wants_hover_moves {
+                opts |= NSTrackingAreaOptions::NSTrackingMouseMoved;
+            }
             let mtm = MainThreadMarker::from(self);
             let area: Retained<NSTrackingArea> = unsafe {
                 msg_send_id![
