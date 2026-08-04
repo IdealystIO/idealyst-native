@@ -282,6 +282,15 @@ fn draw_layers(
     }
 }
 
+/// Hard ceiling for one backing-store dimension. A canvas whose CSS box is not
+/// size-constrained tracks its own width/height ATTRIBUTES — then the
+/// `box × dpr` sync below becomes a doubling feedback loop through the
+/// `ResizeObserver` (box→attr→bigger box→…) that grows the canvas to the
+/// browser maximum within milliseconds and kills the page (multi-terabyte
+/// allocation; observed as a silent hang-then-crash). No real display needs
+/// more than this; clamping breaks the loop into a bounded, drawable state.
+const MAX_BACKING_DIM: f64 = 16384.0;
+
 /// Resize the backing store and replay `scene` into `ctx`.
 fn render_scene(canvas: &HtmlCanvasElement, ctx: &CanvasRenderingContext2d, scene: &Scene) {
     let dpr = web_sys::window().map(|w| w.device_pixel_ratio()).unwrap_or(1.0);
@@ -292,8 +301,8 @@ fn render_scene(canvas: &HtmlCanvasElement, ctx: &CanvasRenderingContext2d, scen
     if css_w <= 0.0 || css_h <= 0.0 {
         return;
     }
-    let bw = (css_w * dpr).round().max(1.0) as u32;
-    let bh = (css_h * dpr).round().max(1.0) as u32;
+    let bw = (css_w * dpr).round().clamp(1.0, MAX_BACKING_DIM) as u32;
+    let bh = (css_h * dpr).round().clamp(1.0, MAX_BACKING_DIM) as u32;
     // Setting width/height resets the context; only do it on a real change.
     if canvas.width() != bw {
         canvas.set_width(bw);
