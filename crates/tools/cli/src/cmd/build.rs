@@ -186,9 +186,10 @@ pub struct Args {
     /// engine. The full size win additionally needs the app to disable
     /// the `style-dynamic` feature on `backend-web` so the engine drops
     /// out of the bundle — without that edit the classes premint but the
-    /// engine still ships. Not yet combinable with `--ssg`/`--ssr` (the
-    /// server-rendered HTML would carry live-minted classes; the build
-    /// refuses the pair).
+    /// engine still ships. Composes with `--ssg`/`--ssr`: the server
+    /// binary is built with the same premint cfgs, stamps the same
+    /// `iy-*` classes the hydrating client stamps, links `premint.css`
+    /// from every page, and arms the same minted-class guard.
     #[arg(long)]
     pub premint: bool,
 
@@ -665,6 +666,12 @@ fn build_ssr_binary(dir: &std::path::Path, args: &Args, web_built: bool) -> Resu
             release: args.release,
             source,
             user_features: Vec::new(),
+            // The server must share the wasm bundle's premint posture:
+            // both sides stamp classes during hydration, and only
+            // matching cfgs make them stamp the SAME ones.
+            premint: args.premint || args.premint_only || args.premint_report,
+            premint_only: args.premint_only,
+            premint_report: args.premint_report,
         },
     )?;
     eprintln!(
@@ -704,6 +711,12 @@ fn build_ssg_export(
             release: args.release,
             source,
             user_features: Vec::new(),
+            // The server must share the wasm bundle's premint posture:
+            // both sides stamp classes during hydration, and only
+            // matching cfgs make them stamp the SAME ones.
+            premint: args.premint || args.premint_only || args.premint_report,
+            premint_only: args.premint_only,
+            premint_report: args.premint_report,
         },
     )?;
     let out_dir = args

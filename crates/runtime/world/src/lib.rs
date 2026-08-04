@@ -572,6 +572,22 @@ pub fn in_effect() -> bool {
     TLS.try_with(|t| !t.borrow().effect_stack.is_empty()).unwrap_or(false)
 }
 
+/// True while an ownership collector ([`collect_owned`]) is active on
+/// this thread — i.e. a signal/effect created right now would be owned
+/// by a component subtree's [`Owned`], not the world root.
+///
+/// The scope-anchored scheduling helpers consult this BEFORE
+/// [`in_effect`]: a timer registered while a subtree is being BUILT —
+/// even when that build happens inside a running effect, e.g. a
+/// navigator's swap effect realizing a screen whose lazy fallback
+/// schedules timers — must die with the SUBTREE. Anchoring it to the
+/// running effect would let it outlive the subtree until the effect's
+/// next re-run, firing into the subtree's already-freed signals (the
+/// lazy-route-loader stale-signal-handle panic).
+pub fn in_collector() -> bool {
+    TLS.try_with(|t| !t.borrow().collectors.is_empty()).unwrap_or(false)
+}
+
 // ============================================================================
 // Arena — the per-world slot storage. Signals and effects live in parallel
 // generational Vecs; the staged queue holds slot indices awaiting commit.

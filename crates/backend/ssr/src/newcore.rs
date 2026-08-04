@@ -176,6 +176,14 @@ where
     // Queue-only scheduler (shared with the old render path): microtasks
     // queue and drain below; frames/timers drop (module docs).
     scheduler::ensure_installed();
+    // Premint builds: arm this thread's minted-class guard from the
+    // process-global set the wrapper installed at startup, so the server
+    // makes the SAME premint-vs-engine-fallback decision per sheet as
+    // the hydrating client (which scans the loaded CSS at boot).
+    // Per-render on purpose: serve mode renders each request on a FRESH
+    // thread and the guard is thread-local; export mode's single thread
+    // just re-installs idempotently. No-op on non-premint servers.
+    crate::arm_minted_class_guard_if_installed();
     // Seed the same slots the old render seeds. The vocabulary navigator
     // handlers peek the SAME `set_initial_path` slot; the viewport seed
     // keeps breakpoint folding + sheet closures at the identical
@@ -315,9 +323,15 @@ where
 {
     let bundle = config.bundle_module.clone();
     let extra_head = config.extra_head.clone();
+    let premint_css = config.premint_css.clone();
     crate::serve::serve_loop(addr, config, move |path| {
         let page = render_path_with(path, |r| register(r), || app());
-        crate::render_document(&page, bundle.as_deref(), extra_head.as_deref())
+        crate::render_document(
+            &page,
+            bundle.as_deref(),
+            extra_head.as_deref(),
+            premint_css.as_ref(),
+        )
     })
 }
 
@@ -907,6 +921,28 @@ impl caps::DocumentOps for SsrBackend {
 // ===========================================================================
 
 impl caps::StyleOps for SsrBackend {
+    fn apply_inline_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
+        // The preminted inline layer (`with_inline` per-instance values —
+        // safe-area insets, a per-instance typeface). Delta form ONLY:
+        // the full `rules_to_css` lowering would re-assert framework
+        // defaults (the flex-direction pin) and stomp the preminted
+        // classes this layer rides alongside — same contract as
+        // backend-web's `apply_inline_style_impl`. SSR renders each
+        // request once, so append semantics suffice; later declarations
+        // win within one `style` attribute anyway.
+        let css = css::rules_to_css_delta(style);
+        for declaration in css.split(';') {
+            let declaration = declaration.trim();
+            if declaration.is_empty() {
+                continue;
+            }
+            let Some((prop, value)) = declaration.split_once(':') else {
+                continue;
+            };
+            add_inline_style(node, prop.trim(), value.trim());
+        }
+    }
+
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         // Match the web backend's structure: each resolved style becomes a
         // content-keyed class (`ui-<hash>`) plus one shared rule in the
@@ -1127,6 +1163,110 @@ mod tests {
         assert!(
             !Host::supports_splice(&b),
             "SSR Host must be anchored (hydration adopts the anchors)"
+        );
+    }
+
+    /// Premint × SSR contract, attach half: a `StyleProp::Preminted`
+    /// stamps every whitespace-separated class segment onto the node
+    /// (additively — the hydrating client's `classList.add` then finds
+    /// them already present and no-ops), and NO `iy-*` rule leaks into
+    /// `head_css` — preminted attach bypasses `apply_style`, which is
+    /// what lets the served page link `premint.css` without duplicating
+    /// its rules inline.
+    #[test]
+    fn ssr_preminted_attach_stamps_class_segments_and_keeps_head_css_clean() {
+        let backend = Rc::new(RefCell::new(SsrBackend::new()));
+        let node = <SsrBackend as caps::ViewOps>::create_view(
+            &mut *backend.borrow_mut(),
+            &runtime_shared::AccessibilityProps::default(),
+        );
+        // Inside a World: the Preminted arm reaches the theme driver
+        // (`ensure_theme_driver` creates reactive state) — same ambient
+        // the real render paths provide.
+        // Inline layer included: the first premint×SSG export of the
+        // website panicked at `caps::StyleOps::apply_inline_style`'s
+        // unreachable!() default — SSR advertised
+        // `supports_preminted_styles()` without implementing the inline
+        // half. (`with_inline` is common: safe-area insets, Card tint.)
+        let inline = Rc::new(runtime_shared::StyleRules {
+            opacity: Some(runtime_shared::Tokenized::Literal(0.5)),
+            ..Default::default()
+        });
+        let world = runtime_world::World::new();
+        let _restyle = world.enter(|| {
+            runtime_vocabulary::style_attach::attach_style(
+                &backend,
+                &node,
+                runtime_vocabulary::style_attach::StyleProp::Preminted {
+                    class: std::borrow::Cow::Borrowed("iy-aaa111 iy-aaa111-tone-danger"),
+                    overrides: None,
+                    inline: Some(inline),
+                },
+            )
+        });
+        let n = node.borrow();
+        let class_attr = n
+            .attrs
+            .iter()
+            .find(|(k, _)| *k == "class")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
+        for cls in ["iy-aaa111", "iy-aaa111-tone-danger"] {
+            assert!(
+                class_attr.split(' ').any(|c| c == cls),
+                "segment {cls:?} stamped; got class attr {class_attr:?}"
+            );
+        }
+        let inline_style = n.style.clone().unwrap_or_default();
+        assert!(
+            inline_style.contains("opacity:0.5"),
+            "regression: the inline layer must land as an inline style \
+             alongside the stamped classes; got {inline_style:?}"
+        );
+        drop(n);
+        let head = backend.borrow().head_css();
+        assert!(
+            !head.contains("iy-"),
+            "preminted rules must NOT be duplicated into the inline head CSS \
+             (they live in the linked premint.css); got:\n{head}"
+        );
+    }
+
+    /// Premint × SSR contract, guard half: `install_premint_classes` at
+    /// process level arms the THREAD-local minted-class guard inside a
+    /// render on a fresh thread — the serve-mode shape (one thread per
+    /// request). An unknown class must veto (`minted_class_known` false)
+    /// while an installed class passes, so the server makes the same
+    /// premint-vs-fallback decision the hydrating client makes from its
+    /// stylesheet scan.
+    ///
+    /// NOTE: the slot is a first-install-wins `OnceLock`, so this test
+    /// leaves it set for the rest of the process — harmless, since no
+    /// other test in this binary exercises preminted eligibility.
+    #[test]
+    fn premint_classes_slot_arms_guard_per_render_thread() {
+        crate::install_premint_classes(vec!["iy-knownclass".to_string()]);
+        let handle = std::thread::spawn(|| {
+            let mut seen: Option<(bool, bool)> = None;
+            let seen_ref = &mut seen;
+            let _page = render_path_with(
+                "/",
+                |_| {},
+                move || {
+                    *seen_ref = Some((
+                        runtime_shared::minted_class_known("iy-knownclass"),
+                        runtime_shared::minted_class_known("iy-bogusclass"),
+                    ));
+                    runtime_vocabulary::builders::text().content("x").build()
+                },
+            );
+            seen.expect("build ran")
+        });
+        let (known, bogus) = handle.join().expect("render thread");
+        assert!(known, "installed class must be known during the render");
+        assert!(
+            !bogus,
+            "unknown class must veto — the guard was armed on the render thread"
         );
     }
 }

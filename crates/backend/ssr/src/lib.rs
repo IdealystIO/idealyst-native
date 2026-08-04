@@ -36,6 +36,121 @@ mod serve;
 #[cfg(feature = "serve")]
 pub use serve::{resolve_bundle_module, ServeConfig};
 
+// ===========================================================================
+// Premint (build-time CSS) support. A premint build stamps deterministic
+// `iy-*` classes that resolve against the content-addressed
+// `premint.css` the web build emits — the server must (a) link that
+// asset from every rendered document and (b) arm the same minted-class
+// guard the hydrating client arms, so both sides make identical
+// premint-vs-engine-fallback decisions per sheet. All of this is
+// cfg-free: the generated SSR wrapper (which knows it was a premint
+// build) installs the classes and passes the link; a non-premint server
+// never calls either and nothing changes.
+// ===========================================================================
+
+/// The premint stylesheet a rendered document links, plus the guard
+/// classes scanned out of it. Produced by [`resolve_premint_css`];
+/// consumed by [`render_document`] (href + font families) and
+/// [`install_premint_classes`] (classes).
+#[derive(Clone, Debug)]
+pub struct PremintCss {
+    /// Root-absolute href, e.g. `/pkg/premint.<16 hex>.css`.
+    pub href: String,
+    /// Comma-joined `@font-face` family names in the asset — emitted as
+    /// the `data-iy-font-families` attribute the hydrating client's
+    /// typeface dedup reads (see backend-web's `register_typeface`).
+    pub font_families: String,
+    /// Every `iy-*` class the asset's selectors mention — the server's
+    /// minted-class guard set.
+    pub classes: Vec<String>,
+}
+
+/// Resolve the premint stylesheet staged by `idealyst build --web
+/// --premint*` under `static_dir/pkg/` — the premint twin of
+/// [`resolve_bundle_module`]: matches the content-addressed
+/// `premint.<16 hex>.css` first (fingerprint naming per `build-web`'s
+/// `fingerprint_pkg`; keep the matching rules in sync), falling back to
+/// a plain `premint.css` (dev-shaped pkg). Reads the file once to scan
+/// guard classes (`runtime_shared::scan_minted_classes`) and `@font-face`
+/// family names (same `@font-face{font-family:"…"` prefix
+/// `build_web::premint_font_families` scans — the dump emits that format
+/// by construction; keep in sync).
+pub fn resolve_premint_css(static_dir: &std::path::Path) -> Option<PremintCss> {
+    let pkg = static_dir.join("pkg");
+    let mut found: Option<(String, std::path::PathBuf)> = None;
+    if let Ok(read) = std::fs::read_dir(&pkg) {
+        for entry in read.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(mid) = name
+                .strip_prefix("premint.")
+                .and_then(|rest| rest.strip_suffix(".css"))
+            else {
+                continue;
+            };
+            if mid.len() == 16 && mid.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+                found = Some((format!("/pkg/{name}"), entry.path()));
+                break;
+            }
+        }
+    }
+    let (href, path) = match found {
+        Some(hit) => hit,
+        None => {
+            let plain = pkg.join("premint.css");
+            if !plain.is_file() {
+                return None;
+            }
+            ("/pkg/premint.css".to_string(), plain)
+        }
+    };
+    let text = std::fs::read_to_string(&path).ok()?;
+    let mut font_families: Vec<&str> = Vec::new();
+    for chunk in text.split("@font-face{font-family:\"").skip(1) {
+        if let Some(end) = chunk.find('"') {
+            let fam = &chunk[..end];
+            if !font_families.contains(&fam) {
+                font_families.push(fam);
+            }
+        }
+    }
+    Some(PremintCss {
+        href,
+        font_families: font_families.join(","),
+        classes: runtime_shared::scan_minted_classes(&text),
+    })
+}
+
+/// The premint guard classes for this server process — set once by the
+/// generated wrapper at startup (from [`resolve_premint_css`]'s
+/// `classes`); consumed by every render via
+/// [`arm_minted_class_guard_if_installed`]. Process-global because the
+/// guard itself (`runtime_shared`'s `MINTED_CLASSES`) is THREAD-local
+/// and serve mode renders each request on a fresh thread.
+static PREMINT_CLASSES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// Install the premint guard classes for every subsequent render in this
+/// process. First install wins (matches the framework's other one-shot
+/// installs); a non-premint server never calls this and the guard stays
+/// disarmed exactly as today.
+pub fn install_premint_classes(classes: Vec<String>) {
+    let _ = PREMINT_CLASSES.set(classes);
+}
+
+/// Arm the thread-local minted-class guard from the process-global slot,
+/// if one was installed. Called at the top of every render: serve mode's
+/// fresh-thread-per-request means per-render install is the only correct
+/// point, and export mode's single thread just re-installs idempotently.
+///
+/// Scanning ONLY premint.css matches the hydrating client's
+/// scan-everything JS (it walks all `document.styleSheets`): the SSR
+/// inline `<style>` contains no `iy-*` selectors, because preminted
+/// attach bypasses `apply_style` and so never enters `head_css`.
+pub(crate) fn arm_minted_class_guard_if_installed() {
+    if let Some(classes) = PREMINT_CLASSES.get() {
+        runtime_shared::install_minted_classes(classes.iter().cloned());
+    }
+}
+
 // New-core (idea-lite) render path: `SsrBackend` as a direct
 // `runtime_scene::Host` + 30-caps implementor, with per-request
 // `runtime_world::World` lifecycles (`newcore::render_path`). Additive —
@@ -635,10 +750,16 @@ fn push_meta_prop(out: &mut String, property: &str, content: &str) {
 ///   *append* a second copy instead of replacing.
 ///
 /// `bundle_module` is developer-provided config, not user input.
+///
+/// `premint_css` links the build-time stylesheet (premint builds only).
+/// Emitted independent of `bundle_module` — a `--ssg-static` page has no
+/// wasm to repair anything, so the link is its ONLY source of CSS for
+/// the `iy-*` classes the server stamped.
 pub fn render_document(
     page: &RenderedPage,
     bundle_module: Option<&str>,
     extra_head: Option<&str>,
+    premint_css: Option<&PremintCss>,
 ) -> String {
     let m = &page.metadata;
     let mut doc = String::from("<!DOCTYPE html>\n<html lang=\"en\">\n<head>");
@@ -666,6 +787,25 @@ pub fn render_document(
         doc.push_str(" href=\"");
         escape_attr(url, &mut doc);
         doc.push_str("\">");
+    }
+    // Premint stylesheet link — BEFORE both inline <style>s below. The
+    // ordering is load-bearing, not stylistic: engine fall-through and
+    // override rules (`ui-*`, in `head_css`) must cascade AFTER premint
+    // rules at their shared (0,1,0) specificity, mirroring the live web
+    // document order (premint <link>, then the runtime <style>). Tag
+    // shape kept in sync with `build_web::premint_css_link_tag`
+    // (root-absolute href here; the `data-iy-font-families` attribute is
+    // the hydrating client's typeface dedup input).
+    if let Some(css) = premint_css {
+        doc.push_str("<link rel=\"stylesheet\" href=\"");
+        escape_attr(&css.href, &mut doc);
+        doc.push('"');
+        if !css.font_families.is_empty() {
+            doc.push_str(" data-iy-font-families=\"");
+            escape_attr(&css.font_families, &mut doc);
+            doc.push('"');
+        }
+        doc.push('>');
     }
     // Baseline so a navigator app-shell works: no body margin, and the
     // mount is a fixed-viewport-height flex column. The navigator's body
@@ -1304,7 +1444,7 @@ mod tests {
             },
             head_css: ".x{color:red}".into(),
         };
-        let doc = render_document(&page, Some("/pkg/app.js"), None);
+        let doc = render_document(&page, Some("/pkg/app.js"), None, None);
 
         assert!(doc.starts_with("<!DOCTYPE html>"));
         assert!(doc.contains("<title>Home</title>"));
@@ -1326,7 +1466,7 @@ mod tests {
             metadata: Default::default(),
             head_css: String::new(),
         };
-        let doc = render_document(&page, None, None);
+        let doc = render_document(&page, None, None, None);
         assert!(doc.contains(r#"<div id="app" data-ssr-viewport="1280x800"><div>hi</div></div>"#));
         assert!(!doc.contains("<script"), "no bundle => no script, got: {doc}");
     }
@@ -1357,7 +1497,7 @@ mod tests {
         };
         let snippet =
             r#"<link rel="icon" type="image/x-icon" href="/favicon.ico" sizes="16x16">"#;
-        let doc = render_document(&page, None, Some(snippet));
+        let doc = render_document(&page, None, Some(snippet), None);
         assert!(
             doc.contains(snippet),
             "extra_head snippet must appear in the document, got: {doc}",
@@ -1381,8 +1521,8 @@ mod tests {
             metadata: Default::default(),
             head_css: String::new(),
         };
-        let with_none = render_document(&page, None, None);
-        let with_empty = render_document(&page, None, Some(""));
+        let with_none = render_document(&page, None, None, None);
+        let with_empty = render_document(&page, None, Some(""), None);
         assert_eq!(with_none, with_empty);
     }
 
@@ -1401,7 +1541,7 @@ mod tests {
                        .x{background-image:url(\"/img/bg.png\")}"
                 .into(),
         };
-        let doc = render_document(&page, Some("/pkg/app.js"), None);
+        let doc = render_document(&page, Some("/pkg/app.js"), None, None);
         assert!(
             doc.contains(
                 r#"<link rel="preload" as="font" crossorigin type="font/ttf" href="/fonts/Inter-Regular.ttf">"#
@@ -1624,5 +1764,82 @@ mod tests {
         assert!(head.contains("src:url(\"/fonts/Inter-Regular.ttf\")"), "got: {head}");
         assert!(head.contains("src:url(\"/fonts/Inter-Bold.ttf\")"), "got: {head}");
         assert!(head.contains("font-weight:700"), "got: {head}");
+    }
+
+    /// `resolve_premint_css` is the premint twin of
+    /// `resolve_bundle_module`: it must find the fingerprinted asset,
+    /// scan its guard classes and font families, and fall back to the
+    /// dev-shaped plain name.
+    #[test]
+    fn resolve_premint_css_finds_fingerprinted_sheet_and_scans_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = tmp.path().join("pkg");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("premint.b08a8039a578b8e9.css"),
+            "@font-face{font-family:\"Inter\";src:url(\"/fonts/i.ttf\")}\
+             .iy-aaa111{color:#111}.iy-bbb222{color:#222}",
+        )
+        .unwrap();
+        let css = resolve_premint_css(tmp.path()).expect("resolved");
+        assert_eq!(css.href, "/pkg/premint.b08a8039a578b8e9.css");
+        assert_eq!(css.font_families, "Inter");
+        assert_eq!(css.classes, vec!["iy-aaa111".to_string(), "iy-bbb222".to_string()]);
+    }
+
+    #[test]
+    fn resolve_premint_css_dev_fallback_and_decoys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = tmp.path().join("pkg");
+        std::fs::create_dir_all(&pkg).unwrap();
+        // Decoys: wrong hash width / non-hex must not match the
+        // fingerprinted form…
+        std::fs::write(pkg.join("premint.abc.css"), ".iy-x{}").unwrap();
+        std::fs::write(pkg.join("premint.not-a-hash-yo.css"), ".iy-x{}").unwrap();
+        // …but the plain dev-shaped name is the fallback.
+        std::fs::write(pkg.join("premint.css"), ".iy-devclass{}").unwrap();
+        let css = resolve_premint_css(tmp.path()).expect("dev fallback");
+        assert_eq!(css.href, "/pkg/premint.css");
+        assert_eq!(css.classes, vec!["iy-devclass".to_string()]);
+        // Missing pkg entirely: graceful None (e.g. a non-premint build).
+        assert!(resolve_premint_css(&tmp.path().join("nope")).is_none());
+    }
+
+    /// Premint × SSR/SSG head contract: the premint `<link>` must appear
+    /// BEFORE both inline `<style>`s — engine fall-through/override
+    /// `ui-*` rules share (0,1,0) specificity with premint rules, so
+    /// source order decides, and the live web document order (premint
+    /// link, then runtime `<style>`) must be reproduced. Also the
+    /// `--ssg-static` posture (`bundle_module: None`): the link is the
+    /// page's ONLY source of `iy-*` CSS — no wasm exists to repair a
+    /// missing one — so it must be emitted independent of the bundle.
+    #[test]
+    fn regression_ssg_static_premint_pages_link_stylesheet() {
+        let page = RenderedPage {
+            html: "<div class=\"iy-aaa111\">hi</div>".into(),
+            metadata: runtime_shared::PageMetadata::default(),
+            head_css: ".ui-fallthrough{color:red}".into(),
+        };
+        let css = PremintCss {
+            href: "/pkg/premint.b08a8039a578b8e9.css".into(),
+            font_families: "Inter".into(),
+            classes: vec!["iy-aaa111".into()],
+        };
+        // Static posture: no bundle module at all.
+        let doc = render_document(&page, None, None, Some(&css));
+        let link_at = doc
+            .find("<link rel=\"stylesheet\" href=\"/pkg/premint.b08a8039a578b8e9.css\"")
+            .expect("premint link emitted without a bundle");
+        assert!(
+            doc.contains("data-iy-font-families=\"Inter\""),
+            "typeface-dedup attribute rides the link: {doc}"
+        );
+        let first_style_at = doc.find("<style>").expect("inline styles present");
+        assert!(
+            link_at < first_style_at,
+            "premint link must precede the inline styles so ui-* rules \
+             cascade after premint rules at equal specificity: {doc}"
+        );
+        assert!(!doc.contains("<script"), "static posture: no boot script");
     }
 }

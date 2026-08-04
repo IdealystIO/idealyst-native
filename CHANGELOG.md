@@ -54,7 +54,81 @@ each entry links to its migration guide.
   other `serve_static` consumers (`idealyst dev`, `idealyst docs`) are
   unchanged.
 
+- **Premint × SSR/SSG.** `--premint`/`--premint-only`/`--premint-report`
+  now compose with `--ssg` and `--ssr` (the build previously refused the
+  combination). The server binary compiles with the same
+  `--cfg idealyst_premint*` posture as the wasm bundle, so the generic
+  `Preminted` attach arm stamps the same deterministic `iy-*` classes
+  server-side that the hydrating client stamps — and since the client's
+  preminted re-stamp is `classList.add`, adoption meets them already
+  present and no-ops. The generated SSR wrapper resolves the staged
+  `premint.css` (`backend_ssr::resolve_premint_css`), links it from
+  every rendered document BEFORE the inline engine CSS (cascade order:
+  `ui-*` fall-through/override rules beat premint rules on source
+  order), and arms the minted-class guard per render thread from the
+  asset's scanned classes (`runtime_shared::scan_minted_classes`, the
+  text twin of the web boot's JS stylesheet scan) — so server and
+  client make identical premint-vs-fallback decisions. Premint server
+  builds use an isolated `target-premint/` dir (the cfg RUSTFLAGS would
+  invalidate the shared native cache). Works in `--ssg-static` (the
+  link is the page's only CSS — required, not optional) and in
+  `idealyst dev --ssr --premint*`.
+
+### Changed
+
+- **`idea_ui::Progress` grew a `mode` prop** (`Reactive<ProgressMode>`:
+  `Value` default / `Indeterminate` / `Simulated`) and the
+  `indeterminate: bool` prop is gone — migrate `indeterminate = true`
+  to `mode = ProgressMode::Indeterminate`. The three modes: `Value`
+  follows the `value` prop and now ANIMATES every change (a `width`
+  transition on the fill sheet's `determinate` arm); `Indeterminate`
+  replaced the opacity pulse with the standard left→right sweep — a
+  constant-fraction segment (`PROGRESS_SWEEP_FRACTION`) translated
+  across the clipped track, ranged by the uniform layout-measurement
+  seam (`rect()` seed + `on_layout` re-measure), render-server
+  keyframes on macOS (`transform.translation.x`, new keyPath mapping)
+  with the per-frame animator as the uniform fallback; `Simulated`
+  fakes a load — creeps from empty toward a ceiling it never crosses
+  in irregular, geometrically-shrinking steps (deterministic jitter),
+  for when nothing measurable is loading but a parked bar reads wrong.
+  End caps are now SQUARE by default — the new `cap: ProgressCap` prop
+  (`cap` variant axis on the track + fill sheets) restores the old
+  pill look with `ProgressCap::Rounded`.
+- **Old-arena `after_ms_scoped` / `raf_loop_scoped` are no longer
+  public.** The pre-World scoped timer helpers (reachable as
+  `runtime_core::scheduling::after_ms_scoped` via the module
+  re-export) re-enter only the old reactive arena, never the World
+  session, so a world-signal timer chain registered through them died
+  silently — exactly how Progress's Simulated mode first shipped
+  broken. They're `pub(crate)` in `runtime-shared` now (still used
+  internally by `animation::binding`'s post-mount re-applies, which
+  touch no signals); author code uses the World-anchored
+  `runtime_core::after_ms_scoped` / `raf_loop_scoped`, which shadow
+  them unchanged in name and shape — most call sites just drop the
+  `scheduling::` path segment.
+
 ### Fixed
+
+- **Scoped timers registered while a subtree is built inside a live
+  effect now die with the subtree.** `after_ms_scoped` /
+  `raf_loop_scoped` anchored ONLY to the running effect's re-run when
+  `in_effect()` — but a navigator swap effect realizes screens whose
+  lazy-loading fallbacks schedule timers, and the fallback subtree
+  tears down (chunk landed) without the effect ever re-running, so a
+  pending shot fired into the subtree's freed signals (kernel
+  stale-signal-handle abort — reproducible on the docs' lazy route
+  loader once it gained a Simulated Progress bar). The anchor now
+  ALSO parks a kill-guard in the enclosing ownership collector (new
+  `runtime_world::in_collector()` probe); whichever lifetime ends
+  first wins. Regression:
+  `regression_timer_in_subtree_built_inside_live_effect_dies_with_the_subtree`.
+- **Hydration boots never armed the minted-class guard.**
+  `hydrate_in_with` skipped the `install_minted_class_guard()` call
+  `start_in_with` makes, so premint hydrated pages ran with the guard
+  disarmed: a sheet whose class had no CSS in the shipped asset stamped
+  it anyway (silently unstyled) instead of falling back to the engine
+  with the once-per-class warning. Regression test:
+  `regression_hydrate_boot_arms_minted_class_guard`.
 
 - **Premint dump now executes `#[component(lazy)]` bodies.** The
   build-time CSS dump crawled every literal route but stopped at each

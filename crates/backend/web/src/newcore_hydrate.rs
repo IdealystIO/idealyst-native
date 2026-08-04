@@ -193,6 +193,16 @@ pub fn hydrate_in_with<S: runtime_vocabulary::BuiltinSet>(
     // executor so future polls fire the post-dispatch flush hook.
     #[cfg(feature = "async-driver")]
     crate::install_async_executor();
+    // Premint builds: arm the minted-class guard BEFORE any style
+    // attaches, exactly as `start_in_with` does. This path skipped the
+    // install (regression: hydrate boots ran with the guard DISARMED, so
+    // `minted_class_known` answered true for every class and a sheet
+    // whose class had no CSS in the shipped asset stamped it anyway —
+    // silently unstyled instead of engine-fallback/loud-uncrawled). The
+    // non-prerendered branch below forwards to `start_in_with`, whose
+    // second install harmlessly overwrites this one.
+    #[cfg(idealyst_premint)]
+    crate::premint_guard::install_minted_class_guard();
 
     // No server DOM → nothing to adopt; plain fresh boot. Same
     // prerendered/fresh dispatch the old CLI wrapper's `start_local` does.
@@ -550,5 +560,54 @@ mod tests {
         microtask().await;
         assert!(mount.text_content().unwrap().contains("n=0"));
         super::super::stop();
+    }
+}
+
+// ===========================================================================
+// Native source-shape pins. The minted-class guard install is
+// `cfg(idealyst_premint)` and its effect (a veto consulted deep inside
+// style attach) only manifests in a full premint browser build — not
+// reachable from wasm-pack unit tests, whose builds don't carry the cfg.
+// Pinning the source is the closest deterministic test (CLAUDE.md §8):
+// each pin fails the moment the install line disappears from its boot
+// path, which is exactly the regression shape.
+// ===========================================================================
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod guard_pin_tests {
+    /// Regression: hydrate boots ran with the minted-class guard
+    /// DISARMED — `hydrate_in_with` never installed it (only
+    /// `start_in_with` did), so under `--premint` a hydrated page
+    /// stamped classes with no CSS behind them instead of falling back
+    /// to the engine with a warning.
+    #[test]
+    fn regression_hydrate_boot_arms_minted_class_guard() {
+        let hydrate_src = include_str!("newcore_hydrate.rs");
+        let boot_src = include_str!("newcore.rs");
+        for (name, src) in [("hydrate_in_with", hydrate_src), ("start_in_with", boot_src)] {
+            assert!(
+                src.contains("premint_guard::install_minted_class_guard()"),
+                "{name}'s boot path must arm the minted-class guard before any \
+                 style attaches"
+            );
+        }
+    }
+
+    /// The web guard scans loaded stylesheets with an inline-JS regex;
+    /// the SSR/SSG server scans `premint.css` text with
+    /// `runtime_shared::scan_minted_classes`. The two can never share
+    /// code, and if their token grammars drift the server and client
+    /// answer `minted_class_known` differently for the same class —
+    /// re-introducing the hydration style divergence premint×SSR was
+    /// built to avoid. This pins the JS literal to the shared pattern.
+    #[test]
+    fn premint_guard_js_regex_matches_shared_scanner_pattern() {
+        let guard_src = include_str!("premint_guard.rs");
+        assert!(
+            guard_src.contains(r"(iy-[A-Za-z0-9_-]+)"),
+            "premint_guard.rs's JS scan must keep the `.iy-` + \
+             [A-Za-z0-9_-] token grammar of runtime_shared::scan_minted_classes; \
+             change both together or server/client guard sets drift"
+        );
     }
 }

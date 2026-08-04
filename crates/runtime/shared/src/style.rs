@@ -1783,6 +1783,42 @@ pub fn minted_class_known(base: &str) -> bool {
     })
 }
 
+/// Scan raw CSS text for every `iy-*` class its selectors mention — the
+/// text-side twin of the web backend's boot-time JS scan
+/// (`backend-web/src/premint_guard.rs` walks `document.styleSheets` with
+/// the regex `\.(iy-[A-Za-z0-9_-]+)`), for hosts that read the premint
+/// asset as a FILE instead of a loaded stylesheet (the SSR/SSG server
+/// arms its guard from `premint.css` on disk). Both scans must keep the
+/// same token grammar or the two sides' [`minted_class_known`] answers
+/// drift — a backend-web test pins the JS literal against this fn.
+///
+/// Matches every `.` immediately followed by `iy-` and the class-token
+/// charset `[A-Za-z0-9_-]`, wherever it appears — inside `@media` /
+/// `@container` preludes' rules, `:where(...)` wrappers, and compound
+/// selectors alike. Like the JS scan it collects base AND arm classes;
+/// the guard only ever queries base classes, and extras are harmless.
+pub fn scan_minted_classes(css_text: &str) -> Vec<String> {
+    let bytes = css_text.as_bytes();
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: rustc_hash::FxHashSet<&str> = rustc_hash::FxHashSet::default();
+    let mut i = 0;
+    while let Some(dot) = css_text[i..].find(".iy-") {
+        let start = i + dot + 1; // past the '.'
+        let mut end = start;
+        while end < bytes.len()
+            && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_' || bytes[end] == b'-')
+        {
+            end += 1;
+        }
+        let class = &css_text[start..end];
+        if seen.insert(class) {
+            out.push(class.to_string());
+        }
+        i = end;
+    }
+    out
+}
+
 thread_local! {
     static UNMINTED_WARNED: std::cell::RefCell<rustc_hash::FxHashSet<String>> =
         std::cell::RefCell::new(rustc_hash::FxHashSet::default());

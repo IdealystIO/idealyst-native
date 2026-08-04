@@ -224,8 +224,9 @@ pub struct Args {
     /// fires here for any sheet the dump's crawl missed. Requires
     /// `--local` (runtime-server mode resolves styles server-side, so
     /// there is nothing to premint client-side). Each rebuild re-runs
-    /// the native style dump; trades the `dev --ssr` hand-off away
-    /// (premint cannot combine with hydration).
+    /// the native style dump. Composes with `dev --ssr`: the SSR wrapper
+    /// is built with the same premint cfgs, stamps the same classes, and
+    /// links the dump's premint.css from every served page.
     #[arg(long)]
     pub premint: bool,
 
@@ -1614,7 +1615,11 @@ fn launch_ssr(
             source: source.clone(),
             user_features: Vec::new(),
             // Follows the session's resolved core (runtime-v2
-            // defaults flip).
+            // defaults flip). Premint posture mirrors the wasm leg above
+            // so server-stamped classes match the hydrating bundle's.
+            premint: args.premint || args.premint_only || args.premint_report,
+            premint_only: args.premint_only,
+            premint_report: args.premint_report,
         },
     )
     .with_context(|| "SSR wrapper build failed")?;

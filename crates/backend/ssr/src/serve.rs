@@ -33,6 +33,11 @@ pub struct ServeConfig {
     /// favicon set the static-file path serves out of `static_dir`.
     /// `None` (or empty) suppresses the injection.
     pub extra_head: Option<String>,
+    /// The premint stylesheet to link from every rendered page (premint
+    /// builds only — see [`crate::resolve_premint_css`]). `None` on
+    /// non-premint servers; the document then carries only its inline
+    /// engine CSS, exactly as before.
+    pub premint_css: Option<crate::PremintCss>,
 }
 
 /// Resolve the boot-module URL for a bundle staged by `idealyst build

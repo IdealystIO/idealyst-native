@@ -444,3 +444,58 @@ fn on_cleanup_coexists_with_scoped_helpers_in_the_same_effect() {
         drop(owned);
     });
 }
+
+/// Regression: a timer registered while a component subtree is being
+/// BUILT INSIDE a running effect dies with the SUBTREE, not (only) the
+/// effect. The docs' lazy route loader hit this: the navigator's swap
+/// effect realizes a screen whose lazy-loading fallback creates a
+/// signal plus a self-re-arming `after_ms_scoped` creep chain; when
+/// the chunk lands the fallback's `Realized` (and its signals) drop
+/// while the swap effect lives on — the still-anchored shot then read
+/// the freed signal (kernel stale-signal-handle abort). The anchor
+/// must ALSO ride the build collector, so dropping the subtree's
+/// `Owned` — registering effect still alive, never re-run — kills the
+/// pending shot.
+#[test]
+fn regression_timer_in_subtree_built_inside_live_effect_dies_with_the_subtree() {
+    ensure_test_scheduler();
+    let world = World::new();
+    let fired: Rc<Cell<u32>> = Rc::new(Cell::new(0));
+    world.enter(|| {
+        let nav = signal(0u32);
+        let subtree: Rc<RefCell<Option<runtime_world::Owned>>> = Rc::new(RefCell::new(None));
+        let st = subtree.clone();
+        let fi = fired.clone();
+        let (_, _chrome) = collect_owned(|| {
+            let _ = effect(move || {
+                let _route = nav.get(); // the "navigation" dependency
+                let fi2 = fi.clone();
+                let (_, owned) = collect_owned(|| {
+                    // The fallback's private state + creep shot: reads
+                    // then writes the subtree-owned signal, exactly the
+                    // access that aborted before the fix.
+                    let s = signal(0f32);
+                    glue::after_ms_scoped(0, move || {
+                        s.set(s.get() + 1.0);
+                        fi2.set(fi2.get() + 1);
+                    });
+                });
+                *st.borrow_mut() = Some(owned);
+            });
+        });
+
+        // "Chunk landed": drop the subtree while the swap effect is
+        // still alive and never re-runs. The queued shot must be inert
+        // — before the fix it fired into the freed signal slot.
+        *subtree.borrow_mut() = None;
+        pump_timers();
+        assert_eq!(fired.get(), 0, "subtree-dropped shot stayed inert");
+
+        // The effect itself is unharmed: a re-run builds a fresh
+        // subtree whose shot fires normally against its live signal.
+        nav.set(1);
+        world.flush();
+        pump_timers();
+        assert_eq!(fired.get(), 1, "fresh subtree's shot fires");
+    });
+}

@@ -28,6 +28,15 @@
 //! The wrapper renders through `backend_ssr::newcore::{render_all,
 //! serve}` — a fresh `World` per request — with the user's
 //! `register_ssr_scene_handlers` as the registration seam.
+//!
+//! **Premint builds** (`BuildOptions::premint`): the wrapper compiles
+//! with the same `--cfg idealyst_premint*` posture as the wasm bundle
+//! (so both sides stamp identical `iy-*` classes during hydration),
+//! bakes `const PREMINT: bool = true`, resolves the staged
+//! `premint.css`, links it from every document, and arms the
+//! minted-class guard per render. Premint builds get an isolated
+//! `target-premint/` dir — the RUSTFLAGS change would otherwise
+//! invalidate the project's shared native cache in both directions.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -48,6 +57,21 @@ pub struct BuildOptions {
     /// always-on `ssr` feature). Typically empty; reserved for future
     /// dev-mode flags.
     pub user_features: Vec<String>,
+    /// Compile the server with `--cfg idealyst_premint` — REQUIRED
+    /// whenever the paired wasm bundle is a premint build, so the server
+    /// stamps the same deterministic `iy-*` classes the hydrating client
+    /// stamps (the `IntoStyleProp` premint fast path is cfg-gated).
+    /// Mismatched postures re-introduce the hydration style divergence
+    /// the old `--premint × --ssg/--ssr` bail refused.
+    pub premint: bool,
+    /// Also set `--cfg idealyst_premint_only` (engine + rule closures
+    /// compiled out; non-premintable styles panic, same clean-app
+    /// contract as the client).
+    pub premint_only: bool,
+    /// Also set `--cfg idealyst_premint_report` (per-attach fall-through
+    /// logging; serve mode re-warns per request since each renders on a
+    /// fresh thread — dev-only diagnostics).
+    pub premint_report: bool,
 }
 
 #[derive(Debug)]
@@ -73,20 +97,27 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         .wrapper_root(&project_dir)
         .join(&manifest.name)
         .join("ssr/wrapper");
-    generate_wrapper(&wrapper_dir, &project_dir, &opts.source, &manifest)?;
+    generate_wrapper(&wrapper_dir, &project_dir, &opts.source, &manifest, opts.premint)?;
 
-    cargo_build(&wrapper_dir, opts.release, &opts.user_features)?;
+    cargo_build(&wrapper_dir, &opts)?;
 
     let profile = if opts.release { "release" } else { "debug" };
     let bin_name = binary_name(&manifest.name);
-    // `write_shared_target_config` points the wrapper's cargo at the
-    // project's shared `target/` (so common deps aren't recompiled
-    // per-wrapper). The binary lands there, not inside the wrapper's
-    // own `target/`.
-    let binary = project_dir
-        .join("target")
-        .join(profile)
-        .join(&bin_name);
+    // Non-premint: `write_shared_target_config` points the wrapper's
+    // cargo at the project's shared `target/` (so common deps aren't
+    // recompiled per-wrapper) and the binary lands there. Premint: the
+    // build injects `--cfg idealyst_premint*` RUSTFLAGS, and cargo
+    // fingerprints every unit on RUSTFLAGS — sharing the target dir
+    // would rebuild the whole native graph AND invalidate the project's
+    // normal dev/test artifacts in both directions (the premint dump
+    // wrapper documents the same concern). So premint builds get their
+    // own `target-premint/` under the wrapper, cached across premint
+    // builds and never thrashing the shared cache.
+    let binary = if opts.premint {
+        wrapper_dir.join("target-premint").join(profile).join(&bin_name)
+    } else {
+        project_dir.join("target").join(profile).join(&bin_name)
+    };
 
     if !binary.is_file() {
         anyhow::bail!(
@@ -116,6 +147,7 @@ pub fn generate_wrapper(
     project_dir: &Path,
     source: &FrameworkSource,
     manifest: &Manifest,
+    premint: bool,
 ) -> Result<()> {
     fs::create_dir_all(wrapper_dir.join("src"))
         .with_context(|| format!("create {}", wrapper_dir.display()))?;
@@ -210,6 +242,13 @@ use std::path::PathBuf;
 /// HTML.
 const EXTRA_HEAD: &str = {extra_head_literal};
 
+/// Baked at wrapper-generation time: whether the paired wasm bundle is a
+/// premint build. When true this binary was ALSO compiled with
+/// `--cfg idealyst_premint*`, so it stamps the same `iy-*` classes the
+/// hydrating client stamps — and it must link `premint.css` from every
+/// document and arm the minted-class guard, below.
+const PREMINT: bool = {premint};
+
 fn main() {{
     // Defaults match `idealyst dev`'s out-of-the-box ports + bundle path.
     let mut addr = "127.0.0.1:8081".to_string();
@@ -268,6 +307,27 @@ fn main() {{
         }}
     }}
 
+    // Premint builds: resolve the staged `premint.css` (export mode from
+    // the export dir, serve mode from `--static-dir` — both hold the
+    // web build's `pkg/`), arm the process-wide minted-class guard from
+    // its scanned classes, and thread the link into every document.
+    let mut premint_css: Option<backend_ssr::PremintCss> = None;
+    if PREMINT {{
+        let root = export_dir.clone().or_else(|| static_dir.clone());
+        match root.as_deref().and_then(backend_ssr::resolve_premint_css) {{
+            Some(css) => {{
+                backend_ssr::install_premint_classes(css.classes.clone());
+                premint_css = Some(css);
+            }}
+            None => eprintln!(
+                "[ssr] warning: premint build but no premint.css was found \
+                 under the export/static dir's pkg/ — rendered pages will \
+                 link no stylesheet and preminted classes will have no CSS. \
+                 Run `idealyst build --web` with the same premint flags first."
+            ),
+        }}
+    }}
+
     if let Some(out) = export_dir {{
         // SSG mode: one-shot crawl + write. No HTTP server.
         if static_only {{
@@ -293,7 +353,7 @@ fn main() {{
             if let Some(parent) = file.parent() {{
                 fs::create_dir_all(parent).expect("create export dir");
             }}
-            let html = render_document(page, module_ref, Some(EXTRA_HEAD));
+            let html = render_document(page, module_ref, Some(EXTRA_HEAD), premint_css.as_ref());
             fs::write(&file, html).expect("write SSG html");
             written.push(file.display().to_string());
         }}
@@ -331,6 +391,7 @@ fn main() {{
             bundle_module,
             static_dir,
             extra_head: Some(EXTRA_HEAD.to_string()),
+            premint_css,
         }},
         {register_arg},
         {lib}::app,
@@ -342,37 +403,97 @@ fn main() {{
         extra_head_literal = extra_head_literal,
         entry_imports = entry_imports,
         register_arg = register_arg,
+        premint = premint,
     );
 
-    write_shared_target_config(wrapper_dir, project_dir)?;
+    write_target_config(wrapper_dir, project_dir, premint)?;
     fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;
     fs::write(wrapper_dir.join("src/main.rs"), main_rs)?;
     Ok(())
 }
 
-/// Redirect the wrapper crate's build output back into the project's
-/// shared `target/` so common dependencies aren't recompiled per
-/// wrapper invocation.
-fn write_shared_target_config(dir: &Path, project_dir: &Path) -> Result<()> {
-    let target_dir = project_dir.join("target");
-    let config = format!(
-        "# GENERATED. Share the project's `target/` so common\n\
-         # dependencies aren't recompiled per-wrapper.\n\
+/// Point the wrapper crate's build output somewhere deliberate — and
+/// always WRITE the file, since the wrapper dir persists across builds
+/// and a stale config from the other mode must not survive a
+/// premint/non-premint flip.
+///
+/// - Non-premint: the project's shared `target/`, so common
+///   dependencies aren't recompiled per wrapper invocation.
+/// - Premint: a wrapper-local `target-premint/`. The premint build
+///   injects `--cfg idealyst_premint*` RUSTFLAGS and cargo fingerprints
+///   every unit on RUSTFLAGS — sharing the project target would rebuild
+///   the entire native graph and invalidate the project's normal
+///   dev/test artifacts in both directions (the premint dump wrapper
+///   documents the same hazard). Isolated, the premint graph caches
+///   across premint builds and never thrashes the shared cache.
+fn write_target_config(dir: &Path, project_dir: &Path, premint: bool) -> Result<()> {
+    let config = if premint {
+        "# GENERATED. Premint builds carry --cfg RUSTFLAGS that would\n\
+         # invalidate the project's shared target cache, so they build\n\
+         # into their own dir (cached across premint builds).\n\
          \n\
          [build]\n\
-         target-dir = \"{}\"\n",
-        target_dir.display(),
-    );
+         target-dir = \"target-premint\"\n"
+            .to_string()
+    } else {
+        let target_dir = project_dir.join("target");
+        format!(
+            "# GENERATED. Share the project's `target/` so common\n\
+             # dependencies aren't recompiled per-wrapper.\n\
+             \n\
+             [build]\n\
+             target-dir = \"{}\"\n",
+            target_dir.display(),
+        )
+    };
     fs::create_dir_all(dir.join(".cargo"))?;
     fs::write(dir.join(".cargo/config.toml"), config)?;
     Ok(())
 }
 
-fn cargo_build(wrapper_dir: &Path, release: bool, user_features: &[String]) -> Result<()> {
+/// The `--cfg` RUSTFLAGS a premint server build injects — a pure fn so
+/// the template tests can pin it. Mirrors `build-web`'s wasm-side
+/// injection (same cfgs, same premint ⊇ premint_only/report implication
+/// handled by the caller setting `premint` for any of the three).
+fn premint_rustflags(premint: bool, premint_only: bool, premint_report: bool) -> Vec<String> {
+    let mut flags = Vec::new();
+    if premint {
+        flags.push("--cfg".to_string());
+        flags.push("idealyst_premint".to_string());
+    }
+    if premint_report {
+        flags.push("--cfg".to_string());
+        flags.push("idealyst_premint_report".to_string());
+    }
+    if premint_only {
+        flags.push("--cfg".to_string());
+        flags.push("idealyst_premint_only".to_string());
+    }
+    flags
+}
+
+fn cargo_build(wrapper_dir: &Path, opts: &BuildOptions) -> Result<()> {
+    let release = opts.release;
+    let user_features = &opts.user_features;
     let mut cmd = Command::new("cargo");
     cmd.args(["build"]).current_dir(wrapper_dir);
     if release {
         cmd.arg("--release");
+    }
+    // Premint cfgs ride CARGO_ENCODED_RUSTFLAGS exactly as the wasm
+    // build's do (build-web `cargo_build_wasm`), seeded from any
+    // caller-provided flags so we extend rather than clobber.
+    let cfgs = premint_rustflags(opts.premint, opts.premint_only, opts.premint_report);
+    if !cfgs.is_empty() {
+        let mut flags: Vec<String> = match std::env::var("CARGO_ENCODED_RUSTFLAGS") {
+            Ok(v) if !v.is_empty() => v.split('\x1f').map(str::to_string).collect(),
+            _ => match std::env::var("RUSTFLAGS") {
+                Ok(v) if !v.is_empty() => v.split_whitespace().map(str::to_string).collect(),
+                _ => Vec::new(),
+            },
+        };
+        flags.extend(cfgs);
+        cmd.env("CARGO_ENCODED_RUSTFLAGS", flags.join("\x1f"));
     }
     // User features are forwarded to the wrapper's user-crate dep, NOT
     // applied at the wrapper-crate level (the wrapper itself has no
@@ -407,7 +528,7 @@ mod wrapper_template_tests {
 
     use super::*;
 
-    fn generated_wrapper() -> (String, String) {
+    fn generated_wrapper_with(premint: bool) -> (String, String, String) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project_dir = tmp.path().join("project");
         let wrapper_dir = tmp.path().join("wrapper");
@@ -421,12 +542,18 @@ mod wrapper_template_tests {
         let source = FrameworkSource::Workspace {
             root: tmp.path().join("workspace"),
         };
-        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest)
+        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, premint)
             .expect("generate wrapper");
         (
             fs::read_to_string(wrapper_dir.join("src/main.rs")).unwrap(),
             fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap(),
+            fs::read_to_string(wrapper_dir.join(".cargo/config.toml")).unwrap(),
         )
+    }
+
+    fn generated_wrapper() -> (String, String) {
+        let (main_rs, cargo_toml, _) = generated_wrapper_with(false);
+        (main_rs, cargo_toml)
     }
 
     fn generated_main_rs() -> String {
@@ -485,5 +612,72 @@ mod wrapper_template_tests {
             !cargo_toml.contains("old-core"),
             "wrapper must not mention old-core anywhere:\n{cargo_toml}",
         );
+    }
+
+    /// WIRING half of the premint×SSR contract (the mechanism half —
+    /// stamping, guard veto, link ordering — lives in backend-ssr's unit
+    /// tests). A premint wrapper must: bake `PREMINT = true`, resolve
+    /// `premint.css` from the export/static dir, arm the process guard,
+    /// and thread the link into both render modes. A non-premint wrapper
+    /// must bake `false` and change nothing else.
+    #[test]
+    fn premint_wrapper_bakes_flag_resolves_css_and_arms_guard() {
+        let (main_rs, _cargo, config) = generated_wrapper_with(true);
+        assert!(
+            main_rs.contains("const PREMINT: bool = true;"),
+            "premint wrapper bakes the flag:\n{main_rs}"
+        );
+        assert!(
+            main_rs.contains("backend_ssr::resolve_premint_css"),
+            "wrapper resolves the staged premint.css:\n{main_rs}"
+        );
+        assert!(
+            main_rs.contains("backend_ssr::install_premint_classes"),
+            "wrapper arms the process-wide minted-class guard:\n{main_rs}"
+        );
+        assert!(
+            main_rs.contains("render_document(page, module_ref, Some(EXTRA_HEAD), premint_css.as_ref())"),
+            "export mode threads the link:\n{main_rs}"
+        );
+        assert!(
+            main_rs.contains("premint_css,"),
+            "serve mode threads the link through ServeConfig:\n{main_rs}"
+        );
+        // Premint builds must NOT share the project target dir — the
+        // --cfg RUSTFLAGS would invalidate the whole shared cache.
+        assert!(
+            config.contains("target-dir = \"target-premint\""),
+            "premint wrapper isolates its target dir:\n{config}"
+        );
+
+        let (main_rs, _cargo, config) = generated_wrapper_with(false);
+        assert!(
+            main_rs.contains("const PREMINT: bool = false;"),
+            "non-premint wrapper bakes false:\n{main_rs}"
+        );
+        assert!(
+            !config.contains("target-premint"),
+            "non-premint wrapper keeps the shared target dir:\n{config}"
+        );
+    }
+
+    /// The premint server build must inject the SAME cfgs the wasm build
+    /// injects, or the two sides of hydration disagree about premint
+    /// posture — the exact divergence the old bail refused.
+    #[test]
+    fn premint_build_sets_cfgs_and_isolates_target_dir() {
+        assert_eq!(
+            premint_rustflags(true, false, false),
+            vec!["--cfg", "idealyst_premint"],
+        );
+        assert_eq!(
+            premint_rustflags(true, true, false),
+            vec!["--cfg", "idealyst_premint", "--cfg", "idealyst_premint_only"],
+        );
+        assert_eq!(
+            premint_rustflags(true, false, true),
+            vec!["--cfg", "idealyst_premint", "--cfg", "idealyst_premint_report"],
+        );
+        assert!(premint_rustflags(false, false, false).is_empty());
     }
 }

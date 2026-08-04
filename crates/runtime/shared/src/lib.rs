@@ -369,10 +369,12 @@ pub use breakpoint::{
 pub use container_query::{
     container_axis_name, container_axis_threshold, CONTAINER_MIN_WIDTH_PREFIX,
 };
+// NOTE: `after_ms_scoped` / `raf_loop_scoped` are deliberately absent —
+// the old-arena scoped helpers are crate-internal (see their docs); the
+// author-facing versions are the vocabulary's newcore-anchored shadows.
 pub use scheduling::{
-    after_animation_frame, after_ms, after_ms_detached, after_ms_scoped, drain_buffered_microtasks,
-    is_frame_active, raf_loop, raf_loop_scoped, schedule_microtask, set_frame_active, RafLoop,
-    ScheduledTask,
+    after_animation_frame, after_ms, after_ms_detached, drain_buffered_microtasks,
+    is_frame_active, raf_loop, schedule_microtask, set_frame_active, RafLoop, ScheduledTask,
 };
 pub use logging::{install_logger, is_logger_installed, log, LogLevel, Logger, StderrLogger};
 
@@ -380,6 +382,7 @@ pub use style::{
     cached_stylesheet, default_text_font, derived, install_tokens, pregenerate,
     pregenerate_and_seed, reset_for_ssg_render,
     empty_absolute_sheet, install_minted_classes, minted_class_known, premint_class_name,
+    scan_minted_classes,
     resolve as resolve_style, set_app_background,
     set_app_key_handler, EMPTY_ABSOLUTE_CLASS,
     PREMINT_FONT_INHERIT_CLASS,

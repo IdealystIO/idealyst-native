@@ -69,6 +69,9 @@ fn main() {
             // wrapper bakes `icon_gen::web_icon_link_tags()` into this
             // slot; the example serves without one.
             extra_head: None,
+            // Non-premint example — the generated wrapper is where the
+            // premint link/guard wiring lives.
+            premint_css: None,
         },
         // The same registration the CLI's SSR wrapper calls: the
         // codeblock scene handler, so code panels server-render their

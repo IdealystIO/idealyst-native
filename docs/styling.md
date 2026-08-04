@@ -415,9 +415,10 @@ shared naming scheme:
    with the `<link>` spliced into the served HTML, and compiles the
    wasm with the same cfgs the deploy build gets — so guard warnings
    and po panics surface while iterating, not after a deploy. Requires
-   `--local` (runtime-server mode resolves styles server-side) and
-   trades away the `dev --ssr` hand-off (premint can't combine with
-   hydration).
+   `--local` (runtime-server mode resolves styles server-side).
+   Composes with `dev --ssr`: the SSR wrapper builds with the same
+   premint cfgs, stamps the same classes, and links `premint.css` from
+   every served page.
 2. **Shipped build.** The wasm compiles with `--cfg idealyst_premint`,
    which flips each `stylesheet!` builder's `into_style_prop` to a
    fast path: an all-constant application (plain variant values, no
@@ -669,12 +670,45 @@ list. (Historical scale: the idea-ui catalog started at 218 entries
 across 47 routes; after the text-slot sheets, the shadow split, the
 static auto-premint, and the Table axis conversion it reached zero.)
 
-### Current limits
+### Premint × SSR/SSG
 
-- `--premint` refuses to combine with `--ssg`/`--ssr`: server-rendered
-  HTML would carry live-minted classes while the hydrating client
-  stamps preminted ones, so adoption would diverge. SSR premint needs
-  its own wiring.
+`--premint`/`--premint-only` compose with `--ssg`/`--ssr`. The server
+binary is compiled with the same `--cfg idealyst_premint*` posture as
+the wasm bundle (build-ssr injects the cfgs; premint server builds get
+an isolated `target-premint/` dir because the RUSTFLAGS change would
+otherwise invalidate the project's shared native cache), so the generic
+`Preminted` attach arm stamps the same deterministic `iy-*` classes on
+the server that the hydrating client stamps — and since hydration's
+preminted re-stamp is `classList.add`, adoption meets the classes
+already present and no-ops. Three pieces make the agreement exact:
+
+- **Same guard set.** The generated wrapper resolves the staged
+  `premint.css` (`backend_ssr::resolve_premint_css`, the premint twin of
+  `resolve_bundle_module`), scans its `iy-*` selectors
+  (`runtime_shared::scan_minted_classes` — the text twin of the web
+  boot's JS stylesheet scan) and arms the same minted-class guard per
+  render thread, so server and client make identical
+  premint-vs-engine-fallback decisions per sheet.
+- **Same fall-through names.** Engine-rendered sheets (overrides,
+  `with_computed`, identity-less closures under plain `--premint`) mint
+  `css::hash_class_name(content_key)` `ui-*` classes — one pure function
+  shared by web and SSR, so those agree byte-for-byte too, exactly as
+  they always did for non-premint SSR.
+- **Cascade order.** Every rendered document links `premint.css` BEFORE
+  its inline `<style>`s, mirroring the live web document order, so
+  `ui-*` override/fall-through rules beat premint rules on source order
+  at their shared (0,1,0) specificity.
+
+Under `--ssg-static` the link is the page's only CSS for preminted
+classes — no wasm exists to repair a missing rule — which is why the
+wrapper emits it independent of hydration mode. `--premint-report` on a
+serve-mode server re-warns per request (each renders on a fresh thread
+with a fresh dedup set); dev-only noise, by design. Known follow-up:
+font preloads are extracted from the inline head CSS only, so a font
+used exclusively by preminted rules loads without a preload hint
+(correctness unaffected).
+
+### Current limits
 - What premints: `stylesheet!` builder applications (link-time
   registration), runtime-assembled sheets with a `premint_as` identity,
   and every plain `StyleSheet::r#static` (auto, by content key). A

@@ -613,16 +613,19 @@ recipe!(
 recipe!(
     Progress,
     /// A horizontal progress bar. Set `value` in 0.0..=1.0 for a
-    /// determinate bar, or `indeterminate = true` for an ongoing
-    /// animation when you can't measure progress. `value` is reactive.
+    /// value-driven bar (changes animate to the new width), or pick a
+    /// `mode`: `Indeterminate` sweeps endlessly when you can't measure
+    /// progress; `Simulated` creeps toward full like a fake page
+    /// loader. `value` is reactive.
     pub fn progress_bar() -> ::runtime_core::Element {
-        use crate::{tone, Progress, Stack, StackGap};
+        use crate::{tone, Progress, ProgressMode, Stack, StackGap};
         use ::runtime_core::ui;
 
         ui! {
             Stack(gap = StackGap::Md) {
                 Progress(value = 0.65f32, tone = tone::Primary)
-                Progress(indeterminate = true, tone = tone::Info)
+                Progress(mode = ProgressMode::Indeterminate, tone = tone::Info)
+                Progress(mode = ProgressMode::Simulated, tone = tone::Success)
             }
         }
     }

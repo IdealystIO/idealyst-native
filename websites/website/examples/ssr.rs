@@ -51,7 +51,7 @@ fn main() {
             // Pure rendered screen (no bundle script, no extra head) —
             // these files are opened directly as a static SSR/SEO
             // preview, not hydrated.
-            render_document(&page, None, None)
+            render_document(&page, None, None, None)
         })
         .join()
         .expect("render thread panicked");

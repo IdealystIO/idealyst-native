@@ -289,12 +289,21 @@ pub(crate) fn static_translate_offset(
 /// CALayer commit). Returns `true` when handled natively, `false` to signal the
 /// framework to fall back to the per-frame `set_animated_f32` clock path.
 ///
-/// First-class for **opacity** (the spinner / indeterminate-progress pulse —
-/// the case where the per-frame full-tree CA commit was measurably stealing
-/// scroll frames). Other props return `false` and keep the per-frame path until
-/// their keyPath mapping lands. Rationale: a forever opacity pulse driven per
-/// frame forces a `CA::Transaction::commit` (O(layer-tree)) every frame; the
-/// same pulse as a CAKeyframeAnimation costs the main thread nothing per frame.
+/// First-class for **opacity** (the spinner pulse — the case where the
+/// per-frame full-tree CA commit was measurably stealing scroll frames) and
+/// **TranslateX** (the indeterminate-Progress sweep — a forever translate loop
+/// with the same per-frame cost profile). Other props return `false` and keep
+/// the per-frame path until their keyPath mapping lands. Rationale: a forever
+/// animation driven per frame forces a `CA::Transaction::commit`
+/// (O(layer-tree)) every frame; the same loop as a CAKeyframeAnimation costs
+/// the main thread nothing per frame.
+///
+/// A keyframe animation only drives the PRESENTATION layer — the model value
+/// (alpha / `rebuild_transform`'s model transform) is untouched. Callers must
+/// not drive the same prop through the per-frame `set_animated_f32` path on
+/// the same view concurrently; the framework's `AnimatedValue` fallback
+/// contract (native path taken → no fallback animator started) guarantees
+/// this.
 pub(crate) fn install_keyframe_animation(
     node: &MacosNode,
     prop: AnimProp,
@@ -303,9 +312,10 @@ pub(crate) fn install_keyframe_animation(
     repeat_forever: bool,
     autoreverse: bool,
 ) -> bool {
-    // keyPath mapping. Only opacity is wired so far; everything else falls back.
+    // keyPath mapping; unmapped props fall back to the per-frame clock.
     let key_path = match prop {
         AnimProp::Opacity => "opacity",
+        AnimProp::TranslateX => "transform.translation.x",
         _ => return false,
     };
     if keyframes.len() < 2 || duration_ms == 0 {
@@ -360,8 +370,10 @@ pub(crate) fn install_keyframe_animation(
         let tf: Retained<NSObject> =
             msg_send_id![class!(CAMediaTimingFunction), functionWithName: &*ease];
         let _: () = msg_send![&anim, setTimingFunction: &*tf];
-        // Stable key so a re-install replaces rather than stacks.
-        let anim_key = NSString::from_str("idealyst.keyframe.opacity");
+        // Stable per-keyPath key so a re-install (e.g. the Progress sweep
+        // re-ranging after a resize) replaces rather than stacks, while
+        // animations on different keyPaths coexist.
+        let anim_key = NSString::from_str(&format!("idealyst.keyframe.{key_path}"));
         let _: () = msg_send![layer, addAnimation: &*anim, forKey: &*anim_key];
     }
     true

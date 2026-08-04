@@ -158,9 +158,9 @@ pub struct BuildOptions {
     /// runtime style engine. Pair with `default-features = false` on
     /// backend-web (dropping `style-dynamic`) to remove the engine
     /// from the bundle entirely. Opt-in while the parity soak is
-    /// running; not yet compatible with `hydrate` (SSG/SSR emits
-    /// live-minted classes — the build refuses the combination
-    /// rather than shipping a hydration mismatch).
+    /// running. Composes with `hydrate`: the SSR/SSG server is built
+    /// with the same premint cfgs (build-ssr), so both sides stamp
+    /// identical `iy-*` classes and adoption stays clean.
     pub premint: bool,
 }
 
@@ -328,15 +328,13 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         .join("target/wasm32-unknown-unknown")
         .join(if opts.release { "release" } else { "debug" })
         .join(format!("{}.wasm", manifest.lib_name));
-    if opts.premint && opts.hydrate {
-        anyhow::bail!(
-            "--premint cannot be combined with --ssg/--ssr yet: the \
-             server-rendered HTML would carry live-minted classes while the \
-             hydrating client stamps preminted ones, so adoption would \
-             diverge. Build the SPA form (--web without --ssg/--ssr), or \
-             drop --premint."
-        );
-    }
+    // premint × hydrate COMPOSES now: the SSR/SSG server binary is built
+    // with the same `--cfg idealyst_premint*` posture (build-ssr injects
+    // the cfgs and the wrapper links premint.css + arms the minted-class
+    // guard), so server and client stamp identical deterministic `iy-*`
+    // classes and hydration's `classList.add` re-stamp is a no-op. The
+    // historical bail here refused the combination back when the server
+    // could only emit live-minted classes.
     cargo_build_wasm(
         &wrapper_dir,
         opts.release,

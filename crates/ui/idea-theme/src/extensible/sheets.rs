@@ -2032,6 +2032,20 @@ pub fn installed_progress_sheets() -> ProgressSheets {
 /// Bar thickness (px) per size.
 pub const PROGRESS_DIMS: [(&str, f32); 3] = [("sm", 4.0), ("md", 8.0), ("lg", 12.0)];
 
+/// Fraction of the track the indeterminate sweep segment occupies.
+/// Shared with the `Progress` component's translate math (the sweep
+/// runs from `-fraction × track_width` to `track_width`, so the
+/// segment enters fully hidden on the left and exits fully past the
+/// right edge). Changing this without rebuilding idea-ui keeps the
+/// two in sync because the component reads THIS constant.
+pub const PROGRESS_SWEEP_FRACTION: f32 = 0.4;
+
+/// Width transition (ms) on the determinate fill: a `value` change (or
+/// a Simulated-mode creep step) animates to the new width instead of
+/// snapping. Long enough to read as motion, short enough that a
+/// fast-ticking value never lags more than one step behind.
+pub const PROGRESS_FILL_WIDTH_MS: u32 = 300;
+
 pub struct ProgressSheetBuilder {
     tones: Vec<ToneRef>,
     variants: Vec<VariantRef>,
@@ -2054,8 +2068,20 @@ impl ProgressSheetBuilder {
     pub fn build(self) -> ProgressSheets {
         use runtime_core::{Length, Overflow};
         let pill = || Tokenized::token("radius-pill", Length::Px(999.0));
+        let pill_rules = move || StyleRules {
+            border_top_left_radius: Some(pill()),
+            border_top_right_radius: Some(pill()),
+            border_bottom_left_radius: Some(pill()),
+            border_bottom_right_radius: Some(pill()),
+            ..Default::default()
+        };
 
         // ---- track ----
+        // `cap` — end-cap treatment, `none` (square) by default: a
+        // progress bar is a measurement surface and pill ends visually
+        // under-report the value at the extremes (a 2% fill vanishes
+        // into the round cap). `rounded` opts back into the pill look.
+        // The fill mirrors the axis so its ends match the track's.
         let mut track = StyleSheet::new(move |_vs: &VariantSet| {
             let theme_rc = active_theme();
             let theme_ref = theme_rc
@@ -2065,10 +2091,6 @@ impl ProgressSheetBuilder {
                 background: Some(theme_ref.colors().border.clone()),
                 width: Some(Tokenized::Literal(Length::pct(100.0))),
                 overflow: Some(Overflow::Hidden),
-                border_top_left_radius: Some(pill()),
-                border_top_right_radius: Some(pill()),
-                border_bottom_left_radius: Some(pill()),
-                border_bottom_right_radius: Some(pill()),
                 ..Default::default()
             }
         });
@@ -2079,18 +2101,21 @@ impl ProgressSheetBuilder {
             });
         }
         track = track.variant_default("size", "md");
+        track = track.variant("cap", "none", |_vs| StyleRules::default());
+        track = track.variant("cap", "rounded", move |_vs| pill_rules());
+        track = track.variant_default("cap", "none");
 
         // ---- fill ----
         let mut fill = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
             height: Some(Tokenized::Literal(Length::pct(100.0))),
-            border_top_left_radius: Some(pill()),
-            border_top_right_radius: Some(pill()),
-            border_bottom_left_radius: Some(pill()),
-            border_bottom_right_radius: Some(pill()),
             background_transition: Some(Transition::new(200, Easing::EaseOut)),
             opacity_transition: Some(Transition::new(200, Easing::EaseOut)),
             ..Default::default()
         });
+        // End caps follow the track's `cap` axis (see above).
+        fill = fill.variant("cap", "none", |_vs| StyleRules::default());
+        fill = fill.variant("cap", "rounded", move |_vs| pill_rules());
+        fill = fill.variant_default("cap", "none");
         for tone in &self.tones {
             for variant in &self.variants {
                 let key = format!("{}_{}", tone.current_key(), variant.current_key());
@@ -2114,15 +2139,21 @@ impl ProgressSheetBuilder {
         }
         fill = fill.variant_default("appearance", "primary_filled");
 
-        // `mode` — the indeterminate bar spans the whole track and animates by
-        // transform, so its width is a CONSTANT 100%. (The determinate bar's
-        // width comes from the live value and stays off the sheet.) A variant
-        // arm rather than a call-site computed layer: a constant closure
-        // blocks premint for the whole sheet without expressing anything a
-        // variant can't.
-        fill = fill.variant("mode", "determinate", |_vs| StyleRules::default());
+        // `mode` — the two fill behaviors have CONSTANT sheet-side widths, so
+        // they're variant arms rather than call-site computed layers (a
+        // constant closure blocks premint for the whole sheet without
+        // expressing anything a variant can't):
+        //   - determinate (the `Value` and `Simulated` component modes): the
+        //     width itself is the live value (inline, off the sheet); the arm
+        //     carries the width TRANSITION so every width change animates.
+        //   - indeterminate: a fixed sweep segment that animates by transform
+        //     (translate), so its width is the constant sweep fraction.
+        fill = fill.variant("mode", "determinate", |_vs| StyleRules {
+            width_transition: Some(Transition::new(PROGRESS_FILL_WIDTH_MS, Easing::EaseOut)),
+            ..Default::default()
+        });
         fill = fill.variant("mode", "indeterminate", |_vs| StyleRules {
-            width: Some(Tokenized::Literal(Length::pct(100.0))),
+            width: Some(Tokenized::Literal(Length::pct(PROGRESS_SWEEP_FRACTION * 100.0))),
             ..Default::default()
         });
         fill = fill.variant_default("mode", "determinate");
@@ -2388,6 +2419,63 @@ mod selection_sheet_tests {
         assert_eq!(appearance_arms(&s.fill_sheet), BUILTIN_APPEARANCE_ARMS);
         assert!(has(&s.track_sheet, "size", "sm"));
         assert!(has(&s.track_sheet, "size", "lg"));
+    }
+
+    /// End caps are square unless the `cap=rounded` arm is selected —
+    /// both the track and the fill carry the axis so their ends match.
+    #[test]
+    fn progress_caps_are_square_by_default_rounded_on_opt_in() {
+        crate::testing::with_test_world(|| {
+            crate::theme::install_idea_theme(crate::theme::light_theme());
+            let s = ProgressSheetBuilder::new().build();
+            for sheet in [&s.track_sheet, &s.fill_sheet] {
+                let default_caps = sheet.resolve(&VariantSet::new());
+                assert!(
+                    default_caps.border_top_left_radius.is_none(),
+                    "default caps are square"
+                );
+                let rounded = sheet.resolve(&VariantSet::new().with("cap", "rounded"));
+                assert!(
+                    rounded.border_top_left_radius.is_some()
+                        && rounded.border_bottom_right_radius.is_some(),
+                    "cap=rounded pills the corners"
+                );
+            }
+        });
+    }
+
+    /// The fill's two `mode` arms carry the behavior contracts the
+    /// Progress component relies on: `determinate` animates width
+    /// changes (the Value / Simulated modes' glide), `indeterminate`
+    /// pins the sweep segment to the shared `PROGRESS_SWEEP_FRACTION`
+    /// of the track (the component's translate math assumes exactly
+    /// this width).
+    #[test]
+    fn progress_fill_mode_arms_carry_sweep_width_and_width_transition() {
+        use runtime_core::Length;
+        crate::testing::with_test_world(|| {
+            crate::theme::install_idea_theme(crate::theme::light_theme());
+            let s = ProgressSheetBuilder::new().build();
+
+            let det = s
+                .fill_sheet
+                .resolve(&VariantSet::new().with("mode", "determinate"));
+            let transition = det
+                .width_transition
+                .expect("determinate fill declares a width transition");
+            assert_eq!(transition.duration_ms, PROGRESS_FILL_WIDTH_MS);
+            assert!(det.width.is_none(), "determinate width stays inline (off the sheet)");
+
+            let indet = s
+                .fill_sheet
+                .resolve(&VariantSet::new().with("mode", "indeterminate"));
+            match indet.width.expect("indeterminate fill has a constant sweep width") {
+                Tokenized::Literal(l) => {
+                    assert_eq!(l, Length::pct(PROGRESS_SWEEP_FRACTION * 100.0))
+                }
+                other => panic!("sweep width is a literal percent, got {other:?}"),
+            }
+        });
     }
 
     #[test]

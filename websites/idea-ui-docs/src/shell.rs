@@ -1,22 +1,26 @@
 //! The docs chrome: the design's custom header bar, the grouped +
 //! searchable sidebar with status dots (both built ONCE inside the swap
-//! navigator's `.layout(...)` closure — see `lib.rs`), the central
-//! `page_frame` (group overline, title + status badge, lead, body, Usage
-//! panel), and the per-page helper components every body is built from
+//! navigator's `.layout(...)` closure — see `lib.rs`), the eager
+//! per-screen `screen_frame` scroll shell, the `page_frame_content`
+//! frame (group overline, title + status badge, lead, body, Usage
+//! panel — rendered inside each page's lazy chunk, see `lazy_pages`),
+//! and the per-page helper components every body is built from
 //! (`CodePanel`, `PropsTable`, `DemoSurface`, `Demo`, `Callout`,
 //! `Section`, `P`, `H2`, `H3`).
 //!
 //! Each helper is a real `#[component]` so it dispatches inside `ui!`.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::{
     component, derived, effect, fragment, pressable, signal, switch, ui, when, Breakpoint, Color,
-    Element, IntoElement, SafeAreaSides, Signal, StyleApplication, Tokenized,
+    Element, IntoElement, Ref, SafeAreaSides, ScrollViewHandle, Signal, StyleApplication,
+    Tokenized, ViewHandle,
 };
 use idea_ui::{
-    dark_theme, light_theme, set_idea_theme, typography_kind, Icon, Modal, Spacer, Stack, StackGap,
-    Switch, Typography,
+    current_breakpoint, dark_theme, light_theme, set_idea_theme, typography_kind, Icon, Modal,
+    Spacer, Stack, StackGap, Switch, Typography,
 };
 use idea_ui::{Table, TableCell, TableRow};
 use icons_lucide::SEARCH;
@@ -27,11 +31,11 @@ use crate::routes::{Entry, Status, CATALOG};
 use crate::styles::{
     BrandName, Callout as CalloutBox, CodePanel as CodePanelBox, CodeText, ControlsBox, DemoRow,
     DemoSurface as DemoSurfaceBox, DemoSurfaceContent, DocHeader, GroupOverline, HeaderBrand, HeaderMono, HeaderSpacer,
-    LogoBox, LogoGlyph, MenuButton, MenuGlyph, NavDot, NavDotReady, NavItem, NavItemActive, PagePad, PreviewBox,
-    PreviewSlot, ScreenScroll, SearchDialogBody, SearchFieldRow, SearchInputBare, SearchResultsScroll,
+    LogoBox, LogoGlyph, MenuButton, MenuGlyph, NavDot, NavDotReady, NavItem, NavItemActive, PagePad, PageRow, PageRowMain, PreviewBox,
+    PreviewSlot, ScreenFill, ScreenScroll, ScrollContent, SearchDialogBody, SearchFieldRow, SearchInputBare, SearchResultsScroll,
     SearchTrigger, SearchTriggerText, SegBtn, SegBtnActive, SegBtnText, SegBtnTextActive,
     SegToggle, SidebarBody, SidebarScroll, SidebarSection, StatusBadge, StatusBadgeDetailed, StatusBadgeText,
-    StatusBadgeTextDetailed, TitleRow, UsageLabel, VersionPill,
+    StatusBadgeTextDetailed, TitleRow, TocHeader, TocLink, TocLinkActive, TocPanel, UsageLabel, VersionPill,
 };
 
 const VERSION: &str = "v0.1.0";
@@ -384,12 +388,243 @@ fn nav_item(entry: &'static Entry, active_route: Signal<&'static str>) -> Elemen
 }
 
 // =============================================================================
-// page_frame — the central frame applied to every screen. Pulls the
-// group, title, status and Usage code from the catalog `Entry`; calls
-// the entry's `body` for the demo sections.
+// screen_frame — the eager per-screen shell: the scrolling surface +
+// safe area. Everything visible (the page frame below, or the landing's
+// own layout) renders inside the entry's `body`, which on web is a lazy
+// chunk — so a chunk fetch shows its loading fallback over the whole
+// screen, not sandwiched between eager frame pieces.
+//
+// The frame also owns the scroll plumbing the "On this page" panel
+// needs: a `scroll_y` signal fed by `on_scroll`, plus bound handles for
+// the scroll view, its viewport wrapper, and the content column. They
+// are PROVIDED into the world context ([`ScreenScrollCtx`]) because the
+// page chunk that consumes them builds asynchronously, long after this
+// function returns — the provision is owned by the screen's scope, so
+// it dies (and is replaced) on navigation.
 // =============================================================================
 
-pub fn page_frame(entry: &'static Entry) -> Element {
+/// Per-screen scroll plumbing for the TOC — provided by
+/// [`screen_frame`], injected by [`page_frame_content`].
+#[derive(Clone, Copy)]
+pub struct ScreenScrollCtx {
+    pub scroll_y: Signal<f32>,
+    pub scroll_ref: Ref<ScrollViewHandle>,
+    /// Scroll viewport wrapper: `.absolute_frame().y` is the body's top
+    /// edge, `.height` the visible height.
+    pub viewport_ref: Ref<ViewHandle>,
+    /// Scrolled content column: `.absolute_frame().height` is the total
+    /// scrollable content height.
+    pub content_ref: Ref<ViewHandle>,
+}
+
+pub fn screen_frame(entry: &'static Entry) -> Element {
+    let ctx = ScreenScrollCtx {
+        scroll_y: signal(0.0_f32),
+        scroll_ref: Ref::<ScrollViewHandle>::new(),
+        viewport_ref: Ref::<ViewHandle>::new(),
+        content_ref: Ref::<ViewHandle>::new(),
+    };
+    runtime_world::provide(ctx);
+    let scroll_y = ctx.scroll_y;
+    let body = (entry.body)();
+    ui! {
+        view(style = ScreenFill()) {
+            scroll_view(style = ScreenScroll()) {
+                view(style = ScrollContent()) {
+                    body
+                }.bind(ctx.content_ref)
+            }
+            .bind(ctx.scroll_ref)
+            .on_scroll(move |_x, y| scroll_y.set(y))
+            .safe_area(SafeAreaSides::BOTTOM)
+        }.bind(ctx.viewport_ref)
+    }
+}
+
+// =============================================================================
+// "On this page" — the docs' port of the main website's TOC panel
+// (`websites/website/src/shell.rs::layout_with_toc`, same constants and
+// spy math). Sections register themselves while a page body builds
+// (`collect_toc` in the lazy chunk), the panel renders inside the page
+// frame at Lg+, and the scroll plumbing crosses the lazy boundary via
+// the world-provided [`ScreenScrollCtx`].
+// =============================================================================
+
+/// One entry in a page's "On this page" panel. `handle` binds the
+/// section's outer view; the spy and click math read its
+/// `absolute_frame()` — Backend-trait primitives, uniform everywhere.
+#[derive(Clone)]
+pub struct TocEntry {
+    pub handle: Ref<ViewHandle>,
+    pub label: String,
+}
+
+thread_local! {
+    /// Live only while [`collect_toc`] runs a page-body build.
+    static TOC_COLLECT: RefCell<Option<Vec<TocEntry>>> = const { RefCell::new(None) };
+}
+
+/// Build a page body while collecting the [`Section`] anchors it
+/// mounts, in document order. The lazy chunks wrap every framed page
+/// body in this (see `lazy_pages`).
+pub fn collect_toc(f: impl FnOnce() -> Element) -> (Element, Vec<TocEntry>) {
+    TOC_COLLECT.with(|c| *c.borrow_mut() = Some(Vec::new()));
+    let el = f();
+    let entries = TOC_COLLECT.with(|c| c.borrow_mut().take()).unwrap_or_default();
+    (el, entries)
+}
+
+/// Register a section anchor with the in-flight collection, if any.
+fn toc_register(label: String, handle: Ref<ViewHandle>) {
+    TOC_COLLECT.with(|c| {
+        if let Some(list) = c.borrow_mut().as_mut() {
+            list.push(TocEntry { handle, label });
+        }
+    });
+}
+
+/// Fraction of the body viewport where the "active band" sits — a
+/// section becomes active once its top scrolls above this line (the
+/// MUI / VitePress convention; see the website's `layout_with_toc`).
+const ACTIVE_BAND_FRACTION: f32 = 0.30;
+/// Within this many px of the end of scroll, force-select the last
+/// entry (a short final section might never reach the band).
+const END_OF_SCROLL_EPSILON: f32 = 8.0;
+/// Band-compare tolerance: a click-scroll can land a section 1–4 px
+/// below the band line (integer scrollTop vs f32 signals) — padding
+/// the compare keeps the clicked entry highlighted.
+const BAND_COMPARE_TOLERANCE: f32 = 8.0;
+
+/// Body-scroll metrics reconstructed from the two bound `ViewHandle`s
+/// in [`ScreenScrollCtx`] (defaults until layout reports frames).
+struct ScrollDims {
+    band_y: f32,
+    near_bottom: bool,
+    /// Body's top edge in window coordinates.
+    body_viewport_top: f32,
+}
+
+fn read_body_scroll_dims(current_scroll: f32, ctx: ScreenScrollCtx) -> ScrollDims {
+    let viewport = ctx.viewport_ref.with(|h| h.absolute_frame()).flatten();
+    let Some(viewport) = viewport else {
+        return ScrollDims { band_y: 160.0, near_bottom: false, body_viewport_top: 0.0 };
+    };
+    let height = viewport.height;
+    let scroll_h = ctx
+        .content_ref
+        .with(|h| h.absolute_frame())
+        .flatten()
+        .map(|r| r.height)
+        .unwrap_or(height);
+    let band_y =
+        if height > 0.0 { (height * ACTIVE_BAND_FRACTION).max(80.0) } else { 160.0 };
+    let near_bottom =
+        scroll_h > 0.0 && current_scroll + height >= scroll_h - END_OF_SCROLL_EPSILON;
+    ScrollDims { band_y, near_bottom, body_viewport_top: viewport.y }
+}
+
+/// Scroll-spy: pick the active entry whenever `scroll_y` changes — the
+/// section with the largest top still inside the band wins; at the end
+/// of scroll the last entry force-selects. Owned by the page chunk's
+/// scope (dies on navigation with the provision it reads).
+fn install_scroll_spy(
+    entries: Vec<TocEntry>,
+    ctx: ScreenScrollCtx,
+    active_idx: Signal<Option<usize>>,
+) {
+    effect!({
+        let current_scroll = ctx.scroll_y.get();
+        let dims = read_body_scroll_dims(current_scroll, ctx);
+        // Force-select the last entry only when the user actually
+        // scrolled there: the spy's first run happens at chunk build,
+        // BEFORE the fresh content's layout replaces the loading
+        // fallback's viewport-height measurement — a `scroll == 0`
+        // near-bottom read is that stale state, not the real page end.
+        if dims.near_bottom && current_scroll > 0.0 && !entries.is_empty() {
+            active_idx.set(Some(entries.len() - 1));
+        } else {
+            let mut active: Option<usize> = None;
+            for (i, e) in entries.iter().enumerate() {
+                let section_top = e.handle.with(|h| h.absolute_frame()).flatten().map(|r| r.y);
+                if let Some(top) = section_top {
+                    if top - dims.body_viewport_top <= dims.band_y + BAND_COMPARE_TOLERANCE {
+                        active = Some(i);
+                    }
+                }
+            }
+            // Nothing above the band yet (page top): light the first
+            // entry rather than none — the reader is at its section.
+            active_idx.set(active.or(if entries.is_empty() { None } else { Some(0) }));
+        }
+    });
+}
+
+/// The panel: header + one link per entry, active highlight from the
+/// spy, clicks scroll the body via the bound `ScrollViewHandle`.
+fn render_toc(
+    entries: Vec<TocEntry>,
+    active_idx: Signal<Option<usize>>,
+    ctx: ScreenScrollCtx,
+) -> Element {
+    ui! {
+        view(style = TocPanel()) {
+            text(style = TocHeader()) { "On this page".to_string() }
+            for (i, entry) in entries.iter().enumerate() {
+                { toc_link(i, entry.clone(), active_idx, ctx) }
+            }
+        }
+    }
+}
+
+/// One TOC link — pin the clicked entry active, then scroll the body
+/// so the section's top lands on the active band (window → body
+/// coordinate translation via the viewport's `absolute_frame`).
+fn toc_link(
+    index: usize,
+    entry: TocEntry,
+    active_idx: Signal<Option<usize>>,
+    ctx: ScreenScrollCtx,
+) -> Element {
+    let label_text = entry.label.clone();
+    let style = move || {
+        TocLink()
+            .active(if active_idx.get() == Some(index) {
+                TocLinkActive::On
+            } else {
+                TocLinkActive::Off
+            })
+            .into_style_application()
+    };
+    let children: Vec<Element> = vec![ui! { text(style = style) { label_text } }];
+    let bound = pressable(children, move || {
+        // Pin immediately — the spy re-fires on the impending scroll
+        // and the band tolerance keeps it from flickering off.
+        active_idx.set(Some(index));
+        let section_window_y = entry
+            .handle
+            .with(|h| h.absolute_frame())
+            .flatten()
+            .map(|r| r.y)
+            .unwrap_or(0.0);
+        let current_scroll = ctx.scroll_y.get();
+        let dims = read_body_scroll_dims(current_scroll, ctx);
+        let section_body_y = section_window_y - dims.body_viewport_top;
+        let target = (current_scroll + section_body_y - dims.band_y).max(0.0);
+        ctx.scroll_ref.with(|h| h.scroll_to(0.0, target));
+    });
+    IntoElement::into_element(bound)
+}
+
+// =============================================================================
+// page_frame_content — the central frame applied to every component
+// page, rendered INSIDE the page's lazy chunk (see `lazy_pages`). Pulls
+// the group, title, status and Usage code from the catalog `Entry`;
+// `body` is the page's demo sections and `toc` their collected
+// anchors. The Overview landing skips this — its body owns the whole
+// layout inside the wide `LandingPad` column.
+// =============================================================================
+
+pub fn page_frame_content(entry: &'static Entry, body: Element, mut toc: Vec<TocEntry>) -> Element {
     let group = crate::routes::group_for(entry.route.name()).unwrap_or("");
     let detailed = entry.status == Status::Detailed;
     let status_label = if detailed { "Detailed" } else { "Preview" };
@@ -402,7 +637,6 @@ pub fn page_frame(entry: &'static Entry) -> Element {
         StatusBadgeTextDetailed::Off
     });
 
-    let body = (entry.body)();
     let lead = entry.desc.to_string();
     let title = entry.name.to_string();
 
@@ -410,47 +644,57 @@ pub fn page_frame(entry: &'static Entry) -> Element {
         ui! { view {} }
     } else {
         let code = entry.code.to_string();
+        // The Usage panel gets its own TOC anchor, after the sections.
+        let usage_anchor: Ref<ViewHandle> = Ref::new();
+        toc.push(TocEntry { handle: usage_anchor, label: "Usage".to_string() });
         ui! {
             view {
                 text(style = UsageLabel()) { "Usage".to_string() }
                 CodePanel(src = code)
-            }
+            }.bind(usage_anchor)
         }
     };
 
-    ui! {
-        scroll_view(style = ScreenScroll()) {
-            view(style = PagePad()) {
-                text(style = GroupOverline()) { group.to_string() }
-                view(style = TitleRow()) {
-                    Typography(content = title, kind = typography_kind::H1)
-                    view(style = badge_style) {
-                        text(style = badge_text_style) { status_label.to_string() }
-                    }
+    let reading_col: Element = ui! {
+        view(style = PagePad()) {
+            text(style = GroupOverline()) { group.to_string() }
+            view(style = TitleRow()) {
+                Typography(content = title, kind = typography_kind::H1)
+                view(style = badge_style) {
+                    text(style = badge_text_style) { status_label.to_string() }
                 }
-                Typography(content = lead, kind = typography_kind::BodyLg, muted = true)
-                body
-                usage
             }
-        }
-        .safe_area(SafeAreaSides::BOTTOM)
-    }
-}
-
-// =============================================================================
-// landing_frame — the full-bleed frame for the Overview landing screen.
-// Unlike `page_frame`, it adds NO title block / status badge / Usage
-// panel; the page body (`pages::overview`) owns its whole layout inside
-// the wide `LandingPad` column. Just the scrolling surface + safe area.
-// =============================================================================
-
-pub fn landing_frame(entry: &'static Entry) -> Element {
-    let body = (entry.body)();
-    ui! {
-        scroll_view(style = ScreenScroll()) {
+            Typography(content = lead, kind = typography_kind::BodyLg, muted = true)
             body
+            usage
         }
-        .safe_area(SafeAreaSides::BOTTOM)
+    };
+
+    // The "On this page" column: only when the screen provided its
+    // scroll plumbing and the page has anchors; only rendered at Lg+
+    // (`when` mounts/unmounts the panel + its subtree reactively, so a
+    // resize across the threshold doesn't leave a hidden spy running).
+    let toc_col: Element = match runtime_world::inject::<ScreenScrollCtx>() {
+        Some(ctx) if !toc.is_empty() => {
+            let active_idx: Signal<Option<usize>> = signal(None);
+            install_scroll_spy(toc.clone(), ctx, active_idx);
+            let entries = toc;
+            when(
+                move || matches!(current_breakpoint().get(), Breakpoint::Lg | Breakpoint::Xl),
+                move || render_toc(entries.clone(), active_idx, ctx),
+                || runtime_core::view(Vec::new()).into_element(),
+            )
+        }
+        _ => runtime_core::view(Vec::new()).into_element(),
+    };
+
+    ui! {
+        view(style = PageRow()) {
+            view(style = PageRowMain()) {
+                reading_col
+            }
+            toc_col
+        }
     }
 }
 
@@ -726,11 +970,19 @@ pub struct SectionProps {
 pub fn Section(props: SectionProps) -> Element {
     let title = props.title;
     let children = props.children;
+    // "On this page" anchor — registered only while a page body is
+    // being collected (`collect_toc` in the lazy chunks), no-op
+    // anywhere else. The wrapper view exists to carry the bound
+    // handle the spy/click math reads.
+    let anchor: Ref<ViewHandle> = Ref::new();
+    toc_register(title.clone(), anchor);
     ui! {
-        Stack(gap = StackGap::Md) {
-            Typography(content = title, kind = typography_kind::H2)
-            children
-        }
+        view {
+            Stack(gap = StackGap::Md) {
+                Typography(content = title, kind = typography_kind::H2)
+                children
+            }
+        }.bind(anchor)
     }
 }
 

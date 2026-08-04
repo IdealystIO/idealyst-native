@@ -43,9 +43,11 @@ pub struct Entry {
     pub token: &'static str,
     /// One-line description — the page lead under the title.
     pub desc: &'static str,
-    /// Builds the page body (demo sections only; the frame adds the
-    /// title block + Usage panel). Points at the page's `lazy_pages`
-    /// shim, so on web each body loads as its own wasm chunk.
+    /// Builds everything visible on the screen. Points at the page's
+    /// `lazy_pages` shim, so on web each body loads as its own wasm
+    /// chunk; the chunk wraps the demo sections in
+    /// `shell::page_frame_content` (title block + Usage panel), so the
+    /// chunk's loading fallback covers the whole screen.
     pub body: fn() -> Element,
     /// Optional `Usage` snippet. Empty string = no panel.
     pub code: &'static str,
@@ -63,8 +65,6 @@ pub struct Group {
 
 // Get started
 pub const OVERVIEW_ROUTE: Route<()> = Route::<()>::new("overview", "/overview");
-/// Every component on one page — the cross-platform render-parity fixture.
-pub const ALL_ROUTE: Route<()> = Route::<()>::new("all", "/all");
 // Foundations
 pub const COLORS_ROUTE: Route<()> = Route::<()>::new("colors", "/foundations/color");
 pub const INTENTS_ROUTE: Route<()> = Route::<()>::new("intents", "/foundations/intents");
@@ -147,17 +147,6 @@ pub const CATALOG: &[Group] = &[
                 desc: "The idea-ui component library — a token-driven UI kit where every \
                     component composes from a shared, swappable design vocabulary.",
                 body: lazy_pages::overview,
-                code: "",
-            },
-            Entry {
-                route: &ALL_ROUTE,
-                name: "All Components",
-                status: Detailed,
-                token: "render-parity fixture",
-                desc: "Every component rendered on one page, each section anchored with a \
-                    stable test_id. The cross-platform render-parity fixture — capture it on \
-                    web and macОS and diff (see `tests/parity.rs`).",
-                body: lazy_pages::all,
                 code: "",
             },
         ],
@@ -315,9 +304,10 @@ pub const CATALOG: &[Group] = &[
                 name: "Progress",
                 status: Preview,
                 token: "intent-*-solid-bg",
-                desc: "Determinate and indeterminate progress.",
+                desc: "A linear progress bar: value-driven with animated changes, an \
+                    endless indeterminate sweep, or a simulated loading creep.",
                 body: lazy_pages::progress,
-                code: "",
+                code: "Progress(mode = ProgressMode::Indeterminate, tone = tone::Info)",
             },
             Entry {
                 route: &BADGE_ROUTE,

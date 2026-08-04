@@ -425,7 +425,16 @@ pub fn raf_loop<F: FnMut() + 'static>(f: F) -> RafLoop {
 /// silently drops its callback outside a scope. If you need a
 /// timer that fires regardless of whether you're in a scope, use
 /// [`after_ms_detached`].
-pub fn after_ms_scoped<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
+/// CRATE-INTERNAL — author-facing code must use the newcore-anchored
+/// shadow (`runtime_vocabulary::scoped_scheduling`, re-exported as
+/// `runtime_core::after_ms_scoped`). This pre-World version re-enters
+/// only the OLD arena's scope/effect ctx, never the World session, so
+/// it is only safe for substrate callbacks that touch no world state
+/// (e.g. `animation::binding`'s post-mount backend re-applies). It was
+/// demoted from `pub` after an idea-ui component grabbed it through the
+/// `runtime_core::scheduling` module re-export and its world-signal
+/// timer chain silently died.
+pub(crate) fn after_ms_scoped<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
     let ctx = crate::reactive::capture_reactive_ctx();
     // Teardown-safety flag (see module doc above `after_ms_scoped` and
     // the `scheduling_scoped` regression). `cancelAnimationFrame` /
@@ -476,7 +485,9 @@ pub fn after_ms_scoped<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
 ///
 /// **Outside any reactive scope this is a no-op** — see
 /// [`after_ms_scoped`] for the rationale.
-pub fn raf_loop_scoped<F: FnMut() + 'static>(mut f: F) {
+/// CRATE-INTERNAL — same demotion rationale as [`after_ms_scoped`]:
+/// authors use the newcore-anchored `runtime_core::raf_loop_scoped`.
+pub(crate) fn raf_loop_scoped<F: FnMut() + 'static>(mut f: F) {
     let ctx = crate::reactive::capture_reactive_ctx();
     // Teardown-safety flag — see `after_ms_scoped` for the full
     // rationale. This is the case the QuillEMR notetaker teardown-race

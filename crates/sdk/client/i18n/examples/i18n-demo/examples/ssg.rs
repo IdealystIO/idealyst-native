@@ -45,7 +45,7 @@ fn main() {
             }
             let page = render_path("/", i18n_demo::app);
             // Static SSR/SEO preview (no hydration bundle script).
-            render_document(&page, None, None)
+            render_document(&page, None, None, None)
         })
         .join()
         .expect("render thread panicked");

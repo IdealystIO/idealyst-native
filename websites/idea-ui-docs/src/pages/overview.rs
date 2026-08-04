@@ -1,8 +1,9 @@
 //! Overview — the landing screen (the design's `D.home`).
 //!
-//! Unlike the component pages, the Overview is rendered **full-bleed** by
-//! `shell::landing_frame` (no group overline / title / status / Usage
-//! panel), so this module owns its whole layout: the hero, the stat row,
+//! Unlike the component pages, the Overview renders **full-bleed** (its
+//! lazy chunk skips `shell::page_frame_content` — no group overline /
+//! title / status / Usage panel, and `LandingPad` spans the full outlet
+//! width), so this module owns its whole layout: the hero, the stat row,
 //! the Principles feature grid, the token-resolution strip, and the
 //! Catalog grid. The hero CTAs and catalog cards are in-app navigation
 //! `link`s (the idiomatic route-jump primitive) wrapping styled views —

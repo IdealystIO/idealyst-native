@@ -38,6 +38,7 @@
 
 mod a11y;
 mod animated;
+mod keyframes;
 mod batch_queue;
 mod introspect;
 pub mod newcore;
@@ -3458,6 +3459,25 @@ impl runtime_shared::ViewOps for WebViewOps {
         if let Some(n) = node.downcast_ref::<web_sys::Node>() {
             crate::set_animated_color(n, prop, value);
         }
+    }
+
+    /// Compositor-driven keyframe loop — the web twin of the macOS
+    /// render-server path. See `keyframes.rs` for the mapping table
+    /// and contract; unmapped props return `false` (per-frame clock
+    /// fallback).
+    fn install_keyframe_animation(
+        &self,
+        node: &dyn std::any::Any,
+        prop: runtime_shared::animation::AnimProp,
+        keyframes: &[(f32, f32)],
+        duration_ms: u32,
+        repeat_forever: bool,
+        autoreverse: bool,
+    ) -> bool {
+        let Some(el) = element_from_any(node) else {
+            return false;
+        };
+        crate::keyframes::install(&el, prop, keyframes, duration_ms, repeat_forever, autoreverse)
     }
 
     /// Layout-change callback. Backed by `ResizeObserver`, which

@@ -2,8 +2,9 @@
 //!
 //! A single [`routes::CATALOG`] table drives everything: the grouped,
 //! searchable sidebar, the custom header bar with the Light/Dark toggle,
-//! and the per-screen page frame (`shell::page_frame`) that renders the
-//! group overline, title, status badge, lead, body, and Usage panel.
+//! and the per-screen frame (`shell::page_frame_content`, rendered
+//! inside each page's lazy chunk) with the group overline, title,
+//! status badge, lead, body, and Usage panel.
 //!
 //! Navigation is the outlet model: a [`SwapNavigator`] owns the screens
 //! and swaps the one visible screen into its outlet; the chrome is plain
@@ -16,13 +17,15 @@
 //!
 //! - `lib.rs` (this) — `app()` entry: theme install + SwapNavigator wiring.
 //! - `routes.rs` — the `CATALOG` (groups → entries) + route constants.
-//! - `shell.rs` — header / sidebar / `page_frame` + page-template helpers.
+//! - `shell.rs` — header / sidebar / `screen_frame` scroll shell /
+//!   `page_frame_content` + page-template helpers.
 //! - `styles.rs` — local stylesheets for chrome only.
 //! - `pages/*.rs` — one module per design group; each exports body-only
 //!   `pub fn name() -> Element`.
 //! - `lazy_pages.rs` — the per-page `#[component(lazy)]` chunk
 //!   boundaries the catalog's `body` slots route through, so on web each
-//!   page ships as its own wasm chunk.
+//!   page ships as its own wasm chunk. The chunk renders the page frame
+//!   too, so its loading fallback owns the whole screen.
 
 use runtime_core::{effect, signal, ui, Breakpoint, Element, Signal};
 use idea_ui_nav::AppShell;
@@ -119,19 +122,14 @@ pub fn app() -> Element {
         ..Default::default()
     });
 
-    // One screen per catalog entry — same page/landing frames; the shell
-    // helpers are core-agnostic through the facade alias.
+    // One screen per catalog entry. `screen_frame` is just the eager
+    // scroll shell — everything visible (page frame included) renders
+    // inside the entry's lazy body chunk, so the chunk's loading state
+    // covers the whole screen.
     let mut builder = runtime_vocabulary::builders::swap_navigator(DEFAULT_ROUTE);
     for group in CATALOG {
         for entry in group.entries {
-            let is_landing = entry.route.name() == routes::OVERVIEW_ROUTE.name();
-            builder = builder.screen(entry.route.clone(), move |_| {
-                if is_landing {
-                    shell::landing_frame(entry)
-                } else {
-                    shell::page_frame(entry)
-                }
-            });
+            builder = builder.screen(entry.route.clone(), move |_| shell::screen_frame(entry));
         }
     }
 

@@ -127,20 +127,41 @@ fn current_anchor() -> Option<Anchor> {
         let anchor = Anchor::new();
         let guard = KillOnDrop(anchor.clone());
         runtime_world::on_cleanup(move || drop(guard));
+        // ALSO die with the enclosing build collector, when there is
+        // one: an effect body may be BUILDING a component subtree (a
+        // navigator's swap effect realizing a screen whose lazy-loading
+        // fallback schedules timers). The subtree can be torn down
+        // WITHOUT the effect ever re-running — the chunk lands, the
+        // fallback's `Realized` (and its signals) drop, the swap effect
+        // lives on — and the pending shot then fired into a freed slot
+        // (the docs route-loader's stale-signal-handle panic). `kill`
+        // is idempotent, so whichever lifetime ends first wins and the
+        // other guard's later drop is a no-op.
+        if runtime_world::in_collector() {
+            own_kill_guard_in_collector(&anchor);
+        }
         return Some(anchor);
     }
     if runtime_world::is_entered() {
+        // No effect running: the collector keepalive alone (component
+        // subtree / boot `collect_owned` — world root as last resort).
         let anchor = Anchor::new();
-        let guard = KillOnDrop(anchor.clone());
-        // Dependency-free effect: runs once, never re-fires, owns the
-        // guard for the collector's lifetime (component subtree /
-        // boot `collect_owned` — world root as last resort).
-        let _ = runtime_world::effect(move || {
-            let _ = &guard;
-        });
+        own_kill_guard_in_collector(&anchor);
         return Some(anchor);
     }
     None
+}
+
+/// Park a kill-guard for `anchor` in the CURRENT ownership collector
+/// via a dependency-free effect: it runs once, never re-fires, and its
+/// slot is owned by the innermost `collect_owned` (world root when
+/// none), so the guard drops — killing the anchor — exactly when that
+/// subtree's `Owned` does.
+fn own_kill_guard_in_collector(anchor: &Anchor) {
+    let guard = KillOnDrop(anchor.clone());
+    let _ = runtime_world::effect(move || {
+        let _ = &guard;
+    });
 }
 
 /// Run `f` with `anchor` pushed as the ambient deferred anchor, so

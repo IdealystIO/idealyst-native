@@ -254,6 +254,9 @@ fn ssg_crawl_and_ssr_serve_full_site_byte_parity() {
         bundle_module: None,
         static_dir: None,
         extra_head: None,
+        // Non-premint posture — this gate's corpus is frozen non-premint
+        // output; `None` keeps every byte identical.
+        premint_css: None,
     };
     {
         let addr = addr.clone();
@@ -276,6 +279,7 @@ fn ssg_crawl_and_ssr_serve_full_site_byte_parity() {
     // isolation reproduces the identical bytes.)
     let direct = backend_ssr::render_document(
         result.pages.get(SERVE_ROUTE).expect("crawl covered the served route"),
+        None,
         None,
         None,
     );

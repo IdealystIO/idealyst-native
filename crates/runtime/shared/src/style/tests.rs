@@ -2072,6 +2072,32 @@ fn regression_minted_class_veto_warns_once_per_class() {
     );
 }
 
+/// The text scanner feeds the SSR/SSG server's guard from `premint.css`
+/// on disk — it must find every `iy-*` class the web backend's JS
+/// stylesheet scan would, wherever the selector sits.
+#[test]
+fn scan_minted_classes_finds_classes_in_media_and_where_wrapped_selectors() {
+    let css = "\
+        .iy-aaa111 { color: #111 }\n\
+        @media (min-width: 900px) { .iy-bbb222-open-on { opacity: 1 } }\n\
+        @container (min-width: 400px) { .iy-ccc333 .iy-ddd444 { gap: 4px } }\n\
+        :where(.iy-eee555) { font-family: inherit }\n\
+        .ui-not-premint { color: #222 }\n\
+        .iy-aaa111:hover { color: #333 }\n";
+    let found = crate::scan_minted_classes(css);
+    assert_eq!(
+        found,
+        vec![
+            "iy-aaa111".to_string(),
+            "iy-bbb222-open-on".to_string(),
+            "iy-ccc333".to_string(),
+            "iy-ddd444".to_string(),
+            "iy-eee555".to_string(),
+        ],
+        "every iy-* selector token once, ui-* and pseudo-suffixed repeats excluded"
+    );
+}
+
 /// `attaches_preminted` is the components' read-back gate (Button icon
 /// tint et al.): true exactly when the build ships build-time CSS
 /// (`--cfg idealyst_premint`) AND the application premints. Without the
