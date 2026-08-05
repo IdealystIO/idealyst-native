@@ -91,6 +91,8 @@ pub(crate) mod web_util;
 mod android;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 mod ios;
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+mod linux;
 
 // The walker translates a parsed `usvg::Tree` into trait-driven calls
 // against per-backend native vector primitives. Only the iOS and
@@ -253,7 +255,14 @@ static OPS: &dyn SvgOps = web_glue::OPS;
 static OPS: &dyn SvgOps = crate::ios::OPS;
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 static OPS: &dyn SvgOps = crate::android::OPS;
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+static OPS: &dyn SvgOps = crate::linux::OPS;
+#[cfg(not(any(
+    target_arch = "wasm32",
+    target_os = "ios",
+    target_os = "android",
+    target_os = "linux"
+)))]
 static OPS: &dyn SvgOps = &UnsupportedOps;
 
 // ============================================================================
@@ -409,6 +418,24 @@ fn mount_svg_ios(
     node
 }
 
+/// Linux (GTK4) mount handler — `Registry<LinuxBackend>`-concrete.
+///
+/// Unlike iOS/Android (which walk `usvg` into native vector primitives),
+/// the GTK leaf rasterizes with resvg + tiny-skia into a `gdk::MemoryTexture`
+/// shown by a `gtk::Picture` — see `linux.rs` for why the walker doesn't fit
+/// GTK's immediate-mode snapshot API.
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+fn mount_svg_linux(
+    cx: &mut MountCx<'_, backend_linux::LinuxBackend>,
+    prim: &Rc<SvgPrim>,
+    _children: Vec<Element>,
+) -> backend_linux::LinuxNode {
+    let backend = cx.backend().clone();
+    let node = crate::linux::build(&prim.props, &mut backend.borrow_mut());
+    finish_mount(&backend, &node, prim);
+    node
+}
+
 /// Android mount handler — `Registry<AndroidBackend>`-concrete.
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 fn mount_svg_android(
@@ -450,6 +477,14 @@ where
         let any: &mut dyn Any = registry;
         if let Some(reg) = any.downcast_mut::<Registry<backend_android::AndroidBackend>>() {
             reg.register::<SvgPrim, _>(mount_svg_android);
+            return;
+        }
+    }
+    #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_linux::LinuxBackend>>() {
+            reg.register::<SvgPrim, _>(mount_svg_linux);
             return;
         }
     }
