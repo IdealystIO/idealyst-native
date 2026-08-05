@@ -28,8 +28,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk4::prelude::*;
-use runtime_core::{Element, Owner};
+use runtime_core::Element;
 
+use backend_linux::newcore::{self, NewCoreApp};
 use backend_linux::LinuxBackend;
 
 mod scheduler;
@@ -101,9 +102,11 @@ where
         Box::new(build_ui),
     ))));
 
-    // Keep the mounted `Owner` (and the backend) alive for the window's
-    // lifetime — dropping the `Owner` tears the whole UI down.
-    let keep: Rc<RefCell<Option<(Owner, Rc<RefCell<LinuxBackend>>)>>> =
+    // Keep the mounted `NewCoreApp` (and the backend) alive for the
+    // window's lifetime. v2 replaced the reactive `Owner` with this: it
+    // owns the realized tree, the registry and the world, and drops them
+    // in field order on `stop()`.
+    let keep: Rc<RefCell<Option<(NewCoreApp, Rc<RefCell<LinuxBackend>>)>>> =
         Rc::new(RefCell::new(None));
     let keep_for_activate = keep.clone();
 
@@ -143,7 +146,13 @@ where
         // for its whole lifetime); a general app would want to gate the
         // pump on "is any animation active" (e.g. off the animation
         // clock's registration count) — a follow-on optimization.
-        let owner = runtime_core::mount(backend_rc.clone(), build_ui);
+        // v2 boot: `newcore::start` installs the time source, builds the
+        // scene `Registry` (builtins + any app handlers), enters the world
+        // and realizes the tree. It replaces `runtime_core::mount`, which
+        // went away with the old walker. The registry closure is a no-op
+        // here — `run_with`'s `register` hook already ran against the
+        // backend above, and this host ships no SDK payload handlers.
+        let app_handle = newcore::start(backend_rc.clone(), |_registry| {}, build_ui);
         let backend_for_pump = backend_rc.clone();
         gtk4::glib::source::timeout_add_local(std::time::Duration::from_millis(16), move || {
             if let Ok(b) = backend_for_pump.try_borrow() {
@@ -151,13 +160,18 @@ where
             }
             gtk4::glib::ControlFlow::Continue
         });
-        *keep_for_activate.borrow_mut() = Some((owner, backend_rc));
+        *keep_for_activate.borrow_mut() = Some((app_handle, backend_rc));
 
         window.present();
     });
 
     let exit = app.run();
-    // Drop the mounted tree explicitly before returning.
-    keep.borrow_mut().take();
+    // Unmount explicitly before returning, on the GTK main thread while
+    // its TLS is still intact — `stop()` runs the reactive scope cleanups
+    // and uninstalls the flush driver / dispatch hook, none of which a
+    // plain drop of the tuple would do.
+    if let Some((app_handle, _backend)) = keep.borrow_mut().take() {
+        app_handle.stop();
+    }
     exit.into()
 }
