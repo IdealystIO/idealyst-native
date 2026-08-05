@@ -67,7 +67,7 @@ dependencies = [
  "accesskit_consumer",
  "hashbrown 0.16.1",
  "objc2 0.5.2",
- "objc2-app-kit",
+ "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
 ]
 
@@ -349,6 +349,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
 dependencies = [
  "derive_arbitrary",
+]
+
+[[package]]
+name = "arboard"
+version = "3.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0348a1c054491f4bfe6ab86a7b6ab1e44e45d899005de92f58b3df180b36ddaf"
+dependencies = [
+ "clipboard-win",
+ "image",
+ "log",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "parking_lot",
+ "percent-encoding",
+ "windows-sys 0.60.2",
+ "x11rb",
 ]
 
 [[package]]
@@ -718,9 +738,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "atomic_refcell"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21e4227379beff4205943696e6c3e0cd809bacdf3f0edd6e3dd153e2269571a4"
+
+[[package]]
 name = "audio"
 version = "1.2.2"
 dependencies = [
+ "gio",
+ "glib",
+ "gstreamer",
  "jni 0.21.1",
  "js-sys",
  "ndk-context",
@@ -1450,11 +1479,18 @@ name = "backend-linux"
 version = "1.2.2"
 dependencies = [
  "gtk4",
+ "inventory",
+ "libc",
+ "pango",
+ "pollster 0.4.0",
  "runtime-layout",
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
+ "wgpu",
+ "wgpu-hal",
+ "wgpu-types",
 ]
 
 [[package]]
@@ -1465,7 +1501,7 @@ dependencies = [
  "block2 0.5.1",
  "inventory",
  "objc2 0.5.2",
- "objc2-app-kit",
+ "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
  "raw-window-handle",
  "runtime-layout",
@@ -1559,6 +1595,7 @@ dependencies = [
 name = "backend-windows"
 version = "1.2.2"
 dependencies = [
+ "raw-window-handle",
  "runtime-layout",
  "runtime-scene",
  "runtime-shared",
@@ -1868,6 +1905,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-linux"
+version = "1.2.2"
+dependencies = [
+ "anyhow",
+ "build-ios",
+ "tempfile",
+]
+
+[[package]]
 name = "build-macos"
 version = "1.2.2"
 dependencies = [
@@ -1957,6 +2003,16 @@ dependencies = [
  "tempfile",
  "toml 0.8.23",
  "wasm-split-cli",
+]
+
+[[package]]
+name = "build-windows"
+version = "1.2.2"
+dependencies = [
+ "anyhow",
+ "build-ios",
+ "tempfile",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -2091,6 +2147,9 @@ name = "camera"
 version = "1.2.2"
 dependencies = [
  "futures-channel",
+ "glib",
+ "gstreamer",
+ "gstreamer-app",
  "jni 0.21.1",
  "js-sys",
  "media-stream",
@@ -2173,14 +2232,16 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
  "backend-ios-mobile",
+ "backend-linux",
  "backend-macos",
  "backend-web",
  "canvas-core",
  "host-mock",
+ "inventory",
  "jni 0.21.1",
  "js-sys",
  "objc2 0.5.2",
- "objc2-app-kit",
+ "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
  "runtime-scene",
@@ -2196,9 +2257,12 @@ dependencies = [
 name = "canvas-vello"
 version = "1.2.2"
 dependencies = [
+ "backend-linux",
  "canvas-core",
  "canvas-native",
+ "glow",
  "js-sys",
+ "libc",
  "log",
  "media-stream",
  "objc2 0.6.4",
@@ -2221,6 +2285,8 @@ dependencies = [
  "wasm-bindgen-test",
  "web-sys",
  "wgpu",
+ "wgpu-hal",
+ "wgpu-types",
 ]
 
 [[package]]
@@ -2370,6 +2436,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 name = "clipboard"
 version = "1.2.2"
 dependencies = [
+ "arboard",
  "jni 0.21.1",
  "js-sys",
  "ndk-context",
@@ -2381,6 +2448,15 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "clipboard-win"
+version = "5.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
+dependencies = [
+ "error-code",
 ]
 
 [[package]]
@@ -2414,14 +2490,18 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
  "backend-ios-mobile",
+ "backend-linux",
  "backend-macos",
+ "backend-windows",
+ "gtk4",
  "host-mock",
  "jni 0.21.1",
  "log",
  "objc2 0.5.2",
- "objc2-app-kit",
+ "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
+ "runtime-core",
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
@@ -2515,7 +2595,9 @@ dependencies = [
 name = "connectivity"
 version = "1.2.2"
 dependencies = [
+ "async-channel",
  "block2 0.5.1",
+ "futures-lite",
  "jni 0.21.1",
  "js-sys",
  "ndk-context",
@@ -2524,6 +2606,7 @@ dependencies = [
  "runtime-vocabulary",
  "wasm-bindgen",
  "web-sys",
+ "zbus",
 ]
 
 [[package]]
@@ -3759,6 +3842,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "error-code"
+version = "3.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
+
+[[package]]
 name = "etagere"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3836,6 +3925,12 @@ name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
+
+[[package]]
+name = "fax"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "caf1079563223d5d59d83c85886a56e586cfd5c1a26292e971a0fa266531ac5a"
 
 [[package]]
 name = "fdeflate"
@@ -4098,9 +4193,17 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 name = "form"
 version = "1.2.2"
 dependencies = [
+ "backend-android-core",
+ "backend-android-mobile",
+ "backend-ios-mobile",
+ "backend-linux",
  "backend-web",
+ "gtk4",
  "host-mock",
+ "jni 0.21.1",
  "js-sys",
+ "objc2 0.5.2",
+ "objc2-ui-kit",
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
@@ -4768,6 +4871,155 @@ dependencies = [
 ]
 
 [[package]]
+name = "gstreamer"
+version = "0.23.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8757a87f3706560037a01a9f06a59fcc7bdb0864744dcf73546606e60c4316e1"
+dependencies = [
+ "cfg-if",
+ "futures-channel",
+ "futures-core",
+ "futures-util",
+ "glib",
+ "gstreamer-sys",
+ "itertools 0.14.0",
+ "libc",
+ "muldiv",
+ "num-integer",
+ "num-rational",
+ "once_cell",
+ "option-operations",
+ "paste",
+ "pin-project-lite",
+ "smallvec",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "gstreamer-allocators"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45f3c36aa5bc98e5dbfd19a27536373167ab1ad734ffafb84d5d65203fe75208"
+dependencies = [
+ "glib",
+ "gstreamer",
+ "gstreamer-allocators-sys",
+ "libc",
+ "once_cell",
+]
+
+[[package]]
+name = "gstreamer-allocators-sys"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c005b6cfae0c7e97b0ea95921f561fc8a8786b734cec25c29363a52305074a10"
+dependencies = [
+ "glib-sys",
+ "gobject-sys",
+ "gstreamer-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
+name = "gstreamer-app"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e9a883eb21aebcf1289158225c05f7aea5da6ecf71fa7f0ff1ce4d25baf004e"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+ "glib",
+ "gstreamer",
+ "gstreamer-app-sys",
+ "gstreamer-base",
+ "libc",
+]
+
+[[package]]
+name = "gstreamer-app-sys"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94f7ef838306fe51852d503a14dc79ac42de005a59008a05098de3ecdaf05455"
+dependencies = [
+ "glib-sys",
+ "gstreamer-base-sys",
+ "gstreamer-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
+name = "gstreamer-base"
+version = "0.23.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f19a74fd04ffdcb847dd322640f2cf520897129d00a7bcb92fd62a63f3e27404"
+dependencies = [
+ "atomic_refcell",
+ "cfg-if",
+ "glib",
+ "gstreamer",
+ "gstreamer-base-sys",
+ "libc",
+]
+
+[[package]]
+name = "gstreamer-base-sys"
+version = "0.23.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87f2fb0037b6d3c5b51f60dea11e667910f33be222308ca5a101450018a09840"
+dependencies = [
+ "glib-sys",
+ "gobject-sys",
+ "gstreamer-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
+name = "gstreamer-sys"
+version = "0.23.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "feea73b4d92dbf9c24a203c9cd0bcc740d584f6b5960d5faf359febf288919b2"
+dependencies = [
+ "glib-sys",
+ "gobject-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
+name = "gstreamer-video"
+version = "0.23.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1318b599d77ca4f7702ecbdeac1672d6304cb16b7e5752fabb3ee8260449a666"
+dependencies = [
+ "cfg-if",
+ "futures-channel",
+ "glib",
+ "gstreamer",
+ "gstreamer-base",
+ "gstreamer-video-sys",
+ "libc",
+ "once_cell",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "gstreamer-video-sys"
+version = "0.23.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a70f0947f12d253b9de9bc3fd92f981e4d025336c18389c7f08cdf388a99f5c"
+dependencies = [
+ "glib-sys",
+ "gobject-sys",
+ "gstreamer-base-sys",
+ "gstreamer-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
 name = "gtk4"
 version = "0.9.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5205,9 +5457,18 @@ dependencies = [
  "backend-macos",
  "libc",
  "objc2 0.5.2",
- "objc2-app-kit",
+ "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
  "runtime-scene",
+]
+
+[[package]]
+name = "host-gtk"
+version = "1.2.2"
+dependencies = [
+ "backend-linux",
+ "gtk4",
+ "runtime-core",
 ]
 
 [[package]]
@@ -5225,6 +5486,19 @@ dependencies = [
  "runtime-scene",
  "runtime-shared",
  "wgpu",
+]
+
+[[package]]
+name = "host-linux-desktop"
+version = "1.2.2"
+dependencies = [
+ "log",
+ "render-api",
+ "render-wgpu",
+ "runtime-core",
+ "wgpu",
+ "wgpu-hal",
+ "wgpu-types",
 ]
 
 [[package]]
@@ -5288,8 +5562,10 @@ version = "1.2.2"
 dependencies = [
  "host-android-mobile",
  "host-ios-mobile",
+ "host-linux-desktop",
  "host-macos-desktop",
  "host-web",
+ "host-windows-desktop",
  "render-api",
  "render-wgpu",
  "runtime-scene",
@@ -5308,13 +5584,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "host-win32"
+version = "1.2.2"
+dependencies = [
+ "backend-windows",
+ "runtime-core",
+ "welcome",
+ "windows 0.58.0",
+]
+
+[[package]]
+name = "host-windows-desktop"
+version = "1.2.2"
+dependencies = [
+ "log",
+ "raw-window-handle",
+ "render-api",
+ "render-wgpu",
+ "runtime-core",
+ "wgpu",
+ "windows 0.58.0",
+]
+
+[[package]]
 name = "host-winit"
 version = "1.2.2"
 dependencies = [
  "host-wgpu-accesskit",
  "log",
  "objc2 0.5.2",
- "objc2-app-kit",
+ "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
  "pollster 0.4.0",
  "raw-window-handle",
@@ -5852,6 +6151,7 @@ dependencies = [
  "backend-roku-transpile",
  "build-android",
  "build-ios",
+ "build-linux",
  "build-macos",
  "build-roku",
  "build-runtime-server",
@@ -5860,6 +6160,7 @@ dependencies = [
  "build-ssr",
  "build-terminal",
  "build-web",
+ "build-windows",
  "clap",
  "configure",
  "ctrlc",
@@ -5880,9 +6181,11 @@ dependencies = [
  "robot-test",
  "run-android",
  "run-ios",
+ "run-linux",
  "run-macos",
  "run-roku",
  "run-terminal",
+ "run-windows",
  "serde",
  "serde_json",
  "syn 2.0.117",
@@ -5944,6 +6247,7 @@ dependencies = [
  "moxcms",
  "num-traits",
  "png 0.18.1",
+ "tiff",
  "zune-core 0.5.1",
  "zune-jpeg 0.5.15",
 ]
@@ -6112,10 +6416,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "javascriptcore6"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03b28ed9c7c08f906b2a51bc2365eae2ba5e7db1249b89892f7ae4cbd602d1f4"
+dependencies = [
+ "glib",
+ "javascriptcore6-sys",
+ "libc",
+]
+
+[[package]]
+name = "javascriptcore6-sys"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4741e2a31c2145050dd4971f8dd51e92c840d5839a7124cc68a33c7325523a12"
+dependencies = [
+ "glib-sys",
+ "gobject-sys",
+ "libc",
+ "system-deps",
+]
 
 [[package]]
 name = "jni"
@@ -6676,6 +7012,9 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 name = "location"
 version = "1.2.2"
 dependencies = [
+ "async-io",
+ "futures-channel",
+ "futures-util",
  "jni 0.21.1",
  "js-sys",
  "ndk-context",
@@ -6688,6 +7027,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "zbus",
 ]
 
 [[package]]
@@ -6808,8 +7148,19 @@ dependencies = [
 name = "markdown"
 version = "1.2.2"
 dependencies = [
+ "backend-android-mobile",
+ "backend-ios-core",
+ "backend-ios-mobile",
+ "backend-linux",
+ "backend-web",
+ "gtk4",
  "host-mock",
+ "jni 0.21.1",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "objc2-ui-kit",
  "pulldown-cmark",
+ "runtime-core",
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
@@ -6960,6 +7311,11 @@ version = "1.2.2"
 dependencies = [
  "block2 0.5.1",
  "files",
+ "glib",
+ "gstreamer",
+ "gstreamer-allocators",
+ "gstreamer-app",
+ "gstreamer-video",
  "jni 0.21.1",
  "js-sys",
  "media-stream",
@@ -7181,6 +7537,12 @@ dependencies = [
  "num-traits",
  "pxfm",
 ]
+
+[[package]]
+name = "muldiv"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "956787520e75e9bd233246045d19f42fb73242759cc57fba9611d940ae96d4b0"
 
 [[package]]
 name = "multer"
@@ -7445,7 +7807,7 @@ dependencies = [
  "host-appkit",
  "host-macos-desktop",
  "objc2 0.5.2",
- "objc2-app-kit",
+ "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
  "render-wgpu",
  "runtime-scene",
@@ -7519,6 +7881,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "zbus",
 ]
 
 [[package]]
@@ -7734,6 +8097,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-app-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c"
+dependencies = [
+ "bitflags 2.11.1",
+ "objc2 0.6.4",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc2-cloud-kit"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7872,7 +8247,7 @@ checksum = "a1a1ae721c5e35be65f01a03b6d2ac13a54cb4fa70d8a5da293d7b0020261398"
 dependencies = [
  "block2 0.5.1",
  "objc2 0.5.2",
- "objc2-app-kit",
+ "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
 ]
 
@@ -8067,6 +8442,15 @@ name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+
+[[package]]
+name = "option-operations"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c26d27bb1aeab65138e4bf7666045169d1717febcc9ff870166be8348b223d0"
+dependencies = [
+ "paste",
+]
 
 [[package]]
 name = "orbclient"
@@ -9502,6 +9886,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "run-linux"
+version = "1.2.2"
+dependencies = [
+ "anyhow",
+ "build-ios",
+ "build-linux",
+]
+
+[[package]]
 name = "run-macos"
 version = "1.2.2"
 dependencies = [
@@ -9526,6 +9919,15 @@ dependencies = [
  "anyhow",
  "build-ios",
  "build-terminal",
+]
+
+[[package]]
+name = "run-windows"
+version = "1.2.2"
+dependencies = [
+ "anyhow",
+ "build-ios",
+ "build-windows",
 ]
 
 [[package]]
@@ -9907,12 +10309,16 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "screen-recorder"
 version = "1.2.2"
 dependencies = [
+ "ashpd",
  "backend-android-mobile",
  "backend-ios-mobile",
  "backend-macos",
  "backend-web",
  "block2 0.5.1",
  "futures-channel",
+ "glib",
+ "gstreamer",
+ "gstreamer-app",
  "host-mock",
  "jni 0.21.1",
  "js-sys",
@@ -10341,6 +10747,7 @@ dependencies = [
 name = "share"
 version = "1.2.2"
 dependencies = [
+ "ashpd",
  "block2 0.5.1",
  "futures-channel",
  "jni 0.21.1",
@@ -10618,6 +11025,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "soup3"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b84ccd1f4aee0854a16b0b489ba843798e2eb4cdcddd4a61248f7db9ce8b6df1"
+dependencies = [
+ "futures-channel",
+ "gio",
+ "glib",
+ "libc",
+ "soup3-sys",
+]
+
+[[package]]
+name = "soup3-sys"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8869997193d52a61a1db48627bdaa57343f76e2c5132ee6d351245a6ab30631e"
+dependencies = [
+ "gio-sys",
+ "glib-sys",
+ "gobject-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
 name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10786,9 +11219,16 @@ dependencies = [
 name = "stack-navigator"
 version = "1.2.2"
 dependencies = [
+ "android-navigator-helpers",
+ "backend-android-mobile",
+ "backend-ios-mobile",
+ "backend-linux",
+ "backend-macos",
  "backend-ssr",
  "backend-web",
  "host-mock",
+ "ios-navigator-helpers",
+ "jni 0.21.1",
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
@@ -10956,18 +11396,23 @@ dependencies = [
  "backend-android-core",
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-linux",
  "backend-web",
  "fontdb 0.18.0",
+ "gtk4",
  "host-mock",
  "jni 0.21.1",
  "js-sys",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
+ "resvg",
+ "runtime-core",
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
+ "tiny-skia",
  "usvg 0.42.0",
  "wasm-bindgen",
  "web-sys",
@@ -11350,6 +11795,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tiff"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b63feaf3343d35b6ca4d50483f94843803b0f51634937cc2ec519fc32232bc52"
+dependencies = [
+ "fax",
+ "flate2",
+ "half",
+ "quick-error",
+ "weezl",
+ "zune-jpeg 0.5.15",
+]
+
+[[package]]
 name = "time"
 version = "0.3.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11684,7 +12143,7 @@ dependencies = [
  "gtk4",
  "host-mock",
  "objc2 0.5.2",
- "objc2-app-kit",
+ "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
  "runtime-scene",
  "runtime-shared",
@@ -12445,16 +12904,19 @@ dependencies = [
  "backend-android-core",
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-linux",
  "backend-macos",
  "backend-web",
  "block2 0.5.1",
+ "gtk4",
  "host-mock",
  "jni 0.21.1",
  "media-stream",
  "objc2 0.5.2",
- "objc2-app-kit",
+ "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
+ "runtime-core",
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
@@ -12500,6 +12962,9 @@ version = "1.2.2"
 dependencies = [
  "block2 0.5.1",
  "futures-channel",
+ "gio",
+ "glib",
+ "gstreamer",
  "jni 0.21.1",
  "js-sys",
  "media-stream",
@@ -13009,6 +13474,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "webkit6"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c359ef247305dcade3363c281c505b943e0e6162a42eac76ff76ed8e7cebfbd"
+dependencies = [
+ "gdk4",
+ "gio",
+ "glib",
+ "gtk4",
+ "javascriptcore6",
+ "libc",
+ "soup3",
+ "webkit6-sys",
+]
+
+[[package]]
+name = "webkit6-sys"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96284c5280af5984dbdae8dae3cfeea11b44b214f9bd42b35c0ca75903bccce2"
+dependencies = [
+ "gdk4-sys",
+ "gio-sys",
+ "glib-sys",
+ "gobject-sys",
+ "gtk4-sys",
+ "javascriptcore6-sys",
+ "libc",
+ "soup3-sys",
+ "system-deps",
+]
+
+[[package]]
 name = "webpki-roots"
 version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13033,10 +13531,12 @@ dependencies = [
  "android-sim",
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-linux",
  "backend-macos",
  "backend-ssr",
  "backend-terminal",
  "backend-web",
+ "backend-windows",
  "codeblock",
  "dev-server",
  "host-web",
@@ -13058,15 +13558,26 @@ dependencies = [
 name = "webview"
 version = "1.2.2"
 dependencies = [
+ "backend-android-core",
+ "backend-android-mobile",
+ "backend-ios-mobile",
+ "backend-linux",
  "backend-web",
+ "gtk4",
  "host-mock",
+ "javascriptcore6",
+ "jni 0.21.1",
  "js-sys",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "objc2-ui-kit",
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
  "wasm-bindgen",
  "web-sys",
+ "webkit6",
 ]
 
 [[package]]
@@ -13083,6 +13594,14 @@ dependencies = [
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
+]
+
+[[package]]
+name = "welcome-gtk"
+version = "1.2.2"
+dependencies = [
+ "host-gtk",
+ "welcome",
 ]
 
 [[package]]
@@ -13271,6 +13790,7 @@ dependencies = [
  "camera",
  "canvas",
  "canvas-native",
+ "canvas-vello",
  "file-export",
  "files",
  "icons-lucide",
@@ -13851,7 +14371,7 @@ dependencies = [
  "memmap2 0.9.10",
  "ndk 0.9.0",
  "objc2 0.5.2",
- "objc2-app-kit",
+ "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
  "orbclient",
