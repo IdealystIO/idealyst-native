@@ -56,6 +56,13 @@ each entry links to its migration guide.
   KeyOutcome>` forwarded to the inner `text_input`, so composed inputs
   can intercept keys before the platform default (the smart-typing Tab
   handling rides this).
+- **`clearable` on the typed date/time inputs** — `DateInput` /
+  `DateTimeInput` gain a `clearable` prop (default `false`) rendering
+  an ✕ button left of the calendar button that empties the field and
+  commits `None` — the input-side sibling of the pickers' `Clear`
+  footer action. Backed by a new `Adornment::Group` on `Field`:
+  several adornments side by side in one leading/trailing slot, spaced
+  by the shell row's existing size-derived gap.
 - **`idealyst serve --precompressed`** — serves the `.br` sidecars a
   release `idealyst build --web` already stages (and `.gz` sidecars,
   if present) with `Content-Encoding` + `Vary: Accept-Encoding` when
@@ -122,6 +129,19 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **Typed inputs no longer sit taller than a plain `Field`.** The typed
+  date/time inputs route a LIVE parse-error channel into `Field`, and
+  the shared optional-text helper's dynamic arm always mounted the
+  help-line text node — rendering `""` (a caption line box plus a slot
+  in the group's gap) while there was no error, so every
+  `DateInput`/`DateTimeInput`/`TimeInput` (and any Field/Textarea with
+  a live `error`/`help` source) carried a permanent phantom help line.
+  The dynamic arm is now a guarded hole mirroring the `Static(None)`
+  no-node semantics: the styled text mounts only while the source is
+  `Some`, collapsing to the layout-neutral empty branch otherwise.
+  Behavior note: dynamic `label`/`body` sources on
+  Switch/Checkbox/Radio/Alert now also collapse while `None` instead
+  of holding an empty line — consistent with their static `None` form.
 - **Scoped timers registered while a subtree is built inside a live
   effect now die with the subtree.** `after_ms_scoped` /
   `raf_loop_scoped` anchored ONLY to the running effect's re-run when

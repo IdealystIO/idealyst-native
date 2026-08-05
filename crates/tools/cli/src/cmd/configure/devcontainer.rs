@@ -46,6 +46,23 @@ pub struct Args {
     #[arg(long, value_name = "remove|reconfigure")]
     pub minio: Option<Option<String>>,
 
+    /// Claude Code CLI in the container: bare to enable (default `host` —
+    /// bind-mounts ~/.claude so your host login/credentials carry over),
+    /// `=volume` for an isolated per-project login, `=remove` / `=reconfigure`.
+    #[arg(long, value_name = "host|volume|remove|reconfigure")]
+    pub claude: Option<Option<String>>,
+
+    /// OpenAI Codex CLI in the container: bare to enable (default `host` —
+    /// bind-mounts ~/.codex), `=volume`, `=remove` / `=reconfigure`.
+    #[arg(long, value_name = "host|volume|remove|reconfigure")]
+    pub codex: Option<Option<String>>,
+
+    /// The `idealyst` CLI in the container (source build via `cargo install
+    /// --git`, cached in a volume across rebuilds): bare to enable,
+    /// `=remove` / `=reconfigure`.
+    #[arg(long = "idealyst-cli", value_name = "remove|reconfigure")]
+    pub idealyst_cli: Option<Option<String>>,
+
     /// Generic per-service instruction for any registered service:
     /// `--service <id>[=variant|remove|reconfigure]`. Repeatable.
     #[arg(long = "service", value_name = "id[=variant|remove|reconfigure]")]
@@ -65,6 +82,9 @@ pub fn run(args: Args) -> Result<()> {
     let has_flags = args.database.is_some()
         || args.redis.is_some()
         || args.minio.is_some()
+        || args.claude.is_some()
+        || args.codex.is_some()
+        || args.idealyst_cli.is_some()
         || !args.service.is_empty();
     let interactive = !args.non_interactive && std::io::stdin().is_terminal();
 
@@ -111,6 +131,15 @@ fn build_request(args: &Args) -> Result<ConfigureRequest> {
     }
     if let Some(v) = &args.minio {
         services.push(parse_flag("minio", v.as_deref())?);
+    }
+    if let Some(v) = &args.claude {
+        services.push(parse_flag("claude", v.as_deref())?);
+    }
+    if let Some(v) = &args.codex {
+        services.push(parse_flag("codex", v.as_deref())?);
+    }
+    if let Some(v) = &args.idealyst_cli {
+        services.push(parse_flag("idealyst-cli", v.as_deref())?);
     }
     for spec in &args.service {
         let (id, value) = match spec.split_once('=') {

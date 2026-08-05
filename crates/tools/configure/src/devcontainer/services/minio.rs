@@ -22,8 +22,9 @@ impl DevService for Minio {
             // and the web console on 9001. Both stay on the compose network;
             // no host ports are published (the dev container reaches it by
             // service name), keeping the sidecar side-effect-free on the host.
-            service: serde_yaml::from_str(
-                r#"
+            service: Some(
+                serde_yaml::from_str(
+                    r#"
 image: minio/minio
 restart: unless-stopped
 command: server /data --console-address ":9001"
@@ -33,14 +34,16 @@ environment:
 volumes:
   - idealyst-minio-data:/data
 "#,
-            )
-            .expect("valid minio service yaml"),
+                )
+                .expect("valid minio service yaml"),
+            ),
             app_env: vec![
                 ("MINIO_ENDPOINT".into(), "http://minio:9000".into()),
                 ("MINIO_ACCESS_KEY".into(), "minioadmin".into()),
                 ("MINIO_SECRET_KEY".into(), "minioadmin".into()),
             ],
             volumes: vec!["idealyst-minio-data".into()],
+            ..Default::default()
         }
     }
 }

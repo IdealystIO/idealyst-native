@@ -72,6 +72,11 @@ pub(crate) struct TypedFieldWiring {
     /// Bind as the Field's `on_key_down` (present only when the spec
     /// carries a mask): Tab completes the active segment in place.
     pub on_key_down: Option<Rc<dyn Fn(&KeyEvent) -> KeyOutcome>>,
+    /// Programmatic clear: empties the text, drops any parse error, and
+    /// commits `None` when a value is set (a no-op commit-wise when the
+    /// host value is already `None`). Backs the inputs' `clearable` ✕
+    /// button.
+    pub clear: Rc<dyn Fn()>,
 }
 
 pub(crate) fn typed_field_wiring<T: Copy + PartialEq + 'static>(
@@ -232,7 +237,12 @@ pub(crate) fn typed_field_wiring<T: Copy + PartialEq + 'static>(
         }) as Rc<dyn Fn(&KeyEvent) -> KeyOutcome>
     });
 
-    TypedFieldWiring { text, error, on_change, on_focus_change, on_key_down }
+    // The empty-string path of `apply_text` IS the clear semantics
+    // (empty → no error, commit `None` if a value stands, text emptied);
+    // `force = false` — a guarded set suffices, nothing external desynced.
+    let clear: Rc<dyn Fn()> = Rc::new(move || (apply_text)(String::new(), false));
+
+    TypedFieldWiring { text, error, on_change, on_focus_change, on_key_down, clear }
 }
 
 #[cfg(test)]
@@ -504,6 +514,40 @@ mod tests {
             (w.on_change)(String::new());
             commit();
             assert_eq!(tab(&w), KeyOutcome::Default);
+        });
+    }
+
+    #[test]
+    fn clear_empties_text_commits_none_and_drops_error() {
+        with_test_world(|| {
+            let value = signal(None);
+            let committed = Rc::new(RefCell::new(Vec::new()));
+            let w = typed_field_wiring(date_spec(value, committed.clone()));
+
+            // A committed value: clear empties the text and commits `None`.
+            (w.on_change)("2026-03-07".into());
+            commit();
+            (w.clear)();
+            commit();
+            assert_eq!(w.text.peek(), "", "clear empties the text");
+            assert_eq!(committed.borrow().last(), Some(&None), "clear commits None");
+            assert_eq!(value.peek(), None);
+
+            // Invalid text with no committed value: clear drops text AND
+            // error, but has nothing to commit.
+            (w.on_change)("gibberish".into());
+            commit();
+            assert_eq!(w.error.get(), Some("Invalid date".into()));
+            let commits_before = committed.borrow().len();
+            (w.clear)();
+            commit();
+            assert_eq!(w.text.peek(), "");
+            assert_eq!(w.error.get(), None, "clear drops the parse error");
+            assert_eq!(
+                committed.borrow().len(),
+                commits_before,
+                "no value to clear → no redundant None commit"
+            );
         });
     }
 

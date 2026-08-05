@@ -173,6 +173,126 @@ fn add_managed_reference(obj: &mut serde_json::Map<String, Value>, managed: &str
     true
 }
 
+/// The `devcontainer.json` keys idealyst added — recorded in the managed
+/// compose file's `x-idealyst.devcontainer` block so a later removal only
+/// ever deletes keys *we* inserted. A feature (or lifecycle entry) the user
+/// already had is never idealyst-owned and never touched.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ManagedWiring {
+    /// Exact `features` keys we inserted (version tag included).
+    pub features: Vec<String>,
+    /// `postCreateCommand` object keys we inserted.
+    pub post_create: Vec<String>,
+}
+
+/// A feature key without its version tag — `ghcr.io/x/y:1.0` → `ghcr.io/x/y`.
+/// Feature ids contain no other `:`, so presence checks are tag-insensitive
+/// (a user pinning `claude-code:1.2` counts as "already installed").
+fn feature_id(key: &str) -> &str {
+    key.rsplit_once(':').map(|(id, _)| id).unwrap_or(key)
+}
+
+/// Sync the desired `features` + keyed `postCreateCommand` entries into the
+/// targeted `devcontainer.json`. `managed` is the previously-recorded set of
+/// idealyst-owned keys; entries in it that are no longer desired are removed,
+/// entries the user already had are left alone (and stay user-owned). Returns
+/// (files written, the new idealyst-owned key set to record).
+pub fn sync_tooling(
+    dir: &Path,
+    config: Option<&str>,
+    desired_features: &[(String, serde_json::Value)],
+    desired_post_create: &[(String, String)],
+    managed: &ManagedWiring,
+) -> Result<(Vec<PathBuf>, ManagedWiring)> {
+    let Some(mut value) = read_json(dir, config)? else {
+        return Ok((Vec::new(), ManagedWiring::default()));
+    };
+    let original = value.clone();
+    let obj = value
+        .as_object_mut()
+        .context("devcontainer.json is not a JSON object")?;
+    let mut now = ManagedWiring::default();
+
+    // --- features ---
+    let features = obj.entry("features").or_insert_with(|| json!({}));
+    let map = features
+        .as_object_mut()
+        .context("devcontainer.json `features` is not an object")?;
+    for (key, opts) in desired_features {
+        match map.keys().find(|k| feature_id(k) == feature_id(key)).cloned() {
+            // Present under some tag: ours only if we added it (this run or a
+            // previous one); otherwise the user's — never claimed.
+            Some(present) => {
+                let ours = managed.features.contains(&present) || now.features.contains(&present);
+                if ours && !now.features.contains(&present) {
+                    now.features.push(present);
+                }
+            }
+            None => {
+                map.insert(key.clone(), opts.clone());
+                now.features.push(key.clone());
+            }
+        }
+    }
+    for m in &managed.features {
+        let still_desired = desired_features
+            .iter()
+            .any(|(k, _)| feature_id(k) == feature_id(m));
+        if !still_desired {
+            map.remove(m);
+        }
+    }
+    if map.is_empty() {
+        obj.remove("features");
+    }
+
+    // --- postCreateCommand (object form — entries run in parallel) ---
+    now.post_create = desired_post_create.iter().map(|(k, _)| k.clone()).collect();
+    match obj.get("postCreateCommand").cloned() {
+        Some(Value::Object(mut map)) => {
+            for (k, cmd) in desired_post_create {
+                map.insert(k.clone(), Value::String(cmd.clone()));
+            }
+            for m in &managed.post_create {
+                if !desired_post_create.iter().any(|(k, _)| k == m) {
+                    map.remove(m);
+                }
+            }
+            if map.is_empty() {
+                obj.remove("postCreateCommand");
+            } else {
+                obj.insert("postCreateCommand".into(), Value::Object(map));
+            }
+        }
+        // A bare string/array command is the user's own; converting it to one
+        // keyed object entry preserves its semantics while letting ours merge
+        // beside it. When we have nothing to add, leave its shape alone.
+        Some(existing) if !desired_post_create.is_empty() => {
+            let mut map = serde_json::Map::new();
+            map.insert("main".into(), existing);
+            for (k, cmd) in desired_post_create {
+                map.insert(k.clone(), Value::String(cmd.clone()));
+            }
+            obj.insert("postCreateCommand".into(), Value::Object(map));
+        }
+        Some(_) => {}
+        None if !desired_post_create.is_empty() => {
+            let mut map = serde_json::Map::new();
+            for (k, cmd) in desired_post_create {
+                map.insert(k.clone(), Value::String(cmd.clone()));
+            }
+            obj.insert("postCreateCommand".into(), Value::Object(map));
+        }
+        None => {}
+    }
+
+    if value != original {
+        write_json(dir, config, &value)?;
+        return Ok((vec![devcontainer_json_path(dir, config)], now));
+    }
+    Ok((Vec::new(), now))
+}
+
 /// Write the targeted `devcontainer.json` pretty-printed with a trailing newline.
 fn write_json(dir: &Path, config: Option<&str>, value: &Value) -> Result<()> {
     let path = devcontainer_json_path(dir, config);

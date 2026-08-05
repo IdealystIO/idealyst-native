@@ -27,7 +27,10 @@
 //! mid-string edits bypass the mask, so corrections behave like a
 //! plain text field. The trailing calendar button opens an anchored
 //! [`Calendar`] popup as an alternative to typing; picking a day
-//! commits and (for `DateInput`) closes.
+//! commits and (for `DateInput`) closes. `clearable` adds an ✕ button
+//! left of the calendar button that empties the field and commits
+//! `None` — the input-side sibling of the pickers' `Clear` footer
+//! action.
 //!
 //! `DateTimeInput` is the same machinery over [`CivilDateTime`]: its
 //! `format` includes time tokens (default `YYYY-MM-DD HH:mm`) and its
@@ -38,8 +41,8 @@ use std::rc::Rc;
 
 use runtime_core::primitives::portal::AnchorTarget;
 use runtime_core::{
-    component, effect, signal, ui, view, when, Element, IdealystSchema, IntoElement, Reactive,
-    Ref, Signal, ViewHandle,
+    component, effect, signal, ui, view, when, Element, FillRule, IconData, IdealystSchema,
+    IntoElement, Reactive, Ref, Signal, ViewHandle,
 };
 
 use crate::components::calendar::Calendar;
@@ -52,6 +55,36 @@ use crate::date::{
     format_date, format_datetime, parse_date, parse_datetime, CivilDate, CivilDateTime,
     CivilTime, DateLabels, Weekday,
 };
+
+/// Trailing clear glyph — an ✕. Inline `IconData` like
+/// [`CALENDAR_GLYPH`]: no icon-pack dependency for built-in affordances.
+const CLEAR_GLYPH: IconData = IconData {
+    view_box: (24, 24),
+    paths: &["M18 6 6 18", "m6 6 12 12"],
+    fill_rule: FillRule::NonZero,
+    filled: false,
+};
+
+/// The trailing adornment shared by [`DateInput`] / [`DateTimeInput`]:
+/// an optional clear ✕ (which empties the field and commits `None`)
+/// left of the optional calendar button.
+fn trailing_adornments(
+    clearable: bool,
+    clear: Rc<dyn Fn()>,
+    picker: bool,
+    open: Signal<bool>,
+) -> Adornment {
+    let mut items: Vec<Adornment> = Vec::new();
+    if clearable {
+        items.push(Adornment::button(CLEAR_GLYPH, move || (clear)()));
+    }
+    if picker {
+        items.push(Adornment::button(CALENDAR_GLYPH, move || open.set(!open.peek())));
+    }
+    // An empty group renders nothing, so the no-adornment Field path
+    // (bare input, no shell) is preserved when both are off.
+    Adornment::Group(items)
+}
 
 // Routing as in `TimeInputProps`; `format` is snapshotted at build (it
 // shapes the parse/render closures and the default placeholder).
@@ -81,6 +114,9 @@ pub struct DateInputProps {
     pub size: FieldSize,
     /// Show the trailing calendar button + popup. Default `true`.
     pub picker: bool,
+    /// Offer a trailing ✕ button (left of the calendar button) that
+    /// empties the field and commits `None`. Default `false`.
+    pub clearable: bool,
     /// Earliest pickable popup day (inclusive). NOTE: bounds gate the
     /// POPUP only — typed text is validated for shape, not range; wire
     /// `error` for range validation feedback.
@@ -111,6 +147,7 @@ impl Default for DateInputProps {
             invalid_message: Reactive::Static("Invalid date".to_string()),
             size: Reactive::Static(FieldSize::default()),
             picker: Reactive::Static(true),
+            clearable: Reactive::Static(false),
             min: Reactive::Static(None),
             max: Reactive::Static(None),
             is_date_disabled: None,
@@ -150,11 +187,12 @@ pub fn DateInput(props: DateInputProps) -> Element {
     };
 
     let open: Signal<bool> = signal(false);
-    let trailing = if props.picker.get() {
-        Adornment::button(CALENDAR_GLYPH, move || open.set(!open.peek()))
-    } else {
-        Adornment::None
-    };
+    let trailing = trailing_adornments(
+        props.clearable.get(),
+        wiring.clear.clone(),
+        props.picker.get(),
+        open,
+    );
 
     let field = ui! {
         Field(
@@ -252,6 +290,9 @@ pub struct DateTimeInputProps {
     pub size: FieldSize,
     /// Show the trailing calendar button + popup. Default `true`.
     pub picker: bool,
+    /// Offer a trailing ✕ button (left of the calendar button) that
+    /// empties the field and commits `None`. Default `false`.
+    pub clearable: bool,
     /// Earliest pickable popup day (inclusive) — popup only, like
     /// [`DateInputProps::min`].
     pub min: Option<CivilDate>,
@@ -283,6 +324,7 @@ impl Default for DateTimeInputProps {
             invalid_message: Reactive::Static("Invalid date/time".to_string()),
             size: Reactive::Static(FieldSize::default()),
             picker: Reactive::Static(true),
+            clearable: Reactive::Static(false),
             min: Reactive::Static(None),
             max: Reactive::Static(None),
             is_date_disabled: None,
@@ -323,11 +365,12 @@ pub fn DateTimeInput(props: DateTimeInputProps) -> Element {
     };
 
     let open: Signal<bool> = signal(false);
-    let trailing = if props.picker.get() {
-        Adornment::button(CALENDAR_GLYPH, move || open.set(!open.peek()))
-    } else {
-        Adornment::None
-    };
+    let trailing = trailing_adornments(
+        props.clearable.get(),
+        wiring.clear.clone(),
+        props.picker.get(),
+        open,
+    );
 
     let field = ui! {
         Field(
@@ -426,6 +469,94 @@ pub fn DateTimeInput(props: DateTimeInputProps) -> Element {
     );
 
     view(vec![field, popup]).bind(anchor_ref).into_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{classify, P};
+    use idea_theme::testing::{commit, with_test_world};
+    use idea_theme::theme::{install_idea_theme, light_theme};
+
+    /// Drill to a built `DateInput`'s adorned-shell children:
+    /// root view [field, popup] → Field group view [shell] → shell row.
+    fn shell_children(root: Element) -> Vec<Element> {
+        let mut outer = classify(root).children();
+        let field_group = classify(outer.remove(0)).children();
+        let mut shell = None;
+        for c in field_group {
+            if let P::View { children, .. } = classify(c) {
+                shell = Some(children);
+            }
+        }
+        shell.expect("an adorned DateInput renders a shell row")
+    }
+
+    /// The ✕ renders LEFT of the calendar button, and pressing it
+    /// commits `None` — the whole point of `clearable`.
+    #[test]
+    fn clearable_renders_x_before_calendar_and_commits_none() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let value: Signal<Option<CivilDate>> = signal(CivilDate::new(2026, 8, 5));
+            let el = DateInput(DateInputProps {
+                value,
+                on_change: Rc::new(move |d| value.set(d)),
+                clearable: Reactive::Static(true),
+                ..Default::default()
+            });
+
+            let shell = shell_children(el);
+            // Row order: input, ✕, calendar.
+            let mut it = shell.into_iter();
+            assert!(matches!(classify(it.next().unwrap()), P::TextInput { .. }));
+            let clear = match classify(it.next().unwrap()) {
+                P::Pressable { children, on_click, .. } => {
+                    let glyph = classify(children.into_iter().next().unwrap());
+                    match glyph {
+                        P::Icon { data, .. } => assert_eq!(
+                            data.paths,
+                            CLEAR_GLYPH.paths,
+                            "the ✕ sits left of the calendar button"
+                        ),
+                        _ => panic!("clear button wraps an icon"),
+                    }
+                    on_click
+                }
+                _ => panic!("clearable renders a pressable ✕"),
+            };
+            match classify(it.next().unwrap()) {
+                P::Pressable { children, .. } => match classify(children.into_iter().next().unwrap())
+                {
+                    P::Icon { data, .. } => assert_eq!(data.paths, CALENDAR_GLYPH.paths),
+                    _ => panic!("calendar button wraps an icon"),
+                },
+                _ => panic!("picker renders the calendar button"),
+            }
+
+            (clear)();
+            commit();
+            assert_eq!(value.peek(), None, "pressing ✕ commits None");
+        });
+    }
+
+    /// Default stays as before: no ✕, just the calendar button.
+    #[test]
+    fn non_clearable_renders_calendar_button_only() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let shell = shell_children(DateInput(DateInputProps::default()));
+            let kinds: Vec<_> = shell
+                .into_iter()
+                .map(|c| match classify(c) {
+                    P::TextInput { .. } => "input",
+                    P::Pressable { .. } => "button",
+                    _ => "other",
+                })
+                .collect();
+            assert_eq!(kinds, vec!["input", "button"], "one trailing button: the calendar");
+        });
+    }
 }
 
 runtime_core::recipe!(

@@ -3,9 +3,13 @@
 //! live in `crate::invocations` so all of them are `#[macro_export]`
 //! at the crate root.
 
+use std::rc::Rc;
+
 use runtime_core::{
-    text, AlignSelf, Element, IdealystSchema, IntoElement, IntoStyleSource, Reactive, StyleRules,
+    text, when, AlignSelf, Element, IdealystSchema, IntoElement, IntoStyleSource, Reactive,
+    StyleRules,
 };
+use runtime_vocabulary::StyleProp;
 
 /// `StyleRules` that make an inline component HUG its content on the cross
 /// axis instead of inheriting a flex parent's default `align-items: stretch`
@@ -23,8 +27,13 @@ pub(crate) fn hug_self() -> StyleRules {
 /// - `Static(None)` → `None` (no node — no layout slot for an absent
 ///   label).
 /// - `Static(Some(s))` → a static text node.
-/// - `Dynamic(f)` → a reactive text node that re-paints when `f`'s
-///   signals change, showing `""` while the value is `None`.
+/// - `Dynamic(f)` → a GUARDED hole: the styled text node mounts only
+///   while `f()` is `Some` (the reactive mirror of the `Static(None)`
+///   arm) and re-paints on content changes while mounted. It must NOT
+///   render `""` while `None`: a mounted empty text is not invisible —
+///   it keeps its line box and a slot in the parent's gap, which held
+///   every typed input (their parse-error channel is always `Dynamic`)
+///   visibly taller than a plain `Field`.
 ///
 /// Shared by the components with an optional text prop (Switch/Field
 /// `label`, Alert `body`). Coercion is uniform: a call-site
@@ -40,8 +49,73 @@ pub(crate) fn optional_reactive_text(
         Reactive::Static(None) => None,
         Reactive::Static(Some(s)) => Some(text(s).with_style(style).into_element()),
         Reactive::Dynamic(f) => {
-            Some(text(move || f().unwrap_or_default()).with_style(style).into_element())
+            // The branch builder re-fires on every remount, so the one-shot
+            // style is normalized to a `StyleProp` up front and re-applied
+            // per mount via `reapply_style_prop` — the value shapes clone
+            // (a static/preminted attach stays static, no engine dragged
+            // in); the closure shapes re-wrap around the shared source.
+            let src = Rc::new(style.into_style_prop());
+            let cond = {
+                let f = f.clone();
+                move || f().is_some()
+            };
+            Some(when(
+                cond,
+                move || {
+                    let content = f.clone();
+                    text(move || content().unwrap_or_default())
+                        .with_style(reapply_style_prop(&src))
+                        .into_element()
+                },
+                runtime_core::empty_absolute_view,
+            ))
         }
+    }
+}
+
+/// Re-issue a shared [`StyleProp`] for another mount of the same node
+/// shape (the guarded arm of [`optional_reactive_text`], whose branch
+/// builder runs once per remount but received its style exactly once).
+/// Value shapes clone; closure shapes get a fresh closure delegating to
+/// the shared original, preserving each shape's attach path (a
+/// `Preminted` stamp must NOT degrade to a `Dynamic` re-resolve).
+fn reapply_style_prop(src: &Rc<StyleProp>) -> StyleProp {
+    match &**src {
+        StyleProp::Static(rules) => StyleProp::Static(rules.clone()),
+        StyleProp::Sheet(app) => StyleProp::Sheet(app.clone()),
+        StyleProp::Dynamic(_) => {
+            let src = src.clone();
+            StyleProp::Dynamic(Box::new(move || match &*src {
+                StyleProp::Dynamic(g) => g(),
+                _ => unreachable!("shape checked by reapply_style_prop"),
+            }))
+        }
+        StyleProp::SheetDynamic(_) => {
+            let src = src.clone();
+            StyleProp::SheetDynamic(Box::new(move || match &*src {
+                StyleProp::SheetDynamic(g) => g(),
+                _ => unreachable!("shape checked by reapply_style_prop"),
+            }))
+        }
+        StyleProp::Preminted { class, overrides, inline } => StyleProp::Preminted {
+            class: class.clone(),
+            overrides: overrides.clone(),
+            inline: inline.clone(),
+        },
+        StyleProp::PremintedDynamic { overrides, .. } => {
+            let overrides = overrides.clone();
+            let src = src.clone();
+            StyleProp::PremintedDynamic {
+                class_of: Box::new(move || match &*src {
+                    StyleProp::PremintedDynamic { class_of, .. } => class_of(),
+                    _ => unreachable!("shape checked by reapply_style_prop"),
+                }),
+                overrides,
+            }
+        }
+        // No optional-text caller hands a `signal_class` (or any future
+        // shape) here; fail loudly rather than silently dropping styling.
+        _ => panic!("optional_reactive_text: unsupported style prop shape"),
     }
 }
 

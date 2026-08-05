@@ -450,10 +450,12 @@ ui! {
     }, ui! {
         Section(title = "Adornments".to_string()) {
             P(content = "Drop an `Adornment` into the `leading` or `trailing` slot — \
-                `Adornment::Icon(data)` renders a vector icon (muted, auto-sized to the field) and \
-                `Adornment::element(|| ui! { … })` renders any element (a clear button, a unit \
-                suffix, a password-visibility toggle). Adornments lay out in a flex row inside the \
-                field box, so any width works.".to_string())
+                `Adornment::Icon(data)` renders a vector icon (muted, auto-sized to the field), \
+                `Adornment::button(data, on_press)` a tappable icon-sized glyph (a clear button, a \
+                password-visibility toggle), `Adornment::element(|| ui! { … })` any element for \
+                full control, and `Adornment::Group(vec![…])` several of those side by side in one \
+                slot (how `DateInput`'s clear ✕ sits beside its calendar button). Adornments lay \
+                out in a flex row inside the field box, so any width works.".to_string())
             DemoSurface {
                 Field(
                     value = query,
@@ -469,11 +471,6 @@ ui! {
     leading = Adornment::Icon(icons_lucide::SEARCH),
     // trailing = Adornment::element(move || ui! { IconButton(...) }),
 )"##.to_string())
-            Callout(label = "Focus ring".to_string()) {
-                P(content = "Adorned fields don't show the focus ring yet: it's driven by the \
-                    input's focus state, which the row wrapper can't receive until a text-input \
-                    on_focus event lands. Plain (un-adorned) fields keep their ring.".to_string())
-            }
         }
     }, ui! {
         Section(title = "Sizes".to_string()) {
@@ -1096,6 +1093,7 @@ pub fn date_input() -> Element {
             format = "D/M/YYYY".to_string(),
             help = Some("Just type 731994 — the delimiters insert themselves.".to_string()),
             max = CivilDate::today(),
+            clearable = true,
         )
     };
     let typed_controls = ui! {
@@ -1106,7 +1104,8 @@ pub fn date_input() -> Element {
                 7 becomes 7/ on its own). Tab commits an ambiguous partial segment in \
                 place — 1 + Tab reads it as month 1 and moves on — while a partial no \
                 value can commit (a bare 0) swallows the Tab. The trailing calendar \
-                button opens the same popup Calendar as DatePicker.".to_string())
+                button opens the same popup Calendar as DatePicker, and `clearable = true` \
+                adds an ✕ beside it that empties the field and commits None.".to_string())
             birthday_label
         }
     };
@@ -1146,6 +1145,7 @@ pub fn date_input() -> Element {
                 Prop { name: "error",           ty: "Option<String>",                desc: "Host-side error; a parse error takes precedence while present." },
                 Prop { name: "invalid_message", ty: "String",                        desc: "Error shown while the text doesn't parse. Default \"Invalid date\"." },
                 Prop { name: "picker",          ty: "bool",                          desc: "Show the trailing calendar button + popup. Default true." },
+                Prop { name: "clearable",       ty: "bool",                          desc: "Offer an ✕ left of the calendar button — empties the field, commits None. Default false." },
                 Prop { name: "min / max",       ty: "Option<CivilDate>",             desc: "Popup-only bounds — typed text is shape-validated, not range." },
             ])
         }

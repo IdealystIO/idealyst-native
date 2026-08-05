@@ -15,6 +15,7 @@ use anyhow::{Context, Result};
 use serde_yaml::{Mapping, Value};
 
 use super::service::{registry, Ctx};
+use super::wiring::ManagedWiring;
 use super::EnabledService;
 
 /// Filename of the managed compose file, relative to `.devcontainer/`.
@@ -74,10 +75,38 @@ fn parse_enabled(doc: &Value) -> Vec<EnabledService> {
         .collect()
 }
 
+/// Read back the idealyst-owned `devcontainer.json` keys recorded in the
+/// `x-idealyst.devcontainer` block. Empty when the file (or block) is absent.
+pub fn read_managed_wiring(dir: &Path) -> Result<ManagedWiring> {
+    let path = managed_path(dir);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(ManagedWiring::default());
+    };
+    let doc: Value = serde_yaml::from_str(&text)
+        .with_context(|| format!("parse managed compose file {}", path.display()))?;
+    let block = doc.get("x-idealyst").and_then(|x| x.get("devcontainer"));
+    let strings = |key: &str| -> Vec<String> {
+        block
+            .and_then(|b| b.get(key))
+            .and_then(|v| v.as_sequence())
+            .map(|seq| {
+                seq.iter()
+                    .filter_map(|s| s.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    Ok(ManagedWiring {
+        features: strings("features"),
+        post_create: strings("post_create"),
+    })
+}
+
 /// Render the full managed compose document for `enabled`, with connection
-/// env + `depends_on` attached to `app_service`. Emitted in registry order
-/// (not selection order) so the file is byte-stable for a given set.
-pub fn render(enabled: &[EnabledService], app_service: &str) -> String {
+/// env + `depends_on` attached to `app_service`. `wiring` is the
+/// idealyst-owned `devcontainer.json` key set to record. Emitted in registry
+/// order (not selection order) so the file is byte-stable for a given set.
+pub fn render(enabled: &[EnabledService], app_service: &str, wiring: &ManagedWiring) -> String {
     let ctx = Ctx { app_service: app_service.to_string() };
 
     // Walk the registry so output order is deterministic; look up each
@@ -85,6 +114,7 @@ pub fn render(enabled: &[EnabledService], app_service: &str) -> String {
     let mut state_services: Vec<Value> = Vec::new();
     let mut services_map = Mapping::new();
     let mut app_env = Mapping::new();
+    let mut app_volumes: Vec<Value> = Vec::new();
     let mut depends_on: Vec<Value> = Vec::new();
     let mut volumes_map = Mapping::new();
 
@@ -103,14 +133,20 @@ pub fn render(enabled: &[EnabledService], app_service: &str) -> String {
         }
         state_services.push(Value::Mapping(entry));
 
-        // The service definition itself.
-        services_map.insert(svc.id().into(), frag.service);
+        // The service definition itself (in-container tools contribute none,
+        // and get no dependency edge).
+        if let Some(service) = frag.service {
+            services_map.insert(svc.id().into(), service);
+            depends_on.push(svc.id().into());
+        }
 
-        // Merge env + dependency edge onto the app service.
+        // Merge env + mounts onto the app service.
         for (k, v) in frag.app_env {
             app_env.insert(k.into(), v.into());
         }
-        depends_on.push(svc.id().into());
+        for mount in frag.app_volumes {
+            app_volumes.push(mount.into());
+        }
 
         // Declare top-level named volumes (null = default driver).
         for vol in frag.volumes {
@@ -120,10 +156,13 @@ pub fn render(enabled: &[EnabledService], app_service: &str) -> String {
 
     // The partial app-service override — merged into the base compose file's
     // `<app_service>` by Docker Compose. Only carries what we contribute.
-    if !app_env.is_empty() || !depends_on.is_empty() {
+    if !app_env.is_empty() || !depends_on.is_empty() || !app_volumes.is_empty() {
         let mut app = Mapping::new();
         if !app_env.is_empty() {
             app.insert("environment".into(), Value::Mapping(app_env));
+        }
+        if !app_volumes.is_empty() {
+            app.insert("volumes".into(), Value::Sequence(app_volumes));
         }
         if !depends_on.is_empty() {
             app.insert("depends_on".into(), Value::Sequence(depends_on));
@@ -135,6 +174,18 @@ pub fn render(enabled: &[EnabledService], app_service: &str) -> String {
     let mut x_idealyst = Mapping::new();
     x_idealyst.insert("version".into(), STATE_VERSION.into());
     x_idealyst.insert("services".into(), Value::Sequence(state_services));
+    if !wiring.features.is_empty() || !wiring.post_create.is_empty() {
+        let mut dc = Mapping::new();
+        if !wiring.features.is_empty() {
+            let seq = wiring.features.iter().map(|s| Value::from(s.as_str())).collect();
+            dc.insert("features".into(), Value::Sequence(seq));
+        }
+        if !wiring.post_create.is_empty() {
+            let seq = wiring.post_create.iter().map(|s| Value::from(s.as_str())).collect();
+            dc.insert("post_create".into(), Value::Sequence(seq));
+        }
+        x_idealyst.insert("devcontainer".into(), Value::Mapping(dc));
+    }
 
     let mut doc = Mapping::new();
     doc.insert("x-idealyst".into(), Value::Mapping(x_idealyst));

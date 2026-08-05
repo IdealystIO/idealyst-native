@@ -380,6 +380,27 @@ mod tests {
 
     // D9 regression (mirror of Field): a live `error` signal must drive
     // the border color reactively, not snapshot it at build.
+    // Same regression as Field's: a live error channel must not mount an
+    // empty help line while `None` (the empty text held a caption line
+    // box + gap slot, inflating the box for no visual payoff).
+    #[test]
+    fn regression_live_error_none_mounts_no_empty_help_line() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let err: Signal<Option<String>> = runtime_core::signal(None);
+            let props = TextareaProps {
+                error: err.into(),
+                ..Default::default()
+            };
+            for c in classify(Textarea(&props)).children() {
+                assert!(
+                    !matches!(classify(c), P::Text { .. }),
+                    "no help text node may be mounted while the live error is None"
+                );
+            }
+        });
+    }
+
     #[test]
     fn reactive_error_drives_border_color_live() {
         with_test_world(|| {

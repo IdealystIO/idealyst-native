@@ -110,6 +110,9 @@ pub fn apply(dir: &Path, req: &ConfigureRequest) -> Result<ConfigureReport> {
     let config = req.config.as_deref();
 
     let before = compose::read_enabled(dir)?;
+    // Read the idealyst-owned devcontainer.json keys BEFORE the managed file
+    // is rewritten/deleted — it's where that record lives.
+    let managed_wiring_before = compose::read_managed_wiring(dir)?;
     let (after, warnings) = resolve(&before, &req.services)?;
     report.warnings = warnings;
     diff(&before, &after, &mut report);
@@ -124,6 +127,36 @@ pub fn apply(dir: &Path, req: &ConfigureRequest) -> Result<ConfigureReport> {
     // creates it as `dev`).
     let app_service = wiring::app_service(dir, config);
 
+    // Validate compose-compatibility (and add the managed reference) before
+    // touching features/lifecycle, so a non-compose devcontainer errors out
+    // with nothing modified.
+    if !after.is_empty() {
+        report.wrote.extend(wiring::add_reference(dir, config)?);
+    }
+
+    // Sync devcontainer.json `features` + keyed `postCreateCommand` entries
+    // contributed by the resulting set (registry order, like `render`).
+    let ctx = service::Ctx { app_service: app_service.clone() };
+    let mut desired_features = Vec::new();
+    let mut desired_post_create = Vec::new();
+    for svc in registry() {
+        let Some(en) = after.iter().find(|e| e.id == svc.id()) else {
+            continue;
+        };
+        let variant = en.variant.as_deref().or_else(|| svc.default_variant());
+        let frag = svc.fragment(variant, &ctx);
+        desired_features.extend(frag.features);
+        desired_post_create.extend(frag.post_create);
+    }
+    let (wrote, managed_wiring) = wiring::sync_tooling(
+        dir,
+        config,
+        &desired_features,
+        &desired_post_create,
+        &managed_wiring_before,
+    )?;
+    report.wrote.extend(wrote);
+
     if after.is_empty() {
         // Tear down: drop the managed file + its reference, keep the base.
         let managed = compose::managed_path(dir);
@@ -134,8 +167,7 @@ pub fn apply(dir: &Path, req: &ConfigureRequest) -> Result<ConfigureReport> {
         }
         report.wrote.extend(wiring::remove_reference(dir, config)?);
     } else {
-        report.wrote.extend(wiring::add_reference(dir, config)?);
-        let text = compose::render(&after, &app_service);
+        let text = compose::render(&after, &app_service, &managed_wiring);
         let managed = compose::managed_path(dir);
         std::fs::write(&managed, text)
             .with_context(|| format!("write {}", managed.display()))?;

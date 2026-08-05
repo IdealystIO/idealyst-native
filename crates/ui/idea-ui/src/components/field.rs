@@ -54,7 +54,7 @@ pub use crate::stylesheets::{FieldAppearance, FieldSize};
 
 /// A leading/trailing adornment inside a [`Field`]'s box — an icon or a custom
 /// element rendered beside the input (e.g. a search glyph, a unit suffix, a
-/// clear button). Three shapes:
+/// clear button). The shapes:
 ///
 /// - [`Adornment::None`] — nothing (the default).
 /// - [`Adornment::Icon`] — a vector icon, rendered in the field's muted text
@@ -62,6 +62,9 @@ pub use crate::stylesheets::{FieldAppearance, FieldSize};
 ///   styling so you just pass the icon).
 /// - [`Adornment::Element`] — any element, rendered as-is, for full control
 ///   (a button, badge, spinner, …).
+/// - [`Adornment::Button`] — a tappable icon-sized glyph (clear ✕,
+///   visibility toggle, …).
+/// - [`Adornment::Group`] — several of the above side by side in one slot.
 ///
 /// Adornments compose into a flex row alongside the input, so any width works.
 #[derive(Clone)]
@@ -81,6 +84,13 @@ pub enum Adornment {
     /// (which stacks the button's own square padding on top of the field's),
     /// this stays icon-sized so it never inflates the field box.
     Button(IconData, Rc<dyn Fn()>),
+    /// Several adornments side by side in ONE slot (e.g. `DateInput`'s
+    /// clear ✕ next to its calendar button). Members render as siblings
+    /// directly in the field's shell row — the shell's size-derived gap
+    /// spaces them like any other row children, so a group needs (and
+    /// gets) no wrapper view of its own. Nested groups flatten; an
+    /// all-`None`/empty group counts as no adornment.
+    Group(Vec<Adornment>),
 }
 
 impl Adornment {
@@ -117,16 +127,18 @@ fn adornment_icon_color() -> Color {
     Tokenized::token("color-text-muted", Color("#8a8270".into())).resolve()
 }
 
-/// Resolve an adornment to a renderable element (or `None`). `Icon`/`Button`
-/// are sized from the field `size` and painted in the theme's muted text color.
-fn render_adornment(adornment: &Adornment, size: FieldSize) -> Option<Element> {
+/// Resolve an adornment to its renderable elements (empty for `None` /
+/// an empty group; one element per leaf, groups flattened in order).
+/// `Icon`/`Button` are sized from the field `size` and painted in the
+/// theme's muted text color.
+fn render_adornment(adornment: &Adornment, size: FieldSize) -> Vec<Element> {
     match adornment {
-        Adornment::None => None,
-        Adornment::Element(build) => Some(build()),
+        Adornment::None => Vec::new(),
+        Adornment::Element(build) => vec![build()],
         Adornment::Icon(data) => {
             let px = adornment_icon_px(size);
             let muted = adornment_icon_color();
-            Some(ui! { Icon(data = data.clone(), size = px, color = Some(muted)) })
+            vec![ui! { Icon(data = data.clone(), size = px, color = Some(muted)) }]
         }
         Adornment::Button(data, on_press) => {
             let px = adornment_icon_px(size);
@@ -136,11 +148,14 @@ fn render_adornment(adornment: &Adornment, size: FieldSize) -> Option<Element> {
             // An icon-sized pressable — no button chrome/padding, so it never
             // inflates the field box (the whole point of `Button` vs an
             // `IconButton` in an `Element` adornment).
-            Some(
+            vec![
                 pressable(vec![glyph], move || on_press())
                     .with_style(StyleApplication::new(adornment_button_sheet()))
                     .into_element(),
-            )
+            ]
+        }
+        Adornment::Group(items) => {
+            items.iter().flat_map(|a| render_adornment(a, size)).collect()
         }
     }
 }
@@ -698,7 +713,7 @@ pub fn Field(props: &FieldProps) -> Element {
     let secure = props.secure.clone();
     let leading = render_adornment(&props.leading, size);
     let trailing = render_adornment(&props.trailing, size);
-    let adorned = leading.is_some() || trailing.is_some();
+    let adorned = !leading.is_empty() || !trailing.is_empty();
 
     // `placeholder` is routed LIVE: a reactive source updates the native
     // placeholder in place (no rebuild); a `Static` one sets it once.
@@ -791,14 +806,11 @@ pub fn Field(props: &FieldProps) -> Element {
             }
         };
 
-        let mut shell_children: Vec<Element> = Vec::with_capacity(3);
-        if let Some(l) = leading {
-            shell_children.push(l);
-        }
+        let mut shell_children: Vec<Element> =
+            Vec::with_capacity(leading.len() + 1 + trailing.len());
+        shell_children.extend(leading);
         shell_children.push(input_node);
-        if let Some(t) = trailing {
-            shell_children.push(t);
-        }
+        shell_children.extend(trailing);
         // Builder form (not `ui!`): the shell style is a reactive CLOSURE (it
         // reads `focused`), and `with_style(closure)` is the canonical way to
         // attach a live style source — mirrors switch.rs / segmented_control.rs.
@@ -1130,6 +1142,116 @@ mod tests {
                  style sink, not snapshotted)"
             );
     });
+    }
+
+    // Regression: a Field with a LIVE error channel (every typed input —
+    // DateInput et al. — routes one in) must not mount an EMPTY help line
+    // while the error is `None`. The mounted empty text kept a caption
+    // line box plus a slot in the group's gap, so typed inputs sat
+    // permanently taller than a plain Field. The help line is a guarded
+    // hole now — no text node until the source turns `Some`.
+    #[test]
+    fn regression_live_error_none_mounts_no_empty_help_line() {
+        with_test_world(|| {
+            theme();
+            let err: Signal<Option<String>> = runtime_core::signal(None);
+            let props = FieldProps {
+                error: err.into(),
+                ..Default::default()
+            };
+            for c in classify(Field(&props)).children() {
+                assert!(
+                    !matches!(classify(c), P::Text { .. }),
+                    "no help text node may be mounted while the live error is None"
+                );
+            }
+        });
+    }
+
+    // The help line now mounts ON DEMAND (first validation error), so its
+    // evaluation must premint like any open-on-demand surface — otherwise
+    // a `--premint-only` app panics on the first error. (The sheet itself
+    // is still constructed/installed by every Field build via
+    // `help_style`, so the premint dump sees it.)
+    #[test]
+    fn help_line_evaluation_premints() {
+        with_test_world(|| {
+            theme();
+            let danger: ToneRef = tones::Danger.into();
+            let app = StyleApplication::new(field_help_sheet())
+                .with("tone", danger.key().to_string());
+            assert!(
+                app.preminted_class_list().is_some(),
+                "the on-demand help line must premint (it constructs on first error)"
+            );
+        });
+    }
+
+    const GLYPH_A: IconData = IconData {
+        view_box: (24, 24),
+        paths: &["M0 0h24"],
+        fill_rule: runtime_core::FillRule::NonZero,
+        filled: false,
+    };
+    const GLYPH_B: IconData = IconData {
+        view_box: (24, 24),
+        paths: &["M0 0v24", "M0 24h24"],
+        fill_rule: runtime_core::FillRule::NonZero,
+        filled: false,
+    };
+
+    // `Adornment::Group` flattens its members as ORDERED siblings in the
+    // shell row — DateInput's clearable ✕ + calendar pair relies on this.
+    #[test]
+    fn trailing_group_adornment_renders_members_as_row_siblings() {
+        with_test_world(|| {
+            theme();
+            let props = FieldProps {
+                trailing: Adornment::Group(vec![
+                    Adornment::button(GLYPH_A, || {}),
+                    Adornment::button(GLYPH_B, || {}),
+                ]),
+                ..Default::default()
+            };
+            let mut group = classify(Field(&props)).children();
+            let shell = classify(group.remove(0)).children();
+            let paths: Vec<_> = shell
+                .into_iter()
+                .map(|c| match classify(c) {
+                    P::TextInput { .. } => "input".to_string(),
+                    P::Pressable { children, .. } => {
+                        match classify(children.into_iter().next().unwrap()) {
+                            P::Icon { data, .. } => format!("icon:{}", data.paths.len()),
+                            _ => panic!("Button adornment wraps an icon"),
+                        }
+                    }
+                    _ => panic!("unexpected shell child"),
+                })
+                .collect();
+            assert_eq!(
+                paths,
+                vec!["input", "icon:1", "icon:2"],
+                "group members render in order after the input"
+            );
+        });
+    }
+
+    // An empty group is NO adornment: the Field must keep the plain
+    // (shell-less) input path.
+    #[test]
+    fn empty_group_adornment_keeps_the_plain_input_path() {
+        with_test_world(|| {
+            theme();
+            let props = FieldProps {
+                trailing: Adornment::Group(Vec::new()),
+                ..Default::default()
+            };
+            let mut group = classify(Field(&props)).children();
+            assert!(
+                matches!(classify(group.remove(0)), P::TextInput { .. }),
+                "an empty group must not create the adorned shell"
+            );
+        });
     }
 
     // Since the D9 focus-ring fix, a non-adorned Field's input style is
