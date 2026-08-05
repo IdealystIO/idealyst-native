@@ -110,6 +110,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
+use runtime_shared::animation::AnimProp;
+use runtime_shared::assets::{AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId};
 use runtime_shared::accessibility::AccessibilityProps;
 use runtime_shared::primitives;
 use runtime_shared::{
@@ -497,7 +499,19 @@ impl caps::ViewOps for LinuxBackend {
     }
 }
 
-impl caps::InputOps for LinuxBackend {}
+impl caps::InputOps for LinuxBackend {
+    fn install_touch_handler(&mut self, node: &Self::Node, handler: runtime_shared::TouchHandler) {
+        LinuxBackend::install_touch_handler(self, node, handler)
+    }
+
+    fn install_file_drop_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: runtime_shared::FileDropHandler,
+    ) {
+        LinuxBackend::install_file_drop_handler(self, node, handler)
+    }
+}
 
 impl caps::PressableOps for LinuxBackend {
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Self::Node {
@@ -576,7 +590,15 @@ impl caps::IconOps for LinuxBackend {
     }
 }
 
-impl caps::LinkOps for LinuxBackend {}
+impl caps::LinkOps for LinuxBackend {
+    fn create_link(
+        &mut self,
+        config: runtime_shared::primitives::link::LinkConfig,
+        a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        LinuxBackend::create_link(self, config, a11y)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Form widgets
@@ -770,7 +792,21 @@ impl caps::StyleOps for LinuxBackend {
     }
 }
 
-impl caps::AssetOps for LinuxBackend {}
+impl caps::AssetOps for LinuxBackend {
+    fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
+        LinuxBackend::register_asset(self, id, kind, source)
+    }
+
+    fn register_typeface(
+        &mut self,
+        id: TypefaceId,
+        family_name: &str,
+        faces: &[TypefaceFace],
+        fallback: SystemFallback,
+    ) {
+        LinuxBackend::register_typeface(self, id, family_name, faces, fallback)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // A11y + animation + introspection
@@ -778,7 +814,19 @@ impl caps::AssetOps for LinuxBackend {}
 
 impl caps::A11yOps for LinuxBackend {}
 
-impl caps::AnimationOps for LinuxBackend {}
+impl caps::AnimationOps for LinuxBackend {
+    // The trait defaults are no-ops. Leaving this impl empty meant every
+    // per-frame animation write was silently discarded — the welcome
+    // scene's three acts animate opacity/transform in, so the content
+    // stayed at its initial (invisible) state on a correct layout tree.
+    fn set_animated_f32(&mut self, node: &Self::Node, prop: AnimProp, value: f32) {
+        LinuxBackend::set_animated_f32(self, node, prop, value)
+    }
+
+    fn set_animated_color(&mut self, node: &Self::Node, prop: AnimProp, value: [f32; 4]) {
+        LinuxBackend::set_animated_color(self, node, prop, value)
+    }
+}
 
 impl caps::IntrospectionOps for LinuxBackend {}
 
