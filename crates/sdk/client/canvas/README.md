@@ -73,8 +73,8 @@ layer; the [`pdf`](../pdf/) SDK builds these from PDF `/SMask`s.
 
 ## Renderers
 
-Pick **one** at bootstrap (the `Element::External` registry is `TypeId`-keyed,
-last-registration-wins):
+Pick **one** at the boot entry's registry seam (the scene registry is
+`TypeId`-keyed, last-registration-wins):
 
 | Crate | Engine | Where it runs |
 | ----- | ------ | ------------- |

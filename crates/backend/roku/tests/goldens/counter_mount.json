@@ -1,0 +1,38 @@
+[
+  {
+    "id": 1,
+    "op": "CreateView"
+  },
+  {
+    "content": "",
+    "id": 2,
+    "op": "CreateText"
+  },
+  {
+    "content": "count: 0",
+    "id": 2,
+    "op": "UpdateText"
+  },
+  {
+    "child": 2,
+    "op": "Insert",
+    "parent": 1
+  },
+  {
+    "id": 3,
+    "label": "inc",
+    "leading_icon": null,
+    "on_click": 1,
+    "op": "CreateButton",
+    "trailing_icon": null
+  },
+  {
+    "child": 3,
+    "op": "Insert",
+    "parent": 1
+  },
+  {
+    "op": "Finish",
+    "root": 1
+  }
+]

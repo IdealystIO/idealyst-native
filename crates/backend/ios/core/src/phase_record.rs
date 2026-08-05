@@ -1,12 +1,12 @@
 //! Phase-record indirection so `backend-ios-core` can push timings
 //! into the same aggregator the leaf `backend-ios-mobile` crate owns
-//! (which in turn forwards into `runtime_core::debug`), without
+//! (which in turn forwards into `runtime_shared::debug`), without
 //! either crate depending on the other.
 //!
 //! `backend-ios-mobile::imp::phase_timer::install_core_bridge` is
 //! called once during `IosBackend::new` and registers the function
 //! pointer below. With `debug-stats` ON the registered closure
-//! pushes into `runtime_core::debug::record_apply_phase` so a single
+//! pushes into `runtime_shared::debug::record_apply_phase` so a single
 //! `take_phase_counters()` drain sees both crates' work.
 //!
 //! When `debug-stats` is OFF (default), [`PhaseScope`] and

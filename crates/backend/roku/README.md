@@ -2,16 +2,17 @@
 
 Generator backend for Roku.
 
-## Theme switching: temporarily unimplemented
+## Theme switching: no-op by design
 
-The theme/tokenization refactor split `runtime-core`'s theme APIs into:
+The theme/tokenization refactor split the theme APIs into:
 
-- **runtime-core**: token primitives (`install_tokens` / `update_tokens` /
-  `Tokenized<T>` / `tokens_version_signal`).
-- **framework-theme**: the optional theme-as-struct pattern + `install_themes`
-  multi-variant helper.
+- **`runtime-shared` (re-exported as `runtime_core::…`)**: token primitives
+  (`install_tokens` / `update_tokens` / `Tokenized<T>` /
+  `tokens_version_signal`).
+- **[`idea-theme`](../../ui/idea-theme)**: the optional theme-as-struct
+  pattern + `install_themes` multi-variant helper.
 
-The previous Roku integration depended on two backend-trait hooks that have
+An earlier Roku integration depended on two backend hooks that have since
 been removed:
 
 - `register_theme_variant(name, tokens)` — captured each named variant's
@@ -19,8 +20,12 @@ been removed:
 - `bind_active_theme_signal(signal_id, initial_name)` — wired a `Signal<String>`
   into the device-side switching machinery.
 
-Both hooks are gone in Phase 1. `Backend::install_tokens` /
-`Backend::update_tokens` currently `unimplemented!()` on this backend — the
-device-side switching machinery needs to be rewired through `framework-theme`
-in a follow-up. Until then, Roku builds that exercise the theme path will
-panic at runtime.
+Both hooks are gone. `StyleOps::install_tokens` / `update_tokens` are now
+deliberate **no-ops** on this backend (same posture as iOS / Android): the
+Roku wire protocol has no runtime variable layer, so `style::lower_style`
+resolves every `Tokenized<T>` to a literal at `apply_style` time. When the
+app calls `update_tokens(...)`, the tokens-version signal re-fires every
+styled effect, each re-applies, and the wire stream picks up the new values
+automatically — nothing needs to be emitted here. See the rationale comment
+on `install_tokens` in `src/newcore.rs`, pinned by
+`regression_roku_install_and_update_tokens_no_panic`.

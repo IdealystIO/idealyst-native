@@ -22,19 +22,35 @@ mod typeface;
 
 pub use app::app;
 
-// SDK-handler registration hook the CLI-generated wrappers invoke before
-// mount. `welcome` registers no third-party SDKs, so it's an empty generic
-// over `Backend` — backend-agnostic (no per-target `#[cfg]`, no `backend-*`
-// dep), matching the scaffold's platform-agnostic app crate. The wrappers
-// pass the concrete backend per platform (web/iOS by value, android via
-// `&mut *b`), so `B` resolves to that backend. A project that adds a
-// navigator / external SDK specializes this to that backend's concrete type.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
-
-// Recorder-side registration for the runtime-server sidecar. Gated by
-// `sidecar` (set only by the generated sidecar wrapper) so device/web
-// builds never pull `dev-server`.
+// Recorder-side registration seam for the runtime-server sidecar
+// (`dev_server::sidecar::run_newcore`) — the recorder's scene-registry
+// twin of `register_scene_extensions`. Gated by `sidecar` (set only by
+// the generated sidecar wrapper) so device/web builds never pull
+// `dev-server`. This app registers no third-party scene handlers.
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {
-    // No SDK navigator/external needs recorder-side registration in this app.
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}
+
+// SDK-handler registration seam, invoked by the CLI-generated wrappers
+// (web `start_in`/`hydrate_in`, macOS `run_with`, iOS `run_in_view`,
+// terminal `run`) after `runtime_vocabulary::register_builtins`.
+// Registry-generic over the scene `Host` so ONE seam serves every
+// backend (each wrapper's call site pins `H` to its concrete backend);
+// a project that adds an SDK with a caps-generic handler (codeblock,
+// table, markdown, …) calls its `register` here, and one with a
+// backend-CONCRETE handler specializes `H` to that backend instead.
+//
+// Registration is mandatory for anything the tree renders: an
+// unregistered payload panics at realize.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
+
+// Android entry: the generated Android wrapper's `attach` mounts
+// `scene_app()` through `backend_android::newcore::start` (see
+// crates/tools/build/android). `app()` already returns the scene
+// `Element`, so this is a plain re-export shim with the conventional
+// name.
+pub fn scene_app() -> runtime_core::Element {
+    app()
 }

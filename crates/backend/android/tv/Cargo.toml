@@ -20,10 +20,10 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 runtime-server = ["dep:runtime-server-shell-native", "runtime-server-shell-native/runtime-server"]
-async-driver = ["runtime-core/async-driver"]
+async-driver = ["runtime-shared/async-driver"]
 
 [dependencies]
-runtime-core = { workspace = true }
+runtime-shared = { workspace = true }
 backend-android-core = { workspace = true }
 raw-window-handle = "0.6"
 runtime-server-shell-native = { workspace = true, optional = true }

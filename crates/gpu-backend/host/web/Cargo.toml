@@ -10,7 +10,7 @@ license.workspace = true
 # `Graphics`-allocated `<canvas>` surface, runs the wgpu init
 # (instance → adapter → device → surface configure), constructs the
 # `render_wgpu::Host` + `Renderer`, mounts the caller's UI, drives
-# per-frame paint through `runtime_core::driver::render_loop`,
+# per-frame paint through `runtime_shared::driver::render_loop`,
 # and translates browser `pointerdown` / `pointermove` /
 # `pointerup` / `pointercancel` / `wheel` events into the
 # `render_api::EventSink` vocabulary the host already understands.
@@ -20,10 +20,22 @@ license.workspace = true
 # preview embeds) collapse to a single `mount(...).await` call inside
 # their `Graphics` primitive's `on_ready`.
 
+# `mount` realizes the embedded tree through
+# `render_wgpu::newcore::start_in_world` into the PAGE's own world
+# (`backend_web::newcore::mounted_world`), so the page's flush driver
+# commits the embedded app's staged writes. The `backend-web` dep is
+# legitimate here (not in author code): this crate IS the web-specific
+# host shell, and on web the embedding page host is backend-web by
+# definition.
+
 [dependencies]
 render-api = { workspace = true }
 render-wgpu = { workspace = true }
-runtime-core = { workspace = true, features = ["async-driver"] }
+# `async-driver`: the crate's `spawn_async` executor, used by the
+# async wgpu init.
+runtime-shared = { workspace = true, features = ["async-driver"] }
+# The scene-element vocabulary `mount`'s build closure returns.
+runtime-scene = { workspace = true }
 
 # Browser-only — same target gate as `backend-web` follows. The
 # `wgpu` major MUST match `render-wgpu`'s (currently 29) so the
@@ -34,6 +46,10 @@ runtime-core = { workspace = true, features = ["async-driver"] }
 # under any browser, same as before — wgpu 29 ships the same
 # `webgl` feature flag.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# The embedding page host — `mount` reads its mounted world (the
+# `newcore` boot's accessor) and installs its render-loop driver
+# (behind backend-web's `async-driver`).
+backend-web = { workspace = true, features = ["async-driver"] }
 wgpu = { version = "29", default-features = false, features = ["webgl", "wgsl"] }
 wasm-bindgen = "0.2"
 # `embed-font-bytes` is off for web, so `face!` fonts are served files,

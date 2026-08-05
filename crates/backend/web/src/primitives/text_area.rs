@@ -9,8 +9,8 @@ use crate::WebBackend;
 // `css_num`, not `f64: Display` — a bare `{}` on a float reinstates core's
 // ~12-15 KB flt2dec float formatter in every bundle (see css::css_num).
 use css::css_num;
-use runtime_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
-use runtime_core::primitives::text_area::{TextAreaHandle, TextAreaOps};
+use runtime_shared::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
+use runtime_shared::primitives::text_area::{TextAreaHandle, TextAreaOps};
 use std::any::Any;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;

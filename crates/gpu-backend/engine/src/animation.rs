@@ -34,9 +34,9 @@ use std::collections::HashMap;
 // `web-time` for wasm32 compat — see `host.rs` for the rationale.
 use web_time::{Duration, Instant};
 
-use runtime_core::animation::{apply_easing, Animatable};
-use runtime_core::Easing;
 use runtime_layout::LayoutNode;
+use runtime_shared::animation::{apply_easing, Animatable};
+use runtime_shared::Easing;
 
 /// Which property of a node a tween targets.
 ///

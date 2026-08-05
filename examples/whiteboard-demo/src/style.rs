@@ -45,7 +45,8 @@ pub fn token_alpha(
     alpha: f32,
 ) -> Color {
     let c = token(getter);
-    let rgba = runtime_core::color::parse_or(&c.0, runtime_core::color::Rgba::new(255, 255, 255, 255));
+    // `color` is a shared-substrate module the facade root does not mirror yet.
+    let rgba = runtime_shared::color::parse_or(&c.0, runtime_shared::color::Rgba::new(255, 255, 255, 255));
     Color(format!(
         "rgba({},{},{},{:.3})",
         rgba.r,

@@ -1,4 +1,4 @@
-//! Core concepts — app vs host crates, Element, signals, ui!, the Backend trait.
+//! Core concepts — app vs host crates, Element, signals, ui!, the platform seam.
 
 use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
@@ -23,7 +23,7 @@ pub fn page() -> Element {
         TocEntry { handle: reactivity_ref, label: "Signals (reactivity)" },
         TocEntry { handle: ui_macro_ref, label: "The ui! macro" },
         TocEntry { handle: builders_ref, label: "Builders and Element" },
-        TocEntry { handle: backend_ref, label: "The Backend trait" },
+        TocEntry { handle: backend_ref, label: "The platform seam" },
         TocEntry { handle: building_ref, label: "Building your own" },
         TocEntry { handle: next_ref, label: "Where to go from here" },
     ];
@@ -34,7 +34,7 @@ pub fn page() -> Element {
                 title = "Core concepts",
                 blurb = "The ideas you need to hold in your head to read or write idealyst \
                  code: the app/host split, Element, signals, the `ui!` macro, the \
-                 builder/Element distinction, the Backend trait, and the path to \
+                 builder/Element distinction, the platform seam, and the path to \
                  building your own component library and theme system on top.",
             )
             PageSection(handle = app_vs_host_ref) { app_vs_host() }
@@ -179,16 +179,16 @@ fn builders() -> Element {
         ui! {
             Typography(content = "The `ui!` macro hides one detail you'll meet the \
                 moment you step outside it. Element constructors don't return \
-                `Element` directly \u{2014} they return a builder wrapper, typically \
-                `Bound<H>`, where `H` is the primitive's handle type (`TextHandle`, \
-                `ButtonHandle`, etc.). The wrapper exists so you can chain configuration \
+                `Element` directly \u{2014} each returns its own builder type \
+                (`text` gives you a `GlueText`, `button` a `GlueButton`, and so on). \
+                The builder exists so you can chain configuration \
                 before committing to the final value.".to_string())
         },
         ui! { CodePanel(src = chain) },
         ui! {
             Typography(content = "Each method takes `self` and returns `Self`, so the \
                 chain accumulates state. At the end of the chain you still have a \
-                `Bound<TextHandle>`, not a `Element`.".to_string())
+                `GlueText`, not a `Element`.".to_string())
         },
         ui! {
             Typography(content = "Inside the `ui!` macro, an `.into_element()` call is \
@@ -199,7 +199,7 @@ fn builders() -> Element {
         ui! {
             Typography(content = "If you forget the unwrap and try to use the builder \
                 where a `Element` is expected, the compiler tells you exactly that: \
-                `expected Element, found Bound<TextHandle>`. The fix is one method \
+                `expected Element, found GlueText`. The fix is one method \
                 call.".to_string())
         },
         ui! {
@@ -214,29 +214,39 @@ fn builders() -> Element {
 }
 
 fn backend_trait() -> Element {
-    let snippet = "// Sketch of the Backend trait (real surface is larger):\n\
-                   pub trait Backend {\n    \
-                       type Node;\n    \
-                       fn create_view(&mut self, ...) -> Self::Node;\n    \
-                       fn create_text(&mut self, ...) -> Self::Node;\n    \
-                       fn create_button(&mut self, ...) -> Self::Node;\n    \
-                       fn update_text(&mut self, node: &Self::Node, ...);\n    \
-                       fn insert(&mut self, parent: &Self::Node, child: Self::Node, idx: usize);\n    \
-                       // ...one method per primitive + property update path\n\
-                   }";
+    let snippet = "// The structural seam \u{2014} seven operations, one impl per target:\n\
+                   pub trait Host: 'static {\n    \
+                       type Node: Clone + 'static;\n    \
+                       fn insert(&mut self, parent: &mut Self::Node, child: Self::Node);\n    \
+                       fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize);\n    \
+                       fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node);\n    \
+                       fn clear_children(&mut self, node: &Self::Node);\n    \
+                       fn create_anchor(&mut self) -> Self::Node;\n    \
+                       fn supports_splice(&self) -> bool;\n\
+                   }\n\
+                   \n\
+                   // Everything else \u{2014} creating primitives, props, styling,\n\
+                   // events \u{2014} arrives as capability traits over that seam:\n\
+                   impl caps::TextOps for MyBackend { ... }\n\
+                   impl caps::StyleOps for MyBackend { ... }";
     let children: Vec<Element> = vec![
-        ui! { Typography(content = "The Backend trait".to_string(), kind = idea_ui::typography_kind::H2) },
+        ui! { Typography(content = "The platform seam".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
-            Typography(content = "The framework's only seam to the platform. Implement \
-                this trait once per target and the entire existing app surface runs \
-                there. Web is `<div>`s and DOM mutations; iOS is `UIView` + `addSubview`; \
-                Android is `android.view.View` + `addView`; wgpu is GPU draw calls.".to_string())
+            Typography(content = "The framework's only seam to the platform. `Host` \
+                covers the structural operations the scene's drivers emit \u{2014} how \
+                nodes are parented, reordered and removed. Web is `<div>`s and DOM \
+                mutations; iOS is `UIView` + `addSubview`; Android is \
+                `android.view.View` + `addView`; wgpu is GPU draw calls.".to_string())
         },
         ui! { CodePanel(src = snippet) },
         ui! {
-            Typography(content = "Adding a new platform is implementing a trait, not \
-                forking the framework. Most backends fit in a single crate of moderate \
-                size.".to_string())
+            Typography(content = "Primitives, properties, styling and events are not \
+                part of `Host`. They arrive as a set of focused capability traits \
+                (`TextOps`, `StyleOps`, `InputOps`, \u{2026}), so a backend implements \
+                the structural seam plus the capabilities it actually supports rather \
+                than one mega-trait. Adding a new platform is implementing those \
+                traits, not forking the framework \u{2014} most backends fit in a \
+                single crate of moderate size.".to_string())
         },
     ];
     ui! { Stack(gap = StackGap::Md) { children } }

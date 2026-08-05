@@ -7,7 +7,7 @@
 mod a11y;
 mod animation;
 /// Cooperative main-thread async executor. Gated on `async-driver` since it
-/// needs `runtime_core::driver` (which the feature brings in). Mirrors the
+/// needs `runtime_shared::driver` (which the feature brings in). Mirrors the
 /// Apple backend's `async_executor` module gating.
 #[cfg(feature = "async-driver")]
 pub(crate) mod async_executor;
@@ -28,8 +28,8 @@ mod style;
 pub(crate) mod view_rect;
 
 use crate::phase_timer;
-use runtime_core::primitives::navigator::NavigatorOps;
-use runtime_core::{Backend, ButtonHandle, StyleRules};
+use runtime_shared::primitives::navigator::NavigatorOps;
+use runtime_shared::{ButtonHandle, StyleRules};
 
 /// No-op `NavigatorOps` returned by `make_navigator_handle` when no
 /// SDK handler is stored for the requested node. Keeps the fallback
@@ -111,7 +111,7 @@ pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
                 .with_max_level(log::LevelFilter::Info)
                 .with_tag("idealyst"),
         );
-        // Route `runtime_core::log` / `log_info!` through the same `log`
+        // Route `runtime_shared::log` / `log_info!` through the same `log`
         // facade so author-level logs reach logcat instead of vanishing
         // into Android's discarded native stderr (the `StderrLogger`
         // fallback). Idempotent.
@@ -288,7 +288,7 @@ pub(crate) struct NodeAnim {
     /// the apply path falls back to a fixed default. The layout
     /// pass calls `sync_radial_gradient_radius` with the just-laid-
     /// out frame to recompute the radius and write the real value.
-    pub(crate) gradient_radial_extent: Option<runtime_core::RadialExtent>,
+    pub(crate) gradient_radial_extent: Option<runtime_shared::RadialExtent>,
     pub(crate) gradient_radial_radius_factor: Option<f32>,
 
     /// Raw pointer to the leaked `Box<StateCallback>` held by the
@@ -347,33 +347,6 @@ pub struct AndroidBackend {
     /// layout pass to apply computed frames.
     pub(crate) view_to_layout:
         HashMap<usize, (GlobalRef, runtime_layout::LayoutNode)>,
-    /// Registry of third-party `Element::External` handlers,
-    /// populated by `register_external::<T>(...)` calls from
-    /// per-platform leaf crates (e.g. `webview-android::register`).
-    /// `create_external` looks the handler up by payload TypeId;
-    /// unregistered kinds fall through to a "not supported" placeholder
-    /// TextView.
-    pub(crate) external_handlers:
-        runtime_core::ExternalRegistry<AndroidBackend>,
-    /// Registry of `Element::Navigator` handler factories.
-    /// SDK leaf crates install factories keyed by their presentation
-    /// TypeId via `register_navigator`.
-    pub(crate) navigator_handlers:
-        runtime_core::NavigatorRegistry<AndroidBackend>,
-    /// Per-navigator-instance SDK handler. Keyed by the node's
-    /// `node_key_of` (JObject raw pointer). `Backend::create_navigator`
-    /// stores the handler here after `init` so the unified
-    /// `navigator_attach_initial` / `release_navigator` /
-    /// `make_navigator_handle` / `apply_navigator_slot_style` trait
-    /// methods can route through the handler's kind-specific logic
-    /// instead of branching on a kind discriminant + calling per-kind
-    /// inherent helpers directly.
-    pub(crate) nav_handler_instances: HashMap<
-        usize,
-        std::rc::Rc<
-            std::cell::RefCell<Box<dyn runtime_core::NavigatorHandler<AndroidBackend>>>,
-        >,
-    >,
     /// Per-`Typeface` registry of custom fonts. Filled by
     /// [`Backend::register_asset`] for `AssetTag::Font`
     /// (bytes → Android `Typeface.createFromFile`) and
@@ -405,7 +378,7 @@ pub struct AndroidBackend {
     /// `insert`, so the parent walk couldn't yet find an enclosing
     /// scroll view. The walker calls `apply_style` (via
     /// `attach_style`) inside the per-primitive `build`, then the
-    /// parent's `insert_children` does `backend.insert(...)`
+    /// parent's `insert_children` does `backend.insert_impl(...)`
     /// afterwards — so at apply-style time the child is still a
     /// detached floating view. We stash `(view_ptr, threshold)`
     /// here and complete the registration in `insert` once the
@@ -511,7 +484,7 @@ thread_local! {
         std::cell::Cell::new(None);
 
     /// Last viewport size (dp) mirrored into the reactive
-    /// `runtime_core::viewport_size()` signal. `viewport_size()` is
+    /// `runtime_shared::viewport_size()` signal. `viewport_size()` is
     /// called every layout pass to feed Taffy; we only want to *notify*
     /// reactive subscribers when the size actually changes, and we must
     /// do it OUTSIDE the layout pass (see `viewport_size` for why), so
@@ -662,7 +635,7 @@ fn install_text_area_measure_fn(
                 (line, pad)
             });
             let content_h = base.height - vpad_dp * 2.0;
-            let h = runtime_core::primitives::text_area::resolve_text_area_height(
+            let h = runtime_shared::primitives::text_area::resolve_text_area_height(
                 content_h, line_dp, vpad_dp, min_rows, max_rows,
             );
             runtime_layout::Size {
@@ -864,33 +837,9 @@ fn start_view_intent(
     Ok(())
 }
 
-/// An inventory-collected external registrar. An SDK's Android module
-/// `inventory::submit!`s one of these (carrying a `fn(&mut AndroidBackend)`);
-/// [`AndroidBackend::new`] drains them so the SDK self-registers its
-/// `Element::External` handler without the app naming the concrete backend.
-/// See [[project_inventory_self_registration]].
-pub struct AndroidExternalRegistrar(pub fn(&mut AndroidBackend));
-inventory::collect!(AndroidExternalRegistrar);
 
-/// Navigator analogue of [`AndroidExternalRegistrar`]; a navigator SDK's Android
-/// module submits one so the app needn't call `<nav>::register` per platform.
-/// See [[project_inventory_self_registration]].
-pub struct AndroidNavigatorRegistrar(pub fn(&mut AndroidBackend));
-inventory::collect!(AndroidNavigatorRegistrar);
 
 impl AndroidBackend {
-    /// Install every SDK-submitted external + navigator handler. Native
-    /// (non-wasm) so inventory's link-time ctors populate the slices before
-    /// construction.
-    fn drain_self_registrars(&mut self) {
-        for r in inventory::iter::<AndroidExternalRegistrar> {
-            (r.0)(self);
-        }
-        for r in inventory::iter::<AndroidNavigatorRegistrar> {
-            (r.0)(self);
-        }
-    }
-
     /// Construct a backend rooted at the provided Android `Context`
     /// and a parent `ViewGroup` to mount under.
     pub fn new(context: GlobalRef, root: GlobalRef) -> Self {
@@ -909,9 +858,6 @@ impl AndroidBackend {
             portal_instances: HashMap::new(),
             layout: runtime_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
-            external_handlers: runtime_core::ExternalRegistry::new(),
-            navigator_handlers: runtime_core::NavigatorRegistry::new(),
-            nav_handler_instances: HashMap::new(),
             font_registry: font::FontRegistry::new(),
             sticky_registry: HashMap::new(),
             scroll_observers: HashMap::new(),
@@ -921,7 +867,6 @@ impl AndroidBackend {
             detached_window_roots: HashMap::new(),
             app_key_ptr: None,
         };
-        backend.drain_self_registrars();
         backend.install_viewport_resize_listener();
         backend
     }
@@ -972,37 +917,6 @@ impl AndroidBackend {
             // an unrelated later JNI call.
             let _ = env.exception_clear();
         });
-    }
-
-    /// Register a handler for the third-party external primitive whose
-    /// payload type is `T`. Called by per-platform leaf crates (e.g.
-    /// `webview_android::register`) during app bootstrap. The handler
-    /// receives the typed payload + a mutable borrow of the backend
-    /// and produces the `GlobalRef` to the Android `View` to mount.
-    pub fn register_external<T, F>(&mut self, handler: F)
-    where
-        T: 'static,
-        F: Fn(&std::rc::Rc<T>, &mut AndroidBackend) -> GlobalRef + 'static,
-    {
-        self.external_handlers.register::<T, _>(handler);
-    }
-
-    /// Register a navigator-kind handler factory. Mirrors `register_external`
-    /// but for `Element::Navigator`. SDK leaf crates
-    /// (`stack_navigator::register`, etc.) call this once at app bootstrap.
-    pub fn register_navigator<P, F>(&mut self, factory: F)
-    where
-        P: 'static,
-        F: Fn() -> Box<dyn runtime_core::NavigatorHandler<AndroidBackend>> + 'static,
-    {
-        self.navigator_handlers.register::<P, _>(factory);
-    }
-
-    /// `true` if a handler for payload type `T` has been registered.
-    /// Useful for opt-in graceful degradation in user code (render a
-    /// static fallback if the SDK isn't available on Android).
-    pub fn has_external<T: 'static>(&self) -> bool {
-        self.external_handlers.has::<T>()
     }
 
     /// SDK extension helper: mark an external content-measured scroller
@@ -1388,8 +1302,18 @@ impl AndroidBackend {
             let changed = LAST_MIRRORED_VIEWPORT.with(|c| c.get()) != Some((w, h));
             if changed {
                 LAST_MIRRORED_VIEWPORT.with(|c| c.set(Some((w, h))));
-                runtime_core::schedule_microtask(move || {
-                    runtime_core::set_viewport_size(runtime_core::ViewportSize {
+                runtime_shared::schedule_microtask(move || {
+                    runtime_shared::set_viewport_size(runtime_shared::ViewportSize {
+                        width: w,
+                        height: h,
+                    });
+                    // New-core mirror (see newcore.rs, "Viewport
+                    // source"): the same deferred push also lands in
+                    // the mounted world's viewport ctx so breakpoint-
+                    // dependent author reactivity re-fires on
+                    // rotation/resize (no-op TLS read when no
+                    // new-core app is booted).
+                    crate::newcore::forward_viewport(runtime_shared::ViewportSize {
                         width: w,
                         height: h,
                     });
@@ -1420,10 +1344,10 @@ impl AndroidBackend {
     /// `getSystemWindowInset*` accessors return zero when the
     /// activity isn't in edge-to-edge mode (system "consumed" them);
     /// the new path always returns the real values.
-    fn platform_safe_area_insets(&self) -> runtime_core::EdgeInsets {
+    fn platform_safe_area_insets(&self) -> runtime_shared::EdgeInsets {
         let host = self.root.as_obj();
-        let mut final_insets = runtime_core::EdgeInsets::ZERO;
-        let result = with_env(|env| -> Option<runtime_core::EdgeInsets> {
+        let mut final_insets = runtime_shared::EdgeInsets::ZERO;
+        let result = with_env(|env| -> Option<runtime_shared::EdgeInsets> {
             let density = density_of(env, &host).unwrap_or(1.0);
             let insets_obj = env
                 .call_method(
@@ -1521,9 +1445,9 @@ impl AndroidBackend {
                     bottom = 24.0;
                 }
             }
-            Some(runtime_core::EdgeInsets { top, right, bottom, left })
+            Some(runtime_shared::EdgeInsets { top, right, bottom, left })
         });
-        final_insets = result.unwrap_or(runtime_core::EdgeInsets::ZERO);
+        final_insets = result.unwrap_or(runtime_shared::EdgeInsets::ZERO);
         // Even after the `Insets`/deprecated/`Resources` fallbacks, if
         // we still see 0 it means `getRootWindowInsets` returned null
         // (host hasn't been attached to a window yet, e.g. very early
@@ -1780,21 +1704,21 @@ pub(crate) fn fire_layout_for_view(view_key: usize, w: f32, h: f32) {
 }
 
 pub(crate) struct AndroidViewOps;
-impl runtime_core::ViewOps for AndroidViewOps {
+impl runtime_shared::ViewOps for AndroidViewOps {
     fn subscribe_layout(
         &self,
         node: &dyn std::any::Any,
         callback: Box<dyn Fn(f32, f32)>,
-    ) -> runtime_core::LayoutSubscription {
+    ) -> runtime_shared::LayoutSubscription {
         let Some(view) = node.downcast_ref::<GlobalRef>() else {
-            return runtime_core::LayoutSubscription::noop();
+            return runtime_shared::LayoutSubscription::noop();
         };
         // Same key derivation as `node_key` / `view_to_layout`.
         let key = view.as_obj().as_raw() as usize;
         let cb: Rc<dyn Fn(f32, f32)> = Rc::from(callback);
         let cb_id = Rc::as_ptr(&cb) as *const () as usize;
         LAYOUT_SUBS.with(|m| m.borrow_mut().push((key, cb)));
-        runtime_core::LayoutSubscription::new(move || {
+        runtime_shared::LayoutSubscription::new(move || {
             LAYOUT_SUBS.with(|m| {
                 m.borrow_mut()
                     .retain(|(k, c)| !(*k == key && Rc::as_ptr(c) as *const () as usize == cb_id))
@@ -1818,7 +1742,7 @@ impl runtime_core::ViewOps for AndroidViewOps {
     fn frame(
         &self,
         node: &dyn std::any::Any,
-    ) -> Option<runtime_core::primitives::portal::ViewportRect> {
+    ) -> Option<runtime_shared::primitives::portal::ViewportRect> {
         let view = node.downcast_ref::<GlobalRef>()?;
         with_env(|env| {
             let obj = view.as_obj();
@@ -1842,7 +1766,7 @@ impl runtime_core::ViewOps for AndroidViewOps {
                 .and_then(|v| v.f())
                 .unwrap_or(0.0);
             let density = density_of(env, &obj).unwrap_or(1.0);
-            Some(runtime_core::primitives::portal::ViewportRect {
+            Some(runtime_shared::primitives::portal::ViewportRect {
                 x: x_px / density,
                 y: y_px / density,
                 width: w_px as f32 / density,
@@ -1858,7 +1782,7 @@ impl runtime_core::ViewOps for AndroidViewOps {
     fn set_animated_f32(
         &self,
         node: &dyn std::any::Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         value: f32,
     ) {
         if let Some(n) = node.downcast_ref::<GlobalRef>() {
@@ -1870,7 +1794,7 @@ impl runtime_core::ViewOps for AndroidViewOps {
     fn set_animated_color(
         &self,
         node: &dyn std::any::Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
         if let Some(n) = node.downcast_ref::<GlobalRef>() {
@@ -1881,7 +1805,7 @@ impl runtime_core::ViewOps for AndroidViewOps {
 pub(crate) static ANDROID_VIEW_OPS: AndroidViewOps = AndroidViewOps;
 
 pub(crate) struct AndroidTextOps;
-impl runtime_core::TextOps for AndroidTextOps {
+impl runtime_shared::TextOps for AndroidTextOps {
     /// Route text-color animations through the backend's
     /// `set_animated_color` — Android's `ForegroundColor` branch
     /// dispatches to `TextView.setTextColor`, which is what makes
@@ -1890,7 +1814,7 @@ impl runtime_core::TextOps for AndroidTextOps {
     fn set_animated_color(
         &self,
         node: &dyn std::any::Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
         if let Some(n) = node.downcast_ref::<GlobalRef>() {
@@ -1901,7 +1825,7 @@ impl runtime_core::TextOps for AndroidTextOps {
 pub(crate) static ANDROID_TEXT_OPS: AndroidTextOps = AndroidTextOps;
 
 pub(crate) struct AndroidScrollViewOps;
-impl runtime_core::primitives::scroll_view::ScrollViewOps for AndroidScrollViewOps {
+impl runtime_shared::primitives::scroll_view::ScrollViewOps for AndroidScrollViewOps {
     /// Programmatic scroll for the author `scroll_view().bind(r)` →
     /// `scroll_to` path and the robot `set_scroll` action. Framework
     /// units are dp; `View.scrollTo` takes px, so convert through the
@@ -2189,6 +2113,18 @@ fn walk_and_deregister_sticky(
     }
 }
 
+impl AndroidBackend {
+    /// The Activity-provided host `ViewGroup` this backend mounts
+    /// under. Crate-internal diagnostic seam — `newcore::
+    /// live_view_count` walks the REAL view hierarchy from here so the
+    /// smoke self-test proves realize/finish attached actual Views
+    /// (the field is module-private to `imp`, so the accessor lives
+    /// here).
+    pub(crate) fn host_root(&self) -> &GlobalRef {
+        &self.root
+    }
+}
+
 /// Install the backend's self-reference. Called once by the host
 /// wrapper after wrapping the backend in `Rc<RefCell<>>`. Without it,
 /// `set_animated_f32` / `set_animated_color` quietly no-op.
@@ -2215,15 +2151,14 @@ pub fn backend_self_weak() -> Option<std::rc::Weak<std::cell::RefCell<AndroidBac
 /// will see the new AV value on its next frame).
 pub fn set_animated_f32(
     node: &GlobalRef,
-    prop: runtime_core::animation::AnimProp,
+    prop: runtime_shared::animation::AnimProp,
     value: f32,
 ) {
     let weak = ANDROID_BACKEND_SELF.with(|s| s.borrow().clone());
     let Some(weak) = weak else { return };
     let Some(rc) = weak.upgrade() else { return };
     if let Ok(mut b) = rc.try_borrow_mut() {
-        use runtime_core::Backend;
-        b.set_animated_f32(node, prop, value);
+        b.set_animated_f32_impl(node, prop, value);
     };
 }
 
@@ -2231,33 +2166,15 @@ pub fn set_animated_f32(
 /// the global backend's `set_animated_color`.
 pub fn set_animated_color(
     node: &GlobalRef,
-    prop: runtime_core::animation::AnimProp,
+    prop: runtime_shared::animation::AnimProp,
     value: [f32; 4],
 ) {
     let weak = ANDROID_BACKEND_SELF.with(|s| s.borrow().clone());
     let Some(weak) = weak else { return };
     let Some(rc) = weak.upgrade() else { return };
     if let Ok(mut b) = rc.try_borrow_mut() {
-        use runtime_core::Backend;
-        b.set_animated_color(node, prop, value);
+        b.set_animated_color_impl(node, prop, value);
     };
-}
-
-// ---------------------------------------------------------------------------
-/// Generic external-registration entry (mirrors `impl RegisterExternal for
-/// MacosBackend`): lets `register<B: RegisterExternal>(b)` — e.g.
-/// `canvas_vello::register` — target Android without naming the concrete
-/// backend. Forwards to the same `external_handlers` registry as the inherent
-/// [`AndroidBackend::register_external`], so an explicit call overrides an
-/// inventory-registered handler for the same payload (last-registration-wins).
-impl runtime_core::RegisterExternal for AndroidBackend {
-    fn register_external<T, F>(&mut self, handler: F)
-    where
-        T: 'static,
-        F: Fn(&std::rc::Rc<T>, &mut AndroidBackend) -> GlobalRef + 'static,
-    {
-        self.external_handlers.register::<T, _>(handler);
-    }
 }
 
 // Backend trait impl. Each method delegates to the matching primitive
@@ -2265,33 +2182,37 @@ impl runtime_core::RegisterExternal for AndroidBackend {
 // anything substantial belongs in the primitive's file.
 // ---------------------------------------------------------------------------
 
-impl Backend for AndroidBackend {
-    type Node = GlobalRef;
+// The backend mechanism, as inherent methods (runtime v2: the `Backend`
+// mega-trait is gone). Bodies are verbatim what the trait impl carried;
+// `newcore.rs` adapts them onto `runtime_scene::Host` + the
+// `runtime_vocabulary::caps::*Ops` capability traits, one delegation per
+// method. `_impl` suffix keeps the adapter's call sites unambiguous.
+impl AndroidBackend {
 
     /// Navigator abstraction calls this after every command (see the trait doc).
-    fn schedule_layout_pass() {
+    pub(crate) fn schedule_layout_pass_impl() {
         crate::schedule_layout_pass();
     }
 
-    fn platform(&self) -> runtime_core::Platform {
-        runtime_core::Platform::Android
+    pub(crate) fn platform_impl(&self) -> runtime_shared::Platform {
+        runtime_shared::Platform::Android
     }
 
-    fn supports_screenshot(&self) -> bool {
+    pub(crate) fn supports_screenshot_impl(&self) -> bool {
         // Capability, not current state: Android can always draw a view
         // hierarchy to a Bitmap. A capture before the root is laid out
         // returns an error rather than failing this gate.
         true
     }
 
-    fn capture_screenshot(
+    pub(crate) fn capture_screenshot_impl(
         &self,
-        done: Box<dyn FnOnce(Result<runtime_core::Screenshot, String>)>,
+        done: Box<dyn FnOnce(Result<runtime_shared::Screenshot, String>)>,
     ) {
         done(screenshot::capture(&self.root));
     }
 
-    fn url_opener(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {
+    pub(crate) fn url_opener_impl(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {
         // Clone the Context's GlobalRef into the closure — the JVM
         // keeps the object alive as long as the ref lives, and the
         // closure outlives this borrow of `self`.
@@ -2303,8 +2224,8 @@ impl Backend for AndroidBackend {
                     // stays pending and would poison the next JNI call
                     // — clear it before returning.
                     let _ = env.exception_clear();
-                    runtime_core::log(
-                        runtime_core::LogLevel::Warn,
+                    runtime_shared::log(
+                        runtime_shared::LogLevel::Warn,
                         &format!("open_url: ACTION_VIEW intent failed: {e:?}"),
                     );
                 }
@@ -2312,7 +2233,7 @@ impl Backend for AndroidBackend {
         }))
     }
 
-    fn fullscreen_setter(&self) -> Option<std::rc::Rc<dyn Fn(bool)>> {
+    pub(crate) fn fullscreen_setter_impl(&self) -> Option<std::rc::Rc<dyn Fn(bool)>> {
         // Same capture pattern as `url_opener`: the Activity Context's
         // GlobalRef rides into the closure (JVM keeps it alive). The
         // closure calls the static Kotlin helper `RustSystemUi`, which
@@ -2328,8 +2249,8 @@ impl Backend for AndroidBackend {
                     Ok(c) => c,
                     Err(_) => {
                         let _ = env.exception_clear();
-                        runtime_core::log(
-                            runtime_core::LogLevel::Warn,
+                        runtime_shared::log(
+                            runtime_shared::LogLevel::Warn,
                             "set_fullscreen: RustSystemUi runtime class unavailable — \
                              full-screen skipped; rebuild the idealyst CLI to ship it.",
                         );
@@ -2346,8 +2267,8 @@ impl Backend for AndroidBackend {
                     ],
                 ) {
                     let _ = env.exception_clear();
-                    runtime_core::log(
-                        runtime_core::LogLevel::Warn,
+                    runtime_shared::log(
+                        runtime_shared::LogLevel::Warn,
                         &format!("set_fullscreen: RustSystemUi.setFullscreen failed: {e:?}"),
                     );
                 }
@@ -2355,7 +2276,7 @@ impl Backend for AndroidBackend {
         }))
     }
 
-    fn color_scheme(&self) -> runtime_core::ColorScheme {
+    pub(crate) fn color_scheme_impl(&self) -> runtime_shared::ColorScheme {
         // context.getResources().getConfiguration().uiMode & UI_MODE_NIGHT_MASK
         // UI_MODE_NIGHT_UNDEFINED = 0x00, UI_MODE_NIGHT_NO = 0x10,
         // UI_MODE_NIGHT_YES = 0x20
@@ -2372,16 +2293,16 @@ impl Backend for AndroidBackend {
             });
             match ui_mode {
                 Ok(mode) => match mode & 0x30 {
-                    0x10 => runtime_core::ColorScheme::Light,
-                    0x20 => runtime_core::ColorScheme::Dark,
-                    _ => runtime_core::ColorScheme::Auto,
+                    0x10 => runtime_shared::ColorScheme::Light,
+                    0x20 => runtime_shared::ColorScheme::Dark,
+                    _ => runtime_shared::ColorScheme::Auto,
                 },
-                Err(_) => runtime_core::ColorScheme::Auto,
+                Err(_) => runtime_shared::ColorScheme::Auto,
             }
         })
     }
 
-    fn create_view(&mut self, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
+    pub(crate) fn create_view_impl(&mut self, a11y: &runtime_shared::accessibility::AccessibilityProps) -> GlobalRef {
         let node = primitives::view::create(self);
         a11y::apply(&node, a11y, None);
         node
@@ -2403,16 +2324,16 @@ impl Backend for AndroidBackend {
     /// AND absolute content the real parent as its containing block, both
     /// matching web with no per-case wrapper hack. It also upgrades
     /// reactive `for` to keyed reconciliation (per-row state survives).
-    fn supports_child_splice(&self) -> bool {
+    pub(crate) fn supports_child_splice_impl(&self) -> bool {
         true
     }
 
-    fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
+    pub(crate) fn remove_child_impl(&mut self, parent: &GlobalRef, child: &GlobalRef) {
         primitives::view::remove_child(self, parent, child);
         crate::imp::scheduler::schedule_layout_pass_retry(0);
     }
 
-    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
+    pub(crate) fn insert_at_impl(&mut self, parent: &mut GlobalRef, child: GlobalRef, index: usize) {
         primitives::view::insert_at(self, parent, child, index);
         // Same dynamic-mount layout-pass policy as `insert`: a region
         // splicing rows into an already-attached parent mounts after the
@@ -2439,21 +2360,21 @@ impl Backend for AndroidBackend {
     /// here. The default fall-through was the root cause of the
     /// `Switch` rewrite's track-tap-doesn't-toggle bug — and any
     /// other author Pressable on Android.
-    fn create_pressable(
+    pub(crate) fn create_pressable_impl(
         &mut self,
         on_click: std::rc::Rc<dyn Fn()>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> GlobalRef {
         let node = primitives::link::create(self, on_click);
         a11y::apply(&node, a11y, None);
         node
     }
 
-    fn create_link(
+    pub(crate) fn create_link_impl(
         &mut self,
-        config: runtime_core::primitives::link::LinkConfig,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        config: runtime_shared::primitives::link::LinkConfig,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> GlobalRef {
         let route = config.route;
         let url = config.url.clone();
         let external = config.external;
@@ -2471,35 +2392,35 @@ impl Backend for AndroidBackend {
                 route.to_string()
             }
         });
-        let effective_a11y = runtime_core::accessibility::AccessibilityProps {
+        let effective_a11y = runtime_shared::accessibility::AccessibilityProps {
             label: Some(resolved_label),
             ..a11y.clone()
         };
         a11y::apply(
             &node,
             &effective_a11y,
-            Some(runtime_core::accessibility::Role::Link),
+            Some(runtime_shared::accessibility::Role::Link),
         );
         node
     }
 
-    fn create_text(&mut self, content: &str, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
+    pub(crate) fn create_text_impl(&mut self, content: &str, a11y: &runtime_shared::accessibility::AccessibilityProps) -> GlobalRef {
         let node = primitives::text::create(self, content);
-        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Text));
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::Text));
         node
     }
 
-    fn create_styled_text(
+    pub(crate) fn create_styled_text_impl(
         &mut self,
-        runs: &[runtime_core::TextRun],
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        runs: &[runtime_shared::TextRun],
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> GlobalRef {
         let node = primitives::text::create_styled(self, runs);
-        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Text));
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::Text));
         node
     }
 
-    fn update_styled_text(&mut self, node: &Self::Node, runs: &[runtime_core::TextRun]) {
+    pub(crate) fn update_styled_text_impl(&mut self, node: &GlobalRef, runs: &[runtime_shared::TextRun]) {
         // Theme-cohort re-realization: rebuild the SpannableString so
         // run token colors resolve against the new theme. No paragraph
         // state to merge — unspanned ranges take the TextView's own
@@ -2507,7 +2428,7 @@ impl Backend for AndroidBackend {
         primitives::text::set_styled(node, runs);
     }
 
-    fn create_button(&mut self, label: &str, on_click: &runtime_core::Action, _leading_icon: Option<&runtime_core::IconData>, _trailing_icon: Option<&runtime_core::IconData>, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
+    pub(crate) fn create_button_impl(&mut self, label: &str, on_click: &runtime_shared::Action, _leading_icon: Option<&runtime_shared::IconData>, _trailing_icon: Option<&runtime_shared::IconData>, a11y: &runtime_shared::accessibility::AccessibilityProps) -> GlobalRef {
         // TODO: render icons as compound drawables on the button
         let node = primitives::button::create(self, label, on_click.fire.clone());
         // A bare `android.widget.Button` is a 0×0 Taffy leaf without a
@@ -2515,11 +2436,11 @@ impl Backend for AndroidBackend {
         // and vanishes (the "Start camera button is missing" bug). Hook its
         // intrinsic `measure()` like Switch/SeekBar do.
         primitives::measure::install_intrinsic_measure(self, &node);
-        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Button));
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::Button));
         node
     }
 
-    fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
+    pub(crate) fn insert_impl(&mut self, parent: &mut GlobalRef, child: GlobalRef) {
         let child_for_sticky = child.clone();
         primitives::view::insert(self, parent, child);
         // Retry pending sticky registrations now that this subtree
@@ -2586,18 +2507,18 @@ impl Backend for AndroidBackend {
         }
     }
 
-    fn install_touch_handler(
+    pub(crate) fn install_touch_handler_impl(
         &mut self,
-        node: &Self::Node,
-        handler: runtime_core::TouchHandler,
+        node: &GlobalRef,
+        handler: runtime_shared::TouchHandler,
     ) {
         primitives::touch::install(self, node, handler)
     }
 
-    fn claim_touch(
+    pub(crate) fn claim_touch_impl(
         &mut self,
-        node: &Self::Node,
-        _touch_id: runtime_core::TouchId,
+        node: &GlobalRef,
+        _touch_id: runtime_shared::TouchId,
     ) {
         // The Kotlin `RustTouchListener` already calls
         // `requestDisallowInterceptTouchEvent` inline when a touch
@@ -2608,7 +2529,7 @@ impl Backend for AndroidBackend {
         primitives::touch::claim(self, node)
     }
 
-    fn update_text(&mut self, node: &Self::Node, content: &str) {
+    pub(crate) fn update_text_impl(&mut self, node: &GlobalRef, content: &str) {
         primitives::text::update_text(node, content);
         // `TextView.setText` repaints the glyphs itself, but Android
         // never tells Taffy the intrinsic content size changed — the
@@ -2626,18 +2547,18 @@ impl Backend for AndroidBackend {
         crate::imp::scheduler::schedule_layout_pass_retry(0);
     }
 
-    fn create_image(&mut self, src: &str, alt: Option<&str>, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
+    pub(crate) fn create_image_impl(&mut self, src: &str, alt: Option<&str>, a11y: &runtime_shared::accessibility::AccessibilityProps) -> GlobalRef {
         let node = primitives::image::create(self, src, alt);
-        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Image));
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::Image));
         node
     }
 
-    fn create_icon(
+    pub(crate) fn create_icon_impl(
         &mut self,
-        data: &runtime_core::primitives::icon::IconData,
-        color: Option<&runtime_core::Color>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        data: &runtime_shared::primitives::icon::IconData,
+        color: Option<&runtime_shared::Color>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> GlobalRef {
         let node = primitives::icon::create(self, data, color);
         // Give the icon a Taffy intrinsic size. The ImageView's drawable
         // has a 24dp intrinsic size and `FIT_CENTER` scaling, but Taffy
@@ -2649,41 +2570,41 @@ impl Backend for AndroidBackend {
         // width/height still wins); FIT_CENTER then scales the glyph to
         // whatever box Taffy assigns. Mirrors iOS `install_icon_measure`.
         install_external_measure_fn(self, &node);
-        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Image));
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::Image));
         node
     }
 
-    fn update_icon_color(&mut self, node: &Self::Node, color: &runtime_core::Color) {
+    pub(crate) fn update_icon_color_impl(&mut self, node: &GlobalRef, color: &runtime_shared::Color) {
         primitives::icon::update_color(node, color)
     }
 
-    fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
+    pub(crate) fn update_icon_stroke_impl(&mut self, node: &GlobalRef, progress: f32) {
         primitives::icon::update_stroke(node, progress)
     }
 
-    fn animate_icon_stroke(
+    pub(crate) fn animate_icon_stroke_impl(
         &mut self,
-        node: &Self::Node,
+        node: &GlobalRef,
         from: f32,
         to: f32,
         duration_ms: u32,
-        easing: runtime_core::Easing,
+        easing: runtime_shared::Easing,
         infinite: bool,
         autoreverses: bool,
     ) {
         primitives::icon::animate_stroke(node, from, to, duration_ms, easing, infinite, autoreverses)
     }
 
-    fn create_text_input(
+    pub(crate) fn create_text_input_impl(
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        _on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
+        on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        _on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
         secure: bool,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> GlobalRef {
         // TODO(secure): wire `secure` to the EditText input type
         // (`PasswordTransformationMethod` / `TYPE_TEXT_VARIATION_PASSWORD`).
         // Stubbed for now so the backend matches the updated Backend trait.
@@ -2692,15 +2613,15 @@ impl Backend for AndroidBackend {
         // same pending JNI work (needs a device to verify), not done blind.
         let _ = secure;
         let node = primitives::text_input::create(self, initial_value, placeholder, on_change, on_key_down);
-        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::TextField));
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::TextField));
         node
     }
 
-    fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
+    pub(crate) fn update_text_input_value_impl(&mut self, node: &GlobalRef, value: &str) {
         primitives::text_input::update_value(node, value)
     }
 
-    fn create_text_area(
+    pub(crate) fn create_text_area_impl(
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
@@ -2708,9 +2629,9 @@ impl Backend for AndroidBackend {
         min_rows: Option<u32>,
         max_rows: Option<u32>,
         on_change: Rc<dyn Fn(String)>,
-        on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> GlobalRef {
         let node = primitives::text_input::create_multiline(self, initial_value, placeholder, wrap, on_change, on_key_down);
         // Intrinsic content sizing in wrap mode (only): give the EditText
         // a `View.measure`-based measure_fn so Taffy sizes it to the
@@ -2722,11 +2643,11 @@ impl Backend for AndroidBackend {
         if wrap {
             install_text_area_measure_fn(self, &node, min_rows, max_rows);
         }
-        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::TextArea));
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::TextArea));
         node
     }
 
-    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
+    pub(crate) fn update_text_area_value_impl(&mut self, node: &GlobalRef, value: &str) {
         primitives::text_input::update_value(node, value);
         // The text changed, so the EditText's measured height changed,
         // but Android doesn't invalidate Taffy. Mark the node dirty so a
@@ -2738,21 +2659,21 @@ impl Backend for AndroidBackend {
         crate::imp::scheduler::schedule_layout_pass_retry(0);
     }
 
-    fn make_text_input_handle(
+    pub(crate) fn make_text_input_handle_impl(
         &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::text_input::TextInputHandle {
+        node: &GlobalRef,
+    ) -> runtime_shared::primitives::text_input::TextInputHandle {
         primitives::text_input::make_text_input_handle(node)
     }
 
-    fn make_text_area_handle(
+    pub(crate) fn make_text_area_handle_impl(
         &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::text_area::TextAreaHandle {
+        node: &GlobalRef,
+    ) -> runtime_shared::primitives::text_area::TextAreaHandle {
         primitives::text_input::make_text_area_handle(node)
     }
 
-    fn create_toggle(&mut self, initial_value: bool, on_change: Rc<dyn Fn(bool)>, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
+    pub(crate) fn create_toggle_impl(&mut self, initial_value: bool, on_change: Rc<dyn Fn(bool)>, a11y: &runtime_shared::accessibility::AccessibilityProps) -> GlobalRef {
         // `primitives::toggle::create` now installs an intrinsic-size
         // `measure_fn`, so it needs `&mut self` to reach Taffy. Without
         // the measure_fn the Switch was a 0×0 leaf in flex layout, the
@@ -2760,22 +2681,22 @@ impl Backend for AndroidBackend {
         // clipped behind the next sibling — visible as a missing
         // dark-mode toggle in the docs sidebar.
         let node = primitives::toggle::create(self, initial_value, on_change);
-        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Switch));
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::Switch));
         node
     }
 
-    fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
+    pub(crate) fn update_toggle_value_impl(&mut self, node: &GlobalRef, value: bool) {
         primitives::toggle::update_value(node, value)
     }
 
-    fn set_app_key_handler(
+    pub(crate) fn set_app_key_handler_impl(
         &mut self,
-        handler: Option<runtime_core::primitives::key::KeyDownHandler>,
+        handler: Option<runtime_shared::primitives::key::KeyDownHandler>,
     ) {
         keyboard::set_app_key_handler(self, handler);
     }
 
-    fn set_app_background(&mut self, color: &runtime_core::Tokenized<runtime_core::Color>) {
+    pub(crate) fn set_app_background_impl(&mut self, color: &runtime_shared::Tokenized<runtime_shared::Color>) {
         // Paint the activity window's DECOR view — NOT a content view — so the
         // app background fills the ENTIRE screen, behind any safe-area-inset
         // content and behind hidden system bars / the display cutout. Without
@@ -2813,32 +2734,32 @@ impl Backend for AndroidBackend {
         });
     }
 
-    fn apply_safe_area_padding(
+    pub(crate) fn apply_safe_area_padding_impl(
         &mut self,
-        node: &Self::Node,
-        sides: runtime_core::SafeAreaSides,
+        node: &GlobalRef,
+        sides: runtime_shared::SafeAreaSides,
     ) {
         let insets = self.platform_safe_area_insets();
         log::info!(
             "[safe-area] apply_safe_area_padding sides={:?} insets=(t={},r={},b={},l={})",
             sides, insets.top, insets.right, insets.bottom, insets.left
         );
-        let top = if sides.contains(runtime_core::SafeAreaSides::TOP) {
+        let top = if sides.contains(runtime_shared::SafeAreaSides::TOP) {
             insets.top
         } else {
             0.0
         };
-        let right = if sides.contains(runtime_core::SafeAreaSides::RIGHT) {
+        let right = if sides.contains(runtime_shared::SafeAreaSides::RIGHT) {
             insets.right
         } else {
             0.0
         };
-        let bottom = if sides.contains(runtime_core::SafeAreaSides::BOTTOM) {
+        let bottom = if sides.contains(runtime_shared::SafeAreaSides::BOTTOM) {
             insets.bottom
         } else {
             0.0
         };
-        let left = if sides.contains(runtime_core::SafeAreaSides::LEFT) {
+        let left = if sides.contains(runtime_shared::SafeAreaSides::LEFT) {
             insets.left
         } else {
             0.0
@@ -2849,10 +2770,10 @@ impl Backend for AndroidBackend {
         crate::imp::scheduler::schedule_layout_pass_retry(0);
     }
 
-    fn apply_scroll_view_safe_area_inset(
+    pub(crate) fn apply_scroll_view_safe_area_inset_impl(
         &mut self,
-        node: &Self::Node,
-        sides: runtime_core::SafeAreaSides,
+        node: &GlobalRef,
+        sides: runtime_shared::SafeAreaSides,
     ) {
         // For a ScrollView we apply the safe-area inset via Android's
         // native `setPadding(...)` + `setClipToPadding(false)` —
@@ -2870,10 +2791,10 @@ impl Backend for AndroidBackend {
         // `MATCH_PARENT` measurement, so the inner stays full-height
         // and the toggle still ends up clipped.
         let insets = self.platform_safe_area_insets();
-        let top = if sides.contains(runtime_core::SafeAreaSides::TOP) { insets.top } else { 0.0 };
-        let right = if sides.contains(runtime_core::SafeAreaSides::RIGHT) { insets.right } else { 0.0 };
-        let bottom = if sides.contains(runtime_core::SafeAreaSides::BOTTOM) { insets.bottom } else { 0.0 };
-        let left = if sides.contains(runtime_core::SafeAreaSides::LEFT) { insets.left } else { 0.0 };
+        let top = if sides.contains(runtime_shared::SafeAreaSides::TOP) { insets.top } else { 0.0 };
+        let right = if sides.contains(runtime_shared::SafeAreaSides::RIGHT) { insets.right } else { 0.0 };
+        let bottom = if sides.contains(runtime_shared::SafeAreaSides::BOTTOM) { insets.bottom } else { 0.0 };
+        let left = if sides.contains(runtime_shared::SafeAreaSides::LEFT) { insets.left } else { 0.0 };
         with_env(|env| {
             let view_obj = node.as_obj();
             let density = density_of(env, &view_obj).unwrap_or(1.0);
@@ -2903,12 +2824,12 @@ impl Backend for AndroidBackend {
         crate::imp::scheduler::schedule_layout_pass_retry(0);
     }
 
-    fn create_scroll_view(
+    pub(crate) fn create_scroll_view_impl(
         &mut self,
         horizontal: bool,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> GlobalRef {
         let node = primitives::scroll_view::create(self, horizontal);
 
         // Wire `on_scroll` via the shared Kotlin listener. The
@@ -2947,163 +2868,61 @@ impl Backend for AndroidBackend {
         node
     }
 
-    fn create_slider(
+    pub(crate) fn create_slider_impl(
         &mut self,
         initial_value: f32,
         min: f32,
         max: f32,
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> GlobalRef {
         let node = primitives::slider::create(self, initial_value, min, max, step, on_change);
         // Same 0×0-leaf hazard as Button: a bare `SeekBar` needs its intrinsic
         // `measure()` hooked into Taffy or it collapses to zero height.
         primitives::measure::install_intrinsic_measure(self, &node);
-        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Slider));
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::Slider));
         node
     }
 
-    fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
+    pub(crate) fn update_slider_value_impl(&mut self, node: &GlobalRef, value: f32) {
         primitives::slider::update_value(node, value)
     }
 
-    fn create_virtualizer(
+    pub(crate) fn create_virtualizer_impl(
         &mut self,
-        callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
+        callbacks: runtime_shared::VirtualizerCallbacks<GlobalRef>,
         overscan: f32,
-        layout: runtime_core::VirtualLayout,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        layout: runtime_shared::VirtualLayout,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> GlobalRef {
         let node = primitives::virtualizer::create(self, callbacks, overscan, layout);
-        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::List));
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::List));
         node
     }
 
-    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
+    pub(crate) fn virtualizer_data_changed_impl(&mut self, node: &GlobalRef) {
         primitives::virtualizer::data_changed(node)
     }
 
-    fn create_activity_indicator(
+    pub(crate) fn create_activity_indicator_impl(
         &mut self,
-        size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
-        color: Option<&runtime_core::Color>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
+        color: Option<&runtime_shared::Color>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> GlobalRef {
         let node = primitives::activity_indicator::create(self, size, color);
-        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Spinner));
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::Spinner));
         node
     }
 
-
-    // ------------------------------------------------------------------
-    // Navigator — unified path for SDK-supplied navigator kinds.
-    //
-    // `create_navigator` resolves the SDK-registered factory, runs
-    // `init`, and stashes the returned handler on
-    // `nav_handler_instances`. Subsequent dispatch
-    // (`attach_initial` / `release` / `make_handle` /
-    // `apply_slot_style`) looks the handler up by node key and
-    // forwards through it; the handler in turn drives the
-    // backend's existing per-kind inherent helpers
-    // (`stack_navigator_attach_initial`, `apply_navigator_header_style`,
-    // …) as appropriate.
-    // ------------------------------------------------------------------
-
-    fn create_navigator(
+    pub(crate) fn create_graphics_impl(
         &mut self,
-        type_id: std::any::TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn std::any::Any>,
-        host: runtime_core::NavigatorHost<Self::Node>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let factory = self
-            .navigator_handlers
-            .get(type_id)
-            .unwrap_or_else(|| {
-                panic!(
-                    "AndroidBackend::create_navigator: navigator kind '{}' \
-                     is not registered. Did the app forget to call \
-                     `<navigator-sdk>::register(&mut backend)` during bootstrap?",
-                    type_name
-                )
-            });
-        let mut handler = factory();
-        let node = handler.init(self, host, presentation);
-        // Apply author-set accessibility props to the navigator root,
-        // matching every other create_* path and the macOS/wgpu backends
-        // — otherwise navigator a11y silently vanishes on Android.
-        a11y::apply(&node, a11y, None);
-        // Stash the handler keyed by the container's node key so
-        // subsequent dispatch routes through the SDK handler instead
-        // of through a kind switch. The handler internally retains
-        // its container `GlobalRef` so its post-init methods can call
-        // back into the backend's legacy per-kind helpers.
-        self.nav_handler_instances.insert(
-            AndroidBackend::node_key_of(&node),
-            std::rc::Rc::new(std::cell::RefCell::new(handler)),
-        );
-        node
-    }
-
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn std::any::Any>,
-    ) {
-        let handler = self
-            .nav_handler_instances
-            .get(&AndroidBackend::node_key_of(navigator))
-            .cloned();
-        let Some(handler) = handler else { return };
-        handler.borrow_mut().attach_initial(self, screen, scope_id, options);
-    }
-
-    fn release_navigator(&mut self, node: &Self::Node) {
-        let key = AndroidBackend::node_key_of(node);
-        let handler = self.nav_handler_instances.remove(&key);
-        let Some(handler) = handler else { return };
-        handler.borrow_mut().release(self);
-    }
-
-    fn make_navigator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::NavigatorHandle {
-        let handler = self
-            .nav_handler_instances
-            .get(&AndroidBackend::node_key_of(node))
-            .cloned();
-        match handler {
-            Some(h) => h.borrow().make_handle(),
-            None => runtime_core::NavigatorHandle::new(Rc::new(()), &NOOP_NAV_OPS),
-        }
-    }
-
-    fn apply_navigator_slot_style(
-        &mut self,
-        navigator: &Self::Node,
-        slot: &'static str,
-        style: &Rc<runtime_core::StyleRules>,
-    ) {
-        let handler = self
-            .nav_handler_instances
-            .get(&AndroidBackend::node_key_of(navigator))
-            .cloned();
-        let Some(handler) = handler else { return };
-        handler.borrow_mut().apply_slot_style(self, slot, style);
-    }
-
-    fn create_graphics(
-        &mut self,
-        on_ready: runtime_core::primitives::graphics::OnReady,
-        on_resize: runtime_core::primitives::graphics::OnResize,
-        on_lost: runtime_core::primitives::graphics::OnLost,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        on_ready: runtime_shared::primitives::graphics::OnReady,
+        on_resize: runtime_shared::primitives::graphics::OnResize,
+        on_lost: runtime_shared::primitives::graphics::OnLost,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> GlobalRef {
         let node = primitives::graphics::create(self, on_ready, on_resize, on_lost);
         // Graphics surfaces are GPU-rendered content with no inherent
         // a11y role; authors opt in via props.role / props.label.
@@ -3111,24 +2930,24 @@ impl Backend for AndroidBackend {
         node
     }
 
-    fn release_graphics(&mut self, node: &Self::Node) {
+    pub(crate) fn release_graphics_impl(&mut self, node: &GlobalRef) {
         primitives::graphics::release(self, node)
     }
 
-    fn make_graphics_handle(
+    pub(crate) fn make_graphics_handle_impl(
         &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::graphics::GraphicsHandle {
+        node: &GlobalRef,
+    ) -> runtime_shared::primitives::graphics::GraphicsHandle {
         primitives::graphics::make_handle(node)
     }
 
-    fn create_portal(
+    pub(crate) fn create_portal_impl(
         &mut self,
-        target: runtime_core::primitives::portal::PortalTarget,
+        target: runtime_shared::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> GlobalRef {
         let node = primitives::overlay::create(self, target, on_dismiss, trap_focus);
         // Portal container is transparent — author sets role
         // explicitly (Dialog / AlertDialog / Drawer / Popover) via
@@ -3137,47 +2956,36 @@ impl Backend for AndroidBackend {
         node
     }
 
-    fn release_portal(&mut self, node: &Self::Node) {
+    pub(crate) fn release_portal_impl(&mut self, node: &GlobalRef) {
         primitives::overlay::release(self, node)
     }
 
-    fn create_external(
+    pub(crate) fn create_external_impl(
         &mut self,
-        type_id: std::any::TypeId,
+        _type_id: std::any::TypeId,
         type_name: &'static str,
-        payload: &Rc<dyn std::any::Any>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        // Look up the handler; clone the Rc so we can drop the registry
-        // borrow before calling the handler (which itself needs
-        // `&mut self`).
-        let node = if let Some(handler) = self.external_handlers.get(type_id) {
-            handler(payload, self)
-        } else {
-            // No handler registered → render a placeholder TextView so
-            // the dev/user sees that an SDK binding is missing on
-            // Android rather than a silent hole.
-            // `has_external::<T>()` is the supported way to render
-            // custom degradation in user space.
-            external_placeholder_view(self, type_name)
-        };
+        _payload: &Rc<dyn std::any::Any>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> GlobalRef {
+        // Runtime v2: there is no backend-side External registry any more.
+        // Third-party primitives register a payload handler on the scene
+        // `Registry` (`runtime_scene::Registry::register`), which dispatches
+        // BEFORE reaching a backend cap — so this method is only ever the
+        // last-resort placeholder an SDK's own degradation handler asks for
+        // on a host it has no leg for. Placeholder body unchanged.
+        let node = external_placeholder_view(self, type_name);
         // External primitives carry no inherent role — third-party
         // SDK authors set the right one via props.role.
         a11y::apply(&node, a11y, None);
         // Install a Taffy measure_fn that asks the underlying Android
         // View for its preferred size via `View.measure(spec, spec)`.
-        // Without this, every External view collapses to 0×0 in the
-        // flex layout — the framework's text/button primitives install
-        // measure_fns themselves, but External handlers go through a
-        // generic path that doesn't know the concrete widget type. A
-        // generic `View.measure` works because every Android View
-        // implements it; container views (FrameLayout, scroll views)
-        // measure their children internally and report the right size.
+        // Without this, every External view collapses to 0x0 in the
+        // flex layout.
         install_external_measure_fn(self, &node);
         node
     }
 
-    fn release_external(&mut self, node: &Self::Node) {
+    pub(crate) fn release_external_impl(&mut self, node: &GlobalRef) {
         // Detached window root (screen_recorder private layer):
         // `WindowManager.removeView` its overlay window so it stops
         // compositing when the layer unmounts.
@@ -3194,7 +3002,7 @@ impl Backend for AndroidBackend {
         }
     }
 
-    fn make_button_handle(&self, node: &Self::Node) -> ButtonHandle {
+    pub(crate) fn make_button_handle_impl(&self, node: &GlobalRef) -> ButtonHandle {
         primitives::button::make_handle(node)
     }
 
@@ -3203,16 +3011,16 @@ impl Backend for AndroidBackend {
     /// `view_handle.as_any()` to `GlobalRef` and reach the backend
     /// through `set_animated_f32` / `set_animated_color`; without this
     /// override the handle stores `Rc<()>` and the downcast fails.
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
-        runtime_core::ViewHandle::new(Rc::new(node.clone()), &ANDROID_VIEW_OPS)
+    pub(crate) fn make_view_handle_impl(&self, node: &GlobalRef) -> runtime_shared::ViewHandle {
+        runtime_shared::ViewHandle::new(Rc::new(node.clone()), &ANDROID_VIEW_OPS)
     }
 
     /// See [`Self::make_view_handle`]. Same plumbing for `TextHandle`
     /// so the welcome example's per-frame `setTextColor` write can
     /// reach a `TextView` (rather than `setTintColor`-equivalent on a
     /// generic wrapper) and animate `color` end-to-end.
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
-        runtime_core::TextHandle::new(Rc::new(node.clone()), &ANDROID_TEXT_OPS)
+    pub(crate) fn make_text_handle_impl(&self, node: &GlobalRef) -> runtime_shared::TextHandle {
+        runtime_shared::TextHandle::new(Rc::new(node.clone()), &ANDROID_TEXT_OPS)
     }
 
     /// Same plumbing for programmatic scrolls — the author
@@ -3223,17 +3031,17 @@ impl Backend for AndroidBackend {
     /// reentrancy hazard the walker's scroll-action comment describes
     /// for AppKit). Without this override both paths were silent no-ops
     /// on Android (the trait-default `NoopScrollViewOps`).
-    fn make_scroll_view_handle(
+    pub(crate) fn make_scroll_view_handle_impl(
         &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::scroll_view::ScrollViewHandle {
-        runtime_core::primitives::scroll_view::ScrollViewHandle::new(
+        node: &GlobalRef,
+    ) -> runtime_shared::primitives::scroll_view::ScrollViewHandle {
+        runtime_shared::primitives::scroll_view::ScrollViewHandle::new(
             Rc::new(node.clone()),
             &ANDROID_SCROLL_VIEW_OPS,
         )
     }
 
-    fn clear_children(&mut self, node: &Self::Node) {
+    pub(crate) fn clear_children_impl(&mut self, node: &GlobalRef) {
         // Drop any sticky bookkeeping for the entire subtree we're
         // about to remove BEFORE the native `removeAllViews` call.
         // Walk recursively so a sticky child nested inside an
@@ -3261,16 +3069,16 @@ impl Backend for AndroidBackend {
         primitives::view::clear_children(self, node)
     }
 
-    fn register_asset(
+    pub(crate) fn register_asset_impl(
         &mut self,
-        id: runtime_core::AssetId,
-        kind: runtime_core::AssetTag,
-        source: &runtime_core::AssetSource,
+        id: runtime_shared::AssetId,
+        kind: runtime_shared::AssetTag,
+        source: &runtime_shared::AssetSource,
     ) {
         // Only the font branch needs JNI today; images on Android go
         // through `create_image(src)` directly. Future image / video
         // caches would chain here the same way the iOS backend does.
-        if kind != runtime_core::AssetTag::Font {
+        if kind != runtime_shared::AssetTag::Font {
             return;
         }
         let context = self.context.clone();
@@ -3280,30 +3088,30 @@ impl Backend for AndroidBackend {
         });
     }
 
-    fn unregister_asset(
+    pub(crate) fn unregister_asset_impl(
         &mut self,
-        id: runtime_core::AssetId,
-        kind: runtime_core::AssetTag,
+        id: runtime_shared::AssetId,
+        kind: runtime_shared::AssetTag,
     ) {
         self.font_registry.unregister_asset(id, kind);
     }
 
-    fn register_typeface(
+    pub(crate) fn register_typeface_impl(
         &mut self,
-        id: runtime_core::assets::TypefaceId,
+        id: runtime_shared::assets::TypefaceId,
         family_name: &str,
-        faces: &[runtime_core::assets::TypefaceFace],
-        fallback: runtime_core::assets::SystemFallback,
+        faces: &[runtime_shared::assets::TypefaceFace],
+        fallback: runtime_shared::assets::SystemFallback,
     ) {
         self.font_registry
             .register_typeface(id, family_name, faces, fallback);
     }
 
-    fn unregister_typeface(&mut self, id: runtime_core::assets::TypefaceId) {
+    pub(crate) fn unregister_typeface_impl(&mut self, id: runtime_shared::assets::TypefaceId) {
         self.font_registry.unregister_typeface(id);
     }
 
-    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
+    pub(crate) fn apply_style_impl(&mut self, node: &GlobalRef, style: &Rc<StyleRules>) {
         let key = Self::node_key(node);
         // External content-measured scroller (SDK leaf like `codeblock`):
         // its `padding_*` goes to the view's own `setPadding` (widget sets
@@ -3323,7 +3131,7 @@ impl Backend for AndroidBackend {
             primitives::image::apply_object_fit(
                 env,
                 &node.as_obj(),
-                style.object_fit.unwrap_or(runtime_core::ObjectFit::Contain),
+                style.object_fit.unwrap_or(runtime_shared::ObjectFit::Contain),
             );
         });
         // Mirror the style into Taffy so flex direction, gaps,
@@ -3351,7 +3159,7 @@ impl Backend for AndroidBackend {
         // `apply_rules`), and the generic `View.measure` measure_fn already
         // includes the view's padding in its measured size.
         if is_text_view || is_external_scroller {
-            let mut text_style: runtime_core::StyleRules = (**style).clone();
+            let mut text_style: runtime_shared::StyleRules = (**style).clone();
             text_style.padding_left = None;
             text_style.padding_right = None;
             text_style.padding_top = None;
@@ -3380,12 +3188,12 @@ impl Backend for AndroidBackend {
         // consults `pending_sticky` after attaching the subtree
         // and promotes any entries it can now resolve.
         match style.position {
-            Some(runtime_core::Position::Sticky) => {
+            Some(runtime_shared::Position::Sticky) => {
                 let threshold_top = style
                     .top
                     .as_ref()
                     .map(|t| match t.resolve() {
-                        runtime_core::Length::Px(v) => v,
+                        runtime_shared::Length::Px(v) => v,
                         // Percent / Auto for sticky's pin offset
                         // isn't meaningful — same rationale as
                         // iOS's `_ => 0.0` fallthrough.
@@ -3450,17 +3258,17 @@ impl Backend for AndroidBackend {
         }
     }
 
-    fn set_animated_f32(
+    pub(crate) fn set_animated_f32_impl(
         &mut self,
-        node: &Self::Node,
-        prop: runtime_core::animation::AnimProp,
+        node: &GlobalRef,
+        prop: runtime_shared::animation::AnimProp,
         value: f32,
     ) {
         // Android View has separate native properties for each
         // transform component (translationX/Y, scaleX/Y, rotation)
         // plus alpha — no composition needed. Each AnimProp maps
         // directly to one setter via JNI.
-        use runtime_core::animation::AnimProp as P;
+        use runtime_shared::animation::AnimProp as P;
         let (method, sig) = match prop {
             P::Opacity => ("setAlpha", "(F)V"),
             P::TranslateX => ("setTranslationX", "(F)V"),
@@ -3523,13 +3331,13 @@ impl Backend for AndroidBackend {
         });
     }
 
-    fn set_animated_color(
+    pub(crate) fn set_animated_color_impl(
         &mut self,
-        node: &Self::Node,
-        prop: runtime_core::animation::AnimProp,
+        node: &GlobalRef,
+        prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
-        use runtime_core::animation::AnimProp as P;
+        use runtime_shared::animation::AnimProp as P;
         // Pack sRGB[r,g,b,a] (0..1 floats) into Android ARGB
         // (0xAARRGGBB) — the int Android's setBackgroundColor takes.
         let r = (value[0].clamp(0.0, 1.0) * 255.0).round() as u32;
@@ -3618,11 +3426,11 @@ impl Backend for AndroidBackend {
     ///   presence and `AnimatedValue` agree on every curve.
     /// - `None` → call the per-property setters directly (instant
     ///   snap), matching the pre-paint enter setup and web's snap path.
-    fn apply_presence(
+    pub(crate) fn apply_presence_impl(
         &mut self,
-        node: &Self::Node,
-        state: runtime_core::PresenceState,
-        transition: Option<(u32, runtime_core::Easing)>,
+        node: &GlobalRef,
+        state: runtime_shared::PresenceState,
+        transition: Option<(u32, runtime_shared::Easing)>,
     ) {
         let alpha = state.opacity.unwrap_or(1.0);
         let tx_dp = state.translate_x.unwrap_or(0.0);
@@ -3704,21 +3512,21 @@ impl Backend for AndroidBackend {
         });
     }
 
-    fn frame(&self, node: &Self::Node) -> Option<runtime_core::primitives::portal::ViewportRect> {
+    pub(crate) fn frame_impl(&self, node: &GlobalRef) -> Option<runtime_shared::primitives::portal::ViewportRect> {
         // Parent-relative rect in dp — matches iOS's `Backend::frame`
         // impl. Framework portal / anchoring code consults this; the
         // ViewHandle-side analog used by author code lives on
         // `AndroidViewOps::frame` (same body, different trait).
-        <AndroidViewOps as runtime_core::ViewOps>::frame(
+        <AndroidViewOps as runtime_shared::ViewOps>::frame(
             &ANDROID_VIEW_OPS,
             node as &dyn std::any::Any,
         )
     }
 
-    fn device_frame(
+    pub(crate) fn device_frame_impl(
         &self,
-        node: &Self::Node,
-    ) -> Option<runtime_core::primitives::portal::ViewportRect> {
+        node: &GlobalRef,
+    ) -> Option<runtime_shared::primitives::portal::ViewportRect> {
         // Physical screen-pixel rect for OS-level input injection
         // (`adb shell input tap`). `view_screen_rect` reuses the same
         // `getLocationOnScreen` path overlay anchoring already trusts —
@@ -3736,7 +3544,7 @@ impl Backend for AndroidBackend {
         Some(rect)
     }
 
-    fn on_node_unstyled(&mut self, node: &Self::Node) {
+    pub(crate) fn on_node_unstyled_impl(&mut self, node: &GlobalRef) {
         // Drop any sticky bookkeeping for this node. Covers both
         // "I'm a sticky child being detached" (deregister from
         // whatever scroll view owns me) and "I'm a scroll view
@@ -3791,7 +3599,7 @@ impl Backend for AndroidBackend {
         }
     }
 
-    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
+    pub(crate) fn set_disabled_impl(&mut self, node: &GlobalRef, disabled: bool) {
         with_env(|env| {
             let _ = env.call_method(
                 node.as_obj(),
@@ -3802,10 +3610,10 @@ impl Backend for AndroidBackend {
         });
     }
 
-    fn attach_states(
+    pub(crate) fn attach_states_impl(
         &mut self,
-        node: &Self::Node,
-        setter: Rc<dyn Fn(runtime_core::StateBits, bool)>,
+        node: &GlobalRef,
+        setter: Rc<dyn Fn(runtime_shared::StateBits, bool)>,
     ) {
         // Box the setter behind a stable raw pointer the JVM can hand
         // back via JNI on event firings, mirroring the
@@ -3864,19 +3672,19 @@ impl Backend for AndroidBackend {
     // `AccessibilityNodeInfo` directly — there's no parallel
     // semantics tree to dump.
 
-    fn update_accessibility(
+    pub(crate) fn update_accessibility_impl(
         &mut self,
-        node: &Self::Node,
-        a11y_props: &runtime_core::accessibility::AccessibilityProps,
-        inferred_role: Option<runtime_core::accessibility::Role>,
+        node: &GlobalRef,
+        a11y_props: &runtime_shared::accessibility::AccessibilityProps,
+        inferred_role: Option<runtime_shared::accessibility::Role>,
     ) {
         a11y::apply(node, a11y_props, inferred_role);
     }
 
-    fn announce_for_accessibility(
+    pub(crate) fn announce_for_accessibility_impl(
         &mut self,
         msg: &str,
-        priority: runtime_core::accessibility::LiveRegionPriority,
+        priority: runtime_shared::accessibility::LiveRegionPriority,
     ) {
         // Routed through the backend's host root view —
         // `announceForAccessibility` exists on `View`, and the host
@@ -3891,7 +3699,7 @@ impl Backend for AndroidBackend {
         });
     }
 
-    fn finish(&mut self, root: Self::Node) {
+    pub(crate) fn finish_impl(&mut self, root: GlobalRef) {
         // Idempotent: in runtime-server mode, each reconnect / re-snapshot from
         // the dev-server replays the full command stream, which
         // includes the `Finish` that drives this method. The
@@ -3979,7 +3787,7 @@ impl Backend for AndroidBackend {
     /// self-ref is never installed). Delegates to the existing
     /// public [`AndroidBackend::run_layout`] wrapper around
     /// `run_layout_pass`.
-    fn run_layout(&mut self) {
+    pub(crate) fn run_layout_impl(&mut self) {
         AndroidBackend::run_layout(self);
     }
 }

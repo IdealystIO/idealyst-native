@@ -133,10 +133,11 @@ it's the price of run-once components, paid back by never diffing.
 Build-time snapshots are still a legitimate tool when they're *intentional*
 (e.g. a structural choice that shouldn't rebuild — IconButton snapshots its
 icon-vs-glyph choice this way). Declare the intent with
-**`.get_untracked()`** — it reads without subscribing, silences both
-diagnostics, and tells every future reader "snapshot, on purpose." The
-distinction is intent: snapshot with `.get_untracked()`, derive with
-`memo(move || …)`, and treat a bare `.get()` outside a closure as a smell.
+**`.peek()`** — it reads without subscribing, silences both diagnostics,
+and tells every future reader "snapshot, on purpose." (On a `Reactive<T>`
+prop the same intent is spelled `.get_untracked()`.) The distinction is
+intent: snapshot with `.peek()`, derive with `memo(move || …)`, and treat
+a bare `.get()` outside a closure as a smell.
 
 ## 3. Conditions and lists — literal Rust, inside `ui!`
 
@@ -182,7 +183,7 @@ use runtime_core::{node_ref, text_input, Ref, TextInputHandle};
 let query = signal(String::new());
 let input_ref: Ref<TextInputHandle> = node_ref!(); // or Ref::new()
 
-// Builder form: constructors return Bound<H>; `.bind(ref)` attaches.
+// Builder form: constructors return a primitive builder; `.bind(ref)` attaches.
 let input = text_input(query, move |v: String| query.set(v))
     .bind(input_ref)
     .placeholder("Search…");
@@ -285,12 +286,14 @@ borrowed" abort. `chart.get()` clones the handle out (handles are
 `Clone`), releasing the borrow before the call. Rule of thumb:
 **`.with()` for reads, `.get()` for method calls that write.**
 
-Both tiers share the `Ref` ground rules from above: `Option` before
-fill, scope-owned, non-reactive fill.
+Both tiers share the `Ref` ground rules from above: `Option` before fill,
+non-reactive fill. Note the slot itself lives in the shared substrate's
+arena and is not freed on unmount — see
+[`reactivity.md` § `Ref<H>`](./reactivity.md#refh--the-imperative-handle-slot).
 
 ### Attaching refs per DSL
 
-`.bind(r)` lives on the `Bound<H>` builders (fn-call form); `jsx!` sugars
+`.bind(r)` lives on the primitive builders (fn-call form); `jsx!` sugars
 it as a `ref={r}` attribute. `ui!` has no `ref =` prop — inside `ui!`,
 attach refs through a component's `bind_to` prop, or build that one child
 in fn-call form.
@@ -393,18 +396,29 @@ let _sub = watch(move || {
 });
 ```
 
-The split matters: `effect!` debug-asserts a scope is active and the scope
-frees it; `watch` is the form with an explicit handle. There is no public
-`Effect::new` — the sealed constructor is what makes effect lifetime a
-syntactic fact rather than a convention.
+The split matters: `effect!` creates into the ambient world and the
+enclosing ownership scope frees it; `watch` puts the effect in a private
+scope and hands you the handle. Effect creation needs `World::enter`, so
+`effect!` belongs in a component body, another effect, or any
+world-entered build scope — not in an event handler
+(`crates/runtime/world/src/lib.rs`). `watch` has the same requirement.
+
+Note the cleanup shape: `on_cleanup` is legal only inside a **running
+effect**, so the paired teardown above works because it sits in the
+effect body. `on_cleanup` directly in a component body panics.
 
 Two write-side idioms worth knowing:
 
-- Event handlers are **born batched** — several `set()`s in one handler
-  coalesce into one fan-out; reach for `batch(|| …)` only outside handlers.
-- A stale `set()` (after the owning scope dropped — e.g. a late async
-  callback) is a **safe no-op**, not a crash. Fire-and-forget writes from
-  async completions are fine.
+- **Every turn is one batch.** A `set()` stages; the driver's flush commits
+  every write made during the handler as one logical update, so several
+  `set()`s in one handler produce one fan-out. There is no `batch(…)` to
+  call — see [`automatic-batching.md`](./automatic-batching.md).
+- **Read-modify-write uses `update`.** Reads never see a staged value, so
+  `set(count.get() + 1)` twice in one handler nets `+1`;
+  `count.update(|n| n + 1)` composes on the staged value and nets `+2`.
+- A write after the owning **world** is gone (a late async callback on an
+  unmounted app) is a **safe no-op**, not a crash. A write through a stale
+  handle in a live world still panics — that's a real use-after-unmount.
 
 ## 7. Context: dependency injection down the scope tree
 
@@ -419,8 +433,22 @@ provide(Theme { accent: color::parse("#7c3aed").unwrap() });
 let theme = inject::<Theme>();
 ```
 
-Provisions live on the scope, so a `when`/`switch` branch that re-provides
-shadows its parent for its own subtree and unwinds on dispose.
+A provision is **owned by the scope that made it**: a `when`/`switch`
+branch that re-provides shadows its parent, and the shadow is retracted
+when the branch disposes, re-exposing the parent's value. That ownership
+is what keeps a context value from outliving scope-owned handles it
+carries — an entry holding a freed `Signal` would abort on the next
+reader's first `get()`.
+
+When scope ownership isn't the lifetime you want: `unscope(|| provide(v))`
+pins a world-lifetime service (a theme or i18n context created lazily on
+first use), and wrapping the `provide` in its own `collect_owned` bounds
+it to a region — for code with no ambient scope of its own to belong to.
+
+Context is keyed by type in a per-type *stack*, not a scope tree:
+`inject` returns the newest live provision, wherever the reader sits. Own
+the provision deliberately rather than relying on the reader's position
+in the tree.
 
 ## 8. A worked example: search-filtered list
 

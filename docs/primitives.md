@@ -20,65 +20,94 @@ right one when building.
 
 ## What is a primitive?
 
-Concretely, a primitive is a variant of the `runtime_core::Element`
-enum. Three views on what that means:
+Concretely, a primitive is a **payload type plus a registered mount
+handler**. The payload is a plain struct in
+`crates/runtime/vocabulary/src/prims/` (`ViewPrim`, `TextPrim`,
+`TogglePrim`, …); the handler lives in
+`crates/runtime/vocabulary/src/handlers/` and is installed on a
+backend's `runtime_scene::Registry` by
+`runtime_vocabulary::handlers::register_builtins`. Three views on what
+that means:
 
-**Data view.** A `Element` is an inert tree node — a description of
-"a `Button` with this label, this click handler, this style," not the
-button itself. The render walker consumes the tree and turns each
-node into a backend call.
+**Data view.** A `runtime_scene::Element` is an inert tree node. Its
+`Item` variant carries a type-erased payload plus children — a
+description of "a button with this label, this click handler, this
+style," not the button itself. The scene never interprets the payload;
+`realize` looks up the handler by the payload's `TypeId` and hands it
+the mount context (`crates/runtime/scene/src/realize.rs`).
 
-**Contract view.** A primitive is a contract between the framework
-and every backend. Adding a primitive variant means adding a
-`Backend` trait method that every backend either implements or
-defaults. The framework guarantees backends a stable set of
-construction + update + lifecycle hooks per primitive.
+**Contract view.** A primitive is a contract between its handler and
+every backend, expressed as the `runtime_vocabulary::caps` traits the
+handler bounds on. `mount_toggle` needs `ToggleOps`; `mount_view` needs
+`ViewOps + InputOps + StyleServices + SafeAreaOps + IntrospectionOps`.
+Adding a primitive means adding those capability methods, which every
+backend either implements or inherits as a documented default
+(placeholder, or degradation to a container). See
+[`backend.md`](./backend.md).
 
 **Composition view.** A primitive is what composes into other
-primitives. Every `Element` can sit inside a `View { children:
-Vec<Element> }`, can be returned from a `#[component]`, can be
-the body of a `when`/`switch` arm. The set of primitives defines
-the set of composable building blocks.
+primitives. Every `Element` can sit in another item's children, be
+returned from a `#[component]`, or be the body of a reactive `if` /
+`match` arm. The set of primitives defines the set of composable
+building blocks.
 
 The framework deliberately keeps this set small. Each primitive is
-expensive: every backend pays implementation cost, the trait gets
-wider, the `Element` enum grows, the walker grows. So the bar
+expensive: every backend pays implementation cost, the capability
+surface gets wider, another handler ships in every bundle. So the bar
 for adding one is high: a primitive earns its place only when it
-**can't reasonably be composed** from existing ones — i.e., it
-needs platform behavior that doesn't decompose into smaller
-primitives.
+**can't reasonably be composed** from existing ones — i.e., it needs
+platform behavior that doesn't decompose into smaller primitives.
+
+**Third-party primitives use the identical contract.** A payload type
+declared outside the framework, with a handler registered at the boot
+seam, is indistinguishable to the scene from a first-party one — which
+is why there is no separate "External" concept any more. See
+[`external-export.md`](./external-export.md) and
+[`migrating-to-runtime-v2.md` § External SDKs](./migrating-to-runtime-v2.md#external-sdks-the-third-party-primitive-layer).
 
 ## Element vs. component
 
 This is the most important distinction in the framework.
 
-| | **Element** | **Component** |
+| | **Primitive** | **Component** |
 | --- | --- | --- |
-| Defined in | `runtime-core` | Your code |
-| Backend impl required | Yes | No |
-| Cross-platform implementation | One per backend | Shared (compiles for every target) |
+| Defined in | `runtime-vocabulary` (or an SDK) | Your code |
+| Backend capability impls required | Yes | No |
+| Cross-platform implementation | One handler + per-backend caps | Shared (compiles for every target) |
 | Set is | Small, stable, fixed | Unbounded |
-| Lives in | `Element` enum variant | `#[component] fn` |
-| Examples | `View`, `Button`, `TextInput`, `Virtualizer` | `Card`, `Modal`, `Tabs`, `LoginForm` |
+| Lives in | a payload struct + a `Registry` handler | `#[component] fn` |
+| Spelled in `ui!` | snake_case (`view`, `text_input`) | PascalCase (`Card`, `LoginForm`) |
+| Examples | `view`, `button`, `text_input`, `flat_list` | `Card`, `Modal`, `Tabs`, `LoginForm` |
 
 A **component** is composed Rust — a function that returns a
 `Element`, with reactivity and refs wired by `#[component]`. Components
 are how you build a design system. You can have thousands.
 
 A **primitive** is the platform-bound substrate components are built
-on. The set the framework ships is intentionally narrow:
+on. The set the framework ships is intentionally narrow — these are the
+snake_case tags `ui!` / `jsx!` recognize
+(`crates/runtime/macros/src/primitives.rs::canonical_primitive`):
 
-- **Layout / content**: `View`, `Text`, `ScrollView`
-- **Controls**: `Button`, `TextInput`, `Toggle`, `Slider`
-- **Media**: `Image`, `Video`, `WebView`
-- **Feedback**: `ActivityIndicator`
-- **Lists**: `Virtualizer` (used through the typed `flat_list<T>` wrapper)
-- **GPU**: `Graphics`
-- **Navigation**: `Navigator`
-- **Structural conditionals**: `When`, `Switch`
+- **Layout / content**: `view`, `text`, `scroll_view`
+- **Controls**: `button`, `text_input`, `text_area`, `toggle`, `slider`
+- **Media**: `image`, `icon`, `link`
+- **Feedback**: `activity_indicator`
+- **Lists**: `flat_list` (the typed face of the virtualizer)
+- **GPU**: `graphics`
+- **Layering**: `overlay`, `anchored_overlay`, `presence`
+- **Structural conditional**: `when` (and `switch`, reached through
+  reactive `match`)
 
-That's it. Roughly fourteen. Everything else in any app you build —
-including everything that has a "look" — is *your* component code.
+That's it — under twenty tags, all installed by one
+`register_builtins` call. Everything else in any app you build — including
+everything that has a "look" — is *your* component code, or an SDK
+shipping its own payload + handler (`video`, `WebView`, `maps`,
+`canvas`, `markdown`, `table`, `codeblock`, `svg`).
+
+**PascalCase is never a primitive.** A PascalCase tag in `ui!` always
+routes to `#[component]` dispatch, which is what frees a component
+library to define its own `Image` / `Link` / `Toggle` without the
+same-named primitive shadowing it.
 
 This is the framework's leverage. The set of primitives is the
 cross-platform contract. The set of components is your design.
@@ -88,53 +117,56 @@ The two don't fight.
 
 ## The shape of every primitive
 
-Every primitive variant in the `Element` enum has the same
-structural pieces:
+Every primitive payload has the same structural pieces
+(`crates/runtime/vocabulary/src/prims/`):
 
 ```rust
-pub enum Element {
-    Button {
-        label:    TextSource,                       // —┐ primitive-specific data
-        on_click: Rc<dyn Fn()>,                     // —┤
-        disabled: Option<Box<dyn Fn() -> bool>>,    // —┘ reactive prop
+pub struct ButtonPrim {
+    pub label:         Value<String>,            // —┐ primitive-specific data
+    pub on_press:      Action,                   // —┤
+    pub leading_icon:  Option<IconData>,         // —┤
+    pub trailing_icon: Option<IconData>,         // —┤
+    pub disabled:      Option<Value<bool>>,      // —┘ reactive prop
 
-        style:    Option<StyleSource>,              // — universal: any primitive can be styled
-        ref_fill: Option<RefFill>,                  // — universal: any primitive can be bound to a Ref
-    },
-    // …
+    pub style:    Option<StyleProp>,             // — universal: any primitive can be styled
+    pub a11y:     AccessibilityProps,            // — universal: accessibility metadata
+    pub test_id:  Option<&'static str>,          // — universal: robot/test identity
+    pub ref_fill: Option<Box<dyn FnOnce(ButtonHandle)>>,  // — universal: imperative handle
 }
 ```
 
-Three slots are universal:
+Four slots are universal:
 
-- **Element-specific data**: the props that define what this
-  primitive *is*. Static for one-shot values (strings, sizes), boxed
-  closures for reactive ones (`Fn() -> String`, `Fn() -> bool`,
-  `Signal<T>`).
-- **`style: Option<StyleSource>`**: an optional stylesheet
-  application. Styling is *orthogonal to structure* — every visible
-  primitive accepts a style without each primitive having to know
-  about styling.
-- **`ref_fill: Option<RefFill>`**: an optional ref binding.
-  Set by `.bind(r)` on the `Bound<H>` wrapper; the walker uses it to
-  fill a typed handle slot so the parent can drive the primitive
-  imperatively.
+- **Primitive-specific data**: the props that define what this
+  primitive *is*, each wrapped in `Value<T>` (see below).
+- **`style: Option<StyleProp>`**: an optional stylesheet application.
+  Styling is *orthogonal to structure* — every visible primitive accepts
+  a style without each primitive knowing about styling.
+- **`a11y` + `test_id`**: accessibility props and the robot-registry
+  identity, uniform across primitives.
+- **`ref_fill`**: an optional handle sink. Set by `.bind(r)` on the
+  builder; the handler calls it with the minted handle at mount so the
+  parent can drive the primitive imperatively.
 
-Reactive props are **closures**, not direct values. A `Button` with a
-reactive label carries `label: TextSource::Reactive(Box<dyn Fn() ->
-String>)`. The walker wraps that closure in an `Effect` so signals
-read inside subscribe naturally. The widget exists once and is
-mutated in place via `Backend::update_button_label` — no diff, no
+Reactive props are `Value<T>`, a two-arm enum:
+`Value::Const(T)` for a statically known value and
+`Value::Dyn(Box<dyn Fn() -> T>)` for a reactive one
+(`crates/runtime/world/src/lib.rs`). A `Const` prop is applied once and
+creates **no reactive machinery at all**; a `Dyn` prop gets a binding
+effect whose body calls the matching capability method, so signals read
+inside subscribe naturally. The widget exists once and is mutated in
+place through e.g. `ButtonOps::update_button_label` — no diff, no
 re-render. (See [`reactivity.md`](./reactivity.md) for the model.)
 
-### `Bound<H>` — the builder façade
+### The builders — the author-facing façade
 
-The author doesn't construct `Element` variants directly. Each
-primitive has a constructor that returns `Bound<H>` — a thin
-wrapper that exposes a fluent builder:
+The author doesn't construct payloads directly. Each primitive has a
+constructor returning a small builder that exposes a fluent surface
+(`crates/runtime/vocabulary/src/glue.rs`, `GlueView` / `GlueText` /
+`GlueButton` / …):
 
 ```rust
-pub fn button<L, F>(label: L, on_click: F) -> Bound<ButtonHandle> { … }
+pub fn button(label: impl TextContent, on_click: impl IntoAction) -> GlueButton { … }
 
 button("Save", || save())
     .with_style(primary_button_style())
@@ -142,10 +174,13 @@ button("Save", || save())
     .disabled(move || saving.get())
 ```
 
-Each builder method mutates the inner `Element`'s optional slot
-(`style`, `ref_fill`, `disabled`) and returns `Self`. The DSLs (`ui!`,
-`jsx!`) emit `.with_style(...)`, `.bind(...)`, `.disabled(...)` on
-the `Bound<H>` returned from the constructor.
+Each builder method fills one of the payload's optional slots and
+returns `Self`. `ui!` / `jsx!` emit exactly these calls on the builder
+the constructor returned, so the macro form and the fn-call form produce
+identical payloads. Every builder also carries the universal setters —
+`with_style`, `test_id`, `accessibility`, `a11y_label`, `a11y_role`,
+`a11y_hidden`, `live_region`, … — generated once by a shared macro
+(`glue_wrapper_common!`).
 
 ### Handles and `Ops`
 
@@ -190,7 +225,7 @@ build on each other conceptually.
 ### `View` — the structural container
 
 ```rust
-pub fn view(children: Vec<Element>) -> Bound<ViewHandle>
+pub fn view(children: Vec<Element>) -> GlueView
 ```
 
 The framework's default container. Holds an ordered list of children;
@@ -210,7 +245,7 @@ component you write is going to compose `View`s.
 ### `Text` — the content leaf
 
 ```rust
-pub fn text<T: IntoTextSource>(source: T) -> Bound<TextHandle>
+pub fn text(content: impl TextContent) -> GlueText
 ```
 
 A leaf of text content. `source` can be:
@@ -219,9 +254,9 @@ A leaf of text content. `source` can be:
 - A closure `Fn() -> String` — reactive content. Signals read inside
   the closure subscribe naturally.
 
-The walker wraps reactive sources in an `Effect` that calls
-`Backend::update_text` on change. The native widget exists once,
-its text is mutated in place.
+A `Value::Dyn` source gets a binding effect that calls
+`TextOps::update_text` on change. The native widget exists once, its
+text is mutated in place.
 
 Text wrapping, font, color, alignment are style concerns —
 controlled via the optional `style` slot, not separate props.
@@ -229,7 +264,7 @@ controlled via the optional `style` slot, not separate props.
 #### Styled runs — inline-styled ranges in one paragraph
 
 ```rust
-pub fn styled_text(runs: Vec<TextRun>) -> Bound<TextHandle>
+pub fn styled_text(runs: Vec<TextRun>) -> StyledText
 ```
 
 A text node whose content is a list of `TextRun`s, each optionally
@@ -253,7 +288,7 @@ styled_text(vec![
 
 The node's own style is the paragraph style; run deltas layer over
 it. Each backend realizes the runs through its platform's own
-attributed-text mechanism (`Backend::create_styled_text`): nested
+attributed-text mechanism (`TextOps::create_styled_text`): nested
 `<span>`s on web/SSR, `NSAttributedString` on iOS/macOS,
 `SpannableString` on Android, cosmic-text rich spans on the GPU
 renderer. Inline wrapping happens INSIDE the platform text engine —
@@ -273,7 +308,7 @@ engines).
 ### `Button` — interactive trigger
 
 ```rust
-pub fn button<L, F>(label: L, on_click: F) -> Bound<ButtonHandle>
+pub fn button(label: impl TextContent, on_click: impl IntoAction) -> GlueButton
 ```
 
 A pressable widget with a label and a callback. Label is a
@@ -297,8 +332,10 @@ widget, which gives all of that for free. Building it from a View
 ### `TextInput` — controlled text input
 
 ```rust
-pub fn text_input<F>(value: Signal<String>, on_change: F) -> Bound<TextInputHandle>
-where F: Fn(String) + 'static
+pub fn text_input(
+    value: impl IntoValue<String>,
+    on_change: impl Fn(String) + 'static,
+) -> GlueTextInput
 ```
 
 A controlled single-line text field. **Controlled** means: the
@@ -329,8 +366,10 @@ fighting the primitive.
 ### `Toggle` — controlled boolean
 
 ```rust
-pub fn toggle<F>(value: Signal<bool>, on_change: F) -> Bound<ToggleHandle>
-where F: Fn(bool) + 'static
+pub fn toggle(
+    value: impl IntoValue<bool>,
+    on_change: impl Fn(bool) + 'static,
+) -> GlueToggle
 ```
 
 Same shape as `TextInput`, for boolean state. Native widget per
@@ -340,13 +379,11 @@ platform (`<input type="checkbox">` on web, `Switch` on Android,
 ### `Slider` — controlled numeric
 
 ```rust
-pub fn slider<F>(
-    value: Signal<f32>,
-    min: f32,
-    max: f32,
-    step: Option<f32>,
-    on_change: F,
-) -> Bound<SliderHandle>
+pub fn slider(
+    value: impl IntoValue<f32>,
+    on_change: impl Fn(f32) + 'static,
+) -> GlueSlider
+// bounds and step are builder methods: .range(min, max), .step(step)
 ```
 
 Controlled numeric input with bounds and an optional step. Same
@@ -362,7 +399,7 @@ opinionated input model.
 ### `ScrollView` — single-axis scroll container
 
 ```rust
-pub fn scroll_view(children: Vec<Element>) -> Bound<ScrollViewHandle>
+pub fn scroll_view(children: Vec<Element>) -> GlueScrollView
 ```
 
 A scrolling container. Children scroll along the configured axis
@@ -378,58 +415,65 @@ front; on 10,000-item lists the cost will hurt.
 ### `Image` — raster image content
 
 ```rust
-pub fn image<S: IntoImageSource>(src: S) -> Bound<ImageHandle>
+pub fn image(src: impl IntoValue<String>) -> GlueImage
 ```
 
 Reactive image source. `src` can be a `String`/`&str` for a static
-URL or a closure that reads a signal. The walker installs an
-effect that calls `Backend::update_image_src` on source changes.
+URL or a closure that reads a signal. A reactive source gets a binding
+effect that calls `ImageOps::update_image_src` on change.
 
 `alt`/`accessibilityLabel`/`contentDescription` is set through a
 builder method.
 
-### `Video`, `WebView`, `ActivityIndicator`
+### `activity_indicator` — passive feedback
 
 ```rust
-pub fn video<S: IntoVideoSrc>(src: S)       -> Bound<VideoHandle>
-pub fn web_view<U: IntoWebViewUrl>(url: U)  -> Bound<WebViewHandle>
-pub fn activity_indicator()                 -> Bound<ActivityIndicatorHandle>
+pub fn activity_indicator() -> GlueActivityIndicator
 ```
 
-Three "embed platform functionality" primitives:
+An indeterminate loading spinner. Size and color are style/builder
+concerns; it exposes no methods.
 
-- `Video` — backend uses native player (`<video>`, `AVPlayer`,
-  `MediaPlayer`). Handle exposes `play`/`pause`/`seek`.
-- `WebView` — embedded browser surface (`<iframe>`, `WKWebView`,
-  `android.webkit.WebView`). Reactive `url`.
-- `ActivityIndicator` — indeterminate loading spinner. Static
-  size/color. No methods; passive widget.
+### Video and WebView are SDKs, not primitives
 
-Each exists because re-implementing native equivalents in
-user-space would lose huge amounts of platform behavior (codec
-support, autoplay policies, web security model, native spinner
-animations). The framework's job here is "expose the native thing
-in a way that participates in layout and styling."
+`video` and `WebView` embed platform functionality — a native player
+(`<video>`, `AVPlayer`, `MediaPlayer`) and an embedded browser surface
+(`<iframe>`, `WKWebView`, `android.webkit.WebView`). Both ship as SDKs
+with their own payload type and per-host handler rather than as
+framework primitives, because neither needs anything from the framework
+beyond the registry contract:
+
+```rust
+ui! { WebView(url = "https://example.com") }     // crates/sdk/client/webview
+```
+
+`web_view` was never a first-party primitive tag, and the macro no
+longer special-cases it — the SDK ships `type WebView = WebViewProps`
+plus its `BuildElement` impl, so the tag is ordinary component dispatch
+(`crates/runtime/macros/src/primitives.rs`, the `web_view` note). The
+same is true of `maps`, `canvas`, `markdown`, `table`, `codeblock`, and
+`svg`. Per-SDK host coverage is tabulated in
+[`migrating-to-runtime-v2.md` § External SDKs](./migrating-to-runtime-v2.md#external-sdks-the-third-party-primitive-layer).
 
 ### `Virtualizer` — windowed list (used via `flat_list<T>`)
 
 ```rust
 // Type-erased primitive (rarely called directly):
-pub fn virtualizer(item_count, item_key, item_size, render_item) -> Bound<VirtualizerHandle>
+pub fn virtualizer(item_count, item_key, item_size, render_item) -> VirtualizerBuilder
 
 // Typed wrapper (what you'll actually use):
-pub fn flat_list<T>(
+pub fn flat_list<T, K, S, R>(
     data: Signal<Vec<T>>,
-    key: impl Fn(usize, &T) -> u64,
+    key: K,                       // Fn(usize, &T) -> ItemKey
     item_size: FlatListItemSize<T>,
-    render_item: impl Fn(usize, &T) -> Element,
-) -> Bound<VirtualizerHandle>
+    render_item: R,               // Fn(usize, &T) -> Element
+) -> GlueFlatList
+where T: Clone + PartialEq + 'static
 ```
 
 A virtualized list — only the visible window plus an overscan
-buffer is mounted at any time. Mount/release happens through
-framework-managed per-item scopes (so signals/effects/refs inside
-an item are freed when it leaves the window).
+buffer is mounted at any time. Mount/release happens through framework-managed per-row scopes, so
+signals and effects inside a row are freed when it leaves the window.
 
 Three concepts to understand:
 
@@ -444,9 +488,10 @@ Three concepts to understand:
    mount and updates layout. Use `Measured` when content size
    depends on layout/wrap (e.g. text whose width depends on its
    container).
-3. **`render_item`** runs **once per mount** inside a fresh per-item
-   `Scope`. Re-mount happens only when an item enters the window,
-   not on every scroll tick.
+3. **`render_item`** runs **once per mount**, inside a fresh per-row
+   ownership scope (`MountCx::realize_detached`). Re-mount happens only
+   when a row enters the window, not on every scroll tick; dropping the
+   row's `Realized` when it leaves is the whole teardown.
 
 This is one of the few primitives that *can't* be composed: every
 backend has a fundamentally different way of doing recycling
@@ -458,7 +503,8 @@ in framework Rust — pointless.
 ### `Graphics` — GPU surface
 
 ```rust
-pub fn graphics(on_ready, on_resize, on_lost) -> Bound<GraphicsHandle>
+pub fn graphics(on_ready: impl FnMut(OnReadyEvent) + 'static) -> GlueGraphics
+// .on_resize(f) / .on_lost(f) are builder methods
 ```
 
 A backend-provided render target, delivered as
@@ -510,69 +556,95 @@ Why this primitive exists: rendering custom 2D/3D content is the
 one thing no composition of other primitives can express. The
 framework gets out of the way and hands you the drawable.
 
-### `Navigator` — screen-stack navigator
+### Navigation — `swap` / `stack` + the outlet
+
+Navigation is two primitives, both registered by `register_builtins`
+and therefore identical on every host
+(`crates/runtime/vocabulary/src/builders/navigator.rs`,
+`crates/runtime/vocabulary/src/handlers/navigator.rs`):
 
 ```rust
-pub fn navigator(initial: &Route<()>) -> Bound<NavigatorHandle>
-
-ui! {
-    Navigator()
-        .screen(HOME_ROUTE, |_| ui! { Home() })
-        .screen(DETAIL_ROUTE, |params: DetailParams| ui! { Detail(id = params.id) })
-        .initial(HOME_ROUTE, ())
-        .bind(nav_ref)
-}
+pub fn swap_navigator(initial: &Route<()>)  -> SwapNavigatorBuilder   // flat, co-equal screens
+pub fn stack_navigator(initial: &Route<()>) -> StackNavigatorBuilder  // push / pop depth
+pub fn navigator_outlet()                   -> …                       // where the screen renders
 ```
 
-A declared route table + a stack-based imperative API. The backend
-owns the platform-native stack: `UINavigationController` on iOS,
-`FragmentManager` on Android, an inline subtree on web. Browser
-back/forward and `history` integration are handled by the web
-backend.
-
-`NavigatorHandle::{push, pop, replace, reset}` drive the stack;
-the framework manages per-screen `Scope`s so navigation leaves
-behind no leaked signals/effects.
-
-The reason this is a primitive: each backend's navigation
-machinery is so different that abstracting them at the user level
-would require re-implementing huge chunks of platform behavior
-(animations, gesture handling, back-stack persistence, deep
-linking). Wrapping each native stack instead lets every platform
-get its native feel.
-
-### `When` / `Switch` — structural conditionals
+Each declares a route table, and the **author supplies the chrome** as
+ordinary layout wrapped around `{nav.outlet}` — the analog of
+react-router's `<Outlet/>`. A tab bar is a bar around the outlet; a
+drawer is an idea-ui `Drawer` around the outlet. Apps normally reach
+these through the SDK faces `SwapNavigator` / `StackNavigator`
+(`crates/sdk/client/navigators/{swap,stack}`), which lower to the same
+builders:
 
 ```rust
-pub fn when<C, T, O>(cond: C, then: T, otherwise: O) -> Element
-pub fn switch<S: PartialEq, F: Fn() -> S, B: Fn(&S) -> Element>(scrutinee: F, branches: B) -> Element
+SwapNavigator::new(&home)
+    .screen(home.clone(),     |_| Screen::new(/* … */))
+    .screen(settings.clone(), |_| Screen::new(/* … */))
+    .layout(|nav| ui! {
+        view {
+            { nav.outlet }
+            TabBar(active = nav.active_route, on_select = nav.on_select) { /* … */ }
+        }
+    })
+    .bind(nav.clone());
 ```
 
-The framework's two reactive conditional primitives. `when` is a
-binary condition; `switch` keys on any `PartialEq + 'static` value
-(typically an enum).
+Three properties follow from the handler design:
 
-Both wrap their decision closure in an `Effect`. When a signal the
-closure reads changes:
+- **Dispatch is handler-safe.** `on_select`, `pop`, and
+  `NavHandle::dispatch` never mount a screen directly — they push a
+  command onto a queue and bump a tick signal (both handle-routed, legal
+  anywhere), and a driver effect drains the queue inside the flush where
+  realize is legal. One navigation is therefore one logical update.
+- **A screen is `(root node, Realized)`.** A persistent policy keeps the
+  pair cached while the node is detached from the tree; returning
+  re-inserts the *same* node, so the route builder does not re-run and
+  row state survives. Dropping the `Realized` (evict, pop, replace,
+  reset, teardown) is the whole screen teardown.
+- **URL sync is a seam, not a per-app opt-in.** A URL-bearing host
+  installs a `UrlSyncService` and both navigators register at mount;
+  hosts without URLs install nothing and the hooks vanish
+  (web: `crates/backend/web/src/newcore_url_sync.rs`).
 
-- `when`: rebuilds when the boolean flips.
-- `switch`: rebuilds only when the new key fails equality against
-  the previous. Unrelated signal reads in the scrutinee don't tear
-  down the active subtree.
+The reason navigation is a primitive at all: retention policy, screen
+scope lifetime, and the outlet's structural swap have to sit next to the
+mount machinery. What is *not* in the primitive any more is the
+platform-native stack — there is one backend-neutral handler, which is
+what keeps behavior uniform across hosts.
 
-**State in a hidden branch is gone on toggle.** The old subtree's
-`Scope` drops, freeing every signal/effect/ref inside it. This is
-the framework's "dispose on hide" model. Components that need to
-keep state across visibility should hoist it into a parent.
+### `when` / `switch` — structural conditionals
+
+```rust
+pub fn when(cond: impl Fn() -> bool, then: …, otherwise: …) -> Element
+pub fn switch<S: PartialEq>(scrutinee: impl Fn() -> S, branches: impl Fn(&S) -> Element) -> Element
+```
+
+The framework's two reactive conditionals. `when` is a binary
+condition; `switch` keys on any `PartialEq + 'static` value (typically
+an enum). Both lower to the scene's **guarded** structural hole
+(`runtime_scene::dyn_keyed`), so the key is what decides a rebuild
+(`crates/runtime/vocabulary/src/glue.rs::when`/`switch`):
+
+- `when`: rebuilds when the boolean flips. A predicate that reads extra
+  signals does not rebuild when only those extras change.
+- `switch`: rebuilds only when the new scrutinee fails `PartialEq`
+  against the previous. Consequence: `touch()` on a scrutinee signal is
+  inert — change the value to force a rebuild.
+
+**State in a hidden branch is gone on toggle.** The outgoing subtree's
+`Realized` drops, freeing every signal and effect inside it and running
+their cleanups. This is the framework's "dispose on hide" model.
+Components that need state to survive visibility hoist it into a parent.
 
 Most authors don't call these directly — the DSLs lower
 `if cond.get() { … } else { … }` → `when`, and
 `match value.get() { Variant => … }` → `switch`.
 
-These are primitives because they shape the *render walk itself* —
-they own a per-branch `Scope` and manage rebuild ordering. They
-don't have a backend method; the walker handles them entirely
-inside runtime-core.
+These are structural rather than platform primitives: they emit no
+capability calls of their own. A hole is realized either anchorless
+(spliced into the real parent, when `Host::supports_splice`) or under a
+`Host::create_anchor` node — the only host ops involved.
 
 ---
 
@@ -587,14 +659,14 @@ Most components are pure composition. No new primitive, no new
 backend code — just a `#[component] fn` that arranges primitives:
 
 ```rust
-#[component]
-pub fn card(props: &CardProps, children: Vec<Element>) -> Element {
+#[component(children)]
+pub fn Card(title: Option<String>, children: Vec<Element>) -> Element {
     ui! {
-        View(style = card_outer_style()) {
-            if let Some(title) = &props.title {
-                Text(style = card_title_style()) { title.clone() }
+        view(style = card_outer_style()) {
+            if let Some(title) = title.clone() {
+                text(style = card_title_style()) { title }
             }
-            View(style = card_body_style()) { children }
+            view(style = card_body_style()) { children }
         }
     }
 }
@@ -612,41 +684,43 @@ typed wrapper gives you a clean API:
 
 ```rust
 #[component]
-pub fn icon(props: &IconProps) -> Element {
+pub fn Avatar(source: AvatarSource, size: f32) -> Element {
     ui! {
-        Image(src = props.icon.url(), alt = props.icon.label())
-            .with_style(icon_style().size(props.size))
+        image(src = source.url(), alt = source.label(), style = avatar_style().size(size))
     }
 }
 ```
 
-`Icon` constrains `Image`'s string-typed source to an `Icon` enum
-that knows what URLs it owns. Same primitive underneath, much
-narrower interface above.
+`Avatar` constrains the `image` primitive's string-typed source to a
+type that knows which URLs it owns. Same primitive underneath, much
+narrower interface above. Note the component is PascalCase and the
+primitive it wraps is snake_case — that separation is what lets a
+component library name a component `Image` without shadowing the
+primitive.
 
 ### Treat a primitive as a slot
 
-`Virtualizer` and `Navigator` expose **slot-shaped** APIs — they
-take rendering closures (`render_item`, screen builders) rather
-than static children. Components that build on them can layer
-abstractions on top without re-implementing the recycling /
-navigation core:
+`flat_list` and the navigators expose **slot-shaped** APIs — they take
+rendering closures (`render`, screen builders) rather than static
+children. Components that build on them can layer abstractions on top
+without re-implementing the recycling / navigation core:
 
 ```rust
 #[component]
-pub fn user_list(users: Signal<Vec<User>>) -> Element {
-    flat_list(
-        users,
-        |_, u| u.id,
-        FlatListItemSize::Known(Rc::new(|_, _| 64.0)),
-        |idx, user| ui! { UserRow(user = user.clone(), index = idx) },
-    )
-    .into_element()
+pub fn UserList(#[prop(static)] users: Signal<Vec<User>>) -> Element {
+    ui! {
+        flat_list(
+            data = users,
+            key = |_, u: &User| u.id,
+            size = FlatListItemSize::Known(Rc::new(|_, _| 64.0)),
+            render = |idx, user: &User| ui! { UserRow(user = user.clone(), index = idx) },
+        )
+    }
 }
 ```
 
-Same `Virtualizer` underneath. `user_list` is just an opinionated
-wrapper that fixes the row size, the key, and the row component.
+Same virtualizer underneath. `UserList` is an opinionated wrapper that
+fixes the row size, the key, and the row component.
 
 ### Build a control out of `Button` + state
 
@@ -658,20 +732,33 @@ composes the primitive smartly:
 
 ```rust
 #[component]
-pub fn segmented<T: Eq + Clone>(props: &SegmentedProps<T>) -> Element {
-    let view: Vec<Element> = props.options.iter().enumerate().map(|(i, opt)| {
-        let selected = props.value.get() == opt.value;
-        let value = opt.value.clone();
-        let on_pick = props.on_change.clone();
-        ui! {
-            Button(label = opt.label.clone(), on_click = move || on_pick(value.clone()))
-                .with_style(segment_style().selected(selected).position(position_for(i, ...)))
+pub fn Segmented(
+    options: Vec<Segment>,
+    #[prop(static)] value: Signal<SegmentId>,
+    on_change: Rc<dyn Fn(SegmentId)>,
+) -> Element {
+    ui! {
+        view(style = segmented_container_style()) {
+            for (i, opt) in options.iter().enumerate() {
+                button(
+                    label = opt.label.clone(),
+                    on_click = {
+                        let (id, pick) = (opt.id, on_change.clone());
+                        move || pick(id)
+                    },
+                    style = segment_style()
+                        .selected(value.get() == opt.id)
+                        .position(position_for(i, options.len())),
+                )
+            }
         }
-        .into_element()
-    }).collect();
-    ui! { View(style = segmented_container_style()) { view } }.into_element()
+    }
 }
 ```
+
+The `for` lives **inside** `ui!` — the macro splats the siblings flat and
+sees the reactive reads in the loop body. Building a `Vec<Element>`
+outside the macro and splatting it in would defeat that.
 
 No new primitive. The "segmented control" experience is the
 component's job; the buttons, click handling, layout — all
@@ -685,17 +772,21 @@ canvas, a chart. `Graphics` is where you go:
 
 ```rust
 #[component]
-pub fn sparkline(data: Signal<Vec<f32>>) -> Element {
-    let state: Ref<RendererState> = Ref::new();
+pub fn Sparkline(#[prop(static)] data: Signal<Vec<f32>>) -> Element {
+    let renderer = Rc::new(RefCell::new(None::<RendererState>));
     ui! {
-        Graphics(
-            on_ready = move |evt| { /* set up GPU pipeline */ state.fill(rs); },
-            on_resize = move |evt| { /* … */ },
-            on_lost   = move ||     { /* drop GPU state */ },
+        graphics(
+            on_ready  = { let r = renderer.clone(); move |evt| { *r.borrow_mut() = Some(setup(evt)); } },
+            on_resize = { let r = renderer.clone(); move |evt| { /* … */ } },
+            on_lost   = { let r = renderer.clone(); move || { *r.borrow_mut() = None; } },
         )
     }
 }
 ```
+
+The renderer state is held in a plain `Rc<RefCell<_>>` captured by the
+callbacks — GPU state isn't reactive, so it doesn't need a signal, and
+this keeps the lifetime tied to the closures the component owns.
 
 The framework gives you a real platform surface; your code does
 the drawing. The component is still pure-Rust; it works on every
@@ -707,24 +798,28 @@ You almost shouldn't. The right test is: **is the behavior something
 that fundamentally has to come from the platform, and that no
 composition of existing primitives can express?**
 
-- A "card with a title and body" — compose `View`s and `Text`.
-- A "video player with custom controls" — compose `Video` +
-  `Button`s + `Slider`. Don't add a primitive.
-- A "fancy custom-rendered chart" — compose `Graphics`. Don't add
-  a primitive.
-- A "platform-native segmented control" — *maybe* a primitive, if
-  the design system actually requires native iOS/Android segmented
-  behavior. But usually you'd build it as a component out of
-  `Button`s and live with the small native-feel sacrifice.
+- A "card with a title and body" — compose `view`s and `text`.
+- A "video player with custom controls" — compose the video SDK's tag +
+  `button`s + `slider`. Don't add a primitive.
+- A "fancy custom-rendered chart" — compose `graphics`. Don't add a
+  primitive.
+- A "platform-native segmented control" — *maybe* a primitive, if the
+  design system actually requires native iOS/Android segmented
+  behavior. Usually you'd build it as a component out of `button`s and
+  live with the small native-feel sacrifice.
 - A "native date picker UI" — probably a primitive, because the
   platform date pickers are massive, opinionated, and not
   realistically expressible in primitives.
 
-If you do conclude that you need one: the path is a new `Element`
-enum variant, new `Backend` trait method(s) for `create_*` /
-`update_*` / (maybe) `release_*`, and an impl in every backend
-you care about. See [`backend.md`](./backend.md) for the trait
-contract.
+If you do conclude that you need one: the path is a payload struct, a
+mount handler registered on the `Registry`, and — if it needs platform
+work the existing capability traits can't express — new capability
+methods with a documented default, implemented in every backend you care
+about. Peripheral features should take the third-party route instead: a
+payload plus a handler registered at the boot seam, shipped as its own
+crate, with no framework change at all. See
+[`backend.md`](./backend.md) for the capability contract and
+[`external-export.md`](./external-export.md) for the registration seam.
 
 The framework's posture: keep the primitive set small enough that
 every backend can plausibly implement all of it, and rich enough
@@ -742,17 +837,17 @@ mental model: pick a UI you'd want to build and decompose it.
 > submit button. Errors appear below each field; the submit button
 > disables while the request is in flight.**
 
-- Outer layout: `View` (with vertical flex style).
-- "Email" label + field: `Text` + `TextInput` (controlled, bound to
-  a `Signal<String>`).
-- Per-field error message (conditional): reactive `if email_error.get().is_some()`
-  → `Text { … }` → lowers to `when(...)`.
+- Outer layout: `view` (with vertical flex style).
+- "Email" label + field: `text` + `text_input` (controlled, bound to a
+  `Signal<String>`).
+- Per-field error message (conditional): reactive
+  `if email_error.get().is_some()` → `text { … }` → lowers to `when`.
 - "Password" — same as email.
-- "Remember me" toggle: `Toggle`.
-- Submit button: `Button` with a reactive `.disabled(move ||
-  submitting.get())`.
-- Loading state (if needed): `ActivityIndicator` shown via
-  `when(submitting.get(), …, …)`.
+- "Remember me" toggle: `toggle`.
+- Submit button: `button` with a reactive
+  `disabled = move || submitting.get()`.
+- Loading state (if needed): `activity_indicator` inside a reactive
+  `if submitting.get() { … }`.
 
 No primitive missing. The form's *behavior* (validation rules,
 submit flow, error mapping) is your component code. The framework

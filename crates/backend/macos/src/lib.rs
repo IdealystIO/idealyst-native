@@ -40,12 +40,23 @@ mod transform_transition_policy;
 #[cfg(target_os = "macos")]
 pub use imp::{
     coalesce_layout_passes, install_global_self, private_layer_window_ids, schedule_layout_pass,
-    set_animated_color, set_animated_f32, with_global_backend, LayoutCoalesceGuard, MacosBackend,
-    MacosExternalRegistrar, MacosNavigatorRegistrar, MacosNode,
+    set_animated_color, set_animated_f32, with_global_backend, LayoutCoalesceGuard, MacosBackend, MacosNode,
 };
 
 #[cfg(not(target_os = "macos"))]
 pub use stub::MacosBackend;
+
+// idea-lite core migration (P4a): `runtime_scene::Host` + all 30
+// `runtime_vocabulary::caps` traits implemented directly on
+// `MacosBackend` (UFCS delegation to the existing Backend impl), plus
+// the new-core mount (`newcore::start`) and its flush driver
+// (dispatch-site author-callback wrapping + the shared
+// `backend_apple_core::dispatch_hook`). Off by default; with the
+// feature off the build is unchanged (module + deps not compiled).
+// macOS-gated like `imp` — the stub backend has no real Backend impl to
+// front. `host-appkit`'s `newcore::run` is the windowed entry point.
+#[cfg(target_os = "macos")]
+pub mod newcore;
 
 // Optional runtime-server-client entry point. Exposes `spawn_runtime_server_shell` +
 // `start_main_thread_drain_timer`, modeled on `backend-ios-mobile`'s
@@ -60,7 +71,7 @@ pub use stub::MacosBackend;
 pub mod runtime_server;
 
 /// Install the macOS scheduler (NSTimer-backed). Must be called once
-/// before `runtime_core::render(...)` so timer-driven features
+/// before `runtime_shared::render(...)` so timer-driven features
 /// (presence animations, anything calling `after_ms` /
 /// `schedule_microtask`) delay correctly instead of firing
 /// synchronously.
@@ -75,12 +86,12 @@ pub use backend_apple_core::scheduler::install_scheduler;
 #[cfg(not(target_os = "macos"))]
 pub fn install_scheduler() {}
 
-// NSTimer-backed `RenderLoopDriver` for `runtime_core::driver::render_loop`
+// NSTimer-backed `RenderLoopDriver` for `runtime_shared::driver::render_loop`
 // (per-frame ticks for embedded wgpu hosts like `host-macos-desktop`).
 // `host-appkit` installs it at boot; without a driver, `render_loop`
 // silently returns a no-op handle and embedded previews never paint.
 // Gated on `async-driver` (which forwards `runtime-core/async-driver`,
-// the feature that compiles `runtime_core::driver`) — host-appkit
+// the feature that compiles `runtime_shared::driver`) — host-appkit
 // enables it, so real apps always have the driver.
 #[cfg(all(target_os = "macos", feature = "async-driver"))]
 mod render_loop;
@@ -89,7 +100,7 @@ mod render_loop;
 pub use render_loop::install_render_loop;
 
 /// No-op when the `async-driver` feature is off (pure-backend builds
-/// without `runtime_core::driver`) or on non-macOS hosts, so consumer
+/// without `runtime_shared::driver`) or on non-macOS hosts, so consumer
 /// cross-compiles still type-check.
 #[cfg(not(all(target_os = "macos", feature = "async-driver")))]
 pub fn install_render_loop() {}
@@ -103,12 +114,12 @@ pub fn install_global_self(_weak: std::rc::Weak<std::cell::RefCell<MacosBackend>
 /// matching `MacosNode` is exposed only on macOS, so consumer code
 /// that reaches these on a non-macOS host is necessarily host-only.
 #[cfg(not(target_os = "macos"))]
-pub fn set_animated_f32<T>(_node: &T, _prop: runtime_core::animation::AnimProp, _value: f32) {}
+pub fn set_animated_f32<T>(_node: &T, _prop: runtime_shared::animation::AnimProp, _value: f32) {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn set_animated_color<T>(
     _node: &T,
-    _prop: runtime_core::animation::AnimProp,
+    _prop: runtime_shared::animation::AnimProp,
     _value: [f32; 4],
 ) {
 }

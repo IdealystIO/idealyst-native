@@ -34,7 +34,8 @@ use runtime_core::{
 };
 
 use idea_theme::extensible::{
-    installed_button_sheet, ButtonSizeRef, ShapeRef, ToneRef, VariantRef,
+    installed_button_label_sheet, installed_button_sheet, ButtonSizeRef, ShapeRef, ToneRef,
+    VariantRef,
 };
 
 use crate::slot_override::{apply_override, override_rules};
@@ -167,46 +168,25 @@ fn button_icon_sheet() -> Rc<runtime_core::StyleSheet> {
                 flex_shrink: Some(Tokenized::Literal(0.0)),
                 ..Default::default()
             });
-            *s.borrow_mut() = Some(Rc::new(sheet));
+            // Constant square → a build-time class. Without an identity this
+            // sheet has no preminted CSS, so every Button with an icon fell
+            // through to the live engine and kept it linked.
+            *s.borrow_mut() = Some(sheet.premint_as("idea-ui.v1.button.icon"));
         }
         s.borrow().as_ref().cloned().unwrap()
     })
 }
 
 /// The text-typography subset the label must carry ON ITS OWN NODE.
-///
-/// The Button sheet sets `font_weight`/`font_size`/`text_align`/`letter_spacing`
-/// on the pressable BOX (so web's CSS cascade paints the label bold + centered).
-/// Native text leaves (`NSTextField`/`NSTextView`/`UILabel`/…) inherit NOTHING
-/// from the box — the same reason the label's *color* is stamped on its own node
-/// (native text doesn't inherit color either, only web's CSS cascade does).
-/// Weight/size/alignment need the same treatment or the native label renders at
-/// the backend default (the macOS "not bold / not centered" bug). We copy the
-/// resolved container typography onto the label so every backend matches web
-/// (Rule #7). Color is applied separately — it re-resolves reactively with
-/// tone/variant, whereas these track the (also-reactive) `size` axis and the
-/// constant base.
-fn label_typography_style(resolved: &StyleRules) -> Rc<StyleSheet> {
-    Rc::new(StyleSheet::r#static(StyleRules {
-        font_family: resolved.font_family.clone(),
-        font_size: resolved.font_size.clone(),
-        font_weight: resolved.font_weight,
-        font_style: resolved.font_style,
-        line_height: resolved.line_height.clone(),
-        letter_spacing: resolved.letter_spacing.clone(),
-        text_align: resolved.text_align,
-        ..Default::default()
-    }))
-}
+// (Former `label_typography_style` — a per-instance snapshot of the
+// container typography plus a color override — is replaced by the
+// installed Button LABEL sheet (`installed_button_label_sheet`), whose
+// enumerated `appearance`/`size` axes carry the same values and premint.
+// Native text still gets everything on its own node; see
+// `ButtonSheetBuilder::build_label`.)
 
 /// Renders a styled, clickable button whose appearance is driven by
 /// the tone × variant × size × shape axes of the installed Button sheet.
-///
-/// **Cargo features:** requires `prim-icon` + `prim-activity` (both in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without them compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Button(props: &ButtonProps) -> Element {
     let label = props.label.clone();
@@ -263,42 +243,18 @@ pub fn Button(props: &ButtonProps) -> Element {
             let shape = shape.clone();
             move || {
                 let appearance_key = format!("{}_{}", tone.get().key(), variant.get().key());
-                let style = StyleApplication::new(installed_button_sheet())
+                // Layout rides three sheet axes rather than one computed
+                // layer keyed `layout_{row}_{block}_{disabled}`. They're three
+                // independent booleans, so they enumerate — and a computed
+                // layer is opaque to premint, which disqualified every Button
+                // on the page. See `ButtonSheetBuilder::build`.
+                StyleApplication::new(installed_button_sheet())
                     .with("appearance", appearance_key)
                     .with("size", size.get().key().to_string())
-                    .with("shape", shape.get().key().to_string());
-                let layer_key = format!(
-                    "layout_{}_{}_{}",
-                    row_layout as u8, block as u8, disabled as u8
-                );
-                style.with_computed(layer_key, move || {
-                    let mut rules = StyleRules::default();
-                    // Center the content on BOTH axes. Web centers the button
-                    // label "for free" via the box's `text-align: center` + inline
-                    // flow; native flex needs it explicit or the label lands at
-                    // the box's top-left (the macOS "not centered" bug). Applies to
-                    // the plain single-label case AND the icon row — without
-                    // `justify_content` even icon buttons were only vertically
-                    // centered, left-packed horizontally.
-                    rules.align_items = Some(runtime_core::AlignItems::Center);
-                    rules.justify_content = Some(runtime_core::JustifyContent::Center);
-                    if row_layout {
-                        rules.flex_direction = Some(FlexDirection::Row);
-                        rules.gap = Some(Tokenized::token("spacing-xs", Length::Px(6.0)));
-                    }
-                    if block {
-                        rules.width = Some(Tokenized::Literal(Length::Percent(100.0)));
-                        rules.align_self = Some(AlignSelf::Stretch);
-                    } else {
-                        rules.align_self = Some(AlignSelf::Center);
-                    }
-                    if disabled {
-                        // Deterministic dim so a disabled button reads as off on
-                        // every backend.
-                        rules.opacity = Some(Tokenized::Literal(0.45));
-                    }
-                    rules
-                })
+                    .with("shape", shape.get().key().to_string())
+                    .with("layout", if row_layout { "row" } else { "column" }.to_string())
+                    .with("block", if block { "on" } else { "off" }.to_string())
+                    .with("dimmed", if disabled { "on" } else { "off" }.to_string())
             }
         }
     };
@@ -335,21 +291,38 @@ pub fn Button(props: &ButtonProps) -> Element {
             let inert = disabled || loading;
 
             let style_closure = make_style(row_layout, block, disabled);
-            // Snapshot the resolved container style for this build. The label +
-            // icons carry the fg on their OWN nodes (native doesn't inherit
-            // text/icon color), and the label additionally carries the box's
-            // typography (weight/size/align/…) for the same reason (see
-            // `label_typography_style`).
-            let resolved_container = resolve_style(&style_closure());
-            let fg = resolved_container.color.clone();
-            // Static snapshot of the label typography for the non-reactive path.
-            let label_typo = label_typography_style(&resolved_container);
+            // Snapshot the resolved container foreground for this build. The
+            // icons + spinner carry the fg on their OWN nodes because native
+            // doesn't inherit text/icon color. When the container application
+            // ATTACHES PREMINTED (a `--premint`/`--premint-only` web build,
+            // no runtime override), skip the read-back: the fill's `color` is
+            // in the box's build-time CSS, so the web icon/spinner inherit it
+            // as `currentColor` — which also tracks `:hover`, something the
+            // snapshot never did — and under `--premint-only` a resolve here
+            // is the panic the stripped rule closure names. Native builds
+            // never premint, so they keep the resolved read.
+            let fg = {
+                let container_app = style_closure();
+                if container_app.attaches_preminted() {
+                    None
+                } else {
+                    resolve_style(&container_app).color.clone()
+                }
+            };
             // Re-resolves the container's foreground from the live tone/variant.
             // Used by the reactive icon `.color`/label-style closures so the
             // tint tracks the container in place when a style axis is live.
+            // Same premint gate, per evaluation.
             let resolve_fg = {
                 let style_closure = style_closure.clone();
-                move || resolve_style(&style_closure()).color.clone()
+                move || {
+                    let app = style_closure();
+                    if app.attaches_preminted() {
+                        None
+                    } else {
+                        resolve_style(&app).color.clone()
+                    }
+                }
             };
 
             // Icon-slot override: a `color` in `icon_style` wins over the theme
@@ -416,38 +389,33 @@ pub fn Button(props: &ButtonProps) -> Element {
             } else if has_lead {
                 children.push(icon_node(&leading_icon));
             }
-            // A label override applies on top of the theme fg (its `color`, if
-            // set, wins). When present it forces the styled path even if there's
-            // no theme fg to stamp.
-            let _ = label_ovr.is_some();
+            // The label applies the SAME appearance/size keys as the box, on
+            // the installed LABEL sheet (color + typography as enumerated
+            // arms — no per-instance snapshot, no color override, so it
+            // premints). A `label_style` slot override still layers on top
+            // and takes the live engine, as every runtime override does.
+            let label_app = {
+                let tone = tone.clone();
+                let variant = variant.clone();
+                let size = size.clone();
+                move || {
+                    StyleApplication::new(installed_button_label_sheet())
+                        .with(
+                            "appearance",
+                            format!("{}_{}", tone.get().key(), variant.get().key()),
+                        )
+                        .with("size", size.get().key().to_string())
+                }
+            };
             let label_node = if style_is_reactive {
-                // Live tone/variant/size: re-resolve the container INSIDE the
-                // style closure so the label's color (tone/variant) AND its
-                // typography (the `size` axis drives font_size) both track the
-                // box in place. Then layer the (static) label override on top.
-                let style_closure = style_closure.clone();
                 let label_ovr = label_ovr.clone();
+                let label_app = label_app.clone();
                 text(label.clone())
-                    .with_style(move || {
-                        let resolved = resolve_style(&style_closure());
-                        let mut app = StyleApplication::new(label_typography_style(&resolved));
-                        if let Some(c) = resolved.color.clone() {
-                            app = app.override_color(c);
-                        }
-                        apply_override(app, &label_ovr)
-                    })
+                    .with_style(move || apply_override(label_app(), &label_ovr))
                     .into_element()
             } else {
-                // Static: stamp the snapshot typography (weight/size/align/…),
-                // then the resolved fg color (if any), then the label override.
-                // Every label carries typography now — a transparent variant
-                // (Ghost, no fg) still needs the bold, centered text.
-                let mut app = StyleApplication::new(label_typo.clone());
-                if let Some(c) = fg.clone() {
-                    app = app.override_color(c);
-                }
                 text(label.clone())
-                    .with_style(apply_override(app, &label_ovr))
+                    .with_style(apply_override(label_app(), &label_ovr))
                     .into_element()
             };
             children.push(label_node);
@@ -574,9 +542,31 @@ fn finalize_switch(switch_el: Element, _props: &ButtonProps) -> Element {
 
 #[cfg(test)]
 mod tests {
+
+    /// The LABEL sheet must premint for every (appearance, size) the box
+    /// itself premints — it replaces the per-instance typography snapshot
+    /// + color override, which forced every Button label onto the live
+    /// engine under `--premint`.
+    #[test]
+    fn regression_button_label_sheet_premints() {
+        use idea_theme::extensible::installed_button_label_sheet;
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let app = StyleApplication::new(installed_button_label_sheet())
+                .with("appearance", "primary_filled".to_string())
+                .with("size", "lg".to_string());
+            assert!(
+                app.preminted_class_list().is_some(),
+                "button label sheet must premint (was snapshot + color override)"
+            );
+        });
+    }
+
     use super::*;
+    use crate::test_support::{classify, P, TStyle};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, FillRule, StyleSource};
+    use runtime_core::{resolve_style, FillRule};
 
     fn theme() {
         install_idea_theme(light_theme());
@@ -592,11 +582,11 @@ mod tests {
     /// Resolves the `color` on a Text node's OWN style. Returns `None`
     /// when the node carries no style (the buggy state — color relied on
     /// container inheritance) or its style sets no color.
-    fn text_node_color(el: &Element) -> Option<Color> {
-        match el {
-            Element::Text { style, .. } => {
-                let app = match style.as_ref()? {
-                    StyleSource::Static(a) => a.clone(),
+    fn text_node_color(el: Element) -> Option<Color> {
+        match classify(el) {
+            P::Text { style, .. } => {
+                let app = match style? {
+                    TStyle::App(a) => a,
                     _ => panic!("button label uses a static style"),
                 };
                 resolve_style(&app).color.clone().map(|c| c.resolve())
@@ -614,22 +604,23 @@ mod tests {
     // color is the intent-primary-solid-text white.
     #[test]
     fn regression_filled_button_label_carries_intent_text_color() {
-        theme();
-        let props = ButtonProps {
-            label: Reactive::Static("Save".into()),
-            tone: Reactive::Static(ToneRef::default()), // Primary
-            variant: Reactive::Static(VariantRef::default()), // Filled
-            ..Default::default()
-        };
-        let (children, _) = pressable_parts(Button(&props));
-        let label = &children[0];
-        let color = text_node_color(label)
-            .expect("filled button label must carry its own color, not inherit from the pressable");
-        assert_eq!(
-            color.0.to_ascii_lowercase(),
-            "#ffffff",
-            "filled-Primary label is the intent-primary-solid-text white"
-        );
+        with_test_world(|| {
+            theme();
+            let props = ButtonProps {
+                label: Reactive::Static("Save".into()),
+                tone: Reactive::Static(ToneRef::default()), // Primary
+                variant: Reactive::Static(VariantRef::default()), // Filled
+                ..Default::default()
+            };
+            let (mut children, _) = pressable_parts(Button(&props));
+            let color = text_node_color(children.remove(0))
+                .expect("filled button label must carry its own color, not inherit from the pressable");
+            assert_eq!(
+                color.0.to_ascii_lowercase(),
+                "#ffffff",
+                "filled-Primary label is the intent-primary-solid-text white"
+            );
+    });
     }
 
     // macOS "not bold / not centered": the Button sheet sets font_weight/
@@ -642,46 +633,48 @@ mod tests {
     // OWN resolved typography AND the box's centering.
     #[test]
     fn regression_button_label_carries_weight_alignment_and_box_centers() {
-        theme();
-        let props = ButtonProps {
-            label: Reactive::Static("Create account".into()),
-            ..Default::default()
-        };
-        let (children, box_app) = pressable_parts(Button(&props));
-        let label_rules = match &children[0] {
-            Element::Text { style, .. } => match style.as_ref().expect("label carries a style") {
-                StyleSource::Static(a) => resolve_style(a),
-                _ => panic!("button label uses a static style"),
-            },
-            _ => panic!("expected a label text node at slot 0"),
-        };
-        assert_eq!(
-            label_rules.font_weight,
-            Some(runtime_core::FontWeight::SemiBold),
-            "label must carry the button's SemiBold weight on its own node (native doesn't inherit)"
-        );
-        assert_eq!(
-            label_rules.text_align,
-            Some(runtime_core::TextAlign::Center),
-            "label must carry the button's center text-align"
-        );
-        assert!(
-            label_rules.font_size.is_some(),
-            "label must carry the size axis's font_size, not fall back to the backend default"
-        );
-        // The box centers content on both axes so the label sits centered in the
-        // button, not packed at the top-left.
-        let box_rules = resolve_style(&box_app);
-        assert_eq!(
-            box_rules.align_items,
-            Some(runtime_core::AlignItems::Center),
-            "button box centers content on the cross axis"
-        );
-        assert_eq!(
-            box_rules.justify_content,
-            Some(runtime_core::JustifyContent::Center),
-            "button box centers content on the main axis"
-        );
+        with_test_world(|| {
+            theme();
+            let props = ButtonProps {
+                label: Reactive::Static("Create account".into()),
+                ..Default::default()
+            };
+            let (mut children, box_app) = pressable_parts(Button(&props));
+            let label_rules = match classify(children.remove(0)) {
+                P::Text { style, .. } => match style.expect("label carries a style") {
+                    TStyle::App(a) => resolve_style(&a),
+                    _ => panic!("button label uses a static style"),
+                },
+                _ => panic!("expected a label text node at slot 0"),
+            };
+            assert_eq!(
+                label_rules.font_weight,
+                Some(runtime_core::FontWeight::SemiBold),
+                "label must carry the button's SemiBold weight on its own node (native doesn't inherit)"
+            );
+            assert_eq!(
+                label_rules.text_align,
+                Some(runtime_core::TextAlign::Center),
+                "label must carry the button's center text-align"
+            );
+            assert!(
+                label_rules.font_size.is_some(),
+                "label must carry the size axis's font_size, not fall back to the backend default"
+            );
+            // The box centers content on both axes so the label sits centered in the
+            // button, not packed at the top-left.
+            let box_rules = resolve_style(&box_app);
+            assert_eq!(
+                box_rules.align_items,
+                Some(runtime_core::AlignItems::Center),
+                "button box centers content on the cross axis"
+            );
+            assert_eq!(
+                box_rules.justify_content,
+                Some(runtime_core::JustifyContent::Center),
+                "button box centers content on the main axis"
+            );
+    });
     }
 
     // Same root cause for the leading/trailing icons: native icons don't
@@ -690,38 +683,39 @@ mod tests {
     // a color override that resolves to the intent text white.
     #[test]
     fn regression_filled_button_icons_carry_intent_text_color() {
-        theme();
-        let props = ButtonProps {
-            label: Reactive::Static("Save".into()),
-            leading_icon: Reactive::Static(Some(PLUS)),
-            trailing_icon: Reactive::Static(Some(PLUS)),
-            ..Default::default()
-        };
-        let (children, _) = pressable_parts(Button(&props));
-        for (i, slot) in [0usize, 2].iter().zip(["leading", "trailing"]) {
-            match &children[*i] {
-                Element::Icon { color, .. } => {
-                    let c = color
-                        .as_ref()
-                        .unwrap_or_else(|| panic!("{slot} icon must carry an explicit color"));
-                    assert_eq!(
-                        c().0.to_ascii_lowercase(),
-                        "#ffffff",
-                        "{slot} icon tint is the intent text white"
-                    );
+        with_test_world(|| {
+            theme();
+            let props = ButtonProps {
+                label: Reactive::Static("Save".into()),
+                leading_icon: Reactive::Static(Some(PLUS)),
+                trailing_icon: Reactive::Static(Some(PLUS)),
+                ..Default::default()
+            };
+            let (children, _) = pressable_parts(Button(&props));
+            let kinds: Vec<P> = children.into_iter().map(classify).collect();
+            for (i, slot) in [0usize, 2].iter().zip(["leading", "trailing"]) {
+                match &kinds[*i] {
+                    P::Icon { color, .. } => {
+                        let c = color
+                            .as_ref()
+                            .unwrap_or_else(|| panic!("{slot} icon must carry an explicit color"));
+                        assert_eq!(
+                            c.0.to_ascii_lowercase(),
+                            "#ffffff",
+                            "{slot} icon tint is the intent text white"
+                        );
+                    }
+                    _ => panic!("expected an icon at slot {i}"),
                 }
-                _ => panic!("expected an icon at slot {i}"),
             }
-        }
+    });
     }
 
     fn pressable_parts(el: Element) -> (Vec<Element>, StyleApplication) {
-        match el {
-            Element::Pressable {
-                children, style, ..
-            } => {
+        match classify(el) {
+            P::Pressable { children, style, .. } => {
                 let app = match style.expect("Button always attaches a style") {
-                    StyleSource::Static(a) => a,
+                    TStyle::App(a) => a,
                     _ => panic!("Button uses a static style source"),
                 };
                 (children, app)
@@ -730,82 +724,153 @@ mod tests {
         }
     }
 
+    // THE `--premint-only` read-back (the stripped-closure panic in
+    // runtime-shared names this exact pattern): Button resolved the
+    // container's fill color in Rust to tint its leading icon and loading
+    // spinner. On a premint build the container attaches a preminted class
+    // whose CSS carries the fill's `color`, so the icon/spinner must ship
+    // with NO explicit color and inherit `currentColor` — stamping one
+    // requires the resolve-read that `--premint-only` panics on. On live/
+    // native builds the resolved snapshot must still be stamped, because
+    // native nodes don't inherit color.
+    #[test]
+    fn regression_premint_icon_and_spinner_tint_inherit_current_color() {
+        with_test_world(|| {
+            theme();
+            let icon_props = ButtonProps {
+                label: Reactive::Static("Save".into()),
+                leading_icon: Reactive::Static(Some(PLUS)),
+                ..Default::default()
+            };
+            let mut children = classify(Button(&icon_props)).children();
+            let icon_color = match classify(children.remove(0)) {
+                P::Icon { color, .. } => color,
+                _ => panic!("expected the leading icon at slot 0"),
+            };
+
+            let spinner_props = ButtonProps {
+                label: Reactive::Static("Save".into()),
+                loading: Reactive::Static(true),
+                ..Default::default()
+            };
+            let mut children = classify(Button(&spinner_props)).children();
+            let spinner_color = match classify(children.remove(0)) {
+                P::ActivityIndicator { color } => color,
+                _ => panic!("expected the loading spinner at slot 0"),
+            };
+
+            #[cfg(idealyst_premint)]
+            {
+                assert!(
+                    icon_color.is_none(),
+                    "premint build: the icon inherits the box class's color as \
+                     `currentColor`; a stamped color is the --premint-only panic"
+                );
+                assert!(
+                    spinner_color.is_none(),
+                    "premint build: the spinner inherits `currentColor` the same way"
+                );
+            }
+            #[cfg(not(idealyst_premint))]
+            {
+                assert_eq!(
+                    icon_color.map(|c| c.0.to_ascii_lowercase()),
+                    Some("#ffffff".into()),
+                    "live/native build: the icon carries the resolved primary-filled \
+                     foreground snapshot (native doesn't inherit)"
+                );
+                assert_eq!(
+                    spinner_color.map(|c| c.0.to_ascii_lowercase()),
+                    Some("#ffffff".into()),
+                    "live/native build: the spinner carries the same resolved foreground"
+                );
+            }
+        });
+    }
+
     // D3: the wrapper must pass leading/trailing icons through as icon
     // children (the primitive supported them; the wrapper dropped them).
     #[test]
     fn icons_become_children_around_the_label() {
-        theme();
-        let props = ButtonProps {
-            label: Reactive::Static("Save".into()),
-            leading_icon: Reactive::Static(Some(PLUS)),
-            trailing_icon: Reactive::Static(Some(PLUS)),
-            ..Default::default()
-        };
-        let (children, _) = pressable_parts(Button(&props));
-        // leading icon + label text + trailing icon = 3 children.
-        assert_eq!(children.len(), 3, "leading + label + trailing");
-        assert!(
-            matches!(children[0], Element::Icon { .. }),
-            "first child is the leading icon"
-        );
-        assert!(
-            matches!(children[2], Element::Icon { .. }),
-            "last child is the trailing icon"
-        );
+        with_test_world(|| {
+            theme();
+            let props = ButtonProps {
+                label: Reactive::Static("Save".into()),
+                leading_icon: Reactive::Static(Some(PLUS)),
+                trailing_icon: Reactive::Static(Some(PLUS)),
+                ..Default::default()
+            };
+            let (children, _) = pressable_parts(Button(&props));
+            // leading icon + label text + trailing icon = 3 children.
+            assert_eq!(children.len(), 3, "leading + label + trailing");
+            let kinds: Vec<P> = children.into_iter().map(classify).collect();
+            assert!(
+                matches!(kinds[0], P::Icon { .. }),
+                "first child is the leading icon"
+            );
+            assert!(
+                matches!(kinds[2], P::Icon { .. }),
+                "last child is the trailing icon"
+            );
 
-        // Without icons, the button is just the label — no stray slots.
-        let plain = ButtonProps {
-            label: Reactive::Static("Save".into()),
-            ..Default::default()
-        };
-        let (children, _) = pressable_parts(Button(&plain));
-        assert_eq!(children.len(), 1, "label only when no icons");
-        assert!(matches!(children[0], Element::Text { .. }));
+            // Without icons, the button is just the label — no stray slots.
+            let plain = ButtonProps {
+                label: Reactive::Static("Save".into()),
+                ..Default::default()
+            };
+            let (mut children, _) = pressable_parts(Button(&plain));
+            assert_eq!(children.len(), 1, "label only when no icons");
+            assert!(matches!(classify(children.remove(0)), P::Text { .. }));
+    });
     }
 
     // D3: a leading/trailing icon forces the centered-row layout (the
     // base sheet doesn't pin one) so the icon and label sit inline.
     #[test]
     fn icon_button_lays_out_as_centered_row() {
-        theme();
-        let props = ButtonProps {
-            leading_icon: Reactive::Static(Some(PLUS)),
-            ..Default::default()
-        };
-        let (_, app) = pressable_parts(Button(&props));
-        let rules = resolve_style(&app);
-        assert_eq!(
-            rules.flex_direction,
-            Some(FlexDirection::Row),
-            "icons must compose into a row"
-        );
-        assert!(rules.gap.is_some(), "row gap between icon and label");
+        with_test_world(|| {
+            theme();
+            let props = ButtonProps {
+                leading_icon: Reactive::Static(Some(PLUS)),
+                ..Default::default()
+            };
+            let (_, app) = pressable_parts(Button(&props));
+            let rules = resolve_style(&app);
+            assert_eq!(
+                rules.flex_direction,
+                Some(FlexDirection::Row),
+                "icons must compose into a row"
+            );
+            assert!(rules.gap.is_some(), "row gap between icon and label");
+    });
     }
 
     // D3: `block` stretches the button to its container's width.
     #[test]
     fn block_stretches_to_container_width() {
-        theme();
-        let props = ButtonProps {
-            block: Reactive::Static(true),
-            ..Default::default()
-        };
-        let (_, app) = pressable_parts(Button(&props));
-        let rules = resolve_style(&app);
-        assert_eq!(
-            rules.width,
-            Some(Tokenized::Literal(Length::Percent(100.0))),
-            "block button is full-width"
-        );
-        assert_eq!(rules.align_self, Some(AlignSelf::Stretch));
+        with_test_world(|| {
+            theme();
+            let props = ButtonProps {
+                block: Reactive::Static(true),
+                ..Default::default()
+            };
+            let (_, app) = pressable_parts(Button(&props));
+            let rules = resolve_style(&app);
+            assert_eq!(
+                rules.width,
+                Some(Tokenized::Literal(Length::Percent(100.0))),
+                "block button is full-width"
+            );
+            assert_eq!(rules.align_self, Some(AlignSelf::Stretch));
 
-        // Default (non-block) leaves width unset → hugs content.
-        let plain = ButtonProps::default();
-        let (_, app) = pressable_parts(Button(&plain));
-        assert!(
-            resolve_style(&app).width.is_none(),
-            "a non-block button doesn't pin a width"
-        );
+            // Default (non-block) leaves width unset → hugs content.
+            let plain = ButtonProps::default();
+            let (_, app) = pressable_parts(Button(&plain));
+            assert!(
+                resolve_style(&app).width.is_none(),
+                "a non-block button doesn't pin a width"
+            );
+    });
     }
 
     // Regression: a non-block button must HUG its content — `align_self:
@@ -816,66 +881,72 @@ mod tests {
     // `block` opts back into Stretch.
     #[test]
     fn regression_non_block_button_hugs_content_not_stretch() {
-        theme();
-        let (_, app) = pressable_parts(Button(&ButtonProps::default()));
-        assert_eq!(
-            resolve_style(&app).align_self,
-            Some(AlignSelf::Center),
-            "a non-block button sizes to content (centered, not stretched to the parent cross axis)"
-        );
+        with_test_world(|| {
+            theme();
+            let (_, app) = pressable_parts(Button(&ButtonProps::default()));
+            assert_eq!(
+                resolve_style(&app).align_self,
+                Some(AlignSelf::Center),
+                "a non-block button sizes to content (centered, not stretched to the parent cross axis)"
+            );
 
-        let block = ButtonProps {
-            block: Reactive::Static(true),
-            ..Default::default()
-        };
-        let (_, app) = pressable_parts(Button(&block));
-        assert_eq!(
-            resolve_style(&app).align_self,
-            Some(AlignSelf::Stretch),
-            "a block button stretches"
-        );
+            let block = ButtonProps {
+                block: Reactive::Static(true),
+                ..Default::default()
+            };
+            let (_, app) = pressable_parts(Button(&block));
+            assert_eq!(
+                resolve_style(&app).align_self,
+                Some(AlignSelf::Stretch),
+                "a block button stretches"
+            );
+    });
     }
 
     // `disabled` dims the surface with a deterministic opacity (not a
     // hover-state overlay) AND blocks the press.
     #[test]
     fn disabled_button_dims_and_blocks_press() {
-        theme();
-        let mk = || ButtonProps {
-            disabled: Reactive::Static(true),
-            ..Default::default()
-        };
-        let (_, app) = pressable_parts(Button(&mk()));
-        assert_eq!(
-            resolve_style(&app).opacity.as_ref().map(|t| t.resolve()),
-            Some(0.45),
-            "a disabled button is dimmed so it reads as off"
-        );
-        let d = pressable_disabled(Button(&mk())).expect("disabled blocks the press");
-        assert!(d(), "disabled reports the button inert");
+        with_test_world(|| {
+            theme();
+            let mk = || ButtonProps {
+                disabled: Reactive::Static(true),
+                ..Default::default()
+            };
+            let (_, app) = pressable_parts(Button(&mk()));
+            assert_eq!(
+                resolve_style(&app).opacity.as_ref().map(|t| t.resolve()),
+                Some(0.45),
+                "a disabled button is dimmed so it reads as off"
+            );
+            let d = pressable_disabled(Button(&mk())).expect("disabled blocks the press");
+            assert!(d, "disabled reports the button inert");
+    });
     }
 
     // `loading` puts a spinner in the leading slot and blocks the press,
     // without dimming the surface (it reads as busy, not off).
     #[test]
     fn loading_button_shows_spinner_and_blocks_press() {
-        theme();
-        let mk = || ButtonProps {
-            label: Reactive::Static("Saving".into()),
-            loading: Reactive::Static(true),
-            ..Default::default()
-        };
-        let (children, app) = pressable_parts(Button(&mk()));
-        assert!(
-            matches!(children[0], Element::ActivityIndicator { .. }),
-            "loading renders a spinner as the leading child"
-        );
-        assert!(
-            resolve_style(&app).opacity.as_ref().map(|t| t.resolve()) != Some(0.45),
-            "loading does not dim like disabled"
-        );
-        let d = pressable_disabled(Button(&mk())).expect("loading blocks the press");
-        assert!(d(), "loading reports the button inert");
+        with_test_world(|| {
+            theme();
+            let mk = || ButtonProps {
+                label: Reactive::Static("Saving".into()),
+                loading: Reactive::Static(true),
+                ..Default::default()
+            };
+            let (mut children, app) = pressable_parts(Button(&mk()));
+            assert!(
+                matches!(classify(children.remove(0)), P::ActivityIndicator { .. }),
+                "loading renders a spinner as the leading child"
+            );
+            assert!(
+                resolve_style(&app).opacity.as_ref().map(|t| t.resolve()) != Some(0.45),
+                "loading does not dim like disabled"
+            );
+            let d = pressable_disabled(Button(&mk())).expect("loading blocks the press");
+            assert!(d, "loading reports the button inert");
+    });
     }
 
     // The framework imposes NO cursor/selection default on the bare
@@ -887,19 +958,21 @@ mod tests {
     // touch backends no-op).
     #[test]
     fn button_opts_into_pointer_cursor_and_non_selectable_text() {
-        theme();
-        let (_, app) = pressable_parts(Button(&ButtonProps::default()));
-        let rules = resolve_style(&app);
-        assert_eq!(
-            rules.cursor,
-            Some(runtime_core::Cursor::Pointer),
-            "a button shows the pointer affordance"
-        );
-        assert_eq!(
-            rules.user_select,
-            Some(runtime_core::UserSelect::None),
-            "a button's label text can't be drag-selected"
-        );
+        with_test_world(|| {
+            theme();
+            let (_, app) = pressable_parts(Button(&ButtonProps::default()));
+            let rules = resolve_style(&app);
+            assert_eq!(
+                rules.cursor,
+                Some(runtime_core::Cursor::Pointer),
+                "a button shows the pointer affordance"
+            );
+            assert_eq!(
+                rules.user_select,
+                Some(runtime_core::UserSelect::None),
+                "a button's label text can't be drag-selected"
+            );
+    });
     }
 
     // Hover + press feedback: the installed Button sheet carries
@@ -911,35 +984,38 @@ mod tests {
     // NOT a state overlay here.
     #[test]
     fn button_has_hover_and_pressed_opacity_overlays() {
-        theme();
-        let sheet = installed_button_sheet();
+        with_test_world(|| {
+            theme();
+            let sheet = installed_button_sheet();
 
-        let base = resolve_style(&StyleApplication::new(sheet.clone()));
-        assert_eq!(
-            base.opacity.as_ref().map(|t| t.resolve()),
-            Some(1.0),
-            "resting button is fully opaque so the hover/press dim has a value to animate back to"
-        );
+            let base = resolve_style(&StyleApplication::new(sheet.clone()));
+            assert_eq!(
+                base.opacity.as_ref().map(|t| t.resolve()),
+                Some(1.0),
+                "resting button is fully opaque so the hover/press dim has a value to animate back to"
+            );
 
-        let hovered =
-            resolve_style(&StyleApplication::new(sheet.clone()).with("__state_hovered", "on"));
-        assert_eq!(
-            hovered.opacity.as_ref().map(|t| t.resolve()),
-            Some(0.92),
-            "hover dims the button"
-        );
+            let hovered =
+                resolve_style(&StyleApplication::new(sheet.clone()).with("__state_hovered", "on"));
+            assert_eq!(
+                hovered.opacity.as_ref().map(|t| t.resolve()),
+                Some(0.92),
+                "hover dims the button"
+            );
 
-        let pressed = resolve_style(&StyleApplication::new(sheet).with("__state_pressed", "on"));
-        assert_eq!(
-            pressed.opacity.as_ref().map(|t| t.resolve()),
-            Some(0.85),
-            "press dims the button further"
-        );
+            let pressed = resolve_style(&StyleApplication::new(sheet).with("__state_pressed", "on"));
+            assert_eq!(
+                pressed.opacity.as_ref().map(|t| t.resolve()),
+                Some(0.85),
+                "press dims the button further"
+            );
+    });
     }
 
-    fn pressable_disabled(el: Element) -> Option<Box<dyn Fn() -> bool>> {
-        match el {
-            Element::Pressable { disabled, .. } => disabled,
+    /// The pressable's evaluated `disabled` state.
+    fn pressable_disabled(el: Element) -> Option<bool> {
+        match classify(el) {
+            P::Pressable { disabled, .. } => disabled,
             _ => panic!("Button renders a Pressable"),
         }
     }
@@ -957,84 +1033,92 @@ mod tests {
     // a white/neutral button" case the CSS cascade can't do on native.
     #[test]
     fn label_style_overrides_label_color() {
-        theme();
-        let props = ButtonProps {
-            label: Reactive::Static("Get started".into()),
-            label_style: Some(color_sheet("#0b6b3a")),
-            ..Default::default()
-        };
-        let (children, _) = pressable_parts(Button(&props));
-        let color = text_node_color(&children[0]).expect("label carries its own color");
-        assert_eq!(
-            color.0.to_ascii_lowercase(),
-            "#0b6b3a",
-            "label_style color overrides the theme foreground on the label node",
-        );
+        with_test_world(|| {
+            theme();
+            let props = ButtonProps {
+                label: Reactive::Static("Get started".into()),
+                label_style: Some(color_sheet("#0b6b3a")),
+                ..Default::default()
+            };
+            let (mut children, _) = pressable_parts(Button(&props));
+            let color = text_node_color(children.remove(0)).expect("label carries its own color");
+            assert_eq!(
+                color.0.to_ascii_lowercase(),
+                "#0b6b3a",
+                "label_style color overrides the theme foreground on the label node",
+            );
+    });
     }
 
     // Slot override: the root `style` layers onto the pressable box on top of
     // the theme style (background here) without disturbing untouched fields.
     #[test]
     fn style_overrides_container_box() {
-        theme();
-        let ovr = Rc::new(StyleSheet::r#static(StyleRules {
-            background: Some(Tokenized::Literal(Color("#ffffff".into()))),
-            ..Default::default()
-        }));
-        let props = ButtonProps {
-            label: Reactive::Static("Go".into()),
-            style: Some(ovr),
-            ..Default::default()
-        };
-        let (_, app) = pressable_parts(Button(&props));
-        assert_eq!(
-            resolve_style(&app).background.as_ref().map(|c| c.resolve().0.to_ascii_lowercase()),
-            Some("#ffffff".to_string()),
-            "root style override wins for the container background",
-        );
+        with_test_world(|| {
+            theme();
+            let ovr = Rc::new(StyleSheet::r#static(StyleRules {
+                background: Some(Tokenized::Literal(Color("#ffffff".into()))),
+                ..Default::default()
+            }));
+            let props = ButtonProps {
+                label: Reactive::Static("Go".into()),
+                style: Some(ovr),
+                ..Default::default()
+            };
+            let (_, app) = pressable_parts(Button(&props));
+            assert_eq!(
+                resolve_style(&app).background.as_ref().map(|c| c.resolve().0.to_ascii_lowercase()),
+                Some("#ffffff".to_string()),
+                "root style override wins for the container background",
+            );
+    });
     }
 
     // Slot override: `icon_style` colour wins for the icon tint.
     #[test]
     fn icon_style_overrides_icon_tint() {
-        theme();
-        let props = ButtonProps {
-            label: Reactive::Static("Go".into()),
-            leading_icon: Reactive::Static(Some(PLUS)),
-            icon_style: Some(color_sheet("#0b6b3a")),
-            ..Default::default()
-        };
-        let (children, _) = pressable_parts(Button(&props));
-        match &children[0] {
-            Element::Icon { color, .. } => {
-                let c = color.as_ref().expect("icon carries an explicit color");
-                assert_eq!(
-                    c().0.to_ascii_lowercase(),
-                    "#0b6b3a",
-                    "icon_style color overrides the theme foreground for the icon tint",
-                );
+        with_test_world(|| {
+            theme();
+            let props = ButtonProps {
+                label: Reactive::Static("Go".into()),
+                leading_icon: Reactive::Static(Some(PLUS)),
+                icon_style: Some(color_sheet("#0b6b3a")),
+                ..Default::default()
+            };
+            let (mut children, _) = pressable_parts(Button(&props));
+            match classify(children.remove(0)) {
+                P::Icon { color, .. } => {
+                    let c = color.expect("icon carries an explicit color");
+                    assert_eq!(
+                        c.0.to_ascii_lowercase(),
+                        "#0b6b3a",
+                        "icon_style color overrides the theme foreground for the icon tint",
+                    );
+                }
+                _ => panic!("expected the leading icon"),
             }
-            _ => panic!("expected the leading icon"),
-        }
+    });
     }
 
     // D4: `disabled` is a plain `bool` — `disabled = true` (not
     // `Some(Rc::new(|| true))`) compiles and marks the button inert.
     #[test]
     fn disabled_bool_marks_the_button_inert() {
-        theme();
-        let on = ButtonProps {
-            disabled: Reactive::Static(true),
-            ..Default::default()
-        };
-        let d = pressable_disabled(Button(&on)).expect("disabled=true sets a disabled source");
-        assert!(d(), "the source reports the button as disabled");
+        with_test_world(|| {
+            theme();
+            let on = ButtonProps {
+                disabled: Reactive::Static(true),
+                ..Default::default()
+            };
+            let d = pressable_disabled(Button(&on)).expect("disabled=true sets a disabled source");
+            assert!(d, "the source reports the button as disabled");
 
-        // Default leaves the press path live (no disabled source attached).
-        let off = ButtonProps::default();
-        assert!(
-            pressable_disabled(Button(&off)).is_none(),
-            "a non-disabled button attaches no disabled source"
-        );
+            // Default leaves the press path live (no disabled source attached).
+            let off = ButtonProps::default();
+            assert!(
+                pressable_disabled(Button(&off)).is_none(),
+                "a non-disabled button attaches no disabled source"
+            );
+    });
     }
 }

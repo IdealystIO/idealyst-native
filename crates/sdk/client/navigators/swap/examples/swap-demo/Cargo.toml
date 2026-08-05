@@ -9,30 +9,31 @@ description = "Minimal swap-navigator demo — three co-equal tab screens switch
 crate-type = ["rlib"]
 
 [features]
-# `sidecar`: CLI-generated native sidecar wrapper only (recorder backend).
-sidecar = ["dep:dev-server", "swap-navigator/runtime-server"]
+# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
+# (build-runtime-server), which calls `register_scene_extensions_recorder`.
+# The swap navigator's runtime is a vocabulary BUILT-IN — `register_builtins`
+# installs it on every host including the wire recorder — so the seam has
+# nothing to register and no SDK feature to forward.
+sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The author-surface root: `extern crate runtime_core as runtime_core;`
+# in src/lib.rs maps every `runtime_core::…` path here.
+# `runtime-vocabulary` because the `ui!` emission spells absolute
+# `::runtime_vocabulary::glue::…` paths; `runtime-scene` because
+# `register_scene_extensions` is generic over the registry host.
 runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 swap-navigator = { workspace = true }
 idea-ui = { workspace = true }
 idea-ui-nav = { workspace = true }
 dev-server = { workspace = true, optional = true }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { workspace = true }
-
-[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
-backend-ios-mobile = { workspace = true }
-
-[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
-backend-android-mobile = { workspace = true }
-
-[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
-backend-macos = { workspace = true }
-
-[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))'.dependencies]
-backend-terminal = { workspace = true }
+# No backend deps: `register_scene_extensions` is registry-generic (this
+# demo registers no third-party scene handlers), so the crate stays fully
+# platform-agnostic and the CLI-generated wrappers bring their own
+# concrete backend.
 
 [package.metadata.idealyst.app]
 name      = "Swap Demo"

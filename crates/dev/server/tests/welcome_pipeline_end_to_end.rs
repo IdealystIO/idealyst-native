@@ -4,10 +4,10 @@
 //! backend instead of a real client:
 //!
 //! 1. Install the sidecar scheduler.
-//! 2. `mount(recorder, app_fn)` — the closure runs *inside* the root
-//!    reactive scope so `after_ms_scoped` / `raf_loop_scoped` survive.
-//!    (This is the [`sidecar_mount_regression`] fix.)
-//! 3. The app builds a `Element::View` with a `Ref<ViewHandle>`, an
+//! 2. `SceneSession::mount(&recorder, register, app_fn)` — the closure
+//!    runs *inside* the session world, so `after_ms_scoped` /
+//!    `raf_loop_scoped` adopt a live scope and survive.
+//! 3. The app builds a view with a `Ref<ViewHandle>`, an
 //!    `AnimatedValue<f32>` bound to its opacity, and an
 //!    `after_ms_scoped(0, || raf_loop_scoped(|| av.set(...)))` chain
 //!    that drives the animation.
@@ -19,7 +19,7 @@
 //!    across the ticks — i.e. animation deltas are flowing end-to-end.
 //!
 //! What this covers that the unit tests don't:
-//! - `mount` / `render` boundary works WITH the scheduler installed
+//! - the session mount boundary works WITH the scheduler installed
 //! - `after_ms_scoped` chained into `raf_loop_scoped` survives its
 //!   scope long enough to fire repeatedly
 //! - `AnimatedValue::bind` correctly routes per-tick writes through
@@ -37,12 +37,19 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use dev_server::newcore::SceneSession;
 use dev_server::{scheduler, WireRecordingBackend};
-use runtime_core::animation::{AnimProp, AnimatedValue};
-use runtime_core::{
-    after_ms_scoped, mount, node_ref, raf_loop_scoped, Element, Ref,
-    RefFill, SafeAreaSides, ViewHandle,
-};
+use runtime_scene::Element;
+use runtime_shared::{node_ref, Ref, ViewHandle};
+// The BINDING half must come from the vocabulary, not from
+// `runtime_shared::animation::AnimatedValue`: the shared type's inherent
+// `bind*` anchors its subscription + deferred re-apply to the LEGACY
+// reactive arena, which nothing drives here, so it is inert. The
+// vocabulary wrapper re-anchors both onto the world kernel — that is
+// what `animated!` expands to, and what author code gets.
+use runtime_vocabulary::glue::animation::{AnimProp, AnimatedValue};
+use runtime_vocabulary::builders::view;
+use runtime_vocabulary::scoped_scheduling::{after_ms_scoped, raf_loop_scoped};
 use wire::Command;
 
 /// Build a view + bind an opacity AV + schedule a raf-driven write
@@ -53,9 +60,9 @@ use wire::Command;
 fn make_app() -> impl FnOnce() -> Element + 'static {
     move || {
         let opacity = AnimatedValue::new(0.0_f32);
-        let view: Ref<ViewHandle> = node_ref!(ViewHandle);
-        opacity.bind(view.clone(), AnimProp::Opacity);
-        let view_for_fill = view.clone();
+        let view_ref: Ref<ViewHandle> = node_ref!(ViewHandle);
+        opacity.bind(view_ref.clone(), AnimProp::Opacity);
+        let view_for_fill = view_ref.clone();
 
         // Wait one event-loop tick (the sidecar scheduler treats
         // 0ms as "deadline = now"), then start a raf loop that
@@ -72,19 +79,7 @@ fn make_app() -> impl FnOnce() -> Element + 'static {
             });
         });
 
-        Element::View {
-            children: vec![],
-            style: None,
-            ref_fill: Some(RefFill::View(Box::new(move |h| view_for_fill.fill(h)))),
-            safe_area_sides: SafeAreaSides::NONE,
-            on_touch: None,
-            on_wheel: None,
-            on_file_drop: None,
-            on_hover: None,
-            is_container: false,
-            accessibility: Default::default(),
-            test_id: None,
-        }
+        view().on_handle(move |h| view_for_fill.fill(h)).build()
     }
 }
 
@@ -102,8 +97,7 @@ fn end_to_end_welcome_shape_emits_animation_deltas_across_ticks() {
     scheduler::install();
 
     let recorder = WireRecordingBackend::new();
-    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-    let _owner = mount(backend_rc, make_app());
+    let _session = SceneSession::mount(&recorder, |_r| {}, make_app());
 
     // Before any tick: the initial render fired (creating the View
     // + Insert + Finish), but the after_ms_scoped(0) hasn't been
@@ -158,18 +152,17 @@ fn end_to_end_raf_dropping_own_handle_inside_mount_does_not_panic() {
     scheduler::install();
 
     let recorder = WireRecordingBackend::new();
-    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
 
     let fired = Rc::new(Cell::new(0u32));
     let fired_for_app = fired.clone();
     let app = move || {
         let fired_inner = fired_for_app.clone();
-        let handle_slot: Rc<RefCell<Option<runtime_core::scheduling::RafLoop>>> =
+        let handle_slot: Rc<RefCell<Option<runtime_shared::scheduling::RafLoop>>> =
             Rc::new(RefCell::new(None));
         let handle_slot_for_raf = handle_slot.clone();
         // `raf_loop` (not _scoped) — we want a handle to drop
         // explicitly rather than rely on scope cleanup.
-        let raf = runtime_core::raf_loop(move || {
+        let raf = runtime_shared::raf_loop(move || {
             fired_inner.set(fired_inner.get() + 1);
             // Drop this raf's own handle mid-tick. The old scheduler
             // panicked here; the new one cleanly cancels.
@@ -179,22 +172,10 @@ fn end_to_end_raf_dropping_own_handle_inside_mount_does_not_panic() {
         });
         *handle_slot.borrow_mut() = Some(raf);
 
-        Element::View {
-            children: vec![],
-            style: None,
-            ref_fill: None,
-            safe_area_sides: SafeAreaSides::NONE,
-            on_touch: None,
-            on_wheel: None,
-            on_file_drop: None,
-            on_hover: None,
-            is_container: false,
-            accessibility: Default::default(),
-            test_id: None,
-        }
+        view().build()
     };
 
-    let _owner = mount(backend_rc, app);
+    let _session = SceneSession::mount(&recorder, |_r| {}, app);
 
     // Drive a tick — must not panic.
     recorder.tick_animations(std::time::Duration::from_millis(16));

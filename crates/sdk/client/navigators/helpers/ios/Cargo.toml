@@ -5,7 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-runtime-core = { workspace = true }
+# Substrate only: the navigator DATA model (`NavigatorControl` / `NavState` /
+# `MountResult` / `NavigatorOps`) plus the style + color vocabulary. Nothing
+# here touches the author surface (no `ui!`, no `Element`), and `NavState`'s
+# signals are the substrate's own arena handles, so this depends on
+# `runtime-shared` directly rather than through the `runtime_core` facade.
+runtime-shared = { workspace = true }
 
 # All UIKit machinery is iOS-only; on non-iOS hosts the crate compiles
 # to an empty rlib so the workspace still cross-compiles. SDK iOS

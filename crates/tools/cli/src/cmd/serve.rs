@@ -28,6 +28,17 @@ pub struct Args {
     /// bundle on a phone over Wi-Fi).
     #[arg(long, default_value = "0.0.0.0")]
     pub host: String,
+
+    /// Serve the precompressed `.br` sidecars a release `idealyst
+    /// build --web` stages next to every compressible file (a `.gz`
+    /// sidecar works too, if present): when the browser's
+    /// `Accept-Encoding` allows it, the sidecar streams with
+    /// `Content-Encoding` set, exactly like a production host with
+    /// nginx `brotli_static` / Caddy `precompressed`. Use this to
+    /// measure real release transfer sizes and load times in a local
+    /// browser. Files without a sidecar serve uncompressed as usual.
+    #[arg(long)]
+    pub precompressed: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -39,7 +50,18 @@ pub fn run(args: Args) -> Result<()> {
         ))
         .context("serve");
     }
-    serve_static(&args.host, args.port, &args.dir, None, None, None, None, None, None)
+    serve_static(
+        &args.host,
+        args.port,
+        &args.dir,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        args.precompressed,
+    )
 }
 
 #[cfg(test)]
@@ -79,6 +101,7 @@ mod tests {
             // returns before any bind — so this never opens a socket.
             port: 0,
             host: "127.0.0.1".to_string(),
+            precompressed: false,
         })
         .unwrap_err();
         let msg = format!("{err:#}");

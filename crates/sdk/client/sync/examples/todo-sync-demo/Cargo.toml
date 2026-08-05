@@ -27,7 +27,14 @@ sidecar = ["dep:dev-server"]
 server = { workspace = true }
 sync = { workspace = true }
 storage = { workspace = true }
+# `runtime-core` is aliased to `runtime_core` at the crate root (see
+# src/lib.rs), so the app's `runtime_core::…` paths resolve against
+# `runtime_vocabulary::glue`. `runtime-vocabulary` must be a NAMED dep
+# because `ui!`/`#[component]` emit absolute `::runtime_vocabulary::glue::…`
+# paths.
 runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 serde = { workspace = true }
 dev-server = { workspace = true, optional = true }

@@ -16,7 +16,11 @@ email = { workspace = true }
 # connection profiles. `email` feature wires the email SDK from the file.
 idealyst-config = { workspace = true, features = ["email"] }
 idea-ui-mail = { workspace = true }
+# `runtime-core` is aliased to `runtime_core` at the crate root (see
+# src/main.rs); `runtime-vocabulary` because the `ui!` emission in
+# `template.rs` spells absolute `::runtime_vocabulary::glue::…` paths.
 runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [[bin]]

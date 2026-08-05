@@ -1,6 +1,6 @@
 //! Wheel / magnify delivery for the web backend.
 //!
-//! Implements [`runtime_core::Backend::install_wheel_handler`] using the DOM
+//! Implements [`runtime_shared::Backend::install_wheel_handler`] using the DOM
 //! `wheel` event. One listener on the subscribed element translates each
 //! event into a [`WheelEvent`] for the framework's handler.
 //!
@@ -18,7 +18,7 @@
 //! doesn't also scroll or trigger the browser's own pinch-zoom.
 
 use crate::WebBackend;
-use runtime_core::{TouchPoint, WheelEvent as FwWheelEvent, WheelHandler, WheelKind};
+use runtime_shared::{TouchPoint, WheelEvent as FwWheelEvent, WheelHandler, WheelKind};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{Element, Node, WheelEvent};
@@ -59,7 +59,7 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: WheelHandler) {
             // not meaningful for zoom. Clamp the per-event magnitude so a large
             // mouse-wheel notch (vs. a fine trackpad pinch) steps smoothly
             // instead of jumping several multiples per notch.
-            let dy = runtime_core::num::clamp_f32(
+            let dy = runtime_shared::num::clamp_f32(
                 ev.delta_y() as f32,
                 -MAX_ZOOM_WHEEL_DELTA,
                 MAX_ZOOM_WHEEL_DELTA,
@@ -87,7 +87,7 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: WheelHandler) {
             timestamp_ns: (ev.time_stamp() * 1_000_000.0) as u64,
         };
         // Batching is automatic via the core `on_wheel` cycle wrapper (see
-        // `runtime_core::cycle`): a wheel pan/zoom writes pan_x, pan_y, zoom, + a
+        // `runtime_shared::cycle`): a wheel pan/zoom writes pan_x, pan_y, zoom, + a
         // repaint tick, all coalesced into one reactive flush so web's rAF renders
         // one consistent frame, not the last stray write.
         let response = (handler)(&we);

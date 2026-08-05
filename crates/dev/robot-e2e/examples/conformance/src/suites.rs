@@ -7,10 +7,12 @@
 //! mounts on `set_toggle` is visible to the assertion on the next line), so
 //! no explicit waits are needed.
 
-use robot_e2e::{expect, flow, run_suites, suite, test, Page};
-use runtime_core::robot::ElementKind;
+use robot_e2e::{expect, flow, run_suites, suite, test, ElementKind, Page};
 
 /// Entry point scheduled from `app()` ~1s after mount.
+///
+/// All five suites run on every backend: primitives, modal, stack
+/// navigation, idea-ui components, and `#[method]` invocation.
 pub(crate) fn run_all() {
     run_suites(vec![
         primitives_suite(),
@@ -163,17 +165,19 @@ fn navigation_suite() -> robot_e2e::Suite {
 
 /// `#[method]` invocation over the robot surface — the same
 /// `list_components` → `invoke_method` path the MCP server and the Inspector
-/// use. Also asserts the element↔component link the macro/walker establish
-/// (so the Inspector can resolve a selected element to its methods).
+/// use. Also asserts the element↔component link the macro establishes
+/// (the realize-time `__component_root` arm — so the Inspector can
+/// resolve a selected element to its
+/// methods).
 fn component_methods_suite() -> robot_e2e::Suite {
-    use runtime_core::robot::{invoke_method, list_components};
+    use runtime_vocabulary::robot::{invoke_method, list_components};
 
     suite(
         "component methods",
         vec![test(
             "list_components + invoke_method drive a #[method] component; element link resolves",
             |page: &Page| {
-                // Locate the live instance and confirm the walker linked it to
+                // Locate the live instance and confirm the macro linked it to
                 // its root element id (what the Inspector resolves a selection
                 // against).
                 let comps = list_components();
@@ -183,14 +187,14 @@ fn component_methods_suite() -> robot_e2e::Suite {
                     .expect("MethodCounter registered its methods");
                 assert!(
                     counter.element_id.is_some(),
-                    "walker linked the component to its root element",
+                    "the component is linked to its root element",
                 );
 
                 // Starts at the mounted `initial = 10`.
                 expect(&page.get_by_test_id("method-counter-val")).to_have_text("methods: 10")?;
 
                 // increment() — no args (the inspector's easy manual case).
-                invoke_method(counter.id, "increment", &runtime_core::__serde_json::json!({}))
+                invoke_method(counter.id, "increment", &runtime_vocabulary::glue::__serde_json::json!({}))
                     .expect("increment()");
                 expect(&page.get_by_test_id("method-counter-val")).to_have_text("methods: 11")?;
 
@@ -198,13 +202,13 @@ fn component_methods_suite() -> robot_e2e::Suite {
                 invoke_method(
                     counter.id,
                     "bump_by",
-                    &runtime_core::__serde_json::json!({ "n": 5 }),
+                    &runtime_vocabulary::glue::__serde_json::json!({ "n": 5 }),
                 )
                 .expect("bump_by(5)");
                 expect(&page.get_by_test_id("method-counter-val")).to_have_text("methods: 16")?;
 
                 // reset() — no args; visible because we started non-zero.
-                invoke_method(counter.id, "reset", &runtime_core::__serde_json::json!({}))
+                invoke_method(counter.id, "reset", &runtime_vocabulary::glue::__serde_json::json!({}))
                     .expect("reset()");
                 expect(&page.get_by_test_id("method-counter-val")).to_have_text("methods: 0")?;
 

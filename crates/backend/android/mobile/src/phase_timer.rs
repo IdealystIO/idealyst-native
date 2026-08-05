@@ -10,7 +10,7 @@
 //!
 //! On-feature behavior: `start` snapshots `now_micros()` into the
 //! returned guard; `Drop` records `(phase, duration_us)` into
-//! `runtime_core::debug`'s thread-local aggregator. The drain helper
+//! `runtime_shared::debug`'s thread-local aggregator. The drain helper
 //! reads + clears that table and formats it for one log line. The
 //! framework already owns the aggregator (per-call count + total_us +
 //! max_us per phase name), so we just plug into it.
@@ -27,7 +27,7 @@ impl PhaseTimer {
     pub(crate) fn start(phase: &'static str) -> Self {
         Self {
             phase,
-            start_us: runtime_core::debug::now_micros(),
+            start_us: runtime_shared::debug::now_micros(),
         }
     }
 }
@@ -35,9 +35,9 @@ impl PhaseTimer {
 #[cfg(feature = "debug-stats")]
 impl Drop for PhaseTimer {
     fn drop(&mut self) {
-        let now = runtime_core::debug::now_micros();
+        let now = runtime_shared::debug::now_micros();
         let dur = now.saturating_sub(self.start_us);
-        runtime_core::debug::record_apply_phase(self.phase, dur);
+        runtime_shared::debug::record_apply_phase(self.phase, dur);
     }
 }
 
@@ -63,7 +63,7 @@ impl PhaseTimer {
 /// itself a no-op then, so a drain would always be empty).
 #[cfg(feature = "debug-stats")]
 pub(crate) fn drain_and_log_phase_counters() {
-    let counters = runtime_core::debug::take_phase_counters();
+    let counters = runtime_shared::debug::take_phase_counters();
     if !counters.is_empty() {
         // Sort by total_us descending — biggest contributors first.
         // `&'static str` is `Ord`, so name ties stay stable.
@@ -89,8 +89,8 @@ pub(crate) fn drain_and_log_phase_counters() {
 
     // Reactive profile: which signal caused a long render. Drained from the
     // same window as the phase counters above.
-    let events = runtime_core::debug::take_events();
-    let profile = runtime_core::debug::format_reactive_profile(&events, 15);
+    let events = runtime_shared::debug::take_events();
+    let profile = runtime_shared::debug::format_reactive_profile(&events, 15);
     if !profile.is_empty() {
         for line in profile.lines() {
             log::info!("[reactive] {line}");

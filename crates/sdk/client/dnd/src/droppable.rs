@@ -9,7 +9,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{on_cleanup, Bound, Element, Ref, Signal, ViewHandle};
+use runtime_core::{effect, signal, Element, GlueView, Ref, Signal, ViewHandle};
 
 use crate::context::{DragContext, DroppableEntry, DroppableId};
 
@@ -35,7 +35,7 @@ impl<T: Clone + 'static> Droppable<T> {
             ctx: ctx.clone(),
             id: DroppableId::next(),
             accepts: Rc::new(|_| true),
-            is_over: Signal::new(false),
+            is_over: signal(false),
             on_enter: None,
             on_leave: None,
             on_drop: None,
@@ -98,11 +98,19 @@ impl<T: Clone + 'static> Droppable<T> {
             on_drop: self.on_drop.clone(),
         });
 
-        // Deregister when the scope drops (component unmount / re-render),
-        // mirroring how `AnimatedValue::bind` anchors its subscription.
+        // Deregister when the surrounding scope drops (component unmount /
+        // re-render), mirroring how `AnimatedValue::bind` anchors its
+        // subscription. `on_cleanup` PANICS outside a running effect on the
+        // world kernel, and `bind` is called from a component body — so the
+        // cleanup is RETURNED from a dependency-free effect instead. The
+        // enclosing `component_scope` owns that effect, so the cleanup fires at
+        // exactly the unmount moment the old scope cleanup did.
         let ctx = self.ctx.clone();
         let id = self.id;
-        on_cleanup(move || ctx.deregister(id));
+        let _ = effect(move || {
+            let ctx = ctx.clone();
+            move || ctx.deregister(id)
+        });
     }
 
     /// Wire this drop target onto `view` and return the finished element — the
@@ -110,7 +118,7 @@ impl<T: Clone + 'static> Droppable<T> {
     /// [`Droppable::is_over`] before calling this to style `view` reactively.
     /// Use [`Droppable::bind`] directly when you need the ref yourself (e.g. to
     /// bind your own animated background to the node for the hover highlight).
-    pub fn attach(self, view: Bound<ViewHandle>) -> Element {
+    pub fn attach(self, view: GlueView) -> Element {
         let r: Ref<ViewHandle> = Ref::new();
         self.bind(r);
         view.bind(r).into()

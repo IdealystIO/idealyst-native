@@ -42,6 +42,11 @@ server = [
 server = { workspace = true }
 net = { workspace = true }
 runtime-core = { workspace = true, features = ["async-driver"] }
+# The `ui!`/`#[component]` expansions spell absolute
+# `::runtime_vocabulary::glue::…` paths, so this is a direct dep.
+runtime-vocabulary = { workspace = true }
+# The registration seam is generic over `runtime_scene::Registry<H>`.
+runtime-scene = { workspace = true }
 serde = { workspace = true }
 idea-ui = { workspace = true }
 

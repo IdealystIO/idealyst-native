@@ -17,8 +17,11 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use runtime_core::accessibility::AccessibilityTraits;
-use runtime_core::{render, Backend, Element, StyleRules, TextSource};
+use runtime_scene::Host;
+use runtime_shared::accessibility::AccessibilityTraits;
+use runtime_shared::StyleRules;
+use runtime_vocabulary::builders::{text, view};
+use runtime_vocabulary::caps;
 use runtime_server_shell_native::connect_and_run;
 use dev_client::WireBackend;
 use dev_server::{serve, WireRecordingBackend};
@@ -38,23 +41,44 @@ struct TraceBackend {
     trace: Vec<Trace>,
 }
 
-impl Backend for TraceBackend {
+impl Host for TraceBackend {
     type Node = u64;
 
-    fn create_view(
-        &mut self,
-        _a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> u64 {
+    fn insert(&mut self, parent: &mut u64, child: u64) {
+        self.trace.push(Trace::Insert(*parent, child));
+    }
+
+    fn insert_at(&mut self, parent: &mut u64, child: u64, _index: usize) {
+        self.trace.push(Trace::Insert(*parent, child));
+    }
+
+    fn remove_child(&mut self, _parent: &u64, _child: &u64) {}
+    fn clear_children(&mut self, _node: &u64) {}
+
+    fn create_anchor(&mut self) -> u64 {
+        self.next += 1;
+        self.next
+    }
+
+    fn supports_splice(&self) -> bool {
+        false
+    }
+}
+
+impl caps::ViewOps for TraceBackend {
+    fn create_view(&mut self, _a11y: &runtime_shared::accessibility::AccessibilityProps) -> u64 {
         self.next += 1;
         let id = self.next;
         self.trace.push(Trace::CreateView(id));
         id
     }
+}
 
+impl caps::TextOps for TraceBackend {
     fn create_text(
         &mut self,
         content: &str,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> u64 {
         self.next += 1;
         let id = self.next;
@@ -67,32 +91,59 @@ impl Backend for TraceBackend {
         id
     }
 
+    fn update_text(&mut self, _node: &u64, _content: &str) {}
+}
+
+impl caps::ButtonOps for TraceBackend {
     fn create_button(
         &mut self,
         _label: &str,
-        _on_click: &runtime_core::Action,
-        _leading: Option<&runtime_core::primitives::icon::IconData>,
-        _trailing: Option<&runtime_core::primitives::icon::IconData>,
-        _a11y: &runtime_core::accessibility::AccessibilityProps,
+        _on_click: &runtime_shared::Action,
+        _leading: Option<&runtime_shared::primitives::icon::IconData>,
+        _trailing: Option<&runtime_shared::primitives::icon::IconData>,
+        _a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> u64 {
         self.next += 1;
         self.next
     }
+}
 
-    fn insert(&mut self, parent: &mut u64, child: u64) {
-        self.trace.push(Trace::Insert(*parent, child));
-    }
-
-    fn update_text(&mut self, _node: &u64, _content: &str) {}
-
-    fn clear_children(&mut self, _node: &u64) {}
-
+impl caps::StyleOps for TraceBackend {
     fn apply_style(&mut self, _node: &u64, _style: &Rc<StyleRules>) {}
+}
 
+impl caps::LifecycleOps for TraceBackend {
     fn finish(&mut self, root: u64) {
         self.trace.push(Trace::Finish(root));
     }
 }
+
+// Families the stand-in replay target does not model — caps defaults.
+impl caps::A11yOps for TraceBackend {}
+impl caps::ActivityIndicatorOps for TraceBackend {}
+impl caps::AnimationOps for TraceBackend {}
+impl caps::AppEnvOps for TraceBackend {}
+impl caps::AssetOps for TraceBackend {}
+impl caps::BatchOps for TraceBackend {}
+impl caps::DocumentOps for TraceBackend {}
+impl caps::ExternalOps for TraceBackend {}
+impl caps::GraphicsOps for TraceBackend {}
+impl caps::IconOps for TraceBackend {}
+impl caps::ImageOps for TraceBackend {}
+impl caps::InputOps for TraceBackend {}
+impl caps::IntrospectionOps for TraceBackend {}
+impl caps::LinkOps for TraceBackend {}
+impl caps::NavigatorOps for TraceBackend {}
+impl caps::PortalOps for TraceBackend {}
+impl caps::PresenceOps for TraceBackend {}
+impl caps::PressableOps for TraceBackend {}
+impl caps::SafeAreaOps for TraceBackend {}
+impl caps::ScrollOps for TraceBackend {}
+impl caps::SliderOps for TraceBackend {}
+impl caps::TextInputOps for TraceBackend {}
+impl caps::ToggleOps for TraceBackend {}
+impl caps::VirtualizerOps for TraceBackend {}
+impl caps::WireBindingOps for TraceBackend {}
 
 fn pick_free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -112,47 +163,26 @@ fn websocket_round_trip_basic_tree() {
     let server_addr_clone = server_addr.clone();
     thread::spawn(move || {
         let recorder = WireRecordingBackend::new();
-        let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-        // The first Text carries an explicit accessibility label
-        // and a SELECTED trait bit so we can assert the wire faithfully
+        // The first Text carries an explicit accessibility label and a
+        // SELECTED trait bit so we can assert the wire faithfully
         // carries non-default a11y across to the app side. The second
         // Text leaves accessibility at default to verify both shapes
         // survive the round-trip.
-        let hello_a11y = runtime_core::accessibility::AccessibilityProps {
-            label: Some("hello-label".into()),
-            traits: AccessibilityTraits::SELECTED,
-            ..Default::default()
-        };
-        let tree = Element::View {
-            children: vec![
-                Element::Text {
-                    source: TextSource::Static("hello".into()),
-                    style: None,
-                    ref_fill: None,
-                    accessibility: hello_a11y,
-                    test_id: None,
-                },
-                Element::Text {
-                    source: TextSource::Static("world".into()),
-                    style: None,
-                    ref_fill: None,
-                    accessibility: Default::default(),
-                    test_id: None,
-                },
-            ],
-            style: None,
-            ref_fill: None,
-            safe_area_sides: Default::default(),
-            on_touch: None,
-            on_wheel: None,
-            on_file_drop: None,
-            on_hover: None,
-            is_container: false,
-            accessibility: Default::default(),
-            test_id: None,
-        };
-        let owner = render(backend_rc, tree);
-        std::mem::forget(owner);
+        let session = dev_server::newcore::SceneSession::mount(&recorder, |_r| {}, || {
+            view()
+                .child(
+                    text()
+                        .content("hello")
+                        .a11y(runtime_shared::accessibility::AccessibilityProps {
+                            label: Some("hello-label".into()),
+                            traits: AccessibilityTraits::SELECTED,
+                            ..Default::default()
+                        }),
+                )
+                .child(text().content("world"))
+                .build()
+        });
+        std::mem::forget(session);
         let _ = serve(server_addr_clone, recorder);
     });
 

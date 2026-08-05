@@ -221,14 +221,25 @@ path = "src/main.rs"
 server-aws = {saws_dep}
 # User crate with the `server` feature ON — this is what compiles the
 # `#[server]` bodies and emits their `inventory::submit!` route registrations.
-{user_name} = {{ path = "{user_path}", features = ["server"] }}
+{user_dep}
 tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
 {patch_block}
 "#,
         bin_name = bin_name,
         saws_dep = saws_dep,
-        user_name = manifest.name,
-        user_path = project_dir.display(),
+        // Plain path dep plus `server`: the app's own defaults select
+        // its feature set. The wrapper only takes the ADDRESS of
+        // `{lib}::app` (the force-link anchor below) and never calls it,
+        // so no render entry — and therefore no core-specific boot — is
+        // involved in this target. A Lambda that also server-renders
+        // pages would additionally reach for
+        // `backend_ssr::newcore::render_path`; see
+        // `crates/tools/build/ssr`.
+        user_dep = format!(
+            "{} = {{ path = \"{}\", features = [\"server\"] }}",
+            manifest.name,
+            project_dir.display(),
+        ),
         patch_block = source.patch_block(),
     );
 
@@ -244,7 +255,8 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
 //! so its `inventory::submit!` `#[server]` route registrations survive. Without
 //! a reference into the lib the linker drops them, `server::router()` registers
 //! zero routes, and every `/_srv/<fn>` 404s. (`server::router()` also warns at
-//! startup when it finds no routes.)
+//! startup when it finds no routes.) Only the fn ADDRESS is taken — the UI is
+//! never built here, so this target needs no render entry.
 
 #[tokio::main]
 async fn main() -> Result<(), server_aws::Error> {{
@@ -389,6 +401,12 @@ mod wrapper_template_tests {
         assert!(
             cargo.contains(r#"features = ["server"]"#),
             "user crate must compile with the `server` feature:\n{cargo}",
+        );
+        // No core pin: the app's own defaults apply (there is one core),
+        // and the wrapper never builds a UI tree.
+        assert!(
+            !cargo.contains("old-core") && !cargo.contains("default-features = false"),
+            "user-crate dep must be a plain path dep + `server`:\n{cargo}",
         );
         assert!(
             cargo.contains(r#"name = "demo-app-lambda""#),

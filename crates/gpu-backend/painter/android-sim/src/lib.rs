@@ -265,8 +265,8 @@ impl Default for AndroidSim {
 /// label, 10×24 padding for a 40 dp pill, full-pill 20 dp corners.
 /// Authors override individual fields via `.with_style(...)`; the
 /// merge in `Backend::apply_style` keeps any field they set.
-fn m3_button_defaults() -> runtime_core::StyleRules {
-    use runtime_core::{Color, FontWeight, Length, StyleRules, Tokenized};
+fn m3_button_defaults() -> runtime_shared::StyleRules {
+    use runtime_shared::{Color, FontWeight, Length, StyleRules, Tokenized};
     StyleRules {
         // M3 Primary (#6750A4). Hard-coded here rather than
         // reading the active theme palette — skins are
@@ -289,11 +289,11 @@ fn m3_button_defaults() -> runtime_core::StyleRules {
 }
 
 impl Painter for AndroidSim {
-    fn platform(&self) -> runtime_core::Platform {
-        runtime_core::Platform::Custom("Sim")
+    fn platform(&self) -> runtime_shared::Platform {
+        runtime_shared::Platform::Custom("Sim")
     }
 
-    fn button_defaults(&self) -> runtime_core::StyleRules {
+    fn button_defaults(&self) -> runtime_shared::StyleRules {
         m3_button_defaults()
     }
 
@@ -868,8 +868,8 @@ impl Painter for AndroidSim {
         }
     }
 
-    fn safe_area_insets(&self) -> runtime_core::EdgeInsets {
-        runtime_core::EdgeInsets {
+    fn safe_area_insets(&self) -> runtime_shared::EdgeInsets {
+        runtime_shared::EdgeInsets {
             top: M3_STATUS_BAR_HEIGHT,
             right: 0.0,
             bottom: M3_GESTURE_NAV_HEIGHT,
@@ -888,7 +888,7 @@ impl Painter for AndroidSim {
     fn paint_device_chrome<'a>(
         &self,
         viewport: (f32, f32),
-        insets: runtime_core::EdgeInsets,
+        insets: runtime_shared::EdgeInsets,
         _now: web_time::Instant,
         glyphs: &'a HashMap<&'static str, Buffer>,
         rects: &mut Vec<RectInstance>,

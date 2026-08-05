@@ -151,8 +151,7 @@ pub type LazyFuture = Pin<Box<dyn Future<Output = Result<Element, String>>>>;
 
 The `lazy! { … }` macro handles this for you (it wraps the block's `Element` in
 `Ok`). You only touch it if you **hand-roll a loader** — a bare `lazy_split(||
-Box::pin(async { … }))`, an `install_dynlink_loader` bridge, or a direct
-`Element::Lazy { … }` construction:
+Box::pin(async { … }))` or a direct `Element::Lazy { … }` construction:
 
 ```rust
 // before

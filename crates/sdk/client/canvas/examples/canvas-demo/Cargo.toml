@@ -9,21 +9,24 @@ description = "Canvas SDK demo — programmatic 2D drawing (paths, fills, stroke
 crate-type = ["rlib"]
 
 [dependencies]
+# The author surface. `runtime-core` is aliased to `runtime_core` at the
+# crate root (see src/lib.rs) — one core, no feature switch.
+# `runtime-vocabulary` is needed because the `ui!` emission spells
+# absolute `::runtime_vocabulary::glue::…` paths (and for the caps bounds
+# `canvas_native::register` asks for), and `runtime-scene` for the scene
+# `Registry` in the registration seam.
 runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 canvas = { workspace = true }
 canvas-native = { workspace = true }
 
-# The concrete backend each platform hands to `register_extensions`, where
-# the canvas renderer registers its `Element::External` handler.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { workspace = true }
-
-[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
-backend-ios-mobile = { workspace = true }
-
-[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
-backend-android-mobile = { workspace = true }
+# No backend deps: `canvas_native::register` is generic on every target
+# and type-dispatches ONCE at registration (it downcasts the registry to
+# the platform's concrete one and installs the native painter, falling
+# back to the External placeholder), so this crate stays fully
+# platform-agnostic.
 
 [package.metadata.idealyst.app]
 name      = "Canvas Demo"

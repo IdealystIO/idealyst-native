@@ -1,0 +1,58 @@
+# newcore-app — the macro/handler END-TO-END INTEGRATION APP: a small
+# but real authored app (`src/app.rs`) driven all the way down the stack
+# by the suites in `tests/`.
+#
+# What one tree covers: nested `#[component]`s with
+# static/reactive/defaulted/children props, local signals, a memo, a
+# reactive `if`, a keyed `for` with row-local state, event-handler-driven
+# mutations, a `stylesheet!` with a token-referencing base + a variant +
+# a `state hovered` overlay, the overlay / anchored_overlay / presence /
+# flat_list primitive set, a `#[method]`-bearing component, and
+# `test_id =` identity anchors feeding the robot registry.
+#
+# `tests/e2e.rs` mounts that tree through the REAL path — `ui!` lowering
+# → glue wrappers → builders → prims → registry handlers → backend caps
+# — against the scene-parity mock host, fires the recorded platform
+# callbacks, and asserts the recorded op log.
+#
+# `tests/recipes_compile.rs` is the second, independent gate: it
+# `include!`s the MCP catalog's static recipe sources
+# (`crates/runtime/shared/recipes/*.rs`) so a prop/API change that would
+# rot a served example fails here.
+#
+#   cargo test -p newcore-app
+#
+# Historically this crate was the DUAL-CORE proof: one source tree
+# compiled and e2e-tested under both the old walker and runtime v2, with
+# a per-core prelude in `src/lib.rs` as the only wiring. The old core is
+# gone — the prelude resolves one surface now, and the suites are the
+# value that remains.
+[package]
+name = "newcore-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Integration app: a ui! + #[component] authored tree, e2e-tested through the vocabulary registry."
+
+[dependencies]
+runtime-macros = { workspace = true }
+# The `runtime_core::…` author-surface alias target: `runtime-core`.
+# `src/lib.rs`'s prelude names the glue directly; the recipe gate aliases
+# this crate to `runtime_core` so the shared recipe sources — which spell
+# `::runtime_core::…` — compile verbatim.
+runtime-core = { workspace = true }
+# `robot` is the identity seam: `test_id = ...` in src/app.rs registers
+# into the vocabulary robot registry, and tests/e2e.rs drives the app
+# through `runtime_vocabulary::robot::Robot` (find/click/type_text).
+runtime-vocabulary = { workspace = true, features = ["robot"] }
+runtime-scene = { workspace = true }
+runtime-world = { workspace = true }
+# The mock-host machinery (`FullRecorder` — a direct `runtime_scene::Host`
+# + all-30-caps impl) the suites mount against. A normal dependency
+# rather than a dev-dep so `cargo check` and `cargo test` see one graph.
+scene-parity = { path = "../scene-parity" }
+# The navigation SDKs the two navigation recipes in
+# tests/recipes_compile.rs compile against — the gate exercises their
+# real public surface, not a replica.
+swap-navigator = { workspace = true }
+stack-navigator = { workspace = true }

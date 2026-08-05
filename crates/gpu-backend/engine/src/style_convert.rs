@@ -5,7 +5,7 @@
 //! f32 px sizes and `[f32; 4]` RGBA. We cache that projection on each
 //! node so the per-frame walk is cheap (just read fields).
 
-use runtime_core::{
+use runtime_shared::{
     Color, FontFamily, FontStyle, FontWeight, Gradient, GradientKind, Length, ObjectFit,
     RadialExtent, StyleRules, TextAlign, Tokenized, Transform,
 };
@@ -91,7 +91,7 @@ pub struct TransformLength {
     pub is_percent: bool,
 }
 
-/// Backend-resolved counterpart of [`runtime_core::Gradient`].
+/// Backend-resolved counterpart of [`runtime_shared::Gradient`].
 ///
 /// The shader supports up to five stops; entries past
 /// `stop_count` carry the last real stop's color repeated so the
@@ -137,13 +137,10 @@ pub enum ResolvedGradientKind {
     /// `(p.x-cx)²/rx² + (p.y-cy)²/ry² = 1`. For `ClosestSide`
     /// the radii are `(min(cx, 1-cx), min(cy, 1-cy)) * multiplier`;
     /// `FarthestCorner` picks the max corner distance.
-    Radial {
-        center: [f32; 2],
-        radii: [f32; 2],
-    },
+    Radial { center: [f32; 2], radii: [f32; 2] },
 }
 
-/// Backend-resolved counterpart of `runtime_core::Shadow` —
+/// Backend-resolved counterpart of `runtime_shared::Shadow` —
 /// hex strings parsed to RGBA, no `Tokenized` indirection so the
 /// renderer can read it on the hot path.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -234,10 +231,26 @@ impl RenderStyle {
         self.corner_radius[3] = px(rules.border_bottom_left_radius.as_ref());
 
         // Border widths.
-        self.border_width[0] = rules.border_top_width.as_ref().map(|t| t.resolve()).unwrap_or(self.border_width[0]);
-        self.border_width[1] = rules.border_right_width.as_ref().map(|t| t.resolve()).unwrap_or(self.border_width[1]);
-        self.border_width[2] = rules.border_bottom_width.as_ref().map(|t| t.resolve()).unwrap_or(self.border_width[2]);
-        self.border_width[3] = rules.border_left_width.as_ref().map(|t| t.resolve()).unwrap_or(self.border_width[3]);
+        self.border_width[0] = rules
+            .border_top_width
+            .as_ref()
+            .map(|t| t.resolve())
+            .unwrap_or(self.border_width[0]);
+        self.border_width[1] = rules
+            .border_right_width
+            .as_ref()
+            .map(|t| t.resolve())
+            .unwrap_or(self.border_width[1]);
+        self.border_width[2] = rules
+            .border_bottom_width
+            .as_ref()
+            .map(|t| t.resolve())
+            .unwrap_or(self.border_width[2]);
+        self.border_width[3] = rules
+            .border_left_width
+            .as_ref()
+            .map(|t| t.resolve())
+            .unwrap_or(self.border_width[3]);
 
         if let Some(c) = rules.border_top_color.as_ref() {
             self.border_color[0] = parse_color(&c.resolve());
@@ -292,10 +305,14 @@ impl RenderStyle {
                 match t {
                     Transform::TranslateX(len) => {
                         let entry = match *len {
-                            Length::Px(v) => TransformLength { value: v, is_percent: false },
-                            Length::Percent(v) => {
-                                TransformLength { value: v / 100.0, is_percent: true }
-                            }
+                            Length::Px(v) => TransformLength {
+                                value: v,
+                                is_percent: false,
+                            },
+                            Length::Percent(v) => TransformLength {
+                                value: v / 100.0,
+                                is_percent: true,
+                            },
                             // `Length::Auto` has no meaning as a
                             // transform offset; treat as zero.
                             Length::Auto => TransformLength::default(),
@@ -315,10 +332,14 @@ impl RenderStyle {
                     }
                     Transform::TranslateY(len) => {
                         let entry = match *len {
-                            Length::Px(v) => TransformLength { value: v, is_percent: false },
-                            Length::Percent(v) => {
-                                TransformLength { value: v / 100.0, is_percent: true }
-                            }
+                            Length::Px(v) => TransformLength {
+                                value: v,
+                                is_percent: false,
+                            },
+                            Length::Percent(v) => TransformLength {
+                                value: v / 100.0,
+                                is_percent: true,
+                            },
                             // `Length::Auto` has no meaning as a
                             // transform offset; treat as zero.
                             Length::Auto => TransformLength::default(),
@@ -341,9 +362,7 @@ impl RenderStyle {
                     // backend's static path yet — author code can
                     // still drive rotation through the animation
                     // system (`AnimProp::RotateZ`), which IS wired.
-                    Transform::Rotate(_)
-                    | Transform::SkewX(_)
-                    | Transform::SkewY(_) => {}
+                    Transform::Rotate(_) | Transform::SkewX(_) | Transform::SkewY(_) => {}
                 }
             }
         }
@@ -389,9 +408,15 @@ fn resolve_gradient(g: &Gradient) -> Option<ResolvedGradient> {
             let theta = angle_deg.to_radians();
             let dx = theta.sin();
             let dy = -theta.cos();
-            ResolvedGradientKind::Linear { direction: [dx, dy] }
+            ResolvedGradientKind::Linear {
+                direction: [dx, dy],
+            }
         }
-        GradientKind::Radial { center, radius, extent } => {
+        GradientKind::Radial {
+            center,
+            radius,
+            extent,
+        } => {
             let (cx, cy) = *center;
             // Reference distance in rect-fraction space. For
             // `ClosestSide` the reference is the closest edge
@@ -404,10 +429,7 @@ fn resolve_gradient(g: &Gradient) -> Option<ResolvedGradient> {
             // sun-glare wrapper carries `aspect_ratio: 1.0` so the
             // distinction doesn't matter visually there).
             let (rx_base, ry_base) = match extent {
-                RadialExtent::ClosestSide => (
-                    cx.min(1.0 - cx),
-                    cy.min(1.0 - cy),
-                ),
+                RadialExtent::ClosestSide => (cx.min(1.0 - cx), cy.min(1.0 - cy)),
                 RadialExtent::FarthestCorner => {
                     let dx = cx.max(1.0 - cx);
                     let dy = cy.max(1.0 - cy);
@@ -440,14 +462,14 @@ fn px(t: Option<&Tokenized<Length>>) -> f32 {
     }
 }
 
-/// Best-effort CSS color parse. Delegates to `runtime_core::color`;
+/// Best-effort CSS color parse. Delegates to `runtime_shared::color`;
 /// unknown strings render as opaque magenta so missing-color bugs are
 /// visible at a glance (vs. silently rendering black like the
 /// platform backends, where the surrounding CSS class still
 /// produces correct output).
 pub fn parse_color(c: &Color) -> [f32; 4] {
     const MAGENTA: [f32; 4] = [1.0, 0.0, 1.0, 1.0];
-    runtime_core::color::parse(&c.0)
+    runtime_shared::color::parse(&c.0)
         .map(|c| c.to_srgb_f32())
         .unwrap_or(MAGENTA)
 }
@@ -463,7 +485,7 @@ pub fn parse_color(c: &Color) -> [f32; 4] {
 // alpha blending, that conversion is identity. If the renderer is
 // ever ported to a target that mandates a linear pipeline, this
 // becomes the natural single place to re-enable the gamma decode.
-pub use runtime_core::color::srgb_channel_to_linear;
+pub use runtime_shared::color::srgb_channel_to_linear;
 pub fn srgb_rgba_to_linear(c: [f32; 4]) -> [f32; 4] {
     c
 }

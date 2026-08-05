@@ -11,6 +11,15 @@
 //! off everywhere) so they're navigable on macOS too, where the stack handler
 //! renders no native chrome.
 //!
+//! ## Renderer coverage
+//!
+//! The canvas is drawn by `canvas-native`'s scene handler, which is REAL on
+//! web (Canvas2D) and an External placeholder on macOS / iOS / Android: the
+//! GPU (`canvas-vello`) and native painters have no scene-registry handler, so
+//! this demo's drawing surface — and the self-capture recording that reads
+//! frames back out of it — only run on web. `video` (camera + recording
+//! preview) is real on every platform.
+//!
 //! Pieces of the board screen, and how they fit:
 //!
 //! 1. **Drawable canvas** (`canvas` SDK). A full-screen `canvas::Canvas`
@@ -43,7 +52,7 @@
 //! ## Module layout
 //!
 //! - [`entry`] — the `app` entry component, root-scoped `BoardState`, the
-//!   recording/self-capture bundles, and `register_extensions`.
+//!   recording/self-capture bundles, and `register_scene_extensions`.
 //! - [`document`] — the drawing + document model: strokes, the multi-canvas
 //!   store and its ops, canvas-navigation commands, stroke color resolution.
 //! - [`board`] — the recordable board content: `BoardScreen`, `DrawingSurface`,
@@ -57,8 +66,8 @@
 //! - `tests` — unit tests for [`document`] + the camera-clamp helpers below.
 
 // Lints inherent to the `#[component]` + `ui!` + closure-heavy idiom, emitted
-// the same way across the framework's own component crates (idea-ui, runtime-core
-// primitives, screen-recorder): the `ui!` macro appends `..Default::default()`
+// the same way across the framework's own component crates (idea-ui, the
+// vocabulary primitives, screen-recorder): the `ui!` macro appends `..Default::default()`
 // to every props literal (`needless_update`); props own `Rc<dyn Fn>` /
 // `Rc<RefCell<…>>` state (`type_complexity`); and props carry an explicit manual
 // `Default` matching the idea-ui convention (`derivable_impls`). Allowed
@@ -79,10 +88,11 @@ use runtime_core::{Route, Signal};
 
 // Re-export each module's surface at the crate root so call sites stay
 // `crate::X` regardless of which file an item lives in (and so the CLI host
-// wrapper reaches `app` / `register_extensions`). The entry module is named
-// `entry`, not `app`, because the `#[component] fn app` generates a type alias
-// `app` that would collide with a module of the same name in the type namespace.
-pub use entry::{app, register_extensions, CanvasCapture};
+// wrapper reaches `app` / `register_scene_extensions` / `scene_app`). The entry
+// module is named `entry`, not `app`, because the `#[component] fn app`
+// generates a type alias `app` that would collide with a module of the same
+// name in the type namespace.
+pub use entry::{app, register_scene_extensions, scene_app, CanvasCapture};
 pub(crate) use entry::{BoardState, MicHandle, RecHandle};
 pub(crate) use board::BoardScreen;
 pub(crate) use document::*;

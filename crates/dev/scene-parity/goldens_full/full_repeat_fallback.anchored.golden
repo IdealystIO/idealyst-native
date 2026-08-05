@@ -1,0 +1,64 @@
+# scene-parity FULL-OP golden — scenario `full_repeat_fallback`, mode `anchored`
+#
+# A static-range Repeat (3 styled view+text rows sharing ONE
+# sheet) inside a `when`, with a static sibling after it. Pins
+# the non-batching fallback both cores share: rows build eagerly
+# (per-row create/insert/apply), attach with ONE insert_many,
+# the trailing sibling inserts after them, and the swap-out
+# releases per row (on_node_unstyled) inside the step.
+#
+# Complete backend-call stream (create_*/update_*/apply_style/release_*
+# + the structural ops). Node names are creation-order (n0, n1, ...).
+# Owned by the OLD core; regenerate after an INTENDED walker change
+# with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 anchor
+clear_children n1
+create n2 view
+create n3 view
+create n4 text "row 0"
+insert n3 <- n4
+apply_style n3 {background: Some(Token { name: "color-surface", fallback: Color("#000") }), width: Some(Literal(Px(100.0)))}
+create n5 view
+create n6 text "row 1"
+insert n5 <- n6
+apply_style n5 {background: Some(Token { name: "color-surface", fallback: Color("#000") }), width: Some(Literal(Px(100.0)))}
+create n7 view
+create n8 text "row 2"
+insert n7 <- n8
+apply_style n7 {background: Some(Token { name: "color-surface", fallback: Color("#000") }), width: Some(Literal(Px(100.0)))}
+insert_many n2 <- [n3, n5, n7]
+create n9 text "after-rows"
+insert n2 <- n9
+insert n1 <- n2
+insert n0 <- n1
+
+== swap out (rows release per row, inside the step) ==
+on_node_unstyled n3
+on_node_unstyled n5
+on_node_unstyled n7
+clear_children n1
+create n10 text "empty"
+insert n1 <- n10
+
+== swap back in (rows rebuild) ==
+clear_children n1
+create n11 view
+create n12 view
+create n13 text "row 0"
+insert n12 <- n13
+apply_style n12 {background: Some(Token { name: "color-surface", fallback: Color("#000") }), width: Some(Literal(Px(100.0)))}
+create n14 view
+create n15 text "row 1"
+insert n14 <- n15
+apply_style n14 {background: Some(Token { name: "color-surface", fallback: Color("#000") }), width: Some(Literal(Px(100.0)))}
+create n16 view
+create n17 text "row 2"
+insert n16 <- n17
+apply_style n16 {background: Some(Token { name: "color-surface", fallback: Color("#000") }), width: Some(Literal(Px(100.0)))}
+insert_many n11 <- [n12, n14, n16]
+create n18 text "after-rows"
+insert n11 <- n18
+insert n1 <- n11

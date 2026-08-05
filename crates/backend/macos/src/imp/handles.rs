@@ -13,8 +13,8 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_core::primitives::portal::ViewportRect;
-use runtime_core::{LayoutSubscription, ViewOps, ViewHandle, TextHandle};
+use runtime_shared::primitives::portal::ViewportRect;
+use runtime_shared::{LayoutSubscription, ViewOps, ViewHandle, TextHandle};
 use objc2::msg_send;
 use objc2_app_kit::NSView;
 use objc2_foundation::CGRect;
@@ -124,7 +124,7 @@ impl ViewOps for MacosViewOps {
     fn set_animated_f32(
         &self,
         node: &dyn Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         value: f32,
     ) {
         if let Some(n) = node.downcast_ref::<MacosNode>() {
@@ -135,7 +135,7 @@ impl ViewOps for MacosViewOps {
     fn set_animated_color(
         &self,
         node: &dyn Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
         if let Some(n) = node.downcast_ref::<MacosNode>() {
@@ -146,7 +146,7 @@ impl ViewOps for MacosViewOps {
     fn install_keyframe_animation(
         &self,
         node: &dyn Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         keyframes: &[(f32, f32)],
         duration_ms: u32,
         repeat_forever: bool,
@@ -182,7 +182,7 @@ pub(crate) static MACOS_VIEW_OPS: MacosViewOps = MacosViewOps;
 // Mirrors iOS's `IosButtonOps` / `IosPressableOps`.
 
 pub(crate) struct MacosButtonOps;
-impl runtime_core::ButtonOps for MacosButtonOps {
+impl runtime_shared::ButtonOps for MacosButtonOps {
     fn click(&self, _node: &dyn Any) {
         // Programmatic click via the handle isn't wired on macOS (matches iOS):
         // the Robot drives clicks through the stored on_press action, and author
@@ -196,7 +196,7 @@ impl runtime_core::ButtonOps for MacosButtonOps {
 pub(crate) static MACOS_BUTTON_OPS: MacosButtonOps = MacosButtonOps;
 
 pub(crate) struct MacosPressableOps;
-impl runtime_core::PressableOps for MacosPressableOps {
+impl runtime_shared::PressableOps for MacosPressableOps {
     fn click(&self, _node: &dyn Any) {}
     fn rect(&self, node: &dyn Any) -> ViewportRect {
         absolute_rect_of_node(node).unwrap_or(ViewportRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 })
@@ -205,13 +205,13 @@ impl runtime_core::PressableOps for MacosPressableOps {
 pub(crate) static MACOS_PRESSABLE_OPS: MacosPressableOps = MacosPressableOps;
 
 /// Build a [`ButtonHandle`] backed by the node so it can be an anchor target.
-pub(crate) fn make_button_handle(node: &MacosNode) -> runtime_core::ButtonHandle {
-    runtime_core::ButtonHandle::new(Rc::new(node.clone()) as Rc<dyn Any>, &MACOS_BUTTON_OPS)
+pub(crate) fn make_button_handle(node: &MacosNode) -> runtime_shared::ButtonHandle {
+    runtime_shared::ButtonHandle::new(Rc::new(node.clone()) as Rc<dyn Any>, &MACOS_BUTTON_OPS)
 }
 
 /// Build a [`PressableHandle`] backed by the node so it can be an anchor target.
-pub(crate) fn make_pressable_handle(node: &MacosNode) -> runtime_core::PressableHandle {
-    runtime_core::PressableHandle::new(Rc::new(node.clone()) as Rc<dyn Any>, &MACOS_PRESSABLE_OPS)
+pub(crate) fn make_pressable_handle(node: &MacosNode) -> runtime_shared::PressableHandle {
+    runtime_shared::PressableHandle::new(Rc::new(node.clone()) as Rc<dyn Any>, &MACOS_PRESSABLE_OPS)
 }
 
 // =========================================================================
@@ -225,7 +225,7 @@ pub(crate) fn make_pressable_handle(node: &MacosNode) -> runtime_core::Pressable
 /// `scroll_to` — same content-pixel coordinate space.
 pub(crate) struct MacosScrollViewOps;
 
-impl runtime_core::primitives::scroll_view::ScrollViewOps for MacosScrollViewOps {
+impl runtime_shared::primitives::scroll_view::ScrollViewOps for MacosScrollViewOps {
     fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
         let Some(macos_node) = node.downcast_ref::<MacosNode>() else {
             return;
@@ -254,8 +254,8 @@ pub(crate) static MACOS_SCROLL_OPS: MacosScrollViewOps = MacosScrollViewOps;
 /// Build a [`ScrollViewHandle`] for `node` backed by [`MacosScrollViewOps`].
 pub(crate) fn make_scroll_view_handle(
     node: &MacosNode,
-) -> runtime_core::primitives::scroll_view::ScrollViewHandle {
-    runtime_core::primitives::scroll_view::ScrollViewHandle::new(
+) -> runtime_shared::primitives::scroll_view::ScrollViewHandle {
+    runtime_shared::primitives::scroll_view::ScrollViewHandle::new(
         Rc::new(node.clone()) as Rc<dyn Any>,
         &MACOS_SCROLL_OPS,
     )
@@ -267,11 +267,11 @@ pub(crate) fn make_scroll_view_handle(
 
 pub(crate) struct MacosTextOps;
 
-impl runtime_core::TextOps for MacosTextOps {
+impl runtime_shared::TextOps for MacosTextOps {
     fn set_animated_color(
         &self,
         node: &dyn Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
         if let Some(n) = node.downcast_ref::<MacosNode>() {
@@ -355,8 +355,8 @@ fn absolute_rect_of_node(node: &dyn Any) -> Option<ViewportRect> {
 // insertion point and starts key delivery). Mirrors the iOS handles.
 
 use objc2_foundation::NSString;
-use runtime_core::primitives::text_area::{TextAreaHandle, TextAreaOps};
-use runtime_core::primitives::text_input::{TextInputHandle, TextInputOps};
+use runtime_shared::primitives::text_area::{TextAreaHandle, TextAreaOps};
+use runtime_shared::primitives::text_input::{TextInputHandle, TextInputOps};
 
 /// Make `node`'s view the window's first responder — shows the caret and
 /// routes keystrokes to it. No-op until the view is in a window.
@@ -457,7 +457,7 @@ pub(crate) fn make_text_area_handle(node: &MacosNode) -> TextAreaHandle {
 // Regression test for the tooltip/popover "anchors to window top-left" bug.
 //
 // `ViewOps::rect` is the anchor rect the portal placement math reads (see
-// `runtime_core::primitives::portal`). Its contract is VIEWPORT/WINDOW-relative
+// `runtime_shared::primitives::portal`). Its contract is VIEWPORT/WINDOW-relative
 // coordinates. macOS used to return the PARENT-relative `view.frame` here, so a
 // trigger nested below the window root reported coordinates in its parent's
 // space; placement treated those as window coordinates and pinned every

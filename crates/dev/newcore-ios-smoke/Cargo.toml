@@ -1,0 +1,45 @@
+# newcore-ios-smoke — smoke app for the iOS backend's boot path
+# (`backend_ios::newcore::run_in_view` → `newcore::start`), the iOS
+# mirror of `newcore-macos-smoke`. Builds the same small
+# vocabulary-builder tree (text + button + toggle + a dyn hole + a
+# keyed list + one literal StyleRules) with DIRECT builder calls — no
+# `ui!`/`jsx!` — so it exercises the registry-dispatch render path
+# against real UIKit with the macro-lowering layer out of the picture.
+#
+# Unlike the macOS smoke (a plain bin — AppKit apps self-host), iOS
+# apps need a Swift shell: this crate is a STATICLIB exposing the
+# `ios_main`/`ios_teardown` C symbols the checked-in `host/` Swift
+# sources call — the same host contract as the CLI-generated wrapper
+# (`crates/tools/build/ios`). Build + launch on the simulator with:
+#
+#   crates/dev/newcore-ios-smoke/host/run-sim.sh
+#
+# Self-test: launch with SIMCTL_CHILD_NEWCORE_SMOKE_SELFTEST=1 (the
+# script does) — from a real NSTimer on the real run loop the app
+# stages a write, later asserts the flush driver COMMITTED it, prints
+# `[SMOKE-SELFTEST] committed=<bool> views=<n>`, and exits 0/1.
+[package]
+name = "newcore-ios-smoke"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Smoke app for backend-ios-mobile's Host + caps boot path."
+
+[lib]
+# `staticlib` for the swiftc link; `rlib` so `cargo check`/workspace
+# builds treat it as an ordinary lib on non-iOS hosts.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# The shared substrate: the style data model + the scheduler the
+# self-test drives (`after_ms_detached`) + the platform logger.
+runtime-shared = { workspace = true }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+backend-ios-mobile = { workspace = true }
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString", "NSArray", "NSObject"] }
+objc2-ui-kit = { version = "0.2", features = ["UIResponder", "UIView"] }

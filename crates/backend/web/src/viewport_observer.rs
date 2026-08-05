@@ -1,7 +1,7 @@
 //! Window-resize observer that pushes `window.innerWidth /
-//! innerHeight` into `runtime_core::set_viewport_size`.
+//! innerHeight` into `runtime_shared::set_viewport_size`.
 //!
-//! Author code subscribes via [`runtime_core::viewport_size()`] from
+//! Author code subscribes via [`runtime_shared::viewport_size()`] from
 //! inside an effect / derived. The observer fires on initial install
 //! (so the signal has a non-zero value before the first paint) and on
 //! every `resize` event after that.
@@ -47,8 +47,8 @@ pub fn ssr_viewport(mount_selector: &str) -> Option<(f32, f32)> {
     // into every web bundle. The attribute is self-emitted by backend_ssr
     // (`{w}x{h}`, plain integers) — the tiny parser covers it exactly.
     Some((
-        runtime_core::num::parse_f32_plain(w.trim())?,
-        runtime_core::num::parse_f32_plain(h.trim())?,
+        runtime_shared::num::parse_f32_plain(w.trim())?,
+        runtime_shared::num::parse_f32_plain(h.trim())?,
     ))
 }
 
@@ -78,7 +78,7 @@ pub fn install_viewport_observer() {
 fn push_current_viewport(win: &web_sys::Window) {
     let w = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
     let h = win.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-    runtime_core::set_viewport_size(runtime_core::ViewportSize {
+    runtime_shared::set_viewport_size(runtime_shared::ViewportSize {
         width: w,
         height: h,
     });

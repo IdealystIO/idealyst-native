@@ -42,8 +42,9 @@ use std::rc::Rc;
 
 use runtime_core::{
     component, signal, text as text_node, ui, ChildList, Color, Cursor, Element, IdealystSchema,
-    IntoElement, Reactive, Signal, StyleApplication, StyleRules, StyleSource, Tokenized,
+    IntoElement, Reactive, Signal, StyleRules, Tokenized,
 };
+use runtime_vocabulary::StyleProp;
 use table::{table as sdk_table, table_cell as sdk_cell, table_row as sdk_row};
 use table::{TableCellProps as SdkTableCellProps, TableProps as SdkTableProps, TableRowProps as SdkTableRowProps};
 
@@ -154,52 +155,16 @@ pub fn TableRow(props: TableRowProps) -> Element {
     sdk_row(SdkTableRowProps { children }).into_element()
 }
 
-/// Layer a reactive whole-row hover background + pointer cursor onto a
-/// cell's existing themed style, driven by the row's shared `hovered`
-/// flag. Preserves the cell's base sheet (padding, border, head/body
-/// surface) by cloning its `StyleApplication` and merging an override on
-/// top — the override layer resolves last, so a `Some` background wins
-/// only while hovered and otherwise leaves the base untouched.
+/// Attach whole-row click + hover to a single cell.
 ///
-/// If the cell carries no static style (not the idea-ui path), the cell
-/// is returned unchanged — the caller still attaches the tap handler, so
-/// the row stays clickable, just without the highlight.
-fn apply_row_hover_style(cell: Element, hovered: Signal<bool>) -> Element {
-    let base: Option<StyleApplication> = match cell_style(&cell) {
-        Some(StyleSource::Static(app)) => Some(app.clone()),
-        _ => None,
-    };
-    let Some(base) = base else { return cell };
-
-    cell.with_style(move || {
-        let on = hovered.get();
-        let mut overlay = StyleRules {
-            cursor: Some(Cursor::Pointer),
-            ..Default::default()
-        };
-        if on {
-            overlay.background =
-                Some(Tokenized::token("color-surface-alt", Color("#eef0f7".into())));
-        }
-        base.clone().with_overrides(overlay)
-    })
-}
-
-/// Read a built cell's current style slot. Cells lower to an
-/// `Element::View` on native and an `Element::External` (`<td>`/`<th>`)
-/// on web; both carry a `style` field.
-fn cell_style(cell: &Element) -> Option<&StyleSource> {
-    match cell {
-        Element::View { style, .. } | Element::External { style, .. } => style.as_ref(),
-        _ => None,
-    }
-}
-
-/// Attach whole-row click + hover to a single cell. The tap recognizer and
-/// the shared hover flag ride on the cell's OWN backend node — a real
-/// `Element::View` grid item on native, a `<td>`/`<th>` `Element::External`
-/// on web (both carry `on_touch`/`on_hover`). The reactive row-hover
-/// background lands on that same node.
+/// The reactive row-hover style is layered over the cell's existing themed
+/// sheet, and the tap recognizer + shared hover flag ride on the cell's OWN
+/// backend node — a grid item on native, a `<td>`/`<th>` on web. The scene
+/// payload is type-erased, so the cell introspection lives in the table SDK
+/// (`cell_base_application` / `set_cell_style` / `set_cell_interaction`,
+/// which reach both shapes). Payloads are pre-mount, so in-place mutation is
+/// the sanctioned path (the navigator handlers' style-override fold uses the
+/// same `PrimCell::with_mut` mechanism).
 ///
 /// Putting the handler on the cell itself — an *ancestor* of whatever the
 /// cell contains — is what makes buttons-in-a-clickable-row work: an
@@ -209,22 +174,29 @@ fn cell_style(cell: &Element) -> Option<&StyleSource> {
 /// native). Taps on plain content or empty space fall through to the row.
 /// This replaces the earlier web-only full-bleed overlay, which physically
 /// covered the cell's content and so swallowed a button's click.
-///
-/// `Bound::<ViewHandle>` here is a type-check-only marker (see `Bound`'s
-/// rustdoc) — `on_touch`/`on_hover` write into a `View` OR an `External`,
-/// so the same call works for both cell shapes.
 fn make_row_cell_interactive(cell: Element, hovered: Signal<bool>, cb: Rc<dyn Fn()>) -> Element {
-    use runtime_core::{tap, Bound, TapRecognizer, ViewHandle};
+    use runtime_core::{tap, TapRecognizer};
 
-    let styled = apply_row_hover_style(cell, hovered);
-    // `tap(..)` yields an `Rc<dyn Fn(&TouchEvent) -> TouchResponse>`; wrap
-    // it so it satisfies `on_touch`'s `Fn` bound (an `Rc` isn't itself
-    // `Fn`).
+    // Reactive whole-row hover style: select the cell sheet's
+    // `interactive`/`row_hovered` AXES instead of layering runtime
+    // overrides. Every arm has build-time CSS, so on a premint build the
+    // flip is a class swap through the reactive diversion — no engine —
+    // while native resolves the same arms through the engine as always.
+    // (The former `with_overrides` spelling disqualified every clickable
+    // cell from preminting.) A cell without a static sheet application
+    // keeps its style untouched but stays clickable.
+    if let Some(base) = table::cell_base_application(&cell) {
+        table::set_cell_style(&cell, move || {
+            base.clone()
+                .with("interactive", "on")
+                .with("row_hovered", if hovered.get() { "on" } else { "off" })
+        });
+    }
+    // `tap(..)` yields the `TouchHandler` Rc directly; the hover reporter
+    // feeds the row's shared flag.
     let recognizer = tap(TapRecognizer::new(), move || (cb)());
-    Bound::<ViewHandle>::new(styled)
-        .on_hover(move |entering| hovered.set(entering))
-        .on_touch(move |ev| recognizer(ev))
-        .into_element()
+    table::set_cell_interaction(&cell, recognizer, Rc::new(move |entering| hovered.set(entering)));
+    cell
 }
 
 // =============================================================================
@@ -309,10 +281,39 @@ pub fn TableCell(props: TableCellProps) -> Element {
     // `<th>` itself. Branching here keeps each style concrete so
     // `IntoStyleSource` resolves on the call (not on a `Box<dyn>`,
     // which the trait doesn't support).
+    // A cell's style is handed over as an EXPLICIT `StyleProp::Sheet`, not
+    // as a bare application. A clickable row re-derives each cell's
+    // `StyleApplication` from the built element
+    // (`table::cell_base_application`) to select the `interactive` /
+    // `row_hovered` axes on it, and a `--premint` build's opaque
+    // `Preminted` class cannot provide one — the app must stay
+    // introspectable in the payload.
+    //
+    // `.into_style_application()` alone used to say that and stopped:
+    // `IntoStyleProp for StyleApplication` gained a preminted fast path, so
+    // the application preminted anyway, `cell_base_application` returned
+    // `None`, and `make_row_cell_interactive` silently skipped the whole
+    // overlay — clickable rows lost their pointer cursor and their hover
+    // highlight in every `--premint` build, with nothing logged. Naming the
+    // variant is what actually pins the intent, and
+    // `regression_premint_keeps_table_cells_on_the_live_engine` holds it
+    // there.
+    //
+    // This no longer costs the premint anything: the row overlay is axis
+    // SELECTION (build-time CSS per arm), not runtime overrides, and the
+    // `--premint-only` attach premints an explicit `Sheet` whose
+    // application qualifies — the spelling only pins introspectability.
+    //
+    // Branching here (rather than boxing) keeps each style concrete so
+    // `IntoStyleSource` resolves on the call, which the trait requires.
     if header {
-        bound.with_style(TableHeadCell()).into_element()
+        bound
+            .with_style(StyleProp::Sheet(Box::new(TableHeadCell().into_style_application())))
+            .into_element()
     } else {
-        bound.with_style(TableBodyCell()).into_element()
+        bound
+            .with_style(StyleProp::Sheet(Box::new(TableBodyCell().into_style_application())))
+            .into_element()
     }
 }
 
@@ -340,13 +341,16 @@ fn cell_text_children(header: bool, content: Reactive<Option<String>>) -> Vec<El
 }
 
 // =============================================================================
-// Tests — native (non-web) lowering. On native a `TableRow` lowers to an
-// `Element::Fragment` of its cells (see the `table` SDK), so we can read
-// each cell's wiring straight off the built tree without a backend.
+// Tests — native (non-web) lowering. On native a `TableRow` lowers to a
+// fragment of its cells (see the `table` SDK), so we can read each cell's
+// wiring straight off the built tree without a backend. Introspection goes
+// through `test_support::classify`.
 // =============================================================================
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P};
+    use idea_theme::testing::with_test_world;
 
     fn body_cell(text: &str) -> Element {
         TableCell(TableCellProps {
@@ -356,9 +360,9 @@ mod tests {
     }
 
     fn row_cells(row: Element) -> Vec<Element> {
-        match row {
-            Element::Fragment { children } => children,
-            other => panic!("TableRow must lower to a Fragment of cells"),
+        match classify(row) {
+            P::Fragment { children } => children,
+            _ => panic!("TableRow must lower to a fragment of cells"),
         }
     }
 
@@ -367,36 +371,155 @@ mod tests {
     /// (`on_hover`), and its style is upgraded to a reactive source so the
     /// whole-row hover highlight can re-apply. This is the whole feature —
     /// if a refactor drops any of the three, the row stops being clickable
-    /// or stops highlighting.
+    /// or stops highlighting. (The wiring goes through the table SDK's
+    /// `set_cell_style`/`set_cell_interaction` helpers — this test is what
+    /// fails if that seam regresses.)
+    /// Regression: a `--premint` build must not premint a table cell's
+    /// style.
+    ///
+    /// A clickable row layers the pointer cursor + hover highlight over
+    /// each cell by re-deriving the cell's `StyleApplication` from the
+    /// built element. A preminted cell is an opaque class string with no
+    /// application behind it, so the derivation returns `None` and
+    /// `make_row_cell_interactive` silently skips the overlay — the row
+    /// stays clickable but loses its cursor and its highlight, with
+    /// nothing logged.
+    ///
+    /// That shipped: `.into_style_application()` was written to keep cells
+    /// off the premint path, then `IntoStyleProp for StyleApplication`
+    /// gained a preminted fast path and preminted the application anyway.
+    /// Caught by a computed-style A/B of the catalog against a live build
+    /// (54 differing `cursor` properties across the table pages), not by a
+    /// test — which is why there are now two.
+    ///
+    /// This half asserts the SEAM: the application must be recoverable.
+    /// Under the default (non-premint) cfg it passes either way, so
+    /// `premint_must_not_reach_table_cell_styles` guards the actual
+    /// spelling.
+    #[test]
+    fn regression_premint_keeps_table_cells_on_the_live_engine() {
+        with_test_world(|| {
+            let cell = body_cell("x");
+            assert!(
+                table::cell_base_application(&cell).is_some(),
+                "a clickable row re-derives the cell's StyleApplication to \
+                 layer the pointer cursor + hover highlight over it; without \
+                 one the overlay is skipped silently"
+            );
+        });
+    }
+
+    /// The source-level half of the guard above.
+    ///
+    /// Whether a style preminted is decided by a `--cfg` this test binary
+    /// is not built with, so no assertion on a value can observe the
+    /// regression here (same limitation `premint_only_surface.rs`
+    /// documents). What IS observable is the spelling: cells must hand
+    /// over an explicit `StyleProp::Sheet`, which no `IntoStyleProp` fast
+    /// path can reinterpret. A bare application can, and did.
+    #[test]
+    fn premint_must_not_reach_table_cell_styles() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/components/table.rs"),
+        )
+        .expect("read table.rs");
+        for sheet in ["TableHeadCell", "TableBodyCell"] {
+            let needle =
+                format!("StyleProp::Sheet(Box::new({sheet}().into_style_application()))");
+            assert!(
+                src.contains(&needle),
+                "the {sheet} cell style must be handed over as an explicit \
+                 `StyleProp::Sheet` — a bare application premints, and the \
+                 clickable-row overlay is then dropped without a word"
+            );
+        }
+    }
+
+    /// The clickable-row overlay must PREMINT: it selects the cell
+    /// sheet's `interactive`/`row_hovered` AXES, whose every arm has
+    /// build-time CSS, instead of layering runtime overrides — the
+    /// override spelling disqualified every clickable cell from
+    /// preminting (one of the last two `--premint-only` blockers on the
+    /// docs corpus). Fails against the override form: an overridden
+    /// application's `preminted_class_list()` is `None` by construction.
+    /// The live engine must resolve the same arms to the same rules the
+    /// overrides produced (pointer cursor; themed hover background).
+    #[test]
+    fn regression_clickable_row_overlay_premints_via_axes() {
+        with_test_world(|| {
+            let row = TableRow(TableRowProps {
+                children: vec![body_cell("x")],
+                on_row_click: Some(Rc::new(|| {})),
+            });
+            let mut cells = row_cells(row);
+            let style = match classify(cells.remove(0)) {
+                P::View { style, .. } => style.expect("clickable cell keeps a style"),
+                _ => panic!("native cell must classify as a View"),
+            };
+            // Evaluate the reactive style at its resting state (not hovered).
+            let app = style.application();
+            assert!(
+                app.preminted_class_list().is_some(),
+                "the axis-selected cell application must premint (overrides would return None)"
+            );
+            let resting = runtime_core::resolve_style(&app);
+            assert_eq!(
+                resting.cursor,
+                Some(Cursor::Pointer),
+                "interactive arm carries the pointer cursor"
+            );
+            assert!(
+                resting.background.is_none(),
+                "resting (row_hovered=off) leaves the body cell's background untouched"
+            );
+
+            // The hovered arm resolves to the themed row highlight — same
+            // value the old override layer produced.
+            let hovered_app = TableBodyCell()
+                .into_style_application()
+                .with("interactive", "on")
+                .with("row_hovered", "on");
+            assert!(hovered_app.preminted_class_list().is_some());
+            let hovered = runtime_core::resolve_style(&hovered_app);
+            assert_eq!(
+                hovered.background.as_ref().map(|b| b.resolve().0.to_ascii_lowercase()),
+                Some("#eef0f7".into()),
+                "row_hovered arm resolves the themed surface-alt highlight"
+            );
+        });
+    }
+
     #[test]
     fn clickable_row_makes_every_cell_interactive() {
-        let row = TableRow(TableRowProps {
-            children: vec![body_cell("a"), body_cell("b")],
-            on_row_click: Some(Rc::new(|| {})),
-        });
-        let cells = row_cells(row);
-        assert_eq!(cells.len(), 2, "both cells survive post-processing");
-        for cell in &cells {
-            match cell {
-                Element::View {
-                    on_hover,
-                    on_touch,
-                    style,
-                    ..
-                } => {
-                    assert!(on_touch.is_some(), "clickable cell carries a tap handler");
-                    assert!(
-                        on_hover.is_some(),
-                        "clickable cell reports hover into the shared row flag"
-                    );
-                    assert!(
-                        matches!(style, Some(StyleSource::Reactive(_))),
-                        "cell style is reactive so the row-hover highlight re-applies"
-                    );
+        with_test_world(|| {
+            let row = TableRow(TableRowProps {
+                children: vec![body_cell("a"), body_cell("b")],
+                on_row_click: Some(Rc::new(|| {})),
+            });
+            let cells = row_cells(row);
+            assert_eq!(cells.len(), 2, "both cells survive post-processing");
+            for cell in cells {
+                match classify(cell) {
+                    P::View {
+                        on_hover,
+                        on_touch,
+                        style,
+                        ..
+                    } => {
+                        assert!(on_touch, "clickable cell carries a tap handler");
+                        assert!(
+                            on_hover,
+                            "clickable cell reports hover into the shared row flag"
+                        );
+                        assert!(
+                            style.expect("clickable cell keeps a style").is_reactive(),
+                            "cell style is reactive so the row-hover highlight re-applies"
+                        );
+                    }
+                    _ => panic!("native cell must classify as a View"),
                 }
-                _ => panic!("native cell must be an Element::View"),
             }
-        }
+        });
     }
 
     /// A plain row (no `on_row_click`) leaves its cells untouched: no
@@ -404,26 +527,28 @@ mod tests {
     /// accidentally making every table row interactive / reactive.
     #[test]
     fn static_row_leaves_cells_passive() {
-        let row = TableRow(TableRowProps {
-            children: vec![body_cell("a")],
-            on_row_click: None,
-        });
-        let cells = row_cells(row);
-        match &cells[0] {
-            Element::View {
-                on_hover,
-                on_touch,
-                style,
-                ..
-            } => {
-                assert!(on_touch.is_none(), "passive cell has no tap handler");
-                assert!(on_hover.is_none(), "passive cell has no hover handler");
-                assert!(
-                    matches!(style, Some(StyleSource::Static(_))),
-                    "passive cell keeps its static themed style (no per-node Effect)"
-                );
+        with_test_world(|| {
+            let row = TableRow(TableRowProps {
+                children: vec![body_cell("a")],
+                on_row_click: None,
+            });
+            let mut cells = row_cells(row);
+            match classify(cells.remove(0)) {
+                P::View {
+                    on_hover,
+                    on_touch,
+                    style,
+                    ..
+                } => {
+                    assert!(!on_touch, "passive cell has no tap handler");
+                    assert!(!on_hover, "passive cell has no hover handler");
+                    assert!(
+                        !style.expect("passive cell keeps its themed style").is_reactive(),
+                        "passive cell keeps its static themed style (no per-node Effect)"
+                    );
+                }
+                _ => panic!("native cell must classify as a View"),
             }
-            _ => panic!("native cell must be an Element::View"),
-        }
+        });
     }
 }

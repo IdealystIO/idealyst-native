@@ -8,20 +8,38 @@
 //!
 //! ```no_run
 //! # use std::rc::Rc;
-//! # use runtime_core::Element;
+//! # use render_wgpu::Painter;
+//! # use runtime_scene::Element;
 //! # fn my_app() -> Element { todo!() }
-//! use ios_sim::IosSim;
-//!
+//! # fn my_skin() -> Rc<dyn Painter> { todo!() }  // e.g. Rc::new(ios_sim::IosSim::new())
 //! fn main() {
-//!     variant_phone::run(Rc::new(IosSim::new()), my_app).unwrap();
+//!     variant_phone::run(my_skin(), my_app).unwrap();
 //! }
 //! ```
 
+// Only the runtime-server boot below needs these; the local-mount
+// entries live in `boot.rs`.
+#[cfg(feature = "runtime-server")]
 use std::rc::Rc;
-
-use runtime_core::{ColorScheme, Element};
-use host_winit::{run as run_core, DeviceProfile, RunError};
+#[cfg(feature = "runtime-server")]
+use host_winit::{DeviceProfile, RunError};
+#[cfg(feature = "runtime-server")]
 use render_wgpu::Painter;
+#[cfg(feature = "runtime-server")]
+use runtime_shared::ColorScheme;
+
+mod boot;
+
+pub use boot::{run, run_at, run_with};
+
+/// Compatibility path. These entries used to live behind a `newcore`
+/// module while the framework carried two cores; callers and docs
+/// spell them `variant_phone::newcore::run` / `::run_at` / `::run_with`. There is
+/// one core now and they live at the crate root — this re-export keeps
+/// the historical paths resolving.
+pub mod newcore {
+    pub use crate::{run, run_at, run_with};
+}
 
 /// Logical width (CSS px). iPhone 14 / 15 portrait.
 pub const WIDTH: u32 = 390;
@@ -30,41 +48,8 @@ pub const HEIGHT: u32 = 844;
 /// Title shown in the desktop window's title bar.
 pub const TITLE: &str = "Idealyst Preview — Phone";
 
-/// Run the phone preview with `skin` driving every widget +
-/// keyboard paint call. The skin is the only platform-flavor
-/// knob; the variant crate fixes the window size + title.
-pub fn run<F>(skin: Rc<dyn Painter>, build_ui: F) -> Result<(), RunError>
-where
-    F: FnOnce() -> Element + 'static,
-{
-    run_at(skin, None, build_ui)
-}
-
-/// Same as [`run`] but places the window at a specific
-/// screen-logical position. Used by harnesses that lay out
-/// multiple previews side by side.
-pub fn run_at<F>(
-    skin: Rc<dyn Painter>,
-    position: Option<(i32, i32)>,
-    build_ui: F,
-) -> Result<(), RunError>
-where
-    F: FnOnce() -> Element + 'static,
-{
-    run_core(
-        DeviceProfile {
-            logical_size: (WIDTH, HEIGHT),
-            position,
-            title: TITLE.to_string(),
-            color_scheme: ColorScheme::Auto,
-        },
-        skin,
-        build_ui,
-    )
-}
-
 /// Runtime-server variant of [`run`]. Instead of mounting a
-/// local `app()`, connects to the idealyst dev-host at `url`
+/// local scene, connects to the idealyst dev-host at `url`
 /// (CLI-baked via `IDEALYST_DEV_ENDPOINT`) and renders whatever
 /// wire commands the sidecar streams in. Each redraw ticks the
 /// runtime-server shell (which sends `RequestFrame` to drive the

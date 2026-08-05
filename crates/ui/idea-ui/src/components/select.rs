@@ -24,19 +24,18 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
+use runtime_core::stylesheet;
 use runtime_core::primitives::overlay::{overlay, BackdropMode};
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
 use runtime_core::{
     component, effect, signal, ui, Color, Element, FillRule, IconData, IdealystSchema,
     IntoElement, Length, Position, PressableHandle, Reactive, Ref, Signal, StyleApplication,
-    StyleRules, StyleSheet, Tokenized, VariantEnum, VariantSet, ViewHandle,
+    StyleRules, StyleSheet, Tokenized, VariantEnum, ViewHandle
 };
 
 use idea_theme::theme::IdeaThemeRef;
 
-// The `icon` primitive builder only exists under `prim-icon`; only the
-// Select component (gated below) renders it.
-#[cfg(all(feature = "prim-icon", feature = "prim-portal"))]
+// The `icon` primitive builder — the Select trigger's chevron.
 use runtime_core::icon;
 use crate::stylesheets::{SelectOption as SelectOptionStyle, SelectTrigger};
 
@@ -46,15 +45,22 @@ use crate::stylesheets::{SelectOption as SelectOptionStyle, SelectTrigger};
 /// *replaces* the backdrop's styling, so this must set the full-viewport inset
 /// itself — a background-only sheet would collapse to zero and catch nothing.
 fn transparent_backdrop_sheet() -> std::rc::Rc<StyleSheet> {
-    std::rc::Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
-        position: Some(Position::Absolute),
-        top: Some(Tokenized::Literal(Length::Px(0.0))),
-        left: Some(Tokenized::Literal(Length::Px(0.0))),
-        right: Some(Tokenized::Literal(Length::Px(0.0))),
-        bottom: Some(Tokenized::Literal(Length::Px(0.0))),
-        background: Some(Tokenized::Literal(Color("transparent".into()))),
-        ..Default::default()
-    }))
+    SelectBackdropSheet::sheet()
+}
+
+// `stylesheet!` (LINK-time), not `premint_as`: the dropdown constructs on
+// OPEN, which the premint dump's crawl never does — see `popover.rs`.
+stylesheet! {
+    SelectBackdropSheet<()> {
+        base(_t) {
+            position: Position::Absolute,
+            top: Length::Px(0.0),
+            left: Length::Px(0.0),
+            right: Length::Px(0.0),
+            bottom: Length::Px(0.0),
+            background: Color("transparent".into()),
+        }
+    }
 }
 
 pub use crate::stylesheets::SelectTriggerSize as SelectSize;
@@ -65,7 +71,7 @@ const CHEVRON_DOWN: IconData = IconData {
     view_box: (24, 24),
     paths: &["M6 9l6 6 6-6"],
     fill_rule: FillRule::NonZero,
-    filled: false,
+    filled: false
 };
 
 /// How fast the trigger chevron flips between its closed (0°) and open
@@ -98,7 +104,6 @@ impl SelectOption {
 // live inside the trigger's label text source. `icon` is structural (the
 // chevron is built once into a bound view) — see the TODO in the body.
 #[runtime_core::props]
-#[cfg(all(feature = "prim-icon", feature = "prim-portal"))]
 #[derive(IdealystSchema)]
 pub struct SelectProps {
     /// Controlled selected value — the `id` of the chosen
@@ -120,11 +125,10 @@ pub struct SelectProps {
     pub icon: Option<IconData>,
 }
 
-#[cfg(all(feature = "prim-icon", feature = "prim-portal"))]
 impl Default for SelectProps {
     fn default() -> Self {
         Self {
-            value: Signal::new(String::new()),
+            value: runtime_core::signal(String::new()),
             on_change: Rc::new(|_| {}),
             options: Vec::new(),
             size: Reactive::Static(SelectSize::default()),
@@ -138,13 +142,6 @@ impl Default for SelectProps {
 /// option's label (or `placeholder`), opening an anchored menu of
 /// [`SelectOption`] rows. Choosing a row fires `on_change` and closes
 /// the menu.
-#[cfg(all(feature = "prim-icon", feature = "prim-portal"))]
-///
-/// **Cargo features:** requires `prim-icon` + `prim-portal` (both in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without them compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Select(props: SelectProps) -> Element {
     let value = props.value;
@@ -165,16 +162,17 @@ pub fn Select(props: SelectProps) -> Element {
     let label_placeholder = placeholder.clone();
     // `placeholder` is read LIVE inside the trigger's label source, so a
     // reactive placeholder re-paints the empty-trigger text in place.
-    let label_source: runtime_core::TextSource = runtime_core::IntoTextSource::into_text_source(
-        move || {
-            label_options
-                .iter()
-                .find(|o| o.id == value.get())
-                .map(|o| o.label.get())
-                .or_else(|| label_placeholder.get())
-                .unwrap_or_default()
-        },
-    );
+    // (Plain closure into `text(...)` — the reactive text-source
+    // conversion is implicit; an explicit `into_text_source` spelling
+    // would be redundant.)
+    let label_source = move || {
+        label_options
+            .iter()
+            .find(|o| o.id == value.get())
+            .map(|o| o.label.get())
+            .or_else(|| label_placeholder.get())
+            .unwrap_or_default()
+    };
     let label_child = runtime_core::text(label_source).into_element();
 
     // Trailing chevron that rotates 180° while the menu is open. Bound to a
@@ -242,7 +240,6 @@ pub fn Select(props: SelectProps) -> Element {
     }
 }
 
-#[cfg(all(feature = "prim-icon", feature = "prim-portal"))]
 fn menu_build(
     value: Signal<String>,
     options: Rc<Vec<SelectOption>>,
@@ -326,6 +323,7 @@ fn menu_build(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
     use runtime_core::{resolve_style, FontFamily};
 
@@ -341,36 +339,38 @@ mod tests {
     // need a main-thread NSApp, so they're covered by the robot screenshot pass.
     #[test]
     fn regression_select_trigger_focus_paints_focus_ring_border() {
-        install_idea_theme(light_theme());
+        with_test_world(|| {
+            install_idea_theme(light_theme());
 
-        // The focus-ring color the trigger must resolve to when focused.
-        let ring = Tokenized::token("color-focus-ring", Color("#5b6cff".into())).resolve();
+            // The focus-ring color the trigger must resolve to when focused.
+            let ring = Tokenized::token("color-focus-ring", Color("#5b6cff".into())).resolve();
 
-        let focused = resolve_style(
-            &StyleApplication::new(SelectTrigger::sheet()).with("__state_focused", "on"),
-        );
-        let focused_border = focused
-            .border_top_color
-            .clone()
-            .expect("a focused trigger must set a border color")
-            .resolve();
-        assert_eq!(
-            focused_border, ring,
-            "a focused Select trigger must paint the theme focus-ring border, not the native ring"
-        );
+            let focused = resolve_style(
+                &StyleApplication::new(SelectTrigger::sheet()).with("__state_focused", "on"),
+            );
+            let focused_border = focused
+                .border_top_color
+                .clone()
+                .expect("a focused trigger must set a border color")
+                .resolve();
+            assert_eq!(
+                focused_border, ring,
+                "a focused Select trigger must paint the theme focus-ring border, not the native ring"
+            );
 
-        // Without focus the border is the resting neutral border — proving the
-        // ring comes from the `focused` state, not the base.
-        let base = resolve_style(&StyleApplication::new(SelectTrigger::sheet()));
-        let base_border = base
-            .border_top_color
-            .clone()
-            .expect("the trigger reserves a border in its base")
-            .resolve();
-        assert_ne!(
-            base_border, ring,
-            "the resting trigger border must NOT already be the focus ring"
-        );
+            // Without focus the border is the resting neutral border — proving the
+            // ring comes from the `focused` state, not the base.
+            let base = resolve_style(&StyleApplication::new(SelectTrigger::sheet()));
+            let base_border = base
+                .border_top_color
+                .clone()
+                .expect("the trigger reserves a border in its base")
+                .resolve();
+            assert_ne!(
+                base_border, ring,
+                "the resting trigger border must NOT already be the focus ring"
+            );
+    });
     }
 
     // Field report: on web the Select dropdown options rendered in the
@@ -381,29 +381,32 @@ mod tests {
     // theme font on the `SelectMenu` panel so the whole dropdown subtree
     // inherits it. This test fails before the fix (`font_family` is `None`).
     #[test]
-    fn regression_select_menu_pins_theme_font_for_portal() {
-        install_idea_theme(light_theme());
+    fn select_menu_sheet_premints_and_rides_the_default_font() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
 
-        let resolved = resolve_style(&StyleApplication::new(SelectMenu::sheet()));
-        let family = resolved.font_family.clone().expect(
-            "the Select menu must pin a font_family so its portal'd options don't \
-             fall back to the browser serif default",
-        );
-
-        // It must be the theme's body font (a non-empty system sans stack),
-        // not an empty/serif fallback.
-        match (&family, &idea_theme::active_font_family()) {
-            (FontFamily::System(got), FontFamily::System(want)) => {
-                assert_eq!(got, want, "menu font must match the active theme's body font");
-                assert!(!got.is_empty(), "an empty family resolves to the browser serif default");
-            }
-            (FontFamily::Typeface(got), FontFamily::Typeface(want)) => {
-                assert_eq!(
-                    got.family_name, want.family_name,
-                    "menu typeface must match the active theme's body typeface"
-                );
-            }
-            (got, want) => panic!("menu font kind {got:?} differs from the theme font {want:?}"),
-        }
+            // The contract INVERTED with the default-font root declaration:
+            // the sheet must NOT pin a font (a dynamic `font_family` is the
+            // one premint disqualifier — it kept SelectMenu off build-time
+            // CSS, and opening any Select panicked under `--premint-only`).
+            // The portal-font guarantee now rides the default-font
+            // machinery: the theme font is declared on the DOCUMENT ROOT on
+            // every build, so a `<body>`-mounted portal inherits it, and
+            // the live static path folds it at apply. That machinery is
+            // pinned by the runtime-vocabulary font tests and
+            // backend-ssr's `regression_reactive_styled_node_inherits_theme_font`.
+            let resolved = resolve_style(&StyleApplication::new(SelectMenu::sheet()));
+            assert!(
+                resolved.font_family.is_none(),
+                "the menu sheet must not pin a font — that disqualifies it \
+                 from preminting; portals get the theme font from the root"
+            );
+            assert!(
+                StyleApplication::new(SelectMenu::sheet()).preminted_class_list().is_some(),
+                "the menu sheet must premint: it first constructs when a \
+                 Select OPENS, so only build-time CSS can style it under \
+                 --premint-only"
+            );
+    });
     }
 }

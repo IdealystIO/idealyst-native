@@ -9,12 +9,12 @@
 //! Without these, framework helpers like `view_ref.frame()` and
 //! `view_ref.absolute_frame()` (used by the welcome example's
 //! raf-driver to read viewport dims) silently return `None`. The
-//! defaults in `runtime_core::handles` are no-op stubs.
+//! defaults in `runtime_shared::handles` are no-op stubs.
 
 use std::any::Any;
 
-use runtime_core::primitives::portal::ViewportRect;
-use runtime_core::{TextOps, ViewOps};
+use runtime_shared::primitives::portal::ViewportRect;
+use runtime_shared::{TextOps, ViewOps};
 
 use crate::node::WgpuNode;
 
@@ -27,8 +27,7 @@ fn frame_of(node: &dyn Any) -> Option<ViewportRect> {
     let weak = crate::backend_impl::global_self()?;
     let rc = weak.upgrade()?;
     let backend = rc.try_borrow().ok()?;
-    use runtime_core::Backend;
-    backend.frame(n)
+    backend.frame_impl(n)
 }
 
 /// Like [`frame_of`] but returns the absolute (viewport-relative)
@@ -39,8 +38,7 @@ fn absolute_frame_of(node: &dyn Any) -> Option<ViewportRect> {
     let weak = crate::backend_impl::global_self()?;
     let rc = weak.upgrade()?;
     let backend = rc.try_borrow().ok()?;
-    use runtime_core::Backend;
-    backend.absolute_frame(n)
+    backend.absolute_frame_impl(n)
 }
 
 pub(crate) struct WgpuViewOps;
@@ -63,7 +61,7 @@ impl ViewOps for WgpuViewOps {
     fn set_animated_f32(
         &self,
         node: &dyn Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         value: f32,
     ) {
         if let Some(n) = node.downcast_ref::<WgpuNode>() {
@@ -73,7 +71,7 @@ impl ViewOps for WgpuViewOps {
     fn set_animated_color(
         &self,
         node: &dyn Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
         if let Some(n) = node.downcast_ref::<WgpuNode>() {
@@ -89,7 +87,7 @@ impl TextOps for WgpuTextOps {
     fn set_animated_color(
         &self,
         node: &dyn Any,
-        prop: runtime_core::animation::AnimProp,
+        prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
         if let Some(n) = node.downcast_ref::<WgpuNode>() {

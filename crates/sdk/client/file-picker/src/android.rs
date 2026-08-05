@@ -74,7 +74,7 @@ impl PickedFile {
 /// fires here — this conversion is unreachable, kept only so the cross-platform
 /// `FileDropZone` compiles.
 #[cfg(feature = "drop")]
-pub(crate) fn picked_from_dropped(_f: &runtime_core::DroppedFile) -> Option<PickedFile> {
+pub(crate) fn picked_from_dropped(_f: &runtime_shared::DroppedFile) -> Option<PickedFile> {
     None
 }
 

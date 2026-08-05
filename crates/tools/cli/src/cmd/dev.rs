@@ -37,19 +37,24 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use build_ios::{parse_manifest, Target};
 
-/// Cargo features for dev-mode builds. The macOS wrapper template
-/// declares its own `dev = ["runtime-core/dev"]` feature that
-/// gates `--emit-catalog` mode in main; passing the wrapper's
-/// own feature is what we want there. iOS / Android / Web wrappers
-/// don't (yet) have a wrapper-side `dev` feature, so we activate
-/// `runtime-core/dev` directly across the dep boundary — same
-/// effect on the framework, just no per-wrapper feature gates.
-fn dev_user_features_macos() -> Vec<String> {
+/// Cargo features for dev-mode builds of a NATIVE wrapper (macOS, iOS,
+/// Android, terminal).
+///
+/// Each of those wrapper templates declares its own
+/// `dev = ["runtime-core/dev", "runtime-shared/robot"]`, and passing
+/// the wrapper's own name is what we want: the template's
+/// `#[cfg(feature = "dev")]` blocks (`--emit-catalog` mode, the
+/// app-identity registration) are gated on it, so activating
+/// `runtime-core/dev` across the dep boundary instead would compile
+/// them out and leave the MCP catalog empty.
+///
+/// The two halves are both load-bearing: `runtime-core/dev` is
+/// robot + catalog (the automation registry and the inventory anchor),
+/// while `runtime-shared/robot` is the bridge TRANSPORT the templates
+/// call into (`robot::bridge::set_app_identity`) — the vocabulary's
+/// `robot` feature does not forward it.
+fn dev_user_features_native() -> Vec<String> {
     vec!["dev".to_string()]
-}
-
-fn dev_user_features_other() -> Vec<String> {
-    vec!["runtime-core/dev".to_string()]
 }
 
 /// Compute the env vars the dev launcher sets on the spawned app.
@@ -184,9 +189,60 @@ pub struct Args {
     #[arg(long)]
     pub local: bool,
 
+    /// Accepted no-op alias: runtime v2 is the only runtime, so every
+    /// dev session already runs on it. Kept so existing invocations,
+    /// scripts, and CI files don't break (see `crate::core_mode`).
+    ///
+    /// In runtime-server mode (the default) the sidecar mounts the app
+    /// through a per-session `World` + scene `realize`
+    /// (`dev_server::sidecar::run_newcore`); the wire protocol is
+    /// unchanged, so clients are identical. Saves apply via
+    /// rebuild-and-respawn — in-place hot-PATCHING needs the
+    /// `#[component]` hot-dispatch split, which the runtime-v2 emission
+    /// does not have. In `--local` mode each platform wrapper boots its
+    /// own `newcore` entry.
+    #[arg(long)]
+    pub new_core: bool,
+
+    /// REMOVED: the pre-runtime-v2 walker no longer exists. Passing
+    /// this fails with the migration pointer rather than silently
+    /// running runtime v2 with old-core semantics expected
+    /// (`crate::core_mode`, `docs/migrating-to-runtime-v2.md`).
+    #[arg(long)]
+    pub old_core: bool,
+
     /// Build and run the web target.
     #[arg(long)]
     pub web: bool,
+
+    /// Web + `--local` only: premint static styles on every dev rebuild —
+    /// the dev loop serves the same premint bundle `idealyst build --web
+    /// --premint` ships (dump-emitted `pkg/premint.css`, wasm compiled
+    /// with `--cfg idealyst_premint`, the stylesheet `<link>` spliced
+    /// into served HTML). Use it to exercise the premint attach paths
+    /// live: the minted-class guard's once-per-class console warning
+    /// fires here for any sheet the dump's crawl missed. Requires
+    /// `--local` (runtime-server mode resolves styles server-side, so
+    /// there is nothing to premint client-side). Each rebuild re-runs
+    /// the native style dump. Composes with `dev --ssr`: the SSR wrapper
+    /// is built with the same premint cfgs, stamps the same classes, and
+    /// links the dump's premint.css from every served page.
+    #[arg(long)]
+    pub premint: bool,
+
+    /// Web + `--local` only: premint AND compile the style engine out —
+    /// the strict verification loop for `--premint-only` deploys. Any
+    /// style the dump's crawl missed panics in the browser on the
+    /// interaction that reaches it, exactly as the shipped po bundle
+    /// would. Implies `--premint`.
+    #[arg(long)]
+    pub premint_only: bool,
+
+    /// Web + `--local` only: premint and log every style that still
+    /// falls through to the live engine (`[premint-report] …` console
+    /// lines). Implies `--premint`.
+    #[arg(long)]
+    pub premint_report: bool,
 
     /// Disable the Robot bridge in dev mode. By DEFAULT `idealyst dev` hosts a
     /// `robot-relay` and wires the launched app to dial it (web-local injects
@@ -333,6 +389,21 @@ fn ambient_lint_pass(dir: &Path) {
 
 pub fn run(args: Args) -> Result<()> {
     let dir = crate::framework_source::abs_project_dir(&args.dir)?;
+
+    // One core: `--new-core` is a no-op, `--old-core` is a hard error.
+    crate::core_mode::validate_flags(args.new_core, args.old_core)?;
+
+    // Premint dev mode renders in the browser from a locally-built wasm
+    // bundle; runtime-server mode resolves styles server-side and streams
+    // them over the wire, so there is nothing client-side to premint —
+    // refuse the pair rather than silently ignoring the flags.
+    if (args.premint || args.premint_only || args.premint_report) && !args.local {
+        anyhow::bail!(
+            "--premint/--premint-only/--premint-report need `--local`: the default \
+             runtime-server dev mode resolves styles server-side, so the premint attach \
+             paths never run. Retry as `idealyst dev --web --local --premint…`."
+        );
+    }
 
     // Resolve the active target set. Explicit flags win; if none are
     // passed, fall back to the manifest's `targets`. We parse the
@@ -1187,7 +1258,7 @@ fn launch_terminal(dir: &Path, args: &Args, runtime_server_port: Option<u16>) ->
             release: false,
             mode,
             source,
-            user_features: dev_user_features_other(),
+            user_features: dev_user_features_native(),
             env_vars,
         },
     )
@@ -1264,34 +1335,27 @@ fn launch_web(
         if !args.no_build {
             crate::dlog!(
                 "dev web",
-                "building wasm shim with runtime-server + runtime-core/hot-reload…"
+                "building wasm shim with runtime-server…"
             );
             dev_reload::build_once(
                 dir,
                 &dev_reload::BuildOptions {
                     source: source.clone(),
-                    // Two features flipped on for the wasm build:
+                    // One feature flipped on for the wasm build:
+                    // `runtime-server` (bare, wrapper-local) switches
+                    // the generated `start()` from a local mount to a
+                    // `WireBackend` + `connect_web` against the URL
+                    // injected as `window.IDEALYST_RUNTIME_SERVER_URL`.
+                    // Without this the browser would render locally and
+                    // never open the WebSocket, so the runtime-server
+                    // sidecar would log `notifying 0 session(s) to
+                    // re-render` on every rebuild.
                     //
-                    // 1. `runtime-server` (bare feature) — wrapper-
-                    //    local; switches the generated `start()` from
-                    //    local `mount(app)` to a `WireBackend` +
-                    //    `connect_web` against the URL injected as
-                    //    `window.IDEALYST_RUNTIME_SERVER_URL`. Without
-                    //    this the browser would render locally and
-                    //    never open the WebSocket, so the runtime-
-                    //    server sidecar would log `notifying 0
-                    //    session(s) to re-render` on every hot-patch.
-                    //
-                    // 2. `runtime-core/hot-reload` (cross-crate) —
-                    //    flips the `#[component]` macro into its
-                    //    split form (`__<Name>_hot_impl` + outer
-                    //    dispatch via `dev_hot::call`) on the
-                    //    USER crate's compilation. Even though the
-                    //    browser doesn't apply patches, the wire
-                    //    protocol carries `HandlerId`s minted against
-                    //    the hot-reload-aware handler table, so the
-                    //    user crate must compile with the same
-                    //    flavor as the runtime-server sidecar.
+                    // There is no hot-reload counterpart: the
+                    // `#[component]` lowering has no hot-dispatch split,
+                    // so a source change rebuilds and respawns the
+                    // session rather than patching a handler table in
+                    // place (named gap in docs/migrating-to-runtime-v2.md).
                     features: vec![
                         // Wrapper-local feature; MUST match the
                         // template's declaration or the
@@ -1300,12 +1364,16 @@ fn launch_web(
                         // and require every user crate to declare an
                         // unused `runtime-server` feature.
                         "runtime-server".to_string(),
-                        "runtime-core/hot-reload".to_string(),
                     ],
                     bundle_out_dir: None,
+                    // Unreachable with premint flags set: run() bails on
+                    // premint without --local, and this is the !local arm.
+                    premint: false,
+                    premint_only: false,
+                    premint_report: false,
                 },
             )
-            .context("web build failed (runtime-server + runtime-core/hot-reload)")?;
+            .context("web build failed (runtime-server)")?;
         }
 
         // The dev-server lives on this machine, so the browser always
@@ -1336,6 +1404,7 @@ fn launch_web(
             overlay_ctx.clone(),
             head_ctx.clone(),
             Some(fallback_index.clone()),
+            false,
         )?;
         Ok(())
     } else {
@@ -1359,6 +1428,13 @@ fn launch_web(
                 signal.clone(),
                 dev_reload::BuildOptions {
                     source: source.clone(),
+                    // Unlike the native wrappers, the web wrapper declares
+                    // no `dev` feature of its own — it takes `runtime-core`
+                    // as a DIRECT dep so this cross-boundary activation
+                    // resolves. It needs no `runtime-shared/robot` either: a
+                    // browser app can't host the TCP bridge, it dials a relay
+                    // through the wrapper-local `robot` feature below.
+                    //
                     // Robot is on by default in dev → add the wrapper-local
                     // `robot` feature (→ `backend-web/robot`) so the local web
                     // bundle dials the relay run() hosts. --no-robot opts out.
@@ -1370,6 +1446,9 @@ fn launch_web(
                         f
                     },
                     bundle_out_dir: None,
+                    premint: args.premint,
+                    premint_only: args.premint_only,
+                    premint_report: args.premint_report,
                 },
             )?;
             std::mem::forget(handle);
@@ -1378,6 +1457,51 @@ fn launch_web(
             // for the local-mode dev path. Splits the wasm-pack
             // output into base + chunks, emits chunks into
             // <project>/pkg/. Mirrors the build path; coming up next.
+        }
+
+        // ── Premint dev: the pkg-into-project path rewrites no
+        //    index.html, so splice the stylesheet <link> into served
+        //    HTML here — the same tag (incl. the font-families dedup
+        //    attribute) the staged deploy bundle gets. Injected once
+        //    from the initial build's CSS: the filename never changes
+        //    across rebuilds and dev-http serves everything no-store,
+        //    so each livereload refetches the fresh bytes. (Families
+        //    could in principle drift on a rebuild that adds a font;
+        //    worst case is one duplicate font fetch until the dev
+        //    server restarts — not worth per-reload HTML rewriting.)
+        if args.premint || args.premint_only || args.premint_report {
+            let css_path = dir.join("pkg").join(build_web::PREMINT_CSS_NAME);
+            match std::fs::read_to_string(&css_path) {
+                Ok(css) => {
+                    let tag = build_web::premint_css_link_tag(
+                        build_web::PREMINT_CSS_NAME,
+                        &build_web::premint_font_families(&css),
+                    );
+                    head_ctx = Some(match head_ctx.take() {
+                        Some(mut h) => {
+                            h.html.push('\n');
+                            h.html.push_str(&tag);
+                            h
+                        }
+                        None => dev_http::HeadInjectionContext { html: tag },
+                    });
+                    crate::dlog!(
+                        "dev web",
+                        "premint: linked pkg/{} into served HTML",
+                        build_web::PREMINT_CSS_NAME,
+                    );
+                }
+                // Reachable with --no-build and no prior premint build —
+                // the served page would boot with zero minted classes
+                // (guard disarms on an empty scan under --premint, or
+                // everything panics under --premint-only), so say why.
+                Err(e) => crate::dlog!(
+                    "dev web",
+                    "premint: cannot read {} ({e}) — with --no-build the CSS must \
+                     already exist from a previous premint build",
+                    css_path.display(),
+                ),
+            }
         }
         let ctx = ReloadContext { signal };
 
@@ -1426,6 +1550,7 @@ fn launch_web(
             overlay_ctx,
             head_ctx,
             Some(fallback_index),
+            false,
         )?;
         Ok(())
     }
@@ -1589,13 +1714,18 @@ fn launch_ssr(
         let _ = build_web::build(
             dir,
             build_web::BuildOptions {
+            // Dev/docs/run builds keep the full vocabulary: `--primitives`
+            // is a release-bundle lever, and dropping one mid-session would
+            // panic at mount rather than degrade.
+            primitives: None,
+            premint_only: false,
+            premint_report: false,
                 release: false,
                 source: source.clone(),
                 user_features: Vec::new(),
                 bundle_out_dir: Some(bundle_dir.clone()),
                 gzip: false,
                 brotli: false,
-                primitives: None,
                 strip_panics: false,
                 // Always on in `dev --ssr` mode — the bundle is going
                 // to hydrate the server's DOM.
@@ -1604,7 +1734,11 @@ fn launch_ssr(
                 // bundle size, and the heuristic adds a pass per
                 // rebuild.
                 prune_dead_data_min: None,
-            },
+                premint: false,
+                // Follows the session's resolved core (runtime-v2
+                // defaults flip) so the served SSR HTML and the
+                // hydrating bundle agree on a core.
+                },
         )
         .with_context(|| "wasm build for SSR mode failed")?;
     }
@@ -1617,6 +1751,12 @@ fn launch_ssr(
             release: false,
             source: source.clone(),
             user_features: Vec::new(),
+            // Follows the session's resolved core (runtime-v2
+            // defaults flip). Premint posture mirrors the wasm leg above
+            // so server-stamped classes match the hydrating bundle's.
+            premint: args.premint || args.premint_only || args.premint_report,
+            premint_only: args.premint_only,
+            premint_report: args.premint_report,
         },
     )
     .with_context(|| "SSR wrapper build failed")?;
@@ -1727,6 +1867,12 @@ fn launch_web_with_backend(
                 // in-crate value) would sync `pkg/` into the project root
                 // instead, which no server reads → stale browser.
                 bundle_out_dir: Some(dist_web.clone()),
+                // Full-stack premint dev: the staged-bundle path injects
+                // the stylesheet <link> into the staged index.html itself,
+                // so threading the flags is the whole feature here.
+                premint: args.premint,
+                premint_only: args.premint_only,
+                premint_report: args.premint_report,
             },
         )
         .context("web bundle initial build + watcher start failed")?;
@@ -1855,16 +2001,28 @@ fn spawn_backend(
     cmd.spawn().context("spawn server (`cargo run`)")
 }
 
-/// Forward the local `[pubsub]` backend from `dev.toml` as `IDEALYST_PUBSUB_*`
-/// so a server/worker `main` calling `pubsub::configure_from_env()` connects to
-/// the same broker across instances.
+/// Forward the local `[pubsub]` + `[cache]` backends from `dev.toml` /
+/// `idealyst.toml` as `IDEALYST_PUBSUB_*` / `IDEALYST_CACHE_*` so a
+/// server/worker `main` calling `pubsub::configure_from_env()` /
+/// `cache::configure_from_env()` connects to the same shared backend across
+/// instances.
 fn apply_pubsub_env(cmd: &mut std::process::Command, dir: &Path) {
-    if let Ok(Some(ps)) = crate::dev_config::DevConfig::load(dir).map(|c| c.pubsub) {
-        if let Some(b) = &ps.backend {
-            cmd.env("IDEALYST_PUBSUB_BACKEND", b);
+    if let Ok(cfg) = crate::dev_config::DevConfig::load(dir) {
+        if let Some(ps) = &cfg.pubsub {
+            if let Some(b) = &ps.backend {
+                cmd.env("IDEALYST_PUBSUB_BACKEND", b);
+            }
+            if let Some(u) = &ps.url {
+                cmd.env("IDEALYST_PUBSUB_URL", u);
+            }
         }
-        if let Some(u) = &ps.url {
-            cmd.env("IDEALYST_PUBSUB_URL", u);
+        if let Some(cache) = &cfg.cache {
+            if let Some(b) = &cache.backend {
+                cmd.env("IDEALYST_CACHE_BACKEND", b);
+            }
+            if let Some(u) = &cache.url {
+                cmd.env("IDEALYST_CACHE_URL", u);
+            }
         }
     }
 }
@@ -2042,7 +2200,7 @@ fn launch_ios(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
             release: false,
             mode,
             source,
-            user_features: dev_user_features_other(),
+            user_features: dev_user_features_native(),
             // The dev loop relaunches on every change; the default
             // terminate-before-install (inside `run`) already keeps the
             // simulator from re-foregrounding a stale process. A full
@@ -2101,7 +2259,7 @@ fn launch_android(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> 
             mode,
             runtime_server_port,
             source,
-            user_features: dev_user_features_other(),
+            user_features: dev_user_features_native(),
             // The dev process hosts the relay and exported its URL; pass it so
             // run-android bakes it into the manifest + sets up `adb reverse`.
             robot_relay_url: std::env::var("IDEALYST_ROBOT_RELAY_URL").ok(),
@@ -2151,7 +2309,7 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>, macos
             release: false,
             mode: build_mode,
             source: source.clone(),
-            user_features: dev_user_features_macos(),
+            user_features: dev_user_features_native(),
             universal: false, // dev: fast host-arch build
         },
     )
@@ -2182,7 +2340,7 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>, macos
             mode,
             source,
             background: true,
-            user_features: dev_user_features_macos(),
+            user_features: dev_user_features_native(),
             env_vars,
         },
     )
@@ -2325,6 +2483,9 @@ impl Args {
             dir: self.dir.clone(),
             local: self.local,
             web: self.web,
+            premint: self.premint,
+            premint_only: self.premint_only,
+            premint_report: self.premint_report,
             no_robot: self.no_robot,
             headless_client: self.headless_client,
             no_headless_client: self.no_headless_client,
@@ -2345,6 +2506,12 @@ impl Args {
             no_build: self.no_build,
             bridge_port: self.bridge_port,
             interactive: self.interactive,
+            // Compatibility flags only — `run` validates them once up
+            // front (`core_mode::validate_flags`) and no worker reads
+            // them, but they are part of the clap struct so the clone
+            // has to carry them.
+            new_core: self.new_core,
+            old_core: self.old_core,
         }
     }
 }

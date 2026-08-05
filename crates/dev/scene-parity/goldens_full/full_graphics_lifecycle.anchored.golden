@@ -1,0 +1,42 @@
+# scene-parity FULL-OP golden — scenario `full_graphics_lifecycle`, mode `anchored`
+#
+# P3-set: the graphics surface's lifecycle contract. Mount pins
+# create_graphics(on_ready/on_resize/on_lost) -> apply_style; the
+# platform sim fires ready (author reads size+scale), resize, and
+# lost, each reaching the author's closures unwrapped ('author'
+# lines); the swap-out releases the surface in both dispose
+# orderings. The unstyle/release interleaving inside the teardown
+# window is a kernel-ordering artifact (README divergence #5: old
+# LIFO, new creation order — override-pinned); an unstyled
+# surface still releases (independent-probe contract, pinned by
+# the vocabulary suite).
+#
+# Complete backend-call stream (create_*/update_*/apply_style/release_*
+# + the structural ops). Node names are creation-order (n0, n1, ...).
+# Owned by the OLD core; regenerate after an INTENDED walker change
+# with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 anchor
+clear_children n1
+create n2 graphics on_ready=<fn> on_resize=<fn> on_lost=<fn>
+apply_style n2 {background: Some(Literal(Color("#202020"))), width: Some(Literal(Px(100.0)))}
+insert n1 <- n2
+insert n0 <- n1
+
+== surface ready 640x480 @2 ==
+author on_ready 640x480 @2
+
+== resize 800x600 @2 ==
+author on_resize 800x600 @2
+
+== surface lost ==
+author on_lost
+
+== swap out (unstyle then release_graphics) ==
+release_graphics n2
+on_node_unstyled n2
+clear_children n1
+create n3 text "no canvas"
+insert n1 <- n3

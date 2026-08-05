@@ -57,8 +57,8 @@
 
 use std::collections::HashMap;
 
-use runtime_core::{Length, StyleRules, Tokenized};
 use runtime_layout::{LayoutNode, LayoutTree};
+use runtime_shared::{Length, StyleRules, Tokenized};
 
 use crate::node::{NodeKind, WgpuNode};
 
@@ -103,7 +103,7 @@ pub(crate) type StickyRegistry = HashMap<usize, StickyChild>;
 /// (the `top` value), and the scroll view's current `offset_y`.
 ///
 /// The math is identical to iOS's — we duplicate the 3-line
-/// helper rather than share via `runtime_core` because there's
+/// helper rather than share via `runtime_shared` because there's
 /// no other consumer and the inline copy keeps the call site
 /// readable.
 ///
@@ -268,10 +268,7 @@ fn find_node_by_layout_recursive(node: &WgpuNode, target: LayoutNode) -> Option<
 ///
 /// Cheap: O(sum of sticky-child depths). The registry is tiny by
 /// construction — at most a handful of sticky elements per app.
-pub(crate) fn refresh_layout_positions(
-    registry: &mut StickyRegistry,
-    layout: &LayoutTree,
-) {
+pub(crate) fn refresh_layout_positions(registry: &mut StickyRegistry, layout: &LayoutTree) {
     for child in registry.values_mut() {
         let Some(scroll_layout) = child.scroll_layout else {
             // No scroll ancestor — render walker won't apply any

@@ -15,7 +15,13 @@ crate-type = ["rlib"]
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# `runtime-core` is aliased to `runtime_core` at the crate root (see
+# src/lib.rs); `runtime-vocabulary` because the `ui!` emission spells
+# absolute `::runtime_vocabulary::glue::…` paths; `runtime-scene` because
+# `register_scene_extensions` is generic over the registry host.
 runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 # Virtualized-collection constructors — this gallery uses `responsive_grid`
 # to lane the icons into as many columns as the viewport fits.

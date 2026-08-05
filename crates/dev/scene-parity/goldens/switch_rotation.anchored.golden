@@ -1,0 +1,35 @@
+# scene-parity golden — scenario `switch_rotation`, mode `anchored`
+#
+# 3-branch `switch` (typed/opaque discriminant) rotated
+# 0 -> 1 -> 2 -> 0. Anchored: the closure path defers the rebuild
+# to a microtask (synchronous here: no scheduler installed) and
+# swaps under the anchor via drop-scope + clear_children + insert.
+# Spliced: synchronous remove_child + insert_at(base_index).
+#
+# Structural ops only. Node names are creation-order (n0, n1, ...);
+# `cleanup <label>` lines are scenario-registered on_cleanup markers
+# pinning dispose ordering. Regenerate after an INTENDED behavior
+# change with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 anchor
+clear_children n1
+create n2 text "arm-a"
+insert n1 <- n2
+insert n0 <- n1
+
+== set arm = 1 ==
+clear_children n1
+create n3 text "arm-b"
+insert n1 <- n3
+
+== set arm = 2 ==
+clear_children n1
+create n4 text "arm-c"
+insert n1 <- n4
+
+== set arm = 0 (full rotation) ==
+clear_children n1
+create n5 text "arm-a"
+insert n1 <- n5

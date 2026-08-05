@@ -21,7 +21,8 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use backend_ssr::{serve, ServeConfig};
+use backend_ssr::newcore::serve;
+use backend_ssr::ServeConfig;
 use std::path::PathBuf;
 
 fn main() {
@@ -64,15 +65,20 @@ fn main() {
         ServeConfig {
             bundle_module,
             static_dir: Some(static_dir),
+            // No favicon/head injection here — `build-ssr`'s generated
+            // wrapper bakes `icon_gen::web_icon_link_tags()` into this
+            // slot; the example serves without one.
+            extra_head: None,
+            // Non-premint example — the generated wrapper is where the
+            // premint link/guard wiring lives.
+            premint_css: None,
         },
-        |b| {
-            // Same extensions the web build registers (see
-            // `website::register_extensions`) so SSR renders identically
-            // and the bundle hydrates by adoption: navigator chrome +
-            // the code-block external (server-rendered `<pre>`).
-            swap_navigator::register_generic(b);
-            codeblock::register(b);
-        },
+        // The same registration the CLI's SSR wrapper calls: the
+        // codeblock scene handler, so code panels server-render their
+        // real `<pre>`/span DOM and the bundle hydrates by adoption
+        // (navigators are vocabulary built-ins — nothing to register).
+        // Identical to `idealyst dev --ssr`.
+        website::register_ssr_scene_handlers,
         website::app,
     )
     .expect("SSR server failed to start");

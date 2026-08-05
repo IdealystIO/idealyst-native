@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>idealyst-native · A/B measurement harness</title>
+<style>
+  html, body { margin: 0; padding: 0; font-family: -apple-system, sans-serif; }
+  #app { min-height: 100vh; }
+</style>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module">
+    // A/B measurement harness. `?pkg=<dir>` picks which built package
+    // under `wasm/` to load, so a before/after comparison is two
+    // wasm-pack builds into two out-dirs:
+    //
+    //   ?pkg=pkg        → wasm/pkg/        (the default build)
+    //   ?pkg=pkg-after  → wasm/pkg-after/  (the candidate build)
+    //
+    // Both bundles export the SAME function set from the SAME source
+    // (benchmark/idealyst-native/wasm/src/lib.rs).
+    // Methodology: see the "A/B harness" section in
+    // ../idealyst-native/README.md. Drive from Playwright/devtools via
+    // `window.bench.run()` or per-op `window.bench.measure(name)`.
+    const params = new URLSearchParams(window.location.search);
+    // Accept any pkg-dir name matching wasm/pkg*(-…) so a candidate
+    // build or a debug-stats profiling build (`pkg-prof`) loads through
+    // the same harness; anything else falls back to `pkg`.
+    const rawPkg = params.get('pkg') || 'pkg';
+    const pkg = /^pkg(-[a-z0-9-]+)?$/.test(rawPkg) ? rawPkg : 'pkg';
+    const mod = await import(`./wasm/${pkg}/benchmark_idealyst_native.js`);
+    await mod.default();
+    mod.start(10);
+
+    // Drain the microtask queue (the flush microtask + the batched-text
+    // microtask both ride here).
+    const drainMicro = async (n = 8) => { for (let i = 0; i < n; i++) await Promise.resolve(); };
+    const raf = () => new Promise(r => requestAnimationFrame(r));
+
+    // Wait until `pred()` holds: microtask drain first (cheap, no
+    // frame quantization), then rAF-poll fallback with a timeout.
+    async function settle(pred, label) {
+      await drainMicro();
+      if (pred()) return;
+      const deadline = performance.now() + 5000;
+      while (performance.now() < deadline) {
+        await raf();
+        await drainMicro();
+        if (pred()) return;
+      }
+      throw new Error(`settle timeout: ${label}`);
+    }
+
+    const app = document.getElementById('app');
+    const rowsIn = (sel) => app.querySelectorAll(sel).length;
+    const scroller = () => app.querySelector('[class]') && app; // rows live under #app
+    const rowCountIs = (n) => () => {
+      // Row text is "Row #i" — count by last row presence + total.
+      const nodes = app.querySelectorAll('div');
+      return app.textContent.includes(`Row #${n - 1}`) && !app.textContent.includes(`Row #${n}`);
+    };
+    const textIncludes = (s) => () => app.textContent.includes(s);
+    const rootVarIs = (name, v) => () =>
+      getComputedStyle(document.documentElement).getPropertyValue(name).trim() === v;
+
+    // One measured iteration: prepare (untimed) → settle → time op
+    // until its predicate holds (sync call + microtask-settled DOM).
+    async function once(prep, op, pred, label) {
+      if (prep) { prep(); await settle(() => true, 'prep'); await drainMicro(); await raf(); }
+      const t0 = performance.now();
+      op();
+      await settle(pred, label);
+      const t1 = performance.now();
+      return t1 - t0;
+    }
+
+    const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+
+    // Per-op definitions. Each returns {samples, median}. `iters`
+    // measured runs after `warmup` discarded runs.
+    async function runOp(def, warmup = 2, iters = 9) {
+      const samples = [];
+      for (let i = 0; i < warmup + iters; i++) {
+        const ms = await def(i);
+        if (i >= warmup) samples.push(ms);
+      }
+      return { samples, median: median(samples) };
+    }
+
+    let seq = 0;
+    const OPS = {
+      // Rebuild suite (mode 0): full row-list teardown + rebuild.
+      create_1k: (i) => once(
+        () => mod.set_rows(10),
+        () => mod.set_rows(1000),
+        rowCountIs(1000), 'create_1k'),
+      create_10k: (i) => once(
+        () => mod.set_rows(10),
+        () => mod.set_rows(10000),
+        rowCountIs(10000), 'create_10k'),
+      teardown_10k: (i) => once(
+        () => mod.set_rows(10000),
+        () => mod.set_rows(10),
+        rowCountIs(10), 'teardown_10k'),
+
+      // Theme toggle at 1k rows: :root var flip + cascade (both cores
+      // deliver via update_tokens → CSS vars).
+      theme_toggle_1k: async (i) => {
+        if (i === 0) { mod.set_rows(1000); await settle(rowCountIs(1000), 'rows'); }
+        const dark = i % 2 === 0;
+        return once(null,
+          () => mod.set_theme_by_name(dark ? 'dark' : 'light'),
+          rootVarIs('--color-surface', dark ? '#1a1d24' : '#ffffff'),
+          'theme_toggle_1k');
+      },
+
+      // Granular suite (mode 2): per-row counter text bindings.
+      granular_bump_1k: async (i) => {
+        if (i === 0) { mod.setup_counters(1000); await settle(textIncludes('row 999'), 'setup'); }
+        const v = ++seq;
+        const row = (i * 97) % 1000;
+        return once(null,
+          () => mod.bump_counter(row, v),
+          textIncludes(`row ${row}: c=${v}`), 'granular_bump_1k');
+      },
+      bump_range_100: async (i) => {
+        const v = ++seq;
+        return once(null,
+          () => mod.bump_range(0, 100, v),
+          textIncludes(`row 99: c=${v}`), 'bump_range_100');
+      },
+
+      // Reactive-style suite (mode 3): shared bump = O(rows) style
+      // effects on BOTH cores; point bump = 1 effect.
+      rstyle_shared_1k: async (i) => {
+        if (i === 0) { mod.setup_reactive_styles(1000); await settle(textIncludes('rstyle 999'), 'setup'); }
+        const b = i % 2 === 0;
+        const rgb = b ? 'rgb(255, 91, 108)' : 'rgb(91, 108, 255)';
+        const last = () => {
+          const el = [...app.querySelectorAll('div')].find(e => e.textContent === 'rstyle 999');
+          return el && getComputedStyle(el.parentElement.contains(el) ? el : el).backgroundColor === rgb
+            || (el && getComputedStyle(el).backgroundColor === rgb);
+        };
+        return once(null, () => mod.set_shared_color(b ? 'B' : 'A'), last, 'rstyle_shared_1k');
+      },
+      rstyle_point: async (i) => {
+        const b = i % 2 === 0;
+        const rgb = b ? 'rgb(255, 91, 108)' : 'rgb(91, 108, 255)';
+        const el0 = () => {
+          const el = [...app.querySelectorAll('div')].find(e => e.textContent === 'rstyle 500');
+          return el && getComputedStyle(el).backgroundColor === rgb;
+        };
+        return once(null, () => mod.set_point_color(500, b ? 'B' : 'A'), el0, 'rstyle_point');
+      },
+
+      // Signal-class suite (mode 4): the class-binding fan-out op —
+      // one world effect per bound node (see the README's note on the
+      // JS write-notifier channel the old walker had here).
+      sclass_shared_1k: async (i) => {
+        if (i === 0) { mod.setup_signal_class_rows(1000); await settle(textIncludes('sclass 999'), 'setup'); }
+        const b = i % 2 === 0;
+        const rgb = b ? 'rgb(255, 91, 108)' : 'rgb(91, 108, 255)';
+        const last = () => {
+          const el = [...app.querySelectorAll('div')].find(e => e.textContent === 'sclass 999');
+          return el && getComputedStyle(el).backgroundColor === rgb;
+        };
+        return once(null, () => mod.set_shared_color(b ? 'B' : 'A'), last, 'sclass_shared_1k');
+      },
+
+      // Hierarchy suite (mode 1): text-binding fan-out. global hits
+      // every leaf; branch hits exactly one.
+      hier_global_1k: async (i) => {
+        if (i === 0) { mod.setup_hierarchy(42, 1000, 0); await settle(textIncludes('leaf'), 'setup'); }
+        const v = ++seq;
+        return once(null,
+          () => mod.global_update(v),
+          textIncludes(`g=${v}`), 'hier_global_1k');
+      },
+      hier_branch: async (i) => {
+        const v = ++seq;
+        return once(null,
+          () => mod.branch_update(v),
+          textIncludes(`b=${v}`), 'hier_branch');
+      },
+    };
+
+    window.bench = {
+      pkg,
+      mod,
+      measure: async (name, warmup, iters) => runOp(OPS[name], warmup, iters),
+      run: async () => {
+        const out = {};
+        for (const name of Object.keys(OPS)) {
+          out[name] = await runOp(OPS[name]);
+          out[name].median = +out[name].median.toFixed(3);
+          out[name].samples = out[name].samples.map(x => +x.toFixed(3));
+        }
+        return out;
+      },
+    };
+    window.benchReady = true;
+  </script>
+</body>
+</html>

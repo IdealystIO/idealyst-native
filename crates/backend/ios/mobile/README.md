@@ -20,12 +20,24 @@ backend_ios_mobile::install_global_self(&backend); // for AnimatedValue::bind
   property writes can find the backend without threading it through
   closures. Without it, `AnimatedValue::bind` silently no-ops.
 
-Call `runtime_core::mount(backend, app)`, not `render(backend, app())`.
-See `project_mount_vs_render` in memory.
+### Boot
+
+`src/newcore.rs` implements `runtime_scene::Host` + all 30
+`runtime_vocabulary::caps` traits directly on `IosBackend` (each method
+delegates to the inherent `*_impl` body that owns the UIKit mechanism
+code in `src/imp/`) and provides the boot entry,
+`backend_ios::newcore::run_in_view(root_view, register, build)` — the
+body of the CLI wrapper's `ios_main`. Its flush driver is
+dispatch-site glue (author callbacks wrapped at the caps impls) plus
+the `backend_apple_core::dispatch_hook` fired after scheduler
+timers/frames and async-executor polls — no event monitor, no frame
+poll (UIKit has no NSEvent-monitor equivalent and needs none; see the
+module docs). `crates/dev/newcore-ios-smoke` is the live smoke app
+(`host/run-sim.sh` builds + launches it on the simulator).
 
 ## Layout
 
-Layout is driven through [`runtime-layout`](../../../framework/runtime-layout)
+Layout is driven through [`runtime-layout`](../../../runtime/layout)
 (Taffy). Each `IosNode` carries its UIKit view *and* its Taffy `LayoutNode`;
 the `finish` hook runs `LayoutTree::compute` against the root and walks the
 tree applying frames.
@@ -67,17 +79,15 @@ backend's structure but skip the workarounds:
   `project_gradient_native`.
 
 If you're patching a primitive on this backend and you find yourself
-adding a per-platform hack to the *call site* (in runtime-core or in
-author code), stop. The fix belongs in this backend. See
+adding a per-platform hack to the *call site* (in the vocabulary's
+handlers or in author code), stop. The fix belongs in this backend. See
 `feedback_backend_owns_rendering` in memory and the project CLAUDE.md §7.
 
-## Element coverage status
+## Primitive coverage status
 
-Not all primitives are implemented yet. As of this README, the iOS backend
-is missing:
-
-- **`create_virtualizer`**: no `UICollectionView`-backed list yet, even
-  though the framework's `FlatList` / `Virtualizer` works on web and Android.
+All 30 capability traits are implemented (see `src/newcore.rs`), including
+`create_virtualizer` — a `UICollectionView` + flow layout with real cell
+recycling (`src/imp/virtualizer.rs`).
 
 The root README's per-backend matrix is the source of truth for parity.
 

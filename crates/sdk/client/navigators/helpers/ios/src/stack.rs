@@ -5,10 +5,10 @@
 //!   1. The per-instance state is now stored in this crate's thread-local
 //!      `STACK_INSTANCES` registry instead of an `IosBackend` field.
 //!   2. The `IosNavCallbacks` (defined in this crate's `lib.rs`)
-//!      replaces the deleted `runtime_core::NavigatorCallbacks<N>`.
+//!      replaces the deleted old-core `NavigatorCallbacks<N>`.
 //!   3. `attach_initial`'s opaque options come through as the helper's
 //!      `IosScreenOptions` reference instead of the deleted
-//!      `runtime_core::ScreenOptions`.
+//!      old-core `ScreenOptions`.
 
 use crate::chrome::apply_header_options;
 use crate::{IosNavCallbacks, IosScreenOptions, IOS_NAV_OPS, STACK_INSTANCES};
@@ -22,7 +22,7 @@ use objc2_foundation::MainThreadMarker;
 use objc2_ui_kit::{
     UINavigationController, UINavigationControllerDelegate, UIView, UIViewController,
 };
-use runtime_core::primitives::navigator::{
+use runtime_shared::primitives::navigator::{
     MountResult, NavCommand, NavState, NavigatorControl,
 };
 use std::any::Any;
@@ -145,7 +145,7 @@ fn sync_back_gesture(nav: &UINavigationController, stack: &[ScreenEntry]) {
 fn sync_active_screen(nav: &UINavigationController, stack: &[ScreenEntry]) {
     sync_back_gesture(nav, stack);
     let fullscreen = stack.last().map(|e| e.fullscreen).unwrap_or(false);
-    runtime_core::set_fullscreen(fullscreen);
+    runtime_shared::set_fullscreen(fullscreen);
 }
 
 // ---------------------------------------------------------------------------
@@ -460,7 +460,7 @@ pub(crate) fn attach_initial(
         // `after_ms(0)` window — the runtime owns it and sweeps it after it
         // fires. The closure only touches the per-navigator registry entry
         // (cleaned up on `release`), so this is safe.
-        runtime_core::after_ms_detached(0, move || {
+        runtime_shared::after_ms_detached(0, move || {
             reconstruct_back_stack(mtm, navigator_key, initial_route);
         });
     }
@@ -529,6 +529,6 @@ fn reconstruct_back_stack(
 // Anchor so the unused-import lint on `IOS_NAV_OPS` doesn't trip when
 // only the public-API funcs in `lib.rs` reach for it.
 #[allow(dead_code)]
-fn _ops_anchor() -> &'static dyn runtime_core::primitives::navigator::NavigatorOps {
+fn _ops_anchor() -> &'static dyn runtime_shared::primitives::navigator::NavigatorOps {
     &IOS_NAV_OPS
 }

@@ -19,7 +19,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_core::{unscope, Signal};
+use runtime_core::{signal, unscope, Signal};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -70,16 +70,20 @@ struct SharedInner<T> {
     bus: RefCell<Option<web::TabBus>>,
 }
 
-impl<T: Clone + Serialize + DeserializeOwned + Merge + 'static> SharedInner<T> {
+impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> SharedInner<T> {
     fn set_state(&self, entries: Vec<Entry<T>>) {
         let items = entries
             .iter()
             .map(|e| e.value.clone())
             .collect::<Vec<_>>();
-        runtime_core::cycle(|| {
-            self.items_sig.set(items);
-            self.entries_sig.set(entries);
-        });
+        // `set_always`: author item type `T` carries no `PartialEq`
+        // bound (only `Merge`), so the projected lists can't be
+        // equality-guarded. No explicit batch window is needed — a `set`
+        // STAGES the write and the flush commits every staged write in one
+        // pass, so these two coalesce into a single fan-out by
+        // construction.
+        self.items_sig.set_always(items);
+        self.entries_sig.set_always(entries);
     }
 
     fn is_owner(&self) -> bool {
@@ -109,7 +113,7 @@ impl<T> Clone for SharedPartition<T> {
     }
 }
 
-impl<T: Clone + Serialize + DeserializeOwned + Merge + 'static> SharedPartition<T> {
+impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> SharedPartition<T> {
     /// The reactive entries view (status-aware), identical to
     /// [`Partition::entries`]. Stable across a leader handoff.
     pub fn entries(&self) -> Signal<Vec<Entry<T>>> {
@@ -196,7 +200,7 @@ impl<T: Clone + Serialize + DeserializeOwned + Merge + 'static> SharedPartition<
 // ---------------------------------------------------------------------------
 
 #[cfg(not(target_arch = "wasm32"))]
-impl<T: Clone + Serialize + DeserializeOwned + Merge + 'static> SharedPartition<T> {
+impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> SharedPartition<T> {
     /// Open the partition. On native this is just an owner with no
     /// coordination.
     pub async fn open(
@@ -204,9 +208,8 @@ impl<T: Clone + Serialize + DeserializeOwned + Merge + 'static> SharedPartition<
         name: &str,
         transport: Rc<dyn Transport<T>>,
     ) -> Result<Self, SyncError> {
-        let (entries_sig, items_sig, leader_sig) = unscope(|| {
-            (Signal::new(Vec::new()), Signal::new(Vec::new()), Signal::new(false))
-        });
+        let (entries_sig, items_sig, leader_sig) =
+            unscope(|| (signal(Vec::new()), signal(Vec::new()), signal(false)));
         let inner = Rc::new(SharedInner {
             entries_sig,
             items_sig,
@@ -234,7 +237,7 @@ impl<T: Clone + Serialize + DeserializeOwned + Merge + 'static> SharedPartition<
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "wasm32")]
-impl<T: Clone + Serialize + DeserializeOwned + Merge + 'static> SharedPartition<T> {
+impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> SharedPartition<T> {
     /// Open the partition with multi-tab coordination. Starts as a follower
     /// and requests leadership; the first tab to acquire the lock becomes
     /// the owner, and a follower is promoted when the owner's tab closes.
@@ -243,9 +246,8 @@ impl<T: Clone + Serialize + DeserializeOwned + Merge + 'static> SharedPartition<
         name: &str,
         transport: Rc<dyn Transport<T>>,
     ) -> Result<Self, SyncError> {
-        let (entries_sig, items_sig, leader_sig) = unscope(|| {
-            (Signal::new(Vec::new()), Signal::new(Vec::new()), Signal::new(false))
-        });
+        let (entries_sig, items_sig, leader_sig) =
+            unscope(|| (signal(Vec::new()), signal(Vec::new()), signal(false)));
         let inner = Rc::new(SharedInner {
             entries_sig,
             items_sig,
@@ -303,7 +305,7 @@ impl<T: Clone + Serialize + DeserializeOwned + Merge + 'static> SharedPartition<
 /// Build the real owner partition for this tab, mirror its signals into the
 /// shared signals (and broadcast on every change), then announce + initial
 /// sync. Used by both native open and the web leadership callback.
-async fn become_owner<T: Clone + Serialize + DeserializeOwned + Merge + 'static>(
+async fn become_owner<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static>(
     inner: Rc<SharedInner<T>>,
 ) -> Result<(), SyncError> {
     let partition = inner
@@ -341,7 +343,7 @@ async fn become_owner<T: Clone + Serialize + DeserializeOwned + Merge + 'static>
 
 /// Dispatch an incoming cross-tab message (web only).
 #[cfg(target_arch = "wasm32")]
-fn handle_msg<T: Clone + Serialize + DeserializeOwned + Merge + 'static>(
+fn handle_msg<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static>(
     inner: &Rc<SharedInner<T>>,
     msg: CoordMsg,
 ) {

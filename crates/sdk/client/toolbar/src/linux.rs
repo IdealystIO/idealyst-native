@@ -1,7 +1,7 @@
-//! Linux (GTK4) implementation of the toolbar SDK.
+//! Linux (GTK4) leg — the `LinuxBackend`-concrete scene handler.
 //!
 //! Builds a [`GtkHeaderBar`] populated with buttons matching the
-//! reactive [`ToolbarProps::items`] closure, then sets it as the
+//! reactive [`crate::ToolbarProps::items`] closure, then sets it as the
 //! host window's titlebar via `window.set_titlebar()`. HeaderBar is
 //! the modern GTK4 replacement for the deprecated `GtkToolbar` and
 //! is the closest equivalent to macOS's `NSToolbar` — it replaces
@@ -11,31 +11,54 @@
 //!
 //! # Reactive items
 //!
-//! Same `effect!`-driven rebuild as the macOS impl: on each
-//! re-fire we wipe the HeaderBar's packed children and append fresh
-//! buttons from the new `items` Vec.
+//! Same effect-driven rebuild as the macOS handler: a
+//! [`runtime_world::effect`] created during realize re-fires whenever the
+//! signals read by `props.items()` change, wiping the HeaderBar's packed
+//! children and appending fresh buttons from the new `items` Vec.
+//!
+//! # Click flush discipline
+//!
+//! `connect_clicked` fires OUTSIDE the runtime's wrapped dispatch sites,
+//! so every button `on_click` is wrapped to call
+//! [`backend_linux::newcore::schedule_flush`] after the author code
+//! returns — otherwise a signal write inside a click handler would stay
+//! staged in the world forever. Same residual the macOS NSToolbar leg
+//! closes.
 //!
 //! # Tree position
 //!
 //! Unlike the macOS NSToolbar (where the in-tree placeholder is 0×0
 //! and invisible), the GTK HeaderBar lives as the window's titlebar
-//! — entirely outside the framework's content tree. The framework-
-//! returned `LinuxNode` for the Toolbar primitive is therefore a
-//! zero-size empty `gtk::Box`. Where you mount it in the `ui!` tree
-//! doesn't affect rendering, same model as macOS.
+//! — entirely outside the framework's content tree. The in-tree
+//! `LinuxNode` for the Toolbar primitive is therefore a zero-size empty
+//! `gtk::Box`. Where you mount it in the `ui!` tree doesn't affect
+//! rendering, same model as macOS.
 
-use crate::{ToolbarItem, ToolbarOps, ToolbarProps};
+use crate::{finish_mount, ToolbarItem, ToolbarOps, ToolbarPrim, ToolbarProps};
 use backend_linux::{LinuxBackend, LinuxNode};
 use gtk4::prelude::*;
+use runtime_scene::{Element, MountCx};
 use std::any::Any;
 use std::rc::Rc;
 
 pub(crate) static OPS: &dyn ToolbarOps = &LinuxToolbarOps;
 
-/// Register the Linux `Toolbar` external handler on `backend`. Call once
-/// at app boot so `Toolbar` elements lower to the native toolbar.
-pub fn register(backend: &mut LinuxBackend) {
-    backend.register_external::<ToolbarProps, _>(|props, b| build_toolbar(props, b));
+/// Mount handler for `Registry<LinuxBackend>`: the HeaderBar built and
+/// installed as the window titlebar, reactive items via a world effect,
+/// a zero-size in-tree placeholder returned, then the standard mount
+/// tail (style / ref fill / `release_external` teardown).
+pub(crate) fn mount_toolbar_linux(
+    cx: &mut MountCx<'_, LinuxBackend>,
+    prim: &Rc<ToolbarPrim>,
+    _children: Vec<Element>,
+) -> LinuxNode {
+    let backend = cx.backend().clone();
+    let node = {
+        let mut b = backend.borrow_mut();
+        build_toolbar(&prim.props, &mut b)
+    };
+    finish_mount(&backend, &node, prim);
+    node
 }
 
 // =========================================================================
@@ -61,7 +84,7 @@ fn build_toolbar(props: &Rc<ToolbarProps>, b: &mut LinuxBackend) -> LinuxNode {
     // rebuilds the HeaderBar's packed children.
     let headerbar_for_effect = headerbar.clone();
     let props_for_effect = props.clone();
-    runtime_core::effect!({
+    runtime_world::effect(move || {
         let items = (props_for_effect.items)();
         apply_items(&headerbar_for_effect, items);
     });
@@ -103,7 +126,13 @@ fn apply_items(headerbar: &gtk4::HeaderBar, items: Vec<ToolbarItem>) {
                     button.set_tooltip_text(Some(tooltip));
                 }
                 if let Some(cb) = btn.on_click {
-                    button.connect_clicked(move |_| cb());
+                    // `connect_clicked` fires outside the runtime's
+                    // wrapped dispatch sites — append the flush so
+                    // writes inside the author's click land (module docs).
+                    button.connect_clicked(move |_| {
+                        cb();
+                        backend_linux::newcore::schedule_flush();
+                    });
                 }
                 // Icon: GTK uses icon-name themed lookup (Freedesktop
                 // icon spec). For v1 we leave icons unwired — the

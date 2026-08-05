@@ -14,7 +14,6 @@
 //!
 //! ```no_run
 //! # use file_picker::{FileDropZone, PickedFile};
-//! # use runtime_core::{ui, view, text};
 //! let dz = FileDropZone::new().on_drop(|files: Vec<PickedFile>| {
 //!     for f in files {
 //!         // stream `f` to your uploader — identical to a picked file
@@ -34,7 +33,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{FileDropEvent, FileDropPhase, Signal, TouchResponse};
+use runtime_core::{signal, FileDropEvent, FileDropPhase, Signal, TouchResponse};
 
 use crate::PickedFile;
 
@@ -62,9 +61,13 @@ impl FileDropZone {
     /// Create an empty drop zone. Chain [`on_drop`](Self::on_drop) (and
     /// optionally [`on_enter`](Self::on_enter) / [`on_leave`](Self::on_leave))
     /// to react to drops.
+    ///
+    /// Creates the `active` signal, so it must run where signal creation is
+    /// legal — a component body or any world-entered build scope, not an
+    /// event handler. The returned handler itself IS handler-safe.
     pub fn new() -> Self {
         Self {
-            active: Signal::new(false),
+            active: signal(false),
             on_enter: None,
             on_leave: None,
             on_drop: None,
@@ -110,9 +113,10 @@ impl FileDropZone {
         let on_drop = self.on_drop.clone();
         move |ev: &FileDropEvent| match &ev.phase {
             FileDropPhase::Entered => {
-                if !active.get() {
-                    active.set(true);
-                }
+                // `set` is equality-guarded at commit, so a redundant write is
+                // already a no-op — no read-back guard needed (and a read-back
+                // could not see a same-turn staged write anyway).
+                active.set(true);
                 if let Some(cb) = &on_enter {
                     cb();
                 }
@@ -120,18 +124,14 @@ impl FileDropZone {
                 TouchResponse::CONSUMED
             }
             FileDropPhase::Exited => {
-                if active.get() {
-                    active.set(false);
-                }
+                active.set(false);
                 if let Some(cb) = &on_leave {
                     cb();
                 }
                 TouchResponse::IGNORED
             }
             FileDropPhase::Dropped(files) => {
-                if active.get() {
-                    active.set(false);
-                }
+                active.set(false);
                 if let Some(cb) = &on_drop {
                     let picked: Vec<PickedFile> = files
                         .iter()
@@ -154,6 +154,17 @@ mod tests {
     use runtime_core::{DroppedFile, TouchPoint};
     use std::cell::RefCell;
 
+    /// The zone mints a signal (world required) and its writes STAGE, so a
+    /// read-back needs the commit the backend's driver would perform after the
+    /// drop event returns.
+    fn world<R>(f: impl FnOnce() -> R) -> R {
+        runtime_core::__with_fresh_world(f)
+    }
+
+    fn flush() {
+        runtime_core::__flush_test_world();
+    }
+
     fn ev(phase: FileDropPhase) -> FileDropEvent {
         FileDropEvent {
             phase,
@@ -163,17 +174,21 @@ mod tests {
 
     #[test]
     fn active_toggles_on_enter_and_exit() {
-        let dz = FileDropZone::new();
-        let active = dz.active();
-        let h = dz.handler();
-        assert!(!active.get());
+        world(|| {
+            let dz = FileDropZone::new();
+            let active = dz.active();
+            let h = dz.handler();
+            assert!(!active.get());
 
-        let resp = h(&ev(FileDropPhase::Entered));
-        assert!(resp.consumed, "Entered is accepted (so the drag isn't rejected)");
-        assert!(active.get(), "active flips true while a drag hovers");
+            let resp = h(&ev(FileDropPhase::Entered));
+            assert!(resp.consumed, "Entered is accepted (so the drag isn't rejected)");
+            flush();
+            assert!(active.get(), "active flips true while a drag hovers");
 
-        h(&ev(FileDropPhase::Exited));
-        assert!(!active.get(), "active flips back false on leave");
+            h(&ev(FileDropPhase::Exited));
+            flush();
+            assert!(!active.get(), "active flips back false on leave");
+        });
     }
 
     #[test]
@@ -183,33 +198,37 @@ mod tests {
         let path = std::env::temp_dir().join("file_drop_zone_unit_test.txt");
         std::fs::write(&path, b"hello").unwrap();
 
-        let names: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-        let names_c = names.clone();
-        let dz = FileDropZone::new().on_drop(move |files| {
-            names_c
-                .borrow_mut()
-                .extend(files.iter().map(|f| f.name().to_string()));
+        world(|| {
+            let names: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let names_c = names.clone();
+            let dz = FileDropZone::new().on_drop(move |files| {
+                names_c
+                    .borrow_mut()
+                    .extend(files.iter().map(|f| f.name().to_string()));
+            });
+            let active = dz.active();
+            let h = dz.handler();
+
+            h(&ev(FileDropPhase::Entered));
+            flush();
+            assert!(active.get());
+
+            h(&ev(FileDropPhase::Dropped(vec![DroppedFile {
+                name: "file_drop_zone_unit_test.txt".to_string(),
+                mime: "text/plain".to_string(),
+                size: Some(5),
+                path: Some(path.clone()),
+                source: None,
+            }])));
+            flush();
+
+            assert!(!active.get(), "active resets after a drop");
+            assert_eq!(
+                names.borrow().as_slice(),
+                &["file_drop_zone_unit_test.txt".to_string()],
+                "the dropped file surfaces as a PickedFile with the right name"
+            );
         });
-        let active = dz.active();
-        let h = dz.handler();
-
-        h(&ev(FileDropPhase::Entered));
-        assert!(active.get());
-
-        h(&ev(FileDropPhase::Dropped(vec![DroppedFile {
-            name: "file_drop_zone_unit_test.txt".to_string(),
-            mime: "text/plain".to_string(),
-            size: Some(5),
-            path: Some(path.clone()),
-            source: None,
-        }])));
-
-        assert!(!active.get(), "active resets after a drop");
-        assert_eq!(
-            names.borrow().as_slice(),
-            &["file_drop_zone_unit_test.txt".to_string()],
-            "the dropped file surfaces as a PickedFile with the right name"
-        );
 
         let _ = std::fs::remove_file(&path);
     }

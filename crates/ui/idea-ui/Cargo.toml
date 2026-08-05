@@ -9,36 +9,7 @@ description = "Cross-platform UI component library for the idealyst framework"
 crate-type = ["rlib"]
 
 [features]
-# Every prim family idea-ui components render through, ON by default so
-# `idea-ui = { workspace = true }` keeps the full component set — the
-# pre-gating behavior. A size-restricted app disables default features
-# here AND on runtime-core/backend-web (`idealyst build --primitives …`),
-# then re-enables only the families it uses; components whose required
-# families are off are compiled out entirely, so using one is a compile
-# error naming the missing feature instead of a runtime placeholder.
-default = [
-    "prim-icon", "prim-image", "prim-text-input", "prim-activity",
-    "prim-portal", "prim-presence",
-]
-# Each feature mirrors the same-named runtime-core family and gates the
-# components that (transitively) render it:
-#   prim-icon        Icon, IconButton, Breadcrumbs, Checkbox, Switch,
-#                    Slider, Pagination (+ contributes to Button/Alert/
-#                    Field/Select/Toast)
-#   prim-image       Image, Avatar
-#   prim-text-input  Textarea (+ Field, Autocomplete)
-#   prim-activity    Spinner (+ Button's loading state, Alert, Field, Toast)
-#   prim-portal      Menu, Popover, Tooltip (+ Select, Autocomplete,
-#                    Modal, Toast)
-#   prim-presence    (+ Modal, Toast)
-# Multi-family components require ALL their families (the cfg(all(...))
-# gates in components/mod.rs are the authoritative per-component map).
-prim-icon = ["runtime-core/prim-icon"]
-prim-image = ["runtime-core/prim-image"]
-prim-text-input = ["runtime-core/prim-text-input"]
-prim-activity = ["runtime-core/prim-activity"]
-prim-portal = ["runtime-core/prim-portal"]
-prim-presence = ["runtime-core/prim-presence"]
+default = ["table"]
 
 # Off by default. When on, every component's `*Props` gets a
 # `DocControls` impl + supporting types that the idea-ui-docs app
@@ -46,36 +17,76 @@ prim-presence = ["runtime-core/prim-presence"]
 # don't need reflective tooling leave this off — the derive
 # expansion is dead code without it but a few hundred kilobytes of
 # generated impls aren't free.
-#
-# Requires the full prim set: the docs runtime (`doc_controls`) renders
-# its control panels out of Field/Select/Switch, and the docs app
-# showcases every component.
-docs = [
-    "dep:idea-ui-docs-derive",
-    "prim-icon", "prim-image", "prim-text-input", "prim-activity",
-    "prim-portal", "prim-presence",
-]
+docs = ["dep:idea-ui-docs-derive"]
 
 # Off by default. When on, components forward an optional `test_id` prop to
-# their root interactive primitive via `Element::with_test_id`, so a robot/
-# E2E suite can locate them. Mirrors `runtime-core/robot`; production apps
-# leave it off (the forwarding compiles out).
+# their root interactive primitive, so a robot/E2E suite can locate them.
+# Mirrors `runtime-core/robot`; production apps leave it off (the
+# forwarding compiles out).
 robot = ["runtime-core/robot"]
 
+# The themed `Table` component + its `table` SDK dep (ON by default).
+# The only feature on this crate that still removes linked code: without
+# it the `table` crate never enters the graph.
+table = ["dep:table"]
+
+# ---------------------------------------------------------------------------
+# WHY THERE IS NO PER-COMPONENT `prim-*` GATING ANY MORE
+# ---------------------------------------------------------------------------
+# This crate used to carry six `prim-icon` / `prim-image` /
+# `prim-text-input` / `prim-activity` / `prim-portal` / `prim-presence`
+# features that `#[cfg]`-deleted every component rendering the matching
+# primitive family. They existed to be the *author-facing half* of the old
+# core's `runtime-core/prim-*` features, which compiled out three real
+# things: the render walker's per-`Element`-variant dispatch arms, the
+# authoring builder fns, and the `Backend` trait's per-primitive methods.
+# Turning a family off on both crates measurably shrank a wasm bundle, and
+# using a gated-out component was a compile error naming the missing
+# feature instead of a runtime placeholder.
+#
+# That lever does not exist on the current runtime. There is no walker and
+# no `Backend` mega-trait: `runtime_vocabulary::handlers::register_builtins`
+# installs one handler per primitive into a `runtime_scene::Registry`, and
+# reachability — not a cargo feature — decides what links.
+# `runtime-vocabulary` has no `prim-*` features at all, so these features had
+# nothing left to forward to. Keeping them would have kept deleting
+# components from this crate's public API while shrinking nothing, which is
+# strictly worse than not having them: the size win WAS the whole point.
+#
+# The bundle lever on this runtime is the boot seam. `register_builtins` holds
+# the only reference to each prim module and its caps calls, so it is what
+# makes every builtin handler reachable from `main`. A per-family gate
+# therefore belongs THERE (plus each backend's caps impls) — a size-restricted
+# app's route to a smaller binary is a narrower registration set, with LTO
+# dropping whatever nothing registers, not a compile-time amputation of the
+# component library. If that split lands, restoring this crate's author-facing
+# half is mechanical: the per-component family map is preserved in the crate
+# docs (`src/lib.rs`, "Primitive families per component") precisely so it can
+# be.
+
 [dependencies]
-# PATH dep with `default-features = false`, NOT `workspace = true`: cargo
-# ignores `default-features = false` on workspace-inherited lines, so a
-# workspace dep would force every `prim-*` family back ON for any app
-# that disabled them (feature unification), defeating the component
-# gating above. The `prim-*` features forward exactly the families this
-# crate's own features select. (Same contract as backend-web; idea-theme
-# and the table SDK carry the same no-defaults dep lines so this crate's
-# whole subtree is unification-clean.)
-runtime-core = { path = "../../runtime/core", default-features = false }
+# The framework author surface, reached under the historical `runtime_core`
+# name via the crate-root `extern crate runtime_core as runtime_core;`
+# alias in lib.rs (see the note there).
+runtime-core = { workspace = true }
+# The `ui!` / `#[component]` emission spells absolute
+# `::runtime_vocabulary::glue::…` paths, and `test_support` downcasts the
+# scene payloads (`runtime_vocabulary::prims`), so the vocabulary is a
+# direct dependency, not only a transitive one.
+runtime-vocabulary = { workspace = true }
 idea-theme = { workspace = true }
 idea-ui-docs-derive = { workspace = true, optional = true }
 # Themed `Table` component layers on the cross-platform `table` SDK
-# (real HTML `<table>` on web, flex passthrough on native). idea-ui
+# (real HTML `<table>` on web, shared-track CSS-grid on native). idea-ui
 # wraps it the same way it wraps `activity_indicator` (as `Spinner`)
-# and `toggle` (as `Switch`).
-table = { workspace = true }
+# and `toggle` (as `Switch`). Optional so a size-restricted build can
+# drop it (the `table` feature).
+table = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Integration tests that MOUNT a component (not just resolve its
+# stylesheets) need a native `Host`. `host-mock` implements `Host` plus
+# every capability trait over a recording op log — it exists for exactly
+# this. Used by `collapsible_direct_mount.rs`.
+host-mock = { workspace = true }
+runtime-scene = { workspace = true }

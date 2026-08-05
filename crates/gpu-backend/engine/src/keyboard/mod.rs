@@ -89,7 +89,11 @@ pub struct KeySpec {
 /// Convenience constructor for a letter key (width 1.0, action
 /// = insert `c`).
 pub fn letter(c: char, label: &'static str) -> KeySpec {
-    KeySpec { label, action: KeyAction::Character(c), width_units: 1.0 }
+    KeySpec {
+        label,
+        action: KeyAction::Character(c),
+        width_units: 1.0,
+    }
 }
 
 /// Per-skin inter-key spacing knobs. The shared layout engine
@@ -145,10 +149,7 @@ pub fn build_glyph_cache(
 /// logical px. `slide` in `[0.0, 1.0]`: `1.0` = fully on-screen
 /// at the bottom edge; `0.0` = fully off-screen below the
 /// viewport. Returns `None` for a degenerate viewport.
-pub fn keyboard_rect(
-    viewport: (f32, f32),
-    slide: f32,
-) -> Option<(f32, f32, f32, f32)> {
+pub fn keyboard_rect(viewport: (f32, f32), slide: f32) -> Option<(f32, f32, f32, f32)> {
     if viewport.0 <= 0.0 || viewport.1 <= 0.0 {
         return None;
     }
@@ -252,11 +253,7 @@ pub fn hit_test(
         return (Some(rect), None);
     }
     for k in keys {
-        if point.0 >= k.x
-            && point.0 <= k.x + k.w
-            && point.1 >= k.y
-            && point.1 <= k.y + k.h
-        {
+        if point.0 >= k.x && point.0 <= k.x + k.w && point.1 >= k.y && point.1 <= k.y + k.h {
             return (Some(rect), Some(k.action));
         }
     }

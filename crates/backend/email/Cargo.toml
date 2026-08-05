@@ -6,10 +6,10 @@ license.workspace = true
 
 # Email-rendering backend — the "SSG for emails" engine.
 #
-# `EmailBackend` is a headless [`Backend`](runtime_core::Backend) like
-# `backend-ssr`, but tuned for the email surface instead of the browser:
-# it walks the SAME author `Element` tree every other backend renders and
-# emits an email-safe HTML document. The differences from SSR are all about
+# `EmailBackend` is a headless renderer like `backend-ssr`, but tuned for
+# the email surface instead of the browser: it realizes the SAME author
+# scene every other backend renders and emits an email-safe HTML
+# document. The differences from SSR are all about
 # where email clients diverge from browsers:
 #
 #   * styles are baked INLINE on each node (`style="…"`), never a `<head>`
@@ -26,6 +26,19 @@ license.workspace = true
 # job of a component layer (`idea-ui-mail`), not this backend — mirroring
 # how the web backend stays layout-neutral and idea-ui owns the opinions.
 
+[features]
+
 [dependencies]
-runtime-core = { workspace = true }
+# The permanent substrate both cores compiled against (style engine,
+# tokens, prop/handle structs, scheduling, viewport). `runtime-core` is
+# NOT a dependency: this backend has no `Element`/`Backend` surface left.
+runtime-shared = { workspace = true }
 css = { workspace = true }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+
+[dev-dependencies]
+# Frozen old-core output for the cross-core parity corpus, so the gate
+# survives the deletion of the old core. See tests/goldens/README.md.
+parity-goldens = { workspace = true }

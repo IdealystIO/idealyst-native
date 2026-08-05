@@ -8,7 +8,7 @@ use runtime_core::{
     component, switch, ui, Color, Element, IntoElement, Ref, StyleApplication, Tokenized,
     ViewHandle,
 };
-use idea_ui::{typography_kind, Stack, StackGap, Typography};
+use idea_ui::{typography_kind, IdeaTheme as _, Stack, StackGap, Typography};
 
 use crate::components::Prose;
 use crate::styles::{
@@ -106,12 +106,24 @@ const DARK_PALETTE: Palette = Palette {
     accent: "#c4b5fd",
 };
 
-/// Read the current `color-background` token and decide whether we're in
-/// a dark theme. Idea-ui's light themes start with near-white
+/// Read the active theme's background and decide whether we're in a
+/// dark theme. Idea-ui's light themes start with near-white
 /// backgrounds; dark themes start with near-black. The luminance check
 /// is robust against minor palette tweaks on either side as long as the
 /// backgrounds remain roughly in the standard light/dark zones.
+///
+/// Reads via [`idea_ui::active_theme`] (a TRACKED signal read) rather
+/// than `Tokenized::resolve()`: the Tokenized-registry read is not
+/// reactive — it neither updates on `set_idea_theme` nor subscribes the
+/// `switch` scrutinee (Tokenized freshness is a documented deferral),
+/// which left dark-mode code panels with the light-palette ink.
 fn theme_is_dark() -> bool {
+    if idea_ui::theme_installed() {
+        let theme = idea_ui::active_theme();
+        if let Some(t) = theme.downcast_ref::<idea_ui::IdeaThemeRef>() {
+            return is_dark_color(&t.colors().background.value().0);
+        }
+    }
     let bg: Color =
         Tokenized::<Color>::token("color-background", Color("#ffffff".into())).resolve();
     is_dark_color(&bg.0)
@@ -243,6 +255,9 @@ pub fn CodeBlock(props: CodeBlockProps) -> Element {
         let palette = if is_dark { DARK_PALETTE } else { LIGHT_PALETTE };
         let spans = highlight(&src_owned, palette);
         let code_style = move || StyleApplication::new(CodeText::sheet());
+        // The `codeblock` SDK's scene-registry handler renders the
+        // real `<pre>`/span DOM (registered at boot — see
+        // `register_scene_extensions`).
         codeblock::code_block(spans)
             .with_style(code_style)
             .into_element()

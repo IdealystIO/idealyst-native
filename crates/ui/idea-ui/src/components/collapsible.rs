@@ -46,10 +46,11 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, derived, on_cleanup, pressable, signal, switch, text, ui, ChildList, Element,
+    component, derived, on_scope_drop, pressable, signal, switch, text, ui, ChildList, Element,
     IdealystSchema, IntoElement, LayoutSubscription, Reactive, Ref, Signal, StyleApplication,
     VariantEnum, ViewHandle,
 };
+use idea_theme::compat::SignalModify as _;
 use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use std::time::Duration;
 
@@ -165,7 +166,7 @@ impl Default for CollapsibleProps {
     fn default() -> Self {
         Self {
             title: Reactive::Static(String::new()),
-            value: Signal::new(false),
+            value: runtime_core::signal(false),
             on_change: Rc::new(|_| {}),
             transition: Reactive::Static(CollapsibleTransition::default()),
             duration_ms: Reactive::Static(COLLAPSIBLE_DURATION_DEFAULT_MS),
@@ -342,10 +343,17 @@ fn measured_body(value: Signal<bool>, duration_ms: u32, kids: Vec<Element>) -> E
     // detaching this subtree) a late layout callback still fired and read
     // `natural_height` after its `Signal<f32>` slot was freed —
     // "signal used after its scope was dropped" → abort. Anchoring to the
-    // scope via `on_cleanup` drops the ScheduledTask (cancels a not-yet-run
-    // setup) and the subscription (unsubscribes the observer) during scope
-    // teardown, before the scope's signals are freed.
-    on_cleanup(move || {
+    // scope drops the ScheduledTask (cancels a not-yet-run setup) and the
+    // subscription (unsubscribes the observer) during scope teardown,
+    // before the scope's signals are freed.
+    //
+    // `on_scope_drop`, NOT `on_cleanup`: this is a component body, and
+    // `on_cleanup` panics unless an effect is running. It happened to
+    // survive when a reactive re-render swapped this subtree in (the swap
+    // runs inside an effect) and aborted on a direct mount — so
+    // deep-linking straight to a page containing a measured Collapsible
+    // took the app down.
+    on_scope_drop(move || {
         drop(setup_task);
         drop(layout_sub_holder);
     });
@@ -489,7 +497,7 @@ impl Default for AccordionProps {
     fn default() -> Self {
         Self {
             items: Vec::new(),
-            open: Signal::new(Vec::new()),
+            open: runtime_core::signal(Vec::new()),
             expand: Reactive::Static(AccordionExpand::default()),
             transition: Reactive::Static(CollapsibleTransition::default()),
             duration_ms: Reactive::Static(COLLAPSIBLE_DURATION_DEFAULT_MS),
@@ -521,7 +529,7 @@ pub fn Accordion(props: AccordionProps) -> Element {
     // default-empty case gracefully without panicking on out-of-bounds.
     let current_len = open_state.get().len();
     if current_len < n {
-        open_state.update(|v| v.resize(n, false));
+        open_state.modify(|v| v.resize(n, false));
     }
 
     let mut item_views: Vec<Element> = Vec::with_capacity(props.items.len());
@@ -547,7 +555,7 @@ pub fn Accordion(props: AccordionProps) -> Element {
         // `expand` mode, then fire the observation callback.
         let on_change_for_item = on_change.clone();
         let item_on_change: Rc<dyn Fn(bool)> = Rc::new(move |next_open: bool| {
-            open_state.update(|v| match expand {
+            open_state.modify(|v| match expand {
                 AccordionExpand::Single => {
                     // Clear everything else; set only this item.
                     for entry in v.iter_mut() {

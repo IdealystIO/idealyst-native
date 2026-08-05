@@ -8,7 +8,10 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use runtime_core::scheduling::{install_scheduler, ScheduleHandle, Scheduler};
-use runtime_core::{Signal, TouchEvent, TouchId, TouchPhase, TouchPoint, ViewportRect};
+use runtime_core::{signal, Signal, TouchEvent, TouchId, TouchPhase, TouchPoint, ViewportRect};
+// `set_active_touch_claim` is a substrate touch-model entry glue does not
+// re-export yet (a one-line gap, reported).
+use runtime_shared::set_active_touch_claim;
 
 use crate::context::{DroppableEntry, DroppableId};
 use crate::recognizer::{Activation, DragPhase, DragRecognizer, ScrollAxis};
@@ -107,6 +110,22 @@ fn reset_test_clock() {
     NOW_MS.with(|n| n.set(0));
     NEXT_ID.with(|n| n.set(0));
     CANCELLED.with(|c| c.borrow_mut().clear());
+}
+
+/// Signals + effects are per-world and can only be created inside
+/// `World::enter`, so every test that builds a `DragContext` / `Draggable` (or
+/// a bare `signal`) runs inside one.
+fn world<R>(f: impl FnOnce() -> R) -> R {
+    runtime_core::__with_fresh_world(f)
+}
+
+/// Read a signal that the code under test just wrote. Writes STAGE until the
+/// driver's flush, so a read-back inside the same turn would see the previous
+/// value — this commits first, exactly as a backend's post-dispatch flush
+/// driver does after every event handler returns.
+fn flushed<T: Clone + PartialEq + 'static>(sig: Signal<T>) -> T {
+    runtime_core::__flush_test_world();
+    sig.get()
 }
 
 /// First call wins (OnceLock); every test calls it but only the first installs.
@@ -271,169 +290,181 @@ fn long_press_abandons_when_finger_moves_before_hold() {
 
 #[test]
 fn hover_enter_leave_edges_fire_once() {
-    let ctx: DragContext<u64> = DragContext::new();
-    let is_over = Signal::new(false);
-    let enters = Rc::new(Cell::new(0u32));
-    let leaves = Rc::new(Cell::new(0u32));
-    let e = enters.clone();
-    let l = leaves.clone();
-    register_zone(
-        &ctx,
-        rect(100.0, 0.0, 50.0, 50.0),
-        is_over,
-        Rc::new(|_| true),
-        Some(Rc::new(move |_| e.set(e.get() + 1))),
-        Some(Rc::new(move || l.set(l.get() + 1))),
-        None,
-    );
+    world(|| {
+        let ctx: DragContext<u64> = DragContext::new();
+        let is_over = signal(false);
+        let enters = Rc::new(Cell::new(0u32));
+        let leaves = Rc::new(Cell::new(0u32));
+        let e = enters.clone();
+        let l = leaves.clone();
+        register_zone(
+            &ctx,
+            rect(100.0, 0.0, 50.0, 50.0),
+            is_over,
+            Rc::new(|_| true),
+            Some(Rc::new(move |_| e.set(e.get() + 1))),
+            Some(Rc::new(move || l.set(l.get() + 1))),
+            None,
+        );
 
-    ctx.begin(7);
-    // Start outside the zone.
-    ctx.update(TouchPoint::new(0.0, 0.0));
-    assert!(!is_over.get());
-    // Move in.
-    ctx.update(TouchPoint::new(120.0, 25.0));
-    assert!(is_over.get(), "is_over flips true on enter");
-    // Move within — no extra enter.
-    ctx.update(TouchPoint::new(130.0, 25.0));
-    // Move out.
-    ctx.update(TouchPoint::new(0.0, 0.0));
-    assert!(!is_over.get(), "is_over flips false on leave");
+        ctx.begin(7);
+        // Start outside the zone.
+        ctx.update(TouchPoint::new(0.0, 0.0));
+        assert!(!flushed(is_over));
+        // Move in.
+        ctx.update(TouchPoint::new(120.0, 25.0));
+        assert!(flushed(is_over), "is_over flips true on enter");
+        // Move within — no extra enter.
+        ctx.update(TouchPoint::new(130.0, 25.0));
+        // Move out.
+        ctx.update(TouchPoint::new(0.0, 0.0));
+        assert!(!flushed(is_over), "is_over flips false on leave");
 
-    assert_eq!(enters.get(), 1, "on_enter fires exactly once");
-    assert_eq!(leaves.get(), 1, "on_leave fires exactly once");
+        assert_eq!(enters.get(), 1, "on_enter fires exactly once");
+        assert_eq!(leaves.get(), 1, "on_leave fires exactly once");
+    });
 }
 
 #[test]
 fn drop_delivers_payload_and_clears_state() {
-    let ctx: DragContext<u64> = DragContext::new();
-    let is_over = Signal::new(false);
-    let dropped: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
-    let sink = dropped.clone();
-    register_zone(
-        &ctx,
-        rect(100.0, 0.0, 50.0, 50.0),
-        is_over,
-        Rc::new(|_| true),
-        None,
-        None,
-        Some(Rc::new(move |p| sink.borrow_mut().push(p))),
-    );
+    world(|| {
+        let ctx: DragContext<u64> = DragContext::new();
+        let is_over = signal(false);
+        let dropped: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = dropped.clone();
+        register_zone(
+            &ctx,
+            rect(100.0, 0.0, 50.0, 50.0),
+            is_over,
+            Rc::new(|_| true),
+            None,
+            None,
+            Some(Rc::new(move |p| sink.borrow_mut().push(p))),
+        );
 
-    ctx.begin(42);
-    ctx.update(TouchPoint::new(120.0, 25.0));
-    assert!(ctx.dragging().get());
-    let landed = ctx.finish(TouchPoint::new(120.0, 25.0));
+        ctx.begin(42);
+        ctx.update(TouchPoint::new(120.0, 25.0));
+        assert!(flushed(ctx.dragging()));
+        let landed = ctx.finish(TouchPoint::new(120.0, 25.0));
 
-    assert!(landed, "finish over an accepting target returns true");
-    assert_eq!(*dropped.borrow(), vec![42]);
-    assert!(!ctx.dragging().get(), "dragging clears after finish");
-    assert!(!is_over.get(), "hover clears after finish");
-    assert!(ctx.payload().is_none(), "payload cleared after finish");
+        assert!(landed, "finish over an accepting target returns true");
+        assert_eq!(*dropped.borrow(), vec![42]);
+        assert!(!flushed(ctx.dragging()), "dragging clears after finish");
+        assert!(!flushed(is_over), "hover clears after finish");
+        assert!(ctx.payload().is_none(), "payload cleared after finish");
+    });
 }
 
 #[test]
 fn drop_fires_on_leave_so_hover_visual_resets() {
-    // Regression: a drop ON a hovered target must still fire its `on_leave`
-    // (and clear `is_over`), or a callback-driven highlight stays stuck "on"
-    // after release.
-    let ctx: DragContext<u64> = DragContext::new();
-    let is_over = Signal::new(false);
-    let leaves = Rc::new(Cell::new(0u32));
-    let l = leaves.clone();
-    register_zone(
-        &ctx,
-        rect(0.0, 0.0, 100.0, 100.0),
-        is_over,
-        Rc::new(|_| true),
-        None,
-        Some(Rc::new(move || l.set(l.get() + 1))),
-        Some(Rc::new(|_| {})),
-    );
+    world(|| {
+        // Regression: a drop ON a hovered target must still fire its `on_leave`
+        // (and clear `is_over`), or a callback-driven highlight stays stuck "on"
+        // after release.
+        let ctx: DragContext<u64> = DragContext::new();
+        let is_over = signal(false);
+        let leaves = Rc::new(Cell::new(0u32));
+        let l = leaves.clone();
+        register_zone(
+            &ctx,
+            rect(0.0, 0.0, 100.0, 100.0),
+            is_over,
+            Rc::new(|_| true),
+            None,
+            Some(Rc::new(move || l.set(l.get() + 1))),
+            Some(Rc::new(|_| {})),
+        );
 
-    ctx.begin(1);
-    ctx.update(TouchPoint::new(50.0, 50.0)); // hover the zone (is_over → true)
-    assert!(is_over.get());
-    assert!(ctx.finish(TouchPoint::new(50.0, 50.0)), "drops on the zone");
-    assert!(!is_over.get(), "is_over clears on drop");
-    assert_eq!(leaves.get(), 1, "on_leave fires on drop so the highlight resets");
+        ctx.begin(1);
+        ctx.update(TouchPoint::new(50.0, 50.0)); // hover the zone (is_over → true)
+        assert!(flushed(is_over));
+        assert!(ctx.finish(TouchPoint::new(50.0, 50.0)), "drops on the zone");
+        assert!(!flushed(is_over), "is_over clears on drop");
+        assert_eq!(leaves.get(), 1, "on_leave fires on drop so the highlight resets");
+    });
 }
 
 #[test]
 fn drop_outside_any_target_returns_false() {
-    let ctx: DragContext<u64> = DragContext::new();
-    register_zone(
-        &ctx,
-        rect(100.0, 0.0, 50.0, 50.0),
-        Signal::new(false),
-        Rc::new(|_| true),
-        None,
-        None,
-        Some(Rc::new(|_| {})),
-    );
-    ctx.begin(1);
-    let landed = ctx.finish(TouchPoint::new(0.0, 0.0)); // miss
-    assert!(!landed);
-    assert!(!ctx.dragging().get());
+    world(|| {
+        let ctx: DragContext<u64> = DragContext::new();
+        register_zone(
+            &ctx,
+            rect(100.0, 0.0, 50.0, 50.0),
+            signal(false),
+            Rc::new(|_| true),
+            None,
+            None,
+            Some(Rc::new(|_| {})),
+        );
+        ctx.begin(1);
+        let landed = ctx.finish(TouchPoint::new(0.0, 0.0)); // miss
+        assert!(!landed);
+        assert!(!flushed(ctx.dragging()));
+    });
 }
 
 #[test]
 fn accepts_predicate_rejects_incompatible_payload() {
-    let ctx: DragContext<u64> = DragContext::new();
-    let is_over = Signal::new(false);
-    // Only accepts even payloads.
-    register_zone(
-        &ctx,
-        rect(0.0, 0.0, 100.0, 100.0),
-        is_over,
-        Rc::new(|p: &u64| p % 2 == 0),
-        None,
-        None,
-        Some(Rc::new(|_| {})),
-    );
+    world(|| {
+        let ctx: DragContext<u64> = DragContext::new();
+        let is_over = signal(false);
+        // Only accepts even payloads.
+        register_zone(
+            &ctx,
+            rect(0.0, 0.0, 100.0, 100.0),
+            is_over,
+            Rc::new(|p: &u64| p % 2 == 0),
+            None,
+            None,
+            Some(Rc::new(|_| {})),
+        );
 
-    ctx.begin(3); // odd — rejected
-    ctx.update(TouchPoint::new(50.0, 50.0));
-    assert!(!is_over.get(), "rejected payload never hovers");
-    assert!(
-        !ctx.finish(TouchPoint::new(50.0, 50.0)),
-        "rejected payload never drops"
-    );
+        ctx.begin(3); // odd — rejected
+        ctx.update(TouchPoint::new(50.0, 50.0));
+        assert!(!flushed(is_over), "rejected payload never hovers");
+        assert!(
+            !ctx.finish(TouchPoint::new(50.0, 50.0)),
+            "rejected payload never drops"
+        );
+    });
 }
 
 #[test]
 fn nested_targets_innermost_wins() {
-    let ctx: DragContext<u64> = DragContext::new();
-    let dropped: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
-    let outer_sink = dropped.clone();
-    let inner_sink = dropped.clone();
-    // Big outer, small inner, both contain (50,50).
-    register_zone(
-        &ctx,
-        rect(0.0, 0.0, 200.0, 200.0),
-        Signal::new(false),
-        Rc::new(|_| true),
-        None,
-        None,
-        Some(Rc::new(move |_| outer_sink.borrow_mut().push("outer"))),
-    );
-    register_zone(
-        &ctx,
-        rect(40.0, 40.0, 40.0, 40.0),
-        Signal::new(false),
-        Rc::new(|_| true),
-        None,
-        None,
-        Some(Rc::new(move |_| inner_sink.borrow_mut().push("inner"))),
-    );
+    world(|| {
+        let ctx: DragContext<u64> = DragContext::new();
+        let dropped: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let outer_sink = dropped.clone();
+        let inner_sink = dropped.clone();
+        // Big outer, small inner, both contain (50,50).
+        register_zone(
+            &ctx,
+            rect(0.0, 0.0, 200.0, 200.0),
+            signal(false),
+            Rc::new(|_| true),
+            None,
+            None,
+            Some(Rc::new(move |_| outer_sink.borrow_mut().push("outer"))),
+        );
+        register_zone(
+            &ctx,
+            rect(40.0, 40.0, 40.0, 40.0),
+            signal(false),
+            Rc::new(|_| true),
+            None,
+            None,
+            Some(Rc::new(move |_| inner_sink.borrow_mut().push("inner"))),
+        );
 
-    ctx.begin(1);
-    ctx.finish(TouchPoint::new(50.0, 50.0));
-    assert_eq!(
-        *dropped.borrow(),
-        vec!["inner"],
-        "smallest-area (innermost) target wins"
-    );
+        ctx.begin(1);
+        ctx.finish(TouchPoint::new(50.0, 50.0));
+        assert_eq!(
+            *dropped.borrow(),
+            vec!["inner"],
+            "smallest-area (innermost) target wins"
+        );
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -442,125 +473,133 @@ fn nested_targets_innermost_wins() {
 
 #[test]
 fn draggable_lands_payload_on_zone() {
-    let ctx: DragContext<u64> = DragContext::new();
-    let dropped: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
-    let drop_sink = dropped.clone();
-    register_zone(
-        &ctx,
-        rect(100.0, 0.0, 100.0, 100.0),
-        Signal::new(false),
-        Rc::new(|_| true),
-        None,
-        None,
-        Some(Rc::new(move |p| drop_sink.borrow_mut().push(p))),
-    );
+    world(|| {
+        let ctx: DragContext<u64> = DragContext::new();
+        let dropped: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+        let drop_sink = dropped.clone();
+        register_zone(
+            &ctx,
+            rect(100.0, 0.0, 100.0, 100.0),
+            signal(false),
+            Rc::new(|_| true),
+            None,
+            None,
+            Some(Rc::new(move |p| drop_sink.borrow_mut().push(p))),
+        );
 
-    let outcomes: Rc<RefCell<Vec<DropOutcome>>> = Rc::new(RefCell::new(Vec::new()));
-    let out_sink = outcomes.clone();
-    let drag = Draggable::new(&ctx, || 99u64)
-        .activation(Activation::immediate())
-        .on_release(move |o| out_sink.borrow_mut().push(o));
-    let h = drag.handler();
+        let outcomes: Rc<RefCell<Vec<DropOutcome>>> = Rc::new(RefCell::new(Vec::new()));
+        let out_sink = outcomes.clone();
+        let drag = Draggable::new(&ctx, || 99u64)
+            .activation(Activation::immediate())
+            .on_release(move |o| out_sink.borrow_mut().push(o));
+        let h = drag.handler();
 
-    // Press at origin, drag into the zone at (150,50), release there.
-    h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
-    h(&ev(TouchPhase::Moved, 1, 150.0, 50.0, 16_000_000));
-    h(&ev(TouchPhase::Ended, 1, 150.0, 50.0, 32_000_000));
+        // Press at origin, drag into the zone at (150,50), release there.
+        h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+        h(&ev(TouchPhase::Moved, 1, 150.0, 50.0, 16_000_000));
+        h(&ev(TouchPhase::Ended, 1, 150.0, 50.0, 32_000_000));
 
-    assert_eq!(*dropped.borrow(), vec![99], "payload delivered to the zone");
-    assert_eq!(*outcomes.borrow(), vec![DropOutcome::Landed]);
+        assert_eq!(*dropped.borrow(), vec![99], "payload delivered to the zone");
+        assert_eq!(*outcomes.borrow(), vec![DropOutcome::Landed]);
+    });
 }
 
 #[test]
 fn draggable_miss_reports_missed_outcome() {
-    let ctx: DragContext<u64> = DragContext::new();
-    register_zone(
-        &ctx,
-        rect(100.0, 0.0, 100.0, 100.0),
-        Signal::new(false),
-        Rc::new(|_| true),
-        None,
-        None,
-        Some(Rc::new(|_| panic!("must not drop on a miss"))),
-    );
+    world(|| {
+        let ctx: DragContext<u64> = DragContext::new();
+        register_zone(
+            &ctx,
+            rect(100.0, 0.0, 100.0, 100.0),
+            signal(false),
+            Rc::new(|_| true),
+            None,
+            None,
+            Some(Rc::new(|_| panic!("must not drop on a miss"))),
+        );
 
-    let outcomes: Rc<RefCell<Vec<DropOutcome>>> = Rc::new(RefCell::new(Vec::new()));
-    let out_sink = outcomes.clone();
-    let drag = Draggable::new(&ctx, || 1u64)
-        .activation(Activation::immediate())
-        .on_release(move |o| out_sink.borrow_mut().push(o));
-    let h = drag.handler();
+        let outcomes: Rc<RefCell<Vec<DropOutcome>>> = Rc::new(RefCell::new(Vec::new()));
+        let out_sink = outcomes.clone();
+        let drag = Draggable::new(&ctx, || 1u64)
+            .activation(Activation::immediate())
+            .on_release(move |o| out_sink.borrow_mut().push(o));
+        let h = drag.handler();
 
-    h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
-    // Drag 30 px — past slop, but nowhere near the zone at x>=100.
-    h(&ev(TouchPhase::Moved, 1, 30.0, 0.0, 16_000_000));
-    h(&ev(TouchPhase::Ended, 1, 30.0, 0.0, 32_000_000));
+        h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+        // Drag 30 px — past slop, but nowhere near the zone at x>=100.
+        h(&ev(TouchPhase::Moved, 1, 30.0, 0.0, 16_000_000));
+        h(&ev(TouchPhase::Ended, 1, 30.0, 0.0, 32_000_000));
 
-    assert_eq!(*outcomes.borrow(), vec![DropOutcome::Missed]);
-    assert!(!ctx.dragging().get());
+        assert_eq!(*outcomes.borrow(), vec![DropOutcome::Missed]);
+        assert!(!flushed(ctx.dragging()));
+    });
 }
 
 #[test]
 fn draggable_cancel_reports_cancelled_and_clears() {
-    let ctx: DragContext<u64> = DragContext::new();
-    let leaves = Rc::new(Cell::new(0u32));
-    let l = leaves.clone();
-    register_zone(
-        &ctx,
-        rect(0.0, 0.0, 200.0, 200.0),
-        Signal::new(false),
-        Rc::new(|_| true),
-        None,
-        Some(Rc::new(move || l.set(l.get() + 1))),
-        Some(Rc::new(|_| {})),
-    );
+    world(|| {
+        let ctx: DragContext<u64> = DragContext::new();
+        let leaves = Rc::new(Cell::new(0u32));
+        let l = leaves.clone();
+        register_zone(
+            &ctx,
+            rect(0.0, 0.0, 200.0, 200.0),
+            signal(false),
+            Rc::new(|_| true),
+            None,
+            Some(Rc::new(move || l.set(l.get() + 1))),
+            Some(Rc::new(|_| {})),
+        );
 
-    let outcomes: Rc<RefCell<Vec<DropOutcome>>> = Rc::new(RefCell::new(Vec::new()));
-    let out_sink = outcomes.clone();
-    let drag = Draggable::new(&ctx, || 1u64)
-        .activation(Activation::immediate())
-        .on_release(move |o| out_sink.borrow_mut().push(o));
-    let h = drag.handler();
+        let outcomes: Rc<RefCell<Vec<DropOutcome>>> = Rc::new(RefCell::new(Vec::new()));
+        let out_sink = outcomes.clone();
+        let drag = Draggable::new(&ctx, || 1u64)
+            .activation(Activation::immediate())
+            .on_release(move |o| out_sink.borrow_mut().push(o));
+        let h = drag.handler();
 
-    h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
-    h(&ev(TouchPhase::Moved, 1, 50.0, 50.0, 16_000_000)); // active, over the zone
-    h(&ev(TouchPhase::Cancelled, 1, 50.0, 50.0, 32_000_000));
+        h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+        h(&ev(TouchPhase::Moved, 1, 50.0, 50.0, 16_000_000)); // active, over the zone
+        h(&ev(TouchPhase::Cancelled, 1, 50.0, 50.0, 32_000_000));
 
-    assert_eq!(*outcomes.borrow(), vec![DropOutcome::Cancelled]);
-    assert_eq!(leaves.get(), 1, "cancel fires the hovered target's on_leave");
-    assert!(!ctx.dragging().get());
+        assert_eq!(*outcomes.borrow(), vec![DropOutcome::Cancelled]);
+        assert_eq!(leaves.get(), 1, "cancel fires the hovered target's on_leave");
+        assert!(!flushed(ctx.dragging()));
+    });
 }
 
 #[test]
 fn ghost_position_tracks_release_point_for_drop_animation() {
-    // The drop-animation hand-off (reveal the hidden source where the ghost was
-    // let go, then spring it into its slot) depends on `ghost_position()`
-    // reporting the ghost's window top-left = pointer − grab-offset, AND on that
-    // value surviving the release so `on_release` can read it.
-    install_test_scheduler_once();
-    let ctx: DragContext<u64> = DragContext::new();
+    world(|| {
+        // The drop-animation hand-off (reveal the hidden source where the ghost was
+        // let go, then spring it into its slot) depends on `ghost_position()`
+        // reporting the ghost's window top-left = pointer − grab-offset, AND on that
+        // value surviving the release so `on_release` can read it.
+        install_test_scheduler_once();
+        let ctx: DragContext<u64> = DragContext::new();
 
-    let drag = Draggable::new(&ctx, || 7u64)
-        .activation(Activation::immediate())
-        .preview(|| runtime_core::fragment(Vec::new()));
-    let h = drag.handler();
+        let drag = Draggable::new(&ctx, || 7u64)
+            .activation(Activation::immediate())
+            .preview(|| runtime_core::fragment(Vec::new()));
+        let h = drag.handler();
 
-    // Press at (10,20); the drag commits on the first move past the 8 px slop —
-    // that move's position is the grab offset (where in the element the finger
-    // sits). View == window in these tests, so grab offset = (10,40).
-    h(&ev(TouchPhase::Began, 1, 10.0, 20.0, 0));
-    h(&ev(TouchPhase::Moved, 1, 10.0, 40.0, 16_000_000));
-    // A real move: ghost top-left = pointer − grab offset = (60−10, 90−40).
-    h(&ev(TouchPhase::Moved, 1, 60.0, 90.0, 32_000_000));
-    assert_eq!(
-        ctx.ghost_position(),
-        (50.0, 50.0),
-        "ghost top-left = pointer − grab offset"
-    );
+        // Press at (10,20); the drag commits on the first move past the 8 px slop —
+        // that move's position is the grab offset (where in the element the finger
+        // sits). View == window in these tests, so grab offset = (10,40).
+        h(&ev(TouchPhase::Began, 1, 10.0, 20.0, 0));
+        h(&ev(TouchPhase::Moved, 1, 10.0, 40.0, 16_000_000));
+        // A real move: ghost top-left = pointer − grab offset = (60−10, 90−40).
+        h(&ev(TouchPhase::Moved, 1, 60.0, 90.0, 32_000_000));
+        assert_eq!(
+            ctx.ghost_position(),
+            (50.0, 50.0),
+            "ghost top-left = pointer − grab offset"
+        );
 
-    // Persists through release so the drop animation can anchor to it.
-    h(&ev(TouchPhase::Ended, 1, 60.0, 90.0, 48_000_000));
-    assert_eq!(ctx.ghost_position(), (50.0, 50.0));
+        // Persists through release so the drop animation can anchor to it.
+        h(&ev(TouchPhase::Ended, 1, 60.0, 90.0, 48_000_000));
+        assert_eq!(ctx.ghost_position(), (50.0, 50.0));
+    });
 }
 
 #[test]
@@ -576,13 +615,13 @@ fn long_press_commit_claims_off_stream() {
     let sink = claims.clone();
     // Stand in for the backend publishing a claim closure for the in-flight
     // touch (iOS does this on `Began`, scoped to the synchronous dispatch).
-    runtime_core::set_active_touch_claim(Some(Rc::new(move || sink.set(sink.get() + 1))));
+    set_active_touch_claim(Some(Rc::new(move || sink.set(sink.get() + 1))));
 
     let h = DragRecognizer::new(Activation::long_press(), |_| {}).into_handler();
     h(&ev(TouchPhase::Began, 1, 10.0, 10.0, 0));
     // The backend clears it after dispatch — so the recognizer must have grabbed
     // its OWN clone on `Began` for the off-stream commit to still claim.
-    runtime_core::set_active_touch_claim(None);
+    set_active_touch_claim(None);
 
     assert_eq!(claims.get(), 0, "no claim before the hold elapses");
     advance_ms(crate::DEFAULT_DRAG_LONG_PRESS_MS);
@@ -599,11 +638,11 @@ fn abandoned_long_press_never_claims() {
     reset_test_clock();
     let claims = Rc::new(Cell::new(0u32));
     let sink = claims.clone();
-    runtime_core::set_active_touch_claim(Some(Rc::new(move || sink.set(sink.get() + 1))));
+    set_active_touch_claim(Some(Rc::new(move || sink.set(sink.get() + 1))));
 
     let h = DragRecognizer::new(Activation::long_press(), |_| {}).into_handler();
     h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
-    runtime_core::set_active_touch_claim(None);
+    set_active_touch_claim(None);
     // Past the 10 px long-press slop before the hold → abandon.
     h(&ev(TouchPhase::Moved, 1, 30.0, 0.0, 16_000_000));
     advance_ms(crate::DEFAULT_DRAG_LONG_PRESS_MS);

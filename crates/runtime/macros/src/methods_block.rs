@@ -723,6 +723,43 @@ mod tests {
         }
     }
 
+    /// The NEW-core emission surface (P5 robot remainder): piping the
+    /// rewritten body through the retarget must land every `#[method]`
+    /// reference on a name `runtime_vocabulary::glue` provides —
+    /// `glue::robot::{Method, register_component}`,
+    /// `glue::__component_keepalive_effect`, `glue::__component_root`,
+    /// `glue::__serde_json`, and the `bind_to` fill's `glue::Ref` (via
+    /// the injected prop type). A rename on either side breaks this
+    /// pin, not a downstream app build.
+    #[test]
+    fn new_core_retarget_lands_method_emission_on_glue_names() {
+        let mut item_fn: ItemFn = syn::parse2(quote! {
+            fn Counter() -> Element {
+                let value = signal(0);
+                #[method]
+                fn bump(n: i32) { value.update(|v| v + n); }
+                view(Vec::new())
+            }
+        })
+        .unwrap();
+        let (_extra, _infos) = extract_and_rewrite(&mut item_fn, true).unwrap();
+        let out: String = crate::new_core::retarget(quote!(#item_fn))
+            .to_string()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        for needle in [
+            "::runtime_vocabulary::glue::robot::Method",
+            "::runtime_vocabulary::glue::robot::register_component",
+            "::runtime_vocabulary::glue::__component_keepalive_effect",
+            "::runtime_vocabulary::glue::__component_root",
+            "::runtime_vocabulary::glue::__serde_json::from_value",
+        ] {
+            assert!(out.contains(needle), "missing {needle} in: {out}");
+        }
+        assert!(!out.contains("runtime_core"), "no old-core paths remain: {out}");
+    }
+
     #[test]
     fn leftover_methods_bang_gets_migration_error() {
         let err = run(

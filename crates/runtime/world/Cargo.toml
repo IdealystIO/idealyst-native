@@ -1,0 +1,25 @@
+# runtime-world — the reactive kernel of the idea-lite core migration (P0).
+#
+# Worlds are discrete reactive runtimes: each owns an arena of signal/effect
+# slots, a staged-write queue, and a typed context map. Many worlds coexist on
+# one thread (app world + per-request SSR worlds + test worlds) and flush /
+# tear down independently. Semantics are idea-lite's staged-commit model with
+# a derivation-class (glitch-free) flush; storage is per-world arenas with
+# generational Copy handles.
+#
+# This crate is deliberately dependency-minimal: it is the bottom of the new
+# core's dependency chain (world ← scene ← vocabulary ← backends) and must
+# stay wasm-lean.
+
+[package]
+name = "runtime-world"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Fast FxHash for the kernel's maps (world registry, per-world context).
+# Keys are internal world ids / TypeIds — never attacker-controlled — so the
+# default SipHash's cryptographic resistance is wasted cost on the hottest
+# path (same rationale as runtime-core's reactive collections).
+rustc-hash = { workspace = true }

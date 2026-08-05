@@ -3,13 +3,19 @@ name = "baseline"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Trivial hello-world app — the framework floor for web bundle-size measurement (runtime-core + backend-web, one text node, no idea-ui, no SDKs)."
+description = "Trivial hello-world app — the framework floor for web bundle-size measurement (the runtime + backend-web, one text node, no idea-ui, no SDKs)."
 
 [lib]
 crate-type = ["rlib"]
 
 [dependencies]
+# `runtime-core` is aliased to `runtime_core` at the crate root (see
+# src/lib.rs); `runtime-vocabulary` because the `ui!` emission spells
+# absolute `::runtime_vocabulary::glue::…` paths; `runtime-scene` because
+# `register_scene_extensions` is generic over the registry host.
 runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Baseline"

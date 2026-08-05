@@ -11,7 +11,7 @@ use super::animation::*;
 use backend_android_core::helpers::*;
 use super::font::{apply_resolved_font_to_textview, FontRegistry};
 use super::NodeAnim;
-use runtime_core::StyleRules;
+use runtime_shared::StyleRules;
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::JNIEnv;
 
@@ -132,14 +132,14 @@ pub(crate) fn apply_rules(
         // CSS-variable equivalent, so we always materialize to the
         // current value.
         let w_lp = rules.width.as_ref().map(|tok| match tok.resolve() {
-            runtime_core::Length::Px(v) => dp_to_px(env, &view, v),
-            runtime_core::Length::Percent(_) => -1,
-            runtime_core::Length::Auto => -2,
+            runtime_shared::Length::Px(v) => dp_to_px(env, &view, v),
+            runtime_shared::Length::Percent(_) => -1,
+            runtime_shared::Length::Auto => -2,
         });
         let h_lp = rules.height.as_ref().map(|tok| match tok.resolve() {
-            runtime_core::Length::Px(v) => dp_to_px(env, &view, v),
-            runtime_core::Length::Percent(_) => -1,
-            runtime_core::Length::Auto => -2,
+            runtime_shared::Length::Px(v) => dp_to_px(env, &view, v),
+            runtime_shared::Length::Percent(_) => -1,
+            runtime_shared::Length::Auto => -2,
         });
         // getLayoutParams() may return null if the view hasn't been
         // attached to a parent yet. Build a fresh
@@ -229,7 +229,7 @@ pub(crate) fn apply_rules(
                 }
             }
         }
-        if let Some(runtime_core::Length::Px(size)) =
+        if let Some(runtime_shared::Length::Px(size)) =
             rules.font_size.as_ref().map(|t| t.resolve())
         {
             // font-size isn't animatable in v1; snap.
@@ -255,12 +255,12 @@ pub(crate) fn apply_rules(
                 .font_weight
                 .as_ref()
                 .copied()
-                .unwrap_or(runtime_core::FontWeight::Normal);
+                .unwrap_or(runtime_shared::FontWeight::Normal);
             let fstyle = rules
                 .font_style
                 .as_ref()
                 .copied()
-                .unwrap_or(runtime_core::FontStyle::Normal);
+                .unwrap_or(runtime_shared::FontStyle::Normal);
             apply_resolved_font_to_textview(
                 env,
                 &view,
@@ -279,10 +279,10 @@ pub(crate) fn apply_rules(
         // horizontal axis.
         if let Some(align) = rules.text_align {
             let gravity = match align {
-                runtime_core::TextAlign::Left => 3 | 48,           // LEFT | TOP
-                runtime_core::TextAlign::Center => 1 | 48,         // CENTER_HORIZONTAL | TOP
-                runtime_core::TextAlign::Right => 5 | 48,          // RIGHT | TOP
-                runtime_core::TextAlign::Justify => 3 | 48,        // No JUSTIFY mode on TextView v1; fall back to LEFT
+                runtime_shared::TextAlign::Left => 3 | 48,           // LEFT | TOP
+                runtime_shared::TextAlign::Center => 1 | 48,         // CENTER_HORIZONTAL | TOP
+                runtime_shared::TextAlign::Right => 5 | 48,          // RIGHT | TOP
+                runtime_shared::TextAlign::Justify => 3 | 48,        // No JUSTIFY mode on TextView v1; fall back to LEFT
             };
             let _ = env.call_method(
                 &view,
@@ -292,12 +292,13 @@ pub(crate) fn apply_rules(
             );
         }
         // Drop shadow → `TextView.setShadowLayer(radius, dx, dy, color)`,
-        // Android's native GLYPH shadow. Web lowers a text node's `shadow`
-        // to `text-shadow`; this converges the output (CLAUDE.md §7). dy is
-        // +down in screen space, matching web's `text-shadow` y. A radius-0
-        // call clears it so a reactively-removed shadow actually turns off
-        // (setShadowLayer only paints when radius > 0).
-        match &rules.shadow {
+        // Android's native GLYPH shadow — the `text_shadow` field (web
+        // lowers it to `text-shadow`; this converges the output,
+        // CLAUDE.md §7). dy is +down in screen space, matching web's
+        // `text-shadow` y. A radius-0 call clears it so a
+        // reactively-removed shadow actually turns off (setShadowLayer
+        // only paints when radius > 0).
+        match &rules.text_shadow {
             Some(sh) => {
                 let packed = parse_color(&sh.color.0).unwrap_or(0);
                 let _ = env.call_method(
@@ -461,7 +462,7 @@ fn apply_transform(
     state: &mut NodeAnim,
     rules: &StyleRules,
 ) {
-    use runtime_core::{Length, Transform};
+    use runtime_shared::{Length, Transform};
     // Per-axis "does the style block explicitly drive this axis?"
     // flags. We only write to the View property when the answer is
     // yes \u{2014} Android's `setTranslationX` / `setScaleX` /
@@ -646,7 +647,7 @@ fn animate_via_view_property_animator(
     (tx, ty): (Option<f32>, Option<f32>),
     (sx, sy): (Option<f32>, Option<f32>),
     rot: Option<f32>,
-    transition: &runtime_core::Transition,
+    transition: &runtime_shared::Transition,
 ) -> bool {
     use crate::transform_transition_policy::{easing_to_interpolator, Interp};
 
@@ -756,8 +757,8 @@ pub(crate) fn sync_radial_gradient_radius(
     let half_w_px = width_dp * 0.5 * density;
     let half_h_px = height_dp * 0.5 * density;
     let reference_px = match extent {
-        runtime_core::RadialExtent::ClosestSide => half_w_px.min(half_h_px),
-        runtime_core::RadialExtent::FarthestCorner => {
+        runtime_shared::RadialExtent::ClosestSide => half_w_px.min(half_h_px),
+        runtime_shared::RadialExtent::FarthestCorner => {
             (half_w_px * half_w_px + half_h_px * half_h_px).sqrt()
         }
     };
@@ -1232,7 +1233,7 @@ fn set_corner_radii(env: &mut JNIEnv, drawable: &JObject, r: [f32; 4]) {
     );
 }
 
-/// Mirror a [`runtime_core::Gradient`] onto an existing
+/// Mirror a [`runtime_shared::Gradient`] onto an existing
 /// `GradientDrawable`. Each call rebuilds the colors + locations
 /// arrays — the GradientDrawable's color path is opaque (no
 /// per-stop setters) so we hand it the full array each time. The
@@ -1243,7 +1244,7 @@ fn apply_gradient_to_drawable(
     env: &mut JNIEnv,
     view: &JObject,
     drawable: &JObject,
-    g: &runtime_core::Gradient,
+    g: &runtime_shared::Gradient,
     state: &mut NodeAnim,
 ) {
     // Sort stops by ascending offset. GradientDrawable's setColors
@@ -1273,7 +1274,7 @@ fn apply_gradient_to_drawable(
     );
 
     match g.kind {
-        runtime_core::GradientKind::Linear { angle_deg } => {
+        runtime_shared::GradientKind::Linear { angle_deg } => {
             // LINEAR_GRADIENT = 0
             let _ = env.call_method(
                 drawable,
@@ -1314,7 +1315,7 @@ fn apply_gradient_to_drawable(
                 }
             }
         }
-        runtime_core::GradientKind::Radial { center: _, radius, extent } => {
+        runtime_shared::GradientKind::Radial { center: _, radius, extent } => {
             // RADIAL_GRADIENT = 1
             let _ = env.call_method(
                 drawable,
@@ -1345,8 +1346,8 @@ fn apply_gradient_to_drawable(
             let half_w = (w_px as f32 * 0.5).max(0.0);
             let half_h = (h_px as f32 * 0.5).max(0.0);
             let reference_px = match extent {
-                runtime_core::RadialExtent::ClosestSide => half_w.min(half_h),
-                runtime_core::RadialExtent::FarthestCorner => (half_w * half_w + half_h * half_h).sqrt(),
+                runtime_shared::RadialExtent::ClosestSide => half_w.min(half_h),
+                runtime_shared::RadialExtent::FarthestCorner => (half_w * half_w + half_h * half_h).sqrt(),
             };
             let radius_px = if reference_px > 0.0 {
                 reference_px * radius
@@ -1418,30 +1419,30 @@ fn cyclic_distance(a: f32, b: f32) -> f32 {
 
 /// Local helper on `Gradient` to extract the center coordinate from a
 /// `Radial` variant. Returns `(0.5, 0.5)` for linear (the field is
-/// unused). Lives here rather than on `runtime_core::Gradient`
+/// unused). Lives here rather than on `runtime_shared::Gradient`
 /// because the runtime-core type doesn't need to know about Android
 /// `GradientDrawable.setGradientCenter`'s shape.
 trait GradientKindCenter {
     fn kind_center(&self) -> (f32, f32);
 }
-impl GradientKindCenter for runtime_core::Gradient {
+impl GradientKindCenter for runtime_shared::Gradient {
     fn kind_center(&self) -> (f32, f32) {
         match self.kind {
-            runtime_core::GradientKind::Radial { center, .. } => center,
-            runtime_core::GradientKind::Linear { .. } => (0.5, 0.5),
+            runtime_shared::GradientKind::Radial { center, .. } => center,
+            runtime_shared::GradientKind::Linear { .. } => (0.5, 0.5),
         }
     }
 }
 
-/// Resolve a `runtime_core::Color` to sRGB `[r, g, b, a]` floats.
+/// Resolve a `runtime_shared::Color` to sRGB `[r, g, b, a]` floats.
 /// Used to seed `state.gradient_stops` so the per-frame
 /// `GradientStopColor` writer can mutate one entry and re-emit
 /// without re-parsing the stylesheet. Falls back to fully
 /// transparent on unknown input — matches the legacy behavior of
 /// `parse_color(...).unwrap_or(0)` (Android's `0` int is fully
 /// transparent).
-pub(crate) fn color_to_srgb(c: &runtime_core::Color) -> [f32; 4] {
-    runtime_core::color::parse_or(&c.0, runtime_core::color::Rgba::TRANSPARENT).to_srgb_f32()
+pub(crate) fn color_to_srgb(c: &runtime_shared::Color) -> [f32; 4] {
+    runtime_shared::color::parse_or(&c.0, runtime_shared::color::Rgba::TRANSPARENT).to_srgb_f32()
 }
 
 /// Cached `Build.VERSION.SDK_INT` — read once from the JVM on the
@@ -1528,7 +1529,7 @@ fn push_gradient_colors_to_drawable(
 /// sRGB float `[r, g, b, a]` → packed ARGB `i32` (Android's color
 /// representation). Symmetric with `color_to_srgb`.
 pub(crate) fn srgb_to_argb_i32(c: [f32; 4]) -> i32 {
-    runtime_core::color::Rgba::from_srgb_f32(c).to_argb_u32() as i32
+    runtime_shared::color::Rgba::from_srgb_f32(c).to_argb_u32() as i32
 }
 
 /// Per-frame writer for `AnimProp::GradientStopColor(idx)`. Mutates

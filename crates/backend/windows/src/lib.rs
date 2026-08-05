@@ -71,7 +71,20 @@ use windows::Win32::UI::WindowsAndMessaging::{
     BS_DEFPUSHBUTTON, HMENU, NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SWP_NOACTIVATE,
     SWP_NOZORDER, SW_SHOW, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WINDOW_EX_STYLE, WM_SETFONT,
     WS_BORDER, WS_CHILD, WS_VISIBLE,
+    // Symbols master's newcore.rs boot path needs (window-class registration,
+    // WndProc dispatch, wheel/destroy messages).
+    DefWindowProcW, GetWindowLongPtrW, RegisterClassExW, SetWindowLongPtrW,
+    CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, WM_MOUSEWHEEL, WM_NCDESTROY, WNDCLASSEXW,
 };
+
+// Post-dispatch flush-hook slot (new-core flush driver). Unconditional
+// — the fire sites live in the out-of-repo host shell, which cannot
+// see this crate's features; no-op default so the old core never pays.
+pub mod dispatch_hook;
+
+/// `runtime_scene::Host` + the 30 capability traits on
+/// [`WindowsBackend`], plus the boot entry and flush driver.
+pub mod newcore;
 
 mod code;
 mod dcomp;
@@ -691,6 +704,14 @@ impl WindowsBackend {
 
     /// SDK extension helper: allocate a fresh Win32 control id + install
     /// `on_click` as its WM_COMMAND handler.
+    /// SDK extension helper: allocate a fresh Win32 control id +
+    /// install `on_click` as its WM_COMMAND handler. Returns the id
+    /// for use as the lParam/hMenu/menu-item-id of whatever native
+    /// control fires WM_COMMAND with that id. Used by the `menu`
+    /// SDK to wire HMENU command items into the same dispatch path
+    /// buttons use — host's WndProc calls
+    /// [`Self::dispatch_command`] with `LOWORD(wParam)` and our
+    /// stored closure fires.
     pub fn register_command_handler(&mut self, on_click: Rc<dyn Fn()>) -> u16 {
         let id = self.alloc_control_id();
         self.command_handlers

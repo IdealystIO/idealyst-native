@@ -33,9 +33,17 @@ license.workspace = true
 [lib]
 crate-type = ["rlib"]
 
+[features]
+
 [dependencies]
-runtime-core = { workspace = true }
+# The permanent substrate both cores compiled against (style engine,
+# tokens, prop/handle structs, scheduling, viewport). `runtime-core` is
+# NOT a dependency: this backend has no `Element`/`Backend` surface left.
+runtime-shared = { workspace = true }
 runtime-layout = { workspace = true }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
 
 # `gtk4-rs` provides the safe Rust bindings to GTK4. The `v4_X` feature
 # flags gate API coverage by GTK version. `v4_14` is the floor: the icon

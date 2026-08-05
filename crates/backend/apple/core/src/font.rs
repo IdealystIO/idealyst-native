@@ -32,10 +32,10 @@
 
 use std::collections::HashMap;
 
-use runtime_core::assets::{
+use runtime_shared::assets::{
     AssetId, AssetSource, AssetTag, SystemFallback, Typeface, TypefaceFace, TypefaceId,
 };
-use runtime_core::{FontStyle, FontWeight};
+use runtime_shared::{FontStyle, FontWeight};
 use objc2::rc::Retained;
 use objc2::msg_send_id;
 use objc2_foundation::{NSObject, NSString};

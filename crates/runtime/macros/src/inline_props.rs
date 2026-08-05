@@ -78,7 +78,20 @@ pub(crate) fn try_expand(
     item_fn: &mut ItemFn,
     attr: &ComponentAttr,
 ) -> syn::Result<Option<TokenStream2>> {
-    if item_fn.sig.inputs.is_empty() || is_legacy_props_sig(&item_fn.sig) {
+    if item_fn.sig.inputs.is_empty() {
+        // Zero-parameter components stay on the legacy path (empty marker
+        // struct via `invocation_macro`) — EXCEPT lazy ones: the chunk glue
+        // needs the generated inline-props struct to carry the `loading` /
+        // `error` config fields, and an empty parameter list is trivially
+        // the inline shape (a props struct with only those two fields).
+        // Zero-arg lazy components are common — a route screen or a heavy
+        // SDK corner takes no input.
+        if attr.lazy && item_fn.sig.generics.params.is_empty() {
+            return Ok(Some(emit_glue(item_fn, &[], attr)));
+        }
+        return Ok(None);
+    }
+    if is_legacy_props_sig(&item_fn.sig) {
         return Ok(None);
     }
     // Generic components keep the legacy behavior (their sig can't have
@@ -215,6 +228,18 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr) -> TokenS
             // `.into()` pinned by the field type — the same coercion
             // `#[component(default(...))]` and the `ui!` call site apply.
             Some(expr) => quote! { #name: (#expr).into(), },
+            // `new-core`: `runtime_world`'s signal handles have no
+            // `Default` (the old core's detached-sentinel Default can't
+            // be reproduced for a foreign type). A signal-typed prop's
+            // struct-update base mints a fresh default-valued signal in
+            // the ambient scope instead (`glue::__default_signal_prop`,
+            // reached through the retargeted path). Divergence, on
+            // purpose and documented (glue docs): OMITTING a required
+            // signal prop reads a fresh default-valued signal here,
+            // where the old core panicked on first read.
+            None if is_signal_handle_type(&f.ty) => {
+                quote! { #name: ::runtime_core::__default_signal_prop(), }
+            }
             None => quote! { #name: ::core::default::Default::default(), },
         }
     });
@@ -271,6 +296,19 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr) -> TokenS
             }
         }
     }
+}
+
+/// Syntactic check: is this prop type one of the reactive HANDLE types
+/// (`Signal<T>` / `ReadSignal<T>` / `WriteSignal<T>`, optionally
+/// qualified)? Same heuristic class as `props_attr::should_wrap` — a
+/// type alias hiding a handle slips through and surfaces as a normal
+/// `Default` bound error.
+fn is_signal_handle_type(ty: &Type) -> bool {
+    let Type::Path(tp) = ty else { return false };
+    tp.path
+        .segments
+        .last()
+        .is_some_and(|seg| matches!(seg.ident.to_string().as_str(), "Signal" | "ReadSignal" | "WriteSignal"))
 }
 
 /// Accumulated `#[prop(...)]` overrides for one parameter. Multiple
@@ -437,6 +475,19 @@ mod tests {
         assert!(!sig.contains("prop"), "the #[prop] attr must be stripped: {sig}");
     }
 
+    /// Signal-typed props can't use `Default::default()`
+    /// (`runtime_world::Signal` has no Default); the glue helper mints
+    /// the struct-update base instead.
+    #[test]
+    fn new_core_signal_props_default_via_glue_helper() {
+        let (_, glue) = expand(quote! {
+            fn Foo(value: Signal<i32>, out: WriteSignal<bool>) -> Element { body() }
+        });
+        let glue = glue.unwrap();
+        assert_eq!(glue.matches("__default_signal_prop").count(), 2, "{glue}");
+        assert!(!glue.contains("value:::core::default::Default::default()"), "{glue}");
+    }
+
     #[test]
     fn skip_shapes_stay_unwrapped() {
         let (_, glue) = expand(quote! {
@@ -503,5 +554,107 @@ mod tests {
             fn Badge<T: Clone>(value: T) -> Element { body() }
         });
         assert!(glue.is_none(), "generic components stay on the legacy path");
+    }
+
+    // ------------------------------------------------------------------
+    // `#[component(lazy)]` emission battery (lazy_component.rs's glue,
+    // reached through try_expand). The shared shape is pinned once; the
+    // `__lazy_body` chunk fn differs by core and is pinned per leg.
+    // ------------------------------------------------------------------
+
+    fn expand_lazy(attr_tokens: TokenStream2, fn_tokens: TokenStream2) -> String {
+        let mut item_fn: ItemFn = syn::parse2(fn_tokens).unwrap();
+        let attr = parse_component_attr(attr_tokens).unwrap();
+        let glue = try_expand(&mut item_fn, &attr)
+            .unwrap()
+            .expect("lazy components always take the inline glue path");
+        squash(glue)
+    }
+
+    #[test]
+    fn lazy_emits_wasm_split_boundary_and_config_fields() {
+        let glue = expand_lazy(
+            quote! { lazy },
+            quote! { fn Panel(id: u32) -> Element { body() } },
+        );
+        // Chunk boundary: the readable split-module name + the attribute
+        // path both cores share (retargeted under new-core).
+        assert!(glue.contains("wasm_split(__idealyst_lazy_Panel)"), "{glue}");
+        assert!(
+            glue.contains("use::runtime_core::__wasm_splitaswasm_split"),
+            "{glue}"
+        );
+        // The generated props struct gains the loading/error config slots.
+        assert!(
+            glue.contains("publoading:::runtime_core::primitives::lazy::LazyLoadingUi"),
+            "{glue}"
+        );
+        assert!(
+            glue.contains("puberror:::runtime_core::primitives::lazy::LazyErrorUi"),
+            "{glue}"
+        );
+        // One-shot loader (no `retryable`): take-once cell, loud on reuse.
+        assert!(glue.contains("invokedtwicewithout`retryable`"), "{glue}");
+        assert!(!glue.contains("derive(::core::clone::Clone)"), "{glue}");
+        // Builder wiring: lazy_split + placeholder/on_error config.
+        assert!(
+            glue.contains("::runtime_core::primitives::lazy::lazy_split"),
+            "{glue}"
+        );
+    }
+
+    #[test]
+    fn lazy_retryable_derives_clone_and_clones_props_per_attempt() {
+        let glue = expand_lazy(
+            quote! { lazy, retryable },
+            quote! { fn Panel(id: u32) -> Element { body() } },
+        );
+        assert!(glue.contains("derive(::core::clone::Clone)"), "{glue}");
+        assert!(glue.contains("::core::clone::Clone::clone(&__props)"), "{glue}");
+        assert!(!glue.contains("invokedtwicewithout"), "{glue}");
+    }
+
+    #[test]
+    fn lazy_zero_params_takes_inline_glue_path() {
+        // Zero-arg lazy components are common (route screens); they must
+        // NOT fall back to the legacy empty-marker path — the chunk glue
+        // needs the generated struct for the loading/error fields.
+        let glue = expand_lazy(quote! { lazy }, quote! { fn Screen() -> Element { body() } });
+        assert!(glue.contains("wasm_split(__idealyst_lazy_Screen)"), "{glue}");
+        assert!(glue.contains("publoading"), "{glue}");
+    }
+
+    /// The chunk fn returns a body THUNK — construction is deferred to
+    /// the vocabulary lazy handler's swap effect, which runs with the
+    /// world entered inside `component_scope` (a naked executor poll has
+    /// no ambient world; building there would panic). See
+    /// lazy_component.rs + runtime-vocabulary's `prims::lazy` docs.
+    #[test]
+    fn lazy_new_core_leg_chunk_fn_returns_body_thunk() {
+        let glue = expand_lazy(
+            quote! { lazy },
+            quote! { fn Panel(id: u32) -> Element { body() } },
+        );
+        assert!(
+            glue.contains(
+                "asyncfn__lazy_body(props:PanelProps,)\
+                 ->::runtime_core::primitives::lazy::LazyBodyThunk"
+            ),
+            "{glue}"
+        );
+        // Explicitly-typed thunk binding (NOT a bare `Box::new` tail):
+        // the wasm `#[wasm_split]` expansion re-homes the body inside
+        // `Box::pin(async move { … })`, whose tail has no coercion
+        // context — without the annotation the closure never unsizes to
+        // `Box<dyn FnOnce() -> Element>` (caught on the first live
+        // wasm32 website build).
+        assert!(
+            glue.contains(
+                "let__thunk:::runtime_core::primitives::lazy::LazyBodyThunk=\
+                 ::std::boxed::Box::new(move||{\
+                 ::runtime_core::IntoElement::into_element(Panel(props.id))});__thunk"
+            ),
+            "{glue}"
+        );
     }
 }

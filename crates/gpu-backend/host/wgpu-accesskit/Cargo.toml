@@ -6,8 +6,9 @@ license.workspace = true
 
 # AccessKit bridge for the wgpu backend's parallel semantics tree.
 #
-# Consumes `Backend::dump_accessibility_tree()` + the wgpu-specific
-# `drain_pending_announcements()` sibling method and projects them
+# Consumes the wgpu backend's inherent `dump_accessibility_tree_impl()`
+# + `drain_pending_announcements()` (named by this crate's own
+# `TreeSource` / `AnnouncementSource` traits) and projects them
 # into the host platform's AX layer (UIA on Windows, AT-SPI on
 # Linux, NSAccessibility on macOS, ARIA on web) via AccessKit. The
 # bridge is a host-shell crate that example apps opt into; the
@@ -17,7 +18,11 @@ license.workspace = true
 # workspace winit 0.30 used by `host-winit`.
 
 [dependencies]
-runtime-core = { workspace = true }
+# The a11y vocabulary (`AccessibilityTree`, `Role`, `LiveRegionPriority`).
+# `runtime-core` is NOT a dependency: the bridge names the two backend
+# operations it needs through its own local traits, so it never sees the
+# `Backend` mega-trait.
+runtime-shared = { workspace = true }
 render-wgpu = { workspace = true }
 
 accesskit = "0.24"

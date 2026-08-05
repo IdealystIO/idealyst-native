@@ -1,5 +1,5 @@
-use runtime_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
-use runtime_core::primitives::text_input::{BlurHandler, BlurOutcome};
+use runtime_shared::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
+use runtime_shared::primitives::text_input::{BlurHandler, BlurOutcome};
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
@@ -312,7 +312,7 @@ impl StringCallbackTarget {
 // `websites/website/src/components/simulator.rs`).
 
 use std::cell::Cell;
-use runtime_core::primitives::graphics::{
+use runtime_shared::primitives::graphics::{
     GraphicsSurface, GraphicsTarget, OnLost, OnReady, OnReadyEvent, OnResize, OnResizeEvent,
 };
 use objc2_foundation::CGRect;
@@ -549,7 +549,16 @@ declare_class!(
                 // measurement too — unlike the layout-pass kick below
                 // — because author code may want the initial value
                 // even on the very first frame.
-                runtime_core::set_viewport_size(runtime_core::ViewportSize {
+                runtime_shared::set_viewport_size(runtime_shared::ViewportSize {
+                    width: w,
+                    height: h,
+                });
+                // New-core mirror: forward the SAME size into the
+                // mounted world's viewport ctx so breakpoint-dependent
+                // author reactivity re-fires on rotation/resize (no-op
+                // TLS read when no new-core app is booted). See
+                // newcore.rs, "Viewport source".
+                crate::newcore::forward_viewport(runtime_shared::ViewportSize {
                     width: w,
                     height: h,
                 });
@@ -571,7 +580,7 @@ declare_class!(
         fn safe_area_insets_did_change(&self) {
             let _: () = unsafe { msg_send![super(self), safeAreaInsetsDidChange] };
             let insets: UIEdgeInsets = unsafe { msg_send![self, safeAreaInsets] };
-            runtime_core::set_safe_area_insets(runtime_core::EdgeInsets {
+            runtime_shared::set_safe_area_insets(runtime_shared::EdgeInsets {
                 top: insets.top as f32,
                 right: insets.right as f32,
                 bottom: insets.bottom as f32,
@@ -1011,7 +1020,7 @@ impl DisplayLinkTarget {
 pub(crate) struct TextKeyDelegateIvars {
     pub(crate) key: RefCell<Option<KeyDownHandler>>,
     pub(crate) on_change: RefCell<Option<Rc<dyn Fn(String)>>>,
-    /// Cancelable blur (see [`runtime_core::primitives::text_input::BlurOutcome`]).
+    /// Cancelable blur (see [`runtime_shared::primitives::text_input::BlurOutcome`]).
     /// Consulted by `textFieldShouldEndEditing:` — the native veto point that
     /// `endEditing:` (our outside-tap dismiss) honors.
     pub(crate) on_blur: RefCell<Option<BlurHandler>>,
@@ -1120,7 +1129,7 @@ impl TextKeyDelegate {
     /// translate [`KeyOutcome`] into the BOOL UIKit expects.
     ///
     /// Replacement-text → `key` heuristics — chosen to match the
-    /// vocabulary documented on `runtime_core::primitives::key`:
+    /// vocabulary documented on `runtime_shared::primitives::key`:
     ///
     /// - `""` with `range.length > 0` → `"Backspace"`. (UIKit reports
     ///   backspace as a deletion of the character behind the caret;
@@ -1183,6 +1192,22 @@ impl TextKeyDelegate {
 // taps landing on a text input so field-to-field focus transfer stays a clean
 // native handoff instead of a dismiss+refocus flicker.
 
+/// Sentinel `UIView.tag` marking a focus-preserving press region
+/// (`Backend::mark_preserves_focus`): touches landing inside a view (or
+/// descendant of one) carrying this tag are skipped by the
+/// keyboard-dismiss tap recognizer, so pressing e.g. an option row in a
+/// combobox's anchored menu doesn't `endEditing:` the input the menu
+/// belongs to. The iOS half of web's canceled-`pointerdown` focus
+/// preservation.
+///
+/// Why `tag`: framework views are plain `UIView`s (no Idealyst subclass to
+/// hold an ivar), and `tag` is otherwise unused by this backend — it
+/// defaults to 0 on every view we create, so a nonzero sentinel is an
+/// unambiguous marker. Invariant: nothing else in this backend may write
+/// `tag` (grep `setTag` before introducing a second use; switch to objc
+/// associated objects if one ever appears).
+pub(crate) const PRESERVES_FOCUS_TAG: isize = 0x1DEA_F0C5;
+
 declare_class!(
     pub(crate) struct KeyboardDismissTarget;
 
@@ -1209,9 +1234,13 @@ declare_class!(
         }
 
         /// Skip touches that land on a text input — those manage focus
-        /// natively (tapping another field transfers focus). Everything else
-        /// (blank space, buttons) dismisses, matching web's "any outside click
-        /// blurs".
+        /// natively (tapping another field transfers focus) — and touches
+        /// inside a focus-preserving subtree ([`PRESERVES_FOCUS_TAG`]): a
+        /// combobox's anchored option menu or an input adornment must be
+        /// tappable without the tap blurring the field it belongs to (a
+        /// close-on-blur would unmount the row mid-tap). Everything else
+        /// (blank space, buttons) dismisses, matching web's "any outside
+        /// click blurs".
         #[method(gestureRecognizer:shouldReceiveTouch:)]
         fn should_receive_touch(&self, _gr: &NSObject, touch: &NSObject) -> objc2::runtime::Bool {
             let view: *mut NSObject = unsafe { msg_send![touch, view] };
@@ -1225,6 +1254,17 @@ declare_class!(
                         return objc2::runtime::Bool::new(false);
                     }
                 }
+            }
+            // Ancestor walk from the touched view: the sentinel tag usually
+            // sits on a wrapping container (the menu panel), while the touch
+            // is delivered to the deepest hit-test view (a row / label).
+            let mut cur = view;
+            while !cur.is_null() {
+                let tag: isize = unsafe { msg_send![cur, tag] };
+                if tag == PRESERVES_FOCUS_TAG {
+                    return objc2::runtime::Bool::new(false);
+                }
+                cur = unsafe { msg_send![cur, superview] };
             }
             objc2::runtime::Bool::new(true)
         }

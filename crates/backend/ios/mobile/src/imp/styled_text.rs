@@ -23,7 +23,7 @@ use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2_foundation::{NSAttributedString, NSObject};
 use objc2_ui_kit::UILabel;
-use runtime_core::{FontFamily, FontWeight, StyleRules, TextRun, TextRunStyle};
+use runtime_shared::{FontFamily, FontWeight, StyleRules, TextRun, TextRunStyle};
 
 use backend_apple_core::font::FontRegistry;
 use backend_apple_core::styled_text::{
@@ -31,7 +31,7 @@ use backend_apple_core::styled_text::{
 };
 use backend_ios_core::font::{resolve_uifont, system_font, ui_font_with_name};
 use backend_ios_core::style::color_to_uicolor;
-use runtime_core::effective_text_color;
+use runtime_shared::effective_text_color;
 
 /// Per-label styled-text state, keyed by view pointer in
 /// `IosBackend::styled_texts`. `para` is the last paragraph style
@@ -64,7 +64,7 @@ pub(crate) fn realize(
         .unwrap_or(FontWeight::Normal);
     let base_style = para
         .and_then(|s| s.font_style)
-        .unwrap_or(runtime_core::FontStyle::Normal);
+        .unwrap_or(runtime_shared::FontStyle::Normal);
     let base_font = para
         .and_then(|s| {
             resolve_uifont(registry, s.font_family.as_ref(), base_weight, base_style, base_size)
@@ -127,7 +127,7 @@ fn run_font(
             registry,
             s.font_family.as_ref(),
             weight,
-            runtime_core::FontStyle::Normal,
+            runtime_shared::FontStyle::Normal,
             size,
         )
         .unwrap_or_else(|| system_font(weight, size)),

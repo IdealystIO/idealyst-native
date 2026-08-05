@@ -3,9 +3,9 @@
 //! Thin wrapper around the framework's `Graphics` surface primitive
 //! and the `host-web` shell crate. The wgpu init, per-frame paint,
 //! and browser-event → `EventSink` translation all live in
-//! [`host_web::mount`]; this component is just the lifecycle glue
-//! (`on_ready` → `mount`, `on_resize` → `handle.resize`, `on_lost`
-//! → drop the handle).
+//! [`host_web::mount_newcore`]; this component is just the lifecycle
+//! glue (`on_ready` → `mount_newcore`, `on_resize` → `handle.resize`,
+//! `on_lost` → drop the handle).
 //!
 //! Invocation shape (via the `ui!` macro's `simulator!` emitter):
 //!
@@ -180,16 +180,16 @@ pub fn Simulator(props: SimulatorProps) -> Element {
                 return;
             };
             spawn_async(async move {
-                // `host_web::mount` does the entire init: wgpu
+                // `host_web::mount_newcore` does the entire init: wgpu
                 // surface, adapter, device, queue, host, renderer,
-                // mount the UI, start the render loop, attach
-                // pointer/wheel listeners. Returns a handle whose
-                // drop tears everything back down in the right
-                // order.
-                // `mount` takes the `Rc<dyn Fn() -> Element>` directly
-                // now (shared with the iOS host's unmount/remount
-                // path) — no closure shim.
-                match host_web::mount(surface, size, profile, skin, build_ui.clone()).await {
+                // realize the embedded tree into the PAGE's world
+                // (`render_wgpu::newcore::start_in_world`, so the page's
+                // flush driver commits the embedded app's writes), start
+                // the render loop, attach pointer/wheel listeners.
+                // Returns a handle whose drop tears everything back down
+                // in the right order.
+                match host_web::mount_newcore(surface, size, profile, skin, build_ui.clone()).await
+                {
                     Ok(handle) => shared::fill(&slot, handle),
                     Err(err) => {
                         web_sys::console::warn_1(

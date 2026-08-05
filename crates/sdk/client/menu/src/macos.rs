@@ -47,6 +47,11 @@ pub fn install(backend: &mut MacosBackend, spec: MenuBarSpec) {
 /// caller-owned `runtime_core::watch(...)` so any signal the closure
 /// reads re-fires the closure (and re-installs the menu bar) on change.
 ///
+/// The `watch` is a world effect, so this must be called where effect
+/// creation is legal — a component body, an effect, or any world-entered
+/// build scope. From a pre-world boot hook (or an event handler) it panics;
+/// use the one-shot [`install`] there instead.
+///
 /// On macOS the re-fire re-acquires `&mut MacosBackend` through the
 /// global self-handle (`backend_macos::with_global_backend`), so the
 /// host must have called `backend_macos::install_global_self(...)`
@@ -55,7 +60,9 @@ pub fn install(backend: &mut MacosBackend, spec: MenuBarSpec) {
 ///
 /// # Example
 /// ```ignore
+/// // inside a `#[component]` body (the world is entered there)
 /// let is_dirty = signal(false);
+/// backend_macos::with_global_backend(|backend| {
 /// menu::install_reactive(backend, move || MenuBarSpec {
 ///     menus: vec![
 ///         Menu::new("File").items(vec![
@@ -67,9 +74,10 @@ pub fn install(backend: &mut MacosBackend, spec: MenuBarSpec) {
 ///         ]),
 ///     ],
 /// });
-/// // Later, somewhere else in the app:
+/// });
+/// // Later, from a handler:
 /// is_dirty.set(true);
-/// // → Save becomes enabled, the menu bar re-renders.
+/// // → at the flush, Save becomes enabled and the menu bar re-renders.
 /// ```
 pub fn install_reactive<F>(backend: &mut MacosBackend, spec_fn: F)
 where

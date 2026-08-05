@@ -1,16 +1,26 @@
 //! `lint` — the idealyst source linter engine.
 //!
-//! Flags three idiom-drift patterns over a project's **un-expanded** Rust
-//! source (the only place the choice is still visible — `effect!` expands
-//! to the raw constructor, so post-expansion the idiom has vanished):
+//! Flags idiom-drift and known-trap patterns over a project's
+//! **un-expanded** Rust source (the only place the choice is still
+//! visible — `effect!` expands to the raw constructor, so post-expansion
+//! the idiom has vanished):
 //!
 //! 1. Drift from the canonical reactive surface — redundant `Signal::new`
 //!    and the removed `signal!` / `memo!` macros (→ the `signal(…)` /
 //!    `memo(move || …)` functions; `prefer-signal-fn`, `prefer-memo-fn`),
 //!    raw `Effect::new` (`prefer-effect-macro`).
 //! 2. Hand-built elements instead of `ui!` / `jsx!` — `builder::…`,
-//!    `BuildElement::build`, `Element::Variant { … }` (`prefer-ui-macro`).
+//!    `BuildElement::build`, `Element::Variant { … }` (`prefer-ui-macro`),
+//!    and hand-built child lists (`prefer-keyed-list`).
 //! 3. Non-PascalCase `#[component]` functions (`component-pascal-case`).
+//! 4. Frozen-snapshot reactivity traps — a hoisted `.get()` used as a
+//!    `ui!` condition or loop source (`snapshot-condition`,
+//!    `snapshot-loop`).
+//! 5. Premint crawl-contract violations — sheet identity or cache keys
+//!    selected by runtime conditionals, and `with_computed` layers
+//!    (`premint-state-keyed-sheet`, `premint-computed-layer`); the
+//!    static twin of the runtime minted-class guard, catching paths a
+//!    dev never exercised before they detonate under `--premint-only`.
 //!
 //! The engine is consumed two ways from one implementation:
 //! - the `idealyst lint` CLI subcommand (human report), and

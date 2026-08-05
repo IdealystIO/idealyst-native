@@ -9,19 +9,35 @@ description = "Marketing site for idealyst-native — built with idealyst-native
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# `async-driver` is required by the embedded `Simulator` component
-# (home-page preview that runs `welcome::app()` through the wgpu
-# render backend). The Simulator uses `runtime_core::driver::spawn_async`
-# to wait on `host_web::mount` without blocking the build walker.
-runtime-core = { workspace = true, features = ["async-driver"] }
-idea-ui = { workspace = true }
+# The author-surface alias target: `extern crate runtime_core as
+# runtime_core;` in lib.rs shadows the extern prelude for the whole
+# crate, so every `runtime_core::…` path resolves against
+# `runtime_vocabulary::glue`. `runtime-vocabulary` is a direct dep
+# because the `ui!` emission spells absolute
+# `::runtime_vocabulary::glue::…` paths, and because `async-driver` is
+# required by the embedded `Simulator` component (the home-page preview
+# that runs `welcome::app()` through the wgpu render backend — it uses
+# `runtime_core::driver::spawn_async` to wait on the wgpu mount without
+# blocking the build).
+runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true, features = ["async-driver"] }
+# `default-features = false`: idea-ui's `table` default stays out of this
+# graph — the website renders no idea-ui Table, so the SDK would be pure
+# dep weight here. (PATH dep, not `workspace = true`: cargo ignores
+# `default-features = false` on workspace-inherited lines.)
+idea-ui = { path = "../../crates/ui/idea-ui", default-features = false }
 swap-navigator = { workspace = true }
 idea-ui-nav = { workspace = true }
+# `codeblock::register` is the website's ONE third-party scene primitive:
+# the boot/SSR registration seam that makes code panels render the SDK's
+# real `<pre>`/span DOM (see `register_scene_extensions` in lib.rs).
 codeblock = { workspace = true }
 # Embedded `welcome` app — the canonical scaffold from `idealyst new`.
 # Re-mounted inside the home-page Simulator so visitors can preview
 # the scene without installing the CLI. Pure rlib, no platform-specific
-# code, compiles the same bytes everywhere.
+# code, compiles the same bytes everywhere. Mounted through
+# `host_wgpu::mount_newcore` (`render_wgpu::newcore::start_in_world`
+# into the page's own world).
 welcome = { workspace = true }
 
 # Embedded-Simulator preview stack. These crates self-gate their
@@ -32,20 +48,23 @@ welcome = { workspace = true }
 host-web = { workspace = true }
 # Target-agnostic wgpu host umbrella. Internally cfg-routes to
 # `host-web` on wasm, `host-ios-mobile` on iOS, etc. The Simulator
-# component calls `host_wgpu::mount(...)` cross-target without any
-# per-platform `cfg` in author code — see §7 of CLAUDE.md +
+# component calls `host_wgpu::mount_newcore(...)` cross-target without
+# any per-platform `cfg` in author code — see §7 of CLAUDE.md +
 # `[[feedback_cfg_hack_signals_missing_backend_method]]`.
 host-wgpu = { workspace = true }
 render-api = { workspace = true }
+# The two simulator skins are pure `Painter` impls with no macro
+# emissions — nothing to retarget.
 ios-sim = { workspace = true }
 android-sim = { workspace = true }
 
 # SSR build target. Optional dep so wasm/native builds don't pull the
 # tiny_http machinery into their dep graph; the `ssr` feature flips it
-# on and `register_ssr_extensions` (gated by the same feature in
+# on and `register_ssr_scene_handlers` (gated by the same feature in
 # `lib.rs`) becomes visible to the CLI-generated SSR wrapper binary
-# (and to `examples/serve.rs`, which compiles examples with all
-# regular features active).
+# and to the examples (see `[[example]]` below — examples do NOT
+# compile with optional features active, so they declare
+# `required-features` and are skipped when `ssr` is off).
 backend-ssr = { workspace = true, features = ["serve"], optional = true }
 
 # Recorder backend for the runtime-server sidecar wrapper. Optional —
@@ -55,7 +74,7 @@ dev-server = { workspace = true, optional = true }
 
 [features]
 # Default to perf instrumentation ON during this investigation. The
-# `debug-stats` feature is feature-gated end-to-end (runtime-core,
+# `debug-stats` feature is feature-gated end-to-end (runtime-shared,
 # the iOS backends, here) so it's a single toggle: this `default`
 # entry threads it through every backend that ships PhaseTimer
 # instrumentation. Drop this entry once the perf chase is over.
@@ -63,25 +82,36 @@ default = ["debug-stats"]
 # Opt into the project-wide `debug-stats` instrumentation. Routes
 # through every dep that has its own `debug-stats` feature, so the
 # whole transitive build records into the same
-# `runtime_core::debug::record_apply_phase` aggregator.
+# `runtime_shared::debug::record_apply_phase` aggregator (reached from
+# author/macro code as `runtime_core::debug::…` through the facade).
 debug-stats = [
-    "runtime-core/debug-stats",
+    "runtime-vocabulary/debug-stats",
 ]
-# Turn on the SSR build path. Activates the optional `backend-ssr`
-# dep + the matching `register_ssr_extensions` impl in `lib.rs`. The
+# Standalone web boot (`web_entry` in lib.rs + standalone.html): the
+# plain-wasm-pack vehicle that carries its OWN
+# `#[wasm_bindgen(start)]`. NON-default and NOT enabled by the CLI web
+# wrapper (`idealyst build --web`), whose generated wrapper has its own
+# start fn — two starts in one module is a wasm-bindgen error. Enable
+# only for the manual wasm-pack flow:
+#   wasm-pack build --target web --dev websites/website \
+#       --out-dir pkg-standalone -- --features standalone-web
+standalone-web = []
+# Turn on the SSR build path. Activates the optional `backend-ssr` dep
+# + the matching `register_ssr_scene_handlers` alias in `lib.rs`. The
 # CLI's `idealyst dev --ssr` / `--static` SSR wrapper sets this
 # (`features = ["ssr"]` on its path-dep on the user crate).
 ssr = ["dep:backend-ssr"]
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
-# (build-runtime-server). Pulls `dev-server` + the drawer SDK's recording
-# handler so `register_extensions_recorder` can register a navigator
-# recording handler on the runtime-server recorder backend.
-sidecar = ["dep:dev-server", "swap-navigator/runtime-server"]
+# (build-runtime-server). Pulls `dev-server` so
+# `register_scene_extensions_recorder` can register the codeblock scene
+# handler on the runtime-server recorder registry (navigators are
+# vocabulary built-ins — no recording handler to wire).
+sidecar = ["dep:dev-server"]
 # Turn on the terminal build path. Like `ssr` above, this forces a
 # host-triple backend that `cfg(target_os)` can't select: the terminal
 # target builds for the host triple, so on a macOS host it collides with
 # `backend-macos`. The CLI's terminal wrapper enables this feature to break
-# the tie. (See the tutorial's Cargo.toml for the full rationale.)
+# the tie.
 terminal = ["dep:backend-terminal"]
 
 # Web target — wasm + DOM. The marketing site's primary surface.
@@ -100,9 +130,9 @@ terminal = ["dep:backend-terminal"]
 # canvas mounts but never paints (the `on_ready` async task is
 # queued onto an executor that was never installed).
 backend-web = { workspace = true, features = ["async-driver"] }
-# NOTE: `lazy! { ... }` no longer requires a direct `wasm-split`
-# dependency — the macro aliases runtime-core's re-export into scope
-# itself. Author crates only need `runtime-core`.
+# NOTE: `lazy! { ... }` / `#[component(lazy)]` needs no direct
+# `wasm-split` dependency — the macro aliases the framework's
+# re-export into scope itself.
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = [
@@ -118,7 +148,7 @@ web-sys = { version = "0.3", features = [
 # FragmentManager.
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
 # `async-driver` is the iOS sibling of the same feature on
-# `backend-web` (line 72 above): it pulls in `install_async_executor`
+# `backend-web` above: it pulls in `install_async_executor`
 # (libdispatch-backed) + `install_render_loop` (NSTimer-backed) so
 # the embedded `Simulator` component's `spawn_async` future resolves
 # and the wgpu host's per-frame closure fires. Without it
@@ -129,9 +159,10 @@ backend-ios-mobile = { workspace = true, features = ["async-driver", "debug-stat
 [target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
 backend-android-mobile = { workspace = true }
 
-# macOS desktop — AppKit backend. `drawer_navigator::register` resolves
-# to its macOS impl (`&mut MacosBackend`) on this host, so the example's
-# `register_extensions` must take the same type.
+# macOS desktop — AppKit backend. The CLI-generated macOS wrapper mounts
+# through `host_appkit::newcore::run_with` and passes
+# `register_scene_extensions`, so this dep only supplies the backend
+# type named by `register_extensions`.
 [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
 backend-macos = { workspace = true }
 
@@ -155,6 +186,21 @@ backend-windows = { workspace = true }
 [dependencies.backend-terminal]
 workspace = true
 optional = true
+
+# The SSR demo examples need the optional `backend-ssr` dep (`ssr`
+# feature). With `required-features`, a plain `cargo test -p website`
+# SKIPS them instead of failing on the unresolved optional dep — they
+# broke silently for months because an older comment wrongly claimed
+# examples compile "with all regular features active". Build them with:
+#   cargo run -p website --features ssr --example serve
+#   cargo run -p website --features ssr --example ssr
+[[example]]
+name = "serve"
+required-features = ["ssr"]
+
+[[example]]
+name = "ssr"
+required-features = ["ssr"]
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false

@@ -5,9 +5,10 @@ use std::rc::Rc;
 use runtime_core::{rx, signal, ui, Element, Signal};
 use icons_lucide::{PENCIL, TRASH_2};
 use idea_ui::{
-    tone, typography_kind, variant, Button, Card, IconButton, Stack, StackAxis, StackGap, Table,
-    TableCell, TableRow, Tag, Typography,
+    tone, typography_kind, variant, Button, Card, IconButton, Stack, StackAxis, StackGap, Tag,
+    Typography,
 };
+use idea_ui::{Table, TableCell, TableRow};
 
 use crate::shell::{Callout, CodePanel, DemoSurface, Prop, PropsTable, Section, P};
 use idea_ui::components::card::variant as card_variant;
@@ -332,3 +333,4 @@ fn clickable_row_table() -> Element {
         }
     }
 }
+

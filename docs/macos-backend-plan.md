@@ -1,5 +1,19 @@
 # macOS backend — plan
 
+
+> **Status note (2026-07-29, runtime-v2).** Build-out plan for the AppKit
+> backend, written against the pre-runtime-v2 `Backend` mega-trait. The
+> AppKit *mechanism* research here — NSView hierarchy, layer-backed
+> styling, scroll/clip views, text metrics, the window shell — is still the
+> reference and is what the shipped backend does. The *seam* it plugs into
+> changed: a backend now implements `runtime_scene::Host` (7 structural
+> ops) plus the `runtime_vocabulary::caps::*Ops` traits it supports, and
+> boots through `host_appkit::newcore::run`. In particular the
+> `external.rs` / `Element::External` handler-registry section is
+> superseded: there is no External concept — first-party and third-party
+> primitives both mount through one `runtime_scene::Registry` handler keyed
+> by payload `TypeId`. See [`backend.md`](backend.md).
+
 A first-class, **desktop-native** AppKit backend. Same `Backend` trait
 the rest of the framework already drives; same Taffy-backed flex layout
 the iOS and Android backends use; but every chrome decision —

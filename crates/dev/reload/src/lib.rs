@@ -123,6 +123,25 @@ pub struct BuildOptions {
     /// `None` keeps the default pkg-into-project behavior that the
     /// `dev-http` static server and in-crate full-stack server rely on.
     pub bundle_out_dir: Option<PathBuf>,
+    /// Premint static styles on every rebuild (`idealyst dev … --premint`).
+    /// Each build runs the native style dump and refreshes
+    /// `pkg/premint.css` alongside the wasm, and the wasm compiles with
+    /// `--cfg idealyst_premint` — so the dev loop exercises the exact
+    /// premint attach paths (minted-class guard, engine fallback + its
+    /// once-per-class console warning) the deployed bundle will run.
+    /// Turning any premint flag on forces `hydrate` OFF for the build:
+    /// premint cannot combine with SSR adoption (`build-web` refuses the
+    /// pair), so a premint dev session gives up the `dev --ssr` hand-off.
+    pub premint: bool,
+    /// Additionally compile the style engine out (`--premint-only`).
+    /// Implies [`Self::premint`]. This is the strict verification mode:
+    /// any style the crawl missed panics in the browser instead of
+    /// silently falling back — run your app's interactions under this
+    /// before shipping a po bundle.
+    pub premint_only: bool,
+    /// Log every engine fall-through (`--premint-report`). Implies
+    /// [`Self::premint`].
+    pub premint_report: bool,
 }
 
 /// Run a single rebuild. Useful for callers that want one build
@@ -152,6 +171,9 @@ pub fn start(
             source,
             features: Vec::new(),
             bundle_out_dir: None,
+            premint: false,
+            premint_only: false,
+            premint_report: false,
         },
     )
 }
@@ -315,40 +337,83 @@ fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
     // runs wasm-pack against it, and copies `pkg/` into `dir`.
     // Same path `idealyst build web` uses; the dev loop is just
     // "do that, but on debounced file changes".
-    build_web::build(
-        dir,
-        build_web::BuildOptions {
-            release: false,
-            source: opts.source.clone(),
-            user_features: opts.features.clone(),
-            // Full-stack standalone-server dev passes a `dist/web` here
-            // so the bundle the server serves is restaged each rebuild;
-            // the plain dev-http / in-crate paths leave it `None` and
-            // get the default pkg-into-project copy.
-            bundle_out_dir: opts.bundle_out_dir.clone(),
-            gzip: false,
-            // Dev rebuilds skip the q11 encode; `.br` siblings are a
-            // deploy-artifact concern (`idealyst build --web --release`).
-            brotli: false,
-                primitives: None,
-            // Dev keeps panic messages — stripping them is a
-            // production-only `idealyst build --web --strip-panics` thing.
-            strip_panics: false,
-            // Dev-loop builds should support `dev --ssr` hand-offs.
-            hydrate: true,
-            // Dev-loop builds skip data pruning — iteration speed
-            // beats bundle size, and the heuristic adds a pass per
-            // rebuild.
-            prune_dead_data_min: None,
-        },
-    )
-    .map(|_| ())
+    build_web::build(dir, to_build_web_options(opts)).map(|_| ())
+}
+
+/// Map the dev-loop options onto a full `build_web::BuildOptions`.
+/// Split out of [`build_wasm`] so the premint/hydrate interaction is
+/// unit-testable without running a build.
+fn to_build_web_options(opts: &BuildOptions) -> build_web::BuildOptions {
+    let premint = opts.premint || opts.premint_only || opts.premint_report;
+    build_web::BuildOptions {
+        // Dev reload always builds the full vocabulary: the flag is a
+        // release-bundle lever, and a dev rebuild that dropped a
+        // primitive would panic at mount mid-session.
+        primitives: None,
+        premint_only: opts.premint_only,
+        premint_report: opts.premint_report,
+        release: false,
+        source: opts.source.clone(),
+        user_features: opts.features.clone(),
+        // Full-stack standalone-server dev passes a `dist/web` here
+        // so the bundle the server serves is restaged each rebuild;
+        // the plain dev-http / in-crate paths leave it `None` and
+        // get the default pkg-into-project copy.
+        bundle_out_dir: opts.bundle_out_dir.clone(),
+        gzip: false,
+        // Dev rebuilds skip the q11 encode; `.br` siblings are a
+        // deploy-artifact concern (`idealyst build --web --release`).
+        brotli: false,
+        // Dev keeps panic messages — stripping them is a
+        // production-only `idealyst build --web --strip-panics` thing.
+        strip_panics: false,
+        // Dev-loop builds support `dev --ssr` hand-offs — EXCEPT under
+        // premint, which cannot combine with SSR adoption (the SSR HTML
+        // carries live-minted classes, the hydrating client stamps
+        // preminted ones; `build_web` refuses the pair). A premint dev
+        // session trades the SSR hand-off for exercising the real
+        // premint attach paths.
+        hydrate: !premint,
+        // Dev-loop builds skip data pruning — iteration speed
+        // beats bundle size, and the heuristic adds a pass per
+        // rebuild.
+        prune_dead_data_min: None,
+        premint,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    fn opts(premint: bool, only: bool, report: bool) -> BuildOptions {
+        BuildOptions {
+            source: FrameworkSource::Workspace { root: std::path::PathBuf::from("/x") },
+            features: Vec::new(),
+            bundle_out_dir: None,
+            premint,
+            premint_only: only,
+            premint_report: report,
+        }
+    }
+
+    /// Premint dev builds must turn hydration OFF: `build_web` refuses
+    /// the premint+hydrate pair, so leaving the dev loop's default
+    /// `hydrate: true` in place would make every `dev --premint`
+    /// rebuild fail. Each of the three flags implies premint (and so
+    /// must flip hydrate), matching `idealyst build`'s semantics.
+    #[test]
+    fn premint_flags_imply_premint_and_disable_hydrate() {
+        for (p, o, r) in [(true, false, false), (false, true, false), (false, false, true)] {
+            let mapped = to_build_web_options(&opts(p, o, r));
+            assert!(mapped.premint, "({p},{o},{r}) implies premint");
+            assert!(!mapped.hydrate, "({p},{o},{r}) must disable hydrate");
+        }
+        let plain = to_build_web_options(&opts(false, false, false));
+        assert!(!plain.premint);
+        assert!(plain.hydrate, "non-premint dev builds keep the SSR hand-off");
+    }
 
     #[test]
     fn signal_starts_at_zero() {

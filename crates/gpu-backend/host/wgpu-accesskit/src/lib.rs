@@ -2,8 +2,8 @@
 //! tree.
 //!
 //! The wgpu backend (a GPU-only renderer) produces an
-//! [`AccessibilityTree`](runtime_core::accessibility::AccessibilityTree)
-//! via `Backend::dump_accessibility_tree()` and queues live-region
+//! [`AccessibilityTree`](runtime_shared::accessibility::AccessibilityTree)
+//! via the local [`TreeSource`] trait and queues live-region
 //! announcements via the inherent `WgpuBackend::drain_pending_announcements`
 //! method. Nothing in the workspace consumes either today — this crate
 //! fills the gap by projecting both into AccessKit, which then drives
@@ -39,8 +39,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use accesskit::{ActionHandler, ActivationHandler, DeactivationHandler, TreeUpdate};
-use runtime_core::Backend;
-use runtime_core::accessibility::{
+use runtime_shared::accessibility::{
     AccessibilityNode, AccessibilityTraits, AccessibilityTree, LiveRegionPriority,
 };
 
@@ -72,6 +71,23 @@ pub trait AnnouncementSource {
 impl AnnouncementSource for render_wgpu::WgpuBackend {
     fn drain(&mut self) -> Vec<(String, LiveRegionPriority)> {
         self.drain_pending_announcements()
+    }
+}
+
+/// Source of the parallel semantics tree. Runtime v2 has no `Backend`
+/// mega-trait to bound on, and the capability trait that carries this
+/// method (`runtime_vocabulary::caps::A11yOps`) would drag the
+/// vocabulary into this host-shell crate — so the bridge names the one
+/// operation it needs, exactly like [`AnnouncementSource`] above.
+/// Defined locally so the impl for the foreign `WgpuBackend` is legal.
+pub trait TreeSource {
+    /// The current semantics tree, or `None` before the first mount.
+    fn dump_accessibility_tree(&self) -> Option<AccessibilityTree>;
+}
+
+impl TreeSource for render_wgpu::WgpuBackend {
+    fn dump_accessibility_tree(&self) -> Option<AccessibilityTree> {
+        self.dump_accessibility_tree_impl()
     }
 }
 
@@ -204,7 +220,7 @@ impl WgpuAccessKitBridge {
     /// closure and the drain needs `&mut`; if both were the same call
     /// we'd need `&mut B` here, which propagates a foreign mutable
     /// borrow into every host's render loop.
-    pub fn sync<B: Backend>(&mut self, backend: &B) {
+    pub fn sync<B: TreeSource>(&mut self, backend: &B) {
         let Some(tree) = backend.dump_accessibility_tree() else {
             return;
         };
@@ -224,7 +240,7 @@ impl WgpuAccessKitBridge {
     ///
     /// Caller invokes this with `&mut WgpuBackend` (or any
     /// [`AnnouncementSource`]) once per frame after [`sync`](Self::sync).
-    pub fn drain_announcements<S: AnnouncementSource, B: Backend>(
+    pub fn drain_announcements<S: AnnouncementSource, B: TreeSource>(
         &mut self,
         source: &mut S,
         backend: &B,
@@ -357,7 +373,7 @@ fn hash_node(node: &AccessibilityNode, h: &mut DefaultHasher) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::accessibility::{
+    use runtime_shared::accessibility::{
         AccessibilityNode, AccessibilityProps, AccessibilityRect, AccessibilityTree, Role,
     };
 
@@ -470,11 +486,10 @@ mod tests {
     // real wgpu backend or a winit event loop.
     // -----------------------------------------------------------------
 
-    /// A `Backend`-ish stub whose `dump_accessibility_tree` returns a
-    /// pre-set tree. We can't implement `runtime_core::Backend`
-    /// trivially (it has ~100 methods), so we don't — the bridge's
-    /// skip-path lives in the public `hash_tree` + `last_signature`
-    /// pair, which we test directly here.
+    /// A stub announcement source. Spinning up a real `WgpuBackend`
+    /// needs a wgpu device, so we don't — the bridge's skip-path lives
+    /// in the public `hash_tree` + `last_signature` pair, which we test
+    /// directly here.
     struct FakeSource(Vec<(String, LiveRegionPriority)>);
     impl AnnouncementSource for FakeSource {
         fn drain(&mut self) -> Vec<(String, LiveRegionPriority)> {

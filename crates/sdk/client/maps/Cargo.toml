@@ -8,22 +8,42 @@ license.workspace = true
 #
 # Layering:
 # - `maps-core` (shared types, zero platform deps)
-# - this crate: facade + cfg-routed `register` re-export
-# - `maps-web`/`maps-ios`/etc.: per-backend leaves with the actual
-#   FFI / SDK wiring
+# - this crate: the author-facing constructor + the cfg-routed scene
+#   `register` (one handler per target family)
+# - `maps-web`/`maps-ios`/etc.: per-backend leaves holding the actual
+#   FFI / SDK node builders
 #
 # Cargo's target-specific deps pull in exactly one leaf for the current
-# build target. On platforms with no matching leaf, the umbrella's
-# fallback `register<B>(_: &mut B) {}` keeps user code compiling; the
-# framework's per-backend "not supported" placeholder renders at
-# runtime.
+# build target. On platforms with no matching leaf, the umbrella
+# registers the External-placeholder handler and the host's "not
+# supported" box renders at runtime.
 
 [dependencies]
-runtime-core = { workspace = true }
 maps-core = { workspace = true }
+# The scene registry + the vocabulary caps the handlers drive
+# (`ExternalOps::create_external` placeholder path) + `style_attach` for
+# the author-style channel. `runtime-shared` supplies
+# `accessibility::AccessibilityProps`. No `runtime-world` — the maps
+# handlers install no reactive effects (the props are plain `Copy` data).
+runtime-scene = { workspace = true }
+runtime-shared = { workspace = true }
+runtime-vocabulary = { workspace = true }
+
+[dev-dependencies]
+# tests/maps.rs mounts `MapView(...)` through the scene registry
+# end-to-end on the shared host-mock recording substrate.
+host-mock = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 maps-web = { workspace = true }
+# The wasm32 register is `WebBackend`-concrete (the leaf's iframe DOM has
+# no caps-trait expression), so `Registry<WebBackend>` needs the
+# backend's `Host` impl; web-sys names the node type the handler returns.
+backend-web = { workspace = true }
+web-sys = { version = "0.3", features = ["Element", "Node"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 maps-ios = { workspace = true }
+# Same story on iOS: the leaf returns an `IosNode` wrapping a real
+# `MKMapView`, so the handler is `IosBackend`-concrete.
+backend-ios-mobile = { workspace = true }

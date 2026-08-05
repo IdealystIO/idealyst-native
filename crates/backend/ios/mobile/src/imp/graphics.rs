@@ -1,4 +1,4 @@
-use runtime_core::primitives::graphics::{
+use runtime_shared::primitives::graphics::{
     GraphicsSurface, OnLost, OnReady, OnResize,
 };
 use objc2::rc::Retained;

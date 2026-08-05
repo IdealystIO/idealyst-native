@@ -7,8 +7,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use canvas_core::{draw, Canvas, CanvasProps, DrawOp, Scene, Transform};
-use runtime_core::{Bound, ExternalHandle, Length, StyleRules, StyleSheet};
+use canvas_core::{draw, Canvas, CanvasBound, CanvasProps, DrawOp, Scene, Transform};
+use runtime_shared::{Length, StyleRules, StyleSheet};
 
 use crate::Document;
 
@@ -43,7 +43,7 @@ impl Default for PdfView {
 /// On a load/parse error the element renders empty (and logs at `warn`), so a
 /// bad document degrades gracefully rather than panicking.
 #[allow(non_snake_case)]
-pub fn Pdf(view: PdfView) -> Bound<ExternalHandle<CanvasProps>> {
+pub fn Pdf(view: PdfView) -> CanvasBound {
     let PdfView { bytes, page, width } = view;
 
     // Interpret the page once. The resulting scene is in page-point coordinates;
@@ -118,7 +118,7 @@ struct PageCache {
 /// // later, from a file picker: bytes.set(Some(Rc::new(file_bytes)));
 /// ```
 #[allow(non_snake_case)]
-pub fn PdfReactive<F>(source: F, page: usize, width: f32, height: f32) -> Bound<ExternalHandle<CanvasProps>>
+pub fn PdfReactive<F>(source: F, page: usize, width: f32, height: f32) -> CanvasBound
 where
     F: Fn() -> Option<Rc<Vec<u8>>> + 'static,
 {

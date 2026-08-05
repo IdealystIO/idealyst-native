@@ -126,7 +126,7 @@ docs! {
                         text { format!("Count: {}", count.get()) }
                         button(
                             label = "Increment",
-                            on_click = move || count.update(|n| *n += 1),
+                            on_click = move || count.update(|n| n + 1),
                         )
                     }
                 }

@@ -12,15 +12,26 @@ crate-type = ["rlib"]
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The author surface. `runtime-core` is aliased to `runtime_core` at the
+# crate root (see src/lib.rs) — one core, no feature switch;
+# `async-driver` because the start handlers use `driver::spawn_async`.
+# `runtime-vocabulary` is needed because the `ui!` emission spells
+# absolute `::runtime_vocabulary::glue::…` paths (and for the caps bounds
+# `video::register` asks for on native), and `runtime-scene` for the
+# scene `Registry` in the registration seam.
 runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 camera = { workspace = true }
 video = { workspace = true }
 media-stream = { workspace = true }
 dev-server = { workspace = true, optional = true }
 
-# Web: the concrete `WebBackend` for `register_extensions`, plus the
-# `getDisplayMedia` surface for the inline screen-share producer.
+# Web: the concrete `WebBackend` — `video::register` is
+# `Registry<WebBackend>`-concrete on wasm32 (the real `<video>` renderer,
+# which needs `web_sys`), so the registration seam specializes there.
+# Also the `getDisplayMedia` surface for the inline screen-share producer.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
 wasm-bindgen = "0.2"

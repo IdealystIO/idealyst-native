@@ -23,17 +23,16 @@
 //!
 //! Everything except `set_open_drawer` is a no-op outside `wasm32`.
 
-use std::cell::OnceCell;
 use std::rc::Rc;
 
 use idea_ui::{current_breakpoint, Breakpoint};
-use runtime_core::{memo, ReadSignal, Ref, Signal, StyleApplication, StyleSheet};
+use runtime_core::{Ref, Signal, StyleApplication, StyleSheet};
 
 /// Width (dp) below which the sidebar collapses into the drawer
 /// overlay. Single source of truth for the collapse breakpoint:
 /// [`build_css`] generates the `@media (max-width: …)` rule from it,
 /// and the mobile header keys its visibility on the same value via
-/// [`sidebar_collapsed`] / [`collapse_responsive_style`]. The header
+/// [`sidebar_collapsed_now`] / [`collapse_responsive_style`]. The header
 /// MUST collapse at this exact width (not at the lower content-tighten
 /// breakpoint used by [`responsive_variant`]) or the band between the
 /// two becomes an un-navigable dead zone — see the regression test.
@@ -111,42 +110,30 @@ fn collapse_variant(collapsed: bool) -> &'static str {
     }
 }
 
-thread_local! {
-    /// Memoized `Signal<bool>` — `true` while the sidebar is collapsed.
-    /// Derived from [`runtime_core::viewport_size`] like
-    /// [`idea_ui::current_breakpoint`], so subscribers only re-fire when
-    /// the viewport crosses [`SIDEBAR_COLLAPSE_PX`], not on every pixel
-    /// of a resize drag. Lazily created on first read.
-    static COLLAPSED_MEMO: OnceCell<ReadSignal<bool>> = const { OnceCell::new() };
-}
-
-/// Reactive flag: is the sidebar collapsed into the drawer overlay?
-/// Read inside a style closure / effect to subscribe to crossings of
-/// the collapse breakpoint.
-pub fn sidebar_collapsed() -> ReadSignal<bool> {
-    COLLAPSED_MEMO.with(|cell| {
-        // Root-anchor this thread-lifetime cached memo so it isn't owned
-        // by whatever transient scope first touches it (e.g. an SSR
-        // deferred chrome build) — otherwise the cached signal id dangles
-        // when that scope drops and its slot recycles.
-        *cell.get_or_init(|| {
-            runtime_core::unscope(|| {
-                memo(|| sidebar_collapsed_at(runtime_core::viewport_size().get().width))
-            })
-        })
-    })
+/// Tracked read: is the sidebar collapsed *right now*? Subscribes the
+/// surrounding reactive scope.
+///
+/// Reads the PER-WORLD breakpoint ctx (`current_breakpoint`) rather than
+/// a thread-cached memo over `viewport_size`: `app()` aligns the `Lg`
+/// minimum to [`SIDEBAR_COLLAPSE_PX`] via `install_breakpoints`, so
+/// `bucket < Lg` is exactly [`sidebar_collapsed_at`]. A thread-cached
+/// world-signal handle would dangle across per-request SSR worlds (a
+/// dead-world read on the second render), which is why the derivation
+/// is per-world and not memoized here.
+pub fn sidebar_collapsed_now() -> bool {
+    !matches!(current_breakpoint().get(), Breakpoint::Lg | Breakpoint::Xl)
 }
 
 /// Build a reactive style closure for a `variant size { wide, narrow }`
 /// stylesheet whose visibility tracks the sidebar-collapse breakpoint
-/// (e.g. the mobile header). Reads [`sidebar_collapsed`] on every fire
+/// (e.g. the mobile header). Reads [`sidebar_collapsed_now`] on every fire
 /// so a resize across [`SIDEBAR_COLLAPSE_PX`] re-applies the matching
 /// variant.
 pub fn collapse_responsive_style(
     sheet: Rc<StyleSheet>,
 ) -> impl Fn() -> StyleApplication + Clone + 'static {
     move || {
-        let variant = collapse_variant(sidebar_collapsed().get());
+        let variant = collapse_variant(sidebar_collapsed_now());
         StyleApplication::new(sheet.clone()).with("size", variant.to_string())
     }
 }

@@ -8,7 +8,8 @@ license.workspace = true
 path = "src/lib.rs"
 
 # App-side replay engine for the dev-mode hot-reload wire protocol.
-# Generic over a platform `Backend` so each backend (iOS, Android,
+# Generic over the platform capability surface
+# (`runtime_vocabulary::caps::AllCaps`) so each backend (iOS, Android,
 # web, …) can host hot-reload without changes to its native code.
 #
 # Everything in this crate is gated by the `dev-hot-reload` feature.
@@ -32,10 +33,18 @@ dev-hot-reload = []
 # `runtime-server` feature. This crate is platform-pure: protocol +
 # replay engine only.
 
+
 [dependencies]
-runtime-core = { workspace = true }
+runtime-shared = { workspace = true }
 wire = { workspace = true }
 serde_json = { workspace = true }
+
+# The replay target: `WireBackend<B>` is bounded on
+# `runtime_vocabulary::caps::AllCaps` (which is itself bounded on
+# `runtime_scene::Host`), so the replayer drives a platform through the
+# capability traits and names no backend crate.
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
 
 [dev-dependencies]
 mock-backend = { workspace = true }

@@ -15,9 +15,14 @@ use idea_ui::{
     TableCell, Tag, TableRow, Typography,
 };
 use markdown::{Markdown, MdTheme};
+// `fixed_size` / `flat_list` are only mirrored at
+// `primitives::flat_list::…` on the current author surface (the old root
+// re-exported them too — see the report note); everything else is a root
+// name.
+use runtime_core::primitives::flat_list::{fixed_size, flat_list};
 use runtime_core::{
-    component, effect, fixed_size, flat_list, rx, signal, switch, ui, Color, Element, IntoElement,
-    SafeAreaSides, StyleApplication, Tokenized,
+    component, effect, rx, signal, switch, ui, Color, Element, IntoElement, SafeAreaSides,
+    StyleApplication, Tokenized,
 };
 
 use crate::catalog::{CatalogModel, Entry, Kind};
@@ -166,16 +171,7 @@ pub fn sidebar(active_path: runtime_core::Signal<String>, model: Rc<CatalogModel
     let open_search: Rc<dyn Fn()> = Rc::new(move || open.set(true));
     let close_search: Rc<dyn Fn()> = Rc::new(move || open.set(false));
     let model_for_results = model.clone();
-
-    let header_children: Vec<Element> = vec![
-        ui! { Typography(content = "Idealyst Catalog".to_string(), kind = typography_kind::H3) },
-        ui! {
-            Typography(
-                content = format!("{} entries, generated from the live catalog.", model.total()),
-                muted = true,
-            )
-        },
-    ];
+    let total = model.total();
 
     // The sidebar owns its scroll now: the legacy drawer SDK wrapped the
     // slot in its own `scroll_view`, but the AppShell panel is a plain
@@ -187,7 +183,13 @@ pub fn sidebar(active_path: runtime_core::Signal<String>, model: Rc<CatalogModel
     ui! {
         scroll_view(style = SidebarScroll()) {
         view(style = SidebarBody()) {
-            view(style = SidebarHeader()) { header_children }
+            view(style = SidebarHeader()) {
+                Typography(content = "Idealyst Catalog".to_string(), kind = typography_kind::H3)
+                Typography(
+                    content = format!("{} entries, generated from the live catalog.", total),
+                    muted = true,
+                )
+            }
             SearchTrigger(on_press = Some(open_search.clone()))
             ThemeToggle()
             // Overview link.
@@ -273,9 +275,17 @@ fn search_results(
                         )
                     }
                 } else {
-                    let cards: Vec<Element> =
-                        hits.into_iter().map(|h| result_card(h, close.clone())).collect();
-                    ui! { Stack(gap = StackGap::Sm) { cards } }
+                    // The `for` lowers to a closure that MOVES what it
+                    // captures; clone the modal-close handle per rebuild so
+                    // the enclosing `switch` closure (an `Fn`) keeps its own.
+                    let close = close.clone();
+                    ui! {
+                        Stack(gap = StackGap::Sm) {
+                            for h in hits {
+                                result_card(h, close.clone())
+                            }
+                        }
+                    }
                 }
             }
         },
@@ -297,11 +307,13 @@ fn filter_chips(filter: runtime_core::Signal<Option<Kind>>, current: Option<Kind
         ("Types", Some(Kind::Type)),
         ("Utilities", Some(Kind::Utility)),
     ];
-    let chips: Vec<Element> = opts
-        .into_iter()
-        .map(|(label, k)| filter_chip(label, current == k, filter, k))
-        .collect();
-    ui! { view(style = ChipRow()) { chips } }
+    ui! {
+        view(style = ChipRow()) {
+            for (label, k) in opts {
+                filter_chip(label, current == k, filter, k)
+            }
+        }
+    }
 }
 
 /// One filter chip — a pressable pill that sets the active kind filter.
@@ -332,11 +344,16 @@ fn result_card(h: crate::catalog::SearchHit, close: Rc<dyn Fn()>) -> Element {
     let kind_label = h.kind.noun().to_string();
     let module = h.module_path.clone();
     let summary = h.summary.clone();
+    // Hoisted so the `if`s lower statically (borrowed-capture plain `if`) —
+    // the 0.4.0 reactive-by-default gate would otherwise demand 'static
+    // move-captures for `module`/`summary` (see emit_if in runtime-macros).
+    let has_module = !module.is_empty();
+    let has_summary = !summary.is_empty();
     let card = ui! {
         Card {
             Stack(gap = StackGap::Xs) {
                 // Crate / namespace — a small label above the result.
-                if !module.is_empty() {
+                if has_module {
                     text(style = ResultNamespace()) { module }
                 }
                 // Name + kind tag, inline.
@@ -344,7 +361,7 @@ fn result_card(h: crate::catalog::SearchHit, close: Rc<dyn Fn()>) -> Element {
                     text(style = LinkText()) { name }
                     Tag(label = kind_label, tone = tone::Neutral, variant = variant::Soft)
                 }
-                if !summary.is_empty() {
+                if has_summary {
                     Typography(content = summary, muted = true)
                 }
             }
@@ -597,51 +614,58 @@ pub struct FieldsTableProps {
 
 #[component]
 pub fn FieldsTable(props: FieldsTableProps) -> Element {
-    let mut rows: Vec<Element> = Vec::with_capacity(props.fields.len() + 1);
-    rows.push(ui! {
-        TableRow {
-            TableCell(header = true, text = Some("Name".to_string()))
-            TableCell(header = true, text = Some("Type".to_string()))
-            TableCell(header = true, text = Some("Description".to_string()))
+    let fields = props.fields;
+    let _ = props.documented;
+    ui! {
+        Table {
+            TableRow {
+                TableCell(header = true, text = Some("Name".to_string()))
+                TableCell(header = true, text = Some("Type".to_string()))
+                TableCell(header = true, text = Some("Description".to_string()))
+            }
+            for f in fields {
+                field_row(f)
+            }
         }
-    });
-    for f in props.fields {
-        let name = f.name.clone();
-        let ty = tidy_type(&f.ty);
-        // Fold the constraint hint into the description column so the
-        // table stays three columns wide on narrow screens.
-        let desc = if f.constraint.is_empty() {
-            f.doc.clone()
-        } else if f.doc.is_empty() {
-            format!("constraint: {}", f.constraint)
-        } else {
-            format!("{} (constraint: {})", f.doc, f.constraint)
-        };
-        // When the type resolves to a catalog Type (not a primitive), make
-        // the Type cell a link to that type's page.
-        let type_cell = match f.type_link {
-            Some(link) => {
-                let params = EntryParams::new(link.kind, link.slug);
-                ui! {
-                    TableCell {
-                        link(route = &ENTRY_ROUTE, params = params) {
-                            text(style = LinkText()) { ty }
-                        }
+    }
+}
+
+/// One props/fields/params row. The type cell links to the field type's
+/// own catalog page when the type resolved to one.
+fn field_row(f: crate::catalog::Field) -> Element {
+    let name = f.name.clone();
+    let ty = tidy_type(&f.ty);
+    // Fold the constraint hint into the description column so the table
+    // stays three columns wide on narrow screens.
+    let desc = if f.constraint.is_empty() {
+        f.doc.clone()
+    } else if f.doc.is_empty() {
+        format!("constraint: {}", f.constraint)
+    } else {
+        format!("{} (constraint: {})", f.doc, f.constraint)
+    };
+    // When the type resolves to a catalog Type (not a primitive), make the
+    // Type cell a link to that type's page.
+    let type_cell = match f.type_link {
+        Some(link) => {
+            let params = EntryParams::new(link.kind, link.slug);
+            ui! {
+                TableCell {
+                    link(route = &ENTRY_ROUTE, params = params) {
+                        text(style = LinkText()) { ty }
                     }
                 }
             }
-            None => ui! { TableCell(text = Some(ty)) },
-        };
-        rows.push(ui! {
-            TableRow {
-                TableCell(text = Some(name))
-                type_cell
-                TableCell(text = Some(desc))
-            }
-        });
+        }
+        None => ui! { TableCell(text = Some(ty)) },
+    };
+    ui! {
+        TableRow {
+            TableCell(text = Some(name))
+            type_cell
+            TableCell(text = Some(desc))
+        }
     }
-    let _ = props.documented;
-    ui! { Table { rows } }
 }
 
 // =============================================================================
@@ -756,6 +780,8 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
         let members = entry.members.clone();
         let count = members.len();
         let docs = entry.docs.clone();
+        // Hoisted for static `if` lowering (borrowed capture; see result_card).
+        let has_docs = !docs.is_empty();
         let groups: Vec<(Kind, Vec<crate::catalog::EntryLink>)> = [
             Kind::Component,
             Kind::Primitive,
@@ -779,7 +805,7 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
                     Typography(content = entry.name.clone(), kind = typography_kind::H1)
                     Typography(content = format!("scope · {} members", count), muted = true)
                 }
-                if !docs.is_empty() {
+                if has_docs {
                     render_markdown(&docs)
                 }
                 Divider()
@@ -801,6 +827,16 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
     let docs = entry.docs.clone();
     let scope = entry.scope.clone();
     let kind_label = entry.kind.noun().to_string();
+    // Hoisted so every `if` lowers statically — the branches borrow `entry`
+    // (a `&Entry` that can't be moved into a 'static reactive closure) and
+    // render one-shot Strings; catalog data never changes after build.
+    let has_docs = !docs.is_empty();
+    let has_variants = !entry.variants.is_empty();
+    let has_return = !entry.return_type.is_empty();
+    let has_composes = !entry.composes.is_empty();
+    let has_methods = !entry.methods.is_empty();
+    let has_animations = !entry.animations.is_empty();
+    let has_recipes = !entry.recipes.is_empty();
 
     layout(ui! {
         view(style = pad) {
@@ -813,36 +849,36 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
                 scope_member_link(s)
             }
             // Docs paragraph(s).
-            if !docs.is_empty() {
+            if has_docs {
                 render_markdown(&docs)
             }
             Divider()
             // Fields / props / params table.
             fields_section(entry)
             // Enum variants.
-            if !entry.variants.is_empty() {
+            if has_variants {
                 variants_section(entry)
             }
             // Return type (utilities).
-            if !entry.return_type.is_empty() {
+            if has_return {
                 Section(title = "Returns".to_string()) {
                     CodePanel(src = tidy_type(&entry.return_type))
                 }
             }
             // Composition graph (components).
-            if !entry.composes.is_empty() {
+            if has_composes {
                 composes_section(entry)
             }
             // Methods (components).
-            if !entry.methods.is_empty() {
+            if has_methods {
                 methods_section(entry)
             }
             // Animations (components).
-            if !entry.animations.is_empty() {
+            if has_animations {
                 animations_section(entry)
             }
             // Usage recipes (components).
-            if !entry.recipes.is_empty() {
+            if has_recipes {
                 recipes_section(entry)
             }
         }
@@ -857,11 +893,13 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
 ///
 /// The gallery body is a `#[component]` ([`IconGallery`]), not inline code,
 /// for a load-bearing reason: the `flat_list` virtualizer installs its
-/// reactive re-diff as an `Effect` that only survives if an *owning
-/// reactive scope* is active when it's built (see
-/// `runtime_core::walker::virtualizer`). A plain page fn provides no such
-/// scope, so the grid would never re-filter on search; a component body
-/// does — the same reason `crates/ui/icons-lucide/examples/icon-gallery` is a `#[component]`.
+/// reactive re-diff as an effect, which is collected into — and lives
+/// exactly as long as — the surrounding component scope
+/// (`runtime_scene::component_scope`; the handler is
+/// `runtime_vocabulary::handlers::virtualizer`). A plain page fn opens no
+/// such scope, so the grid would never re-filter on search; a component
+/// body does — the same reason
+/// `crates/ui/icons-lucide/examples/icon-gallery` is a `#[component]`.
 fn icon_set_page(entry: &Entry) -> Element {
     use crate::icons;
     use crate::styles::{PageColumn, PagePad};
@@ -869,6 +907,8 @@ fn icon_set_page(entry: &Entry) -> Element {
     let meta = entry.icon_set.clone().unwrap_or_default();
     let title = entry.name.clone();
     let docs = entry.docs.clone();
+    // Hoisted for static `if` lowering (borrowed capture; see result_card).
+    let has_docs = !docs.is_empty();
     let count = meta.count;
 
     // Pack registered in the catalog but its crate isn't linked here — show
@@ -881,7 +921,7 @@ fn icon_set_page(entry: &Entry) -> Element {
                     Typography(content = title, kind = typography_kind::H1)
                     Typography(content = format!("icon set · {} icons", count), muted = true)
                 }
-                if !docs.is_empty() {
+                if has_docs {
                     render_markdown(&docs)
                 }
                 Callout(label = "Preview unavailable".to_string()) {
@@ -965,8 +1005,8 @@ pub fn IconGallery(props: IconGalleryProps) -> Element {
         fixed_size(icons::ROW_H),
         |_idx, r: &icons::RowData| icons::render_row(r),
     )
-    .into_element()
-    .with_style(icons::list_style());
+    .with_style(icons::list_style())
+    .into_element();
 
     let header_pad = PagePad();
     ui! {
@@ -1036,24 +1076,26 @@ fn fields_section(entry: &Entry) -> Element {
 
 fn variants_section(entry: &Entry) -> Element {
     let variants = entry.variants.clone();
-    let mut rows: Vec<Element> = Vec::with_capacity(variants.len() + 1);
-    rows.push(ui! {
-        TableRow {
-            TableCell(header = true, text = Some("Variant".to_string()))
-            TableCell(header = true, text = Some("Description".to_string()))
-        }
-    });
-    for (vn, vd) in variants {
-        rows.push(ui! {
-            TableRow {
-                TableCell(text = Some(vn))
-                TableCell(text = Some(vd))
-            }
-        });
-    }
     ui! {
         Section(title = "Variants".to_string()) {
-            Table { rows }
+            Table {
+                TableRow {
+                    TableCell(header = true, text = Some("Variant".to_string()))
+                    TableCell(header = true, text = Some("Description".to_string()))
+                }
+                for (vn, vd) in variants {
+                    variant_row(vn, vd)
+                }
+            }
+        }
+    }
+}
+
+fn variant_row(name: String, docs: String) -> Element {
+    ui! {
+        TableRow {
+            TableCell(text = Some(name))
+            TableCell(text = Some(docs))
         }
     }
 }
@@ -1182,11 +1224,13 @@ fn method_row(m: crate::catalog::Method) -> Element {
     };
     let sig = format!("fn {}({}){}", m.name, params, ret);
     let doc = m.doc.clone();
+    // Hoisted for static `if` lowering (borrowed capture; see result_card).
+    let has_doc = !doc.is_empty();
     ui! {
         Card {
             Stack(gap = StackGap::Xs) {
                 CodePanel(src = sig)
-                if !doc.is_empty() {
+                if has_doc {
                     Typography(content = doc, muted = true)
                 }
             }
@@ -1196,25 +1240,28 @@ fn method_row(m: crate::catalog::Method) -> Element {
 
 fn animations_section(entry: &Entry) -> Element {
     let animations = entry.animations.clone();
-    let mut rows: Vec<Element> = Vec::with_capacity(animations.len() + 1);
-    rows.push(ui! {
-        TableRow {
-            TableCell(header = true, text = Some("Binding".to_string()))
-            TableCell(header = true, text = Some("Initial value".to_string()))
-        }
-    });
-    for a in animations {
-        let binding = if a.binding.is_empty() { "(inline)".to_string() } else { a.binding.clone() };
-        rows.push(ui! {
-            TableRow {
-                TableCell(text = Some(binding))
-                TableCell(text = Some(a.initial.clone()))
-            }
-        });
-    }
     ui! {
         Section(title = "Animations".to_string()) {
-            Table { rows }
+            Table {
+                TableRow {
+                    TableCell(header = true, text = Some("Binding".to_string()))
+                    TableCell(header = true, text = Some("Initial value".to_string()))
+                }
+                for a in animations {
+                    animation_row(a)
+                }
+            }
+        }
+    }
+}
+
+fn animation_row(a: crate::catalog::Animation) -> Element {
+    let binding =
+        if a.binding.is_empty() { "(inline)".to_string() } else { a.binding.clone() };
+    ui! {
+        TableRow {
+            TableCell(text = Some(binding))
+            TableCell(text = Some(a.initial))
         }
     }
 }
@@ -1246,6 +1293,8 @@ fn recipe_card(recipe: crate::catalog::Recipe) -> Element {
     let title = recipe.name.replace('_', " ");
     let heading = if recipe.primary { format!("{} · primary", title) } else { title };
     let docs = recipe.docs.clone();
+    // Hoisted for static `if` lowering (borrowed capture; see result_card).
+    let has_docs = !docs.is_empty();
     let source = strip_leading_doc(&recipe.source);
     // A live preview, when this recipe is a zero-arg renderable one the
     // build-time map could address. Props-defining recipes (those whose
@@ -1255,7 +1304,7 @@ fn recipe_card(recipe: crate::catalog::Recipe) -> Element {
         Card {
             Stack(gap = StackGap::Sm) {
                 Typography(content = heading, kind = typography_kind::H3)
-                if !docs.is_empty() {
+                if has_docs {
                     render_markdown(&docs)
                 }
                 if let Some(preview) = preview {

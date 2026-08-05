@@ -4,59 +4,54 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Third-party `Table` SDK — one crate, cfg-gated per-backend impl
-# modules (same single-crate shape as the `form` SDK).
+# Third-party `Table` SDK — one crate, cfg-gated per-target lowering
+# (same single-crate shape as the `form` SDK).
 #
 # # Why this is an SDK and not a core primitive
 #
 # A real HTML `<table>` is irreplaceable for cross-row column
 # alignment on web: the browser's table layout algorithm sizes
 # every column to fit the widest cell in that column, then applies
-# that width to every row. Reproducing that with flex requires
-# per-column pre-computed widths or `display: grid`, neither of
-# which the framework's stylesheet vocabulary exposes today.
+# that width to every row.
 #
 # Native platforms have no comparable structure (UITableView is a
 # vertical list, not a multi-column grid; Android RecyclerView is
 # the same; macOS has NSTableView but it's row-keyed not
-# cross-column). So `Table` is a web-first SDK on
-# `Element::External` (with children):
+# cross-column), so `Table` lowers per target:
 #   * web    → real `<table>`/`<thead>`/`<tbody>`/`<tr>`/`<th>`/`<td>`
-#              hierarchy. Browser's `table-layout: auto` handles
-#              column alignment for free.
-#   * native → flex passthrough (column proportions still controlled
-#              by per-cell styles, same as the docs' hand-rolled
-#              table — no column-fits-widest behavior, but the
-#              author-supplied flex weights still apply).
-description = "Cross-platform table SDK on Element::External — real <table> on web."
+#              hierarchy through scene-registry handlers. The browser's
+#              `table-layout: auto` handles column alignment for free.
+#   * native → ONE shared-track CSS grid (rows flatten to cells), so
+#              column `i` is one width across every row.
+description = "Cross-platform table SDK — real <table> on web, shared-track CSS-grid on native."
 
 [lib]
 crate-type = ["rlib"]
 
 [dependencies]
-# PATH dep with `default-features = false`, NOT `workspace = true`: cargo
-# ignores `default-features = false` on workspace-inherited lines, so a
-# workspace dep here would force every `prim-*` family back ON for any
-# app that disabled them (feature unification) — this crate sits in
-# idea-ui's dep tree, so it must not widen the prim set. The table SDK
-# renders through ungated primitives (views, grid, `Element::External`),
-# so it forwards nothing. (Same contract as backend-web / idea-ui.)
-runtime-core = { path = "../../../runtime/core", default-features = false }
-# Self-registration of the per-backend external handler at construction.
-inventory = "0.3"
+# The scene Element/Registry/item + the vocabulary glue (view builder,
+# style attach, caps traits) both lowerings are expressed over.
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+# The permanent shared substrate: the style data model plus the event
+# handler aliases (`TouchHandler` / `HoverHandler`) idea-ui's
+# clickable-row feature installs on built cells.
+runtime-shared = { workspace = true }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-# Same unification contract as the runtime-core line above — the
-# workspace spec would re-enable backend-web's default prim set.
-backend-web = { path = "../../../backend/web", default-features = false }
-web-sys = { version = "0.3", features = [
-    "Document",
-    "Element",
-    "Node",
-    "Window",
-    "HtmlTableElement",
-    "HtmlTableRowElement",
-    "HtmlTableCellElement",
-    "HtmlTableSectionElement",
-] }
-wasm-bindgen = "0.2"
+[dev-dependencies]
+# The scene handlers are generic over the caps traits, so the SSR
+# backend — a real caps-complete host — drives them on the host target
+# (the navigator-SDK test pattern).
+#
+# COORDINATION: `` is still needed because
+# backend-ssr's newcore render path is feature-gated. When that feature
+# is made unconditional (backend flattening wave), drop the forward.
+backend-ssr = { workspace = true }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+
+# No wasm32-specific dependency: the web `<table>` handlers are generic
+# over the vocabulary caps traits, so nothing here touches `web-sys` or
+# the web backend directly. (They used to, when the web lowering went
+# through a `WebBackend`-concrete external handler.)

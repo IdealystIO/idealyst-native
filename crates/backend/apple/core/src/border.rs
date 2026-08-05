@@ -18,10 +18,10 @@
 //! unit-tested once on the host and the two backends converge byte for
 //! byte (Rule #7) — see [`uniform_border`].
 //!
-//! NOT OS-gated — pure `runtime_core` logic, so it builds and tests on the
+//! NOT OS-gated — pure `runtime_shared` logic, so it builds and tests on the
 //! host while iOS + macOS share one source of truth.
 
-use runtime_core::Color;
+use runtime_shared::Color;
 
 /// Decide whether a per-side border collapses to a single uniform
 /// CALayer stroke. `widths` and `colors` are the four resolved sides

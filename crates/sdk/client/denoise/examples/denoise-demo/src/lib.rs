@@ -11,9 +11,9 @@
 //!   denoise pipeline stays warm for the next take).
 //! - **Not recording** — if a clip exists, the **A/B monitor** is mounted: both
 //!   takes play in lockstep, the two **waveforms are the selector** (tap a track
-//!   to make it the audible one, via [`VideoHandle::set_muted`]), and a GPU
-//!   canvas draws an Audacity-style waveform per track with a live played-region
-//!   highlight + playhead ([`VideoHandle::position`]).
+//!   to make it the audible one, via [`VideoHandle::set_muted`]), and a
+//!   `canvas` draws an Audacity-style waveform per track with a live
+//!   played-region highlight + playhead ([`VideoHandle::position`]).
 //!
 //! The audio→UI bridge is the canonical one (see `mic-demo`): capture/processing
 //! callbacks run off the main thread and write peaks into lock-free
@@ -39,13 +39,6 @@ use runtime_core::{
 };
 use video::{Video, VideoBind, VideoHandle, VideoProps};
 use canvas::{color, CanvasProps, Paint, Path, Scene, Stroke};
-// Link anchor: `canvas-native` self-registers its CPU renderer via `inventory`
-// at backend construction, but ONLY if the crate is actually linked. Nothing
-// else references it by name (we draw through the `canvas` SDK), so without this
-// `use … as _` the linker drops it and the macOS canvas renders nothing
-// ("external not supported"). `canvas-vello` has no inventory hook and is
-// registered explicitly in `register_extensions`. See [[project_inventory_self_registration]].
-use canvas_native as _;
 
 // Where the two recordings live (./Library/Application Support/denoise-recordings/).
 const STORE: &str = "denoise-recordings";
@@ -56,7 +49,7 @@ const DENOISED_FILE: &str = "denoised.m4a";
 const SEG_RAW: &str = "raw";
 const SEG_DENOISED: &str = "denoised";
 
-// Waveform rendering + capture (Audacity-style, drawn on the GPU canvas).
+// Waveform rendering + capture (Audacity-style, drawn on the canvas SDK).
 const SCRUB_H: f32 = 140.0; // total scrubber canvas height — two stacked lanes
 const WAVE_DECIMATE: u32 = 2; // sample the envelope every Nth frame while recording
 const WAVE_MAX_GAIN: f32 = 8.0; // cap normalization so a near-silent take isn't blown up to noise
@@ -176,32 +169,61 @@ mod web_model {
     }
 }
 
-/// `video` and `canvas-native` self-register via inventory at backend
-/// construction (the latter only because the `use canvas_native as _` anchor
-/// above keeps it linked). `canvas-vello` (the GPU renderer) has no inventory
-/// hook, so register it explicitly here — last-registration-wins over native on
-/// the targets where vello is viable; it self-gates off where the GPU can't run
-/// it (iOS simulator, Android emulator). `microphone`/`denoise`/`media-writer`
-/// are plain capability crates.
-pub fn register_extensions<B: runtime_core::RegisterExternal>(backend: &mut B) {
-    #[cfg(any(
-        target_os = "ios",
-        target_os = "android",
-        target_os = "macos",
-        target_arch = "wasm32"
-    ))]
-    canvas_vello::register(backend);
-    #[cfg(not(any(
-        target_os = "ios",
-        target_os = "android",
-        target_os = "macos",
-        target_arch = "wasm32"
-    )))]
-    let _ = backend; // desktop (linux/windows): canvas-native (inventory) only
+/// SDK-handler registration seam, invoked by the CLI-generated wrappers
+/// after `runtime_vocabulary::register_builtins`. The scene registry has
+/// no self-registration — an UNREGISTERED payload panics at realize — so
+/// BOTH rendered SDKs this demo uses (`canvas` for the waveform,
+/// `video` for the two hidden players) must be composed in here.
+/// `microphone`/`denoise`/`media-writer`/`files` are plain capability
+/// crates with nothing to register.
+///
+/// wasm32 takes the concrete arm because `video::register` is
+/// `Registry<WebBackend>`-typed there (the real `<video>` element);
+/// `canvas_native::register` is generic on every target and
+/// type-dispatches at registration time.
+#[cfg(target_arch = "wasm32")]
+pub fn register_scene_extensions(
+    registry: &mut runtime_scene::Registry<backend_web::WebBackend>,
+) {
+    canvas_native::register(registry);
+    // Registered AFTER canvas-native: the vello GPU painter self-gates and
+    // wins where a GPU surface is available, falling back to the CPU
+    // painter otherwise. Order is the fallback order.
+    canvas_vello::register(registry);
+    video::register(registry);
 }
 
+/// Native arm — both `register`s are generic and dispatch on the registry
+/// TYPE once, at registration time.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
+where
+    H: runtime_vocabulary::caps::ExternalOps
+        + runtime_vocabulary::caps::GraphicsOps
+        + runtime_vocabulary::style_attach::StyleServices
+        + 'static,
+{
+    canvas_native::register(registry);
+    // Only the platforms whose Cargo.toml target block pulls canvas-vello
+    // (macOS/iOS/Android). Linux/Windows keep the CPU painter alone.
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+    canvas_vello::register(registry);
+    video::register(registry);
+}
+
+/// Recorder-side seam for the runtime-server sidecar
+/// (`dev_server::sidecar::run_newcore`).
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {}
+pub fn register_scene_extensions_recorder(registry: &mut dev_server::newcore::SceneRegistry) {
+    canvas_native::register(registry);
+    video::register(registry);
+}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
+}
 
 pub fn app() -> Element {
     install_idea_theme(light_theme());
@@ -229,7 +251,7 @@ pub fn app() -> Element {
     let raw_player: Ref<VideoHandle> = Ref::new();
     let den_player: Ref<VideoHandle> = Ref::new();
     // The first waveform track's wrapper view — polled for its laid-out width so
-    // the GPU draw can map the envelope across the available pixels.
+    // the draw can map the envelope across the available pixels.
     let wave_box: Ref<ViewHandle> = Ref::new();
 
     // Per-recording handles + in-progress envelopes. `!Send`, main-thread only.
@@ -291,13 +313,11 @@ pub fn app() -> Element {
         let last_den = Cell::new(u32::MAX);
         let frame = Cell::new(0u32);
         let raf = runtime_core::raf_loop(move || {
-            // The plain `raf_loop` (unlike the `_scoped` variants) does NOT guard
-            // the reactive arena: an OS-dispatched frame can land while a reactive
-            // mutation is mid-flight. Writing a signal then panics with "RefCell
-            // already borrowed". Skip the frame — exactly what `raf_loop_scoped` does.
-            if runtime_core::is_reactive_busy() {
-                return;
-            }
+            // No reentrancy guard needed: writes STAGE and the driver
+            // commits them at the flush, so a frame landing mid-turn can
+            // never re-borrow a live arena (the old core's
+            // `is_reactive_busy()` skip existed only to dodge that
+            // "RefCell already borrowed" abort).
             let r = RAW_PEAK_BITS.load(Ordering::Relaxed);
             if r != last_raw.get() {
                 last_raw.set(r);
@@ -319,9 +339,9 @@ pub fn app() -> Element {
             }
 
             if phase.get() == Phase::Preview {
-                // Read everything OUT of the handles first: `Ref::with` holds the
-                // reactive arena borrowed across its closure, so a `signal.set()`
-                // inside it would re-borrow and panic. Set after `with` returns.
+                // Read everything OUT of the handles first, then set —
+                // `Ref::with` still holds the ref arena across its closure,
+                // so keep the handle reads and the signal writes separate.
                 if let Some((pos, dur)) = raw_player.with(|h| (h.position(), h.duration())) {
                     if dur > 0.0 {
                         dur_secs.set(dur);
@@ -773,7 +793,7 @@ pub fn app() -> Element {
     }
 }
 
-/// The playback scrubber: **one** GPU canvas spanning both takes — Raw lane on
+/// The playback scrubber: **one** canvas spanning both takes — Raw lane on
 /// top, Denoised below — with a **single continuous playhead** through both, a
 /// per-lane played-region highlight, and a `M:SS / M:SS` readout. Two transparent
 /// `pressable` overlays (top half / bottom half) make each lane tappable to

@@ -28,8 +28,8 @@ trick, generalized to every backend).
 - [`Source`] — `ThisApp`, `UserChoice`, `FullScreen`, or `Window(WindowSelector)`.
 - [`AudioSource`] — reserved enum (`None` / `App` / `System` / `Microphone` /
   `AppAndMic`) for when audio capture lands; the frame callback is video-only today.
-- [`PrivateLayer(children)`] + [`register(&mut backend)`] — the capture-excluded
-  overlay (`Element::External`) and its per-backend bootstrap.
+- [`PrivateLayer(children)`] + [`register(&mut registry)`] — the
+  capture-excluded overlay and its boot-seam registration.
 - [`RecorderError`] — `Unsupported`, `PermissionDenied`, `UnsupportedSource(&str)`,
   `Platform(String)`.
 - Re-exported from `media-stream`: [`MediaStream`], [`VideoFrame`],
@@ -70,8 +70,9 @@ controls, watermarks, or chrome you don't want in the captured output. Bootstrap
 once at startup, then wrap children:
 
 ```rust
-// bootstrap (native builds the capture-excluded window):
-// screen_recorder::register(&mut backend);
+// bootstrap — pass `register` to the boot entry's registry seam
+// (native then builds the capture-excluded window):
+// backend_web::newcore::start_in("#app", screen_recorder::register, app);
 
 // in your tree:
 // ui! {
@@ -96,7 +97,7 @@ differs.
 | Android | `MediaProjection` + `VirtualDisplay` + `ImageReader` (JNI/Kotlin shim) | separate `WindowManager` window — PixelCopy-excluded |
 | Web (wasm32) | `getDisplayMedia` → hidden `<video>` → `<canvas>` pixel pump | inline no-op (TODO: Element Capture `restrictTo`) |
 | Windows | `Windows.Graphics.Capture` *(planned)* | `WDA_EXCLUDEFROMCAPTURE` *(planned)* |
-| Linux | xdg-desktop-portal ScreenCast + PipeWire (`pipewiresrc` → GStreamer, user picks the source in the portal dialog) | none available — the portal has no capture-exclusion; overlay is recorded inline |
+| Linux | xdg-desktop-portal ScreenCast + PipeWire *(planned)* | none available |
 | other desktop | *not implemented* — returns `RecorderError::Unsupported` | — |
 
 `Source::Window(..)` is desktop-only; iOS/Android treat `UserChoice` as
@@ -115,25 +116,11 @@ at build time and injects the right per-platform artifacts:
   consent dialog (re-prompts each session on API 14+).
 - **Web** — nothing to declare; the browser shows the source picker on
   `getDisplayMedia`.
-- **Linux** — nothing to declare; the xdg-desktop-portal ScreenCast dialog
-  *is* the permission — the user picks a monitor/window and approves capture
-  there (like `getDisplayMedia`). `request_permission` only verifies the portal
-  is reachable and defers the grant to that dialog. Needs a running
-  `xdg-desktop-portal` + PipeWire daemon and the `gst-plugin-pipewire` GStreamer
-  plugin. **Video only** — desktop-audio capture and dmabuf zero-copy are
-  documented follow-ons; there is no capture-exclusion mechanism, so a
-  `PrivateLayer` overlay is recorded inline.
 
 ## Tests
 
-- `tests/portable.rs` — config builders + the private-layer `Element::External`
-  lowering contract + the `Unsupported` fallback contract (only on targets with
-  no capture backend); runs anywhere.
-- `src/linux.rs` tests — the real `videoconvert → appsink(RGBA) → FrameWriter`
-  delivery path, exercised headless via `videotestsrc` (no portal), plus the
-  `Source`→portal-`SourceType` and error mapping. An `#[ignore]`d
-  `live_portal_delivers_a_real_frame` runs the real `ashpd` negotiation +
-  `pipewiresrc` capture (needs a human to approve the share dialog).
+- `tests/portable.rs` — config builders + the private-layer
+  lowering contract + the skeleton's `Unsupported` contract; runs anywhere.
 
 ## Testing checklist
 
@@ -142,12 +129,11 @@ compiles for that target but isn't confirmed on real hardware yet. Tick each
 item as you exercise it.
 
 **Automated**
-- [ ] `cargo test -p screen-recorder` — config builders, private-layer `Element::External` lowering, the `Unsupported` fallback contract, and (on Linux) the `videotestsrc`→`FrameWriter` delivery path + `Source`/error mapping
+- [ ] `cargo test -p screen-recorder` — config builders, the private-layer mount shape (`tests/private_layer.rs`), the `Unsupported` skeleton contract
 - [ ] `cargo build -p screen-recorder --target wasm32-unknown-unknown` — web target
 
 **Behavior**
 - [ ] **Web** — `getDisplayMedia` source picker appears; frames stream as RGBA8; `PrivateLayer` is an inline no-op (no exclusion yet).
-- [ ] **Linux** — `cargo test -p screen-recorder -- --ignored --nocapture live_portal_delivers_a_real_frame` on a real Wayland/X session; the xdg-desktop-portal share dialog appears, and after approval frames stream as RGBA8 (video only; `PrivateLayer` recorded inline).
 - [ ] **iOS** — device-verified: ReplayKit consent dialog appears; `Source::ThisApp` frames stream (in-app capture shows the app — recursive mirror expected); the private layer's separate `UIWindow` is excluded; `UserChoice` falls back to `ThisApp`, `Window` → `UnsupportedSource`.
 - [ ] **Android** — ⚠️ not yet device-confirmed: MediaProjection consent dialog appears (re-prompts each session on API 14+); confirm the `FOREGROUND_SERVICE_MEDIA_PROJECTION` foreground-service notification shows; frames stream; the private layer's separate `WindowManager` window is PixelCopy-excluded.
 - [ ] **macOS** — system Screen Recording (TCC) prompt appears; ScreenCaptureKit frames stream; the private `NSWindow`/`NSPanel` is excluded via `SCContentFilter`.
@@ -166,5 +152,5 @@ item as you exercise it.
 [`Source`]: src/config.rs
 [`AudioSource`]: src/config.rs
 [`PrivateLayer(children)`]: src/private_layer.rs
-[`register(&mut backend)`]: src/lib.rs
+[`register(&mut registry)`]: src/private_layer.rs
 [`RecorderError`]: src/error.rs

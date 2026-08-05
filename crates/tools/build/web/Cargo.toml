@@ -30,10 +30,6 @@ wasm-split-cli = { workspace = true }
 # from `[package.metadata.idealyst.app.icon].source` during bundle
 # staging. Build is a no-op when the icon block is absent.
 icon-gen = { workspace = true }
-# Reads the APP crate's Cargo.toml to warn when `--primitives` is
-# defeated by the app's own default-features runtime-core dep line
-# (feature unification). Already a dev-dep for the wrapper tests.
-toml = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

@@ -28,7 +28,9 @@
 //! reactive text on read), so a `toHaveText` immediately after a `click`
 //! sees the post-update value with no explicit wait.
 
-use runtime_core::robot::{Element, ElementKind, Query, Robot};
+// The Robot registry + query surface lives in the vocabulary now
+// (`runtime_core::robot` carries only the `#[method]` glue).
+use runtime_vocabulary::robot::{Element, ElementKind, Query, Robot};
 
 /// Pacing between tests, in ms. Purely cosmetic: it lets the on-screen UI
 /// visibly change and the console stream one test at a time, like watching
@@ -37,12 +39,12 @@ const STEP_PACING_MS: i32 = 750;
 
 /// `[e2e]`-prefixed info line to the platform console.
 fn log(line: impl AsRef<str>) {
-    runtime_core::log_info!("[e2e] {}", line.as_ref());
+    runtime_shared::log_info!("[e2e] {}", line.as_ref());
 }
 
 /// `[e2e]`-prefixed error line (failed assertions / actions).
 fn log_fail(line: impl AsRef<str>) {
-    runtime_core::log_error!("[e2e] {}", line.as_ref());
+    runtime_shared::log_error!("[e2e] {}", line.as_ref());
 }
 
 // ---------------------------------------------------------------------------

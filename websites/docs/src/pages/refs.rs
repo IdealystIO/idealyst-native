@@ -70,7 +70,7 @@ docs! {
                         value.set(0);
                     }
                     fn bump_by(&self, n: i32) {
-                        value.update(|v| *v += n);
+                        value.update(|v| v + n);
                     }
                     fn set_to(&self, n: i32) {
                         value.set(n);
@@ -278,7 +278,7 @@ docs! {
             ui! {
                 button(
                     label = "Open menu",
-                    on_click = move || is_open.update(|v| *v = !*v),
+                    on_click = move || is_open.update(|v| !v),
                 )
                 .bind(trigger)
 
@@ -310,7 +310,7 @@ docs! {
         p("A ", code("Ref<H>"), " is a ", code("Copy"), " token, same shape as ",
           code("Signal<T>"), ". Pass it into closures, into child components, \
            anywhere, without ", code(".clone()"),
-          ". The token indexes into the reactive arena; the storage is shared."),
+          ". The token indexes into the world's arena; the storage is shared."),
         p("Allocate refs early — typically right at the top of a component — and \
            bind them inline in the ", code("ui!"), " block. The slot stays empty \
            until the primitive (or component) mounts."),
@@ -389,7 +389,7 @@ docs! {
               emptied at unmount. Reading it doesn't subscribe to anything. Use \
               to invoke methods on a mounted thing."],
         ),
-        p("Both live in the reactive arena and share the ", code("Copy"),
+        p("Both live in the world's arena and share the ", code("Copy"),
           "-token shape. They solve different problems and coexist freely — you'll \
            often fire a ref-driven action from inside a signal-driven event \
            handler."),

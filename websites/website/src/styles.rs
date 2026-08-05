@@ -71,9 +71,23 @@ stylesheet! {
             overflow: runtime_core::Overflow::Hidden,
         }
         variant size {
+            // `min_height: 0` is load-bearing on native: without it,
+            // Taffy's flex automatic minimum size (min-height auto →
+            // min-content) floors the bar at its 56-px content despite
+            // `height: 0`, so the header stayed visible on desktop at
+            // wide widths. Web never showed this because CSS
+            // `overflow: hidden` zeroes the automatic minimum, but on
+            // native `StyleRules.overflow` is backend clipping only —
+            // it is NOT forwarded into Taffy's layout style (see the
+            // `clip_rect_for` docs in `runtime-layout`).
+            // `padding_vertical: 0` matters for the same reason on a
+            // live narrow→wide resize: `narrow` sets it, and a variant
+            // switch only overrides fields the new resolution specifies.
             #[default]
             wide(_t) {
                 height: 0.0,
+                min_height: 0.0,
+                padding_vertical: 0.0,
                 padding_horizontal: 0.0,
                 border_bottom_width: 0.0,
             }
@@ -623,7 +637,7 @@ stylesheet! {
 /// so clicks on the hero text below pass through.
 pub fn hero_glare_sheet() -> std::rc::Rc<runtime_core::StyleSheet> {
     use runtime_core::StyleRules;
-    std::rc::Rc::new(runtime_core::StyleSheet::r#static(StyleRules {
+    runtime_core::StyleSheet::r#static(StyleRules {
         position: Some(Position::Absolute),
         top: Some(Tokenized::Literal(Length::Px(0.0))),
         right: Some(Tokenized::Literal(Length::Px(0.0))),
@@ -653,7 +667,8 @@ pub fn hero_glare_sheet() -> std::rc::Rc<runtime_core::StyleSheet> {
             ],
         }),
         ..Default::default()
-    }))
+    })
+    .premint_as("website.v1.hero_glare")
 }
 
 /// Headline wrapper so the text claims the column width without the
@@ -1403,5 +1418,50 @@ stylesheet! {
             align_items: AlignItems::FlexStart,
             max_width: 280.0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtime_core::VariantSet;
+
+    fn px(field: &Option<Tokenized<Length>>) -> Option<f32> {
+        field.as_ref().map(|t| match *t.value() {
+            Length::Px(v) => v,
+            ref other => panic!("expected px length, got {other:?}"),
+        })
+    }
+
+    /// Regression: on desktop native at wide viewports the mobile
+    /// header bar stayed visible. The `wide` variant only set
+    /// `height: 0`, and on native Taffy floors a flex item at its
+    /// automatic minimum size (min-height auto → the 56-px content)
+    /// because `StyleRules.overflow: Hidden` is backend clipping only
+    /// and never reaches Taffy's layout style. Web masked the bug:
+    /// CSS `overflow: hidden` zeroes the automatic minimum. The fix
+    /// is an explicit `min_height: 0` (plus `padding_vertical: 0` so
+    /// a live narrow→wide resize also clears the fields `narrow`
+    /// sets). This test pins the resolved `wide` rules to a shape
+    /// that collapses to zero height under Taffy.
+    #[test]
+    fn regression_mobile_header_wide_variant_collapses_on_native() {
+        let sheet = MobileHeader::sheet();
+
+        let wide = sheet.resolve(&VariantSet::new().with("size", "wide"));
+        assert_eq!(px(&wide.height), Some(0.0));
+        assert_eq!(
+            px(&wide.min_height),
+            Some(0.0),
+            "wide variant must pin min_height to 0 — leaving it unset lets \
+             Taffy's automatic minimum size floor the bar at its content \
+             height on native, so the header shows at desktop widths"
+        );
+        assert_eq!(px(&wide.padding_top), Some(0.0));
+        assert_eq!(px(&wide.padding_bottom), Some(0.0));
+
+        // Sanity: the visible bar is unchanged.
+        let narrow = sheet.resolve(&VariantSet::new().with("size", "narrow"));
+        assert_eq!(px(&narrow.min_height), Some(56.0));
     }
 }

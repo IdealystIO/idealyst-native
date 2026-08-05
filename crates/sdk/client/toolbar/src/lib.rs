@@ -1,28 +1,24 @@
 //! Third-party `Toolbar` SDK for the idealyst framework.
 //!
-//! Provides a `Toolbar` primitive backed by `Element::External`. On
-//! native desktop hosts (macOS via `NSToolbar`; Windows/Linux land in
-//! follow-ups when their backends gain `register_external`), the
-//! toolbar attaches to the host window's chrome — title bar on macOS,
-//! command bar on Windows, HeaderBar on GTK. On every other platform
-//! (iOS, Android, web, terminal, wgpu, ESP, CPU) `register` is a
-//! no-op and the in-tree primitive renders zero-size.
+//! Provides a `Toolbar` primitive that attaches to the host window's
+//! chrome on native desktop hosts — title bar on macOS (`NSToolbar`),
+//! Common-Controls toolbar on Windows, `GtkHeaderBar` on GTK4. On every
+//! other platform (iOS, Android, web, terminal, wgpu, ESP, CPU)
+//! [`register`] installs the External-placeholder handler and the
+//! in-tree primitive renders zero-size.
 //!
 //! That posture follows the project's mobile-first philosophy
 //! ([[feedback_mobile_first_philosophy]]): toolbar / menu chrome
-//! belongs in third-party SDKs, not the core Backend trait.
+//! belongs in third-party SDKs, not the host capability set.
 //!
 //! # Usage
 //!
 //! ```ignore
-//! // App bootstrap: pass an `register_extensions` closure to host_appkit::run_with.
-//! host_appkit::run_with(
+//! // App bootstrap: the boot entry's registration closure IS the seam.
+//! host_appkit::newcore::run_with(
 //!     app,
 //!     host_appkit::RunOptions::default(),
-//!     |backend| {
-//!         toolbar::register(backend);
-//!         // other SDKs that need backend.register_external::<T>(...)
-//!     },
+//!     |registry| toolbar::register(registry),
 //! )?;
 //!
 //! // Inside a `ui!` block — the toolbar's in-tree footprint is zero,
@@ -32,7 +28,7 @@
 //! // the enum so `vec![]` accepts mixed kinds (buttons + spacers).
 //! let count = signal(0_i32);
 //! ui! {
-//!     View {
+//!     view {
 //!         { toolbar::Toolbar(toolbar::ToolbarProps {
 //!             items: Box::new(move || vec![
 //!                 toolbar::ToolbarItem::button("Save")
@@ -51,48 +47,70 @@
 //! }
 //! ```
 //!
-//! # Architecture
-//!
-//! - The `Element::External` payload type is [`ToolbarProps`].
-//! - Per-backend `register(&mut backend)` impls live in cfg-gated
-//!   modules. The macOS impl installs an `effect!` inside its
-//!   handler closure, so the `items` closure re-runs whenever the
-//!   signals it reads change — same reactive shape as `webview::url`.
-//! - [`ToolbarHandle`] carries a type-erased `Rc<dyn Any>` to the
-//!   native toolbar object plus a `&'static dyn ToolbarOps` pointer
-//!   the active backend module exposes. Imperative ops
-//!   (`set_visible`) route through it.
-//! - The in-tree node returned by the backend handler is a 0-size
-//!   transparent view — toolbars are window chrome, not view content,
-//!   so the placeholder is invisible regardless of where it's mounted.
+//! An UNREGISTERED payload panics at realize (the scene contract), so a
+//! missed `register` fails loud.
 #![deny(missing_docs)]
 
-use runtime_core::{Bound, Element, IdealystSchema, Ref, RefFill};
-use std::any::{Any, TypeId};
+// Core-free item model (ToolbarItem/ToolbarButton + builders), shared by
+// the platform legs.
+mod items;
+
+// Shared macOS NSToolbar machinery (delegate, item construction,
+// wipe+repopulate update, placeholder view, imperative ops). Kept
+// separate from `macos` so the AppKit code stays free of any reactive
+// or scene imports.
+#[cfg(target_os = "macos")]
+mod macos_shared;
+
+// Per-platform concrete scene handlers. Each is
+// `Registry<ConcreteBackend>`-typed: window chrome has no caps-trait
+// expression, so these cannot be caps-generic.
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "linux")]
+mod linux;
+
+// Hosts must drain freshly-allocated Win32 command ids into the
+// backend's handler map for toolbar buttons to become clickable — see
+// the fn's docs. Windows-only, historically part of this crate's public
+// surface on that target.
+#[cfg(target_os = "windows")]
+pub use crate::windows::flush_pending;
+
+use std::any::Any;
+use std::cell::RefCell;
 use std::rc::Rc;
+
+use runtime_shared::Ref;
+use runtime_scene::{item, Element, MountCx, Registry};
+use runtime_vocabulary::caps::ExternalOps;
+use runtime_vocabulary::glue::IntoElement;
+use runtime_vocabulary::style_attach::{
+    attach_style, on_teardown, IntoStyleProp, StyleProp, StyleServices,
+};
+
+pub use crate::items::{ToolbarButton, ToolbarItem};
 
 // ============================================================================
 // Public API surface
 // ============================================================================
 
-/// Author-supplied props for a `Toolbar` instance. Owned by the SDK,
-/// not the framework — the framework just type-erases this behind
-/// `Element::External { payload: Rc<dyn Any>, .. }` and hands it
-/// back to the registered backend handler on mount.
+/// Author-supplied props for a `Toolbar` instance. Carried inside the
+/// scene item payload and read back by the registered handler.
 ///
-/// `items` is reactive: the backend handler wraps the call in an
-/// `Effect` and rebuilds the native toolbar's item list whenever the
+/// `items` is reactive: each desktop handler subscribes via a world
+/// effect and rebuilds the native toolbar's item list whenever the
 /// signals captured by the closure change.
-#[derive(IdealystSchema)]
 pub struct ToolbarProps {
     /// Reactive item list. Re-evaluated whenever its captured signals
     /// change; the result is diffed against the current toolbar and
     /// applied via the native toolbar's "set items" call.
-    #[schema(constraint = "reactive: re-runs when captured signals change")]
     pub items: Box<dyn Fn() -> Vec<ToolbarItem>>,
     /// Whether the toolbar is visible initially. Reactive visibility
     /// (driven by a signal) goes through `ToolbarHandle::set_visible`
-    /// from an `effect!` in the app — kept off the props struct to
+    /// from an effect in the app — kept off the props struct to
     /// avoid two ways of doing the same thing.
     pub visible: bool,
 }
@@ -106,137 +124,43 @@ impl Default for ToolbarProps {
     }
 }
 
-/// One entry in the toolbar. The native backend interprets the kind
-/// into the right widget — `Button` becomes an `NSToolbarItem` on
-/// macOS, `Separator` becomes a `NSToolbarSeparatorItemIdentifier`,
-/// the two space variants become `NSToolbarSpaceItemIdentifier` /
-/// `NSToolbarFlexibleSpaceItemIdentifier`.
-///
-/// Build via the constructor helpers ([`ToolbarItem::button`],
-/// [`ToolbarItem::separator`], [`ToolbarItem::space`],
-/// [`ToolbarItem::flexible_space`]) rather than the enum directly —
-/// the builder shape leaves room for the SDK to grow new optional
-/// fields (tooltip, badge, custom view) without breaking existing
-/// call sites.
-pub enum ToolbarItem {
-    /// A clickable button (with optional icon / tooltip / handler).
-    /// Construct via [`ToolbarItem::button`].
-    Button(ToolbarButton),
-    /// A vertical divider between item groups. macOS draws an
-    /// `NSToolbarSeparatorItem`.
-    Separator,
-    /// Fixed-width gap. macOS draws an NSToolbarSpaceItem (~32 px).
-    Space,
-    /// Flex gap that pushes following items to the right edge.
-    FlexibleSpace,
-}
-
-impl ToolbarItem {
-    /// Builder for a button item. Chain `.icon(...)` and `.on_click(...)`
-    /// to fill in details. Label is required — toolbar buttons without
-    /// a label fail accessibility and look broken with `setDisplayMode:
-    /// IconOnly` regardless.
-    pub fn button(label: impl Into<String>) -> ToolbarButton {
-        ToolbarButton {
-            label: label.into(),
-            icon: None,
-            on_click: None,
-            tooltip: None,
-        }
-    }
-
-    /// A vertical divider [`ToolbarItem`]. Use between logical groups
-    /// of buttons.
-    pub fn separator() -> Self {
-        Self::Separator
-    }
-
-    /// A fixed-width gap [`ToolbarItem`] (~32 px on macOS).
-    pub fn space() -> Self {
-        Self::Space
-    }
-
-    /// A flexible gap [`ToolbarItem`] that pushes every following item
-    /// toward the trailing (right) edge of the toolbar.
-    pub fn flexible_space() -> Self {
-        Self::FlexibleSpace
-    }
-}
-
-/// Button item. Use [`ToolbarItem::button`] to construct, then chain
-/// `.icon(...)`, `.tooltip(...)`, `.on_click(...)`. Implements
-/// `Into<ToolbarItem>` so callers can mix builders + raw variants in
-/// the same `vec![...]`.
-pub struct ToolbarButton {
-    /// Visible button label. Required — toolbar buttons without a label
-    /// fail accessibility and look broken under `IconOnly` display mode.
-    pub label: String,
-    /// Icon name. Interpreted by the active backend:
-    /// - **macOS**: SF Symbol name (e.g. `"square.and.arrow.down"`,
-    ///   `"arrow.clockwise"`). Falls back to a label-only button if
-    ///   the symbol isn't found at runtime.
-    /// - **Windows/Linux**: ignored until those backends grow real
-    ///   toolbar support.
-    ///
-    /// We deliberately don't route through the framework's icon
-    /// registry here — SF Symbols give the toolbar a native macOS
-    /// look without an asset bundle. Authors who want their own
-    /// glyphs can compose a custom-view toolbar item once that
-    /// surface lands.
-    pub icon: Option<String>,
-    /// Click handler, invoked on the main thread when the user activates
-    /// the button. `None` makes the button inert.
-    pub on_click: Option<Rc<dyn Fn()>>,
-    /// Hover tooltip text. macOS shows it on the toolbar item's
-    /// `label` + `paletteLabel`; both also serve as the
-    /// accessibility description.
-    pub tooltip: Option<String>,
-}
-
-impl ToolbarButton {
-    /// Set the button's icon (an SF Symbol name on macOS). See the
-    /// [`icon`](Self::icon) field for per-backend interpretation.
-    pub fn icon(mut self, name: impl Into<String>) -> Self {
-        self.icon = Some(name.into());
-        self
-    }
-
-    /// Set the click handler. Fires on the main thread when the button
-    /// is activated.
-    pub fn on_click<F: Fn() + 'static>(mut self, f: F) -> Self {
-        self.on_click = Some(Rc::new(f));
-        self
-    }
-
-    /// Set the hover tooltip / accessibility description.
-    pub fn tooltip(mut self, text: impl Into<String>) -> Self {
-        self.tooltip = Some(text.into());
-        self
-    }
-}
-
-impl From<ToolbarButton> for ToolbarItem {
-    fn from(b: ToolbarButton) -> Self {
-        ToolbarItem::Button(b)
-    }
-}
-
 // ============================================================================
 // Handle + ops trait
 // ============================================================================
 
-/// Typed handle to a mounted `Toolbar`. Filled by `Ref::fill` after
-/// the primitive mounts; users hold a `Ref<ToolbarHandle>` at the
-/// call site and reach imperative ops via `r.with(|h| h.set_visible(false))`.
+/// Typed handle to a mounted `Toolbar`. Filled at mount time when the
+/// author chained [`ToolbarBind::bind`]; user code receives the handle
+/// through `Ref::with`.
 #[derive(Clone)]
 pub struct ToolbarHandle {
     node: Rc<dyn Any>,
     ops: &'static dyn ToolbarOps,
 }
 
+/// Pointer identity on the NODE — a `ToolbarHandle` names one mounted `Toolbar`, so
+/// clones of it are equal and handles onto two different `Toolbar`s never are.
+/// Exactly the shape (and reasoning) of `form::FormHandle`'s impl.
+///
+/// `node` is a type-erased native element behind `Rc<dyn Any>`: the address
+/// is all there is to compare, and it is the right thing to compare. `ops`
+/// is excluded deliberately — it is the backend's single `&'static` vtable,
+/// identical for every handle on a target, so it says nothing about WHICH
+/// `Toolbar` this is.
+///
+/// Needed because `Signal<T>` is bounded on `T: PartialEq` at creation and
+/// `get`, not just on the guarded `set`; an author stashing the bound handle
+/// in state cannot add the impl themselves (orphan rule).
+impl PartialEq for ToolbarHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.node, &other.node)
+    }
+}
+
+impl Eq for ToolbarHandle {}
+
 impl ToolbarHandle {
     /// Wrap a type-erased native toolbar node + its backend ops vtable.
-    /// Called by the backend's `RefFill` after the toolbar mounts; you
+    /// Called by the handler's ref fill after the toolbar mounts; you
     /// don't construct this directly.
     pub fn new(node: Rc<dyn Any>, ops: &'static dyn ToolbarOps) -> Self {
         Self { node, ops }
@@ -249,14 +173,8 @@ impl ToolbarHandle {
     }
 }
 
-/// Imperative-ops dispatch. Implementations live in each cfg-gated
-/// backend module and downcast `node` to their concrete native type.
-/// Every method defaults to a no-op so a backend that hasn't wired
-/// a particular op degrades silently.
-///
-/// `Sync` bound: the trait object lives in a `static OPS: &dyn
-/// ToolbarOps` slot per backend module, which Rust requires to be
-/// `Sync`. The ZST impls each backend ships are trivially `Sync`.
+/// Imperative-ops dispatch. The active target's `OPS` static supplies
+/// the impl.
 pub trait ToolbarOps: Sync {
     /// Show or hide the native toolbar represented by `node`. Backends
     /// downcast `node` to their concrete native type; the default is a
@@ -270,39 +188,66 @@ pub trait ToolbarOps: Sync {
 pub struct UnsupportedOps;
 impl ToolbarOps for UnsupportedOps {}
 
+// On a desktop target the crate-level OPS is that platform's real ops
+// (each `set_visible` downcasts to its own node type internally, so a
+// foreign node — e.g. host-mock's — degrades to the same silent no-op as
+// `UnsupportedOps`).
+#[cfg(target_os = "macos")]
+static OPS: &dyn ToolbarOps = crate::macos_shared::OPS;
+#[cfg(target_os = "windows")]
+static OPS: &dyn ToolbarOps = crate::windows::OPS;
+#[cfg(target_os = "linux")]
+static OPS: &dyn ToolbarOps = crate::linux::OPS;
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+static OPS: &dyn ToolbarOps = &UnsupportedOps;
+
 // ============================================================================
-// Constructor + bind
+// Payload + builder — the `.with_style(…)` / `.bind(…)` chain then
+// element coercion.
 // ============================================================================
 
-/// Build a `Toolbar` primitive. Returns a typed `Bound<ToolbarHandle>`
-/// so `.bind(...)` is type-checked against `Ref<ToolbarHandle>`.
+/// Scene payload for the `Toolbar` item. Single-take slots (the
+/// vocabulary `PrimCell` discipline, inlined): the scene hands the
+/// handler a shared `&Rc<Self>`, but the style/ref-fill must move at
+/// mount.
+pub(crate) struct ToolbarPrim {
+    pub(crate) props: Rc<ToolbarProps>,
+    pub(crate) style: RefCell<Option<StyleProp>>,
+    pub(crate) ref_fill: RefCell<Option<Box<dyn FnOnce(Rc<dyn Any>)>>>,
+}
+
+/// Author-side builder returned by [`Toolbar`].
+pub struct ToolbarBound {
+    props: Rc<ToolbarProps>,
+    style: Option<StyleProp>,
+    ref_fill: Option<Box<dyn FnOnce(Rc<dyn Any>)>>,
+}
+
+/// Build a `Toolbar` primitive.
 ///
 /// PascalCase intentionally — matches first-party primitive cadence
 /// inside a `ui!` block. Interpolate as `{ toolbar::Toolbar(props) }`.
-///
-/// Under the hood this is `Element::External` with a `ToolbarProps`
-/// payload; on non-desktop backends the framework's "External not
-/// registered" placeholder fires, but since the toolbar is window
-/// chrome (not view content) the in-tree footprint stays invisible.
 #[allow(non_snake_case)]
-pub fn Toolbar(props: ToolbarProps) -> Bound<ToolbarHandle> {
-    Bound::new(Element::External {
-        type_id: TypeId::of::<ToolbarProps>(),
-        type_name: std::any::type_name::<ToolbarProps>(),
-        payload: Rc::new(props) as Rc<dyn Any>,
-        children: Vec::new(),
+pub fn Toolbar(props: ToolbarProps) -> ToolbarBound {
+    ToolbarBound {
+        props: Rc::new(props),
         style: None,
         ref_fill: None,
-        on_touch: None,
-        on_hover: None,
-        accessibility: runtime_core::accessibility::AccessibilityProps::default(),
-    })
+    }
 }
 
-/// Adds `.bind(r)` to `Bound<ToolbarHandle>` via an extension trait
-/// (the orphan rule blocks an inherent `impl` on the foreign `Bound`).
-/// Bring this trait into scope to use the builder-style `.bind(...)`
-/// on the value returned by [`Toolbar`].
+impl ToolbarBound {
+    /// Attach the author style — lands on the in-tree placeholder node
+    /// (not a Toolbar idiom — the placeholder is deliberately 0-size —
+    /// but the channel exists for parity with other primitives).
+    pub fn with_style(mut self, style: impl IntoStyleProp) -> Self {
+        self.style = Some(style.into_style_prop());
+        self
+    }
+}
+
+/// Adds `.bind(r)` so `use toolbar::prelude::*` brings the imperative
+/// binding into scope.
 pub trait ToolbarBind {
     /// Bind a `Ref<ToolbarHandle>` for imperative access (e.g.
     /// `r.with(|h| h.set_visible(false))`). The ref fills once the
@@ -310,20 +255,36 @@ pub trait ToolbarBind {
     fn bind(self, r: Ref<ToolbarHandle>) -> Self;
 }
 
-impl ToolbarBind for Bound<ToolbarHandle> {
+impl ToolbarBind for ToolbarBound {
     fn bind(mut self, r: Ref<ToolbarHandle>) -> Self {
-        if let Element::External { ref_fill, .. } = self.primitive_mut() {
-            *ref_fill = Some(RefFill::External(Box::new(move |node_any| {
-                r.fill(ToolbarHandle::new(node_any, OPS));
-            })));
-        }
+        self.ref_fill = Some(Box::new(move |node_any| {
+            r.fill(ToolbarHandle::new(node_any, OPS));
+        }));
         self
     }
 }
 
-/// One-stop import for typical use: `use toolbar::prelude::*;` brings
-/// in the constructor, props, handle, item types, and the `.bind(...)`
-/// extension trait.
+impl IntoElement for ToolbarBound {
+    fn into_element(self) -> Element {
+        item(
+            ToolbarPrim {
+                props: self.props,
+                style: RefCell::new(self.style),
+                ref_fill: RefCell::new(self.ref_fill),
+            },
+            Vec::new(),
+        )
+    }
+}
+
+/// Element coercion for the constructor form.
+impl From<ToolbarBound> for Element {
+    fn from(b: ToolbarBound) -> Element {
+        b.into_element()
+    }
+}
+
+/// One-stop import for the author-facing names.
 pub mod prelude {
     pub use super::{
         Toolbar, ToolbarBind, ToolbarButton, ToolbarHandle, ToolbarItem, ToolbarProps,
@@ -331,49 +292,102 @@ pub mod prelude {
 }
 
 // ============================================================================
-// Backend selector
+// Handlers + registration seam
 // ============================================================================
 
-// Each platform module exposes:
-//   - `pub fn register(backend: &mut <ConcreteBackend>)`
-//   - `pub static OPS: &dyn ToolbarOps`
-// Only one is compiled per target via cfg. On targets with no
-// matching impl the fallback `register<B: Backend>` keeps user code
-// compiling and `OPS` resolves to `UnsupportedOps`.
-
-#[cfg(target_os = "macos")]
-mod macos;
-#[cfg(target_os = "macos")]
-pub use macos::register;
-#[cfg(target_os = "macos")]
-static OPS: &dyn ToolbarOps = macos::OPS;
-
-#[cfg(target_os = "windows")]
-mod windows;
-#[cfg(target_os = "windows")]
-pub use windows::{flush_pending, register};
-#[cfg(target_os = "windows")]
-static OPS: &dyn ToolbarOps = windows::OPS;
-
-#[cfg(target_os = "linux")]
-mod linux;
-#[cfg(target_os = "linux")]
-pub use linux::register;
-#[cfg(target_os = "linux")]
-static OPS: &dyn ToolbarOps = linux::OPS;
-
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-mod fallback {
-    use runtime_core::Backend;
-
-    /// No-op register for targets with no toolbar concept (iOS,
-    /// Android, web, terminal, wgpu, ESP, CPU). User code calls
-    /// this unconditionally; the fallback ignores it.
-    pub fn register<B: Backend>(_backend: &mut B) {}
+/// Shared mount tail, run after node creation: (children are none for
+/// toolbar) → author style → ref fill (type-erased node clone) →
+/// scope-tied `release_external` (every External is released on unmount,
+/// handler-backed or not).
+pub(crate) fn finish_mount<H>(backend: &Rc<RefCell<H>>, node: &H::Node, prim: &ToolbarPrim)
+where
+    H: ExternalOps + StyleServices,
+{
+    if let Some(style) = prim.style.borrow_mut().take() {
+        attach_style(backend, node, style);
+    }
+    if let Some(fill) = prim.ref_fill.borrow_mut().take() {
+        let any_node: Rc<dyn Any> = Rc::new(node.clone());
+        fill(any_node);
+    }
+    let backend = backend.clone();
+    let node = node.clone();
+    on_teardown(move || {
+        backend.borrow_mut().release_external(&node);
+    });
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-pub use fallback::register;
+/// Placeholder handler for hosts with no native toolbar — the External
+/// degradation path (`create_external` renders each host's "not
+/// supported" box). The `items` closure is never evaluated: no native
+/// toolbar means no effect, so no items call.
+fn mount_placeholder<H>(
+    cx: &mut MountCx<'_, H>,
+    prim: &Rc<ToolbarPrim>,
+    _children: Vec<Element>,
+) -> H::Node
+where
+    H: ExternalOps + StyleServices,
+{
+    let backend = cx.backend().clone();
+    let payload: Rc<dyn Any> = prim.props.clone();
+    let node = backend.borrow_mut().create_external(
+        std::any::TypeId::of::<ToolbarProps>(),
+        std::any::type_name::<ToolbarProps>(),
+        &payload,
+        &runtime_shared::accessibility::AccessibilityProps::default(),
+    );
+    finish_mount(&backend, &node, prim);
+    node
+}
 
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-static OPS: &dyn ToolbarOps = &UnsupportedOps;
+/// Register the toolbar payload handler on a scene registry. Pass this
+/// as the boot registration seam — on macOS
+/// (`host_appkit::newcore::run_with(build, opts, |registry|
+/// toolbar::register(registry))`) it installs the real NSToolbar
+/// handler, on Windows the Common-Controls toolbar, on GTK4 the
+/// HeaderBar; against any other host (`backend_web::newcore::start_in`,
+/// host-mock, …) the External-placeholder path.
+///
+/// # One `register`, resolved at registration time
+///
+/// A desktop build must serve BOTH its concrete backend registry (the
+/// real native handler) and `Registry<HostMock>` (the placeholder arm,
+/// exercised by `tests/toolbar.rs`) from the same target. A cfg-split
+/// pair of same-named `register` fns cannot express that, so `register`
+/// stays generic on every target and type-dispatches ONCE at
+/// registration: it downcasts `&mut Registry<H>` to the platform's
+/// concrete registry (`H: 'static` makes the registry `Any`) and
+/// installs the native handler on hit; every other `H` gets the
+/// placeholder handler. Mount-path cost: zero (the dispatch happens
+/// before any element exists).
+pub fn register<H>(registry: &mut Registry<H>)
+where
+    H: ExternalOps + StyleServices + 'static,
+{
+    #[cfg(target_os = "macos")]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_macos::MacosBackend>>() {
+            reg.register::<ToolbarPrim, _>(crate::macos::mount_toolbar_macos);
+            return;
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_windows::WindowsBackend>>() {
+            reg.register::<ToolbarPrim, _>(crate::windows::mount_toolbar_windows);
+            return;
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_linux::LinuxBackend>>() {
+            reg.register::<ToolbarPrim, _>(crate::linux::mount_toolbar_linux);
+            return;
+        }
+    }
+    registry.register::<ToolbarPrim, _>(mount_placeholder::<H>);
+}

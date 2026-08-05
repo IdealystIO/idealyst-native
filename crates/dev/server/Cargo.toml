@@ -5,9 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 # Dev-side runtime for the hot-reload wire protocol. Provides a
-# `WireRecordingBackend` that implements `runtime_core::Backend`
-# with `Node = NodeId`, recording each walker call as a `Command`
-# for transport to the app.
+# `WireRecordingBackend` that implements `runtime_scene::Host` + all 30
+# `runtime_vocabulary::caps` traits with `Node = NodeId`, recording each
+# realize-time call as a `Command` for transport to the app.
 #
 # This crate runs on the developer's machine, never inside the
 # shipped app binary.
@@ -18,14 +18,17 @@ license.workspace = true
 # `BridgeHandle` once per tick on the same thread that owns the
 # walker's reactive scope, so click / find / invoke_method commands
 # from an external MCP proxy hit the *server's* registry (which is
-# where the walker registered the elements in runtime-server mode). Forwards
-# to `runtime-core/robot` so the registry actually populates.
+# where the session registered the elements in runtime-server mode).
+# Forwards to `runtime-shared/robot` (the registry itself) and
+# `runtime-vocabulary/robot` (mount handlers' `register_mount`, which is
+# what populates it) — without the latter the registry stays empty and
+# every find/click verb answers nothing.
 #
 # Native app builds run their bridge in-process on the device, not
-# here — server-side is for runtime-server-shell mode where the device has no
-# walker and therefore no registry of its own. runtime-server clients are
-# platform-agnostic; this server can drive any of them.
-robot = ["runtime-core/robot"]
+# here — server-side is for runtime-server-shell mode where the device
+# has no scene of its own. runtime-server clients are platform-agnostic;
+# this server can drive any of them.
+robot = ["runtime-shared/robot"]
 
 # Enables `dev_server::test_support` — a `MockClient` plus helpers for
 # driving the fake-sidecar IPC. Off by default; integration tests in
@@ -42,7 +45,7 @@ test-support = []
 # `libc` saves single-digit KB of link time. Off for any consumer
 # that only wants the dev-side recorder / transport — those callers
 # stay anyhow-free + don't drag subsecond through their build.
-runtime-server = ["dep:dev-hot", "dep:subsecond-types", "dep:libc", "dep:anyhow", "dep:ctrlc", "dep:tokio", "dep:pollster", "runtime-core/async-driver"]
+runtime-server = ["dep:dev-hot", "dep:subsecond-types", "dep:libc", "dep:anyhow", "dep:ctrlc", "dep:tokio", "dep:pollster", "runtime-shared/async-driver"]
 
 # Registers a `"screenshot"` Robot-bridge verb in each runtime-server
 # session so Robot / the MCP server can rasterize the (mocked) app's
@@ -54,8 +57,23 @@ runtime-server = ["dep:dev-hot", "dep:subsecond-types", "dep:libc", "dep:anyhow"
 screenshot = ["dep:headless-screenshot", "dep:base64", "runtime-server", "robot"]
 
 [dependencies]
-runtime-core = { workspace = true }
+# `robot` is unconditional: `newcore::install_robot_env` (called by the
+# sidecar session thread and by the generated wrapper) wires the
+# vocabulary robot registry into the shared TCP bridge, and both halves
+# — the registry (`runtime-vocabulary/robot`, populated by the mount
+# handlers' `register_mount`) and the bridge transport
+# (`runtime-shared/robot`) — must exist for that path to compile.
+# dev-server is a developer-machine crate; nothing shipped links it, so
+# there is no size argument for gating this.
+runtime-shared = { workspace = true, features = ["robot"] }
 wire = { workspace = true }
+
+# The runtime substrate the recorder realizes against: the scene seam +
+# realized-tree drivers, the caps traits + built-in vocabulary, and the
+# per-session world.
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true, features = ["robot"] }
+runtime-world = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
@@ -115,12 +133,14 @@ pollster = { version = "0.3", optional = true }
 # Used by the `dump_wire` example to pretty-print the captured
 # command stream as JSON.
 serde_json = { workspace = true }
-# The integration tests under `tests/aas_headless.rs` need the
-# framework's Robot registry populated by the walker. Enabling
-# `runtime-core/robot` as a dev-dep activates that codepath only
-# for `cargo test` — the production builds of dev-server still
-# choose to enable `robot` via *our* feature, see `[features]` above.
-runtime-core = { workspace = true, features = ["robot"] }
+# The integration tests under `tests/aas_headless.rs` need the Robot
+# registry populated by the mount handlers. Enabling the robot features
+# as dev-deps activates that codepath only for `cargo test` — production
+# builds of dev-server still choose to enable `robot` via *our* feature,
+# see `[features]` above.
+# `catalog` links mcp-catalog + the static core recipes so the bridge's
+# `get_catalog` verb is live under test (`tests/newcore_robot_catalog.rs`).
+runtime-shared = { workspace = true, features = ["catalog"] }
 idea-ui = { workspace = true }
 # `tests/runtime_server_shell_e2e.rs` drives the *real* native
 # runtime-server client shell (the worker-thread WebSocket transport +
@@ -128,7 +148,7 @@ idea-ui = { workspace = true }
 # so the end-to-end "app connects, snapshots, replays, reconnects"
 # path is guarded. `runtime-server` activates the tungstenite worker.
 # No dependency cycle: the shell crate depends on dev-client/wire/
-# runtime-core, never on dev-server.
+# runtime-shared, never on dev-server.
 runtime-server-shell-native = { workspace = true, features = ["runtime-server"] }
 # `tests/aas_async_reactor.rs` stands up a loopback TCP listener and
 # drives a `tokio::net::TcpStream` through `spawn_async` to prove the
@@ -144,3 +164,4 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", 
 [[test]]
 name = "aas_async_reactor"
 required-features = ["runtime-server"]
+

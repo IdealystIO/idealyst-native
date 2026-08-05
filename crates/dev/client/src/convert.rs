@@ -6,11 +6,11 @@
 
 use std::rc::Rc;
 
-use runtime_core::accessibility::{
+use runtime_shared::accessibility::{
     AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
 };
-use runtime_core::primitives;
-use runtime_core::{
+use runtime_shared::primitives;
+use runtime_shared::{
     AlignItems, AssetId as CoreAssetId, AssetSource, AssetTag, Color, Easing, FlexDirection,
     FontFamily, FontStyle, FontWeight, Gradient, GradientKind, GradientStop, JustifyContent,
     Length, ObjectFit, Overflow, Position, RadialExtent, StateBits, StyleRules, SystemFallback,
@@ -105,8 +105,8 @@ pub fn wire_easing(e: WireEasing) -> Easing {
 /// Returns `None` for the forward-compat `Unknown` variant — caller
 /// drops the animation tick rather than aborting the batch (the next
 /// tick supersedes anyway).
-pub fn wire_anim_prop(w: wire::WireAnimProp) -> Option<runtime_core::animation::AnimProp> {
-    use runtime_core::animation::AnimProp;
+pub fn wire_anim_prop(w: wire::WireAnimProp) -> Option<runtime_shared::animation::AnimProp> {
+    use runtime_shared::animation::AnimProp;
     Some(match w {
         wire::WireAnimProp::Opacity => AnimProp::Opacity,
         wire::WireAnimProp::TranslateX => AnimProp::TranslateX,
@@ -369,7 +369,7 @@ pub fn wire_radial_extent(e: WireRadialExtent) -> RadialExtent {
 /// name into the registered typeface; the web backend looks it up
 /// via its own [`Backend::register_typeface`] handler.
 /// Reconstruct a `FontFamily` from its wire form. The `Typeface`
-/// variant rehydrates an in-memory [`Typeface`](runtime_core::Typeface)
+/// variant rehydrates an in-memory [`Typeface`](runtime_shared::Typeface)
 /// from the wire's `(id, family_name)` pair, leaking the name into a
 /// `&'static str` so the struct matches the type of an
 /// authoring-side `typeface!{}` literal. The face list is left empty
@@ -380,7 +380,7 @@ pub fn wire_font_family(w: WireFontFamily) -> FontFamily {
         WireFontFamily::System(name) => FontFamily::System(name),
         WireFontFamily::Typeface { id, family_name } => {
             let family_name_static: &'static str = Box::leak(family_name.into_boxed_str());
-            FontFamily::Typeface(runtime_core::Typeface {
+            FontFamily::Typeface(runtime_shared::Typeface {
                 id: wire_typeface_id(id),
                 family_name: family_name_static,
                 faces: &[],
@@ -429,7 +429,7 @@ pub fn wire_system_fallback(f: WireSystemFallback) -> SystemFallback {
 }
 
 /// `AssetSource` cannot reference the wire's owned `String` / `Vec<u8>`
-/// once the command is consumed — `runtime_core::AssetSource` keeps
+/// once the command is consumed — `runtime_shared::AssetSource` keeps
 /// `&'static` slices. To bridge them at runtime we leak the bytes /
 /// path / URL into a static box. This is acceptable because (a) on the
 /// authoring side `asset!` always produces literally-static data, so a
@@ -461,7 +461,7 @@ pub fn wire_asset_source(s: WireAssetSource) -> AssetSource {
 /// decode via `from_bits_truncate` so an unknown future bit silently
 /// drops on this side rather than failing the whole batch. Each
 /// [`wire::WireAccessibilityAction`] becomes an
-/// [`runtime_core::accessibility::AccessibilityAction`] whose
+/// [`runtime_shared::accessibility::AccessibilityAction`] whose
 /// `handler` is built via `handler_factory(id)` — the standard
 /// trampoline that posts `AppToDev::Event { handler, args: Unit }`
 /// over the reverse channel, matching how `on_click` / `on_change`
@@ -486,7 +486,7 @@ pub fn wire_a11y_to_props(
         actions: w
             .actions
             .into_iter()
-            .map(|a| runtime_core::accessibility::AccessibilityAction {
+            .map(|a| runtime_shared::accessibility::AccessibilityAction {
                 name: a.name,
                 handler: handler_factory(a.handler),
             })
@@ -559,5 +559,29 @@ pub fn wire_typeface_face(f: WireTypefaceFace) -> TypefaceFace {
         // `register_typeface` queries `asset_urls` by id and never
         // touches this field.
         source: AssetSource::Bundled { path: "" },
+    }
+}
+
+/// Inverse of `dev-server`'s `convert_out::virtual_layout_to_wire`:
+/// rebuild the in-memory layout descriptor from its wire mirror. The
+/// ONE in-memory definition is
+/// `runtime_shared::primitives::virtualizer::VirtualLayout`
+/// (re-exported through `runtime_core`; both cores share it). Matches
+/// are exhaustive so a new `WireLanes` variant fails compile here
+/// instead of silently flattening to a list. Round-trip pinned by
+/// `mock-backend/tests/wire_virtual_layout_roundtrip.rs`.
+pub fn wire_virtual_layout(
+    w: wire::WireVirtualLayout,
+) -> primitives::virtualizer::VirtualLayout {
+    use primitives::virtualizer::{Axis, Lanes, VirtualLayout};
+    let wire::WireVirtualLayout { horizontal, lanes, main_spacing, cross_spacing } = w;
+    VirtualLayout {
+        axis: if horizontal { Axis::Horizontal } else { Axis::Vertical },
+        lanes: match lanes {
+            wire::WireLanes::Fixed(n) => Lanes::Fixed(n),
+            wire::WireLanes::AutoFit { min_cross } => Lanes::AutoFit { min_cross },
+        },
+        main_spacing,
+        cross_spacing,
     }
 }

@@ -2,26 +2,32 @@
 //!
 //! `.safe_area(sides)` opts a view into platform safe-area padding. The
 //! inset value is a CLIENT (device) concern — the dev side / recorder is
-//! headless and has no insets. Before the fix, the framework's
-//! `attach_safe_area` Effect ran on the dev side (against a stable ZERO
-//! signal) and the recorder's `apply_safe_area_padding` was a no-op that
-//! emitted nothing, so the opt-in never reached the client and the inset
-//! was never applied (the drawer sidebar's top inset, etc.).
+//! headless and has no insets. Before the fix, the safe-area effect ran
+//! on the dev side (against a stable ZERO signal) and the recorder's
+//! `apply_safe_area_padding` was a no-op that emitted nothing, so the
+//! opt-in never reached the client and the inset was never applied (the
+//! drawer sidebar's top inset, etc.).
 //!
 //! Now the recorder emits `Command::ApplySafeAreaPadding { node, sides }`
 //! (just the opt-in), the SceneModel persists it for late joiners, and
 //! `dev-client` resolves it against the CLIENT backend's own device insets
 //! — re-applying via a client-side effect whenever those insets change.
+//!
+//! LATE-JOINER half: the opt-in also has to survive in the recorder's
+//! catch-up snapshot, or a client that connects after the mount never
+//! learns about it.
 
 use mock_backend::WireHarness;
-use runtime_core::{set_safe_area_insets, text, view, EdgeInsets, SafeAreaSides};
+use runtime_shared::{set_safe_area_insets, EdgeInsets, SafeAreaSides};
+use runtime_vocabulary::builders::{text, view};
 
 #[test]
 fn safe_area_opt_in_crosses_wire_and_reapplies_on_inset_change() {
     let mut h = WireHarness::mount(|| {
-        view(vec![text("SAFE CONTENT").into()])
+        view()
             .safe_area(SafeAreaSides::TOP)
-            .into()
+            .child(text().content("SAFE CONTENT"))
+            .build()
     });
 
     // 1. The opt-in crossed the wire and the client backend applied it.
@@ -58,5 +64,27 @@ fn safe_area_opt_in_crosses_wire_and_reapplies_on_inset_change() {
         count1 > count0,
         "client must re-apply safe-area when device insets change \
          (apply count {count0} → {count1})"
+    );
+}
+
+/// The late-joiner half: `ApplySafeAreaPadding` is persisted in the
+/// recorder's `SceneModel`, so a client connecting AFTER the mount
+/// receives the opt-in in its catch-up snapshot rather than a scene
+/// missing every inset.
+#[test]
+fn safe_area_opt_in_survives_in_the_late_joiner_snapshot() {
+    let h = WireHarness::mount(|| {
+        view()
+            .safe_area(SafeAreaSides::TOP)
+            .child(text().content("SAFE CONTENT"))
+            .build()
+    });
+    let snapshot = h.snapshot();
+    assert!(
+        snapshot.iter().any(|c| matches!(
+            c,
+            wire::Command::ApplySafeAreaPadding { sides, .. } if *sides == SafeAreaSides::TOP.0
+        )),
+        "the catch-up snapshot must carry the safe-area opt-in; got {snapshot:#?}"
     );
 }

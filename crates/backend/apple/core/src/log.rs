@@ -5,7 +5,7 @@
 //! (macOS).
 
 use objc2_foundation::NSString;
-use runtime_core::logging::{LogLevel, Logger};
+use runtime_shared::logging::{LogLevel, Logger};
 
 extern "C" {
     fn NSLog(fmt: *const NSString, ...);
@@ -20,7 +20,7 @@ pub fn apple_log(msg: &str) {
     unsafe { NSLog(&*fmt, &*ns) };
 }
 
-/// `runtime_core::Logger` that forwards to NSLog. NSLog has no per-level
+/// `runtime_shared::Logger` that forwards to NSLog. NSLog has no per-level
 /// channel, so the level tag is prefixed (matching `runtime-core`'s
 /// `StderrLogger` `[LEVEL] msg` shape) to keep severity greppable.
 struct AppleLogger;
@@ -31,10 +31,10 @@ impl Logger for AppleLogger {
     }
 }
 
-/// Route `runtime_core::log` / `log_info!` through NSLog so author-level
+/// Route `runtime_shared::log` / `log_info!` through NSLog so author-level
 /// logs surface in the Xcode console (iOS/tvOS) and Console.app (macOS)
 /// instead of only `StderrLogger`. Idempotent (first-install wins);
 /// called from [`crate::scheduler::install_scheduler`].
 pub fn install_logger() {
-    runtime_core::logging::install_logger(Box::new(AppleLogger));
+    runtime_shared::logging::install_logger(Box::new(AppleLogger));
 }

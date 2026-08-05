@@ -1,0 +1,26 @@
+# scene-parity FULL-OP golden — scenario `full_presence_bare`, mode `spliced`
+#
+# P3-set: presence with NO animations, initially present. Mount
+# pins placeholder -> child build -> insert; hide is an immediate
+# teardown (old: scope-drop then clear_children; new-core
+# override: retire-owned scope-drop then remove_child — README
+# divergence #6).
+#
+# Complete backend-call stream (create_*/update_*/apply_style/release_*
+# + the structural ops). Node names are creation-order (n0, n1, ...).
+# Owned by the OLD core; regenerate after an INTENDED walker change
+# with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 text "before"
+insert n0 <- n1
+create n2 presence_placeholder
+create n3 text "card"
+insert n2 <- n3
+insert n0 <- n2
+create n4 text "after"
+insert n0 <- n4
+
+== hide (no exit: immediate teardown) ==
+clear_children n2

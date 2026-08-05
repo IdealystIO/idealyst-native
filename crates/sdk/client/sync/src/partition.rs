@@ -33,7 +33,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use runtime_core::driver::spawn_async;
-use runtime_core::{cycle, unscope, Signal};
+use runtime_core::{signal, unscope, Signal};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use storage::Storage;
@@ -55,7 +55,7 @@ trait AnyPartition {
     fn flush_dyn(&self) -> Pin<Box<dyn Future<Output = Result<(), SyncError>>>>;
 }
 
-impl<T: Clone + Serialize + DeserializeOwned + Merge + 'static> AnyPartition for Partition<T> {
+impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> AnyPartition for Partition<T> {
     fn sync_now_dyn(&self) -> Pin<Box<dyn Future<Output = Result<(), SyncError>>>> {
         let me = self.clone();
         Box::pin(async move { me.sync_now().await })
@@ -107,7 +107,7 @@ impl<T> Clone for Partition<T> {
     }
 }
 
-impl<T: Clone + Serialize + DeserializeOwned + Merge + 'static> Partition<T> {
+impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Partition<T> {
     /// Load a partition's persisted state and build its handle. Reading the
     /// store *is* the crash-recovery path — whatever was durable comes
     /// back, and pending ops replay on the next flush.
@@ -129,14 +129,14 @@ impl<T: Clone + Serialize + DeserializeOwned + Merge + 'static> Partition<T> {
         // signal would dangle when that scope drops and its arena slot
         // recycles (see `runtime_core::unscope`). Partitions are
         // app-lifetime, so thread-lifetime ownership is correct here.
-        let (signal, entries_signal) =
-            unscope(|| (Signal::new(inner.live_values()), Signal::new(inner.entry_views())));
+        let (items_signal, entries_signal) =
+            unscope(|| (signal(inner.live_values()), signal(inner.entry_views())));
 
         Ok(Partition {
             inner: Rc::new(RefCell::new(inner)),
             store: Rc::new(store),
             transport,
-            signal,
+            signal: items_signal,
             entries_signal,
             online,
             busy: Rc::new(Cell::new(false)),
@@ -182,18 +182,18 @@ impl<T: Clone + Serialize + DeserializeOwned + Merge + 'static> Partition<T> {
             let inner = self.inner.borrow();
             (inner.live_values(), inner.entry_views())
         };
-        // Wrap the signal writes in a reactive cycle. publish() runs from
-        // inside async tasks (after `await`s for storage / the network),
-        // and the async executors do NOT establish a reactive window —
-        // `backend_web`'s is a bare `spawn_local`. Without this cycle, the
-        // set marks subscribers dirty but the fan-out never flushes, so the
-        // UI goes stale until an unrelated re-render (a page refresh).
-        // Mirrors `async_reducer`, which cycles its applies for the same
-        // reason. Coalesces the two sets into one flush, too.
-        cycle(|| {
-            self.signal.set(live);
-            self.entries_signal.set(entries);
-        });
+        // `set_always`: author item type `T` carries no `PartialEq`
+        // bound (only `Merge`), so the projected lists can't be
+        // equality-guarded.
+        //
+        // No explicit batch window: a `set` STAGES the write against the
+        // signal's world and the flush commits every staged write in one
+        // pass, so these two coalesce into a SINGLE subscriber fan-out even
+        // though `publish()` runs from inside an async task (after `await`s
+        // for storage / the network) whose executor establishes no reactive
+        // window of its own.
+        self.signal.set_always(live);
+        self.entries_signal.set_always(entries);
     }
 
     // -----------------------------------------------------------------
@@ -382,7 +382,7 @@ impl<T: Clone + Serialize + DeserializeOwned + Merge + 'static> Partition<T> {
 /// `client_id`, the online flag, and a registry of live [`Partition`]s.
 ///
 /// Provide one at the app root via
-/// [`runtime_core::reactive::provide`] and `inject` it anywhere. Cheap to
+/// [`runtime_core::provide`] and `inject` it anywhere. Cheap to
 /// clone (all shared state behind `Rc`/`Arc`).
 #[derive(Clone)]
 pub struct SyncEngine {
@@ -393,6 +393,30 @@ pub struct SyncEngine {
     /// True once auto-sync is enabled (a reconnect then auto-syncs).
     auto_sync: Rc<Cell<bool>>,
 }
+
+/// Pointer identity on the partition registry — an engine IS its shared
+/// state, so clones of one engine are equal and two engines built over the
+/// same store never are.
+///
+/// `partitions` is the discriminator because every clone shares that exact
+/// `Rc` and each `SyncEngine::new` allocates a fresh one; it is a proxy for
+/// the whole shared cell group, not a partial comparison. Comparing the
+/// contents instead would be both wrong and expensive: the registry mutates
+/// on every `register`, so a field-wise engine would compare *unequal to
+/// itself* across a registration — turning `provide(engine)` into a
+/// re-render storm — and `Arc<dyn SyncStore>` has no equality at all, so a
+/// full derive is not even available.
+///
+/// The impl exists because `Signal<T>` (and the `provide`/`inject` context
+/// slot) bound `T: PartialEq` at creation and `get`, and an app parking the
+/// engine at its root is the documented usage right above.
+impl PartialEq for SyncEngine {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.partitions, &other.partitions)
+    }
+}
+
+impl Eq for SyncEngine {}
 
 impl SyncEngine {
     /// Construct an engine over a [`SyncStore`] backend and a stable
@@ -480,7 +504,7 @@ impl SyncEngine {
     /// store (the crash-recovery path) and caches the handle; later calls
     /// return a clone of the same handle (same signal), and `transport` is
     /// used only on that first construction.
-    pub async fn partition<T: Clone + Serialize + DeserializeOwned + Merge + 'static>(
+    pub async fn partition<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static>(
         &self,
         name: &str,
         transport: Rc<dyn Transport<T>>,
@@ -686,9 +710,79 @@ mod tests {
         }
     }
 
+    /// Run an async test body inside a fresh reactive world.
+    ///
+    /// Creating a `Partition` mints signals, and `signal()` panics outside
+    /// `World::enter`. The world's "entered" flag is thread-local and
+    /// `block_on` drives the future on THIS thread, so the world stays
+    /// ambient across the body's `await`s — which a bare `#[tokio::test]`
+    /// cannot express (the enter scope would close at the first await
+    /// point).
+    fn in_world(body: impl std::future::Future<Output = ()>) {
+        runtime_core::__with_fresh_world(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("tokio runtime")
+                .block_on(body);
+        });
+    }
+
+    /// Commit staged signal writes so a reactive assertion sees them.
+    /// `set` STAGES; the flush commits and fans out.
+    fn settle() {
+        assert!(runtime_core::__flush_test_world(), "test world must be live");
+    }
+
     fn engine() -> (SyncEngine, MockTransport) {
         let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
         (SyncEngine::with_kv(storage, "device-1"), MockTransport::new())
+    }
+
+    /// `SyncEngine: PartialEq` by shared-state identity — required so the
+    /// engine can be `provide`d / held in a signal, which is the documented
+    /// app-root usage. Clones must be the same engine.
+    #[test]
+    fn sync_engine_clones_compare_equal() {
+        let (e, _) = engine();
+        assert!(e == e.clone(), "clones share one partition registry");
+    }
+
+    /// Two engines over equally-configured stores are still two engines.
+    /// Value equality is not available here (`Arc<dyn SyncStore>` has none)
+    /// and would be wrong anyway.
+    #[test]
+    fn independently_built_sync_engines_compare_unequal() {
+        let (a, _) = engine();
+        let (b, _) = engine();
+        assert!(a != b, "same client_id + same store kind is not the same engine");
+    }
+
+    /// The comparison must NOT read the registry's contents: registering a
+    /// partition mutates it, and an engine that stopped being equal to its
+    /// own clone across a registration would re-render every subscriber.
+    #[test]
+    fn sync_engine_eq_survives_partition_registration() {
+        in_world(async {
+            let (e, tr) = engine();
+            let snapshot = e.clone();
+            let _p = part(&e, &tr).await;
+            assert!(
+                e == snapshot,
+                "registering a partition must not change the engine's identity"
+            );
+        });
+    }
+
+    /// `SyncHandle` derives from the engine, so the same two facts hold
+    /// for it — pinned separately because the derive is what makes the
+    /// handle usable in a signal at all.
+    #[test]
+    fn sync_handles_follow_their_engines_identity() {
+        let (a, _) = engine();
+        let (b, _) = engine();
+        let ha = SyncHandle::new(a.clone());
+        assert!(ha == SyncHandle::new(a), "same engine, same handle");
+        assert!(ha != SyncHandle::new(b), "different engines, different handles");
     }
 
     async fn part(engine: &SyncEngine, tr: &MockTransport) -> Partition<Note> {
@@ -702,218 +796,240 @@ mod tests {
     /// signals, and `publish()`'s two writes (items + entries) must
     /// coalesce into a SINGLE fan-out. `publish()` runs from inside async
     /// tasks (after storage/network `await`s) where the executor
-    /// establishes no reactive window — web's is a bare `spawn_local` —
-    /// so without the `cycle()` wrap the two `set`s fan out separately,
-    /// re-running every subscriber twice per mutation (a double render).
-    /// An effect reading BOTH views runs exactly twice here (once at
-    /// creation, once per mutation) WITH the wrap; it runs three times
-    /// (the extra is the second, un-coalesced `set`) WITHOUT it.
-    #[tokio::test]
-    async fn mutation_triggers_one_coalesced_fanout() {
-        use std::cell::Cell;
+    /// establishes no reactive window of its own. Staged writes commit in
+    /// ONE flush pass, so an effect reading BOTH views runs exactly twice
+    /// here (once at creation, once per mutation) — a third run would mean
+    /// the two `set`s fanned out separately (a double render). `settle()`
+    /// is the test-harness flush: outside a mounted app nothing drives the
+    /// world's commit, so the staged writes need an explicit one.
+    #[test]
+    fn mutation_triggers_one_coalesced_fanout() {
+        in_world(async {
+            use std::cell::Cell;
 
-        let (eng, tr) = engine();
-        let p = part(&eng, &tr).await;
+            let (eng, tr) = engine();
+            let p = part(&eng, &tr).await;
 
-        let runs = Rc::new(Cell::new(0usize));
-        let observed_len = Rc::new(Cell::new(usize::MAX));
-        let items = p.items();
-        let entries = p.entries();
-        let runs_c = runs.clone();
-        let len_c = observed_len.clone();
-        let _sub = runtime_core::watch(move || {
-            // Subscribe to BOTH signals publish() writes.
-            len_c.set(items.get().len());
-            let _ = entries.get();
-            runs_c.set(runs_c.get() + 1);
+            let runs = Rc::new(Cell::new(0usize));
+            let observed_len = Rc::new(Cell::new(usize::MAX));
+            let items = p.items();
+            let entries = p.entries();
+            let runs_c = runs.clone();
+            let len_c = observed_len.clone();
+            let _sub = runtime_core::watch(move || {
+                // Subscribe to BOTH signals publish() writes.
+                len_c.set(items.get().len());
+                let _ = entries.get();
+                runs_c.set(runs_c.get() + 1);
+            });
+            assert_eq!(runs.get(), 1, "effect ran once at creation");
+            assert_eq!(observed_len.get(), 0, "starts empty");
+
+            p.upsert("a", note("hello")).await.unwrap();
+            settle();
+            assert_eq!(observed_len.get(), 1, "subscriber observed the new item");
+            assert_eq!(
+                runs.get(),
+                2,
+                "exactly one coalesced fan-out per mutation (two un-coalesced sets would make this 3)"
+            );
+
+            p.delete("a").await.unwrap();
+            settle();
+            assert_eq!(observed_len.get(), 0, "subscriber observed the delete");
+            assert_eq!(runs.get(), 3, "one coalesced fan-out for the delete");
         });
-        assert_eq!(runs.get(), 1, "effect ran once at creation");
-        assert_eq!(observed_len.get(), 0, "starts empty");
-
-        p.upsert("a", note("hello")).await.unwrap();
-        assert_eq!(observed_len.get(), 1, "subscriber observed the new item");
-        assert_eq!(
-            runs.get(),
-            2,
-            "exactly one coalesced fan-out per mutation (two un-coalesced sets would make this 3)"
-        );
-
-        p.delete("a").await.unwrap();
-        assert_eq!(observed_len.get(), 0, "subscriber observed the delete");
-        assert_eq!(runs.get(), 3, "one coalesced fan-out for the delete");
     }
 
-    #[tokio::test]
-    async fn create_offline_then_flush_reaches_server() {
-        let (eng, tr) = engine();
-        let p = part(&eng, &tr).await;
-        eng.set_online(false);
-        p.upsert("a", note("hello")).await.unwrap();
-        // Offline: nothing pushed yet.
-        assert!(tr.server.borrow().records.is_empty());
-        assert_eq!(p.snapshot(), vec![note("hello")]);
-
-        eng.set_online(true);
-        p.flush().await.unwrap();
-        assert_eq!(tr.server.borrow().records.len(), 1);
-        // Local record is now synced; no pending work.
-        assert!(!p.has_pending());
-    }
-
-    #[tokio::test]
-    async fn download_brings_server_records_into_cache() {
-        let (eng, tr) = engine();
-        // Seed the server directly.
-        {
-            let mut s = tr.server.borrow_mut();
-            s.rev = 3;
-            s.records.insert("x".into(), (3, Some(note("server"))));
-        }
-        let p = part(&eng, &tr).await;
-        p.sync().await.unwrap();
-        assert_eq!(p.snapshot(), vec![note("server")]);
-    }
-
-    #[tokio::test]
-    async fn outbox_survives_a_restart_and_replays() {
-        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
-        let tr = MockTransport::new();
-
-        // Session 1: go offline, queue a create, "crash" (drop everything
-        // but the shared storage + server).
-        {
-            let eng = SyncEngine::with_kv(storage.clone(), "device-1");
+    #[test]
+    fn create_offline_then_flush_reaches_server() {
+        in_world(async {
+            let (eng, tr) = engine();
+            let p = part(&eng, &tr).await;
             eng.set_online(false);
+            p.upsert("a", note("hello")).await.unwrap();
+            // Offline: nothing pushed yet.
+            assert!(tr.server.borrow().records.is_empty());
+            assert_eq!(p.snapshot(), vec![note("hello")]);
+
+            eng.set_online(true);
+            p.flush().await.unwrap();
+            assert_eq!(tr.server.borrow().records.len(), 1);
+            // Local record is now synced; no pending work.
+            assert!(!p.has_pending());
+        });
+    }
+
+    #[test]
+    fn download_brings_server_records_into_cache() {
+        in_world(async {
+            let (eng, tr) = engine();
+            // Seed the server directly.
+            {
+                let mut s = tr.server.borrow_mut();
+                s.rev = 3;
+                s.records.insert("x".into(), (3, Some(note("server"))));
+            }
+            let p = part(&eng, &tr).await;
+            p.sync().await.unwrap();
+            assert_eq!(p.snapshot(), vec![note("server")]);
+        });
+    }
+
+    #[test]
+    fn outbox_survives_a_restart_and_replays() {
+        in_world(async {
+            let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+            let tr = MockTransport::new();
+
+            // Session 1: go offline, queue a create, "crash" (drop everything
+            // but the shared storage + server).
+            {
+                let eng = SyncEngine::with_kv(storage.clone(), "device-1");
+                eng.set_online(false);
+                let p = eng
+                    .partition::<Note>("p", Rc::new(tr.clone()))
+                    .await
+                    .unwrap();
+                p.upsert("a", note("queued")).await.unwrap();
+            }
+
+            // Session 2: a fresh engine over the SAME storage rebuilds the
+            // partition from disk — the queued op is still there and replays.
+            let eng2 = SyncEngine::with_kv(storage.clone(), "device-1");
+            let p2 = eng2
+                .partition::<Note>("p", Rc::new(tr.clone()))
+                .await
+                .unwrap();
+            assert_eq!(p2.snapshot(), vec![note("queued")], "pending edit restored");
+            assert!(p2.has_pending());
+            p2.flush().await.unwrap();
+            assert_eq!(tr.server.borrow().records.len(), 1, "replayed to server");
+        });
+    }
+
+    #[test]
+    fn lost_ack_replay_is_idempotent() {
+        in_world(async {
+            let (eng, tr) = engine();
+            let p = part(&eng, &tr).await;
+            p.upsert("a", note("v")).await.unwrap();
+
+            // First flush: the push reaches the server, but we simulate a lost
+            // ack by NOT processing — instead, induce a transport failure right
+            // after the server applied. Easiest reproduction: flush once
+            // (succeeds), then flush again — second flush is a no-op since
+            // nothing is pending. To exercise dedup we re-queue the same op
+            // manually by flushing with a server that already saw the key.
+            p.flush().await.unwrap();
+            assert_eq!(tr.server.borrow().records.len(), 1);
+            // The server recorded the idempotency key.
+            assert_eq!(tr.server.borrow().seen_keys.len(), 1);
+            // A redundant flush does nothing and creates no duplicate.
+            p.flush().await.unwrap();
+            assert_eq!(tr.server.borrow().records.len(), 1);
+        });
+    }
+
+    #[test]
+    fn transport_failure_keeps_work_queued_for_retry() {
+        in_world(async {
+            let (eng, tr) = engine();
+            let p = part(&eng, &tr).await;
+            p.upsert("a", note("v")).await.unwrap();
+
+            tr.fail_next.set(true);
+            let err = p.flush().await.unwrap_err();
+            assert!(err.is_retryable());
+            assert!(p.has_pending(), "failed push leaves the op queued");
+            assert!(tr.server.borrow().records.is_empty());
+
+            // Retry succeeds.
+            p.flush().await.unwrap();
+            assert_eq!(tr.server.borrow().records.len(), 1);
+            assert!(!p.has_pending());
+        });
+    }
+
+    #[test]
+    fn sync_all_flushes_every_partition() {
+        in_world(async {
+            let (eng, tr) = engine();
+            let pa = eng.partition::<Note>("a", Rc::new(tr.clone())).await.unwrap();
+            let pb = eng.partition::<Note>("b", Rc::new(tr.clone())).await.unwrap();
+            eng.set_online(false);
+            pa.upsert("x", note("ax")).await.unwrap();
+            pb.upsert("y", note("by")).await.unwrap();
+            assert_eq!(tr.server.borrow().records.len(), 0, "nothing pushed offline");
+
+            eng.set_online(true);
+            eng.sync_all().await.unwrap();
+            assert_eq!(tr.server.borrow().records.len(), 2, "both partitions flushed");
+            assert!(!pa.has_pending() && !pb.has_pending());
+        });
+    }
+
+    #[test]
+    fn reconnect_auto_syncs_when_enabled() {
+        in_world(async {
+            use crate::autosync::SyncTrigger;
+            // A trigger that does nothing on start — we exercise only the
+            // engine's offline→online auto-sync path.
+            struct Noop;
+            impl SyncTrigger for Noop {
+                fn start(self: Rc<Self>, _h: crate::autosync::SyncHandle) {}
+            }
+
+            let (eng, tr) = engine();
+            let p = part(&eng, &tr).await;
+            eng.start_auto_sync(Rc::new(Noop));
+
+            eng.set_online(false);
+            p.upsert("x", note("v")).await.unwrap();
+            assert_eq!(tr.server.borrow().records.len(), 0);
+
+            // Reconnect: with auto-sync enabled this triggers sync_all. On
+            // native, spawn_async runs it to completion synchronously.
+            eng.set_online(true);
+            assert_eq!(tr.server.borrow().records.len(), 1, "reconnect auto-synced");
+            assert!(!p.has_pending());
+        });
+    }
+
+    #[test]
+    fn reconnect_does_not_sync_without_auto_sync() {
+        in_world(async {
+            let (eng, tr) = engine();
+            let p = part(&eng, &tr).await;
+            eng.set_online(false);
+            p.upsert("x", note("v")).await.unwrap();
+            eng.set_online(true); // auto-sync NOT enabled → no automatic flush
+            assert_eq!(tr.server.borrow().records.len(), 0, "stays queued");
+            assert!(p.has_pending());
+        });
+    }
+
+    #[test]
+    fn forget_drops_persisted_state() {
+        in_world(async {
+            let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+            let tr = MockTransport::new();
+            let eng = SyncEngine::with_kv(storage.clone(), "device-1");
             let p = eng
                 .partition::<Note>("p", Rc::new(tr.clone()))
                 .await
                 .unwrap();
-            p.upsert("a", note("queued")).await.unwrap();
-        }
+            p.upsert("a", note("v")).await.unwrap();
+            eng.forget("p").await.unwrap();
 
-        // Session 2: a fresh engine over the SAME storage rebuilds the
-        // partition from disk — the queued op is still there and replays.
-        let eng2 = SyncEngine::with_kv(storage.clone(), "device-1");
-        let p2 = eng2
-            .partition::<Note>("p", Rc::new(tr.clone()))
-            .await
-            .unwrap();
-        assert_eq!(p2.snapshot(), vec![note("queued")], "pending edit restored");
-        assert!(p2.has_pending());
-        p2.flush().await.unwrap();
-        assert_eq!(tr.server.borrow().records.len(), 1, "replayed to server");
-    }
-
-    #[tokio::test]
-    async fn lost_ack_replay_is_idempotent() {
-        let (eng, tr) = engine();
-        let p = part(&eng, &tr).await;
-        p.upsert("a", note("v")).await.unwrap();
-
-        // First flush: the push reaches the server, but we simulate a lost
-        // ack by NOT processing — instead, induce a transport failure right
-        // after the server applied. Easiest reproduction: flush once
-        // (succeeds), then flush again — second flush is a no-op since
-        // nothing is pending. To exercise dedup we re-queue the same op
-        // manually by flushing with a server that already saw the key.
-        p.flush().await.unwrap();
-        assert_eq!(tr.server.borrow().records.len(), 1);
-        // The server recorded the idempotency key.
-        assert_eq!(tr.server.borrow().seen_keys.len(), 1);
-        // A redundant flush does nothing and creates no duplicate.
-        p.flush().await.unwrap();
-        assert_eq!(tr.server.borrow().records.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn transport_failure_keeps_work_queued_for_retry() {
-        let (eng, tr) = engine();
-        let p = part(&eng, &tr).await;
-        p.upsert("a", note("v")).await.unwrap();
-
-        tr.fail_next.set(true);
-        let err = p.flush().await.unwrap_err();
-        assert!(err.is_retryable());
-        assert!(p.has_pending(), "failed push leaves the op queued");
-        assert!(tr.server.borrow().records.is_empty());
-
-        // Retry succeeds.
-        p.flush().await.unwrap();
-        assert_eq!(tr.server.borrow().records.len(), 1);
-        assert!(!p.has_pending());
-    }
-
-    #[tokio::test]
-    async fn sync_all_flushes_every_partition() {
-        let (eng, tr) = engine();
-        let pa = eng.partition::<Note>("a", Rc::new(tr.clone())).await.unwrap();
-        let pb = eng.partition::<Note>("b", Rc::new(tr.clone())).await.unwrap();
-        eng.set_online(false);
-        pa.upsert("x", note("ax")).await.unwrap();
-        pb.upsert("y", note("by")).await.unwrap();
-        assert_eq!(tr.server.borrow().records.len(), 0, "nothing pushed offline");
-
-        eng.set_online(true);
-        eng.sync_all().await.unwrap();
-        assert_eq!(tr.server.borrow().records.len(), 2, "both partitions flushed");
-        assert!(!pa.has_pending() && !pb.has_pending());
-    }
-
-    #[tokio::test]
-    async fn reconnect_auto_syncs_when_enabled() {
-        use crate::autosync::SyncTrigger;
-        // A trigger that does nothing on start — we exercise only the
-        // engine's offline→online auto-sync path.
-        struct Noop;
-        impl SyncTrigger for Noop {
-            fn start(self: Rc<Self>, _h: crate::autosync::SyncHandle) {}
-        }
-
-        let (eng, tr) = engine();
-        let p = part(&eng, &tr).await;
-        eng.start_auto_sync(Rc::new(Noop));
-
-        eng.set_online(false);
-        p.upsert("x", note("v")).await.unwrap();
-        assert_eq!(tr.server.borrow().records.len(), 0);
-
-        // Reconnect: with auto-sync enabled this triggers sync_all. On
-        // native, spawn_async runs it to completion synchronously.
-        eng.set_online(true);
-        assert_eq!(tr.server.borrow().records.len(), 1, "reconnect auto-synced");
-        assert!(!p.has_pending());
-    }
-
-    #[tokio::test]
-    async fn reconnect_does_not_sync_without_auto_sync() {
-        let (eng, tr) = engine();
-        let p = part(&eng, &tr).await;
-        eng.set_online(false);
-        p.upsert("x", note("v")).await.unwrap();
-        eng.set_online(true); // auto-sync NOT enabled → no automatic flush
-        assert_eq!(tr.server.borrow().records.len(), 0, "stays queued");
-        assert!(p.has_pending());
-    }
-
-    #[tokio::test]
-    async fn forget_drops_persisted_state() {
-        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
-        let tr = MockTransport::new();
-        let eng = SyncEngine::with_kv(storage.clone(), "device-1");
-        let p = eng
-            .partition::<Note>("p", Rc::new(tr.clone()))
-            .await
-            .unwrap();
-        p.upsert("a", note("v")).await.unwrap();
-        eng.forget("p").await.unwrap();
-
-        // A fresh load sees nothing.
-        let eng2 = SyncEngine::with_kv(storage.clone(), "device-1");
-        let p2 = eng2
-            .partition::<Note>("p", Rc::new(tr.clone()))
-            .await
-            .unwrap();
-        assert!(p2.snapshot().is_empty());
-        assert!(!p2.has_pending());
+            // A fresh load sees nothing.
+            let eng2 = SyncEngine::with_kv(storage.clone(), "device-1");
+            let p2 = eng2
+                .partition::<Note>("p", Rc::new(tr.clone()))
+                .await
+                .unwrap();
+            assert!(p2.snapshot().is_empty());
+            assert!(!p2.has_pending());
+        });
     }
 }

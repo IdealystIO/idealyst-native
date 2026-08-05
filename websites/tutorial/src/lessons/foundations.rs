@@ -1,17 +1,18 @@
 //! Foundations — the unifying mental model that sits above the
-//! per-primitive tracks. Two steps: how signals, the UI, and the theme
-//! are all one reactive engine; and an under-the-hood look at batching
-//! that explains why that engine stays cheap at scale.
+//! per-primitive tracks. Two steps: how signals, the UI, and the theme are
+//! all one reactive engine; and an under-the-hood look at the flush, which
+//! is the boundary every one of those pieces commits at.
 //!
-//! Like the rest of the tutorial, the lessons here lean on `runtime_core`
-//! concepts directly. The chrome (`Typography`, `Callout`, ...) is idea-ui;
-//! the substance is the core.
+//! Like the rest of the tutorial, the lessons here teach the framework's
+//! own surface. The chrome (`Typography`, `Callout`, ...) is idea-ui; the
+//! substance is the core.
 
-use runtime_core::{ui, Element};
 use idea_ui::{typography_kind, Typography};
+use runtime_core::{ui, Element};
 
 use crate::common::{Callout, CodePanel, DocsLink, LessonPage};
-use crate::routes::{CORE_ENGINE_ROUTE, CORE_PERF_ROUTE};
+use crate::demo::FlushDemo;
+use crate::routes::{CORE_ENGINE_ROUTE, CORE_FLUSH_ROUTE};
 use crate::shell;
 
 pub fn engine() -> Element {
@@ -25,48 +26,30 @@ pub fn engine() -> Element {
             Typography(
                 content = "Signals and effects are the reactive core, the same primitives many \
                     frameworks share. Idealyst takes this a little further, bridging the style \
-                    system with reactivity for efficient, consistent style management with no \
-                    third-party libraries. This page maps how the pieces connect; the tracks that \
-                    follow fill in each one.".to_string()
+                    system with reactivity so runtime restyling and theming need no third-party \
+                    library. This page maps how the pieces connect; the tracks that follow fill \
+                    in each one.".to_string()
             )
 
             Typography(content = "Signals drive reactivity".to_string(), kind = typography_kind::H2)
             Typography(
                 content = "A signal read inside a running effect records a two-way link: the \
                     effect joins the signal's subscribers, and the signal joins the effect's \
-                    dependencies. A write re-runs exactly the effects that read it. Dependencies \
-                    are tracked automatically as each effect runs, so a branch that stops reading \
-                    a signal stops being notified by it.".to_string()
+                    dependencies. A write stages a value; the next flush commits it and re-runs \
+                    exactly the effects that read it. Dependencies are recollected on every run, \
+                    so a branch that stops reading a signal stops being notified by it.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::{signal, effect};
 
-let count = signal(0);
-
-effect!({
-    // reading count here subscribes this effect to it:
-    log::info!("count = {}", count.get());
-});
-
-count.set(1); // re-runs the effect — and nothing else"##.to_string())
-
-            Typography(content = "Reactivity affects the UI".to_string(), kind = typography_kind::H2)
+            Typography(content = "Reactivity drives the UI".to_string(), kind = typography_kind::H2)
             Typography(
                 content = "Your UI nodes are effects. When you bind a signal into a node, the \
                     framework wraps that node in an effect whose body calls into the backend. A \
-                    write re-runs that one effect, which repaints that one node \u{2014} the unit \
-                    of update is the closure that read the signal. A bound node is an effect that \
-                    owns a native view, so updates stay surgical: there's no virtual DOM, and the \
-                    tree is never diffed or re-rendered wholesale.".to_string()
+                    committed write re-runs that one effect, which repaints that one node \u{2014} \
+                    the unit of update is the closure that read the signal. A bound node is an \
+                    effect that owns a native view, so updates stay surgical: there's no virtual \
+                    DOM, and the tree is never diffed or re-rendered wholesale.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::{signal, ui, rx};
-
-let count = signal(0);
-
-// This text node IS an effect. Reading `count` inside `rx!` subscribes
-// it; a write repaints just this node — no diff, no tree walk.
-ui! { text { rx!(format!("Count: {}", count.get())) } }
-
-count.update(|n| *n += 1); // re-runs only this text node"##.to_string())
+            CodePanel(src = include_str!("../samples/fnd_engine.rs").to_string())
 
             Typography(
                 content = "Stylesheets are composed of tokens, tokens are reactive".to_string(),
@@ -79,20 +62,18 @@ count.update(|n| *n += 1); // re-runs only this text node"##.to_string())
                     rule stores a token reference, and resolving it is a signal read, so a styled \
                     node subscribes to exactly the tokens it uses. Switching the theme rewrites \
                     those signals, and the same fan-out re-applies the styles of only the nodes \
-                    that read a changed token \u{2014} no separate theming library, no manual \
-                    wiring.".to_string()
+                    that read a changed token.".to_string()
             )
-            CodePanel(src = r##"// A style references a token by NAME, not a concrete value:
-stylesheet! {
-    Card<ThemeRef> {
-        base(t) { background: Tokenized::token("color-surface", Color("#ffffff")) }
-    }
-}
+            CodePanel(src = include_str!("../samples/fnd_tokens.rs").to_string())
 
-// Switching the theme writes the token signals…
-set_theme(dark_theme());
-// …and every node that resolved `color-surface` re-applies its style.
-// Nodes that never read it stay asleep."##.to_string())
+            Typography(content = "One boundary for all of it".to_string(), kind = typography_kind::H2)
+            Typography(
+                content = "Because dynamic text, keyed lists, styles, and theme switching are all \
+                    signals and effects, they also share one commit point. A turn of your code \
+                    stages whatever it stages \u{2014} state, tokens, list contents \u{2014} and \
+                    the flush commits the lot as a single logical update. The next step walks that \
+                    boundary in detail.".to_string()
+            )
 
             Callout(label = "Learn the core once".to_string()) {
                 Typography(
@@ -104,8 +85,8 @@ set_theme(dark_theme());
             }
 
             DocsLink(
-                summary = "The full model \u{2014} the arena, scopes, the subscription graph, and \
-                    the token registry.".to_string(),
+                summary = "The full model \u{2014} per-world arenas, scopes, the subscription \
+                    graph, and the token registry.".to_string(),
                 link_label = "Reactivity reference".to_string(),
                 doc_file = "reactivity.md".to_string(),
             )
@@ -113,59 +94,56 @@ set_theme(dark_theme());
     })
 }
 
-pub fn performance() -> Element {
+pub fn flush_boundary() -> Element {
     shell::layout(ui! {
         LessonPage(
-            current = CORE_PERF_ROUTE.name(),
-            title = "Under the hood: batching".to_string(),
-            lead = "Why a theme switch that touches fifty tokens still feels \
-                instant.".to_string(),
+            current = CORE_FLUSH_ROUTE.name(),
+            title = "Under the hood: the flush".to_string(),
+            lead = "Why a theme switch that touches fifty tokens costs one update.".to_string(),
         ) {
             Typography(
-                content = "A naive observer model would thrash on exactly the workload theming \
-                    creates. A theme swap writes around fifty token signals at once. A typical \
-                    styled node reads two to five of them. Fan out every write the moment it \
-                    happens and each node's style effect re-runs once per token it read \u{2014} \
-                    two to five full re-applies per node, each re-resolving every property and \
-                    pushing it onto the live view (on native, a msg_send per property plus \
-                    animator scheduling). On a docs-sized tree \u{2014} ~490 views, hundreds of \
-                    effects \u{2014} that's the difference between a snappy toggle and one that \
-                    hangs the main thread for hundreds of milliseconds.".to_string()
+                content = "Theming is the workload that shows why the commit point exists. A \
+                    theme swap writes around fifty token signals at once, and a typical styled \
+                    node reads two to five of them. If each write fanned out the moment it \
+                    happened, every node's style effect would re-run once per token it read \
+                    \u{2014} several full re-applies per node, each re-resolving every property \
+                    and pushing it onto the live view (on native, a platform message per property \
+                    plus animator scheduling).".to_string()
             )
 
             Typography(
-                content = "Batching turns N\u{00d7}M into N".to_string(),
+                content = "Staging collapses the fan-out".to_string(),
                 kind = typography_kind::H2,
             )
             Typography(
-                content = "batch coalesces the fan-out. Inside the batch, writes still land \
-                    immediately \u{2014} a read after a set sees the new value \u{2014} but \
-                    subscriber notifications are queued instead of run. At the end of the \
-                    outermost batch the queue is de-duplicated, preserving first-seen order, and \
-                    each effect runs exactly once. A node that read five changed tokens re-applies \
-                    its style a single time, not five.".to_string()
+                content = "A write stages a pending value and returns. Nothing observable moves \
+                    until the driver flushes, and the flush drains all fifty staged tokens in one \
+                    pass: it commits them, settles the derived values, dedupes the woken effects, \
+                    and runs each one once. A node that read five changed tokens re-applies its \
+                    style a single time. The old core exposed a batch(f) wrapper to buy this \
+                    coalescing per call site; here it is the shape of every turn, so there is no \
+                    wrapper to remember.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::{signal, batch};
+            CodePanel(src = include_str!("../samples/rx_flush.rs").to_string())
 
-let first = signal(0);
-let second = signal(0);
-
-batch(|| {
-    first.set(1);
-    assert_eq!(first.get(), 1); // the WRITE is visible immediately…
-    second.set(2);
-}); // …but an effect reading both re-runs ONCE here, not twice"##.to_string())
+            Typography(content = "Watch it happen".to_string(), kind = typography_kind::H2)
+            Typography(
+                content = "The reader below is a reactive text node \u{2014} an effect \u{2014} so \
+                    its run count is an effect-run count. \"write both\" writes two of its \
+                    dependencies in one handler and the count moves by one.".to_string()
+            )
+            FlushDemo()
 
             Typography(
                 content = "On the web, a theme change is a variable write".to_string(),
                 kind = typography_kind::H2,
             )
             Typography(
-                content = "Batching is the native story \u{2014} coalesced re-applies onto live \
-                    views. The web takes an even shorter path. A token compiles to a CSS custom \
-                    property, so a stylesheet rule that reads it emits var(--token, fallback) into \
-                    the element's class. That class carries the reference, so it stays valid across \
-                    every theme and never has to be recomputed.".to_string()
+                content = "Coalesced re-applies onto live views are the native story. The web \
+                    takes a shorter path. A token compiles to a CSS custom property, so a \
+                    stylesheet rule that reads it emits var(--token, fallback) into the element's \
+                    class. That class carries the reference, so it stays valid across every theme \
+                    and never has to be recomputed.".to_string()
             )
             CodePanel(src = r##"/* a token reference compiles to a CSS variable, baked in once: */
 .card-a1b2 { background: var(--color-surface, #ffffff); }
@@ -179,8 +157,7 @@ batch(|| {
                     per changed token, and the browser's cascade repaints every element that reads \
                     them. No class is recomputed, no element's style attribute is rewritten, no \
                     node is added or removed. The only DOM mutation is that handful of variable \
-                    writes on a single rule, however many thousands of elements depend on \
-                    them.".to_string()
+                    writes on a single rule, however many elements depend on them.".to_string()
             )
             Callout(label = "Cost scales with tokens".to_string()) {
                 Typography(
@@ -192,41 +169,32 @@ batch(|| {
             }
 
             Typography(
-                content = "You rarely call it yourself".to_string(),
+                content = "What the boundary asks of you".to_string(),
                 kind = typography_kind::H2,
             )
             Typography(
-                content = "The framework already wraps the expensive bulk paths. update_tokens \u{2014} \
-                    every theme switch \u{2014} batches its per-token writes internally; that's the \
-                    line between a theme toggle that scales and one that doesn't. You reach for \
-                    batch directly on your own bulk writes: resetting a list, hydrating a form, \
-                    or updating several related fields where one settled result beats a flurry of \
-                    intermediate ones.".to_string()
+                content = "Two habits. Read-modify-write goes through update, whose closure sees \
+                    the staged value, so increments in one turn compose. And a handler computes \
+                    against the snapshot it started with, so anything that must react to a value \
+                    the handler just wrote belongs in an effect or a memo, which the flush runs \
+                    after the commit.".to_string()
             )
 
-            Callout(label = "Immediate reads, deferred effects".to_string()) {
-                Typography(
-                    content = "Batching delays only the subscriber fan-out; your values update \
-                        immediately. Inside a batch, set-then-get sees the new value, while the \
-                        effects wait until the batch closes.".to_string(),
-                    muted = true,
-                )
-            }
             Callout(label = "Memos compound the win".to_string()) {
                 Typography(
-                    content = "An equality-gated memo stops a cascade early: if a derived value \
-                        recomputes to the same result, its subscribers aren't notified at all. \
-                        Batching collapses duplicate runs; memos prevent the runs that wouldn't \
-                        change anything from firing in the first place.".to_string(),
+                    content = "An equality-guarded memo stops a cascade early: if a derived value \
+                        recomputes to the same result, its subscribers aren't notified at all. The \
+                        flush collapses duplicate runs; memos prevent the runs that wouldn't \
+                        change anything from being queued in the first place.".to_string(),
                     muted = true,
                 )
             }
 
             DocsLink(
-                summary = "The batching internals, the dedup-and-flush order, and the reactive \
-                    seams across the framework.".to_string(),
-                link_label = "Reactivity reference".to_string(),
-                doc_file = "reactivity.md".to_string(),
+                summary = "The staged-commit contract, the flush algorithm, and where each \
+                    backend's flush driver lives.".to_string(),
+                link_label = "Runtime v2 migration guide".to_string(),
+                doc_file = "migrating-to-runtime-v2.md".to_string(),
             )
         }
     })

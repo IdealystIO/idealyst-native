@@ -11,35 +11,63 @@
 use camera::{Camera, CameraConfig, CameraError, MediaStream};
 use idea_ui::{install_idea_theme, light_theme, Stack, StackGap, StackPadding, Typography};
 use runtime_core::{
-    signal, text, ui, view, Element, IntoElement, Length, Signal, StyleRules, StyleSheet,
+    signal, ui, view, Element, IntoElement, Length, Signal, StyleRules, StyleSheet,
 };
 use std::rc::Rc;
 
-// The `video` external self-registers its handler at backend construction via
-// `inventory::submit!` inside the `video` SDK — the app just uses `Video`, no
-// per-platform registration. The hook remains for app-local externals; the CLI
-// bootstrap still calls it. See [[project_inventory_self_registration]].
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// Web registration seam — registry-CONCRETE: `video::register` takes a
+/// `Registry<WebBackend>` on wasm32 (the real `<video>` handler has no
+/// caps-trait expression). `camera` renders nothing, so it registers nothing.
+///
+/// Registration is MANDATORY: an unregistered payload panics at realize.
+#[cfg(target_arch = "wasm32")]
+pub fn register_scene_extensions(registry: &mut runtime_scene::Registry<backend_web::WebBackend>) {
+    video::register(registry);
+}
 
+/// Native registration seam. `video::register` is registry-GENERIC off web
+/// and type-dispatches ONCE at registration: macOS / iOS / Android get the
+/// real player, every other host gets the External placeholder.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
+where
+    H: runtime_vocabulary::caps::ExternalOps
+        + runtime_vocabulary::style_attach::StyleServices
+        + 'static,
+{
+    video::register(registry);
+}
+
+/// Runtime-server (sidecar) recorder seam: the wire recorder's registry gets
+/// the External placeholder arm of `video::register`.
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {}
+pub fn register_scene_extensions_recorder(registry: &mut dev_server::newcore::SceneRegistry) {
+    video::register(registry);
+}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
+}
 
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
     // The live source, once opened. `MediaStream` is `Clone` (Rc); the signal
     // holds it (keeping capture alive) and the `Video` clones it to display.
+    // `MediaStream` compares by pointer identity (see its `PartialEq`), so
+    // `Option<MediaStream>` is directly a legal signal payload: the guarded
+    // `set` stays quiet only when the SAME stream is stored again.
     let stream_sig: Signal<Option<MediaStream>> = signal(None);
     let status: Signal<String> = signal("Idle — press Start camera".to_string());
     let started: Signal<bool> = signal(false);
-
-    let status_text = text(move || status.get()).into_element();
 
     // Always-mounted Video with a REACTIVE stream source: `stream(|| ..)`'s
     // `resolve()` reads `stream_sig`, so when the camera opens and sets the
     // signal, the video re-populates with no remount.
     //
-    // The Video is an `Element::External` with NO intrinsic size — on native
+    // The Video is a handler-backed scene payload with NO intrinsic size — on native
     // (iOS UIView / Android FrameLayout) it lays out at main-axis size 0 and
     // collapses, exactly like the `graphics` primitive does. So we give it an
     // explicit size: a fixed-height box, with the Video filling it. (On web
@@ -91,22 +119,18 @@ pub fn app() -> Element {
         });
     };
 
-    let body: Vec<Element> = vec![
-        ui! { Typography(content = "Camera → Video".to_string(), kind = idea_ui::typography_kind::H1) },
-        ui! {
+    ui! {
+        Stack(gap = StackGap::Md, padding = StackPadding::Lg) {
+            Typography(content = "Camera → Video".to_string(), kind = idea_ui::typography_kind::H1)
             Typography(
                 content = "The camera SDK yields a `MediaStream`; the video SDK displays it. \
                     On web that's a zero-copy `<video srcObject>` — no platform types in app code."
                     .to_string(),
                 muted = true,
             )
-        },
-        status_text,
-        preview,
-        ui! { button(label = "Start camera".to_string(), on_click = on_start) },
-    ];
-
-    ui! {
-        Stack(gap = StackGap::Md, padding = StackPadding::Lg) { body }
+            text { move || status.get() }
+            preview
+            button(label = "Start camera".to_string(), on_click = on_start)
+        }
     }
 }

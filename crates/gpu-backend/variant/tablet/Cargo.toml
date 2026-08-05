@@ -9,7 +9,9 @@ license.workspace = true
 [dependencies]
 host-winit = { workspace = true }
 render-wgpu = { workspace = true }
-runtime-core = { workspace = true }
+# Style/host vocabulary (`ColorScheme`). `runtime-core` is NOT a
+# dependency: this variant has no `Element`/`Backend` surface left.
+runtime-shared = { workspace = true }
 
 [features]
 default = []

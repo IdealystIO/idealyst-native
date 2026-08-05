@@ -17,7 +17,7 @@ use crate::{BoardState, CanvasStore, Strokes, REC_FILE, REC_STORE};
 use idea_ui::{typography_kind, Modal, SegmentOption, SegmentedControl, Switch, Typography};
 use icons_lucide::X;
 use runtime_core::{
-    component, icon, rx, safe_area_insets, ui, view, AlignItems, ChildList, Color,
+    component, icon, rx, safe_area_insets, signal, ui, view, AlignItems, ChildList, Color,
     Element, FlexDirection, FontWeight, IntoElement, JustifyContent, Length, Overflow, Ref,
     Signal, StyleRules, Tokenized, TouchPhase, TouchResponse,
 };
@@ -179,7 +179,7 @@ impl Default for SettingsScreenProps {
             state: BoardState::default(),
             strokes: Default::default(),
             canvases: Default::default(),
-            version: Signal::new(0),
+            version: signal(0),
         }
     }
 }
@@ -224,7 +224,7 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
     // Aspect preset picker. `aspect_sel` mirrors the chosen segment (a preset
     // label or "Custom"); choosing a preset routes through `request_aspect`.
     let (aw0, ah0) = aspect.get();
-    let aspect_sel = Signal::new(aspect_label(aw0, ah0).to_string());
+    let aspect_sel = signal(aspect_label(aw0, ah0).to_string());
     let aspect_options: Vec<SegmentOption> = ASPECTS
         .iter()
         .map(|(l, _, _)| SegmentOption::new(*l, *l))
@@ -236,7 +236,7 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
     // canvas — with a confirmation when any drawing exists. `pending` holds the
     // requested aspect while the confirm modal is up; once confirmed (board
     // cleared) or when the board is already empty, the change applies directly.
-    let pending: Signal<Option<(u32, u32)>> = Signal::new(None);
+    let pending: Signal<Option<(u32, u32)>> = signal(None);
     let request_aspect: Rc<dyn Fn((u32, u32))> = {
         let canvases = canvases.clone();
         let strokes = strokes.clone();
@@ -301,8 +301,8 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
     let size_label = |s: CameraSize| {
         CAMERA_SIZES.iter().find(|(_, v)| *v == s).map(|(l, _)| *l).unwrap_or("M")
     };
-    let shape_sel = Signal::new(shape_label(camera_shape.get()).to_string());
-    let size_sel = Signal::new(size_label(camera_size.get()).to_string());
+    let shape_sel = signal(shape_label(camera_shape.get()).to_string());
+    let size_sel = signal(size_label(camera_size.get()).to_string());
     let shape_options: Vec<SegmentOption> =
         CAMERA_SHAPES.iter().map(|(l, _)| SegmentOption::new(*l, *l)).collect();
     let size_options: Vec<SegmentOption> =
@@ -323,12 +323,12 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
     // Show the CURRENT selection in each section caption — the segmented/​swatch
     // highlights can read subtly, so this makes the chosen value unmistakable and
     // updates live as the user picks.
-    let aspect_caption = Signal::new(String::new());
+    let aspect_caption = signal(String::new());
     runtime_core::effect!({
         let (w, h) = aspect.get();
         aspect_caption.set(format!("Aspect ratio · {}", aspect_label(w, h)));
     });
-    let color_caption = Signal::new(String::new());
+    let color_caption = signal(String::new());
     runtime_core::effect!({
         let cur = canvas_bg.get();
         let lbl = CANVAS_BGS
@@ -433,7 +433,7 @@ pub struct SwatchRowProps {
 
 impl Default for SwatchRowProps {
     fn default() -> Self {
-        Self { canvas_bg: Signal::new(CanvasBg::Auto) }
+        Self { canvas_bg: signal(CanvasBg::Auto) }
     }
 }
 
@@ -448,7 +448,7 @@ pub struct SwatchProps {
 
 impl Default for SwatchProps {
     fn default() -> Self {
-        Self { bg: CanvasBg::Auto, canvas_bg: Signal::new(CanvasBg::Auto) }
+        Self { bg: CanvasBg::Auto, canvas_bg: signal(CanvasBg::Auto) }
     }
 }
 
@@ -528,7 +528,7 @@ pub struct AspectStepperProps {
 impl Default for AspectStepperProps {
     fn default() -> Self {
         Self {
-            aspect: Signal::new(crate::settings::DEFAULT_ASPECT),
+            aspect: signal(crate::settings::DEFAULT_ASPECT),
             on_set: Rc::new(|_| {}),
         }
     }
@@ -571,7 +571,7 @@ impl Default for StepperRowProps {
     fn default() -> Self {
         Self {
             label: "",
-            aspect: Signal::new(crate::settings::DEFAULT_ASPECT),
+            aspect: signal(crate::settings::DEFAULT_ASPECT),
             is_width: true,
             on_set: Rc::new(|_| {}),
         }
@@ -620,7 +620,7 @@ pub fn StepperRow(props: &StepperRowProps) -> Element {
     });
     // Derived reactive label for the value — a `Signal<String>` so Typography's
     // `content` (Reactive<String>) gets the live value via `From<Signal>`.
-    let value_sig: Signal<String> = Signal::new(String::new());
+    let value_sig: Signal<String> = signal(String::new());
     runtime_core::effect!({
         let (w, h) = aspect.get();
         value_sig.set((if is_width { w } else { h }).to_string());
@@ -684,9 +684,9 @@ pub struct PreviewScreenProps {
 impl Default for PreviewScreenProps {
     fn default() -> Self {
         Self {
-            rec_path: Signal::new(None),
-            playback_url: Signal::new(String::new()),
-            aspect: Signal::new((9, 16)),
+            rec_path: signal(None),
+            playback_url: signal(String::new()),
+            aspect: signal((9, 16)),
             nav: Ref::new(),
         }
     }

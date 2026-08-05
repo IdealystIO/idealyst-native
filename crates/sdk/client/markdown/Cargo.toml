@@ -5,29 +5,33 @@ edition.workspace = true
 license.workspace = true
 
 # Third-party `Markdown` primitive — renders a CommonMark/GFM document
-# as a SINGLE native styled-text node on every native backend (one
-# `UILabel` + `NSAttributedString` on iOS, one `TextView` +
-# `SpannableStringBuilder` on Android) and as semantic DOM on web.
+# as semantic DOM through ONE caps-generic scene handler, so every
+# caps-complete host (web, SSR, native) mounts the identical tree.
 #
 # Rationale (see README): a markdown document is a deeply nested tree of
 # blocks and inline runs. Lowering it to framework primitives would emit
 # one styled `text`/`view` node per inline run — the exact per-token
 # explosion the `codeblock` SDK was carved out to avoid (100–300× more
-# backend ops per render). Native rich-text engines (NSAttributedString,
-# SpannableString) express the whole tree as inline attribute ranges on
-# ONE widget, so a 50-block document is ONE node, not thousands.
+# backend ops per render). Instead the SDK resolves the document
+# author-side and hands ONE payload to the scene registry, whose handler
+# builds the host element tree directly.
 #
-# Parsing + theme resolution happen author-side (in the `Markdown`
-# component's reactive scope) and produce a fully-resolved, serializable
-# `MarkdownDoc`. The per-backend handler is "dumb": it lowers concrete
-# runs into native attribute spans. Theme toggles re-resolve the doc →
-# new External props → the one node is rebuilt. Per-target `register`
-# functions live in `lib.rs` behind `#[cfg(...)]` (codeblock pattern).
+# Parsing + theme resolution happen author-side (in the `Markdown` tag's
+# reactive region) and produce a fully-resolved, serializable
+# `MarkdownDoc`. The handler is "dumb": it lowers concrete runs into
+# styled host nodes. Theme toggles re-resolve the doc → the node is
+# rebuilt.
 
 [dependencies]
-runtime-core = { workspace = true }
-# Self-registration of the per-backend external handler at construction.
-inventory = "0.3"
+# The scene registry (`item` + `MountCx`/`Registry`) + the vocabulary
+# caps the mount handler drives (`DocumentOps::create_element`,
+# `TextOps::create_text`, `StyleOps::apply_style`) + `style_attach` for
+# the author-style channel + `glue` for the manual
+# `BuildElement`/`Reactive`/`switch` tag. `runtime-shared` supplies the
+# style vocabulary (`StyleRules`, `Tokenized`, …) + `Ref`.
+runtime-scene = { workspace = true }
+runtime-shared = { workspace = true }
+runtime-vocabulary = { workspace = true }
 
 # CommonMark + GFM (strikethrough, task lists) pull parser. Pure Rust,
 # compiles on every target incl. wasm32. `default-features = false`
@@ -35,11 +39,9 @@ inventory = "0.3"
 # use — we only consume the event stream.
 pulldown-cmark = { version = "0.12", default-features = false }
 
-# Wire serde for `MarkdownDoc` so a `Markdown(...)` external renders over
-# the runtime-server wire (recorder serializes the resolved doc; the
-# device deserializes + dispatches to its real per-backend handler).
+# Wire serde for `MarkdownDoc` so a resolved document can cross the
+# runtime-server wire (recorder serializes it; the device deserializes).
 serde = { workspace = true }
-serde_json = { workspace = true }
 
 # Web handler self-registers a `WebExternalRegistrar` (the generic
 # `register` monomorphized to `WebBackend`), so the web backend must be a
@@ -87,3 +89,7 @@ objc2-ui-kit = { version = "0.2", features = [
     "UILabel",
     "UIColor",
 ] }
+# tests/markdown.rs mounts markdown through the scene registry
+# end-to-end on the shared host-mock recording substrate.
+[dev-dependencies]
+host-mock = { workspace = true }

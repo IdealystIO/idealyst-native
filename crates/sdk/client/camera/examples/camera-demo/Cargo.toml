@@ -17,7 +17,16 @@ crate-type = ["rlib"]
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The author surface. `runtime-core` is aliased to `runtime_core` at the
+# crate root (see src/lib.rs) — one core, no feature switch;
+# `async-driver` because the start handler uses `driver::spawn_async`.
+# `runtime-vocabulary` is needed because the `ui!` emission spells
+# absolute `::runtime_vocabulary::glue::…` paths, and `runtime-scene`
+# because `register_scene_extensions` is generic over the scene `Registry`
+# host.
 runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 camera = { workspace = true }
 # Recorder backend for the runtime-server sidecar wrapper (host-side only).

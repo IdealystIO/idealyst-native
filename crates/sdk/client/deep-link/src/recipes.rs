@@ -19,32 +19,26 @@ recipe!(
     DeepLink,
     /// Subscribe to inbound deep links and render the most recent one.
     ///
-    /// `on_link` registers a handler inside an `Effect` and returns an RAII
-    /// `LinkSubscription`; keeping it alive in a session signal keeps the
-    /// subscription alive for the component's lifetime. Each link updates a
-    /// reactive `signal`, and the `text` reads it so the view re-renders on
-    /// every link. `feed_link` is what the platform host calls when the OS
+    /// `on_link` returns an RAII `LinkSubscription` — dropping it
+    /// unsubscribes. Register it inside an effect and RETURN the guard as the
+    /// effect's cleanup: the surrounding component scope owns the effect, so
+    /// the subscription lives exactly as long as the component and tears down
+    /// at unmount. (`on_cleanup` in a component body panics — the
+    /// cleanup-returned-from-an-effect shape is the supported one.) Each link
+    /// writes a reactive `signal` that the `text` reads, so the view re-renders
+    /// on every link. `feed_link` is what the platform host calls when the OS
     /// delivers a URL — here we call it ourselves to demonstrate the flow.
     pub fn deep_link_listen() -> ::runtime_core::Element {
         use crate::{feed_link, on_link, DeepLink};
-        use ::runtime_core::session::signal;
-        use ::runtime_core::{effect, text, ui};
+        use ::runtime_core::{effect, signal, text, ui};
 
         // The latest inbound link, rendered reactively below.
-        let latest = signal::<Option<DeepLink>>("deep_link.latest", None);
+        let latest = signal::<Option<DeepLink>>(None);
 
-        // Subscribe once, inside a scope-owned effect, and park the RAII
-        // guard in a session signal so it lives as long as this scope.
-        // Dropping the guard unsubscribes — so we must NOT drop it at the
-        // end of setup.
-        let sub_slot = signal::<::std::rc::Rc<::std::cell::RefCell<Option<crate::LinkSubscription>>>>(
-            "deep_link.sub",
-            ::std::rc::Rc::new(::std::cell::RefCell::new(None)),
-        );
-        effect!({
-            let sink = latest;
-            let sub = on_link(move |link| sink.set(Some(link)));
-            *sub_slot.get().borrow_mut() = Some(sub);
+        let _ = effect(move || {
+            let sub = on_link(move |link| latest.set(Some(link)));
+            // Returned cleanup: runs before each re-run and at teardown.
+            move || drop(sub)
         });
 
         // Demonstrate the host ingress: feed a link as the OS would.

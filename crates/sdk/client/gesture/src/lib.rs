@@ -36,7 +36,7 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use runtime_core::{
+use runtime_shared::{
     GestureState, Recognizer, RecognizerCtx, TouchEvent, TouchHandler, TouchPhase, TouchResponse,
 };
 
@@ -177,7 +177,7 @@ struct Inner {
     /// Dependency order (prerequisites before dependents) for driving.
     order: Vec<usize>,
     /// Live finger ids — used to detect the last lift and reset the group.
-    active_touches: HashSet<runtime_core::TouchId>,
+    active_touches: HashSet<runtime_shared::TouchId>,
 }
 
 impl Inner {

@@ -245,6 +245,126 @@ impl FrameworkSource {
     }
 }
 
+/// `--remap-path-prefix` flags that keep build-machine absolute paths out
+/// of a shipped binary.
+///
+/// **Why this is needed at all.** Every `panic!` / `unwrap` / `expect` /
+/// bounds check emits a `&'static core::panic::Location` holding
+/// `file!()`, and the panic handler reads it to build its message. That
+/// makes the path *live `.rodata`*, not debug info — `wasm-opt
+/// --strip-debug` and `strip = "..."` provably cannot remove it (a
+/// release web bundle keeps them while retaining only ~157 bytes of
+/// custom sections). Without remapping, a bundle built on a laptop ships
+/// the developer's home directory, username, toolchain version, and full
+/// dependency inventory to every client that loads it.
+///
+/// **Why the framework paths are absolute in the first place.** The
+/// generated wrappers live under `target/idealyst/<app>/<platform>/wrapper`
+/// with their own `[workspace]`, and [`FrameworkSource::dep`] spells each
+/// framework dep as an absolute `path = "…"`. Cargo hands rustc those
+/// absolute paths, so `file!()` expands absolute in every framework crate.
+/// Building the same crates as ordinary workspace members (e.g. the
+/// `benchmark/` wasm) yields repo-relative paths instead — the wrapper
+/// design is what promotes them, so the wrapper build is where this is
+/// fixed.
+///
+/// Four prefixes are covered:
+///
+/// 1. the framework workspace root (`Workspace` mode only — `Git`-mode
+///    checkouts land under `CARGO_HOME` and are caught by 3),
+/// 2. the app being built,
+/// 3. `CARGO_HOME` — crates.io registry sources *and* git checkouts,
+/// 4. the rustc sysroot — `std`/`core`/`alloc` sources.
+///
+/// **Order is load-bearing.** rustc's `map_prefix` scans the mapping list
+/// in reverse and takes the first hit, so the LAST matching entry wins.
+/// The app root is pushed after the framework root precisely so an in-tree
+/// app (`examples/baseline`, which sits *inside* the framework workspace)
+/// maps to `/app` rather than `/idealyst` — the more specific prefix has
+/// to be able to win.
+///
+/// Release builds only. Dev builds keep real paths so a panic in the
+/// terminal or devtools stays clickable.
+///
+/// **Diagnostics are remapped too.** On stable rustc `--remap-path-prefix`
+/// is all-or-nothing — it rewrites compiler diagnostics as well as the
+/// embedded strings (scoping it to object code needs the unstable
+/// `-Zremap-path-scope`). So a *failing* release build reports
+/// `/app/src/lib.rs:19` rather than a clickable absolute path. Dev builds
+/// are unaffected, which is where iteration happens; set
+/// `IDEALYST_NO_PATH_REMAP=1` to opt out for a one-off release build you
+/// need to debug.
+pub fn remap_path_flags(source: &FrameworkSource, project_root: &Path) -> Vec<String> {
+    if remap_disabled(std::env::var("IDEALYST_NO_PATH_REMAP").ok().as_deref()) {
+        return Vec::new();
+    }
+    let mut prefixes: Vec<(PathBuf, &str)> = Vec::new();
+    if let FrameworkSource::Workspace { root } = source {
+        prefixes.push((root.clone(), "/idealyst"));
+    }
+    prefixes.push((project_root.to_path_buf(), "/app"));
+    if let Some(cargo_home) = cargo_home() {
+        prefixes.push((cargo_home, "/cargo"));
+    }
+    if let Some(sysroot) = rustc_sysroot() {
+        prefixes.push((sysroot, "/rust"));
+    }
+    prefixes
+        .into_iter()
+        .map(|(from, to)| format!("--remap-path-prefix={}={}", from.display(), to))
+        .collect()
+}
+
+/// Whether `IDEALYST_NO_PATH_REMAP` asks for path remapping to be skipped.
+///
+/// Taken as a parameter rather than read here so it can be tested without
+/// mutating process-global env state (Rust runs tests in parallel, so an
+/// env-var-setting test corrupts its neighbours).
+///
+/// Set-but-empty counts as unset — that is what `FOO= cmd` produces, and it
+/// reads as "no opinion" rather than "opt out". `0` / `false` / `no` are
+/// honored as explicit negatives so `IDEALYST_NO_PATH_REMAP=0` doesn't
+/// silently do the opposite of what it says.
+fn remap_disabled(value: Option<&str>) -> bool {
+    match value.map(str::trim) {
+        None | Some("") => false,
+        Some(v) => !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no"),
+    }
+}
+
+/// `CARGO_HOME`, or the conventional `~/.cargo` when unset.
+fn cargo_home() -> Option<PathBuf> {
+    if let Ok(explicit) = std::env::var("CARGO_HOME") {
+        if !explicit.is_empty() {
+            return Some(PathBuf::from(explicit));
+        }
+    }
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo"))
+}
+
+/// The active toolchain's sysroot, under which `lib/rustlib/src/rust/library`
+/// holds the `std`/`core`/`alloc` sources whose paths reach panic `Location`s.
+///
+/// Asked of `rustc` rather than assumed to be `~/.rustup/...` so distro and
+/// non-rustup toolchains are covered too. Returns `None` if `rustc` can't be
+/// run — the caller simply emits one fewer remap.
+fn rustc_sysroot() -> Option<PathBuf> {
+    let out = std::process::Command::new("rustc")
+        .arg("--print")
+        .arg("sysroot")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let path = String::from_utf8(out.stdout).ok()?;
+    let path = path.trim();
+    if path.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(path))
+}
+
 /// Walk up from `start` looking for the idealyst framework workspace
 /// root.
 ///
@@ -661,6 +781,133 @@ runtime-core = { path = "../fw/crates/runtime/core" }
         assert!(
             is_framework_root(&from_relative),
             "resolved root must actually be a framework workspace",
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // remap_path_flags — keeping build-machine paths out of shipped
+    // binaries (panic `Location` strings live in `.rodata`, so no
+    // strip pass can remove them after the fact).
+    // ---------------------------------------------------------------
+
+    fn remap_targets(flags: &[String]) -> Vec<&str> {
+        flags
+            .iter()
+            .filter_map(|f| f.strip_prefix("--remap-path-prefix="))
+            .filter_map(|kv| kv.rsplit_once('=').map(|(_, to)| to))
+            .collect()
+    }
+
+    #[test]
+    fn remap_flags_cover_framework_app_cargo_and_sysroot() {
+        let source = FrameworkSource::Workspace {
+            root: PathBuf::from("/some/idealyst-native"),
+        };
+        let flags = remap_path_flags(&source, Path::new("/elsewhere/my-app"));
+        let targets = remap_targets(&flags);
+
+        assert!(targets.contains(&"/idealyst"), "framework root: {flags:?}");
+        assert!(targets.contains(&"/app"), "project root: {flags:?}");
+        // `cargo_home` falls back to `$HOME/.cargo` and `rustc_sysroot`
+        // shells out; both are present in any environment that can build
+        // this crate at all.
+        assert!(targets.contains(&"/cargo"), "cargo home: {flags:?}");
+        assert!(targets.contains(&"/rust"), "sysroot: {flags:?}");
+
+        assert!(
+            flags
+                .iter()
+                .all(|f| f.starts_with("--remap-path-prefix=")),
+            "every emitted flag must be a remap: {flags:?}",
+        );
+    }
+
+    /// rustc's `map_prefix` scans the mapping list in REVERSE and takes the
+    /// first hit, so the last matching entry wins. An in-tree app (e.g.
+    /// `examples/baseline`) sits *inside* the framework workspace, so both
+    /// prefixes match its files — the app root must be emitted afterwards or
+    /// the more specific mapping could never win.
+    ///
+    /// Verified against real rustc behavior: compiling one file with
+    /// `--remap-path-prefix=<outer>=/OUTER --remap-path-prefix=<inner>=/INNER`
+    /// yields `/INNER/main.rs`, and swapping the order yields
+    /// `/OUTER/inner/main.rs`.
+    #[test]
+    fn in_tree_app_root_is_emitted_after_framework_root() {
+        let root = PathBuf::from("/some/idealyst-native");
+        let source = FrameworkSource::Workspace { root: root.clone() };
+        let flags = remap_path_flags(&source, &root.join("examples/baseline"));
+
+        let framework_at = flags
+            .iter()
+            .position(|f| f.ends_with("=/idealyst"))
+            .expect("framework remap present");
+        let app_at = flags
+            .iter()
+            .position(|f| f.ends_with("=/app"))
+            .expect("app remap present");
+        assert!(
+            app_at > framework_at,
+            "app root must come after framework root so it wins: {flags:?}",
+        );
+    }
+
+    /// Git-mode framework sources are fetched into `CARGO_HOME`, so there is
+    /// no separate workspace root to remap — the cargo-home entry covers them.
+    #[test]
+    fn git_mode_emits_no_framework_root_remap() {
+        let source = FrameworkSource::Git {
+            url: "https://github.com/IdealystIO/idealyst-native".into(),
+            refspec: GitRef::Tag("v1.0.0".into()),
+        };
+        let flags = remap_path_flags(&source, Path::new("/elsewhere/my-app"));
+        let targets = remap_targets(&flags);
+
+        assert!(!targets.contains(&"/idealyst"), "{flags:?}");
+        assert!(targets.contains(&"/app"), "{flags:?}");
+        assert!(targets.contains(&"/cargo"), "{flags:?}");
+    }
+
+    /// `IDEALYST_NO_PATH_REMAP` is the escape hatch for the one real cost of
+    /// remapping: on stable rustc it rewrites compiler *diagnostics* too, so
+    /// a failing release build loses clickable paths.
+    #[test]
+    fn remap_opt_out_reads_only_explicit_values() {
+        // Unset, or set-but-empty (`FOO= cmd`), means "no opinion".
+        assert!(!remap_disabled(None));
+        assert!(!remap_disabled(Some("")));
+        assert!(!remap_disabled(Some("   ")));
+        // Explicit negatives must not silently opt OUT.
+        for no in ["0", "false", "no", "FALSE", "No"] {
+            assert!(!remap_disabled(Some(no)), "{no:?} must not disable");
+        }
+        // Anything else is an opt-out.
+        for yes in ["1", "true", "yes", "on"] {
+            assert!(remap_disabled(Some(yes)), "{yes:?} must disable");
+        }
+    }
+
+    /// The flags are joined with `\x1f` into `CARGO_ENCODED_RUSTFLAGS`
+    /// precisely so a space in a path can't split one flag into two. Pin
+    /// that a spacey path survives as a single argument.
+    #[test]
+    fn path_with_spaces_stays_one_flag() {
+        let source = FrameworkSource::Workspace {
+            root: PathBuf::from("/Users/Jane Smith/idealyst-native"),
+        };
+        let flags = remap_path_flags(&source, Path::new("/Users/Jane Smith/my app"));
+
+        let encoded = flags.join("\x1f");
+        assert_eq!(
+            encoded.split('\x1f').count(),
+            flags.len(),
+            "encoding must preserve one field per flag: {flags:?}",
+        );
+        assert!(
+            flags
+                .iter()
+                .any(|f| f == "--remap-path-prefix=/Users/Jane Smith/my app=/app"),
+            "spacey project root must survive intact: {flags:?}",
         );
     }
 }

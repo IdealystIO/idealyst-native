@@ -1,24 +1,33 @@
-//! REGRESSION: `idea-ui-docs` — a full `SwapNavigator` + AppShell app —
-//! must render on the wgpu (GPU) backend via the swap SDK's ONE
-//! backend-neutral navigator handler, registered through the
-//! `RegisterNavigator` trait impl on `WgpuBackend`
-//! (`swap_navigator::register_generic`).
+//! REGRESSION: `idea-ui-docs` — a full swap-navigator + AppShell app —
+//! must render on the wgpu (GPU) backend.
 //!
-//! Before the trait impl + `Screenshotter::with_color_scheme_and_skin`
-//! existed, there was no way to host a navigator app on the GPU backend:
-//! `create_navigator` would hit the "External/Navigator not registered"
-//! panic (no wgpu navigator handler), and the only headless skin reported
-//! an empty platform identity (mobile branch, no desktop chrome). This
-//! test mounts the real app under a `NativeSkin(MacOs)` desktop identity
-//! and asserts it rasterizes a non-trivial frame.
+//! Two things this pins, both of which have been broken before:
 //!
-//! Captures to `$CARGO_TARGET_TMPDIR/idea-ui-docs-gpu.png` for eyeballing.
+//! 1. **A navigator app can be hosted on the GPU backend at all.** There
+//!    used to be no wgpu navigator handler, so `create_navigator` hit the
+//!    "External/Navigator not registered" panic; and the only headless
+//!    skin reported an empty platform identity (mobile branch, no desktop
+//!    chrome). The navigator is a vocabulary built-in now
+//!    (`register_builtins`), and `NativeSkin(MacOs)` +
+//!    `Screenshotter::with_color_scheme_and_skin` supply the desktop
+//!    identity.
+//! 2. **The desktop LAYOUT shape** — a pinned sidebar column beside the
+//!    body — which depends on the AppShell's `__bp_lg` breakpoint overlay
+//!    resolving from the live viewport width on a non-CSS backend.
+//!
+//! It drives the same offscreen path `crates/dev/newcore-gpu-smoke`'s
+//! `NEWCORE_SMOKE_HEADLESS` mode uses: `render_wgpu::newcore::start` on
+//! the headless `Screenshotter`'s backend (real Metal/Vulkan device, same
+//! shaders as the window, PNG/RGBA readback). `Screenshotter::mount` is
+//! the old walker's entry and is gone.
+//!
+//! Captures to the OS temp dir under `IDEALYST_DUMP_PNG=1`.
 
 use std::rc::Rc;
 
 use render_wgpu::headless::Screenshotter;
-use render_wgpu::NativeSkin;
-use runtime_core::{ColorScheme, Platform};
+use render_wgpu::{newcore, NativeSkin};
+use runtime_shared::{ColorScheme, Platform};
 
 #[test]
 fn idea_ui_docs_renders_on_wgpu_backend() {
@@ -27,12 +36,7 @@ fn idea_ui_docs_renders_on_wgpu_backend() {
     let (w, h) = (1280u32, 832u32);
 
     let skin = Rc::new(NativeSkin::new(Platform::MacOs));
-    let mut shot = match Screenshotter::with_color_scheme_and_skin(
-        w,
-        h,
-        ColorScheme::Light,
-        skin,
-    ) {
+    let mut shot = match Screenshotter::with_color_scheme_and_skin(w, h, ColorScheme::Light, skin) {
         Ok(s) => s,
         // A headless GPU/software adapter isn't always available in every
         // CI sandbox; skip rather than fail spuriously when there's no
@@ -43,20 +47,19 @@ fn idea_ui_docs_renders_on_wgpu_backend() {
         }
     };
 
-    // The make-or-break step: register the SwapNavigator's backend-neutral
-    // handler on the wgpu backend through the generic `RegisterNavigator`
-    // path. This is the behavior the trait impl unlocks — without it this
-    // call would not compile, and a mounted navigator would panic at
-    // `create_navigator`.
-    // `&mut *…` derefs the `RefMut` to a concrete `&mut WgpuBackend`; the
-    // generic `register_generic<B: RegisterNavigator>` infers `B` and won't
-    // peel the `RefMut` for us.
-    let backend = shot.backend();
-    swap_navigator::register_generic(&mut *backend.borrow_mut());
-
-    // Mount the real app and rasterize a frame. A panic here (e.g. an
-    // unregistered External/Navigator leaf) fails the test.
-    shot.mount(idea_ui_docs::app);
+    // Mount the real app on the Screenshotter's backend and rasterize a
+    // frame. `register_scene_extensions` is the app's own boot seam
+    // (codeblock + table payload handlers); without it the docs pages'
+    // code panels and PropsTables have no registry entry and realize
+    // panics. A panic anywhere here fails the test.
+    //
+    // The returned app state owns the World — hold it for the whole test
+    // so the tree isn't torn down before the captures.
+    let _app = newcore::start(
+        shot.backend(),
+        idea_ui_docs::register_scene_extensions,
+        idea_ui_docs::app,
+    );
     let rgba = shot.capture_rgba();
 
     assert_eq!(rgba.len(), (w * h * 4) as usize, "RGBA buffer size");

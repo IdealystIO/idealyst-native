@@ -28,9 +28,33 @@ fn be<E: std::fmt::Display>(e: E) -> PubSubError {
 impl RedisBackend {
     /// Connect to Redis at `url` (e.g. `redis://127.0.0.1/`).
     pub async fn connect(url: &str) -> Result<Self, PubSubError> {
-        let client = redis::Client::open(url).map_err(be)?;
+        Self::from_client(redis::Client::open(url).map_err(be)?).await
+    }
+
+    /// Build over an existing `redis::Client` — the shared-connection
+    /// spelling. A `redis::Client` is cheap connection *config* (connections
+    /// are opened from it per use), so the same client the app installs for
+    /// `cache::RedisCache` / server-kit's rate limiter serves pub/sub too:
+    /// one URL configured at boot, every consumer attached to it.
+    pub async fn from_client(client: redis::Client) -> Result<Self, PubSubError> {
         let conn = ConnectionManager::new(client.clone()).await.map_err(be)?;
         Ok(Self { client, conn })
+    }
+
+    /// Build over the `redis::Client` already installed via
+    /// `server::install_state` — the "provided context" spelling, mirroring
+    /// `cache::RedisCache::from_installed`. Errors when no client is
+    /// installed (boot-time misconfiguration).
+    pub async fn from_installed() -> Result<Self, PubSubError> {
+        let client = server::use_state::<redis::Client>().ok_or_else(|| {
+            PubSubError::Backend(
+                "RedisBackend::from_installed: no redis::Client installed; call \
+                 server::install_state(client.clone()) at boot (or pass one via \
+                 RedisBackend::from_client)"
+                    .to_string(),
+            )
+        })?;
+        Self::from_client(client).await
     }
 }
 

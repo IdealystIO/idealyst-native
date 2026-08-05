@@ -1,0 +1,48 @@
+# scene-parity FULL-OP golden — scenario `full_prop_updates`, mode `spliced`
+#
+# Per-primitive reactive prop updates: toggle checked, slider
+# value, image src, input value + secure, button label. Each
+# step writes ONE signal and must produce exactly the matching
+# update_* call — nothing else.
+#
+# Complete backend-call stream (create_*/update_*/apply_style/release_*
+# + the structural ops). Node names are creation-order (n0, n1, ...).
+# Owned by the OLD core; regenerate after an INTENDED walker change
+# with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 toggle false on_change=<fn>
+update_toggle_value n1 false
+insert n0 <- n1
+create n2 slider 0 [0,1] step=none on_change=<fn>
+update_slider_value n2 0
+insert n0 <- n2
+create n3 image src="a.png" alt=none
+update_image_src n3 "a.png"
+insert n0 <- n3
+create n4 text_input "" placeholder=none secure=false on_change=<fn> on_key_down=none on_blur=none
+update_text_input_value n4 ""
+update_text_input_secure n4 false
+insert n0 <- n4
+create n5 button "Start" on_click=<fn>
+update_button_label n5 "Start"
+insert n0 <- n5
+
+== toggle checked = true ==
+update_toggle_value n1 true
+
+== slider value = 0.7 ==
+update_slider_value n2 0.7
+
+== image src = b.png ==
+update_image_src n3 "b.png"
+
+== input value = 'abc' ==
+update_text_input_value n4 "abc"
+
+== input secure = true ==
+update_text_input_secure n4 true
+
+== button label = 'Stop' ==
+update_button_label n5 "Stop"

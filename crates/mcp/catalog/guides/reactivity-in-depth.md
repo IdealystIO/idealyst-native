@@ -9,9 +9,13 @@ tags = ["core", "reactivity", "advanced", "patterns"]
 [[reactivity]] covers the everyday surface — `signal`, `effect!`, `watch`.
 This guide is the layer beneath it: the derived-state primitives, the tracking
 controls, the reactive control-flow builders, and the sharp edges you only hit
-sometimes but need to recognize when you do. Everything here is in
-`crates/runtime/core/src/reactive.rs` (and `builder.rs` for the control-flow
-constructors); reach for these when the plain signal/effect pair isn't enough.
+sometimes but need to recognize when you do. The kernel is
+`crates/runtime/world/src/lib.rs` (`signal`, `effect`, `memo`, `untrack`,
+`on_cleanup`, `provide`/`inject`) and the author surface that wraps it is
+`crates/runtime/vocabulary/src/glue.rs` (`memo_with`, `reducer`, `watch`,
+`when`/`switch`) plus `async_reactive.rs` (`resource`, `mutation`); everything
+is re-exported under `runtime_core::…`. Reach for these when the plain
+signal/effect pair isn't enough.
 
 ## Derived state
 
@@ -50,8 +54,11 @@ for children that report values upward without subscribing themselves. The
 unified `Signal<T>` stays the right type for genuinely two-way props
 (`TextInput.value` and friends).
 
-- For a type without `PartialEq`, or a "close enough" comparison (float
-  tolerance, trait-object contents), call `memo_with(eq, f)` directly.
+- For a "close enough" comparison (float tolerance, trait-object contents),
+  call `memo_with(eq, f)` directly. It does not lift the `PartialEq` bound —
+  world signal storage is `PartialEq`-bounded end to end — so a type with no
+  equality at all needs the impl on the type, or `runtime_core::ByIdentity<T>`
+  when it is not yours to change.
 - A memo's body must be a **pure derivation** — calling `.set()`/`.update()`
   inside it panics loudly (a `MemoComputeGuard` catches the side effect).
 - For a cheap one-off derivation, a plain closure or `rx!` is lighter than a
@@ -86,31 +93,45 @@ enclosing effect to them. Use it when an effect needs a value but shouldn't
 re-run when that value changes — e.g. reading "current" state inside a
 dispatcher that's meant to *cause* changes, not react to them.
 
-### `batch` — coalesce writes into one fan-out
+### Coalescing — automatic, and there is no `batch` to call
 
-`batch(|| { a.set(…); b.set(…); c.set(…); })` records all writes and fans out
-to each subscriber **once**, in first-write order, when the outer batch
-returns. Intermediate states are never observed by any effect. Nested batches
-join the outermost window and don't flush early.
+`a.set(…); b.set(…); c.set(…);` already fans out to each subscriber **once**.
+A write *stages* a pending value; the world commits every staged write and runs
+the affected effects in one **flush** at the end of the turn, so intermediate
+states are never observed. There is no explicit `batch(f)` on the author
+surface — the writes inside one already coalesce.
 
-You rarely call `batch` by hand: **handlers are born batched.** A closure
-attached through a core builder (`pressable`, `Bound::on_*`, `reducer`'s
-dispatch) is wrapped in a `cycle` at the point the backend invokes it, so two
-writes in one tap wake a shared subscriber once. Reach for explicit `batch`
-only for multi-write sequences *outside* an event handler.
+Every backend installs a **flush driver** that closes the turn: the capability
+impls wrap each author callback (press, input, toggle, scroll, key, …) and call
+`schedule_flush()` after it returns, and a post-dispatch hook does the same for
+`after_ms` timers, animation-frame callbacks, and async continuations. So a
+handler that writes five signals produces one commit, one deduped effect pass,
+and one paint.
 
-> Edge: an effect body that calls `.set()` *during* a flush sees the batch as
-> already over — that write fans out synchronously, it doesn't fold back into
-> the window being drained.
+Change detection happens **at commit**, against the committed value: a signal
+set `A → B → A` within one turn nets to no change and never wakes its
+subscribers. `set_always` / `touch` force-taint the entry, so the flush
+notifies regardless of the net comparison.
+
+> Edge: reads see the **committed** value, so `s.set(v)` followed by `s.get()`
+> in the same handler still returns the old value. `update(|cur| …)` is the
+> exception — it composes on the staged value, which is why two increments in
+> one turn net `+2`.
+
+Full model: the `automatic-batching` design doc
+(`docs/automatic-batching.md`).
 
 ## Derived-state machines
 
 ### `reducer` — action-dispatched state
 
 `reducer(initial, |&state, action| next_state)` returns `(Signal<S>, dispatch)`.
-Each `dispatch(action)` runs as one reactive cycle (coalescing sibling writes),
-and reads current state under `untrack` so dispatching from inside an effect
-doesn't subscribe that effect to the state.
+Each `dispatch(action)` folds against the **staged** value, so two dispatches in
+one turn compose (`0 → 1 → 2`) instead of both reading the committed `0`, and it
+always notifies — a fold back to an equal state still wakes subscribers, even
+though the underlying write is equality-guarded. It never subscribes the caller,
+so dispatching from inside an effect doesn't make that effect depend on the
+state.
 
 ```rust
 let (count, dispatch) = reducer(0i32, |&n, a| match a {
@@ -146,7 +167,8 @@ with_inject::<Theme, _>(|t| t.background);    // borrow, no clone
 
 ## Reactive control flow
 
-These build `Element`s whose subtree the walker rebuilds reactively. All three
+These build `Element`s whose subtree the scene's structural drivers rebuild
+reactively. All three
 follow the **dispose-on-hide** model: when a branch goes away, its effects are
 dropped and its signal subscriptions released — **state in the hidden branch is
 lost.**
@@ -159,7 +181,7 @@ lost.**
   `match` in the macro and it emits `switch`.
 - `fragment(children)` — a **layout-transparent** sibling group. Return it from
   a `#[component]` that conceptually yields several siblings but must return one
-  `Element` — the walker splices the children into the parent with no wrapper
+  `Element` — realize splices the children into the parent with no wrapper
   view (so `flex: 1` / absolute overlays aren't broken by a box). Built once,
   **not** reconciled — for a reactive child set use `switch`/`when`/keyed `for`
   (`for item in items, key = item.id` — the SIGNAL itself in the header, never
@@ -203,10 +225,25 @@ intended.
 
 ## Sharp edges worth knowing
 
-- **Stale `set` is a safe no-op, not a panic.** Signal handles are generational
-  — a `.set()`/`.update()` on a handle whose slot was recycled (or whose owning
-  scope was torn down) silently does nothing. This is why a deferred/async
-  callback firing after unmount doesn't crash.
+- **`set` is equality-guarded — a same-value write wakes nobody.** The default
+  `.set(v)` (`T: PartialEq`) skips the fan-out when the value is unchanged.
+  Code that used a same-value write as a *retrigger* (re-firing a `switch`
+  discriminant, forcing a re-render) must say so explicitly: `touch()`
+  notifies without writing, `set_always(v)` writes and always notifies.
+  `set_always` does NOT admit non-`PartialEq` payloads — the bound is on the
+  whole handle, so such a type cannot be stored at all; give it a
+  pointer-identity `PartialEq`, or wrap it in `runtime_core::ByIdentity<T>` if
+  you do not own it. `set_untracked(v)` is the
+  inverse — write silently, notify never. `update(|&cur| next)` is guarded the
+  same way, and composes on the *staged* value, which is why two increments in
+  one turn net `+2`. This deliberately diverges from Leptos, whose `set` never
+  compares.
+- **A write after the world is gone is a no-op; a stale handle in a live world
+  panics.** An async callback completing after its world dropped writes
+  harmlessly into the void (reads from a dead world do panic). But a write
+  through a handle whose slot was recycled *while the world is still alive* is
+  a use-after-unmount logic error, and panics rather than silently poking the
+  slot's new occupant.
 - **Never `.set()` inside a `Ref::with` / `handle.with` closure.** That closure
   holds the arena borrow; a signal write inside it aborts with *"RefCell already
   borrowed"* (the `is_reactive_busy` guard does **not** catch this). Read the
@@ -239,8 +276,8 @@ intended.
   shouldn't rebuild — declare them with `.get_untracked()` (reads without
   subscribing, silences both diagnostics).
 - **A mutual write-loop panics, it doesn't hang.** A > B > A cascade trips the
-  `MAX_EFFECT_DEPTH` (256) guard with a recognizable backtrace instead of a
-  stack overflow.
+  flush's round limit (100 outer rounds) with a recognizable backtrace instead
+  of spinning forever.
 - **Reactive text interpolation is an f-string literal** (`text { "count:
   {count}" }`) — slots are live by TYPE. For a live prop value, use `rx!` or
   pass the signal itself.

@@ -3,7 +3,7 @@
 //! Reads the **browser's resolved state** — `getComputedStyle` (the *used*
 //! CSS values, after the cascade and the engine's own resolution) and
 //! `getBoundingClientRect` (the laid-out geometry) — and normalizes it to the
-//! canonical [`runtime_core::introspect`] schema. This is the deliberate
+//! canonical [`runtime_shared::introspect`] schema. This is the deliberate
 //! "don't trust our inline style" path: the values come from the layout/style
 //! engine, not from the `StyleRules` the framework asked for, so a diff
 //! against the macOS backend catches real divergence.
@@ -13,7 +13,7 @@
 use wasm_bindgen::JsCast;
 use web_sys::Element;
 
-use runtime_core::introspect::{keys, collect_native_tree, NativeNode, NativeRect, NativeValue};
+use runtime_shared::introspect::{keys, collect_native_tree, NativeNode, NativeRect, NativeValue};
 
 use crate::WebBackend;
 

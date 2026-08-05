@@ -24,7 +24,7 @@ use objc2::msg_send;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::NSView;
 use objc2_foundation::CGRect;
-use runtime_core::Screenshot;
+use runtime_shared::Screenshot;
 
 /// `NSBitmapImageFileTypePNG` — the raw enum value for PNG output. Hard
 /// -coded to avoid pulling the `NSBitmapImageRep` typed bindings just for

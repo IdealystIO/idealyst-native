@@ -3,7 +3,7 @@
 //! Reads the **live AppKit object** — the `NSView` and its backing
 //! `CALayer`, the `NSTextField`'s resolved `NSFont` — and reports the
 //! values the platform actually applied, normalized to the canonical
-//! [`runtime_core::introspect`] schema. This is the parity-testing surface:
+//! [`runtime_shared::introspect`] schema. This is the parity-testing surface:
 //! the numbers here come from CoreGraphics/AppKit, never from the framework's
 //! `StyleRules`, so a diff against the web backend catches the cases where
 //! "the style we asked for" and "the style the platform applied" disagree.
@@ -16,7 +16,7 @@ use objc2::{class, msg_send, msg_send_id};
 use objc2_app_kit::{NSColor, NSView};
 use objc2_foundation::{CGFloat, CGRect, NSArray, NSString};
 
-use runtime_core::introspect::{keys, collect_native_tree, NativeNode, NativeRect, NativeValue};
+use runtime_shared::introspect::{keys, collect_native_tree, NativeNode, NativeRect, NativeValue};
 
 use super::{CGColorRef, MacosBackend, MacosNode};
 
@@ -54,13 +54,13 @@ impl MacosBackend {
 }
 
 /// RAII phase timer so capture cost is attributable via `get_perf_counters`.
-/// The timing (and the `runtime_core::debug` clock it reads) only exist under
+/// The timing (and the `runtime_shared::debug` clock it reads) only exist under
 /// `debug-stats`; without it the guard is a zero-field no-op the optimizer
 /// strips — this is the feature's only remaining tie to `debug-stats`.
 fn phase_timer() -> PhaseGuard {
     PhaseGuard {
         #[cfg(feature = "debug-stats")]
-        start: runtime_core::debug::now_micros(),
+        start: runtime_shared::debug::now_micros(),
     }
 }
 struct PhaseGuard {
@@ -70,8 +70,8 @@ struct PhaseGuard {
 #[cfg(feature = "debug-stats")]
 impl Drop for PhaseGuard {
     fn drop(&mut self) {
-        let now = runtime_core::debug::now_micros();
-        runtime_core::debug::record_apply_phase("introspect_native", now.saturating_sub(self.start));
+        let now = runtime_shared::debug::now_micros();
+        runtime_shared::debug::record_apply_phase("introspect_native", now.saturating_sub(self.start));
     }
 }
 
@@ -278,7 +278,7 @@ mod tests {
     use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker, NSObject};
 
     use crate::imp::{CGColorRef, FlippedView};
-    use runtime_core::introspect::{keys, NativeValue};
+    use runtime_shared::introspect::{keys, NativeValue};
 
     // Reads must come from the LIVE CALayer, not from any style struct: this
     // test sets the layer's own backgroundColor/cornerRadius/borderWidth

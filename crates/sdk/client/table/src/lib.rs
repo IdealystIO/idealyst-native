@@ -2,24 +2,46 @@
 //!
 //! Web emits real HTML `<table>` / `<thead>` / `<tbody>` / `<tr>` /
 //! `<th>` / `<td>` so the browser's native table-layout algorithm
-//! handles cross-row column alignment for free.
+//! handles cross-row column alignment for free. Native (iOS / Android /
+//! macOS / terminal / gpu / SSR) builds a single **CSS-grid**: every
+//! row is flattened to its cells and the cells are parented directly
+//! under one grid node whose `N` column tracks span all rows, giving
+//! the same cross-row alignment the browser gives a real `<table>`.
 //!
-//! Native (iOS / Android / macOS / terminal / gpu) builds a single
-//! Taffy **CSS-grid**: every row is flattened to its cells and the cells
-//! are parented directly under one grid node whose `N` column tracks
-//! span all rows. Because the column tracks are shared, column `i` is
-//! one width across every row — the same cross-row alignment the browser
-//! gives a real `<table>`. No per-backend handler registration is
-//! needed; the framework's existing `view` + grid layout path renders
-//! correctly on every target.
+//! # Why this is an SDK and not a core primitive
+//!
+//! Web's `<table>` is a layout primitive with no native equivalent —
+//! UITableView is a vertical list, Android RecyclerView the same,
+//! macOS NSTableView is row-keyed. Putting a web-only-with-real-
+//! behavior primitive in the framework would be a web capability
+//! wearing a primitive's clothes. The SDK keeps that behavior
+//! pluggable: web wires up a real `<table>` through the scene registry,
+//! native composes a grid out of the framework's own layout primitives.
+//!
+//! # The two lowerings
+//!
+//! - **Web (wasm32)**: each primitive lowers to a scene
+//!   [`Element::Item`] carrying a typed payload; the scene
+//!   [`Registry`] dispatches to the handlers installed by
+//!   [`register`], which emit the real `<table>` / `<tr>` /
+//!   `<td>` / `<th>` DOM through the vocabulary's capability traits
+//!   ([`create_element`](runtime_vocabulary::caps::DocumentOps::create_element))
+//!   — the runtime's unified primitive==external contract. The
+//!   handlers are generic over the caps traits, so the SSR backend
+//!   reuses them for static rendering.
+//! - **Native (non-wasm)**: rows flatten to cells parented directly
+//!   under one `display: grid` node with `N` `auto` column tracks,
+//!   built with the vocabulary glue's `view` builder. Because the
+//!   column tracks are shared, column `i` is one width across every
+//!   row — the same cross-row alignment the browser gives a real
+//!   `<table>`. No handler registration is needed; the grid is plain
+//!   views, handled by the vocabulary built-ins.
 //!
 //! The columns are `auto`, which `runtime-layout` treats as the
 //! `table-layout: auto` signal: it measures each column's content, then
 //! short columns hug their content while a text-heavy column absorbs the
 //! remaining width and wraps — the same layout a browser gives the web
-//! `<table>`. This replaces the old equal-width flex fallback, which
-//! sized each row's columns independently and so let columns drift out of
-//! alignment between rows.
+//! `<table>`.
 //!
 //! Why a grid and not nested row/cell views: Taffy has no subgrid and no
 //! `display: contents`, so a grid can only align the columns of its
@@ -29,74 +51,42 @@
 //! by per-cell styling (head/body surface + per-cell `border-bottom`
 //! separators), exactly as on web.
 //!
-//! # Why this is an SDK and not a core primitive
+//! # Owned-scope peeling (native grid flattening)
 //!
-//! Web's `<table>` is a layout primitive with no native equivalent —
-//! UITableView is a vertical list, Android RecyclerView the same,
-//! macOS NSTableView is row-keyed. Putting a web-only-with-real-
-//! behavior primitive in the framework would be a web capability
-//! wearing a primitive's clothes. The SDK keeps that behavior pluggable:
-//! web wires up real `<table>` via `Element::External`, native composes
-//! a grid out of the framework's own layout primitives.
+//! A `#[component]`-wrapped row (idea-ui's `TableRow` with
+//! `on_row_click`) arrives as
+//! `Element::Owned { element: Fragment(cells), owned }` — the row
+//! body's collected scope (its shared hover signal) rides the wrapper.
+//! Flattening must NOT drop that scope: the cells' reactive hover
+//! style reads the signal for the cells' whole life. [`table`] peels
+//! the wrapper, flattens the cells into the grid, and re-attaches
+//! every peeled scope around the finished table element
+//! (`runtime_scene::owned`), so the scopes live exactly as long as the
+//! subtree that uses them.
 //!
-//! # Usage
+//! # Built-cell post-processing ([`cell_base_application`] & co.)
 //!
-//! ```ignore
-//! use table::prelude::*;
-//!
-//! // Register once at app boot (only does anything on web).
-//! table::register(&mut backend);
-//!
-//! ui! {
-//!     Table {
-//!         TableRow {
-//!             TableCell(header = true) { text { "Prop".to_string() } }
-//!             TableCell(header = true) { text { "Type".to_string() } }
-//!             TableCell(header = true) { text { "Description".to_string() } }
-//!         }
-//!         for row in rows {
-//!             TableRow {
-//!                 TableCell { text { row.name.to_string() } }
-//!                 TableCell { text { row.ty.to_string() } }
-//!                 TableCell { text { row.desc.to_string() } }
-//!             }
-//!         }
-//!     }
-//! }
-//! ```
-//!
-//! # Structure
-//!
-//! Three primitives, each its own `Element::External` payload type:
-//!
-//! - [`Table`] — the outer container. Renders as `<table>` on web (an
-//!   implicit `<tbody>` wraps all rows because we don't surface a
-//!   `TableHead`/`TableBody` distinction yet); a CSS-grid node on native.
-//! - [`TableRow`] — `<tr>` on web; an [`Element::Fragment`] of cells on
-//!   native (no box — its cells become direct grid children).
-//! - [`TableCell`] — `<td>` (or `<th>` when `header = true`) on web,
-//!   a grid item on native.
-//!
-//! Authors style cells through the `style` prop (a normal stylesheet),
-//! same as any other primitive. Column widths come from the column
-//! tracks: the browser's column-fits-widest algorithm on web, the
-//! matching grid track sizing on native. To pin a column to a fixed or
-//! proportional width, set that cell's `width` (or a grid track via a
-//! future template prop) — but by default both backends size a column to
-//! its widest cell across all rows.
+//! idea-ui's clickable-row feature re-styles built cells and attaches
+//! touch/hover handlers AFTER the cell element exists. An
+//! `Element::Item` payload is type-erased, so this crate owns that
+//! knowledge: the [`cell_base_application`] / [`set_cell_style`] /
+//! [`set_cell_interaction`] helpers reach through the payload cell
+//! (`PrimCell::with_mut` — the payload is not yet mounted, so in-place
+//! mutation is sound) for BOTH lowerings (native `ViewPrim` grid item,
+//! web [`TableCellPrim`]).
 #![deny(missing_docs)]
 
 use std::rc::Rc;
 
-use runtime_core::{BuildElement, Bound, Element, ExternalHandle, IdealystSchema, IntoElement};
-
-#[cfg(target_arch = "wasm32")]
-use std::any::{Any, TypeId};
-
-#[cfg(not(target_arch = "wasm32"))]
-use runtime_core::{
-    DisplayKind, FlexDirection, StyleApplication, StyleSheet, TrackSize, VariantSet,
+use runtime_shared::{HoverHandler, TouchHandler};
+use runtime_scene::{fragment, item, Element, Host, MountCx, Registry};
+use runtime_vocabulary::caps::InputOps;
+use runtime_vocabulary::glue::{
+    self, BuildElement, ChildList, DisplayKind, IntoElement, StyleApplication, StyleRules,
+    StyleSheet, TrackSize, VariantSet,
 };
+use runtime_vocabulary::prims::{self, PrimCell};
+use runtime_vocabulary::style_attach::{attach_style, IntoStyleProp, StyleProp, StyleServices};
 
 // ============================================================================
 // Props
@@ -104,24 +94,18 @@ use runtime_core::{
 
 /// Props for the outer `<table>` container.
 ///
-/// `children` carries the rows (or a wrapping `TableHead`/`TableBody`
-/// later if we surface them). The framework parents them into the
-/// returned backend node — on web they become real DOM children of
-/// the `<table>` element so the browser's table-layout algorithm sees
-/// the full row set.
-#[derive(Default, IdealystSchema)]
+/// `children` carries the rows. On web they become real DOM children
+/// of the `<table>` element so the browser's table-layout algorithm
+/// sees the full row set; on native the rows are flattened into one
+/// grid (see the module docs).
+#[derive(Default)]
 pub struct TableProps {
-    /// The table's rows (and, later, any `TableHead`/`TableBody`
-    /// wrappers if we surface them). The framework parents these into
-    /// the returned backend node — on web they become real DOM
-    /// children of the `<table>` so the browser's table-layout
-    /// algorithm sees the full row set. Populated by the `ui!`
-    /// children block.
+    /// The table's rows. Populated by the `ui!` children block.
     pub children: Vec<Element>,
 }
 
 /// Props for a single row (`<tr>`).
-#[derive(Default, IdealystSchema)]
+#[derive(Default)]
 pub struct TableRowProps {
     /// The row's cells. Parented into the `<tr>` on web; on native the
     /// row lowers to a fragment and these cells become direct children
@@ -132,240 +116,328 @@ pub struct TableRowProps {
 /// Props for a single cell. `header = true` renders `<th>` instead of
 /// `<td>` so the browser applies its default header styling and
 /// assistive tech announces it as a header.
-#[derive(Default, IdealystSchema)]
+#[derive(Default)]
 pub struct TableCellProps {
     /// When `true`, render a `<th>` (header cell) instead of a `<td>`
-    /// on web — the browser applies its default header styling
-    /// (centered, bold) and assistive tech announces it as a header.
-    /// On native `header` has no built-in visual effect (the cell is a
-    /// grid item); the caller styles header cells via `.with_style(...)`.
+    /// on web. On native `header` has no built-in visual effect (the
+    /// cell is a grid item); the caller styles header cells via
+    /// `.with_style(...)`.
     pub header: bool,
-    /// The cell's contents (typically a `text`). Parented into the
-    /// `<td>`/`<th>` on web / the grid item on native. Populated by the
+    /// The cell's contents (typically a `text`). Populated by the
     /// `ui!` children block.
     pub children: Vec<Element>,
 }
 
 // ============================================================================
-// Handles
+// Web item payloads. Always COMPILED (the handlers are generic over the
+// caps traits, so host-side tests drive them through the SSR backend);
+// only the wasm32 CONSTRUCTOR arm emits them in an app tree.
 // ============================================================================
 
-/// Typed handle for a `Table` external element; lets callers attach
-/// styles/refs to the table container via the `Bound<TableHandle>` builder.
-pub type TableHandle = ExternalHandle<TableProps>;
-/// Typed handle for a `TableRow` external element.
-pub type TableRowHandle = ExternalHandle<TableRowProps>;
-/// Typed handle for a `TableCell` external element.
-pub type TableCellHandle = ExternalHandle<TableCellProps>;
+/// Scene payload for the `<table>` container (web lowering). Wrapped in
+/// [`PrimCell`] at the item boundary — the registry key is
+/// `PrimCell<TablePrim>`.
+pub struct TablePrim {
+    /// Author style, attached to the `<table>` node after children
+    /// mount (the standard handler ordering).
+    pub style: Option<StyleProp>,
+}
+
+/// Scene payload for a `<tr>` (web lowering).
+pub struct TableRowPrim {
+    /// Author style for the row node (unused by idea-ui, kept because
+    /// `.with_style(…)` works on every wrapper).
+    pub style: Option<StyleProp>,
+}
+
+/// Scene payload for a `<td>` / `<th>` (web lowering). The interaction
+/// slots exist so [`set_cell_interaction`] can attach idea-ui's
+/// clickable-row handlers to a BUILT cell.
+pub struct TableCellPrim {
+    /// `<th>` when `true`, `<td>` otherwise.
+    pub header: bool,
+    /// Author style, attached to the cell node.
+    pub style: Option<StyleProp>,
+    /// Touch handler installed on the cell node (clickable rows).
+    pub on_touch: Option<TouchHandler>,
+    /// Hover handler installed on the cell node (row hover highlight).
+    pub on_hover: Option<HoverHandler>,
+}
+
+// ============================================================================
+// Builder wrappers — `.with_style(…)` → `IntoElement`, deferred-build
+// so the style lands in the right slot on either lowering.
+// ============================================================================
+
+macro_rules! table_wrapper_common {
+    ($wrapper:ident) => {
+        impl $wrapper {
+            /// Attach an author style — lands on the `<table>`/`<tr>`/
+            /// `<td>` node on web, on the corresponding grid node on
+            /// native. Replaces any previously set style.
+            pub fn with_style(mut self, style: impl IntoStyleProp) -> Self {
+                self.style = Some(style.into_style_prop());
+                self
+            }
+        }
+
+        impl ChildList for $wrapper {
+            fn append_to(self, out: &mut Vec<Element>) {
+                out.push(self.into_element());
+            }
+        }
+
+        /// Element coercion for bare `{ … }` interpolation sites.
+        impl From<$wrapper> for Element {
+            fn from(w: $wrapper) -> Element {
+                w.into_element()
+            }
+        }
+    };
+}
+
+/// Deferred `Table` build — finish with `.with_style(…)` +
+/// `.into_element()`.
+pub struct TableBound {
+    children: Vec<Element>,
+    style: Option<StyleProp>,
+}
+table_wrapper_common!(TableBound);
+
+impl IntoElement for TableBound {
+    fn into_element(self) -> Element {
+        build_table(self.children, self.style)
+    }
+}
+
+/// Deferred `TableRow` build.
+pub struct TableRowBound {
+    children: Vec<Element>,
+    style: Option<StyleProp>,
+}
+table_wrapper_common!(TableRowBound);
+
+impl IntoElement for TableRowBound {
+    fn into_element(self) -> Element {
+        build_row(self.children, self.style)
+    }
+}
+
+/// Deferred `TableCell` build.
+pub struct TableCellBound {
+    header: bool,
+    children: Vec<Element>,
+    style: Option<StyleProp>,
+}
+table_wrapper_common!(TableCellBound);
+
+impl IntoElement for TableCellBound {
+    fn into_element(self) -> Element {
+        build_cell(self.header, self.children, self.style)
+    }
+}
 
 // ============================================================================
 // Constructors
 // ============================================================================
 
-/// Build a `Table` container. On web lowers to `Element::External`
-/// keyed by `TableProps` (the registered handler emits a real
-/// `<table>`); on native lowers to a CSS-grid node (see the non-wasm
-/// `table` below).
-#[cfg(target_arch = "wasm32")]
-pub fn table(mut props: TableProps) -> Bound<TableHandle> {
-    let children = std::mem::take(&mut props.children);
-    external(TypeId::of::<TableProps>(),
-             std::any::type_name::<TableProps>(),
-             Rc::new(props) as Rc<dyn Any>,
-             children)
-}
-
-/// Build a `Table` container. On native lowers to a CSS-grid whose
-/// column tracks span every row, so a column is one width across all
-/// rows — the same cross-row alignment the browser's `<table>` gives on
-/// web (web builds the `Element::External` variant in the `wasm32` arm
-/// above).
-///
-/// Taffy has no subgrid and no `display: contents`, so a grid only
-/// aligns columns of its *direct* children. We therefore flatten every
-/// row into its cells and parent the cells directly under one grid node
-/// (`grid-auto-flow: row` re-groups them into rows, `len` cells per
-/// row). The grid sheet lives on an INNER node so a later author-side
-/// `.with_style(...)` on the returned (outer) node — e.g. idea-ui's
-/// themed surface — styles the table frame without clobbering the grid.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn table(mut props: TableProps) -> Bound<TableHandle> {
-    let rows = std::mem::take(&mut props.children);
-    let mut cells: Vec<Element> = Vec::new();
-    let mut columns = 0usize;
-    for row in rows {
-        let row_cells = extract_row_cells(row);
-        columns = columns.max(row_cells.len());
-        cells.extend(row_cells);
-    }
-    // Inner node: the actual grid. Its sheet (display:grid + N tracks)
-    // is one level below the `.with_style(...)` target so it survives.
-    let inner = runtime_core::view(cells)
-        .with_style(StyleApplication::new(native_styles::grid_sheet(columns)))
-        .into_element();
-    // Outer node: an unstyled passthrough — the `.with_style(...)`
-    // target. The framework's default cross-axis stretch makes the inner
-    // grid fill this node's width.
-    Bound::new(runtime_core::view(vec![inner]).into_element())
-}
-
-/// Pull a row's cells out so they can be parented directly under the
-/// grid. `table_row` lowers a row to an [`Element::Fragment`] of its
-/// cells (no box of its own), which is the hot path. A row that lowered
-/// to a plain `view` (defensive) yields its children; any other stray
-/// element is treated as a single one-cell row so nothing silently
-/// vanishes.
-///
-/// Note: idea-ui's `TableRow` is a plain `#[component]` (no `#[method]` fns),
-/// so it is never wrapped in `Element::Component` — the Fragment arrives
-/// here intact even under the `robot` feature.
-#[cfg(not(target_arch = "wasm32"))]
-fn extract_row_cells(row: Element) -> Vec<Element> {
-    match row {
-        Element::Fragment { children } => children,
-        Element::View { children, .. } => children,
-        other => vec![other],
+/// Build a `Table` container. Web lowers to a scene item handled by
+/// [`register`] (a real `<table>`); native lowers to a
+/// CSS-grid whose column tracks span every row (see the module docs).
+pub fn table(mut props: TableProps) -> TableBound {
+    TableBound {
+        children: std::mem::take(&mut props.children),
+        style: None,
     }
 }
 
-/// Build a table row.
-#[cfg(target_arch = "wasm32")]
-pub fn table_row(mut props: TableRowProps) -> Bound<TableRowHandle> {
-    let children = std::mem::take(&mut props.children);
-    external(TypeId::of::<TableRowProps>(),
-             std::any::type_name::<TableRowProps>(),
-             Rc::new(props) as Rc<dyn Any>,
-             children)
-}
-
-/// Build a table row. On native lowers to an [`Element::Fragment`] of
-/// the row's cells — it produces no layout box of its own. The parent
-/// `table` flattens these fragments so every cell is a direct child of
-/// one grid node, which is the only way a subgrid-less, contents-less
-/// Taffy can align columns across rows. The row's identity therefore
-/// lives only on web (`<tr>`); on native, cell styling carries the row
-/// look (head/body surface, per-cell `border-bottom` row separators).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn table_row(mut props: TableRowProps) -> Bound<TableRowHandle> {
-    let children = std::mem::take(&mut props.children);
-    Bound::new(Element::Fragment { children })
+/// Build a table row. Web lowers to a `<tr>` item; native lowers to an
+/// [`Element::Fragment`] of the row's cells — it produces no layout box
+/// of its own (Taffy has no subgrid, so cells must be direct grid
+/// children for cross-row column alignment).
+pub fn table_row(mut props: TableRowProps) -> TableRowBound {
+    TableRowBound {
+        children: std::mem::take(&mut props.children),
+        style: None,
+    }
 }
 
 /// Build a table cell. `header = true` produces a `<th>` on web; on
 /// native the cell is a grid item — visual treatment lives on the
-/// caller's `with_style(...)` (e.g. idea-ui's `TableHeadCell`).
-#[cfg(target_arch = "wasm32")]
-pub fn table_cell(mut props: TableCellProps) -> Bound<TableCellHandle> {
-    let children = std::mem::take(&mut props.children);
-    external(TypeId::of::<TableCellProps>(),
-             std::any::type_name::<TableCellProps>(),
-             Rc::new(props) as Rc<dyn Any>,
-             children)
-}
-
-/// Build a table cell. On native lowers to a plain `view` that becomes a
-/// grid item of the table; its width is set by the column track, so the
-/// default cell sheet only stacks the cell's own content. `header` has
-/// no visual effect here (web emits a `<th>` in the `wasm32` arm above).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn table_cell(mut props: TableCellProps) -> Bound<TableCellHandle> {
-    let children = std::mem::take(&mut props.children);
-    native_view::<TableCellHandle>(children, native_styles::cell_sheet())
-}
-
-#[cfg(target_arch = "wasm32")]
-fn external<H>(
-    type_id: TypeId,
-    type_name: &'static str,
-    payload: Rc<dyn Any>,
-    children: Vec<Element>,
-) -> Bound<H> {
-    Bound::new(Element::External {
-        type_id,
-        type_name,
-        payload,
-        children,
+/// caller's `.with_style(...)` (e.g. idea-ui's `TableHeadCell`).
+pub fn table_cell(mut props: TableCellProps) -> TableCellBound {
+    TableCellBound {
+        header: props.header,
+        children: std::mem::take(&mut props.children),
         style: None,
-        ref_fill: None,
-        on_touch: None,
-        on_hover: None,
-        accessibility: runtime_core::accessibility::AccessibilityProps::default(),
-    })
+    }
 }
 
-// =============================================================================
-// Native (non-web) view-tree fallback.
-//
-// Each constructor returns a `Bound<H>` wrapping an `Element::View` with
-// a pre-attached `StyleSource::Static` that supplies the SDK's default
-// flex layout for that role. The framework's normal `view` path applies
-// the style via Taffy on every native backend — no per-backend handler
-// registration required.
-//
-// Author-side `.with_style(...)` chained on the returned `Bound` lands
-// on the same `style` slot, replacing the SDK's default with the
-// caller's stylesheet (the framework's `with_style` overwrites, not
-// merges). The themed `Table` / `TableRow` / `TableCell` in idea-ui
-// supply their own visual stylesheets that already include the right
-// flex axis, so layout stays correct end-to-end.
-// =============================================================================
+// ============================================================================
+// Web lowering (scene items). The item constructors are always
+// compiled so host tests can drive the registry handlers through the
+// SSR backend; the wasm32 build arm below uses them for the app tree.
+// ============================================================================
 
+/// Item-payload constructors for the web lowering. `#[doc(hidden)]`:
+/// test/handler plumbing, not author surface — apps go through
+/// [`table`] / [`table_row`] / [`table_cell`], which pick the right
+/// lowering per target.
+#[doc(hidden)]
+pub mod item_lowering {
+    use super::*;
+
+    /// `<table>` item.
+    pub fn table_item(children: Vec<Element>, style: Option<StyleProp>) -> Element {
+        item(PrimCell::new(TablePrim { style }), children)
+    }
+
+    /// `<tr>` item.
+    pub fn row_item(children: Vec<Element>, style: Option<StyleProp>) -> Element {
+        item(PrimCell::new(TableRowPrim { style }), children)
+    }
+
+    /// `<td>` / `<th>` item.
+    pub fn cell_item(header: bool, children: Vec<Element>, style: Option<StyleProp>) -> Element {
+        item(
+            PrimCell::new(TableCellPrim {
+                header,
+                style,
+                on_touch: None,
+                on_hover: None,
+            }),
+            children,
+        )
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn build_table(children: Vec<Element>, style: Option<StyleProp>) -> Element {
+    item_lowering::table_item(children, style)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn build_row(children: Vec<Element>, style: Option<StyleProp>) -> Element {
+    item_lowering::row_item(children, style)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn build_cell(header: bool, children: Vec<Element>, style: Option<StyleProp>) -> Element {
+    item_lowering::cell_item(header, children, style)
+}
+
+// ============================================================================
+// Native lowering (CSS-grid via the glue view builder).
+// ============================================================================
+
+/// Native `Table`: outer unstyled passthrough (the author-style target)
+/// wrapping the inner grid whose direct children are ALL cells from ALL
+/// rows. Peeled row scopes re-attach around the finished element (see
+/// the module docs).
 #[cfg(not(target_arch = "wasm32"))]
-fn native_view<H>(children: Vec<Element>, sheet: Rc<StyleSheet>) -> Bound<H> {
-    let style = StyleApplication::new(sheet);
-    // Go through `runtime_core::view(...).with_style(...)` so the
-    // construction path stays insulated from `Element::View`'s field
-    // shape (which includes a feature-gated `test_id` field under
-    // `runtime-core/robot`). The view builder fills sensible defaults
-    // for every field; `with_style` writes the SDK's role-default
-    // sheet into the same `style` slot a later author-side
-    // `.with_style(...)` would overwrite.
-    //
-    // The handle-type marker `H` differs from the `view()` return
-    // (`Bound<ViewHandle>`), so we re-wrap via `Bound::new` after
-    // extracting the underlying `Element`. The marker is type-check
-    // only — see `Bound`'s rustdoc.
-    Bound::new(runtime_core::view(children).with_style(style).into_element())
+fn build_table(rows: Vec<Element>, style: Option<StyleProp>) -> Element {
+    let mut cells: Vec<Element> = Vec::new();
+    let mut owneds: Vec<glue::Owned> = Vec::new();
+    let mut columns = 0usize;
+    for row in rows {
+        let row_cells = extract_row_cells(row, &mut owneds);
+        columns = columns.max(row_cells.len());
+        cells.extend(row_cells);
+    }
+    // Inner node: the actual grid. Its sheet (display:grid + N tracks)
+    // is one level below the author-style target so it survives a
+    // `.with_style(...)` on the outer node.
+    let inner = glue::view(cells)
+        .with_style(native_styles::grid_sheet(columns))
+        .into_element();
+    // Outer node: the author-style target. The framework's default
+    // cross-axis stretch makes the inner grid fill this node's width.
+    let outer = glue::view(vec![inner]);
+    let mut el = match style {
+        Some(style) => outer.with_style(style).into_element(),
+        None => outer.into_element(),
+    };
+    // Re-attach every peeled row scope: the cells' reactive props (the
+    // clickable-row hover style) read signals those scopes own, so they
+    // must live exactly as long as the flattened subtree.
+    for owned in owneds {
+        el = runtime_scene::owned(el, owned);
+    }
+    el
+}
+
+/// Native `TableRow`: a fragment of cells (no layout box). The author
+/// style is dropped — a fragment has no node to style (row visuals live
+/// per-cell).
+#[cfg(not(target_arch = "wasm32"))]
+fn build_row(children: Vec<Element>, _style: Option<StyleProp>) -> Element {
+    fragment(children)
+}
+
+/// Native `TableCell`: a plain view that becomes a grid item; the
+/// column track sizes its width. Author style REPLACES the SDK's
+/// default cell sheet.
+#[cfg(not(target_arch = "wasm32"))]
+fn build_cell(_header: bool, children: Vec<Element>, style: Option<StyleProp>) -> Element {
+    let styled = match style {
+        Some(style) => glue::view(children).with_style(style),
+        None => glue::view(children).with_style(native_styles::cell_sheet()),
+    };
+    styled.into_element()
+}
+
+/// Pull a row's cells out so they can be parented directly under the
+/// grid. `table_row` lowers a row to a [`Element::Fragment`] of its
+/// cells (the hot path); a `#[component]` row body that created
+/// reactive state arrives `Owned`-wrapped — peel it and KEEP the scope
+/// (pushed into `owneds`, re-attached by the caller). Any other stray
+/// element is treated as a single one-cell row so nothing silently
+/// vanishes.
+#[cfg(not(target_arch = "wasm32"))]
+fn extract_row_cells(row: Element, owneds: &mut Vec<glue::Owned>) -> Vec<Element> {
+    match row {
+        Element::Fragment(children) => children,
+        Element::Owned { element, owned } => {
+            owneds.push(owned);
+            extract_row_cells(*element, owneds)
+        }
+        other => vec![other],
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native_styles {
     use super::*;
-    use runtime_core::StyleRules;
     use std::cell::RefCell;
     use std::collections::HashMap;
 
     /// The sizing function applied to every table column: `auto`.
     ///
     /// An all-`Auto` column grid is the signal `runtime-layout` uses to
-    /// run its `table-layout: auto` column sizing: it measures each
-    /// column's content and sizes columns so short columns hug their
-    /// content while a text-heavy column (a description) absorbs the
-    /// remaining width and wraps — the same layout a browser gives the web
-    /// `<table>`. Using `Auto` here (not `fr`/`px`) is what opts a table
-    /// into that behavior — see `LayoutTree::compute`'s table-grid pass.
-    /// One function so the recipe stays in a single place.
+    /// run its `table-layout: auto` column sizing (short columns hug
+    /// content, a text-heavy column absorbs the remaining width and
+    /// wraps). `min-content` is unusable as a track floor here —
+    /// glyphon reports ~0 for a long unbroken token — so the water-fill
+    /// column sizing in `runtime-layout` measures per-cell max-content
+    /// instead.
     fn column_track() -> TrackSize {
         TrackSize::Auto
     }
 
     thread_local! {
-        // Cache one grid sheet per column count: the framework's style
-        // resolver dedup's applications by sheet pointer + variant set,
-        // so reusing a sheet across same-width tables keeps the class
-        // table small. Keyed by N because the column-track list (and
-        // thus the resolved rules) differs per width.
+        // Cache one grid sheet per column count — the style resolver
+        // dedups applications by sheet pointer, so reusing a sheet
+        // across same-width tables keeps the class table small.
         static GRID_SHEETS: RefCell<HashMap<usize, Rc<StyleSheet>>> = RefCell::new(HashMap::new());
         static CELL_SHEET: RefCell<Option<Rc<StyleSheet>>> = RefCell::new(None);
     }
 
     /// Grid sheet for an `n`-column table: `display: grid` plus `n`
-    /// identical column tracks. Cells (the grid's direct children) are
-    /// placed row-major by auto-flow, so every `n`th cell starts a new
-    /// row and column `i` is one width across all of them.
+    /// identical column tracks (row-major auto-flow re-groups the
+    /// flattened cells into rows).
     pub(super) fn grid_sheet(n: usize) -> Rc<StyleSheet> {
-        // An empty table (no rows / no cells) has no columns; a 1-track
-        // grid lays out a single column harmlessly.
+        // An empty table has no columns; a 1-track grid lays out a
+        // single column harmlessly.
         let n = n.max(1);
         GRID_SHEETS.with(|slot| {
             slot.borrow_mut()
@@ -388,11 +460,10 @@ mod native_styles {
                 .get_or_insert_with(|| {
                     Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
                         // A cell is a grid item; the column track sizes
-                        // its width, so no flex sizing is needed here.
-                        // Stack the cell's own content vertically so
-                        // multi-line content (a label + a description)
-                        // wraps naturally inside the column.
-                        flex_direction: Some(FlexDirection::Column),
+                        // its width. Stack the cell's own content
+                        // vertically so multi-line content wraps
+                        // naturally inside the column.
+                        flex_direction: Some(glue::FlexDirection::Column),
                         ..Default::default()
                     }))
                 })
@@ -401,39 +472,266 @@ mod native_styles {
     }
 }
 
-// Styling note: `Bound<H>::with_style(…)` is already provided as an
-// inherent method by runtime-core on every `Bound`, including ours.
-// Authors attach a style to a `<td>` / `<tr>` / `<table>` by calling
-// it on the constructor's return value. Use the raw-expression child
-// syntax inside `ui!` because the macro doesn't auto-chain methods
-// onto user-component tags:
-//
-// ```ignore
-// ui! {
-//     TableRow {
-//         { table_cell(TableCellProps { … }).with_style(MyCellStyle()) }
-//     }
-// }
-// ```
-//
-// The framework's `apply_style` lands a resolved CSS class on the
-// `<td>`, and `border-collapse: collapse` on the parent `<table>`
-// merges adjacent cell borders into one continuous row boundary —
-// which is the whole reason borders should live on the cell, not on
-// an inner view wrapper that would dangle with the cell's wrapped
-// content.
+// ============================================================================
+// Built-cell post-processing — the payload-side home of the cell
+// introspection idea-ui's clickable-row feature needs (see the crate
+// docs). Both lowerings are handled, so the callers stay
+// target-agnostic.
+// ============================================================================
+
+/// Read the STATIC sheet application off a built cell (`None` for
+/// non-cells and for cells whose style is not a static sheet). The
+/// clickable-row hover overlay derives its reactive style from this
+/// base.
+pub fn cell_base_application(cell: &Element) -> Option<StyleApplication> {
+    match cell {
+        Element::Owned { element, .. } => cell_base_application(element),
+        Element::Item { data, .. } => {
+            let mut out = None;
+            if let Some(c) = data.downcast_ref::<PrimCell<prims::ViewPrim>>() {
+                c.with_mut(|p| {
+                    if let Some(StyleProp::Sheet(app)) = &p.style {
+                        out = Some((**app).clone());
+                    }
+                });
+            } else if let Some(c) = data.downcast_ref::<PrimCell<TableCellPrim>>() {
+                c.with_mut(|p| {
+                    if let Some(StyleProp::Sheet(app)) = &p.style {
+                        out = Some((**app).clone());
+                    }
+                });
+            }
+            out
+        }
+        _ => None,
+    }
+}
+
+/// Replace a built cell's style in place (no-op for non-cells, so a
+/// caller that hands over an unexpected element shape is harmless).
+/// Sound because the payload is not yet mounted: realization takes it
+/// exactly once, after this returns.
+pub fn set_cell_style(cell: &Element, style: impl IntoStyleProp) {
+    let prop = style.into_style_prop();
+    let mut prop = Some(prop);
+    visit_cell(cell, &mut |view, table_cell| {
+        if let Some(p) = view {
+            p.style = prop.take();
+        } else if let Some(p) = table_cell {
+            p.style = prop.take();
+        }
+    });
+}
+
+/// Attach clickable-row interaction to a built cell: the tap handler
+/// and the shared row-hover reporter land on the cell's own node
+/// (native grid item / web `<td>`-`<th>`), so a button inside a
+/// clickable row still eats its own click.
+pub fn set_cell_interaction(cell: &Element, on_touch: TouchHandler, on_hover: HoverHandler) {
+    let mut handlers = Some((on_touch, on_hover));
+    visit_cell(cell, &mut |view, table_cell| {
+        if let Some(p) = view {
+            if let Some((t, h)) = handlers.take() {
+                p.on_touch = Some(t);
+                p.on_hover = Some(h);
+            }
+        } else if let Some(p) = table_cell {
+            if let Some((t, h)) = handlers.take() {
+                p.on_touch = Some(t);
+                p.on_hover = Some(h);
+            }
+        }
+    });
+}
+
+/// Shared Owned-peeling walk for the post-processing helpers: calls `f`
+/// with whichever cell payload shape the element carries (exactly one
+/// of the two arguments is `Some`).
+fn visit_cell(
+    cell: &Element,
+    f: &mut dyn FnMut(Option<&mut prims::ViewPrim>, Option<&mut TableCellPrim>),
+) {
+    match cell {
+        Element::Owned { element, .. } => visit_cell(element, f),
+        Element::Item { data, .. } => {
+            if let Some(c) = data.downcast_ref::<PrimCell<prims::ViewPrim>>() {
+                c.with_mut(|p| f(Some(p), None));
+            } else if let Some(c) = data.downcast_ref::<PrimCell<TableCellPrim>>() {
+                c.with_mut(|p| f(None, Some(p)));
+            }
+        }
+        _ => {}
+    }
+}
 
 // ============================================================================
-// `ui!` dispatch — type aliases + BuildElement impls
-//
-// The `ui!` macro lowers a user-tag `Table { … }` to a struct literal
-// `BuildElement::build(Table { … })`, so the tag name must resolve as a
-// *type* with a `BuildElement` impl whose `build` returns an
-// `Element`. Each Props struct gets a matching alias + impl below.
+// Registry handlers (web lowering). Generic over the caps traits so the
+// SSR backend reuses them — the same contract as the vocabulary's own
+// handlers and the website's codeblock precedent.
+// ============================================================================
+
+/// Mount the `<table>` container: `create_element("table")`, the
+/// browser-default reset set inline (`border-collapse: collapse;
+/// width: 100%; table-layout: auto`), children, then the author style.
+fn mount_table<H>(
+    cx: &mut MountCx<'_, H>,
+    prim: &Rc<PrimCell<TablePrim>>,
+    children: Vec<Element>,
+) -> H::Node
+where
+    H: StyleServices + InputOps,
+{
+    let data = prim.take();
+    let backend = cx.backend().clone();
+    let mut node = backend.borrow_mut().create_element("table");
+    {
+        // Reset the browser's default table chrome — apps style via the
+        // stylesheet system. `border-collapse: collapse` keeps the cell
+        // borders the author draws from doubling up. Inline
+        // declarations (not a class), so `attach_style` below still
+        // wins where the author sets the same property.
+        let b = backend.borrow();
+        b.attach_html_style(&node, "border-collapse", "collapse");
+        b.attach_html_style(&node, "width", "100%");
+        b.attach_html_style(&node, "table-layout", "auto");
+    }
+    cx.realize_children_into(&mut node, children);
+    if let Some(style) = data.style {
+        attach_style(&backend, &node, style);
+    }
+    node
+}
+
+/// Mount a `<tr>`: children, then the (rarely used) author style.
+fn mount_row<H>(
+    cx: &mut MountCx<'_, H>,
+    prim: &Rc<PrimCell<TableRowPrim>>,
+    children: Vec<Element>,
+) -> H::Node
+where
+    H: StyleServices + InputOps,
+{
+    let data = prim.take();
+    let backend = cx.backend().clone();
+    let mut node = backend.borrow_mut().create_element("tr");
+    cx.realize_children_into(&mut node, children);
+    if let Some(style) = data.style {
+        attach_style(&backend, &node, style);
+    }
+    node
+}
+
+/// Mount a `<td>` / `<th>`: children, author style, then the
+/// clickable-row interaction handlers (if [`set_cell_interaction`]
+/// attached any). No inline defaults on the cell — an inline style
+/// would beat the author's class-based `apply_style`.
+fn mount_cell<H>(
+    cx: &mut MountCx<'_, H>,
+    prim: &Rc<PrimCell<TableCellPrim>>,
+    children: Vec<Element>,
+) -> H::Node
+where
+    H: StyleServices + InputOps,
+{
+    let data = prim.take();
+    let backend = cx.backend().clone();
+    let tag = if data.header { "th" } else { "td" };
+    let mut node = backend.borrow_mut().create_element(tag);
+    cx.realize_children_into(&mut node, children);
+    if let Some(style) = data.style {
+        attach_style(&backend, &node, style);
+    }
+    if let Some(h) = data.on_touch {
+        backend.borrow_mut().install_touch_handler(&node, h);
+    }
+    if let Some(h) = data.on_hover {
+        backend.borrow_mut().install_hover_handler(&node, h);
+    }
+    node
+}
+
+/// Register the Table SDK's payload handlers on a scene registry — the
+/// boot registration seam. Web boots pass this to
+/// `backend_web::newcore::start_in`'s `register` argument; SSR renders
+/// pass it to `backend_ssr::newcore::render_path_with`. Only the WEB
+/// lowering needs it: native trees lower to plain grid views handled by
+/// the vocabulary built-ins.
+pub fn register<H>(registry: &mut Registry<H>)
+where
+    H: StyleServices + InputOps + 'static,
+{
+    registry.register::<PrimCell<TablePrim>, _>(mount_table::<H>);
+    registry.register::<PrimCell<TableRowPrim>, _>(mount_row::<H>);
+    registry.register::<PrimCell<TableCellPrim>, _>(mount_cell::<H>);
+}
+
+/// Declare this SDK's payload kinds **late-bound** instead of installing
+/// their handlers — the boot half of lazy registration. Pair with
+/// [`register_from_chunk`] called from inside a `#[component(lazy)]`
+/// body; realize parks a table item behind a placeholder until that
+/// chunk lands, rather than panicking on it.
+///
+/// This exists so an app never has to spell the registry keys: there are
+/// three of them and each is wrapped in [`PrimCell`], a framework
+/// internal an app would otherwise have to import to write
+/// `registry.defer::<PrimCell<TablePrim>>()`.
+///
+/// Only web code-splits, so on every other target this installs the
+/// handlers eagerly exactly as [`register`] does. That is deliberate:
+/// deferring a kind nothing later registers leaves the payload parked
+/// behind a placeholder forever — no panic, no log — and native has no
+/// chunk to arrive. Calling `defer` is therefore always safe: it splits
+/// where splitting exists and is a plain `register` elsewhere.
+pub fn defer<H>(registry: &mut Registry<H>)
+where
+    H: Host + StyleServices + InputOps + 'static,
+{
+    #[cfg(target_arch = "wasm32")]
+    {
+        registry.defer::<PrimCell<TablePrim>>();
+        registry.defer::<PrimCell<TableRowPrim>>();
+        registry.defer::<PrimCell<TableCellPrim>>();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        register(registry);
+    }
+}
+
+/// Install this SDK's payload handlers from inside a lazy chunk — the
+/// chunk half of lazy registration. Requires [`defer`] at boot.
+///
+/// Generic over the host because this crate takes no backend dependency;
+/// the caller pins `H` to its concrete backend, e.g.
+/// `register_from_chunk::<backend_web::WebBackend>()`. Only the WEB
+/// lowering has handlers to split — native tables lower to plain grid
+/// views handled by the vocabulary built-ins — and web is the only
+/// target that code-splits at all.
+///
+/// Inert off-web, where [`defer`] already registered eagerly: queueing a
+/// late registration for a kind that was never declared deferred panics
+/// in `Registry::register_deferred`. The stub keeps a
+/// `#[component(lazy)]` body that calls this compiling on every target.
+pub fn register_from_chunk<H>()
+where
+    H: Host + StyleServices + InputOps + 'static,
+{
+    #[cfg(target_arch = "wasm32")]
+    {
+        runtime_scene::defer_registration::<H, _>(|registry| {
+            registry.register_deferred::<PrimCell<TablePrim>, _>(mount_table::<H>);
+            registry.register_deferred::<PrimCell<TableRowPrim>, _>(mount_row::<H>);
+            registry.register_deferred::<PrimCell<TableCellPrim>, _>(mount_cell::<H>);
+        });
+    }
+}
+
+// ============================================================================
+// `ui!` dispatch — type aliases + BuildElement impls (glue dispatch).
 // ============================================================================
 
 /// `ui!` tag alias for the table container — `ui! { Table { … } }`
-/// resolves to this type and dispatches through `BuildElement`.
+/// resolves to this type and dispatches through [`BuildElement`].
 pub type Table = TableProps;
 /// `ui!` tag alias for a table row.
 pub type TableRow = TableRowProps;
@@ -462,140 +760,11 @@ impl BuildElement for TableCellProps {
 // Prelude
 // ============================================================================
 
-/// Glob-importable bundle of the table tags, props, handles, and
-/// constructors for use at `ui!` call sites.
+/// Glob-importable bundle of the table tags, props, and constructors
+/// for use at `ui!` call sites.
 pub mod prelude {
     pub use super::{
-        table, table_cell, table_row, Table, TableCell, TableCellHandle, TableCellProps,
-        TableHandle, TableProps, TableRow, TableRowHandle, TableRowProps,
+        table, table_cell, table_row, Table, TableBound, TableCell, TableCellBound, TableCellProps,
+        TableProps, TableRow, TableRowBound, TableRowProps,
     };
-}
-
-// ============================================================================
-// Per-target registration. Only the web target registers anything — it
-// emits real `<table>`/`<tr>`/`<td>` via `Element::External`. Native
-// builds its grid directly in the constructors above (the `view` + grid
-// layout path needs no handler), so `register` is a no-op there.
-// ============================================================================
-
-#[cfg(target_arch = "wasm32")]
-mod web;
-#[cfg(target_arch = "wasm32")]
-pub use web::register;
-
-#[cfg(not(target_arch = "wasm32"))]
-mod fallback {
-    use runtime_core::Backend;
-
-    /// No-op register for non-web targets — native tables are built as
-    /// a grid directly in `table()`, with no backend handler to install.
-    pub fn register<B: Backend>(_backend: &mut B) {}
-}
-#[cfg(not(target_arch = "wasm32"))]
-pub use fallback::register;
-
-// ============================================================================
-// Native lowering tests
-// ============================================================================
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests {
-    use super::*;
-    use runtime_core::{resolve_style, DisplayKind, StyleSource};
-
-    fn cell() -> Element {
-        table_cell(TableCellProps::default()).into_element()
-    }
-
-    fn row(n: usize) -> Element {
-        let cells: Vec<Element> = (0..n).map(|_| cell()).collect();
-        table_row(TableRowProps { children: cells }).into_element()
-    }
-
-    /// A row produces no layout box of its own — it lowers to a
-    /// `Fragment` whose children are the cells, so the parent table can
-    /// flatten them into a single grid.
-    #[test]
-    fn table_row_lowers_to_fragment_of_cells() {
-        match row(3) {
-            Element::Fragment { children } => assert_eq!(children.len(), 3),
-            _ => panic!("table_row must lower to an Element::Fragment of its cells"),
-        }
-    }
-
-    /// The table lowers to an outer passthrough wrapping an inner grid:
-    /// every cell from every row is a direct child of the grid, and the
-    /// grid's style is `display: grid` with one column track per column.
-    #[test]
-    fn table_lowers_to_grid_with_flattened_cells() {
-        // header row of 3 + two body rows of 3 → 9 cells, 3 columns.
-        let t = table(TableProps {
-            children: vec![row(3), row(3), row(3)],
-        })
-        .into_element();
-
-        // Outer node is a passthrough View wrapping exactly the grid.
-        let inner = match t {
-            Element::View { children, .. } => {
-                assert_eq!(children.len(), 1, "outer wraps exactly the inner grid");
-                children.into_iter().next().unwrap()
-            }
-            _ => panic!("table must lower to an outer View"),
-        };
-
-        match inner {
-            Element::View { children, style, .. } => {
-                assert_eq!(
-                    children.len(),
-                    9,
-                    "all 9 cells become direct children of the grid"
-                );
-                let app = match style.expect("grid view carries a style") {
-                    StyleSource::Static(app) => app,
-                    _ => panic!("the grid sheet is constant → StyleSource::Static"),
-                };
-                let rules = resolve_style(&app);
-                assert_eq!(
-                    rules.display,
-                    Some(DisplayKind::Grid),
-                    "the inner node lays its children out as a grid"
-                );
-                assert_eq!(
-                    rules.grid_template_columns.as_ref().map(|c| c.len()),
-                    Some(3),
-                    "one column track per table column"
-                );
-            }
-            _ => panic!("inner node must be the grid View"),
-        }
-    }
-
-    /// A ragged table (rows of differing length) sizes its column track
-    /// list to the widest row, so short rows simply leave trailing
-    /// columns empty rather than the grid losing a column.
-    #[test]
-    fn table_column_count_is_widest_row() {
-        let t = table(TableProps {
-            children: vec![row(2), row(4), row(3)],
-        })
-        .into_element();
-        let inner = match t {
-            Element::View { children, .. } => children.into_iter().next().unwrap(),
-            _ => panic!("outer View"),
-        };
-        if let Element::View { style, .. } = inner {
-            let app = match style.unwrap() {
-                StyleSource::Static(app) => app,
-                _ => panic!("Static"),
-            };
-            let rules = resolve_style(&app);
-            assert_eq!(
-                rules.grid_template_columns.as_ref().map(|c| c.len()),
-                Some(4),
-                "column count tracks the widest row (4)"
-            );
-        } else {
-            panic!("inner grid View");
-        }
-    }
 }

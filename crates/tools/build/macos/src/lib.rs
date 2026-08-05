@@ -49,8 +49,9 @@ pub struct BuildOptions {
     /// Which wrapper template to generate (local-mount vs runtime-server).
     pub mode: BuildMode,
     /// Cargo features to enable on the cargo invocation. Forwarded
-    /// as `--features <list>`. Used by `idealyst dev` to pass
-    /// `runtime-core/dev` so the Robot bridge auto-starts.
+    /// as `--features <list>`. Used by `idealyst dev` to pass `dev`
+    /// (→ `runtime-core/dev` + `runtime-shared/robot`) so the Robot
+    /// bridge auto-starts.
     pub user_features: Vec<String>,
     /// Framework-source resolution: workspace path-deps for in-tree
     /// projects, git deps for external installs. Same shape sim uses.
@@ -158,12 +159,14 @@ fn generate_wrapper(
     // additionally needs the `runtime-server` feature forwarded; we
     // declare a wrapper-local `aas` feature that turns it on.
     let host_dep = opts.source.dep("crates/gpu-backend/host/appkit", &[]);
-    // `runtime-core` as a direct dep of the wrapper so the dev
-    // command can pass `--features runtime-core/dev` from cargo
-    // without needing a [features] section. Without this, cargo
-    // rejects the spec because runtime-core is only reachable
-    // transitively through host-appkit / the user crate.
-    let fcore_dep = opts.source.dep("crates/runtime/core", &[]);
+    // `runtime-core` + `runtime-shared` as DIRECT deps: cargo only
+    // resolves a `<dep>/<feat>` spec for a direct dependency of the
+    // package being built, and the wrapper's own `dev` feature maps onto
+    // them. The facade carries the catalog anchor + emission gate;
+    // runtime-shared carries the bridge transport and the substrate
+    // names this wrapper spells directly (`robot::bridge`).
+    let runtime_core_dep = opts.source.dep("crates/runtime/core", &[]);
+    let shared_dep = opts.source.dep("crates/runtime/shared", &[]);
 
     let bundle_id = manifest
         .app
@@ -173,18 +176,37 @@ fn generate_wrapper(
 
     let (deps_block, features_block, main_rs) = match opts.mode {
         BuildMode::Local => {
+            // Plain path dep on the user crate: the app's own defaults
+            // select its prim families / feature set, and there is only
+            // one core to select.
             let user_dep = format!("{{ path = \"{}\" }}", project_dir.display());
+            // `host-appkit/new-core` compiles the boot path
+            // (windowed `run_with`) + backend-macos's
+            // Host/caps impls and flush driver. The feature is vacuous
+            // once backend-macos makes its contents unconditional; drop
+            // it from this list at that point.
+            let host_dep = opts
+                .source
+                .dep("crates/gpu-backend/host/appkit", &[]);
             let deps = format!(
                 "host-appkit = {host_dep}\n\
-                 runtime-core = {fcore_dep}\n\
+                 runtime-core = {runtime_core_dep}\n\
+                 runtime-shared = {shared_dep}\n\
                  {user_name} = {user_dep}\n",
                 host_dep = host_dep,
-                fcore_dep = fcore_dep,
+                runtime_core_dep = runtime_core_dep,
+                shared_dep = shared_dep,
                 user_name = manifest.name,
                 user_dep = user_dep,
             );
-            let features =
-                "[features]\ndev = [\"runtime-core/dev\"]\n".to_string();
+            // `dev` = the catalog + automation surface
+            // (`runtime-core/dev` = robot registry + catalog emission
+            // gate) plus the bridge TRANSPORT
+            // (`runtime-shared/robot`), which is what makes
+            // `robot::bridge::set_app_identity` below resolve.
+            let features = "[features]\n\
+                dev = [\"runtime-core/dev\", \"runtime-shared/robot\"]\n"
+                .to_string();
             let main = local_main_rs(
                 &manifest.lib_name,
                 &manifest.name,
@@ -203,17 +225,19 @@ fn generate_wrapper(
                 .dep("crates/dev/runtime-server-shell", &["runtime-server"]);
             let deps = format!(
                 "host-appkit = {host_dep}\n\
-                 runtime-core = {fcore_dep}\n\
+                 runtime-core = {runtime_core_dep}\n\
+                 runtime-shared = {shared_dep}\n\
                  runtime-server-shell-native = {shell_dep}\n",
                 host_dep = host_dep,
-                fcore_dep = fcore_dep,
+                runtime_core_dep = runtime_core_dep,
+                shared_dep = shared_dep,
                 shell_dep = shell_dep,
             );
             // `aas` toggles the host-appkit runtime-server variant; `dev`
             // additionally enables Robot bridge + MCP catalog.
             let features = "[features]\n\
                 aas = [\"host-appkit/runtime-server\"]\n\
-                dev = [\"runtime-core/dev\"]\n"
+                dev = [\"runtime-core/dev\", \"runtime-shared/robot\"]\n"
                 .to_string();
             let main = aas_main_rs(&bundle_id, &manifest.name, &bin_name);
             (deps, features, main)
@@ -254,6 +278,9 @@ edition = "2021"
     Ok(())
 }
 
+/// Local wrapper `main`: mounts through `host_appkit::newcore::run_with`,
+/// which owns the world + scene registry + flush driver + viewport
+/// source.
 fn local_main_rs(
     user_lib: &str,
     app_name: &str,
@@ -261,18 +288,16 @@ fn local_main_rs(
     bin_name: &str,
 ) -> String {
     format!(
-        r#"//! GENERATED by `idealyst build --macos` (local-mount). Wrapper
-//! binary for the AppKit-backed native macOS runtime.
-
-use {user_lib}::app;
+        r#"//! GENERATED by `idealyst build --macos` (local-mount).
+//! Wrapper binary for the AppKit-backed native macOS runtime.
 
 fn main() {{
     // `--emit-catalog`: dump the MCP catalog JSON to stdout and exit
     // without launching the AppKit host. This is what `idealyst mcp`
-    // (with `--from-bin <this-binary>`) spawns to extract the
-    // project's catalog. Only available in `dev` builds — the
-    // `mcp` feature on `runtime-core` (transitively on via `dev`)
-    // is what makes `__mcp::catalog_json()` reachable.
+    // (with `--from-bin <this-binary>`) spawns to extract the project's
+    // catalog. Only available in `dev` builds — the `catalog` feature on
+    // `runtime-core` (transitively on via `dev`) is what makes
+    // `__mcp::catalog_json()` reachable.
     #[cfg(feature = "dev")]
     {{
         if std::env::args().any(|a| a == "--emit-catalog") {{
@@ -282,15 +307,14 @@ fn main() {{
         }}
     }}
 
-    // Register the project's identity for the Robot bridge's per-
-    // process registration file (`~/.idealyst/apps/<name>-<pid>.json`).
-    // Tells the MCP server which project this app belongs to without
-    // any network discovery. No-op when the `dev` feature is off
-    // (bridge not built).
+    // Register the project's identity for the Robot bridge's per-process
+    // registration file (`~/.idealyst/apps/<name>-<pid>.json`). Tells the
+    // MCP server which project this app belongs to without any network
+    // discovery. No-op when the `dev` feature is off (bridge not built).
     #[cfg(feature = "dev")]
     {{
-        ::runtime_core::robot::bridge::set_app_identity(
-            ::runtime_core::robot::bridge::AppIdentity {{
+        ::runtime_shared::robot::bridge::set_app_identity(
+            ::runtime_shared::robot::bridge::AppIdentity {{
                 name: "{app_name}".to_string(),
                 bundle_id: Some("{bundle_id}".to_string()),
                 project_root: ::std::option::Option::None,
@@ -304,12 +328,15 @@ fn main() {{
         height: 768.0,
     }};
     // `run_with` (not `run`) so the user crate's
-    // `pub fn register_extensions(&mut MacosBackend)` runs — this is how
-    // SDK externals (canvas, camera, video, screen-recorder, …) register
-    // their per-backend handlers. Without it every `Element::External`
-    // renders the framework's "not supported" placeholder on macOS. Mirrors
-    // the web / terminal / iOS / android templates.
-    if let Err(e) = host_appkit::run_with(app, opts, {user_lib}::register_extensions) {{
+    // `register_scene_extensions` seam runs after `register_builtins` —
+    // this is how SDK payload handlers (canvas, codeblock, table, …)
+    // register their per-backend implementations. An unregistered payload
+    // panics at realize (the scene contract), so the seam is load-bearing.
+    if let Err(e) = host_appkit::run_with(
+        || {user_lib}::app(),
+        opts,
+        {user_lib}::register_scene_extensions,
+    ) {{
         eprintln!("[{bin_name}] runtime error: {{e}}");
         std::process::exit(1);
     }}
@@ -494,15 +521,14 @@ fn lipo_create(slices: &[PathBuf], output: &Path) -> Result<()> {
 mod regression_tests {
     //! Wrapper-shape regressions for `build-macos`.
     //!
-    //! macOS uses a wrapper-local `dev` feature instead of letting
-    //! the launcher pass `--features runtime-core/dev` directly —
-    //! the cargo `--features dev` invocation from
-    //! `cli/cmd/dev.rs::dev_user_features_macos` activates the
-    //! wrapper's `dev` feature, which in turn pulls in
-    //! `runtime-core/dev`. If the wrapper-side `dev` mapping is
-    //! ever dropped, `idealyst mcp` against a running macOS dev
-    //! session returns an empty catalog — same end-user symptom
-    //! the runtime-server sidecar bug had.
+    //! macOS uses a wrapper-local `dev` feature: the cargo
+    //! `--features dev` invocation from
+    //! `cli/cmd/dev.rs::dev_user_features_macos` activates it, and it in
+    //! turn pulls in `runtime-core/dev` (catalog + robot registry) and
+    //! `runtime-shared/robot` (the bridge transport). If either half of
+    //! that mapping is dropped, `idealyst mcp` against a running macOS
+    //! dev session returns an empty catalog — same end-user symptom the
+    //! runtime-server sidecar bug had.
     //!
     //! These tests don't fire `cargo build`; they only run the
     //! wrapper-generation step (sub-millisecond) and assert on the
@@ -530,6 +556,8 @@ mod regression_tests {
                 server_bin: None,
                 server_manifest: None,
                 server_port: 3000,
+                worker_bin: None,
+                worker_manifest: None,
                 web: Default::default(),
                 macos: Default::default(),
                 permissions: Default::default(),
@@ -558,7 +586,41 @@ mod regression_tests {
         (wrapper_dir, tmp)
     }
 
-    fn dev_feature_pulls_runtime_core_dev(toml_text: &str) -> bool {
+    /// The local wrapper boots through `host_appkit::run_with`,
+    /// enables `host-appkit/new-core`, takes a plain path dep on the user
+    /// crate (no core pin — there is one core), and keeps the dev
+    /// preamble (`--emit-catalog` + Robot identity).
+    #[test]
+    fn local_wrapper_boots_newcore_run_with_plain_user_dep() {
+        let (wrapper_dir, _tmp) = run_generator(BuildMode::Local);
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+        let main_rs = std::fs::read_to_string(wrapper_dir.join("src/main.rs")).unwrap();
+        assert!(
+            !cargo.contains("old-core"),
+            "wrapper must not pin any core feature on the user crate:\n{cargo}",
+        );
+        assert!(
+            !cargo.contains("default-features = false"),
+            "user-crate dep must be a plain path dep so the app's own \
+             defaults apply:\n{cargo}",
+        );
+        assert!(
+            cargo.contains("host-appkit"),
+            "wrapper must depend on host-appkit:\n{cargo}",
+        );
+        assert!(
+            main_rs.contains("host_appkit::run_with("),
+            "main must boot through host_appkit::run_with:\n{main_rs}",
+        );
+        assert!(
+            main_rs.contains("register_scene_extensions"),
+            "main must register through the scene seam:\n{main_rs}",
+        );
+        assert!(dev_feature_pulls_dev_surface(&cargo));
+        assert!(main_rs.contains("--emit-catalog"));
+    }
+
+    fn dev_feature_pulls_dev_surface(toml_text: &str) -> bool {
         let parsed: toml::Value = toml::from_str(toml_text).expect("valid TOML");
         let features = match parsed.get("features").and_then(|f| f.as_table()) {
             Some(t) => t,
@@ -568,31 +630,30 @@ mod regression_tests {
             Some(a) => a,
             None => return false,
         };
-        dev.iter()
-            .filter_map(|v| v.as_str())
-            .any(|s| s == "runtime-core/dev")
+        let names: Vec<&str> = dev.iter().filter_map(|v| v.as_str()).collect();
+        names.contains(&"runtime-core/dev") && names.contains(&"runtime-shared/robot")
     }
 
     #[test]
-    fn local_wrapper_dev_feature_pulls_runtime_core_dev() {
+    fn local_wrapper_dev_feature_pulls_dev_surface() {
         let (wrapper_dir, _tmp) = run_generator(BuildMode::Local);
         let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml"))
             .expect("read Cargo.toml");
         assert!(
-            dev_feature_pulls_runtime_core_dev(&cargo),
-            "local macOS wrapper missing `[features] dev = [..., \"runtime-core/dev\"]`. \
+            dev_feature_pulls_dev_surface(&cargo),
+            "local macOS wrapper missing `[features] dev = [\"runtime-core/dev\", \"runtime-shared/robot\"]`. \
              MCP catalog will be empty in `idealyst dev --macos`. Got:\n{cargo}",
         );
     }
 
     #[test]
-    fn runtime_server_wrapper_dev_feature_pulls_runtime_core_dev() {
+    fn runtime_server_wrapper_dev_feature_pulls_dev_surface() {
         let (wrapper_dir, _tmp) = run_generator(BuildMode::RuntimeServer);
         let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml"))
             .expect("read Cargo.toml");
         assert!(
-            dev_feature_pulls_runtime_core_dev(&cargo),
-            "runtime-server macOS wrapper missing `[features] dev = [..., \"runtime-core/dev\"]`. \
+            dev_feature_pulls_dev_surface(&cargo),
+            "runtime-server macOS wrapper missing `[features] dev = [\"runtime-core/dev\", \"runtime-shared/robot\"]`. \
              MCP catalog will be empty in `idealyst dev --macos --runtime-server`. Got:\n{cargo}",
         );
     }

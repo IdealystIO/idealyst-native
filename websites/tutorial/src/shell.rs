@@ -108,16 +108,6 @@ pub fn sidebar(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> Ele
     let header_style = SidebarHeader();
     let footer_style = SidebarFooter();
 
-    let header_children: Vec<Element> = vec![
-        ui! { Typography(content = "Idealyst Tutorial".to_string(), kind = idea_ui::typography_kind::H3) },
-        ui! {
-            Typography(
-                content = "Learn the core concepts, hands-on.".to_string(),
-                muted = true,
-            )
-        },
-    ];
-
     ui! {
         // The WHOLE sidebar scrolls as one — header, nav list, and the theme
         // toggle all move together when the content is taller than the panel.
@@ -126,7 +116,16 @@ pub fn sidebar(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> Ele
         // its background still spans the full panel when the content is short.
         scroll_view(style = SidebarScroll()) {
             view(style = body_style) {
-                view(style = header_style) { header_children }
+                view(style = header_style) {
+                    Typography(
+                        content = "Idealyst Tutorial".to_string(),
+                        kind = idea_ui::typography_kind::H3,
+                    )
+                    Typography(
+                        content = "Learn the core concepts, hands-on.".to_string(),
+                        muted = true,
+                    )
+                }
                 for section in SECTIONS {
                     (!section.title.is_empty()).then(|| ui! {
                         text(style = SidebarSection()) { section.title.to_string() }
@@ -155,15 +154,15 @@ fn theme_toggle(footer_style: SidebarFooter, is_dark: Signal<bool>) -> Element {
         }
     });
 
-    let row_children: Vec<Element> = vec![ui! {
-        Switch(
-            label = Some("Dark mode".to_string()),
-            value = is_dark,
-            on_change = on_change,
-        )
-    }];
-
-    ui! { view(style = footer_style) { row_children } }
+    ui! {
+        view(style = footer_style) {
+            Switch(
+                label = Some("Dark mode".to_string()),
+                value = is_dark,
+                on_change = on_change,
+            )
+        }
+    }
 }
 
 /// One sidebar nav link. The `active` axis is derived reactively from

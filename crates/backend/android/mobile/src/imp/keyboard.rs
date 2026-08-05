@@ -14,7 +14,7 @@ use crate::imp::callbacks::{leak, KeyDownCallback};
 use crate::imp::{with_env, AndroidBackend};
 use jni::objects::{JObject, JValue};
 use jni::sys::jlong;
-use runtime_core::primitives::key::KeyDownHandler;
+use runtime_shared::primitives::key::KeyDownHandler;
 
 /// Install (or, with `None`, remove) the app-level key listener on the root view.
 /// Replacing first detaches + frees the previous handler.

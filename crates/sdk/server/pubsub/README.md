@@ -42,6 +42,13 @@ instance B, because both go through the shared backend. **No changes to
   for runtime topic names.
 - **`configure(backend)`** installs the process-wide backend; **`configure_from_env()`**
   reads `IDEALYST_PUBSUB_BACKEND` / `IDEALYST_PUBSUB_URL` (set by `idealyst dev`).
+  For `redis` with no URL set it falls back to the app-installed `redis::Client`
+  (`server::install_state`) — one client configured at boot serves cache,
+  sessions, rate-limiting, and pubsub. The `[pubsub]` section of `idealyst.toml`
+  (via `idealyst-config`) is the structured spelling.
+- **`RedisBackend::from_client(client)` / `from_installed()`** — build over an
+  existing / app-installed `redis::Client` instead of a URL (the
+  shared-connection spelling, mirroring `cache::RedisCache`).
 - **`PubSubBackend`** trait — implement your own transport.
 
 ## Backends (feature-gated)

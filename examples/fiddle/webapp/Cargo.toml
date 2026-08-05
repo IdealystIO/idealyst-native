@@ -14,7 +14,11 @@ description = "Idealyst-built editor UI for the fiddle server. Compiles to wasm 
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+# `runtime-core` is aliased to `runtime_core` at the crate root (the author
+# surface); `runtime-vocabulary` because the `ui!`/`stylesheet!` emissions spell
+# absolute `::runtime_vocabulary::glue::…` paths.
 runtime-core = { path = "../../../crates/runtime/core", features = ["async-driver"] }
+runtime-vocabulary = { path = "../../../crates/runtime/vocabulary" }
 idea-ui = { path = "../../../crates/ui/idea-ui" }
 codeblock = { path = "../../../crates/sdk/client/codeblock" }
 webview = { path = "../../../crates/sdk/client/webview" }

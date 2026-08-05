@@ -34,7 +34,8 @@ server = [
 ]
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
 # (build-runtime-server). Pulls `dev-server` so
-# `register_extensions_recorder` is compiled against the recorder backend.
+# `register_scene_extensions_recorder` is compiled against the recorder
+# backend's scene registry.
 sidecar = ["dep:dev-server"]
 
 [dependencies]
@@ -45,6 +46,11 @@ server = { workspace = true }
 dev-server = { workspace = true, optional = true }
 net = { workspace = true }
 runtime-core = { workspace = true, features = ["async-driver"] }
+# The `ui!`/`#[component]` expansions spell absolute
+# `::runtime_vocabulary::glue::…` paths, so this is a direct dep.
+runtime-vocabulary = { workspace = true }
+# `register_scene_extensions` is generic over the scene registry host.
+runtime-scene = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
@@ -61,8 +67,9 @@ tower-http = { version = "0.6", features = ["fs"], optional = true }
 # Server-only: builds the timed `Stream` the `#[sse] ticks` endpoint yields.
 futures-util = { version = "0.3", optional = true }
 
-# Web-only client extra. `register_extensions` is generic over `Backend`
-# (no SDKs), so no backend dep is needed — the CLI wrappers bring their own.
+# Web-only client extra. `register_scene_extensions` is generic over the
+# scene `Host` (no SDKs), so no backend dep is needed — the CLI wrappers
+# bring their own.
 # `web-sys` is still required to read `window.location.origin` for
 # `server::configure`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

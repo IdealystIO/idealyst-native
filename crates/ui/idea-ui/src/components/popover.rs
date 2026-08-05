@@ -56,8 +56,8 @@ use std::rc::Rc;
 use runtime_core::primitives::overlay::{overlay, BackdropMode};
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
 use runtime_core::{
-    component, ui, ChildList, Color, Element, IdealystSchema, IntoElement, Length, Position,
-    Reactive, StyleApplication, StyleRules, StyleSheet, Tokenized, VariantSet,
+    component, stylesheet, ui, ChildList, Color, Element, IdealystSchema, IntoElement, Length,
+    Position, Reactive, StyleApplication, StyleRules, StyleSheet, Tokenized
 };
 
 use crate::stylesheets::Popover as PopoverStyle;
@@ -78,22 +78,37 @@ use crate::stylesheets::Popover as PopoverStyle;
 /// the trigger stays put. (Same fix the `if`-without-else macro lowering
 /// applies to its empty branch.)
 pub(crate) fn out_of_flow_wrapper_sheet() -> Rc<StyleSheet> {
-    Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
-        position: Some(Position::Absolute),
-        ..Default::default()
-    }))
+    PopoverWrapperSheet::sheet()
+}
+
+// `stylesheet!` (LINK-time registration), not `premint_as`: a Popover's
+// sheets first construct when it OPENS, and the premint dump's crawl
+// mounts routes without opening anything — a runtime-registered identity
+// here got no build-time CSS and `--premint-only` panicked on the first
+// open (same category as Modal's search-dialog repro).
+stylesheet! {
+    PopoverWrapperSheet<()> {
+        base(_t) {
+            position: Position::Absolute,
+        }
+    }
 }
 
 fn transparent_backdrop_sheet() -> Rc<StyleSheet> {
-    Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
-        position: Some(Position::Absolute),
-        top: Some(Tokenized::Literal(Length::Px(0.0))),
-        left: Some(Tokenized::Literal(Length::Px(0.0))),
-        right: Some(Tokenized::Literal(Length::Px(0.0))),
-        bottom: Some(Tokenized::Literal(Length::Px(0.0))),
-        background: Some(Tokenized::Literal(Color("transparent".into()))),
-        ..Default::default()
-    }))
+    PopoverBackdropSheet::sheet()
+}
+
+stylesheet! {
+    PopoverBackdropSheet<()> {
+        base(_t) {
+            position: Position::Absolute,
+            top: Length::Px(0.0),
+            left: Length::Px(0.0),
+            right: Length::Px(0.0),
+            bottom: Length::Px(0.0),
+            background: Color("transparent".into()),
+        }
+    }
 }
 
 /// A FULLSCREEN, transparent outside-click catcher portal. Rendered *behind*
@@ -172,12 +187,6 @@ impl Default for PopoverProps {
 /// target yet. When `target` is `None` there's nothing to anchor to, so
 /// this renders an empty (no-op) element rather than panicking. The host
 /// supplies a real `AnchorTarget` once the trigger is bound.
-///
-/// **Cargo features:** requires `prim-portal` (in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without it compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component(children)]
 pub fn Popover(props: PopoverProps) -> Element {
     // No anchor → nothing to position against. Degrade to an empty,
@@ -244,6 +253,8 @@ pub fn Popover(props: PopoverProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P};
+    use idea_theme::testing::with_test_world;
 
     /// Regression: building a `Popover` with `target: None` used to
     /// `.expect()` and panic. A host gates the popover behind an
@@ -252,22 +263,24 @@ mod tests {
     /// state. It must degrade to a harmless empty element, not crash.
     #[test]
     fn none_target_does_not_panic() {
-        // Would have panicked on the old `.expect(...)`.
-        let el = Popover(PopoverProps {
-            target: None,
-            children: vec![runtime_core::text("hi").into_element()],
-            ..Default::default()
-        });
-        // Degenerate output: a plain (childless) view — there's nothing to
-        // anchor so nothing is rendered. A *targeted* popover is a View too
-        // (catcher + anchored), so distinguish on child count: None = empty.
-        match el {
-            Element::View { children, .. } => assert!(
-                children.is_empty(),
-                "a None-target Popover must render an EMPTY View (nothing to anchor)"
-            ),
-            _ => panic!("a None-target Popover must render an empty View, not panic / build a Portal"),
-        }
+        with_test_world(|| {
+            // Would have panicked on the old `.expect(...)`.
+            let el = Popover(PopoverProps {
+                target: None,
+                children: vec![runtime_core::text("hi").into_element()],
+                ..Default::default()
+            });
+            // Degenerate output: a plain (childless) view — there's nothing to
+            // anchor so nothing is rendered. A *targeted* popover is a View too
+            // (catcher + anchored), so distinguish on child count: None = empty.
+            match classify(el) {
+                P::View { children, .. } => assert!(
+                    children.is_empty(),
+                    "a None-target Popover must render an EMPTY View (nothing to anchor)"
+                ),
+                _ => panic!("a None-target Popover must render an empty View, not panic / build a Portal"),
+            }
+    });
     }
 
     /// Regression: an outside click dismisses. Like `Select`, the popover
@@ -281,44 +294,47 @@ mod tests {
     /// disappears and this test fails.
     #[test]
     fn outside_click_uses_fullscreen_catcher_behind_surface() {
-        use runtime_core::primitives::portal::{AnchorTarget, PortalTarget};
-        use runtime_core::{PressableHandle, Ref};
+        with_test_world(|| {
+            use runtime_core::primitives::portal::{AnchorTarget, PortalTarget};
+            use runtime_core::{PressableHandle, Ref};
 
-        let trigger: Ref<PressableHandle> = Ref::new();
-        let el = Popover(PopoverProps {
-            target: Some(AnchorTarget::from(trigger)),
-            children: vec![runtime_core::text("body").into_element()],
-            ..Default::default()
-        });
+            let trigger: Ref<PressableHandle> = Ref::new();
+            let el = Popover(PopoverProps {
+                target: Some(AnchorTarget::from(trigger)),
+                children: vec![runtime_core::text("body").into_element()],
+                ..Default::default()
+            });
 
-        // Top level: a View wrapping [catcher, anchored].
-        let kids = match &el {
-            Element::View { children, .. } => children,
-            _ => panic!("a targeted Popover should wrap [catcher, anchored] in a View"),
-        };
-        assert_eq!(kids.len(), 2, "Popover = fullscreen catcher + anchored surface");
+            // Top level: a View wrapping [catcher, anchored].
+            let mut kids = match classify(el) {
+                P::View { children, .. } => children,
+                _ => panic!("a targeted Popover should wrap [catcher, anchored] in a View"),
+            };
+            assert_eq!(kids.len(), 2, "Popover = fullscreen catcher + anchored surface");
 
-        // child[0]: the fullscreen catcher portal. Its backdrop pressable is
-        // the first portal child, and its target is the FullScreen viewport.
-        match &kids[0] {
-            Element::Portal { children, target, .. } => {
-                assert!(
-                    matches!(target, PortalTarget::Viewport(ViewportPlacement::FullScreen)),
-                    "the catcher must be a FULLSCREEN viewport portal so its backdrop covers the page"
-                );
-                assert!(
-                    matches!(children.first(), Some(Element::Pressable { .. })),
-                    "the catcher's first child must be the tap-catching backdrop Pressable"
-                );
+            // child[0]: the fullscreen catcher portal. Its backdrop pressable is
+            // the first portal child, and its target is the FullScreen viewport.
+            match classify(kids.remove(0)) {
+                P::Portal { mut children, target, .. } => {
+                    assert!(
+                        matches!(target, PortalTarget::Viewport(ViewportPlacement::FullScreen)),
+                        "the catcher must be a FULLSCREEN viewport portal so its backdrop covers the page"
+                    );
+                    assert!(
+                        !children.is_empty()
+                            && matches!(classify(children.remove(0)), P::Pressable { .. }),
+                        "the catcher's first child must be the tap-catching backdrop Pressable"
+                    );
+                }
+                _ => panic!("Popover's first child must be the fullscreen catcher Portal"),
             }
-            _ => panic!("Popover's first child must be the fullscreen catcher Portal"),
-        }
 
-        // child[1]: the anchored surface portal (backdrop None → no catcher
-        // pressable of its own; the surface view is its content).
-        assert!(
-            matches!(&kids[1], Element::Portal { .. }),
-            "Popover's second child must be the anchored surface Portal"
-        );
+            // child[1]: the anchored surface portal (backdrop None → no catcher
+            // pressable of its own; the surface view is its content).
+            assert!(
+                matches!(classify(kids.remove(0)), P::Portal { .. }),
+                "Popover's second child must be the anchored surface Portal"
+            );
+    });
     }
 }

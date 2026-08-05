@@ -24,6 +24,28 @@ pub(crate) struct ClientInner {
     pub transport: transport::Transport,
 }
 
+/// Pointer identity — a `Client` is a HANDLE to shared connection state,
+/// so clones of one client are equal and two independently built clients
+/// never are.
+///
+/// Identity, not value: `transport::Transport` is a live platform object
+/// (a `fetch` binding, a URLSession, an OkHttp client) with no equality of
+/// its own, so a field-wise compare is not available even in principle —
+/// and would be the wrong question regardless. Two clients configured
+/// identically are still two clients, and swapping one for the other is a
+/// real change a signal subscriber should see.
+///
+/// The bound exists because `Signal<T>` is bounded on `T: PartialEq` at
+/// creation and `get`, not just on the guarded `set`; holding the app's
+/// configured client in state is the ordinary case. Mirrors `MediaStream`.
+impl PartialEq for Client {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
+impl Eq for Client {}
+
 impl Client {
     /// Construct a default client (no base URL, no default headers,
     /// no default timeout).
@@ -128,5 +150,29 @@ impl ClientBuilder {
                 transport: transport::Transport::new(),
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Signal<T>` is bounded on `T: PartialEq`, so a client parked in app
+    /// state needs one — and only this crate can supply it (the orphan rule
+    /// blocks an app crate). Clones must be the same client.
+    #[test]
+    fn client_clones_compare_equal() {
+        let c = Client::new();
+        assert!(c == c.clone(), "clones address the same client state");
+    }
+
+    /// Identity, not configuration: two clients built from the SAME builder
+    /// options are still two clients, and swapping one for the other is a
+    /// change a subscriber must see.
+    #[test]
+    fn identically_configured_clients_compare_unequal() {
+        let a = Client::builder().base_url("https://example.com").build();
+        let b = Client::builder().base_url("https://example.com").build();
+        assert!(a != b, "identical configuration does not make one client");
     }
 }

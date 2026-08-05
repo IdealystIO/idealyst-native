@@ -1,0 +1,35 @@
+# scene-parity golden — scenario `when_toggle`, mode `anchored`
+#
+# `when` toggled true -> false -> true between two static siblings.
+# Anchored: anchor created up front, every flip = drop-scope +
+# clear_children(anchor) + rebuild + insert (the first Effect fire
+# also clear_children's the freshly created, still-empty anchor).
+# Spliced: no anchor; every flip = remove_child(old) +
+# insert_at(parent, new, base_index=1) directly in the real parent.
+#
+# Structural ops only. Node names are creation-order (n0, n1, ...);
+# `cleanup <label>` lines are scenario-registered on_cleanup markers
+# pinning dispose ordering. Regenerate after an INTENDED behavior
+# change with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 text "before"
+insert n0 <- n1
+create n2 anchor
+clear_children n2
+create n3 text "shown"
+insert n2 <- n3
+insert n0 <- n2
+create n4 text "after"
+insert n0 <- n4
+
+== set show = false ==
+clear_children n2
+create n5 text "hidden"
+insert n2 <- n5
+
+== set show = true ==
+clear_children n2
+create n6 text "shown"
+insert n2 <- n6

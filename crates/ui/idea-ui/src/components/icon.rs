@@ -77,12 +77,6 @@ const EMPTY_ICON: IconData = IconData {
 /// Renders a sized, optionally tinted vector icon. Wraps the framework's
 /// `icon` primitive so call sites get a themed `#[component]` instead of
 /// the raw primitive.
-///
-/// **Cargo features:** requires `prim-icon` (in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without it compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Icon(props: &IconProps) -> Element {
     // `size` is a `.size()` sizing-sheet pin (a plain `f32`); a live `size`
@@ -129,11 +123,11 @@ pub fn Icon(props: &IconProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P, TStyle};
     use idea_theme::extensible::tone;
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{
-        resolve_style, FillRule, Length, StyleApplication, StyleSource, Tokenized,
-    };
+    use runtime_core::{resolve_style, FillRule, Length, StyleApplication, Tokenized};
 
     fn theme() {
         install_idea_theme(light_theme());
@@ -147,10 +141,10 @@ mod tests {
     };
 
     fn icon_parts(el: Element) -> (bool, StyleApplication) {
-        match el {
-            Element::Icon { color, style, .. } => {
+        match classify(el) {
+            P::Icon { color, style, .. } => {
                 let app = match style.expect("Icon always pins a size style") {
-                    StyleSource::Static(a) => a,
+                    TStyle::App(a) => a,
                     _ => panic!("Icon uses a static size sheet"),
                 };
                 (color.is_some(), app)
@@ -162,39 +156,45 @@ mod tests {
     // D5: a tone tints the icon — the primitive's `color` override is set.
     #[test]
     fn tone_sets_a_color_override() {
-        theme();
-        let props = IconProps {
-            data: Reactive::Static(DOT),
-            tone: Reactive::Static(Some(tone::Primary.into())),
-            ..Default::default()
-        };
-        let (has_color, _) = icon_parts(Icon(&props));
-        assert!(has_color, "a toned Icon installs a color override");
+        with_test_world(|| {
+            theme();
+            let props = IconProps {
+                data: Reactive::Static(DOT),
+                tone: Reactive::Static(Some(tone::Primary.into())),
+                ..Default::default()
+            };
+            let (has_color, _) = icon_parts(Icon(&props));
+            assert!(has_color, "a toned Icon installs a color override");
+    });
     }
 
     // With neither tone nor color, the icon inherits ambient text color
     // (no override) — matching the raw primitive's default.
     #[test]
     fn no_tint_inherits_ambient_color() {
-        theme();
-        let props = IconProps { data: Reactive::Static(DOT), ..Default::default() };
-        let (has_color, _) = icon_parts(Icon(&props));
-        assert!(!has_color, "an untinted Icon leaves color to inherit");
+        with_test_world(|| {
+            theme();
+            let props = IconProps { data: Reactive::Static(DOT), ..Default::default() };
+            let (has_color, _) = icon_parts(Icon(&props));
+            assert!(!has_color, "an untinted Icon leaves color to inherit");
+    });
     }
 
     // D5: `size` pins an explicit square so the icon doesn't collapse to
     // 0×0 under flex.
     #[test]
     fn size_pins_an_explicit_square() {
-        theme();
-        let props = IconProps {
-            data: Reactive::Static(DOT),
-            size: Reactive::Static(28.0),
-            ..Default::default()
-        };
-        let (_, app) = icon_parts(Icon(&props));
-        let rules = resolve_style(&app);
-        assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(28.0))));
-        assert_eq!(rules.height, Some(Tokenized::Literal(Length::Px(28.0))));
+        with_test_world(|| {
+            theme();
+            let props = IconProps {
+                data: Reactive::Static(DOT),
+                size: Reactive::Static(28.0),
+                ..Default::default()
+            };
+            let (_, app) = icon_parts(Icon(&props));
+            let rules = resolve_style(&app);
+            assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(28.0))));
+            assert_eq!(rules.height, Some(Tokenized::Literal(Length::Px(28.0))));
+    });
     }
 }

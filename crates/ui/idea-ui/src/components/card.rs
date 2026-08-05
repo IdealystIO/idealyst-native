@@ -27,7 +27,10 @@ use runtime_core::{
 };
 
 use idea_theme::active_theme;
-use idea_theme::extensible::{tone as tones, ResolutionCtx, ToneRef, VariantRef};
+use idea_theme::extensible::{
+    premint_identity, tone as tones, variant_keys, RefBuiltins, ResolutionCtx, ToneRef,
+    VariantRef,
+};
 use idea_theme::theme::IdeaThemeRef;
 
 use crate::slot_override::apply_override;
@@ -112,7 +115,9 @@ pub fn install_card_sheet(sheet: Rc<StyleSheet>) {
 fn card_sheet() -> Rc<StyleSheet> {
     CARD_SHEET.with(|s| {
         if s.borrow().is_none() {
-            let built = build_card_sheet(vec![variant::Flat.into(), variant::Elevated.into()]);
+            let tones: Vec<ToneRef> = ToneRef::builtins().into_iter().map(|(_, t)| t).collect();
+            let built =
+                build_card_sheet(vec![variant::Flat.into(), variant::Elevated.into()], tones);
             *s.borrow_mut() = Some(built);
         }
         s.borrow().as_ref().cloned().unwrap()
@@ -123,7 +128,7 @@ fn card_sheet() -> Rc<StyleSheet> {
 /// is fixed (none/sm/md/lg → theme spacing tokens). Each variant arm
 /// pulls its background/shadow from `variant.render(ctx)` (Card
 /// variants ignore the tone, so a placeholder Neutral is passed).
-pub fn build_card_sheet(variants: Vec<VariantRef>) -> Rc<StyleSheet> {
+pub fn build_card_sheet(variants: Vec<VariantRef>, tones: Vec<ToneRef>) -> Rc<StyleSheet> {
     let radius = || Tokenized::token("radius-lg", Length::Px(12.0));
 
     let mut sheet = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
@@ -207,7 +212,26 @@ pub fn build_card_sheet(variants: Vec<VariantRef>) -> Rc<StyleSheet> {
         .variant_default("variant", "flat")
         .variant_default("padding", "md");
 
-    Rc::new(sheet)
+    // NOTE: the intent tint deliberately does NOT live on a `tone` axis here,
+    // even though every sibling sheet enumerates its tones. `StyleSheet`
+    // stores axes in a `BTreeMap`, so per-axis arms merge in ALPHABETICAL axis
+    // order — `"tone"` merges before `"variant"`, and Card's `variant` arms
+    // set `background` (the Flat/Elevated surface), which would overwrite the
+    // tint. The tint has to resolve after the surface, and the computed layer
+    // is the only slot that does (base → axes → computed → overrides).
+    //
+    // The sheets that DO enumerate tones (Badge/Tag/Alert) dodge this by
+    // folding both into ONE `appearance` axis keyed `{tone}_{variant}`, so
+    // there's no cross-axis conflict to order. Card could follow suit — it's a
+    // tones × variants arm expansion — but that's a behavioral restructure of
+    // the public axis, not a mechanical conversion.
+    //
+    // Consequence: a TONED Card still resolves live. An untoned one (the
+    // common case) premints, which is what the identity below unlocks.
+
+    // Premint identity — without it the sheet has no premint class and every
+    // Card falls through to the runtime engine.
+    sheet.premint_as(&premint_identity("card", [variant_keys(&variants)]))
 }
 
 // Reactive-by-default: `#[props]` wraps each scalar-DATA field → `Reactive<…>`
@@ -288,30 +312,31 @@ pub fn Card(props: CardProps) -> Element {
                 .with("variant", variant_key)
                 .with("padding", padding_key);
 
-            // Intent tint — when a tone is set, overlay the variant's surface
-            // bg/border with the tone's Soft slots (the same tint Alert's Soft
-            // variant uses). Rides a computed layer keyed on the tone so the
-            // framework caches one resolved StyleRules per tone. Without a tone
-            // the layer is absent and Flat/Elevated keep their surface look.
+            // Intent tint — overlays the variant's surface bg/border with the
+            // tone's Soft slots. Rides the INLINE layer, which resolves after
+            // the `variant` axis (see `build_card_sheet`) — and, unlike the
+            // old `with_computed` spelling, does not disqualify the card
+            // from preminting (a `--premint-only` app panicked on any toned
+            // Card). Tones are an OPEN set (author-extensible via the tone
+            // macro), so an enumerated axis can't carry them; the slot
+            // values are theme TOKENS, so the tint stays live across theme
+            // swaps on every backend.
             if let Some(tone) = tone.get() {
-                let tone_for_key = tone.clone();
-                style = style.with_computed(format!("tone_{}", tone_for_key.key()), move || {
-                    let theme_rc = active_theme();
-                    let theme_ref = theme_rc
-                        .downcast_ref::<IdeaThemeRef>()
-                        .expect("idea-ui: no IdeaTheme installed");
-                    let bg = tone.soft_bg(theme_ref);
-                    let border = tone.stroke_color(theme_ref);
-                    let fg = tone.soft_fg(theme_ref);
-                    StyleRules {
-                        background: Some(bg),
-                        color: Some(fg),
-                        border_top_color: Some(border.clone()),
-                        border_right_color: Some(border.clone()),
-                        border_bottom_color: Some(border.clone()),
-                        border_left_color: Some(border),
-                        ..Default::default()
-                    }
+                let theme_rc = active_theme();
+                let theme_ref = theme_rc
+                    .downcast_ref::<IdeaThemeRef>()
+                    .expect("idea-ui: no IdeaTheme installed");
+                let bg = tone.soft_bg(theme_ref);
+                let border = tone.stroke_color(theme_ref);
+                let fg = tone.soft_fg(theme_ref);
+                style = style.with_inline(StyleRules {
+                    background: Some(bg),
+                    color: Some(fg),
+                    border_top_color: Some(border.clone()),
+                    border_right_color: Some(border.clone()),
+                    border_bottom_color: Some(border.clone()),
+                    border_left_color: Some(border),
+                    ..Default::default()
                 });
             }
 
@@ -336,18 +361,20 @@ pub fn Card(props: CardProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P, TStyle};
     use idea_theme::extensible::{tone, Tone};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, StyleSource};
+    use runtime_core::resolve_style;
 
     fn theme() {
         install_idea_theme(light_theme());
     }
 
     fn view_style(card: Element) -> StyleApplication {
-        match card {
-            Element::View { style, .. } => match style.expect("Card view has a style") {
-                StyleSource::Static(a) => a,
+        match classify(card) {
+            P::View { style, .. } => match style.expect("Card view has a style") {
+                TStyle::App(a) => a,
                 _ => panic!("Card uses a static style source"),
             },
             _ => panic!("Card renders a view"),
@@ -358,45 +385,74 @@ mod tests {
     // distinct from the surface bg a tone-less Flat card renders.
     #[test]
     fn tone_tints_background_distinct_from_surface() {
-        theme();
-        let toned = CardProps {
-            tone: Reactive::Static(Some(tone::Danger.into())),
-            ..Default::default()
-        };
-        let toned_bg = resolve_style(&view_style(Card(toned)))
-            .background
-            .clone()
-            .expect("toned card sets a background");
+        with_test_world(|| {
+            theme();
+            let toned = CardProps {
+                tone: Reactive::Static(Some(tone::Danger.into())),
+                ..Default::default()
+            };
+            let toned_bg = resolve_style(&view_style(Card(toned)))
+                .background
+                .clone()
+                .expect("toned card sets a background");
 
-        let plain = CardProps::default();
-        let plain_bg = resolve_style(&view_style(Card(plain)))
-            .background
-            .clone()
-            .expect("Flat card sets a surface background");
+            let plain = CardProps::default();
+            let plain_bg = resolve_style(&view_style(Card(plain)))
+                .background
+                .clone()
+                .expect("Flat card sets a surface background");
 
-        assert_ne!(
-            toned_bg, plain_bg,
-            "a Danger-toned card must read differently from a plain surface card"
-        );
-        // The tint matches the Danger tone's Soft slot (the same tint
-        // Alert's Soft variant uses).
-        let theme_rc = active_theme();
-        let expected =
-            tone::Danger.soft_bg(theme_rc.downcast_ref::<IdeaThemeRef>().unwrap());
-        assert_eq!(toned_bg, expected, "tint is the tone's soft_bg");
+            assert_ne!(
+                toned_bg, plain_bg,
+                "a Danger-toned card must read differently from a plain surface card"
+            );
+            // The tint matches the Danger tone's Soft slot (the same tint
+            // Alert's Soft variant uses).
+            let theme_rc = active_theme();
+            let expected =
+                tone::Danger.soft_bg(theme_rc.downcast_ref::<IdeaThemeRef>().unwrap());
+            assert_eq!(toned_bg, expected, "tint is the tone's soft_bg");
+    });
     }
 
     // D7: with no tone, Flat/Elevated keep their surface look unchanged —
-    // the computed tint layer is absent entirely.
+    // the tint layer is absent entirely.
     #[test]
     fn no_tone_keeps_surface_look() {
-        theme();
-        let plain = CardProps::default();
-        let app = view_style(Card(plain));
-        assert!(
-            app.computed().is_none(),
-            "a tone-less Card attaches no tint layer"
-        );
+        with_test_world(|| {
+            theme();
+            let plain = CardProps::default();
+            let app = view_style(Card(plain));
+            assert!(
+                app.inline().is_none(),
+                "a tone-less Card attaches no tint layer"
+            );
+    });
+    }
+
+    // A toned Card must still PREMINT: the tint rides the INLINE layer
+    // (out-of-band, applied over the preminted classes), never a
+    // `with_computed` layer — a computed layer is a premint disqualifier,
+    // so the old spelling made any `Card(tone = …)` panic at mount in a
+    // `--premint-only` app. Fails against the computed spelling
+    // (`preminted_class_list()` is `None` for a computed-carrying
+    // application).
+    #[test]
+    fn regression_toned_card_premints_tint_via_inline_layer() {
+        with_test_world(|| {
+            theme();
+            let toned = CardProps {
+                tone: Reactive::Static(Some(tone::Danger.into())),
+                ..Default::default()
+            };
+            let app = view_style(Card(toned));
+            assert!(
+                app.preminted_class_list().is_some(),
+                "a toned Card must premint (tint rides the inline layer)"
+            );
+            let inline = app.inline().expect("tone tint rides the inline layer");
+            assert!(inline.background.is_some(), "tint carries the Soft bg");
+        });
     }
 
     // Clipping is a style attribute, not a bespoke prop: an `overflow: hidden`
@@ -404,27 +460,29 @@ mod tests {
     // the default (no override) leaves overflow unset so content may overhang.
     #[test]
     fn style_override_overflow_clips_to_radius() {
-        theme();
-        let clip = Rc::new(StyleSheet::r#static(StyleRules {
-            overflow: Some(Overflow::Hidden),
-            ..Default::default()
-        }));
-        let clipped = CardProps {
-            style: Some(clip),
-            ..Default::default()
-        };
-        assert_eq!(
-            resolve_style(&view_style(Card(clipped))).overflow,
-            Some(Overflow::Hidden),
-            "overflow:hidden in the style override clips children to the radius",
-        );
+        with_test_world(|| {
+            theme();
+            let clip = Rc::new(StyleSheet::r#static(StyleRules {
+                overflow: Some(Overflow::Hidden),
+                ..Default::default()
+            }));
+            let clipped = CardProps {
+                style: Some(clip),
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve_style(&view_style(Card(clipped))).overflow,
+                Some(Overflow::Hidden),
+                "overflow:hidden in the style override clips children to the radius",
+            );
 
-        let default = CardProps::default();
-        assert_eq!(
-            resolve_style(&view_style(Card(default))).overflow,
-            None,
-            "the default doesn't clip — content may extend past the radius",
-        );
+            let default = CardProps::default();
+            assert_eq!(
+                resolve_style(&view_style(Card(default))).overflow,
+                None,
+                "the default doesn't clip — content may extend past the radius",
+            );
+    });
     }
 
     // Slot override: the root `style` layers onto the card surface and wins
@@ -432,22 +490,24 @@ mod tests {
     // off, since it's the top resolution layer.
     #[test]
     fn style_override_wins_over_variant() {
-        theme();
-        let ovr = Rc::new(StyleSheet::r#static(StyleRules {
-            background: Some(Tokenized::Literal(runtime_core::Color("#123456".into()))),
-            ..Default::default()
-        }));
-        let props = CardProps {
-            style: Some(ovr),
-            ..Default::default()
-        };
-        assert_eq!(
-            resolve_style(&view_style(Card(props)))
-                .background
-                .as_ref()
-                .map(|c| c.resolve().0.to_ascii_lowercase()),
-            Some("#123456".to_string()),
-            "style override sets the card background over the variant surface",
-        );
+        with_test_world(|| {
+            theme();
+            let ovr = Rc::new(StyleSheet::r#static(StyleRules {
+                background: Some(Tokenized::Literal(runtime_core::Color("#123456".into()))),
+                ..Default::default()
+            }));
+            let props = CardProps {
+                style: Some(ovr),
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve_style(&view_style(Card(props)))
+                    .background
+                    .as_ref()
+                    .map(|c| c.resolve().0.to_ascii_lowercase()),
+                Some("#123456".to_string()),
+                "style override sets the card background over the variant surface",
+            );
+    });
     }
 }

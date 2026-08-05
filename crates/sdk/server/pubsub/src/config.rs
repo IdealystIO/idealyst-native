@@ -70,6 +70,10 @@ where
 /// (`memory` | `redis` | `postgres`, default `memory`) + `IDEALYST_PUBSUB_URL`.
 /// The bridge for `idealyst dev`, which sets those vars. Errors if the selected
 /// backend's cargo feature isn't compiled in.
+///
+/// For the `redis` backend, a missing `IDEALYST_PUBSUB_URL` falls back to the
+/// `redis::Client` already installed via `server::install_state` — one client
+/// configured at boot serves cache, sessions, rate-limiting, and pubsub.
 pub async fn configure_from_env() -> Result<(), PubSubError> {
     let backend = std::env::var("IDEALYST_PUBSUB_BACKEND").unwrap_or_else(|_| "memory".to_string());
     let url = std::env::var("IDEALYST_PUBSUB_URL").ok();
@@ -113,7 +117,23 @@ fn configure_memory() -> Result<(), PubSubError> {
 async fn configure_redis(url: Option<String>) -> Result<(), PubSubError> {
     #[cfg(feature = "redis")]
     {
-        configure(crate::RedisBackend::connect(&require_url(url, "redis")?).await?);
+        // No URL → fall back to the app-installed `redis::Client`, so one
+        // client configured at boot serves cache, sessions, AND pubsub.
+        let backend = match url {
+            Some(u) => crate::RedisBackend::connect(&u).await?,
+            None => {
+                let client = server::use_state::<redis::Client>().ok_or_else(|| {
+                    PubSubError::Backend(
+                        "IDEALYST_PUBSUB_URL is not set and no redis::Client is installed to \
+                         fall back on; set the URL or call \
+                         server::install_state(client.clone()) at boot"
+                            .to_string(),
+                    )
+                })?;
+                crate::RedisBackend::from_client(client).await?
+            }
+        };
+        configure(backend);
         Ok(())
     }
     #[cfg(not(feature = "redis"))]

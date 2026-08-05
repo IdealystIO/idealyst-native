@@ -1,0 +1,40 @@
+# scene-parity FULL-OP NEW-CORE override — scenario `nav_stack_push_pop`, mode `spliced`
+#
+# Sanctioned kernel-ordering divergences only (README + the
+# FULL_NEWCORE_OVERRIDES docs): teardown release interleaving (old
+# LIFO vs new creation-order effect free — same release SET, only
+# the order within teardown windows) and, where noted, cross-effect
+# firing order across sibling effects (divergence #3).
+# Regenerate: UPDATE_NEWCORE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+apply_style n0 {flex_direction: Some(Column), flex_grow: Some(Literal(1.0)), width: Some(Literal(Percent(100.0))), height: Some(Literal(Percent(100.0))), min_height: Some(Literal(Px(0.0)))}
+create n1 view
+create n2 text "home"
+insert n1 <- n2
+apply_style n1 {background: Some(Literal(Color("#111111"))), flex_grow: Some(Literal(1.0)), flex_shrink: Some(Literal(1.0)), flex_basis: Some(Literal(Px(0.0))), width: Some(Literal(Percent(100.0))), min_height: Some(Literal(Px(0.0)))}
+create n3 view
+create n4 text "header"
+insert n3 <- n4
+create n5 view
+mark_container n5
+apply_style n5 {flex_direction: Some(Column), flex_grow: Some(Literal(1.0)), flex_shrink: Some(Literal(1.0)), flex_basis: Some(Literal(Px(0.0))), min_width: Some(Literal(Px(0.0))), min_height: Some(Literal(Px(0.0)))}
+insert n3 <- n5
+insert n0 <- n3
+clear_children n5
+insert n5 <- n1
+
+== push detail (mount + outlet swap, home retained) ==
+create n6 view
+create n7 text "detail"
+insert n6 <- n7
+apply_style n6 {background: Some(Literal(Color("#222222"))), flex_grow: Some(Literal(1.0)), flex_shrink: Some(Literal(1.0)), flex_basis: Some(Literal(Px(0.0))), width: Some(Literal(Percent(100.0))), min_height: Some(Literal(Px(0.0)))}
+clear_children n5
+insert n5 <- n6
+
+== pop (release detail FIRST, reveal retained home) ==
+on_node_unstyled n6
+cleanup detail-screen
+clear_children n5
+insert n5 <- n1

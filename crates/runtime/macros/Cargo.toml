@@ -14,13 +14,24 @@ rust-version = "1.88"
 proc-macro = true
 
 [features]
-# Forwarded from runtime-core's debug-stats. Toggles whether
+# NOTE: the `new-core` lowering switch is GONE. `ui!` / `jsx!` /
+# `#[component]` / `#[props]` now always emit at `runtime_scene::Element`
+# + `runtime_vocabulary` builders + `runtime_world` reactivity, and
+# `finish()` always runs the `::runtime_core` -> `::runtime_vocabulary::glue`
+# retarget (src/new_core.rs). Consumer crates must depend on
+# `runtime-vocabulary` — that is where the emitted absolute paths land.
+# It was a feature only while two cores existed, and it carried a real
+# unification hazard (a proc-macro crate is compiled once per build
+# graph, so one crate enabling it flipped the lowering for every crate
+# in the same cargo invocation). One core, one lowering, no switch.
+
+# Forwarded from the app crate's debug-stats. Toggles whether
 # `#[component]` emits enter/exit instrumentation calls into the
 # generated component function bodies. When off, the macro emits
 # no instrumentation at all.
 debug-stats = []
 
-# Forwarded from runtime-core's `hot-reload`. When on, `#[component]`
+# Forwarded from the host wrapper's `hot-reload`. When on, `#[component]`
 # rewrites the function body to dispatch through
 # `dev_hot::call(impl_fn, args_tuple)` so a hot-reloaded
 # replacement can be jump-table-swapped at runtime. When off, the

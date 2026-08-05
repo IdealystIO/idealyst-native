@@ -28,13 +28,13 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use runtime_core::primitives::key::{KeyEvent, KeyOutcome};
 use runtime_core::{
     component, pressable, recipe, ui, AlignItems, Color, Cursor, Easing, Element, FlexDirection,
     IconData, IdealystSchema, IntoElement, JustifyContent, Length, Reactive, Signal,
     StyleApplication, StyleRules, StyleSheet, Tokenized, Transition, VariantEnum, VariantSet,
 };
 
-#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 use crate::components::icon::Icon;
 
 /// Horizontal inset on the BARE (adorned) input. Just enough that the glyph's
@@ -44,7 +44,9 @@ use crate::components::icon::Icon;
 const FIELD_BARE_H_PAD: f32 = 2.0;
 
 use idea_theme::active_theme;
-use idea_theme::extensible::{tone as tones, RefBuiltins, ResolutionCtx, ToneRef};
+use idea_theme::extensible::{
+    premint_identity, tone as tones, tone_keys, RefBuiltins, ResolutionCtx, ToneRef,
+};
 use idea_theme::theme::{IdeaTheme, IdeaThemeRef};
 
 use crate::stylesheets::{FieldGroup, FieldLabel};
@@ -52,7 +54,7 @@ pub use crate::stylesheets::{FieldAppearance, FieldSize};
 
 /// A leading/trailing adornment inside a [`Field`]'s box — an icon or a custom
 /// element rendered beside the input (e.g. a search glyph, a unit suffix, a
-/// clear button). Three shapes:
+/// clear button). The shapes:
 ///
 /// - [`Adornment::None`] — nothing (the default).
 /// - [`Adornment::Icon`] — a vector icon, rendered in the field's muted text
@@ -60,9 +62,11 @@ pub use crate::stylesheets::{FieldAppearance, FieldSize};
 ///   styling so you just pass the icon).
 /// - [`Adornment::Element`] — any element, rendered as-is, for full control
 ///   (a button, badge, spinner, …).
+/// - [`Adornment::Button`] — a tappable icon-sized glyph (clear ✕,
+///   visibility toggle, …).
+/// - [`Adornment::Group`] — several of the above side by side in one slot.
 ///
 /// Adornments compose into a flex row alongside the input, so any width works.
-#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 #[derive(Clone)]
 pub enum Adornment {
     /// No adornment.
@@ -80,9 +84,15 @@ pub enum Adornment {
     /// (which stacks the button's own square padding on top of the field's),
     /// this stays icon-sized so it never inflates the field box.
     Button(IconData, Rc<dyn Fn()>),
+    /// Several adornments side by side in ONE slot (e.g. `DateInput`'s
+    /// clear ✕ next to its calendar button). Members render as siblings
+    /// directly in the field's shell row — the shell's size-derived gap
+    /// spaces them like any other row children, so a group needs (and
+    /// gets) no wrapper view of its own. Nested groups flatten; an
+    /// all-`None`/empty group counts as no adornment.
+    Group(Vec<Adornment>),
 }
 
-#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 impl Adornment {
     /// Build an [`Adornment::Element`] from a closure: `Adornment::element(move
     /// || ui! { Button(…) })`.
@@ -97,7 +107,6 @@ impl Adornment {
     }
 }
 
-#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 impl Default for Adornment {
     fn default() -> Self {
         Adornment::None
@@ -105,7 +114,6 @@ impl Default for Adornment {
 }
 
 /// Icon point size for an adornment at a given field size.
-#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 fn adornment_icon_px(size: FieldSize) -> f32 {
     match size.as_variant_str() {
         "sm" => 14.0,
@@ -115,22 +123,22 @@ fn adornment_icon_px(size: FieldSize) -> f32 {
 }
 
 /// The muted glyph color shared by `Icon`/`Button` adornments.
-#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 fn adornment_icon_color() -> Color {
     Tokenized::token("color-text-muted", Color("#8a8270".into())).resolve()
 }
 
-/// Resolve an adornment to a renderable element (or `None`). `Icon`/`Button`
-/// are sized from the field `size` and painted in the theme's muted text color.
-#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
-fn render_adornment(adornment: &Adornment, size: FieldSize) -> Option<Element> {
+/// Resolve an adornment to its renderable elements (empty for `None` /
+/// an empty group; one element per leaf, groups flattened in order).
+/// `Icon`/`Button` are sized from the field `size` and painted in the
+/// theme's muted text color.
+fn render_adornment(adornment: &Adornment, size: FieldSize) -> Vec<Element> {
     match adornment {
-        Adornment::None => None,
-        Adornment::Element(build) => Some(build()),
+        Adornment::None => Vec::new(),
+        Adornment::Element(build) => vec![build()],
         Adornment::Icon(data) => {
             let px = adornment_icon_px(size);
             let muted = adornment_icon_color();
-            Some(ui! { Icon(data = data.clone(), size = px, color = Some(muted)) })
+            vec![ui! { Icon(data = data.clone(), size = px, color = Some(muted)) }]
         }
         Adornment::Button(data, on_press) => {
             let px = adornment_icon_px(size);
@@ -140,38 +148,37 @@ fn render_adornment(adornment: &Adornment, size: FieldSize) -> Option<Element> {
             // An icon-sized pressable — no button chrome/padding, so it never
             // inflates the field box (the whole point of `Button` vs an
             // `IconButton` in an `Element` adornment).
-            Some(
+            vec![
                 pressable(vec![glyph], move || on_press())
                     .with_style(StyleApplication::new(adornment_button_sheet()))
                     .into_element(),
-            )
+            ]
+        }
+        Adornment::Group(items) => {
+            items.iter().flat_map(|a| render_adornment(a, size)).collect()
         }
     }
 }
 
 /// Lazy stylesheet for [`Adornment::Button`]: a pointer cursor, centered glyph,
 /// and a subtle hover/press dim. No padding — it stays icon-sized.
-#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 fn adornment_button_sheet() -> Rc<StyleSheet> {
-    thread_local! {
-        static SHEET: Rc<StyleSheet> = Rc::new(
-            StyleSheet::new(|_| StyleRules {
-                cursor: Some(Cursor::Pointer),
-                align_items: Some(AlignItems::Center),
-                justify_content: Some(JustifyContent::Center),
-                ..Default::default()
-            })
-            .variant("__state_hovered", "on", |_| StyleRules {
-                opacity: Some(Tokenized::Literal(0.65)),
-                ..Default::default()
-            })
-            .variant("__state_pressed", "on", |_| StyleRules {
-                opacity: Some(Tokenized::Literal(0.4)),
-                ..Default::default()
-            }),
-        );
+    AdornmentButtonSheet::sheet()
+}
+
+// `stylesheet!` (LINK-time registration): an identity-less closure sheet
+// here kept every Button-adorned field on the live engine — the same
+// premint hazard class as the lazily-opened overlay sheets.
+runtime_core::stylesheet! {
+    AdornmentButtonSheet<()> {
+        base(_t) {
+            cursor: Cursor::Pointer,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+        }
+        state hovered(_t) { opacity: 0.65 }
+        state pressed(_t) { opacity: 0.4 }
     }
-    SHEET.with(|s| s.clone())
 }
 
 // Reactive-by-default: `#[props]` rewrites each scalar-DATA field `T` →
@@ -188,7 +195,6 @@ fn adornment_button_sheet() -> Rc<StyleSheet> {
 // element-builder isn't comparable — so a bare `Adornment` is the right type.
 #[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
-#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 #[derive(IdealystSchema)]
 pub struct FieldProps {
     /// Optional field label. `Reactive<Option<String>>` — static
@@ -256,14 +262,25 @@ pub struct FieldProps {
     /// inner input either way).
     #[prop(static)]
     pub field_ref: Option<runtime_core::Ref<runtime_core::primitives::text_input::TextInputHandle>>,
+    /// Observe the input's focus transitions (`true` = gained focus,
+    /// `false` = blurred). The Field already bridges `on_focus` internally
+    /// for its focus ring; this forwards the same transitions to the host —
+    /// e.g. `DateInput` normalizes its text on blur. `None` (default)
+    /// forwards nothing.
+    pub on_focus_change: Option<Rc<dyn Fn(bool)>>,
+    /// Intercept key presses on the inner input before the platform's
+    /// default handling (see [`runtime_core::primitives::key`]). Return
+    /// [`KeyOutcome::PreventDefault`] to swallow a key — e.g.
+    /// `DateInput` turns Tab into "complete the current date segment".
+    /// `None` (default) attaches no handler.
+    pub on_key_down: Option<Rc<dyn Fn(&KeyEvent) -> KeyOutcome>>,
 }
 
-#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 impl Default for FieldProps {
     fn default() -> Self {
         Self {
             label: Reactive::Static(None),
-            value: Signal::new(String::new()),
+            value: runtime_core::signal(String::new()),
             on_change: Rc::new(|_| {}),
             placeholder: Reactive::Static(None),
             help: Reactive::Static(None),
@@ -277,6 +294,8 @@ impl Default for FieldProps {
             min_height: Reactive::Static(None),
             width: Reactive::Static(None),
             field_ref: None,
+            on_focus_change: None,
+            on_key_down: None,
         }
     }
 }
@@ -404,6 +423,44 @@ pub fn build_field_input_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
             ..Default::default()
         });
 
+    // `slot` — where this input sits. `standalone` (the default) is the plain
+    // Field/TextArea. `shell` is the input nested inside an ADORNED field's
+    // row wrapper, which owns the chrome (border, horizontal padding, focus
+    // ring) so the input itself must go flat and fill the row.
+    //
+    // A variant arm and not a call-site `with_computed` layer: every rule here
+    // is constant, and a constant closure blocks premint for the whole sheet.
+    // It can't ride the `bare` appearance arm either — `FieldAppearance::Bare`
+    // is an author-facing prop value, and these rules would then leak onto a
+    // standalone bare field (losing its 1px transparent border spacing and
+    // overriding its size-derived horizontal padding).
+    sheet = sheet.variant("slot", "standalone", |_vs| StyleRules::default());
+    sheet = sheet.variant("slot", "shell", |_vs| StyleRules {
+        // NB: do NOT add `flex_basis: 0` / `min_width: 0`. The shell fills the
+        // column via `width: 100%`, and that percent resolves through the
+        // shell's CONTENT size on macOS — collapse the input's content
+        // contribution to zero and the shell hugs the lone icon (it regressed
+        // to an icon-only box). Letting the input keep its auto basis is what
+        // makes `width: 100%` resolve to the full field width; `flex_grow: 1`
+        // then fills the row.
+        flex_grow: Some(Tokenized::Literal(1.0)),
+        // KEEP the size-derived VERTICAL padding on the input: it's what
+        // establishes the field's height, so adornments center within it
+        // instead of stretching the row (an Element adornment shouldn't
+        // inflate the field — only the auto-sized Icon adapts the other way).
+        // Horizontal padding moves to the shell; a 2px inset stays so the
+        // glyph's bearing doesn't clip the edge.
+        padding_left: Some(Tokenized::Literal(Length::Px(FIELD_BARE_H_PAD))),
+        padding_right: Some(Tokenized::Literal(Length::Px(FIELD_BARE_H_PAD))),
+        border_top_width: Some(Tokenized::Literal(0.0)),
+        border_right_width: Some(Tokenized::Literal(0.0)),
+        border_bottom_width: Some(Tokenized::Literal(0.0)),
+        border_left_width: Some(Tokenized::Literal(0.0)),
+        background: Some(Tokenized::Literal(Color("transparent".into()))),
+        ..Default::default()
+    });
+    sheet = sheet.variant_default("slot", "standalone");
+
     // Tone arms — "default" = neutral base border; each tone overrides
     // the border color with its stroke color.
     sheet = sheet.variant("tone", "default", |_vs| StyleRules::default());
@@ -448,12 +505,64 @@ pub fn build_field_input_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
             ..Default::default()
         });
 
+    // Adorned-shell axes (leading/trailing icon shells). Enumerated
+    // variants + compounds rather than the former single-slot
+    // `with_computed` layer, so every arm has build-time CSS and an
+    // adorned Field premints — the computed layer kept every Field on
+    // the live engine (a `--premint-only` blocker on the docs corpus).
+    //
+    // `adorned=on` turns the node into the row shell: horizontal flex,
+    // centered, full width, vertical padding zeroed (it lives on the
+    // inner input, which drives the box height). The size-dependent GAP
+    // rides (adorned, size) COMPOUNDS — compounds premint as compound
+    // selectors, and this is exactly the "value depends on two axes"
+    // shape they exist for. Gap = edge_pad(size) − FIELD_BARE_H_PAD so
+    // the icon↔input spacing visually equals the edge↔icon spacing (see
+    // the shell builder in `field_shell`).
+    sheet = sheet.variant("adorned", "on", |_vs| StyleRules {
+        flex_direction: Some(runtime_core::FlexDirection::Row),
+        align_items: Some(runtime_core::AlignItems::Center),
+        width: Some(Tokenized::Literal(Length::pct(100.0))),
+        padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
+        padding_bottom: Some(Tokenized::Literal(Length::Px(0.0))),
+        ..Default::default()
+    });
+    for (size_key, edge_pad) in [("sm", 8.0_f32), ("md", 12.0), ("lg", 16.0)] {
+        let gap = (edge_pad - FIELD_BARE_H_PAD).max(0.0);
+        sheet = sheet.compound(vec![("adorned", "on"), ("size", size_key)], move |_vs| {
+            StyleRules {
+                gap: Some(Tokenized::Literal(Length::Px(gap))),
+                ..Default::default()
+            }
+        });
+    }
+    // The adorned shell's focus ring. The shell is a plain view — the
+    // FOCUSED widget is the inner input — so `__state_focused` can never
+    // fire on it; the component forwards the input's `on_focus` into
+    // this author axis instead. Same ring the state overlay paints.
+    sheet = sheet.variant("ring", "on", |_vs| {
+        let theme_rc = active_theme();
+        let theme_ref = theme_rc.downcast_ref::<IdeaThemeRef>().expect("theme");
+        let ring = theme_ref.colors().focus_ring.clone();
+        StyleRules {
+            border_top_color: Some(ring.clone()),
+            border_right_color: Some(ring.clone()),
+            border_bottom_color: Some(ring.clone()),
+            border_left_color: Some(ring),
+            ..Default::default()
+        }
+    });
+
     sheet = sheet
         .variant_default("size", "md")
         .variant_default("tone", "default")
         .variant_default("appearance", "outline");
 
-    Rc::new(sheet)
+    // Premint identity, like the idea-theme sibling builders. Without it
+    // `premint_class()` is `None`, the premint dump skips the sheet, and every
+    // Field/TextArea input falls through to the runtime engine no matter how
+    // static its styling is.
+    sheet.premint_as(&premint_identity("field_input", [tone_keys(&tones)]))
 }
 
 /// Build the Field help-text sheet — a tone axis driving the text
@@ -487,10 +596,10 @@ pub fn build_field_help_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
         });
     }
     sheet = sheet.variant_default("tone", "default");
-    Rc::new(sheet)
+    // See `build_field_input_sheet` for why this identity is required.
+    sheet.premint_as(&premint_identity("field_help", [tone_keys(&tones)]))
 }
 
-#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 fn size_key(size: FieldSize) -> &'static str {
     size.as_variant_str()
 }
@@ -498,13 +607,6 @@ fn size_key(size: FieldSize) -> &'static str {
 /// Renders a labeled text input with optional helper/error text. Composes
 /// an optional label, a `text_input` styled by the size × tone × variant
 /// axes, and a helper/error line (error takes precedence) into a column.
-#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
-///
-/// **Cargo features:** requires `prim-icon` + `prim-activity` + `prim-text-input` (all in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without them compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Field(props: &FieldProps) -> Element {
     let value = props.value;
@@ -564,31 +666,24 @@ pub fn Field(props: &FieldProps) -> Element {
                 .with("size", size_str)
                 .with("appearance", appearance)
                 .with("tone", tone_key);
-            // Pin min-height / width AND the focus ring in ONE computed layer.
-            // `with_computed` is single-slot (a second call overwrites the
-            // first), so dims and the focus border MUST share one layer — else
-            // focusing a field with `min_height` would drop it (the same
-            // single-slot trap that made the adorned shell grow on focus).
-            if min_height.is_some() || width.is_some() || focused {
-                let ring = if focused {
-                    let theme_rc = active_theme();
-                    let theme_ref = theme_rc.downcast_ref::<IdeaThemeRef>().expect("theme");
-                    Some(theme_ref.colors().focus_ring.clone())
-                } else {
-                    None
-                };
-                app = app.with_computed(
-                    format!("field-dim-{:?}-{:?}-{}", min_height, width, focused),
-                    move || StyleRules {
-                        min_height: min_height.map(|h| Tokenized::Literal(Length::Px(h))),
-                        width: width.map(|w| Tokenized::Literal(Length::Px(w))),
-                        border_top_color: ring.clone(),
-                        border_right_color: ring.clone(),
-                        border_bottom_color: ring.clone(),
-                        border_left_color: ring.clone(),
-                        ..Default::default()
-                    },
-                );
+            // The focus ring rides the sheet's `ring` AXIS (an enumerated
+            // arm with build-time CSS) and the per-instance dims ride the
+            // INLINE layer — independent layers, so the single-slot
+            // `with_computed` trap (focusing a field with `min_height`
+            // dropped the height) can't recur, and BOTH evaluations of
+            // this closure premint. The former computed spelling made the
+            // FOCUSED evaluation non-premintable: focusing any text input
+            // panicked under `--premint-only` (user-reported on the docs
+            // catalog).
+            if focused {
+                app = app.with("ring", "on");
+            }
+            if min_height.is_some() || width.is_some() {
+                app = app.with_inline(StyleRules {
+                    min_height: min_height.map(|h| Tokenized::Literal(Length::Px(h))),
+                    width: width.map(|w| Tokenized::Literal(Length::Px(w))),
+                    ..Default::default()
+                });
             }
             app
         }
@@ -618,7 +713,7 @@ pub fn Field(props: &FieldProps) -> Element {
     let secure = props.secure.clone();
     let leading = render_adornment(&props.leading, size);
     let trailing = render_adornment(&props.trailing, size);
-    let adorned = leading.is_some() || trailing.is_some();
+    let adorned = !leading.is_empty() || !trailing.is_empty();
 
     // `placeholder` is routed LIVE: a reactive source updates the native
     // placeholder in place (no rebuild); a `Static` one sets it once.
@@ -627,6 +722,11 @@ pub fn Field(props: &FieldProps) -> Element {
         .placeholder_reactive(props.placeholder.clone());
     if let Some(field_ref) = props.field_ref.clone() {
         input = input.bind(field_ref);
+    }
+    // Attached only when present (a silent no-op handler would still
+    // claim every key press on some backends).
+    if let Some(on_key) = props.on_key_down.clone() {
+        input = input.on_key_down(move |e| (on_key)(e));
     }
 
     // The "field box" — either the bare input (no adornments) or a flex-row
@@ -641,38 +741,23 @@ pub fn Field(props: &FieldProps) -> Element {
         // sets a `focused` signal, and the shell style is a reactive closure that
         // overlays the theme `focus_ring` border colors while focused — the same
         // ring the non-adorned branch gets natively, now on the shell.
-        let focused = Signal::new(false);
+        let focused = runtime_core::signal(false);
         let size_str = size_key(size).to_string();
+        // The shell owns the chrome; the input goes flat and fills the row.
+        // See the sheet's `slot` axis for why those rules live on the arm.
         let bare_style = StyleApplication::new(field_input_sheet())
             .with("size", size_str)
             .with("appearance", "bare")
             .with("tone", "default")
-            .with_computed("field-input-bare", || StyleRules {
-                flex_grow: Some(Tokenized::Literal(1.0)),
-                // NB: do NOT add `flex_basis: 0` / `min_width: 0` here. The
-                // shell fills the column via `width: 100%`, and that percent is
-                // resolved through the shell's CONTENT size on macOS — collapse
-                // the input's content contribution to zero and the shell hugs
-                // the lone icon (regressed to an icon-only box). Letting the
-                // input keep its auto basis is what makes `width: 100%` resolve
-                // to the full field width; `flex_grow: 1` then fills the row.
-                // KEEP the size-derived VERTICAL padding on the input: it's
-                // what establishes the field's height, so adornments center
-                // within it instead of stretching the row (an Element adornment
-                // shouldn't inflate the field — only the auto-sized Icon adapts
-                // the other way). Horizontal padding moves to the shell; a 2px
-                // inset stays so the glyph's bearing doesn't clip the edge.
-                padding_left: Some(Tokenized::Literal(Length::Px(FIELD_BARE_H_PAD))),
-                padding_right: Some(Tokenized::Literal(Length::Px(FIELD_BARE_H_PAD))),
-                border_top_width: Some(Tokenized::Literal(0.0)),
-                border_right_width: Some(Tokenized::Literal(0.0)),
-                border_bottom_width: Some(Tokenized::Literal(0.0)),
-                border_left_width: Some(Tokenized::Literal(0.0)),
-                background: Some(Tokenized::Literal(Color("transparent".into()))),
-                ..Default::default()
-            });
+            .with("slot", "shell");
+        let notify_focus = props.on_focus_change.clone();
         let input_node = input
-            .on_focus(move |f| focused.set(f))
+            .on_focus(move |f| {
+                focused.set(f);
+                if let Some(cb) = &notify_focus {
+                    cb(f);
+                }
+            })
             .with_style(bare_style)
             .into_element();
 
@@ -689,65 +774,43 @@ pub fn Field(props: &FieldProps) -> Element {
             "lg" => 16.0,
             _ => 12.0,
         };
-        let gap_px = (edge_pad - FIELD_BARE_H_PAD).max(0.0);
-        let size_key_str = size.as_variant_str().to_string();
-        // Reactive shell style: base chrome + tone border + row layout, plus a
-        // `focus_ring` border overlay while the inner input is focused (driven
-        // by `focused`, set from the input's `on_focus`). Reading `focused.get()`
-        // makes the apply-style Effect re-resolve on focus change, so the ring
-        // lights/clears in place — the adorned analogue of the sheet's
-        // `__state_focused` overlay the non-adorned input gets natively.
+        let _ = edge_pad; // gap now rides the sheet's (adorned, size) compounds
+        // Reactive shell style: base chrome + tone border + row layout via the
+        // sheet's `adorned` axis, plus its `ring` axis while the inner input
+        // is focused (driven by `focused`, set from the input's `on_focus`).
+        // Reading `focused.get()` makes the apply-style Effect re-resolve on
+        // focus change, so the ring lights/clears in place — the adorned
+        // analogue of the sheet's `__state_focused` overlay the non-adorned
+        // input gets natively.
         //
-        // CRITICAL: the row layout AND the focus border MUST live in ONE
-        // `with_computed`. `StyleApplication::with_computed` is single-slot —
-        // a second call OVERWRITES the first — so splitting them made focus drop
-        // the row layout's `padding_top/bottom: 0`, and the shell sprang back to
-        // the size variant's vertical padding (the field visibly grew ~16px
-        // taller on focus). One layer, keyed by size+focus, keeps both.
+        // AXES, not `with_computed`: every arm (row layout, per-size gap
+        // compounds, ring) has build-time CSS, so an adorned Field premints
+        // and a focus flip is a class swap — the former single-slot computed
+        // layer kept every Field on the live engine. The layout+ring
+        // single-layer pitfall the computed spelling had (splitting them
+        // dropped the row layout on focus) doesn't exist here: axes are
+        // independent layers by construction.
         let make_shell = make_input_style.clone();
         let tone_for_shell = tone_key_for.clone();
         let shell_style = move || {
-            let is_focused = focused.get();
-            let key = format!("field-shell-{}-{}", size_key_str, is_focused);
-            // `false`: the shell paints its OWN focus ring in the computed layer
-            // below; make_input_style's focus would just be overwritten here.
-            make_shell(tone_for_shell(), false).with_computed(key, move || {
-                let ring = if is_focused {
-                    let theme_rc = active_theme();
-                    let theme_ref = theme_rc.downcast_ref::<IdeaThemeRef>().expect("theme");
-                    Some(theme_ref.colors().focus_ring.clone())
-                } else {
-                    None
-                };
-                StyleRules {
-                    flex_direction: Some(FlexDirection::Row),
-                    align_items: Some(AlignItems::Center),
-                    gap: Some(Tokenized::Literal(Length::Px(gap_px))),
-                    // Fill the FieldGroup (it stretches to its container), so the
-                    // row spans the field and the input has room to grow.
-                    width: Some(Tokenized::Literal(Length::pct(100.0))),
-                    // Vertical padding lives on the INPUT (it drives the box
-                    // height); zeroing it here keeps the row from stretching.
-                    padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
-                    padding_bottom: Some(Tokenized::Literal(Length::Px(0.0))),
-                    // Focus ring (same layer — see CRITICAL note above).
-                    border_top_color: ring.clone(),
-                    border_right_color: ring.clone(),
-                    border_bottom_color: ring.clone(),
-                    border_left_color: ring,
-                    ..Default::default()
-                }
-            })
+            // `false`: the shell paints its OWN focus ring via the `ring`
+            // axis; make_input_style's focus handling targets the input.
+            // `ring` is only SET while focused — the axis declares no
+            // default and no `off` arm, so leaving it unset applies (and
+            // stamps) nothing, exactly like the resolver.
+            let app = make_shell(tone_for_shell(), false).with("adorned", "on");
+            if focused.get() {
+                app.with("ring", "on")
+            } else {
+                app
+            }
         };
 
-        let mut shell_children: Vec<Element> = Vec::with_capacity(3);
-        if let Some(l) = leading {
-            shell_children.push(l);
-        }
+        let mut shell_children: Vec<Element> =
+            Vec::with_capacity(leading.len() + 1 + trailing.len());
+        shell_children.extend(leading);
         shell_children.push(input_node);
-        if let Some(t) = trailing {
-            shell_children.push(t);
-        }
+        shell_children.extend(trailing);
         // Builder form (not `ui!`): the shell style is a reactive CLOSURE (it
         // reads `focused`), and `with_style(closure)` is the canonical way to
         // attach a live style source — mirrors switch.rs / segmented_control.rs.
@@ -769,14 +832,20 @@ pub fn Field(props: &FieldProps) -> Element {
         // the border red and the focus ring still lights — both re-resolve in
         // place through the apply-style Effect. (The former static fast path is
         // gone; a non-adorned Field now always carries one style Effect.)
-        let focused = Signal::new(false);
+        let focused = runtime_core::signal(false);
         let make_input_style = make_input_style.clone();
         let tone_key_for = tone_key_for.clone();
-        // The focus ring is baked into `make_input_style`'s single computed
-        // layer (alongside any min_height/width), so it can't be clobbered.
+        // The focus ring is the sheet's `ring` axis; the dims ride the
+        // inline layer — independent, unclobberable, premintable.
         let input_style = move || make_input_style(tone_key_for(), focused.get());
+        let notify_focus = props.on_focus_change.clone();
         input
-            .on_focus(move |f| focused.set(f))
+            .on_focus(move |f| {
+                focused.set(f);
+                if let Some(cb) = &notify_focus {
+                    cb(f);
+                }
+            })
             .with_style(input_style)
             .into_element()
     };
@@ -836,19 +905,62 @@ recipe!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P, TStyle};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::install_idea_theme;
     use idea_theme::theme::light_theme;
-    use runtime_core::{resolve_style, StyleSource};
+    use runtime_core::resolve_style;
 
-    /// Pull the `StyleSource` off the `text_input` node inside a built
+    /// User-reported `--premint-only` panic: FOCUSING any text input.
+    /// The input's style closure re-evaluates with `focused = true`, and
+    /// that evaluation carried a `with_computed` layer (ring + dims in
+    /// one slot) — non-premintable, so the reactive po arm panicked on
+    /// the focus flip. Both evaluations must premint: the ring is the
+    /// sheet's `ring` AXIS and per-instance dims ride the INLINE layer.
+    /// Fails against the computed spelling (`preminted_class_list()` is
+    /// `None` for a computed-carrying application).
+    #[test]
+    fn regression_focused_input_evaluation_premints() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let field = Field(&FieldProps {
+                label: Reactive::Static(Some("Email".into())),
+                min_height: Reactive::Static(Some(120.0)),
+                ..Default::default()
+            });
+            let style = input_style_source(field);
+            let app_of = |s: &TStyle| match s {
+                TStyle::AppFn(f) => f(),
+                _ => panic!("the Field input style is a reactive closure (INVARIANT D9)"),
+            };
+            // Resting evaluation (not focused).
+            let resting = app_of(&style);
+            assert!(
+                resting.preminted_class_list().is_some(),
+                "resting input evaluation must premint (dims ride inline)"
+            );
+            // The FOCUSED shape: same axes plus ring=on — build it the way
+            // the closure does and assert it premints too. (Flipping the
+            // component's internal focus signal isn't reachable from the
+            // mirror; the ring arm's premintability is the load-bearing
+            // half, and the closure's two branches differ only by it.)
+            let focused = resting.clone().with("ring", "on");
+            assert!(
+                focused.preminted_class_list().is_some(),
+                "focused input evaluation must premint (ring is an enumerated axis)"
+            );
+        });
+    }
+
+    /// Pull the normalized style off the `text_input` node inside a built
     /// `Field` element tree (a `view` wrapping label/input/help).
-    fn input_style_source(field: Element) -> StyleSource {
-        let children = match field {
-            Element::View { children, .. } => children,
+    fn input_style_source(field: Element) -> TStyle {
+        let children = match classify(field) {
+            P::View { children, .. } => children,
             _ => panic!("Field renders a view wrapper"),
         };
         for c in children {
-            if let Element::TextInput { style, .. } = c {
+            if let P::TextInput { style, .. } = classify(c) {
                 return style.expect("Field's text_input always has a style");
             }
         }
@@ -856,15 +968,11 @@ mod tests {
     }
 
     /// Resolve a Field input's style to `StyleRules`, whether the source is
-    /// `Static` or `Reactive`. Since the D9 focus-ring fix a non-adorned
+    /// static or reactive. Since the D9 focus-ring fix a non-adorned
     /// Field's input is ALWAYS a reactive closure (see the component body),
     /// so behavioral assertions resolve through whichever variant is present.
     fn resolve_input_style(field: Element) -> runtime_core::StyleRules {
-        match input_style_source(field) {
-            StyleSource::Static(app) => (*resolve_style(&app)).clone(),
-            StyleSource::Reactive(f) => (*resolve_style(&f())).clone(),
-            _ => panic!("unexpected input style source variant (not Static/Reactive)"),
-        }
+        (*input_style_source(field).resolve()).clone()
     }
 
     fn theme() {
@@ -878,36 +986,39 @@ mod tests {
     // border never turned red on live validation (only the error TEXT did).
     #[test]
     fn reactive_error_drives_border_color_live() {
-        theme();
-        let err: Signal<Option<String>> = Signal::new(None);
-        let props = FieldProps {
-            error: err.into(),
-            ..Default::default()
-        };
-        let src = input_style_source(Field(&props));
+        with_test_world(|| {
+            theme();
+            let err: Signal<Option<String>> = runtime_core::signal(None);
+            let props = FieldProps {
+                error: err.into(),
+                ..Default::default()
+            };
+            let src = input_style_source(Field(&props));
 
-        let closure = match src {
-            StyleSource::Reactive(f) => f,
-            _ => panic!(
-                "a Field with a reactive `error` must attach a reactive style \
-                 source so the border re-resolves on validation (D9 regression)"
-            ),
-        };
+            let closure = match src {
+                TStyle::AppFn(f) => f,
+                _ => panic!(
+                    "a Field with a reactive `error` must attach a reactive style \
+                     source so the border re-resolves on validation (D9 regression)"
+                ),
+            };
 
-        // No error → neutral border. The closure reads the signal each call.
-        let border_none = resolve_style(&closure()).border_top_color.clone();
-        err.set(Some("Required".into()));
-        let border_err = resolve_style(&closure()).border_top_color.clone();
+            // No error → neutral border. The closure reads the signal each call.
+            let border_none = resolve_style(&closure()).border_top_color.clone();
+            err.set(Some("Required".into()));
+            idea_theme::testing::commit();
+            let border_err = resolve_style(&closure()).border_top_color.clone();
 
-        assert!(
-            border_none.is_some() && border_err.is_some(),
-            "border color is set in both states"
-        );
-        assert_ne!(
-            border_none, border_err,
-            "flipping the error signal must change the input's border color \
-             (Danger tone vs neutral)"
-        );
+            assert!(
+                border_none.is_some() && border_err.is_some(),
+                "border color is set in both states"
+            );
+            assert_ne!(
+                border_none, border_err,
+                "flipping the error signal must change the input's border color \
+                 (Danger tone vs neutral)"
+            );
+    });
     }
 
     // D9 (updated for the always-reactive focus-ring path): an EXPLICIT tone
@@ -918,84 +1029,99 @@ mod tests {
     // by resolving the reactive closure.
     #[test]
     fn explicit_tone_overrides_error_derived_tone() {
-        theme();
-        // Explicit Warning tone + a reactive error: the explicit tone wins,
-        // so the resolved border color must NOT change when the error flips.
-        let err: Signal<Option<String>> = Signal::new(None);
-        let props = FieldProps {
-            error: err.into(),
-            tone: Reactive::Static(Some(tones::Warning.into())),
-            ..Default::default()
-        };
-        let border_no_err = resolve_input_style(Field(&props)).border_top_color.clone();
-        err.set(Some("bad".into()));
-        let border_err = resolve_input_style(Field(&props)).border_top_color.clone();
-        assert!(border_no_err.is_some(), "explicit tone sets a border color");
-        assert_eq!(
-            border_no_err, border_err,
-            "an explicit tone must override the error-derived tone — the border \
-             color stays the Warning tone regardless of the error signal"
-        );
+        with_test_world(|| {
+            theme();
+            // Explicit Warning tone + a reactive error: the explicit tone wins,
+            // so the resolved border color must NOT change when the error flips.
+            let err: Signal<Option<String>> = runtime_core::signal(None);
+            let props = FieldProps {
+                error: err.into(),
+                tone: Reactive::Static(Some(tones::Warning.into())),
+                ..Default::default()
+            };
+            let border_no_err = resolve_input_style(Field(&props)).border_top_color.clone();
+            err.set(Some("bad".into()));
+            idea_theme::testing::commit();
+            let border_err = resolve_input_style(Field(&props)).border_top_color.clone();
+            assert!(border_no_err.is_some(), "explicit tone sets a border color");
+            assert_eq!(
+                border_no_err, border_err,
+                "an explicit tone must override the error-derived tone — the border \
+                 color stays the Warning tone regardless of the error signal"
+            );
+    });
     }
 
     // D6: a `min_height` prop pins the exact min-height in px.
     #[test]
     fn min_height_prop_sets_min_height_style() {
-        theme();
-        let props = FieldProps {
-            min_height: Reactive::Static(Some(48.0)),
-            ..Default::default()
-        };
-        let rules = resolve_input_style(Field(&props));
-        assert_eq!(
-            rules.min_height,
-            Some(Tokenized::Literal(Length::Px(48.0))),
-            "min_height prop must pin an exact px min-height"
-        );
+        with_test_world(|| {
+            theme();
+            let props = FieldProps {
+                min_height: Reactive::Static(Some(48.0)),
+                ..Default::default()
+            };
+            let rules = resolve_input_style(Field(&props));
+            assert_eq!(
+                rules.min_height,
+                Some(Tokenized::Literal(Length::Px(48.0))),
+                "min_height prop must pin an exact px min-height"
+            );
+    });
     }
 
     // D6: width prop pins an exact px width.
     #[test]
     fn width_prop_sets_width_style() {
-        theme();
-        let props = FieldProps {
-            width: Reactive::Static(Some(240.0)),
-            ..Default::default()
-        };
-        let rules = resolve_input_style(Field(&props));
-        assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(240.0))));
+        with_test_world(|| {
+            theme();
+            let props = FieldProps {
+                width: Reactive::Static(Some(240.0)),
+                ..Default::default()
+            };
+            let rules = resolve_input_style(Field(&props));
+            assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(240.0))));
+    });
     }
 
-    /// Is the built Field's `text_input` secure flag a `Static` snapshot?
-    fn input_secure_is_static(field: Element) -> bool {
-        let children = match field {
-            Element::View { children, .. } => children,
+    /// The built Field's `text_input` secure flag, evaluated NOW.
+    fn input_secure(field: Element) -> bool {
+        let children = match classify(field) {
+            P::View { children, .. } => children,
             _ => panic!("Field renders a view wrapper"),
         };
         for c in children {
-            if let Element::TextInput { secure, .. } = c {
-                return secure.is_static();
+            if let P::TextInput { secure, .. } = classify(c) {
+                return secure;
             }
         }
         panic!("Field tree has no text_input node");
     }
 
-    // A live `secure` source must thread to the `text_input` as
-    // `Reactive::Dynamic` — NOT snapshotted at build — so the mask can toggle
-    // at runtime without rebuilding the Field (the password show/hide path
-    // that previously needed a `switch`).
+    // A live `secure` source must thread to the `text_input` reactively —
+    // NOT snapshotted at build — so the mask can toggle at runtime without
+    // rebuilding the Field (the password show/hide path that previously
+    // needed a `switch`). Observable form: flip the signal AFTER the Field
+    // is built, then evaluate — a build-time snapshot would still report
+    // the old value.
     #[test]
     fn reactive_secure_threads_through_not_flattened() {
-        theme();
-        let visible: Signal<bool> = Signal::new(false);
-        let props = FieldProps {
-            secure: runtime_core::rx!(!visible.get()),
-            ..Default::default()
-        };
-        assert!(
-            !input_secure_is_static(Field(&props)),
-            "a reactive `secure` must reach the text_input as Reactive::Dynamic"
-        );
+        with_test_world(|| {
+            theme();
+            let visible: Signal<bool> = runtime_core::signal(false);
+            let props = FieldProps {
+                secure: runtime_core::rx!(!visible.get()),
+                ..Default::default()
+            };
+            let field = Field(&props);
+            // Built with secure = !false = true; reveal AFTER build.
+            visible.set(true);
+            idea_theme::testing::commit();
+            assert!(
+                !input_secure(field),
+                "a reactive `secure` must reach the text_input live, not as a build-time snapshot"
+            );
+    });
     }
 
     // A live `size` (or any style-driving prop) must attach the input style
@@ -1003,17 +1129,129 @@ mod tests {
     // are routed into the style sink, not snapshotted at build.
     #[test]
     fn reactive_size_drives_reactive_input_style() {
-        theme();
-        let big: Signal<bool> = Signal::new(false);
-        let props = FieldProps {
-            size: runtime_core::rx!(if big.get() { FieldSize::Lg } else { FieldSize::Sm }),
-            ..Default::default()
-        };
-        assert!(
-            matches!(input_style_source(Field(&props)), StyleSource::Reactive(_)),
-            "a reactive `size` must attach a reactive input style (routed to the \
-             style sink, not snapshotted)"
-        );
+        with_test_world(|| {
+            theme();
+            let big: Signal<bool> = runtime_core::signal(false);
+            let props = FieldProps {
+                size: runtime_core::rx!(if big.get() { FieldSize::Lg } else { FieldSize::Sm }),
+                ..Default::default()
+            };
+            assert!(
+                input_style_source(Field(&props)).is_reactive(),
+                "a reactive `size` must attach a reactive input style (routed to the \
+                 style sink, not snapshotted)"
+            );
+    });
+    }
+
+    // Regression: a Field with a LIVE error channel (every typed input —
+    // DateInput et al. — routes one in) must not mount an EMPTY help line
+    // while the error is `None`. The mounted empty text kept a caption
+    // line box plus a slot in the group's gap, so typed inputs sat
+    // permanently taller than a plain Field. The help line is a guarded
+    // hole now — no text node until the source turns `Some`.
+    #[test]
+    fn regression_live_error_none_mounts_no_empty_help_line() {
+        with_test_world(|| {
+            theme();
+            let err: Signal<Option<String>> = runtime_core::signal(None);
+            let props = FieldProps {
+                error: err.into(),
+                ..Default::default()
+            };
+            for c in classify(Field(&props)).children() {
+                assert!(
+                    !matches!(classify(c), P::Text { .. }),
+                    "no help text node may be mounted while the live error is None"
+                );
+            }
+        });
+    }
+
+    // The help line now mounts ON DEMAND (first validation error), so its
+    // evaluation must premint like any open-on-demand surface — otherwise
+    // a `--premint-only` app panics on the first error. (The sheet itself
+    // is still constructed/installed by every Field build via
+    // `help_style`, so the premint dump sees it.)
+    #[test]
+    fn help_line_evaluation_premints() {
+        with_test_world(|| {
+            theme();
+            let danger: ToneRef = tones::Danger.into();
+            let app = StyleApplication::new(field_help_sheet())
+                .with("tone", danger.key().to_string());
+            assert!(
+                app.preminted_class_list().is_some(),
+                "the on-demand help line must premint (it constructs on first error)"
+            );
+        });
+    }
+
+    const GLYPH_A: IconData = IconData {
+        view_box: (24, 24),
+        paths: &["M0 0h24"],
+        fill_rule: runtime_core::FillRule::NonZero,
+        filled: false,
+    };
+    const GLYPH_B: IconData = IconData {
+        view_box: (24, 24),
+        paths: &["M0 0v24", "M0 24h24"],
+        fill_rule: runtime_core::FillRule::NonZero,
+        filled: false,
+    };
+
+    // `Adornment::Group` flattens its members as ORDERED siblings in the
+    // shell row — DateInput's clearable ✕ + calendar pair relies on this.
+    #[test]
+    fn trailing_group_adornment_renders_members_as_row_siblings() {
+        with_test_world(|| {
+            theme();
+            let props = FieldProps {
+                trailing: Adornment::Group(vec![
+                    Adornment::button(GLYPH_A, || {}),
+                    Adornment::button(GLYPH_B, || {}),
+                ]),
+                ..Default::default()
+            };
+            let mut group = classify(Field(&props)).children();
+            let shell = classify(group.remove(0)).children();
+            let paths: Vec<_> = shell
+                .into_iter()
+                .map(|c| match classify(c) {
+                    P::TextInput { .. } => "input".to_string(),
+                    P::Pressable { children, .. } => {
+                        match classify(children.into_iter().next().unwrap()) {
+                            P::Icon { data, .. } => format!("icon:{}", data.paths.len()),
+                            _ => panic!("Button adornment wraps an icon"),
+                        }
+                    }
+                    _ => panic!("unexpected shell child"),
+                })
+                .collect();
+            assert_eq!(
+                paths,
+                vec!["input", "icon:1", "icon:2"],
+                "group members render in order after the input"
+            );
+        });
+    }
+
+    // An empty group is NO adornment: the Field must keep the plain
+    // (shell-less) input path.
+    #[test]
+    fn empty_group_adornment_keeps_the_plain_input_path() {
+        with_test_world(|| {
+            theme();
+            let props = FieldProps {
+                trailing: Adornment::Group(Vec::new()),
+                ..Default::default()
+            };
+            let mut group = classify(Field(&props)).children();
+            assert!(
+                matches!(classify(group.remove(0)), P::TextInput { .. }),
+                "an empty group must not create the adorned shell"
+            );
+        });
     }
 
     // Since the D9 focus-ring fix, a non-adorned Field's input style is
@@ -1024,29 +1262,17 @@ mod tests {
     // isn't silently regressed back.
     #[test]
     fn non_adorned_input_is_reactive_for_focus_ring() {
-        theme();
-        let props = FieldProps {
-            size: Reactive::Static(FieldSize::Lg),
-            ..Default::default()
-        };
-        assert!(
-            matches!(input_style_source(Field(&props)), StyleSource::Reactive(_)),
-            "a non-adorned Field input carries a reactive style for the focus ring"
-        );
+        with_test_world(|| {
+            theme();
+            let props = FieldProps {
+                size: Reactive::Static(FieldSize::Lg),
+                ..Default::default()
+            };
+            assert!(
+                input_style_source(Field(&props)).is_reactive(),
+                "a non-adorned Field input carries a reactive style for the focus ring"
+            );
+    });
     }
 
-    // A bare `bool` stays a `Static` mask — the zero-overhead common case (no
-    // per-input effect).
-    #[test]
-    fn static_secure_stays_static() {
-        theme();
-        let props = FieldProps {
-            secure: true.into(),
-            ..Default::default()
-        };
-        assert!(
-            input_secure_is_static(Field(&props)),
-            "a static `secure` stays Reactive::Static"
-        );
-    }
 }

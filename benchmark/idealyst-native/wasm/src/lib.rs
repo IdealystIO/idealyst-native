@@ -17,15 +17,65 @@
 //! the comparison is apples-to-apples with the other arena
 //! variants (which mirror those same dimensions).
 
-use backend_web::WebBackend;
 use runtime_core::{
-    signal, stylesheet, ui, view, AlignItems, Color, FlexDirection, IntoElement, JustifyContent,
-    Length, Overflow, Element, Signal, TokenEntry, TokenValue, Tokenized,
+    stylesheet, ui, AlignItems, Color, FlexDirection, JustifyContent, Length, Overflow,
+    TokenEntry, TokenValue, Tokenized,
 };
-use idea_ui::{install_theme, set_theme, ThemeTokens};
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
+
+use runtime_vocabulary::glue::{signal, signal_class, Element, Signal};
+
+// ---------------------------------------------------------------------------
+// Reactive-boundary helpers.
+// ---------------------------------------------------------------------------
+
+/// A page-lifetime signal created from a JS export (outside any render
+/// scope). Signal creation needs the ambient world, so route through
+/// the mounted app's world.
+fn make_signal<T: PartialEq + 'static>(v: T) -> Signal<T> {
+    backend_web::newcore::with_world_entered(|| signal(v))
+        .expect("bench export called before start() mounted the app")
+}
+
+/// Commit staged writes before the export returns, so an export returns
+/// with the reactive work done (the measurement contract in
+/// ../README.md; DOM text updates additionally ride the batched-text
+/// microtask).
+///
+/// Every write stages until a flush, which makes each export an
+/// implicit batch: a `MODE` write and a `COUNT` write in the same export
+/// rebuild the switch arm exactly once.
+fn commit() {
+    backend_web::newcore::flush_sync();
+}
+
+/// Install the boot theme: token install + host surface via
+/// `runtime_vocabulary::theme` (must run inside the app world — `app()`
+/// qualifies), capturing the `ThemeCtx` for the handler-safe swap
+/// surface the exports use.
+fn theme_install(theme: &Theme) {
+    runtime_vocabulary::theme::install_tokens(&theme.tokens_vec());
+    runtime_vocabulary::theme::set_app_background(theme.background.clone());
+    THEME_CTX.with(|c| {
+        *c.borrow_mut() = Some(runtime_vocabulary::theme::theme_ctx());
+    });
+}
+
+/// Swap the active theme (the toggle suite's op):
+/// `ThemeCtx::update_tokens` (stages + version bump) + one flush.
+/// `ThemeCtx` methods are the handler-safe surface — the exports run
+/// outside `World::enter`, where the free `theme::update_tokens` would
+/// have no ambient world.
+fn theme_swap(theme: Theme) {
+    THEME_CTX.with(|c| {
+        if let Some(ctx) = c.borrow().as_ref() {
+            ctx.update_tokens(&theme.tokens_vec());
+        }
+    });
+    commit();
+}
 
 // Default dlmalloc allocator (was: lol_alloc::FreeListAllocator).
 // Swapped out because the bench's repeated alloc/dealloc cycles
@@ -96,13 +146,12 @@ pub fn dark() -> Theme {
     }
 }
 
-/// `ThemeTokens` impl: enumerate every theme color as a
-/// `TokenEntry { name, value }` so the backend can install them on
-/// `:root`. The names here are exactly the names embedded in the
-/// `Tokenized::Token { name, .. }` references — keep these two lists
-/// in sync.
-impl ThemeTokens for Theme {
-    fn tokens(&self) -> Vec<TokenEntry> {
+impl Theme {
+    /// Enumerate every theme color as a `TokenEntry { name, value }` so
+    /// the backend can install them on `:root`. The names here are
+    /// exactly the names embedded in the `Tokenized::Token { name, .. }`
+    /// references — keep these two lists in sync.
+    pub fn tokens_vec(&self) -> Vec<TokenEntry> {
         fn entry(t: &Tokenized<Color>) -> Option<TokenEntry> {
             // Tokenized::Token always — we never construct literals for
             // theme fields above. If a literal ever slipped in there is
@@ -262,19 +311,16 @@ const DEFAULT_ROWS: usize = 1000;
 const ROW_MAX: usize = 100_000;
 
 thread_local! {
-    /// Holds the render's `Owner` so the framework's signals / effects
-    /// stay alive for the page's lifetime. Without this, the Owner
-    /// would drop at the end of `start()` and the framework would
-    /// tear down everything immediately.
-    static OWNER: RefCell<Option<runtime_core::Owner>> = const { RefCell::new(None) };
+    /// The per-world theme context, captured during `app()` (inside
+    /// `World::enter`). Theme swaps from the JS exports go through this
+    /// — `ThemeCtx` methods are the handler-safe surface (exports run
+    /// outside `enter`, where the free `theme::update_tokens` would
+    /// have no ambient world).
+    static THEME_CTX: RefCell<Option<runtime_vocabulary::theme::ThemeCtx>> =
+        const { RefCell::new(None) };
+}
 
-    /// Diagnostic-only: a second handle to the backend so we can
-    /// inspect its per-node HashMaps from the arena_stats accessor.
-    /// The framework's render path owns the primary reference; this
-    /// is just an `Rc::clone` so we can peek without going through
-    /// the framework.
-    static BACKEND: RefCell<Option<Rc<RefCell<WebBackend>>>> = const { RefCell::new(None) };
-
+thread_local! {
     /// Tracks current theme so `toggle()` knows what to flip to.
     /// Lives at module scope (not inside the framework's reactive
     /// graph) because the JS side calls `toggle()` directly.
@@ -345,6 +391,28 @@ thread_local! {
     /// Number of signal-class rows mounted. Drives the mode-4 `for`
     /// loop. Reuses `SHARED_COLOR` as the binding's signal.
     static SCLASS_COUNT: RefCell<Option<Signal<usize>>> = const { RefCell::new(None) };
+
+    /// Rebuild generation: part of the top-level match's SCRUTINEE
+    /// tuple, bumped by every `set_rows` / `setup_*` export. This is
+    /// the cross-core rebuild trigger. The pre-migration bench used
+    /// `MODE.touch()` (notify-without-write) — a retrigger idiom the
+    /// old Switch honored but the new core's `switch` deliberately
+    /// dedupes (it keys the mounted arm on the scrutinee VALUE via
+    /// `PartialEq`, so an equal re-fire keeps the arm — the walker's
+    /// `last_active` guard generalized). A value that actually
+    /// changes rebuilds identically on both cores.
+    static REBUILD_GEN: RefCell<Option<Signal<u64>>> = const { RefCell::new(None) };
+}
+
+/// Bump the rebuild generation (inside the caller's `batched` window
+/// so it coalesces with the suite's own writes).
+fn bump_gen() {
+    REBUILD_GEN.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            let v = sig.get();
+            sig.set(v + 1);
+        }
+    });
 }
 
 // =============================================================================
@@ -482,13 +550,14 @@ fn build_tree_primitive(
                 .iter()
                 .map(|c| build_tree_primitive(c, target_id, global, branch))
                 .collect();
-            view(kids).into_element()
+            // Bare-ident child splat.
+            ui! { view { kids } }
         }
     }
 }
 
 fn app(initial_rows: usize) -> Element {
-    install_theme(light());
+    theme_install(&light());
 
     // Reactive row count + mode + hierarchy state. Stored in
     // thread_locals so the wasm-bindgen exports below can mutate
@@ -497,6 +566,8 @@ fn app(initial_rows: usize) -> Element {
     ROW_COUNT.with(|c| *c.borrow_mut() = Some(count));
     let mode = signal(0u32);
     MODE.with(|c| *c.borrow_mut() = Some(mode));
+    let gen = signal(0u64);
+    REBUILD_GEN.with(|c| *c.borrow_mut() = Some(gen));
     let tree_version = signal(0u64);
     TREE_VERSION.with(|c| *c.borrow_mut() = Some(tree_version));
     let global_counter = signal(0u32);
@@ -516,45 +587,30 @@ fn app(initial_rows: usize) -> Element {
     let sclass_count = signal(0usize);
     SCLASS_COUNT.with(|c| *c.borrow_mut() = Some(sclass_count));
 
-    // Register the two hierarchy-bench signals with the web
-    // backend's JS-side reactive layer so signal writes flow into
-    // JS for per-binding fan-out (instead of firing N Rust
-    // Effects, one per leaf). Done once at startup; the leaves
-    // themselves only need to declare the binding (no per-leaf
-    // Effect setup). Wrapped in `untrack` so the stringifier
-    // can't accidentally pick up a subscription if it fires
-    // inside some outer effect's run.
-    BACKEND.with(|s| {
-        if let Some(b_rc) = s.borrow().as_ref() {
-            let mut b = b_rc.borrow_mut();
-            b.register_signal_for_js(global_counter.id(), move || {
-                runtime_core::untrack(|| global_counter.get()).to_string()
-            });
-            b.register_signal_for_js(branch_counter.id(), move || {
-                runtime_core::untrack(|| branch_counter.get()).to_string()
-            });
-            // Wire `shared_color` to the JS-side signal-change
-            // dispatcher so the signal-class suite's bindings (which
-            // tap `__idealystOnSignalChanged`) hear updates. The
-            // existing reactive-style suite drives this signal via
-            // a per-row Rust Effect — those Effects continue to
-            // fire (no harm), but the binding's JS dispatcher is
-            // what makes the SHARED bumps fast at scale.
-            b.register_signal_for_js(shared_color.id(), move || {
-                runtime_core::untrack(|| shared_color.get()).to_string()
-            });
-        }
-    });
+    // NOTE: no JS-side signal-write notifier is wired here. The old
+    // walker registered `global_counter` / `branch_counter` /
+    // `shared_color` with the web backend's JS reactive layer
+    // (`register_signal_for_js`), so a write fanned out per BINDING in
+    // JS instead of firing one Rust effect per leaf. World signals have
+    // no JS write-notifier channel (see `runtime_vocabulary::
+    // style_attach`'s `signal_class` note), so the same author shapes
+    // fall back to per-binding world effects — which is exactly what
+    // the hierarchy + signal-class suites measure.
 
     ui! {
         view(style = page_style()) {
-            // Top-level Switch on `mode`. Flipping `mode` swaps
-            // the entire subtree atomically. Branches: 0 = row
-            // list (rebuild/toggle), 1 = hierarchy tree.
-            match mode.get() {
+            // Top-level Switch on `(mode, rebuild-generation)`.
+            // Flipping either swaps/rebuilds the entire subtree
+            // atomically. Branches (by mode): 0 = row list
+            // (rebuild/toggle), 1 = hierarchy tree, 2-4 = suites.
+            // The generation component is what lets a same-mode
+            // re-setup rebuild at all: a reactive `match` is keyed on
+            // the scrutinee VALUE, so an equal tuple keeps the mounted
+            // arm (see REBUILD_GEN).
+            match (mode.get(), gen.get()) {
                 m => {
                     {
-                        match *m {
+                        match m.0 {
                             0u32 => {
                                 let n: usize = count.get();
                                 ui! {
@@ -681,7 +737,7 @@ fn app(initial_rows: usize) -> Element {
                                             // Pre-resolve both classes
                                             // (one per signal value)
                                             // at construction.
-                                            view(style = runtime_core::signal_class(
+                                            view(style = signal_class(
                                                 shared_color,
                                                 &[0u32, 1u32],
                                                 |v: u32| {
@@ -719,7 +775,7 @@ fn app(initial_rows: usize) -> Element {
                                                         global_counter,
                                                         branch_counter,
                                                     ),
-                                                    None => view(Vec::new()).into_element(),
+                                                    None => ui! { view {} },
                                                 }
                                             }
                                         }
@@ -737,32 +793,22 @@ fn app(initial_rows: usize) -> Element {
 /// Boot the wasm side: mount the screen under `#app` with
 /// `initial_rows` rows. Called once from the arena variant's
 /// `<script type="module">` after the wasm is loaded.
+///
+/// `backend_web::newcore::start` owns the backend, the registry, the
+/// world, and the flush driver (dispatch-site glue — no window
+/// listener, no rAF poll). `install_time_source` (so `PhaseTimer` reads
+/// `performance.now()` rather than recording 0 under `debug-stats`),
+/// `install_scheduler`, and the global self-handle that carries the
+/// batched-text microtask all happen inside it.
 #[wasm_bindgen]
 pub fn start(initial_rows: usize) {
     console_error_panic_hook::set_once();
-    // Register the web backend's wasm-bindgen-backed scheduler so the
-    // framework can defer work to microtasks / rAF. Without this, the
-    // first render panics the moment it hits a Switch primitive (or any
-    // other path that calls `schedule_microtask`).
-    backend_web::install_scheduler();
-    // Register a TimeSource so `runtime_core::debug::now_micros`
-    // (used by `PhaseTimer` and the rest of the debug-stats
-    // aggregator) reads `performance.now()` instead of returning 0.
-    // Without this, every phase counter records duration 0 and the
-    // profiling output is useless.
-    backend_web::install_time_source();
-    // Route effect-closure + scope-guard drops through the web
-    // backend's rAF-sliced drain so wasm-bindgen Closure teardown
-    // cost lands outside the synchronous `apply` window. Without
-    // this, drops are synchronous (correct, but slower on big
-    // `set_rows(...)` transitions).
-    backend_web::install_drop_deferral();
     let rows = initial_rows.clamp(1, ROW_MAX);
-    let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
-    backend_web::install_text_batcher(&backend);
-    BACKEND.with(|slot| *slot.borrow_mut() = Some(backend.clone()));
-    let owner = runtime_core::render(backend, app(rows));
-    OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
+    backend_web::newcore::start(move || app(rows));
+    // Commit anything the suites staged during mount over and above
+    // what `newcore::start`'s own mount flush covered (theme install
+    // version bump).
+    commit();
 }
 
 
@@ -777,10 +823,10 @@ pub fn toggle() -> String {
         let mut is_dark = d.borrow_mut();
         *is_dark = !*is_dark;
         if *is_dark {
-            set_theme(dark());
+            theme_swap(dark());
             name = "dark".to_string();
         } else {
-            set_theme(light());
+            theme_swap(light());
             name = "light".to_string();
         }
     });
@@ -799,9 +845,9 @@ pub fn set_theme_by_name(name: &str) {
         *is_dark = want_dark;
     });
     if want_dark {
-        set_theme(dark());
+        theme_swap(dark());
     } else {
-        set_theme(light());
+        theme_swap(light());
     }
 }
 
@@ -819,9 +865,9 @@ pub fn set_theme_by_name(name: &str) {
 /// is invisible to the Switch and the row list never rebuilds.
 ///
 /// The fix is to also touch `mode` so the Switch's Effect re-fires.
-/// `Signal::set` notifies subscribers unconditionally (no
-/// value-equality skip), so `mode.set(0)` when mode is already 0
-/// still triggers the rebuild — at which point the arm body reads
+/// `Signal::touch` notifies subscribers without writing (the guarded
+/// `set` skips same-value writes, so `mode.set(0)` when mode is
+/// already 0 would be a no-op) — at which point the arm body reads
 /// the latest `count.get()` and produces the new row list.
 ///
 /// We could fix this at the framework level (e.g. by including
@@ -835,16 +881,14 @@ pub fn set_rows(n: usize) {
             sig.set(clamped);
         }
     });
-    // Unconditional — this is what actually triggers the rebuild.
-    // Without it, the rebuild bench stays stuck on its initial
-    // row count for every subsequent iteration (silent failure;
-    // the bench reports apply times for set-rows calls that did
-    // not actually mount any new DOM).
-    MODE.with(|c| {
-        if let Some(sig) = c.borrow().as_ref() {
-            sig.set(0);
-        }
-    });
+    // Unconditional — this is what actually triggers the rebuild
+    // (the row-count read inside the match arm is untracked, so the
+    // count write alone is invisible to the Switch). A VALUE bump in
+    // the scrutinee tuple, not `touch()`: the new core's switch
+    // dedupes equal scrutinee values, so notify-without-write would
+    // silently skip the rebuild there (see REBUILD_GEN).
+    bump_gen();
+    commit();
 }
 
 /// Mount a tree of `nodes` leaves for the hierarchy suite,
@@ -859,24 +903,32 @@ pub fn setup_hierarchy(seed: u32, nodes: u32, max_depth: u32) {
     let tree = gen_tree_shape(seed, nodes as usize, md);
     TARGET_LEAF_ID.with(|t| t.set(tree.target_leaf_id));
     TREE_ROOT.with(|r| *r.borrow_mut() = Some(tree.root));
-    // Coalesce the mode flip + tree_version bump into one fan-out.
-    // Without `batch`, MODE.set(1) and TREE_VERSION.update(...) each
-    // re-fire the Switch arm's effect — so the tree builds TWICE
+    // The mode flip + tree_version bump coalesce into ONE fan-out
+    // because writes stage until this export's `commit()`. That matters:
+    // if each write fanned out on its own, the tree would build TWICE
     // (once on mode flip, again on version bump), with the first
-    // build's 100k+ Effects torn down before the second builds the
-    // same tree fresh. Batching collapses to a single rebuild.
-    runtime_core::batch(|| {
-        MODE.with(|c| {
-            if let Some(sig) = c.borrow().as_ref() {
-                sig.set(1);
-            }
-        });
-        TREE_VERSION.with(|c| {
-            if let Some(sig) = c.borrow().as_ref() {
-                sig.update(|v| *v += 1);
-            }
-        });
+    // build's 100k+ effects torn down before the second built the same
+    // tree fresh.
+    MODE.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            // Plain guarded `set`: a same-mode re-setup leaves this
+            // a no-op — the `bump_gen()` below is what forces the
+            // rebuild (a scrutinee-tuple VALUE change; a force-notify
+            // `set_always` would NOT work, because the reactive `match`
+            // dedupes equal scrutinee values).
+            sig.set(1);
+        }
     });
+    TREE_VERSION.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            // get+set instead of `update`: the two cores' `update`
+            // closures differ in shape (`&mut T` vs `&T -> T`);
+            // this spelling is core-agnostic.
+            let v = sig.get();
+            sig.set(v + 1);
+        }
+    });
+    commit();
 }
 
 /// Bump the branch counter. Only the target leaf reads this
@@ -890,6 +942,7 @@ pub fn branch_update(n: u32) {
             sig.set(n);
         }
     });
+    commit();
 }
 
 /// Bump the global counter. EVERY leaf reads this signal, so
@@ -901,54 +954,45 @@ pub fn global_update(n: u32) {
             sig.set(n);
         }
     });
+    commit();
 }
 
 // ----------------------------------------------------------------
 // Granular suite hooks (mode = 2)
 // ----------------------------------------------------------------
 
-/// Mount `n` counter rows. Each row binds its own signal via the
-/// JS-side text-binding registry, so a `bump_counter(i, v)` is one
-/// JS notifier call (not a Rust Effect per row). Tearing down a
+/// Mount `n` counter rows, each bound to its own signal. Tearing down a
 /// previous mount: we drop the existing signal Vec and re-create.
 ///
-/// The mode + count writes are batched so the Switch arm rebuilds
-/// exactly once. Without the batch, `MODE.set(2)` and
-/// `COUNTER_COUNT.set(n)` would each re-fire the Switch effect and
-/// the row list would build twice.
+/// The mode + count writes stage until this export's `commit()`, so the
+/// switch arm rebuilds exactly once. If each write fanned out on its
+/// own, `MODE.set(2)` and `COUNTER_COUNT.set(n)` would each re-fire the
+/// switch effect and the row list would build twice.
 #[wasm_bindgen]
 pub fn setup_counters(n: u32) {
     let n = n.clamp(1, ROW_MAX as u32) as usize;
     // Fresh signals each setup — old ones drop with the previous
     // scope when the Switch arm rebuilds.
-    let sigs: Vec<Signal<u32>> = (0..n).map(|_| Signal::new(0u32)).collect();
-    // Register each counter signal as a JS-side notifier so
-    // `bump_counter` updates flow through the batched text bridge
-    // instead of firing per-row Rust Effects.
-    BACKEND.with(|s| {
-        if let Some(b_rc) = s.borrow().as_ref() {
-            let mut b = b_rc.borrow_mut();
-            for sig in &sigs {
-                let sig_for_notify = *sig;
-                b.register_signal_for_js(sig.id(), move || {
-                    runtime_core::untrack(|| sig_for_notify.get()).to_string()
-                });
-            }
+    let sigs: Vec<Signal<u32>> = (0..n).map(|_| make_signal(0u32)).collect();
+    // NOTE: no JS-side notifier per counter signal — see `app()`'s note.
+    // Each row's binding is a world effect.
+    COUNTERS.with(|c| *c.borrow_mut() = sigs);
+    MODE.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            // Plain guarded `set`: a same-mode re-setup leaves this
+            // a no-op — the `bump_gen()` below is what forces the
+            // rebuild (a scrutinee-tuple VALUE change; a force-notify
+            // `set_always` would NOT work, because the reactive `match`
+            // dedupes equal scrutinee values).
+            sig.set(2);
         }
     });
-    COUNTERS.with(|c| *c.borrow_mut() = sigs);
-    runtime_core::batch(|| {
-        MODE.with(|c| {
-            if let Some(sig) = c.borrow().as_ref() {
-                sig.set(2);
-            }
-        });
-        COUNTER_COUNT.with(|c| {
-            if let Some(sig) = c.borrow().as_ref() {
-                sig.set(n);
-            }
-        });
+    COUNTER_COUNT.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            sig.set(n);
+        }
     });
+    commit();
 }
 
 /// Bump one row's counter to `v`. Routes through the JS-side text
@@ -961,6 +1005,7 @@ pub fn bump_counter(i: u32, v: u32) {
             sig.set(v);
         }
     });
+    commit();
 }
 
 /// Bump every counter in `[start, end)` to `v` inside a single
@@ -973,14 +1018,13 @@ pub fn bump_range(start: u32, end: u32, v: u32) {
     if s >= e {
         return;
     }
-    runtime_core::batch(|| {
-        COUNTERS.with(|c| {
-            let c = c.borrow();
-            for sig in c.iter().skip(s).take(e - s) {
-                sig.set(v);
-            }
-        });
+    COUNTERS.with(|c| {
+        let c = c.borrow();
+        for sig in c.iter().skip(s).take(e - s) {
+            sig.set(v);
+        }
     });
+    commit();
 }
 
 // ----------------------------------------------------------------
@@ -993,7 +1037,7 @@ pub fn bump_range(start: u32, end: u32, v: u32) {
 #[wasm_bindgen]
 pub fn setup_reactive_styles(n: u32) {
     let n = n.clamp(1, ROW_MAX as u32) as usize;
-    let points: Vec<Signal<u32>> = (0..n).map(|_| Signal::new(0u32)).collect();
+    let points: Vec<Signal<u32>> = (0..n).map(|_| make_signal(0u32)).collect();
     POINT_COLORS.with(|p| *p.borrow_mut() = points);
     // Reset shared color to 0 (== color A) so the suite starts in
     // a known state on each setup.
@@ -1002,18 +1046,22 @@ pub fn setup_reactive_styles(n: u32) {
             sig.set(0);
         }
     });
-    runtime_core::batch(|| {
-        MODE.with(|c| {
-            if let Some(sig) = c.borrow().as_ref() {
-                sig.set(3);
-            }
-        });
-        RSTYLE_COUNT.with(|c| {
-            if let Some(sig) = c.borrow().as_ref() {
-                sig.set(n);
-            }
-        });
+    MODE.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            // Plain guarded `set`: a same-mode re-setup leaves this
+            // a no-op — the `bump_gen()` below is what forces the
+            // rebuild (a scrutinee-tuple VALUE change; a force-notify
+            // `set_always` would NOT work, because the reactive `match`
+            // dedupes equal scrutinee values).
+            sig.set(3);
+        }
     });
+    RSTYLE_COUNT.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            sig.set(n);
+        }
+    });
+    commit();
 }
 
 /// Mount `n` signal-class rows. Each row's `background` is bound to
@@ -1029,18 +1077,22 @@ pub fn setup_signal_class_rows(n: u32) {
             sig.set(0);
         }
     });
-    runtime_core::batch(|| {
-        MODE.with(|c| {
-            if let Some(sig) = c.borrow().as_ref() {
-                sig.set(4);
-            }
-        });
-        SCLASS_COUNT.with(|c| {
-            if let Some(sig) = c.borrow().as_ref() {
-                sig.set(n);
-            }
-        });
+    MODE.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            // Plain guarded `set`: a same-mode re-setup leaves this
+            // a no-op — the `bump_gen()` below is what forces the
+            // rebuild (a scrutinee-tuple VALUE change; a force-notify
+            // `set_always` would NOT work, because the reactive `match`
+            // dedupes equal scrutinee values).
+            sig.set(4);
+        }
     });
+    SCLASS_COUNT.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            sig.set(n);
+        }
+    });
+    commit();
 }
 
 /// Set the shared color. `name` is "A" or "B" — anything else is
@@ -1053,6 +1105,7 @@ pub fn set_shared_color(name: &str) {
             sig.set(v);
         }
     });
+    commit();
 }
 
 /// Set row `i`'s point color. `name` is "A" / "B" / anything else
@@ -1068,6 +1121,7 @@ pub fn set_point_color(i: u32, name: &str) {
             sig.set(v);
         }
     });
+    commit();
 }
 
 /// Convenience: how many rows the wasm is rendering right now.
@@ -1079,38 +1133,18 @@ pub fn row_count() -> usize {
         .unwrap_or(DEFAULT_ROWS)
 }
 
-/// Diagnostic: return arena slot counts so JS can detect when the
-/// rebuild loop is leaving state behind. Each field returns
-/// `in_use` × 1_000_000 + `total` so we can shove the full snapshot
-/// over the wasm boundary as a small struct of plain numbers without
-/// inventing a wrapper type. Tooling-only — call `bench_stats_json`
-/// for human-readable output.
+/// Diagnostic JSON for the variant's index.html. Phase counters report
+/// when `debug-stats` is on — that is the profiling surface CLAUDE.md §6
+/// describes and the ±5 % gate work used.
+///
+/// The historical arena/backend slot census (`signals_in_use`,
+/// `effects_total`, the backend's per-node HashMap counts) is gone with
+/// the old walker: world slots replaced the reactive arena and the
+/// backend handle is owned by `newcore::start`, so there is no
+/// process-global census to read.
 #[wasm_bindgen]
 pub fn bench_stats_json() -> String {
-    let s = runtime_core::arena_stats();
-    let backend_json = {
-        let b = BACKEND.with(|slot| slot.borrow().as_ref().map(|rc| rc.borrow().debug_counts()));
-        match b {
-            // Node-id allocation moved to a JS-side WeakMap (see
-            // `WebBackend::node_id`); there's no Rust-side counter
-            // or cache to report anymore.
-            Some(b) => format!(
-                "{{\"dynamic\":{},\"state_listeners\":{},\"pregen\":{},\"pregen_by_ptr\":{},\"free_rule_indices\":{}}}",
-                b.dynamic, b.state_listeners, b.pregen, b.pregen_by_ptr, b.free_rule_indices,
-            ),
-            None => "null".into(),
-        }
-    };
-    let phases_json = phase_counters_json();
-    format!(
-        "{{\"signals_in_use\":{},\"signals_total\":{},\"effects_in_use\":{},\"effects_total\":{},\"refs_in_use\":{},\"refs_total\":{},\"total_subscribers\":{},\"total_deps\":{},\"backend\":{},\"phases\":{}}}",
-        s.signals_in_use, s.signals_total,
-        s.effects_in_use, s.effects_total,
-        s.refs_in_use, s.refs_total,
-        s.total_subscribers, s.total_deps,
-        backend_json,
-        phases_json,
-    )
+    format!("{{\"phases\":{}}}", phase_counters_json())
 }
 
 /// Drain + serialize `runtime_core::debug` phase counters as a

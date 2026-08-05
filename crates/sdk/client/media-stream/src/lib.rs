@@ -458,6 +458,21 @@ pub struct MediaStream {
     inner: Rc<StreamInner>,
 }
 
+/// Pointer identity — a `MediaStream` is a HANDLE to a live capture, so clones
+/// of one stream are equal and two independent streams never are.
+///
+/// There is no meaningful VALUE equality to offer: the payload is a live frame
+/// channel plus a native source, and comparing frames would be both wrong (a
+/// stream is not its current frame) and unbounded. 1.0 bounds the whole `Signal`
+/// handle on `PartialEq`, and holding a camera/screen stream in app state is the
+/// common case, so the guarded `set` needs *an* answer — pointer identity is the
+/// one that matches this type's semantics. Mirrors `idea_theme`'s `ThemeSlot`.
+impl PartialEq for MediaStream {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
 impl MediaStream {
     /// Create a stream and its producer [`FrameWriter`]. The producer spins
     /// up capture (writing through the `FrameWriter`), optionally sets a
@@ -770,6 +785,34 @@ mod tests {
         };
         writer.write_rgba8_at(W, H, &[1, 2, 3, 4, 5, 6, 7, 8], 4_242);
         assert_eq!(*seen.lock().unwrap(), vec![(W, H, 4_242)]);
+    }
+
+    /// The 1.0.1 identity impl, pinned. `Signal<T>` is bounded on
+    /// `T: PartialEq` at creation and `get`, so without this a camera or
+    /// screen stream could not be held in app state at all — and the
+    /// orphan rule means only this crate can supply it.
+    #[test]
+    fn media_stream_clones_compare_equal() {
+        let (stream, _writer) = MediaStream::new();
+        assert!(stream == stream.clone(), "clones address the same capture");
+    }
+
+    /// Two independently opened streams are never the same stream, even
+    /// after both have received byte-identical frames — the compare must
+    /// read identity, not the current frame. If it collapsed them,
+    /// swapping the camera for the screen-share would be swallowed by the
+    /// guarded `set` and the preview would keep showing the old source.
+    #[test]
+    fn independently_opened_media_streams_compare_unequal() {
+        let (a, wa) = MediaStream::new();
+        let (b, wb) = MediaStream::new();
+        assert!(a != b);
+        wa.write_rgba8_at(W, H, &[1, 2, 3, 4, 5, 6, 7, 8], 0);
+        wb.write_rgba8_at(W, H, &[1, 2, 3, 4, 5, 6, 7, 8], 0);
+        assert!(
+            a != b,
+            "identical frames must not collapse two streams into one"
+        );
     }
 
     #[test]

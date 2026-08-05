@@ -1155,7 +1155,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::{FontFamily, Length, Signal, TokenValue};
+    use runtime_core::{FontFamily, Length, TokenValue};
     use crate::theme_runtime::{active_theme_untracked, ThemeTokens};
 
     /// The active theme's `color-background` token value (the cheapest
@@ -1192,23 +1192,31 @@ mod tests {
     /// effects synchronously, so no flush is needed.)
     #[test]
     fn reactive_theme_swaps_when_its_signal_flips() {
-        let light_bg = theme_background(light_theme());
-        let dark_bg = theme_background(dark_theme());
-        assert_ne!(light_bg.0, dark_bg.0, "light/dark backgrounds must differ for this test");
+        crate::testing::with_test_world(|| {
+            let light_bg = theme_background(light_theme());
+            let dark_bg = theme_background(dark_theme());
+            assert_ne!(light_bg.0, dark_bg.0, "light/dark backgrounds must differ for this test");
 
-        let dark = Signal::new(false); // Copy: a clone moves into the selector
-        install_idea_theme_reactive(move || if dark.get() { dark_theme() } else { light_theme() });
-        assert_eq!(active_background().0, light_bg.0, "initial theme is light");
+            // The free `signal(...)` constructor — `Signal` has no inherent
+            // `new`, because creation is world-ambient.
+            let dark = runtime_core::signal(false); // Copy: a clone moves into the selector
+            install_idea_theme_reactive(move || if dark.get() { dark_theme() } else { light_theme() });
+            assert_eq!(active_background().0, light_bg.0, "initial theme is light");
 
-        dark.set(true);
-        assert_eq!(active_background().0, dark_bg.0, "flipping the signal re-themes");
+            dark.set(true);
+            // Old core: `set` runs subscribed effects synchronously (commit is
+            // a no-op). New core: writes stage until the flush `commit()` runs.
+            crate::testing::commit();
+            assert_eq!(active_background().0, dark_bg.0, "flipping the signal re-themes");
 
-        dark.set(false);
-        assert_eq!(active_background().0, light_bg.0, "and flips back");
+            dark.set(false);
+            crate::testing::commit();
+            assert_eq!(active_background().0, light_bg.0, "and flips back");
 
-        // Free the effect's arena slot before thread teardown (see the
-        // INSTALL_THEMES_KEEPALIVE test for why).
-        super::REACTIVE_THEME_KEEPALIVE.with(|k| *k.borrow_mut() = None);
+            // Free the effect's arena slot before thread teardown (see the
+            // INSTALL_THEMES_KEEPALIVE test for why).
+            super::REACTIVE_THEME_KEEPALIVE.with(|k| *k.borrow_mut() = None);
+        });
     }
 
     /// Two theme impls with different spacing/radius/typography should
@@ -1550,24 +1558,28 @@ mod tests {
     /// only" works with zero hardcoded palette values in the stylesheet.
     #[test]
     fn installed_custom_theme_wins_over_reference_fallback() {
-        // Author writes this in a stylesheet — no hex, just the token name.
-        let surface_ref = theme_color("color-surface");
-        assert_ne!(
-            surface_ref.value().0, "#FBF9F4",
-            "precondition: the reskin color is not the base fallback"
-        );
+        crate::testing::with_test_world(|| {
+            // Author writes this in a stylesheet — no hex, just the token name.
+            let surface_ref = theme_color("color-surface");
+            assert_ne!(
+                surface_ref.value().0, "#FBF9F4",
+                "precondition: the reskin color is not the base fallback"
+            );
 
-        // App installs a reskin overriding color-surface.
-        let mut reskin = light_theme();
-        reskin.colors.surface = Tokenized::token("color-surface", Color("#FBF9F4".into()));
-        install_idea_theme(reskin);
+            // App installs a reskin overriding color-surface.
+            let mut reskin = light_theme();
+            reskin.colors.surface = Tokenized::token("color-surface", Color("#FBF9F4".into()));
+            install_idea_theme(reskin);
 
-        // The same by-name reference now resolves to the reskin value.
-        assert_eq!(
-            surface_ref.resolve().0,
-            "#FBF9F4",
-            "installed theme's registry value must win over the reference fallback"
-        );
+            // The same by-name reference now resolves to the reskin value.
+            // (This pins the glue's shared-token-registry seed:
+            // `Tokenized::resolve` must see per-world installs.)
+            assert_eq!(
+                surface_ref.resolve().0,
+                "#FBF9F4",
+                "installed theme's registry value must win over the reference fallback"
+            );
+        });
     }
 
     /// An unknown name is a runtime-checked no-panic on the function path:

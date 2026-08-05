@@ -1,253 +1,63 @@
+# runtime-core — the framework's author surface.
+#
+# Every app, SDK, component library and example spells the framework as
+# `runtime_core::…`. This crate is that root: a paper-thin re-export of
+# `runtime_vocabulary::glue` plus the macro set (which a module
+# re-export cannot carry).
+#
+# It is NOT the runtime. The runtime is `runtime-world` (reactive
+# kernel), `runtime-scene` (Element/realize/Host/Registry),
+# `runtime-vocabulary` (capability traits + builtin handlers) and
+# `runtime-shared` (style engine, assets, animation, scheduling, robot,
+# prop/handle types). Backends depend on those directly and never on
+# this crate.
+#
+# Anything missing from the author surface belongs in
+# `runtime_vocabulary::glue`, next to the machinery it wraps — not here.
 [package]
 name = "runtime-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-
-# Crate-type stays the cargo default (rlib only). The runtime-server dylib
-# hot-reload mode now uses a "fat bin + thin patch" architecture
-# (dx-style): the host bin statically links every framework crate
-# and is linked with `-Wl,-export_dynamic` so every internal
-# symbol is visible to the patch linker. Patches are dylibs whose
-# external references are resolved as ABSOLUTE jumps to the host
-# bin's symbol addresses — no dynamic linking against framework
-# crates at all. So no separate dylib output is needed here.
+description = "Idealyst author surface: runtime_vocabulary::glue re-export plus the macro set."
 
 [features]
-# ---------------------------------------------------------------------------
-# Primitive gating (`prim-*`): each feature compiles the walker dispatch,
-# authoring builder fn, and backend hooks for one heavy primitive family.
-# All prim-* features are ON by default — existing apps change nothing.
-# Size-conscious web apps set `default-features = false` on runtime-core AND
-# their backend crate, then re-enable the primitives they use; an unused
-# primitive's dispatcher, backend implementation, and web JS shims then leave
-# the bundle entirely (the walker renders the platform "not supported"
-# placeholder if one arrives over the wire).
-#
-# NOT gated, by design: `Element` variants (wire-protocol stability — a
-# runtime-server may send any primitive) and the `Backend` trait methods
-# (they already carry default impls, so the trait surface is identical in
-# every configuration). Gating is code-only; rule 7 uniformity holds because
-# one runtime-core feature drives every backend identically.
-#
-# SDKs that render through a primitive must forward its feature on their
-# runtime-core dependency (e.g. `virtualized` forwards `prim-virtualizer`),
-# so depending on the SDK re-enables exactly what it needs.
-default = ["prim-virtualizer", "prim-icon", "prim-image", "prim-text-input", "prim-toggle", "prim-slider", "prim-activity", "prim-portal", "prim-presence", "prim-graphics", "prim-navigator", "prim-lazy"]
-# `Element::Navigator` + `Element::NavigatorOutlet` behavior: the walker's
-# navigator build (screen scopes, outlet capture), URL sync (pushState /
-# popstate / deep links) and scroll persistence. The navigator *types*
-# (`NavigatorHost`, `NavigatorHandle`, `NavState`, `Route`, …) stay ungated
-# — they appear in `Element` payloads, `RefFill`, and `Backend` trait
-# signatures. Navigator SDK crates (swap-navigator, stack-navigator,
-# idea-ui-nav) forward this feature, so using one re-enables it.
-prim-navigator = []
-# `Element::Lazy` (`#[lazy_component]` / wasm-split chunk mounting): the
-# walker's async chunk-load driver and the `lazy(..)` builder. The
-# `LazyLoader` / `LazyState` types stay ungated (Element payload).
-prim-lazy = []
-# `flat_list` / windowed-list virtualization (`Element::Virtualizer`).
-# Also covers the `ui!` structured `for i in count(sig) { .. }` form, which
-# lowers to a Virtualizer — disabling this feature makes that construct a
-# compile error too (plain `for` over data/`Each` is unaffected).
-prim-virtualizer = []
-# Per-family gates; same shape as prim-virtualizer (walker dispatch +
-# authoring fns + backend impls). prim-text-input covers TextInput AND
-# TextArea; prim-portal covers portal/overlay/anchored_overlay.
-prim-icon = []
-prim-image = []
-prim-text-input = []
-prim-toggle = []
-prim-slider = []
-prim-activity = []
-prim-portal = []
-prim-presence = []
-prim-graphics = []
-
-# When enabled, the framework records component/build/backend timing
-# events into an in-memory log. Author-facing API lives in
-# `runtime_core::debug`. Off by default — when off, the `debug`
-# module + all instrumentation are entirely compiled out (no atomic
-# check, no symbol pollution, no binary growth).
-#
-# Forwards to the matching feature on `runtime-macros` so the
-# `#[component]` macro emits the corresponding enter/exit calls.
-# Timing reads go through the platform-agnostic `runtime_core::time`
-# source (installed by each backend); this crate links no `js-sys` /
-# `wasm-bindgen` itself.
-debug-stats = ["runtime-macros/debug-stats"]
-
-# Dev-time hot-reload substrate. Pulls in `dev-hot` (the
-# subsecond-backed jump-table runtime) and tells the `#[component]`
-# macro to emit a thin `hot::call(...)` wrapper around every
-# user-authored component body. Production builds (where this is
-# off — the default) emit components with no wrapper, no
-# indirection, zero overhead — `dev-hot` itself doesn't even
-# get compiled.
-#
-# Turn on for: runtime-server dylib-mode host builds, and any dev-time native
-# platform build (Android, iOS) where the dev-server will ship
-# patch dylibs over the wire.
-hot-reload = ["runtime-macros/hot-reload", "dep:dev-hot", "dev-hot/hot"]
-
-# Project catalog capture. When enabled, the macros emit
-# `inventory::submit!`s registering each component / props struct /
-# tool into `mcp-catalog`'s distributed slice; the catalog surfaces via
-# `runtime_core::__mcp` (a hidden re-export of `mcp-catalog`). This is
-# the project's introspection interface — the MCP server renders it for
-# AI, a docs generator renders it for humans. Off by default —
-# production builds carry zero catalog code. Forwards to
-# `runtime-macros/catalog` (the emission gate) and pulls `mcp-catalog`
-# in as an optional dep so user crates never declare it directly.
-# See `docs/mcp-catalog-spec.md`.
-catalog = ["runtime-macros/catalog", "dep:mcp-catalog"]
-
-# Backward-compatible alias. The catalog feature used to be named `mcp`
-# (after its first consumer). MCP now *relies on* the catalog rather than
-# being the gate, so the gate is `catalog`; `runtime-core/mcp` stays as
-# an alias that just turns it on. Existing consumers keep working.
+# The robot registry so `test_id` forwarding and `#[method]`
+# registrations go live in a consuming crate.
+robot = ["runtime-vocabulary/robot"]
+# `driver` (spawn_async/render_loop) and the `resource`/`mutation`
+# mirrors on the root — what an async-consuming SDK reaches for.
+async-driver = ["runtime-vocabulary/async-driver"]
+# ONE switch makes a graph catalog-capable: the macro emission gate
+# (`runtime-macros/catalog`) plus the vocabulary anchor (`glue::__mcp`,
+# which this root's glob re-export carries, so the
+# `::runtime_core::__mcp::…` emissions from
+# `#[derive(IdealystSchema)]` / `#[idealyst_tool]` / `recipe!` resolve
+# here too). Forwards runtime-shared's `catalog` through the
+# vocabulary, so the bridge `get_catalog` verb + the static
+# core-primitive recipes come along.
+catalog = ["runtime-vocabulary/catalog", "runtime-macros/catalog"]
+# Back-compat alias — the catalog feature was originally named after
+# its first consumer.
 mcp = ["catalog"]
-
-# Compile-time documentation enforcement. When on, the compiler rejects
-# any `#[component]` without a `///` doc comment and any
-# `#[derive(IdealystSchema)]` prop field / enum variant without one.
-# A deliberately strict gate — not the everyday workflow — for catching
-# undocumented public surface at build time instead of in a later catalog
-# audit. Independent of `mcp`; forwards to `runtime-macros/strict-docs`.
-# Off by default. See `docs/mcp-catalog-spec.md`.
-strict-docs = ["runtime-macros/strict-docs"]
-
-# Compile-time component-naming enforcement. When on, the compiler rejects
-# any `#[component]` whose fn name isn't PascalCase — the convention
-# `ui!`/`jsx!` use to route a tag to component dispatch vs. a primitive.
-# The build-failing counterpart to the `component-pascal-case` lint rule.
-# Independent of the other gates; forwards to `runtime-macros/strict-naming`.
-# Off by default.
-strict-naming = ["runtime-macros/strict-naming"]
-
-# Programmatic introspection and control of the running UI. When
-# enabled, the render walker registers every mounted primitive into a
-# thread-local registry that can be queried and controlled via the
-# `robot` module's API. Designed as the foundation for:
-# - Cross-platform E2E testing
-# - MCP server for AI-driven in-app control
-# - Live debugging / inspection tools
-#
-# Off by default — adds per-node overhead (one registry entry per
-# mounted element + retained action closures). Production builds
-# should leave this off.
-# `dep:base64` powers the Robot bridge's `"screenshot"` verb, which
-# returns the captured PNG as base64 in its JSON response.
-# `dep:libc` is the unix `kill(pid, 0)` liveness check the bridge uses to
-# sweep dead-pid registration files from `~/.idealyst/apps/` on bind (so
-# a crashed prior run doesn't leave a ghost the MCP server tries to dial).
-# `dep:tungstenite` is the native dial-out transport's WebSocket client
-# (target-gated to non-wasm, so it's a no-op when `robot` is enabled on a web
-# build — mirrors how `dep:libc` resolves to nothing there).
-robot = ["dep:base64", "dep:libc", "dep:tungstenite"]
-
-# `dev` umbrella feature — the one `idealyst dev` flips. Bundles
-# every feature that "the user is running locally for development"
-# implies. Today: `robot` (so the MCP server's runtime tools can
-# attach) + `catalog` (so the component catalog is populated). When
-# `dev` is on, `runtime_core::mount()` auto-starts the Robot bridge on
-# the default port — no user code needed. Production builds leave this
-# off; they never link `mcp-catalog` or the bridge thread.
+# What a dev-session wrapper turns on: the automation registry AND the
+# MCP catalog. NOTE: `runtime-vocabulary/robot` does not forward
+# `runtime-shared/robot`, so a native dev wrapper that also needs the
+# bridge transport declares
+# `dev = ["runtime-core/dev", "runtime-shared/robot"]`.
 dev = ["robot", "catalog"]
-
-# Platform-agnostic async + per-frame primitives:
-#
-# - `render_loop(|elapsed| ...)`  ticks a closure once per frame.
-# - `spawn_async(future)`         drives a future to completion.
-#
-# Both are defined here as platform-agnostic traits (`RenderLoopDriver`,
-# `AsyncExecutor` in `driver.rs`); each `backend/*` crate installs the
-# implementation appropriate to its platform (rAF/spawn_local on web,
-# a render thread on Android, CADisplayLink on iOS). This crate links
-# NO platform deps for them — no `wasm-bindgen-futures`, no
-# `objc2`/`block2`. The only target-gated dep is `pollster`, a portable
-# native fallback so `spawn_async` works before a backend installs an
-# executor (and `log` for the desktop-fallback warning).
-#
-# Off by default because that native fallback is dead weight for apps
-# that never need a frame ticker. Enabling this feature does NOT pull
-# in any GPU library — that's the author's call, kept in the author's
-# own Cargo.toml. The `Graphics` surface primitive is unconditional.
-async-driver = [
-    "dep:pollster",
-    "dep:log",
-]
-
-# When on, the `face!` macro embeds each font file's bytes into the
-# binary via `include_bytes!` (emitting `AssetSource::BundledEmbedded`,
-# which carries the bytes alongside the bundle path). When off, `face!`
-# emits a bytes-free `AssetSource::Bundled` carrying only the path.
-#
-# The decision is made by the dep graph, not the author: backends that
-# consume font *bytes* (cosmic-text/wgpu Simulator, CoreText on
-# iOS/macOS, Android `Typeface`) turn this on through their own
-# `runtime-core` dep, so any build containing one of them embeds the
-# fonts. A pure web (DOM) build links none of those backends, leaves
-# this off, and resolves every font to a served-file URL via
-# `@font-face { src: url(...) }` — keeping the fonts out of the wasm.
-#
-# This is why the `#[cfg]` split lives on the `__face_source!` helper
-# *defined here in runtime-core* (evaluated against runtime-core's own
-# unified feature set) rather than inside the `face!` expansion (which
-# would be evaluated against the author crate's features).
-embed-font-bytes = []
+# `runtime_core::premint` — the linkme registry the `stylesheet!`
+# expansion registers into under `cfg(idealyst_premint_dump)`. Enabled
+# only by the CLI's ephemeral premint-dump wrapper and by the
+# `premint-dump` crate's own tests.
+style-dump = ["runtime-vocabulary/style-dump"]
 
 [dependencies]
+runtime-vocabulary = { workspace = true }
 runtime-macros = { workspace = true }
-# `dev-hot` is only linked in when the `hot-reload` cargo
-# feature is on (typically by the runtime-server dylib-mode host wrapper). Off
-# by default — production builds don't compile it.
-dev-hot = { workspace = true, optional = true }
-# `mcp-catalog` is only linked in when the `mcp` cargo feature is
-# on. Same pattern as `dev-hot`: hidden re-export via
-# `runtime_core::__mcp` so consumer crates' `#[component]`
-# expansions can reach the catalog crate without declaring it as a
-# direct dep.
-mcp-catalog = { workspace = true, optional = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-# Only linked under the `robot` feature — encodes captured screenshot
-# PNGs as base64 for the bridge's `"screenshot"` JSON response.
-base64 = { version = "0.22", optional = true }
-# Bitflags for `AccessibilityTraits` (one u16 of orthogonal a11y flags
-# per primitive). Already transitively pulled by several deps; declaring
-# it directly here so the module owns the version pin.
-bitflags = "2"
-# The `Graphics` primitive exposes its surface as a standard
-# `raw_window_handle` handle so authors can plug any GPU library
-# (wgpu, glow, vello, softbuffer, …) on top. Tiny dep — a handful of
-# enums and traits, no platform code.
-raw-window-handle = "0.6"
-# Fast FxHash hasher for the reactive core's hot-path collections
-# (`signal_subscribers`, `effect_dependencies`, the RUNNING set, etc.).
-# Keys are internal Signal/Effect integer ids — never attacker-controlled —
-# so the default SipHash's cryptographic resistance is wasted cost on the
-# framework's hottest path (a HashSet insert per signal read inside an effect).
-rustc-hash = { workspace = true }
-# Runtime for `lazy! { ... }` — see the workspace dep declaration for
-# the alias rationale. Re-exported below as `__wasm_split` so the
-# `lazy!` macro's expansion in author crates can reach it.
-wasm-split = { workspace = true }
-
-# Native deps for the optional `async-driver` feature. `pollster`
-# drives the future returned from `spawn_async` on every non-wasm
-# target so authors can write the same `async fn build_renderer(...)`
-# everywhere. `log` is reserved for desktop-fallback warnings.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-pollster = { version = "0.4", optional = true }
-log = { version = "0.4", optional = true }
-# `kill(pid, 0)` for the Robot bridge's stale-registration sweep. Only
-# linked under `robot` (non-wasm); ordinary app builds don't pull it.
-libc = { version = "0.2", optional = true }
-# Native WebSocket CLIENT for the Robot bridge's dial-out transport: when a
-# relay URL is configured the app dials a `robot-relay` (web-style universal
-# transport) instead of self-hosting a TCP listener. Only under `robot`
-# (non-wasm) — web uses `backend-web`'s `web_sys` client instead. No TLS
-# (ws:// loopback / dev-host only) so it's a pure-Rust, cross-compiles-clean dep.
-tungstenite = { version = "0.24", default-features = false, features = ["handshake"], optional = true }
-
+# For the shared-substrate `#[macro_export]` decl macros this root
+# re-exports (`typeface!` / `face!` / `node_ref!`): their `$crate::…`
+# expansions resolve against runtime-shared, and the types they
+# construct (`assets::Typeface`, `Ref<H>`) are the same items glue
+# already re-exports.
+runtime-shared = { workspace = true }

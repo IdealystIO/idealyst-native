@@ -1,17 +1,16 @@
 //! Shared types for the `maps` SDK. Pure data, zero platform deps.
 //!
 //! This is the base of the multi-crate `maps` split. It defines the
-//! `Element::External` payload type ([`MapViewProps`]) and nothing
-//! else — no backend code, no FFI, no `register` function. It exists so
-//! the umbrella crate (`maps`) and the per-backend leaves (`maps-web`,
-//! `maps-ios`, future `maps-android`) can each depend on the shared
-//! props type without forming a dependency cycle: the leaves need
-//! `MapViewProps` to key their `register_external::<MapViewProps>(...)`
-//! handler by `TypeId`, and the umbrella needs each leaf's `register`
-//! function. Both depend on this crate; this crate depends on neither.
+//! scene payload type ([`MapViewProps`]) and nothing else — no backend
+//! code, no FFI, no node builder. It exists so the umbrella crate
+//! (`maps`) and the per-backend leaves (`maps-web`, `maps-ios`, future
+//! `maps-android`) can each depend on the shared props type without
+//! forming a dependency cycle: the leaves build a node FROM
+//! `MapViewProps`, and the umbrella needs each leaf's builder. Both
+//! depend on this crate; this crate depends on neither.
 //!
-//! The author-facing `MapView` constructor, the cfg-routed `register`
-//! re-export, and the usage docs all live in the umbrella `maps` crate.
+//! The author-facing `MapView` constructor, the cfg-routed `register`,
+//! and the usage docs all live in the umbrella `maps` crate.
 //!
 //! The only non-data dependency here is `runtime-core`, pulled in for
 //! the [`IdealystSchema`] derive so the catalog can document
@@ -22,10 +21,9 @@
 
 use runtime_core::IdealystSchema;
 
-/// Props for the `MapView` external primitive. Backends register a
-/// handler keyed by `TypeId::of::<MapViewProps>()` and consume the
-/// fields directly to drive their native map SDK (an OpenStreetMap
-/// embed iframe on web, `MKMapView` on iOS, etc.).
+/// Props for the `MapView` primitive. The umbrella's registered scene
+/// handler consumes the fields directly to drive the platform's map SDK
+/// (an OpenStreetMap embed iframe on web, `MKMapView` on iOS, etc.).
 ///
 /// Plain `Copy` data — unlike the `webview`/`video`/`svg` props, there
 /// are no reactive closures or callbacks here. A re-render with changed

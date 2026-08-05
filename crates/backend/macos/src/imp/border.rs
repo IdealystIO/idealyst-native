@@ -35,7 +35,7 @@ use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_app_kit::NSView;
 use objc2_foundation::{CGRect, CGFloat, MainThreadMarker, NSObject, NSString};
-use runtime_core::{Color, StyleRules};
+use runtime_shared::{Color, StyleRules};
 
 use super::{color_to_nscolor, CGColorRef};
 

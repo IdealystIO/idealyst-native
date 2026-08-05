@@ -8,10 +8,11 @@ composed from `view`/`scroll_view`); this crate is the thin, generic layer above
 it that picks a lane layout for each use case.
 
 Every constructor takes the author's `Signal<Vec<T>>` plus key, size, and render
-closures — exactly like `flat_list` — and returns the same
-`Bound<VirtualizerHandle>` the primitive does, so all the builder knobs
-(`.axis`, `.gap`, `.overscan`, `.lanes`, `.bind`) still chain. There is no
-styling, header, or selection model here; those are app- or higher-SDK policy.
+closures — exactly like `flat_list` — and returns the same `GlueFlatList`
+builder the primitive does, so all the builder knobs
+(`.axis`, `.gap`, `.overscan`, `.lanes`, `.spacing`, `.on_handle`) still chain.
+There is no styling, header, or selection model here; those are app- or
+higher-SDK policy.
 
 ## What you get
 
@@ -25,17 +26,18 @@ styling, header, or selection model here; those are app- or higher-SDK policy.
   `repeat(auto-fill, minmax(min_item_cross, 1fr))`. A resize or rotation re-lanes
   it.
 - Re-exports: `fixed_size` / `ItemSize` (the `item_size` builders), and `Axis`,
-  `LaneCount`, `VirtualLayout`, `Handle` for the chained builder + `.bind`.
+  `LaneCount`, `VirtualLayout`, `Handle` for the chained builder + `.on_handle`.
 
 ## Usage
 
 ```rust
 use virtualized::{responsive_grid, fixed_size};
-use runtime_core::{signal, Axis, Bound, Element, VirtualizerHandle};
+use runtime_core::{signal, Axis, Element};
+use runtime_core::primitives::flat_list::GlueFlatList;
 
 struct Cell { key: u64 /* ... */ }
 
-fn icon_grid(cells: runtime_core::Signal<Vec<Cell>>) -> Bound<VirtualizerHandle> {
+fn icon_grid(cells: runtime_core::Signal<Vec<Cell>>) -> GlueFlatList {
     responsive_grid(
         cells,
         |_idx, c: &Cell| c.key,            // stable item key
@@ -53,15 +55,15 @@ fn examples(items: runtime_core::Signal<Vec<Cell>>) {
     let _l = virtualized::list(items, |i, _| i as u64, fixed_size(44.0), render_row);
 }
 
-fn grid_three(items: runtime_core::Signal<Vec<Cell>>) -> Bound<VirtualizerHandle> {
+fn grid_three(items: runtime_core::Signal<Vec<Cell>>) -> GlueFlatList {
     virtualized::grid(items, |_, c: &Cell| c.key, fixed_size(120.0), |_, c| render_cell(c), 3)
         .gap(8.0)
         .axis(Axis::Vertical)
 }
 ```
 
-Grab a handle by chaining `.bind(grid_ref)` to call `scroll_to_index` later, or
-`.into_element().with_style(...)` to style the scroll container directly.
+Grab a handle by chaining `.on_handle(|h| …)` to call `scroll_to_index` later,
+or `.with_style(...)` to style the scroll container directly.
 
 ## Lanes, not list-vs-grid
 
@@ -80,7 +82,8 @@ Manual verification per backend — an unchecked **native** box means the code
 compiles for that target but isn't confirmed on real hardware yet. Tick each
 item as you exercise it. This crate is a thin generic layer; the windowing /
 recycling / lane-math *behavior* is owned by the `flat_list` / `virtualizer`
-primitive and tested in `runtime-core`, so the boxes below exercise the
+primitive and tested in `runtime-vocabulary` (the virtualizer handler suite)
+plus `runtime-layout` (lane resolution), so the boxes below exercise the
 underlying engine through these constructors.
 
 **Automated**

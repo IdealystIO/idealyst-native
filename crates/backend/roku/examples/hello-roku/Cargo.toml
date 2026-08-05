@@ -16,11 +16,19 @@ crate-type = ["rlib"]
 # `dev-server`'s dev-deps), the `ui!` macro's `#[cfg(feature =
 # "robot")]` gate evaluated in this crate's context needs to see
 # `robot` enabled too, otherwise the lowered struct-literal omits
-# `Primitive::View.test_id` while the struct definition includes it.
+# the view's `test_id` while the struct definition includes it.
 default = ["robot"]
 robot = ["runtime-core/robot"]
 
 [dependencies]
+# `runtime-core` is aliased to `runtime_core` at the crate root (see
+# src/lib.rs); `runtime-vocabulary` because the `ui!` / `stylesheet!`
+# emissions spell absolute `::runtime_vocabulary::glue::…` paths;
+# `runtime-scene` because `register_scene_extensions` is generic over the
+# registry host (the snapshot wrapper `idealyst build roku` generates
+# passes it a `Registry<RokuBackend>`).
 runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 backend-roku = { workspace = true }

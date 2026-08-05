@@ -49,6 +49,48 @@
 //!     }
 //! }
 //! ```
+//!
+//! # Cargo features
+//!
+//! - `table` (default) — the themed [`Table`] component and its `table`
+//!   SDK dependency. The one feature here that still removes linked code.
+//! - `docs` — a `DocControls` impl on every `*Props` for reflective
+//!   control panels (what the idea-ui-docs app renders).
+//! - `robot` — forward an optional `test_id` prop to each component's
+//!   root interactive primitive for robot/E2E location.
+//!
+//! ## Primitive families per component (historical, non-gating)
+//!
+//! Components used to be `#[cfg]`-deleted per primitive family through six
+//! `prim-*` features paired with the old core's `runtime-core/prim-*`
+//! gating of walker dispatch arms, authoring builder fns, and `Backend`
+//! trait methods. None of those exist now: handlers are registered into a
+//! `runtime_scene::Registry` by
+//! `runtime_vocabulary::handlers::register_builtins`, and reachability from
+//! that boot seam (plus LTO), not a cargo feature, decides what links.
+//! `runtime-vocabulary` has no `prim-*` equivalent, so the features could
+//! only have deleted components while shrinking nothing — they are gone and
+//! the component set is unconditional. See this crate's Cargo.toml for the
+//! full rationale and where a real per-family gate would belong.
+//!
+//! The family map is recorded here because it is the thing that would have
+//! to be recovered if `register_builtins` is ever split behind features and
+//! the author-facing half is restored:
+//!
+//! | Family | Components that (transitively) render it |
+//! | --- | --- |
+//! | `icon` | Icon, IconButton, Breadcrumbs, Checkbox, Switch, Slider, Pagination (+ Button, Alert, Field, Select, Toast) |
+//! | `image` | Image, Avatar |
+//! | `text-input` | Textarea (+ Field, Autocomplete) |
+//! | `activity` | Spinner (+ Button's loading state, Alert, Field, Toast) |
+//! | `portal` | Menu, Popover, Tooltip (+ Select, Autocomplete, Modal, Toast) |
+//! | `presence` | (+ Modal, Toast) |
+//!
+//! Multi-family components need every family listed for them: Button =
+//! icon + activity, Alert = icon + activity, Select = icon + portal,
+//! Modal = portal + presence, Field = icon + activity + text-input,
+//! Autocomplete = text-input + portal, Toast / ToastHost = icon +
+//! activity + portal + presence.
 
 // Self-alias so derive macros (like `DocControls`) that expand to
 // `::idea_ui::...` paths resolve correctly when compiling idea-ui
@@ -59,6 +101,12 @@ extern crate self as idea_ui;
 
 pub mod breakpoint;
 pub mod components;
+/// Civil date/time values + token formatting for the date components
+/// (`Calendar`, `DatePicker`, `DateInput`, …) — chrono-free by design.
+pub mod date;
+/// Smart-typing mask for the typed date/time inputs — auto-inserted
+/// delimiters + segment auto-advance, derived from the format tokens.
+pub(crate) mod date_mask;
 #[cfg(feature = "docs")]
 pub mod doc_controls;
 pub mod intent;
@@ -70,6 +118,10 @@ pub mod intent;
 // the whole module is still nothing in production (catalog off).
 pub mod recipes;
 pub mod slot_override;
+/// Build-tree introspection for this crate's (and idea-ui-nav's) unit
+/// tests — see the module docs. Hidden: test support, not surface.
+#[doc(hidden)]
+pub mod test_support;
 pub mod stylesheets;
 pub mod theme;
 mod theme_runtime;
@@ -121,37 +173,35 @@ pub use breakpoint::{
 // and the `*Props` struct + any companion enums. `ui! { Foo(...) }` resolves
 // `Foo` via the type alias, while direct fn-call sites resolve to the fn —
 // they coexist in different namespaces. See [[project_buildelement_dispatch]].
-#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 pub use components::alert::{Alert, AlertClose, AlertProps};
-#[cfg(all(feature = "prim-text-input", feature = "prim-portal"))]
 pub use components::autocomplete::{Autocomplete, AutocompleteProps};
-#[cfg(feature = "prim-image")]
 pub use components::avatar::{Avatar, AvatarColor, AvatarProps, AvatarSize};
 pub use components::badge::{Badge, BadgeProps};
-#[cfg(all(feature = "prim-icon", feature = "prim-activity"))]
 pub use components::button::{Button, ButtonProps};
-#[cfg(feature = "prim-icon")]
 pub use components::breadcrumbs::{Breadcrumbs, BreadcrumbsProps, Crumb};
+pub use components::calendar::{Calendar, CalendarProps, RangeCalendar, RangeCalendarProps};
 pub use components::card::{Card, CardPadding, CardProps};
+pub use components::date_input::{DateInput, DateInputProps, DateTimeInput, DateTimeInputProps};
+pub use components::date_picker::{
+    DatePicker, DatePickerProps, DateRangePicker, DateRangePickerProps, DateTimePicker,
+    DateTimePickerProps,
+};
+pub use components::time_input::{TimeInput, TimeInputProps};
+// The date components' value vocabulary — apps hold these in their state.
+pub use date::{CivilDate, CivilDateTime, CivilTime, DateLabels, Weekday};
 pub use components::center::{Center, CenterProps};
-#[cfg(feature = "prim-icon")]
 pub use components::checkbox::{Checkbox, CheckboxProps};
 pub use components::chip::{Chip, ChipProps};
 pub use components::grid::{Grid, GridProps};
-#[cfg(feature = "prim-icon")]
 pub use components::icon::{Icon, IconProps};
-#[cfg(feature = "prim-image")]
 pub use components::image::{Image, ImageProps};
 pub use components::link::{Link, LinkProps};
 pub use components::list::{List, ListItem, ListItemProps, ListProps};
-#[cfg(feature = "prim-portal")]
 pub use components::menu::{
     Menu, MenuEntry, MenuItem, MenuItemProps, MenuLabel, MenuLabelProps, MenuProps, MenuSeparator,
     MenuSeparatorProps, SubMenu, SubMenuProps,
 };
-#[cfg(feature = "prim-icon")]
 pub use components::pagination::{Pagination, PaginationProps};
-#[cfg(feature = "prim-portal")]
 pub use components::tooltip::{Tooltip, TooltipProps};
 pub use components::radio::{
     Radio, RadioAxis, RadioGroup, RadioGroupProps, RadioOption, RadioProps,
@@ -162,44 +212,33 @@ pub use components::collapsible::{
     CollapsibleTransition,
 };
 pub use components::divider::{Divider, DividerAxis, DividerProps};
-#[cfg(all(feature = "prim-icon", feature = "prim-activity", feature = "prim-text-input"))]
 pub use components::field::{Adornment, Field, FieldProps};
-// Style-level types, not component code — usable (e.g. by Textarea)
-// whether or not the Field component itself is compiled in.
+// Style-level types, not component code — the Field/Textarea shared axes.
 pub use stylesheets::{FieldAppearance, FieldSize};
-#[cfg(feature = "prim-icon")]
 pub use components::icon_button::{IconButton, IconButtonProps, IconButtonSize};
-#[cfg(all(feature = "prim-portal", feature = "prim-presence"))]
 pub use components::modal::{Modal, ModalContent, ModalProps};
-#[cfg(feature = "prim-portal")]
 pub use components::popover::{Popover, PopoverProps};
-pub use components::progress::{Progress, ProgressProps};
+pub use components::progress::{Progress, ProgressCap, ProgressMode, ProgressProps};
 pub use components::segmented_control::{
     SegmentOption, SegmentedControl, SegmentedControlProps,
 };
-#[cfg(all(feature = "prim-icon", feature = "prim-portal"))]
 pub use components::select::{Select, SelectProps};
-// Data/style types shared with Autocomplete — no icon dependency.
-#[cfg(feature = "prim-portal")]
+// Data/style types shared with Autocomplete.
 pub use components::select::{SelectOption, SelectSize};
 pub use components::skeleton::{Skeleton, SkeletonProps, SkeletonWidth};
-#[cfg(feature = "prim-icon")]
 pub use components::slider::{Slider, SliderProps};
 pub use components::spacer::{Spacer, SpacerProps};
-#[cfg(feature = "prim-activity")]
 pub use components::spinner::{Spinner, SpinnerProps, SpinnerSize};
 pub use components::stack::{
     Stack, StackAlign, StackAxis, StackGap, StackJustify, StackPadding, StackProps,
 };
 pub use components::surface::{Surface, SurfaceColor, SurfaceProps};
-#[cfg(feature = "prim-icon")]
 pub use components::switch::{Switch, SwitchProps};
+#[cfg(feature = "table")]
 pub use components::table::{Table, TableCell, TableCellProps, TableProps, TableRow, TableRowProps};
 pub use components::tabs::{Tab, TabIndicator, Tabs, TabsProps};
 pub use components::tag::{Tag, TagProps};
-#[cfg(feature = "prim-text-input")]
 pub use components::textarea::{Textarea, TextareaProps};
-#[cfg(all(feature = "prim-icon", feature = "prim-activity", feature = "prim-portal", feature = "prim-presence"))]
 pub use components::toast::{
     dismiss_toast, push_toast, push_toast_node, push_toast_with, Toast, ToastCard, ToastCardProps,
     ToastEntry, ToastHost, ToastHostProps, ToastPlacement,

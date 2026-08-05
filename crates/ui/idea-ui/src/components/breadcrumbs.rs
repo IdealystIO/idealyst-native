@@ -17,8 +17,8 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, icon, ui, Color, Cursor, Element, IconData, IdealystSchema, IntoElement, Reactive,
-    StyleApplication, StyleRules, Tokenized,
+    component, icon, ui, Color, Element, IconData, IdealystSchema, IntoElement, Reactive,
+    StyleApplication, Tokenized,
 };
 
 use crate::stylesheets::{BreadcrumbItem, BreadcrumbRow, BreadcrumbSeparator};
@@ -90,12 +90,6 @@ fn crumb_style(is_current: bool) -> impl Fn() -> StyleApplication + Clone + 'sta
 
 /// Renders a horizontal trail of crumbs joined by `separator`. Earlier
 /// linked crumbs are clickable; the last crumb is the current page.
-///
-/// **Cargo features:** requires `prim-icon` (in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without it compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Breadcrumbs(props: BreadcrumbsProps) -> Element {
     let n = props.items.len();
@@ -119,12 +113,7 @@ pub fn Breadcrumbs(props: BreadcrumbsProps) -> Element {
                 vec![runtime_core::text(crumb.label).into_element()],
                 move || (cb)(),
             )
-            .with_style(|| {
-                crumb_style(false)().with_computed("bc-link-cursor", || StyleRules {
-                    cursor: Some(Cursor::Pointer),
-                    ..Default::default()
-                })
-            })
+            .with_style(|| crumb_style(false)().with("interactive", "on".to_string()))
             .into_element(),
             _ => runtime_core::text(crumb.label)
                 .with_style(crumb_style(is_current))

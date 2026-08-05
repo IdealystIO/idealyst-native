@@ -22,6 +22,10 @@ registry = []
 catalog = ["dep:mcp-catalog"]
 
 [dependencies]
+# Only `IconData` + `FillRule` (the generated `const`s' type) — reached
+# under the historical `runtime_core` name via the crate-root
+# `extern crate runtime_core as runtime_core;` alias in lib.rs, which
+# is also what the build-generated `use runtime_core::{…}` resolves through.
 runtime-core = { workspace = true }
 # Only linked when the `catalog` feature is on (the `IconSetEntry` type +
 # the `inventory` re-export the self-registration submits through).

@@ -83,7 +83,7 @@ pub(crate) fn update_text(node: &Node, content: &str) {
 // ride the CSS cascade — no JS/wasm work per swap.
 // =============================================================================
 
-pub(crate) fn create_styled(b: &mut WebBackend, runs: &[runtime_core::TextRun]) -> Node {
+pub(crate) fn create_styled(b: &mut WebBackend, runs: &[runtime_shared::TextRun]) -> Node {
     if let Some(span) = b.hydrate_next_skip_subtree("span") {
         // SSR rendered the identical run structure (same author tree,
         // shared css emitter) — adopt the outer span wholesale,
@@ -103,7 +103,7 @@ pub(crate) fn create_styled(b: &mut WebBackend, runs: &[runtime_core::TextRun]) 
     node
 }
 
-pub(crate) fn update_styled(b: &mut WebBackend, node: &Node, runs: &[runtime_core::TextRun]) {
+pub(crate) fn update_styled(b: &mut WebBackend, node: &Node, runs: &[runtime_shared::TextRun]) {
     // Rebuild the children. `set_text_content(None)` drops all child
     // spans in one call; static runs carry no listeners or registry
     // entries, so plain removal is safe.
@@ -111,7 +111,7 @@ pub(crate) fn update_styled(b: &mut WebBackend, node: &Node, runs: &[runtime_cor
     append_runs(b, node, runs);
 }
 
-fn append_runs(b: &mut WebBackend, outer: &Node, runs: &[runtime_core::TextRun]) {
+fn append_runs(b: &mut WebBackend, outer: &Node, runs: &[runtime_shared::TextRun]) {
     for run in runs {
         let s = b
             .doc

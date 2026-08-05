@@ -1,6 +1,6 @@
 //! Cooperative main-thread async executor for Apple platforms.
 //!
-//! `runtime_core::driver::spawn_async` falls back to `pollster::block_on`
+//! `runtime_shared::driver::spawn_async` falls back to `pollster::block_on`
 //! when no executor is installed — it drives a future *to completion on the
 //! calling thread*. That's fine for a short one-shot future (an async
 //! renderer setup), but it FREEZES the main thread for a long-running
@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 
 use block2::StackBlock;
-use runtime_core::driver::AsyncExecutor;
+use runtime_shared::driver::AsyncExecutor;
 
 use crate::scheduler::{dispatch_async, _dispatch_main_q};
 
@@ -44,7 +44,7 @@ thread_local! {
 /// Register the Apple cooperative executor with `runtime-core`. Idempotent
 /// (first install wins). Called from [`crate::scheduler::install_scheduler`].
 pub fn install_async_executor() {
-    runtime_core::driver::install_async_executor(Box::new(AppleAsyncExecutor));
+    runtime_shared::driver::install_async_executor(Box::new(AppleAsyncExecutor));
 }
 
 struct AppleAsyncExecutor;
@@ -88,6 +88,12 @@ fn poll_task(id: u64) {
             TASKS.with(|t| t.borrow_mut().insert(id, fut));
         }
     }
+    // Post-dispatch flush hook: each poll runs author code up to its
+    // next `.await` (resource / server-call continuations that set
+    // signals) — fire so a new-core flush driver commits the staged
+    // writes. No-op unless a new-core boot installed the hook; mirrors
+    // the web executor's per-poll fire (see `dispatch_hook`).
+    crate::dispatch_hook::fire_dispatch_hook();
 }
 
 /// Waker carrying just the task id. `wake` may fire from ANY thread (e.g. an

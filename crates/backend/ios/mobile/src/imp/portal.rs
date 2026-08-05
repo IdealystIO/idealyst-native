@@ -37,10 +37,10 @@ use objc2_foundation::{MainThreadMarker, NSObject, NSString};
 use objc2_ui_kit::UIView;
 use std::rc::Rc;
 
-use runtime_core::primitives::portal::{
+use runtime_shared::primitives::portal::{
     AnchorTarget, ElementAlign, ElementSide, ViewportPlacement, ViewportRect,
 };
-use runtime_core::{
+use runtime_shared::{
     AlignItems, FlexDirection, JustifyContent, Length, Position, StyleRules, Tokenized,
 };
 
@@ -296,11 +296,11 @@ pub(crate) fn start_anchor_tracker(
             return;
         }
 
-        // Shared measured align/side geometry (runtime_core) — one
+        // Shared measured align/side geometry (runtime_shared) — one
         // definition across web/iOS/Android (CLAUDE.md §7). The tracker
         // keeps its no-flip/no-clamp behavior (it just re-pins to the
         // requested side); web layers flip+clamp on top of the same math.
-        let (top, left) = runtime_core::primitives::portal::anchor_top_left(
+        let (top, left) = runtime_shared::primitives::portal::anchor_top_left(
             trigger, side, align, offset, (pop_w, pop_h),
         );
         let cur_top = pop_frame.origin.y as f32;

@@ -4,23 +4,27 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Pure data crate: defines the dev-mode hot-reload wire protocol.
-# Carries no runtime-core dependency so the wire format can evolve
-# independently of in-memory representation.
+# Data crate: defines the dev-mode hot-reload wire protocol, plus the
+# `payload_serde` registry for third-party primitive payloads (SDK-owned
+# closures; no runtime type in the signatures). Carries no runtime
+# dependency so the wire format can evolve independently of the
+# in-memory representation.
 
 [dependencies]
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-# Used by the round-trip integration test (tests/roundtrip.rs) that
+# Used by the round-trip integration test (tests/roundtrip.rs), which
 # exercises the dev-side recorder + app-side replay engine against a
-# stand-in TraceBackend. `robot` is enabled so `Primitive::View`'s
-# `test_id` field is present — keeps the test source identical
-# whether we build standalone or as part of the workspace (the
-# workspace's feature unification pulls `runtime-core/robot` in via
-# `dev-server`'s dev-deps anyway).
-runtime-core = { workspace = true, features = ["robot"] }
+# stand-in `TraceHost`, and by tests/virtual_layout_roundtrip.rs.
+runtime-shared = { workspace = true }
+# The scene + capability surface the stand-in replay target implements,
+# and the builders/registry the recorder-side scenes are realized
+# through.
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-world = { workspace = true }
 dev-client = { workspace = true, features = ["dev-hot-reload"] }
 # `connect_and_run` lives here (moved from dev-client). tests/transport.rs
 # exercises it against a TraceBackend.

@@ -9,13 +9,14 @@
 //!    encoding/persistence is a separate higher-level crate.
 //!
 //! 2. **The private layer** — [`PrivateLayer`] + [`register`]. An
-//!    `Element::External` overlay subtree that recordings don't capture,
-//!    via the framework's existing third-party-extension mechanism. Zero
-//!    framework-core changes. See [`private_layer`] for the design.
+//!    overlay subtree that recordings don't capture, via the scene
+//!    registry's third-party-extension mechanism. Zero runtime changes.
+//!    See [`private_layer`] for the design.
 //!
 //! ```ignore
-//! // bootstrap (only needed for the private layer):
-//! screen_recorder::register(&mut backend);
+//! // bootstrap (only needed for the private layer) — the boot entry's
+//! // `register` argument IS the seam:
+//! backend_web::newcore::start_in("#app", screen_recorder::register, app);
 //!
 //! // capture — yields a `MediaStream`, the same currency `camera` produces
 //! // and the `video` SDK displays:
@@ -30,18 +31,16 @@
 
 mod config;
 mod error;
+
+// The overlay subtree that recordings don't capture. Its handler is
+// backend-CONCRETE on the native hosts (it builds a real platform
+// window), so `register` type-dispatches at registration time —
+// see the module docs.
 pub mod private_layer;
 
 pub use config::{AudioSource, RecordingConfig, Source, WindowSelector, DEFAULT_FPS};
 pub use error::RecorderError;
-pub use private_layer::{PrivateLayer, PrivateLayerProps};
-
-// The private-layer `register` is backend-concrete on native (it builds
-// platform windows that the generic `RegisterExternal` surface can't),
-// so it's supplied by the per-target `imp` module — iOS/Android install
-// the real capture-excluded-window handler; web + unsupported targets
-// install the inline no-op. See `private_layer`'s module docs.
-pub use imp::register;
+pub use private_layer::{register, PrivateLayer, PrivateLayerProps};
 
 // The live-source surface is the shared `media-stream` vocabulary — the same
 // currency the `camera` SDK produces and the `video` SDK consumes. Re-export

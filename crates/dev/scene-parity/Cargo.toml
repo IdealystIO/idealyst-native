@@ -1,0 +1,27 @@
+[package]
+name = "scene-parity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Golden-record harness: a recording `runtime_scene::Host` + scenario
+# suite that pins the EXACT structural-op and full-op sequences the
+# runtime emits (see README.md). The goldens were frozen from the
+# pre-runtime-v2 walker before it was deleted and are frozen testimony —
+# they cannot be regenerated from it.
+#
+# Dev/test utility crate — nothing shipped depends on it.
+
+[dependencies]
+# The shared vocabulary of prop/style/handler types the harness and the
+# caps traits speak.
+runtime-shared = { workspace = true }
+# The scene core the harness realizes against, checked against the
+# frozen goldens (modulo the README's sanctioned divergences).
+runtime-scene = { workspace = true }
+runtime-world = { workspace = true }
+# The built-in vocabulary's handlers, mounted directly on `FullRecorder`
+# (which implements `Host` + all 30 caps traits itself).
+runtime-vocabulary = { workspace = true }
+# GfxSim's dummy surface provider (graphics lifecycle goldens).
+raw-window-handle = "0.6"

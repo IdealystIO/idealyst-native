@@ -3,9 +3,9 @@
 //!
 //! This crate owns the **abstraction**: the retained [`Scene`] model
 //! (paths, paint, strokes, transforms) and the [`Canvas`] primitive that
-//! carries an author's draw closure into an [`Element::External`]
-//! payload. It contains **no rendering code**. Two interchangeable
-//! renderer crates register a handler for [`CanvasProps`]:
+//! carries an author's draw closure into a [`CanvasPrim`] scene payload.
+//! It contains **no rendering code**. Two interchangeable renderer
+//! crates register a handler for [`CanvasPrim`]:
 //!
 //! - `canvas-native` — replays the scene with each platform's native 2D
 //!   engine (web Canvas2D, iOS CoreGraphics, Android `android.graphics`).
@@ -13,7 +13,7 @@
 //!   for backends with no native 2D API (winit/wgpu desktop, etc.).
 //!
 //! An app picks a renderer at bootstrap by calling exactly one
-//! `register(&mut backend)` (the registry is `TypeId`-keyed, last-wins).
+//! `register(&mut registry)` (the registry is `TypeId`-keyed, last-wins).
 //! Because both renderers consume the identical [`Scene`], swapping the
 //! `register` call swaps renderers with zero changes to screen code —
 //! which also makes benchmarking native-vs-vello apples-to-apples.
@@ -21,8 +21,8 @@
 //! # Usage
 //!
 //! ```ignore
-//! // App bootstrap — one renderer:
-//! canvas_native::register(&mut backend);   // or canvas_vello::register
+//! // App bootstrap — one renderer, at the boot entry's register seam:
+//! backend_web::newcore::start_in("#app", canvas_native::register, app);
 //!
 //! // On a screen — the "type in tag" SDK convention, small namespace:
 //! use canvas::prelude::*;
@@ -52,20 +52,17 @@
 mod scene;
 pub use scene::*;
 
-use runtime_core::{
-    external, Bound, ExternalHandle, IdealystSchema, Length, RegisterExternal, StyleRules,
-    StyleSheet,
-};
-use std::any::Any;
-use std::cell::Cell;
+mod prim;
+pub use prim::{register_ssr, Canvas, CanvasBound, CanvasPrim};
+
+use runtime_core::{IdealystSchema, Length, StyleRules, StyleSheet};
 use std::rc::Rc;
 use std::sync::Arc;
 
-/// Author-supplied props for a [`Canvas`] instance. Type-erased into an
-/// [`Element::External`](runtime_core::Element) payload at build time;
-/// the active renderer's registered handler reads the typed
-/// `Rc<CanvasProps>` back out and replays the [`Scene`] the `draw`
-/// closure produces.
+/// Author-supplied props for a [`Canvas`] instance. Carried inside the
+/// [`CanvasPrim`] scene payload; the active renderer's registered
+/// handler reads the typed `Rc<CanvasProps>` back out and replays the
+/// [`Scene`] the `draw` closure produces.
 #[derive(IdealystSchema)]
 pub struct CanvasProps {
     /// The scene painter. Called by the renderer (inside a reactive
@@ -426,7 +423,7 @@ pub fn paint_scene(props: &CanvasProps) -> Scene {
 /// or `flex_grow` on the chain — the same rule every percentage-sized
 /// box follows. `flex_grow: 1` in this default covers the common
 /// "fill the remaining main-axis space" case without a definite parent.
-fn default_fill_style() -> Rc<StyleSheet> {
+pub(crate) fn default_fill_style() -> Rc<StyleSheet> {
     thread_local! {
         static SHEET: Rc<StyleSheet> = {
             let mut fill = StyleRules::default();
@@ -437,85 +434,6 @@ fn default_fill_style() -> Rc<StyleSheet> {
         };
     }
     SHEET.with(|s| s.clone())
-}
-
-/// Construct a `Canvas` primitive. Returns a typed
-/// `Bound<ExternalHandle<CanvasProps>>` so `.bind(...)` is type-checked
-/// against a call-site `Ref<ExternalHandle<CanvasProps>>`.
-///
-/// PascalCase intentionally — matches the visual cadence of first-party
-/// primitives inside a `ui!` block. Third-party primitives are
-/// expression-interpolated (`{ canvas::Canvas(..) }`); the macro only
-/// knows the closed first-party set.
-///
-/// **Default sizing.** An unstyled canvas fills its parent box (see
-/// [`default_fill_style`]). Any `.with_style(...)` the caller chains
-/// *replaces* this default, so a canvas that wants a fixed size or a
-/// background just sets its own sheet — the fill default is only there
-/// so a bare `Canvas(...)` is visible at all, matching every backend.
-///
-/// Registers the wire serde for [`CanvasProps`] on first construction
-/// (idempotent) so a canvas can render across the runtime-server wire.
-#[allow(non_snake_case)]
-pub fn Canvas(props: CanvasProps) -> Bound<ExternalHandle<CanvasProps>> {
-    ensure_wire_serde();
-    external(props).with_style(default_fill_style())
-}
-
-/// Register the **SSR / hydration host** for `Element::External<CanvasProps>`.
-///
-/// A GPU canvas can't paint its CONTENT on the server (no adapter), but its
-/// host `<canvas>` element is trivially server-renderable. This registers a
-/// renderer-agnostic handler that emits a bare `<canvas>`, so a pre-rendered
-/// (SSG) page ships the real element the web client adopts during hydration
-/// (the `graphics` primitive does `hydrate_next("canvas")`); the GPU surface
-/// then attaches after hydration via the platform renderer's `register`
-/// (e.g. `canvas_vello::register`). Without this the external falls to the
-/// backend's generic `<div>` fallback, which the `<canvas>`-expecting client
-/// can't adopt — a tag mismatch that diverges hydration at the very first node.
-///
-/// Call from an app's `register_ssr_extensions` hook (the SSR/SSG build path),
-/// mirroring the client-side `register` on the web/native path.
-pub fn register_ssr<B: RegisterExternal>(backend: &mut B) {
-    backend.register_external::<CanvasProps, _>(|_props, b| b.create_element("canvas"));
-}
-
-/// Register the wire (serialize, deserialize) pair for [`CanvasProps`]
-/// so an `Element::External<CanvasProps>` can cross the runtime-server
-/// wire. A draw closure can't be serialized, so we ship a **`Scene`
-/// snapshot**: the serializer runs the painter once and encodes the
-/// resulting ops; the deserializer rebuilds a `CanvasProps` whose
-/// painter replays that snapshot. Server-side reactivity still works —
-/// a dependency change rebuilds the element tree, which re-serializes a
-/// fresh snapshot.
-///
-/// Idempotent (guarded by a thread-local flag) so the per-construction
-/// call in [`Canvas`] only registers once.
-pub fn ensure_wire_serde() {
-    thread_local! {
-        static DONE: Cell<bool> = const { Cell::new(false) };
-    }
-    if DONE.with(|d| d.replace(true)) {
-        return;
-    }
-    runtime_core::register_external_serde(
-        std::any::type_name::<CanvasProps>(),
-        |any: &dyn Any| {
-            let props = any.downcast_ref::<CanvasProps>()?;
-            let scene = paint_scene(props);
-            serde_json::to_vec(&scene).ok()
-        },
-        |bytes: &[u8]| {
-            let scene: Scene = serde_json::from_slice(bytes).ok()?;
-            // Replay the decoded snapshot verbatim into the renderer's
-            // scene. `Rc` so the closure is `Fn` (clonable into effects).
-            let scene = Rc::new(scene);
-            let draw: DrawFn = Box::new(move |s: &mut Scene| *s = (*scene).clone());
-            // `capture` is a runtime-only sink (a live `FrameWriter`); it never
-            // crosses the wire, so a wire-adopted canvas has no self-capture.
-            Some(Rc::new(CanvasProps { draw, capture: None, layers: Vec::new() }) as Rc<dyn Any>)
-        },
-    );
 }
 
 /// One-stop import for typical screen code: brings in the [`Canvas`]
@@ -538,55 +456,6 @@ mod tests {
     fn default_props_paint_to_empty_scene() {
         let props = CanvasProps::default();
         assert!(paint_scene(&props).is_empty());
-    }
-
-    /// Regression test for the "bare canvas doesn't fill" papercut
-    /// (Whiteboard Pro feedback): an unstyled `Canvas(...)` must carry a
-    /// fill-parent style so it's visible on every backend, instead of
-    /// collapsing to a 0×0 box on native. Mirrors the navigators' fill
-    /// convention (`flex_grow: 1` + `100% × 100%`).
-    #[test]
-    fn unstyled_canvas_defaults_to_fill_parent() {
-        use runtime_core::{resolve_style, Length, StyleSource, Tokenized};
-
-        let mut canvas = Canvas(CanvasProps::default());
-        let rules = match canvas.primitive_mut() {
-            runtime_core::Element::External { style, .. } => {
-                match style.as_ref().expect("unstyled Canvas must attach a fill style") {
-                    StyleSource::Static(a) => resolve_style(a),
-                    _ => panic!("the fill default is a static sheet"),
-                }
-            }
-            _ => panic!("Canvas builds an External element"),
-        };
-        assert_eq!(rules.flex_grow, Some(Tokenized::Literal(1.0)));
-        assert_eq!(rules.width, Some(Tokenized::Literal(Length::Percent(100.0))));
-        assert_eq!(rules.height, Some(Tokenized::Literal(Length::Percent(100.0))));
-    }
-
-    /// An explicit `.with_style(...)` replaces the fill default — authors
-    /// who size the canvas themselves aren't fighting a baked-in 100%.
-    #[test]
-    fn explicit_style_overrides_fill_default() {
-        use runtime_core::{resolve_style, Length, StyleRules, StyleSheet, StyleSource, Tokenized};
-
-        let mut fixed = StyleRules::default();
-        fixed.width = Some(Length::Px(120.0).into());
-        let sheet = std::rc::Rc::new(StyleSheet::r#static(fixed));
-
-        let mut canvas = Canvas(CanvasProps::default()).with_style(sheet);
-        let rules = match canvas.primitive_mut() {
-            runtime_core::Element::External { style, .. } => {
-                match style.as_ref().unwrap() {
-                    StyleSource::Static(a) => resolve_style(a),
-                    _ => panic!("static sheet expected"),
-                }
-            }
-            _ => panic!("Canvas builds an External element"),
-        };
-        assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(120.0))));
-        // The fill default's flex_grow is gone — the author's sheet won.
-        assert_eq!(rules.flex_grow, None);
     }
 
     #[test]
@@ -666,9 +535,12 @@ mod tests {
         assert!(slots[0].is_none(), "an image layer must not hold a subscription");
     }
 
+    /// The `Scene` wire format is what a dev-session recorder ships for a
+    /// canvas (a painter closure can't cross a process boundary, so the
+    /// transported artifact is a painted snapshot). Round-trip a
+    /// non-trivial scene through it and confirm the replayed ops match.
     #[test]
-    fn wire_serde_round_trips_a_painted_scene() {
-        ensure_wire_serde();
+    fn scene_snapshot_round_trips_through_the_wire_format() {
         let props = CanvasProps {
             draw: draw(|s| {
                 s.path().add_path(Path::circle(20.0, 20.0, 15.0));
@@ -678,15 +550,16 @@ mod tests {
             ..Default::default()
         };
 
-        let type_name = std::any::type_name::<CanvasProps>();
-        let bytes = runtime_core::serialize_external_payload(type_name, &props as &dyn Any)
-            .expect("serialize");
-        let decoded =
-            runtime_core::deserialize_external_payload(type_name, &bytes).expect("deserialize");
-        let decoded = decoded.downcast_ref::<CanvasProps>().expect("downcast");
+        let bytes = serde_json::to_vec(&paint_scene(&props)).expect("serialize");
+        let decoded: Scene = serde_json::from_slice(&bytes).expect("deserialize");
 
-        // The decoded painter replays the snapshot — same ops as the
+        // A canvas rebuilt from the snapshot replays the same ops as the
         // original painter produced.
-        assert_eq!(paint_scene(&props).ops(), paint_scene(decoded).ops());
+        let replay = Rc::new(decoded);
+        let replayed = CanvasProps {
+            draw: draw(move |s: &mut Scene| *s = (*replay).clone()),
+            ..Default::default()
+        };
+        assert_eq!(paint_scene(&props).ops(), paint_scene(&replayed).ops());
     }
 }

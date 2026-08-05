@@ -42,6 +42,16 @@ license.workspace = true
 # No permissions required.
 
 [dependencies]
-# Pure Rust on top of core's touch recognizer + animation + geometry
+# Pure Rust on top of the framework's touch recognizer + animation + geometry
 # primitives — no platform crates.
+#
+# The author surface, aliased to `runtime_core` at the crate root (see
+# src/lib.rs): `Signal` (the reactive `dragging` / `is_over` flags an author
+# binds), `Element` / `view` / `when` for the drag layer, and — critically —
+# glue's `animation::AnimatedValue`, whose `bind*` keeps its per-frame
+# subscription alive through a world effect (the shared handle's does not).
 runtime-core = { workspace = true }
+# Four substrate items glue does not re-export yet: the `Recognizer` trait
+# family the `DragRecognizer` implements, `active_touch_claim`, and
+# `schedule_microtask`. One-line glue gaps, reported.
+runtime-shared = { workspace = true }

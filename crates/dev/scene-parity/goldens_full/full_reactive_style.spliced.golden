@@ -1,0 +1,25 @@
+# scene-parity FULL-OP golden — scenario `full_reactive_style`, mode `spliced`
+#
+# A view with a DYNAMIC style closure over a signal. Mount:
+# apply_style with the initial resolved rules + attach_states
+# (the event-driven state hookup). Each signal write re-applies
+# via ONE apply_style with the new digest — no structural ops,
+# no re-attach.
+#
+# Complete backend-call stream (create_*/update_*/apply_style/release_*
+# + the structural ops). Node names are creation-order (n0, n1, ...).
+# Owned by the OLD core; regenerate after an INTENDED walker change
+# with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 text "styled by signal"
+insert n0 <- n1
+apply_style n0 {background: Some(Literal(Color("#112233"))), width: Some(Literal(Px(100.0)))}
+attach_states n0
+
+== set wide = true (one apply_style, new digest) ==
+apply_style n0 {background: Some(Literal(Color("#112233"))), width: Some(Literal(Px(300.0)))}
+
+== set wide = false (back to the narrow digest) ==
+apply_style n0 {background: Some(Literal(Color("#112233"))), width: Some(Literal(Px(100.0)))}

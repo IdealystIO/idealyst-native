@@ -1,0 +1,35 @@
+# scene-parity golden — scenario `fragment_base_index`, mode `spliced`
+#
+# Children list = [static, Fragment(2 children), when, static].
+# The fragment splices its children flat and the threaded
+# `inserted` counter keeps counting THROUGH it, so the spliced
+# `when` after the fragment captures base_index=3 (1 static + 2
+# fragment children) and every re-splice lands at index 3.
+#
+# Structural ops only. Node names are creation-order (n0, n1, ...);
+# `cleanup <label>` lines are scenario-registered on_cleanup markers
+# pinning dispose ordering. Regenerate after an INTENDED behavior
+# change with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 text "s0"
+insert n0 <- n1
+create n2 text "f1"
+insert n0 <- n2
+create n3 text "f2"
+insert n0 <- n3
+create n4 text "cond-on"
+insert_at n0 <- n4 @ 3
+create n5 text "tail"
+insert n0 <- n5
+
+== set show = false (must re-insert at index 3) ==
+remove_child n0 -x n4
+create n6 text "cond-off"
+insert_at n0 <- n6 @ 3
+
+== set show = true (still index 3) ==
+remove_child n0 -x n6
+create n7 text "cond-on"
+insert_at n0 <- n7 @ 3

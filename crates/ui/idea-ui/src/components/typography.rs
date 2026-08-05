@@ -153,29 +153,32 @@ pub fn Typography(props: &TypographyProps) -> Element {
             }
             .to_string();
 
+            // Per-instance weight override, layered over the kind's baked-in
+            // weight. An axis rather than a computed layer: `FontWeight` is a
+            // closed enum, so it premints — and `StyleApplication` has only
+            // ONE computed slot, so while both `font` and `weight` rode
+            // computed layers the second silently overwrote the first and a
+            // Typography with both set lost its font.
+            let weight_key = match weight.get() {
+                Some(w) => idea_theme::extensible::font_weight_key(w),
+                None => "inherit",
+            };
+
             let mut style = StyleApplication::new(installed_typography_sheet())
                 .with("kind", kind_key)
                 .with("color", color_key)
+                .with("weight", weight_key.to_string())
                 .with("align", align_key);
 
-            // Per-instance font override, layered over the sheet base. The
-            // cache key encodes the family identity so identical faces share
-            // one resolved class.
+            // Per-instance font override, layered over the sheet base. Rides
+            // the INLINE layer: a typeface is an app-supplied asset, not a
+            // closed set the sheet could enumerate as an axis — and unlike
+            // the old `with_computed` spelling, inline does not disqualify
+            // the application from preminting (a `--premint-only` app
+            // panicked on any Typography with a `font` override).
             if let Some(font) = font.get() {
-                let key = format!("font:{}", font_override_key(&font));
-                style = style.with_computed(key, move || StyleRules {
-                    font_family: Some(font.clone()),
-                    ..Default::default()
-                });
-            }
-
-            // Per-instance weight override, layered over the kind's baked-in
-            // weight (added AFTER `kind` so it wins). The cache key encodes the
-            // weight so identical overrides share one resolved class.
-            if let Some(w) = weight.get() {
-                let key = format!("weight:{w:?}");
-                style = style.with_computed(key, move || StyleRules {
-                    font_weight: Some(w),
+                style = style.with_inline(StyleRules {
+                    font_family: Some(font),
                     ..Default::default()
                 });
             }
@@ -194,110 +197,138 @@ pub fn Typography(props: &TypographyProps) -> Element {
         None => None,
     };
 
-    let apply_role = |el: runtime_core::Bound<_>| match role {
-        Some(r) => el.a11y_role(r),
-        None => el,
-    };
-
-    if style_is_reactive {
-        apply_role(text(content).with_style(make_style)).into_element()
+    // Both branches produce the same wrapper type, so the role is folded
+    // in after the style split (no `Bound<_>` type annotation — the
+    // builder's own type carries it).
+    let styled = if style_is_reactive {
+        text(content).with_style(make_style)
     } else {
-        apply_role(text(content).with_style(make_style())).into_element()
-    }
-}
-
-/// Stable cache-key fragment for a font override. A `System` family is
-/// keyed by its stack string; a `Typeface` by its registry id (the same
-/// dedup key the framework's `FontFamily` equality uses). Two overrides
-/// with the same key MUST resolve to the same `font_family`, which holds
-/// because identical families produce identical keys here.
-fn font_override_key(font: &FontFamily) -> String {
-    match font {
-        FontFamily::System(name) => format!("sys:{name}"),
-        FontFamily::Typeface(tf) => format!("tf:{}", tf.id.0),
+        text(content).with_style(make_style())
+    };
+    match role {
+        Some(r) => styled.a11y_role(r).into_element(),
+        None => styled.into_element(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P, TStyle};
+    use idea_theme::testing::with_test_world;
     use idea_theme::{install_idea_theme, light_theme, DEFAULT_FONT_STACK};
-    use runtime_core::{resolve_style, StyleSource};
+    use runtime_core::resolve_style;
 
-    /// Pull the `StyleSource` off the `text` node a `Typography` renders.
-    fn typography_style(t: Element) -> StyleSource {
-        match t {
-            Element::Text { style, .. } => style.expect("Typography text always carries a style"),
+    /// Pull the normalized style slot off the `text` node a `Typography` renders.
+    fn typography_style(t: Element) -> TStyle {
+        match classify(t) {
+            P::Text { style, .. } => style.expect("Typography text always carries a style"),
             _ => panic!("Typography renders a text node"),
         }
     }
 
     fn resolve(t: Element) -> runtime_core::StyleRules {
         match typography_style(t) {
-            StyleSource::Static(app) => (*resolve_style(&app)).clone(),
+            TStyle::App(app) => (*resolve_style(&app)).clone(),
             _ => panic!("Typography uses a static style source"),
         }
     }
 
     /// Field report 3.1(b): with the default theme and no per-instance
-    /// override, Typography must still carry a font_family — the theme's
-    /// sans stack — so web text isn't left in the browser serif fallback.
+    /// override, Typography text must still land on the theme's sans
+    /// stack, so web text isn't left in the browser serif fallback.
+    ///
+    /// The sheet deliberately does NOT carry the family (it used to —
+    /// see `TypographySheetBuilder::build`). A baked `FontFamily` is not
+    /// `Tokenized`, so it is exactly the shape premint cannot honour: a
+    /// build-time class would freeze whichever theme the dump installed.
+    /// The guarantee now rides the framework's default-text-font channel
+    /// instead, which BOTH style paths already consume — the live path
+    /// via `fill_default_text_font` at apply time, the preminted path via
+    /// the `--iy-default-font` custom property the dump emits into the
+    /// base rule.
+    ///
+    /// So this pins the two halves of the new chain that are reachable
+    /// from here: the theme feeds the channel on install, and the sheet
+    /// leaves the slot empty for the fill to occupy. (That the fill then
+    /// happens is `style_attach`'s contract, and the end-to-end result is
+    /// covered by the live-vs-preminted computed-style A/B, which found
+    /// `font-family` identical on all 400 catalog elements.)
     #[test]
     fn default_typography_inherits_theme_sans_font() {
-        install_idea_theme(light_theme());
-        let rules = resolve(Typography(&TypographyProps::default()));
-        match rules.font_family {
-            Some(FontFamily::System(stack)) => {
-                assert_eq!(stack, DEFAULT_FONT_STACK);
-                assert!(stack.contains("sans-serif"));
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+
+            // 1. Installing the theme publishes its family on the channel
+            //    the fill reads.
+            match runtime_core::default_text_font() {
+                Some(FontFamily::System(stack)) => {
+                    assert_eq!(stack, DEFAULT_FONT_STACK);
+                    assert!(stack.contains("sans-serif"));
+                }
+                other => panic!("theme did not publish its sans font: {other:?}"),
             }
-            other => panic!("expected the theme's sans font_family, got {other:?}"),
-        }
+
+            // 2. The sheet leaves the slot empty, so nothing shadows the
+            //    fill and no stale family can be preminted.
+            let rules = resolve(Typography(&TypographyProps::default()));
+            assert!(
+                rules.font_family.is_none(),
+                "Typography's sheet must leave font_family to the \
+                 default-text-font channel; baking one breaks premint \
+                 across a theme swap (got {:?})",
+                rules.font_family,
+            );
+    });
     }
 
     /// Field report 3.1(a): a per-instance `font` override carries into
     /// the resolved style's `font_family`, overriding the theme default.
     #[test]
     fn font_prop_override_carries_into_resolved_style() {
-        install_idea_theme(light_theme());
-        let props = TypographyProps {
-            font: Reactive::Static(Some(FontFamily::System("Courier New, monospace".to_string()))),
-            ..Default::default()
-        };
-        let rules = resolve(Typography(&props));
-        match rules.font_family {
-            Some(FontFamily::System(stack)) => assert_eq!(stack, "Courier New, monospace"),
-            other => panic!("expected the overridden font_family, got {other:?}"),
-        }
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let props = TypographyProps {
+                font: Reactive::Static(Some(FontFamily::System("Courier New, monospace".to_string()))),
+                ..Default::default()
+            };
+            let rules = resolve(Typography(&props));
+            match rules.font_family {
+                Some(FontFamily::System(stack)) => assert_eq!(stack, "Courier New, monospace"),
+                other => panic!("expected the overridden font_family, got {other:?}"),
+            }
+    });
     }
 
     /// A registered `Typeface` override resolves through too — the path
     /// authors use for a real brand face (`typeface!` → `.into()`).
     #[test]
     fn typeface_override_carries_into_resolved_style() {
-        install_idea_theme(light_theme());
-        // Minimal Typeface value; only `id`/family identity matters for
-        // resolution + cache keying.
-        let tf = runtime_core::Typeface {
-            id: runtime_core::TypefaceId(0xBEEF),
-            family_name: "BrandSans",
-            faces: &[],
-            fallback: runtime_core::SystemFallback::SansSerif,
-        };
-        let props = TypographyProps {
-            font: Reactive::Static(Some(FontFamily::Typeface(tf))),
-            ..Default::default()
-        };
-        let rules = resolve(Typography(&props));
-        match rules.font_family {
-            Some(FontFamily::Typeface(got)) => assert_eq!(got.id, tf.id),
-            other => panic!("expected the typeface font_family, got {other:?}"),
-        }
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            // Minimal Typeface value; only `id`/family identity matters for
+            // resolution + cache keying.
+            let tf = runtime_core::Typeface {
+                id: runtime_core::TypefaceId(0xBEEF),
+                family_name: "BrandSans",
+                faces: &[],
+                fallback: runtime_core::SystemFallback::SansSerif,
+            };
+            let props = TypographyProps {
+                font: Reactive::Static(Some(FontFamily::Typeface(tf))),
+                ..Default::default()
+            };
+            let rules = resolve(Typography(&props));
+            match rules.font_family {
+                Some(FontFamily::Typeface(got)) => assert_eq!(got.id, tf.id),
+                other => panic!("expected the typeface font_family, got {other:?}"),
+            }
+    });
     }
 
     fn a11y_role(t: Element) -> Option<Role> {
-        match t {
-            Element::Text { accessibility, .. } => accessibility.role,
+        match classify(t) {
+            P::Text { accessibility, .. } => accessibility.role,
             _ => panic!("Typography renders a text node"),
         }
     }
@@ -308,40 +339,122 @@ mod tests {
     /// A heading kind must now auto-attach `Role::Header`.
     #[test]
     fn regression_heading_kind_auto_attaches_header_role() {
-        install_idea_theme(light_theme());
-        for kind in [
-            TypographyKindRef::from(idea_theme::extensible::typography::H1),
-            TypographyKindRef::from(idea_theme::extensible::typography::H2),
-            TypographyKindRef::from(idea_theme::extensible::typography::H3),
-            TypographyKindRef::from(idea_theme::extensible::typography::Display),
-        ] {
-            let props = TypographyProps {
-                kind: Reactive::Static(kind.clone()),
-                ..Default::default()
-            };
-            assert_eq!(
-                a11y_role(Typography(&props)),
-                Some(Role::Header),
-                "kind {:?} must auto-attach Role::Header",
-                kind.key()
-            );
-        }
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            for kind in [
+                TypographyKindRef::from(idea_theme::extensible::typography::H1),
+                TypographyKindRef::from(idea_theme::extensible::typography::H2),
+                TypographyKindRef::from(idea_theme::extensible::typography::H3),
+                TypographyKindRef::from(idea_theme::extensible::typography::Display),
+            ] {
+                let props = TypographyProps {
+                    kind: Reactive::Static(kind.clone()),
+                    ..Default::default()
+                };
+                assert_eq!(
+                    a11y_role(Typography(&props)),
+                    Some(Role::Header),
+                    "kind {:?} must auto-attach Role::Header",
+                    kind.key()
+                );
+            }
+    });
     }
 
     #[test]
     fn body_kind_gets_no_role_and_explicit_override_wins() {
-        install_idea_theme(light_theme());
-        // Body (non-heading) → natural text, no role.
-        assert_eq!(a11y_role(Typography(&TypographyProps::default())), None);
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            // Body (non-heading) → natural text, no role.
+            assert_eq!(a11y_role(Typography(&TypographyProps::default())), None);
 
-        // Explicit Role::Text opts a heading kind OUT of the heading role.
-        let opted_out = TypographyProps {
-            kind: Reactive::Static(TypographyKindRef::from(
-                idea_theme::extensible::typography::H1,
-            )),
-            a11y_role: Reactive::Static(Some(Role::Text)),
-            ..Default::default()
-        };
-        assert_eq!(a11y_role(Typography(&opted_out)), Some(Role::Text));
+            // Explicit Role::Text opts a heading kind OUT of the heading role.
+            let opted_out = TypographyProps {
+                kind: Reactive::Static(TypographyKindRef::from(
+                    idea_theme::extensible::typography::H1,
+                )),
+                a11y_role: Reactive::Static(Some(Role::Text)),
+                ..Default::default()
+            };
+            assert_eq!(a11y_role(Typography(&opted_out)), Some(Role::Text));
+    });
+    }
+
+    /// Setting BOTH `font` and `weight` must apply both.
+    ///
+    /// `StyleApplication` has exactly one computed slot — `with_computed`
+    /// assigns rather than stacks. While `font` and `weight` each rode a
+    /// computed layer, the weight layer (added second) silently overwrote the
+    /// font layer, so a Typography with both set rendered the theme font at
+    /// the requested weight. `weight` is now a sheet axis and `font` rides
+    /// the inline layer, so nothing shares a slot.
+    #[test]
+    fn regression_font_and_weight_overrides_both_apply() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let rules = resolve(Typography(&TypographyProps {
+                content: Reactive::Static("Hi".to_string()),
+                font: Reactive::Static(Some(FontFamily::System("Courier New".to_string()))),
+                weight: Reactive::Static(Some(FontWeight::Bold)),
+                ..Default::default()
+            }));
+            assert_eq!(rules.font_weight, Some(FontWeight::Bold));
+            assert_eq!(
+                rules.font_family,
+                Some(FontFamily::System("Courier New".to_string())),
+                "the font override must survive alongside a weight override"
+            );
+        });
+    }
+
+    /// A Typography with a `font` override must still PREMINT: the typeface
+    /// rides the INLINE layer (out-of-band, applied over the preminted
+    /// classes) — the old `with_computed` spelling was a premint
+    /// disqualifier, so any `font = …` Typography panicked at mount in a
+    /// `--premint-only` app. Fails against the computed spelling
+    /// (`preminted_class_list()` is `None` for a computed-carrying
+    /// application).
+    #[test]
+    fn regression_font_override_premints_via_inline_layer() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let style = typography_style(Typography(&TypographyProps {
+                content: Reactive::Static("Hi".to_string()),
+                font: Reactive::Static(Some(FontFamily::System("Courier New".to_string()))),
+                ..Default::default()
+            }));
+            let app = match style {
+                TStyle::App(a) => a,
+                TStyle::AppFn(f) => f(),
+                _ => panic!("Typography style is an application"),
+            };
+            assert!(
+                app.preminted_class_list().is_some(),
+                "a font-overridden Typography must premint (font rides inline)"
+            );
+            let inline = app.inline().expect("font override rides the inline layer");
+            assert_eq!(
+                inline.font_family,
+                Some(FontFamily::System("Courier New".to_string()))
+            );
+        });
+    }
+
+    /// Each `weight` value must reach the resolved rules through the sheet's
+    /// axis — a weight missing an arm would silently fall back to the kind's
+    /// baked-in weight.
+    #[test]
+    fn every_font_weight_resolves_through_the_axis() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            for (_, w) in idea_theme::extensible::FONT_WEIGHT_KEYS {
+                let rules = resolve(Typography(&TypographyProps {
+                    content: Reactive::Static("Hi".to_string()),
+                    weight: Reactive::Static(Some(w)),
+                    ..Default::default()
+                }));
+                assert_eq!(rules.font_weight, Some(w), "weight {w:?} did not resolve");
+            }
+        });
     }
 }

@@ -89,9 +89,9 @@ fn architecture_diff() -> Element {
             Typography(
                 content = "Flutter's renderer is part of the framework. If a target needs \
                  something the renderer doesn't do, that target has to wait for the \
-                 renderer to grow that capability. Idealyst's Backend trait is the only \
-                 seam, and it's a fixed contract — primitives plus styling plus layout \
-                 plus refs. New target = new implementation of the trait, rest of the \
+                 renderer to grow that capability. Idealyst's backend traits are the only \
+                 seam, and they're a fixed contract — primitives plus styling plus layout \
+                 plus refs. New target = new implementation of those traits, rest of the \
                  framework comes along.".to_string(),
             )
         }

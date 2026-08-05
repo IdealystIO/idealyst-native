@@ -72,6 +72,12 @@ inventory::submit! {
                 doc: "Optional raw-touch handler. Author-level novel gesture surface — bubbles via the `consumed` flag.",
                 constraint: "",
             },
+            PropFieldSpec {
+                name: "preserves_focus",
+                type_str: "bool",
+                doc: "Focus-preserving press region: presses inside this subtree do NOT blur the focused text input / dismiss the soft keyboard. For surfaces that belong to a focused input — a combobox's anchored option menu, an input adornment — so a close-on-blur can't tear them down mid-press. Delivered on web (canceled capture-phase pointerdown), macOS (outside-click resign exemption), iOS (keyboard-dismiss tap exemption); no-op elsewhere.",
+                constraint: "builder method `.preserves_focus(true)` — also available on `pressable`",
+            },
             COMMON_ACCESSIBILITY_FIELD,
         ],
         category: PrimitiveCategory::Structural,
@@ -168,6 +174,12 @@ inventory::submit! {
             },
             COMMON_STYLE_FIELD,
             COMMON_REF_FILL_FIELD,
+            PropFieldSpec {
+                name: "preserves_focus",
+                type_str: "bool",
+                doc: "Pressing this pressable does not blur the focused text input (see `view.preserves_focus`). Set on controls that adorn an input — a combobox's disclosure chevron, a clear-text button — so activating them keeps the field focused.",
+                constraint: "builder method `.preserves_focus(true)`",
+            },
             COMMON_ACCESSIBILITY_FIELD,
         ],
         category: PrimitiveCategory::Input,
@@ -560,31 +572,6 @@ inventory::submit! {
             COMMON_ACCESSIBILITY_FIELD,
         ],
         category: PrimitiveCategory::Composition,
-        backends: ALL_BACKENDS,
-        _seal: (),
-    }
-}
-
-inventory::submit! {
-    PrimitiveEntry {
-        name: "external",
-        pascal_name: "External",
-        docs: "Third-party extension escape hatch. Use the per-backend `ExternalRegistry` to register a renderer keyed by the payload type; the runtime resolves the registered impl at mount time. Reference impls: maps, webview (see [[third_party_extension]]). Heavy SDK used in only one corner of a web app? Register the handler LAZILY from inside a `lazy!` chunk via [[defer_external_registration]] instead of eagerly at boot — eager registration anchors the whole SDK in `main.wasm`, defeating code-splitting.",
-        props: &[
-            PropFieldSpec {
-                name: "kind",
-                type_str: "&str",
-                doc: "Registry key — must match a `register_external` call on each backend.",
-                constraint: "Must be a registered external name",
-            },
-            PropFieldSpec {
-                name: "props",
-                type_str: "Box<dyn Any>",
-                doc: "Opaque payload handed to the registered renderer.",
-                constraint: "",
-            },
-        ],
-        category: PrimitiveCategory::Advanced,
         backends: ALL_BACKENDS,
         _seal: (),
     }

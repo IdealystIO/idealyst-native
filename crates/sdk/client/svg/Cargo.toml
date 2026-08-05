@@ -4,8 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Third-party SVG renderer SDK — one crate, cfg-gated per-backend impl
-# modules, matching the WebView SDK's single-crate pattern.
+# Third-party SVG renderer SDK — one crate, cfg-gated per-platform
+# painter modules, matching the WebView SDK's single-crate pattern.
 #
 # # Renderer strategy
 #
@@ -18,10 +18,15 @@ license.workspace = true
 #   `drawRect:` / `PictureDrawable.draw(canvas)` re-runs at the
 #   layout-time pixel resolution, so the output stays crisp at any
 #   scale and through transform animations.
+# - **Everything else**: the frozen External-placeholder path.
 #
 # This honors the "backend impls diverge in mechanism, converge in
-# behavior" rule from CLAUDE.md §7: every backend renders the SVG
-# spec via vector primitives native to that platform.
+# behavior" rule from CLAUDE.md §7: every platform with a renderer
+# renders the SVG spec via vector primitives native to that platform.
+#
+# `register` type-dispatches ONCE, by registry type (the toolbar SDK's
+# pattern) — a cfg split cannot express it, because `target_os = "ios"`
+# is also true for a host-side SSR render inside an iOS build graph.
 #
 # # v1 scope
 #
@@ -31,7 +36,7 @@ license.workspace = true
 # - Nested groups (transforms compose through `Path::abs_transform`,
 #   which usvg pre-resolves)
 # - Reactive inline SVG markup. URL sources can be wrapped by author
-#   code (fetch bytes via the standard `Image` pipeline, pass the
+#   code (fetch bytes via the standard image pipeline, pass the
 #   markup string here).
 #
 # Known gaps for v2:
@@ -40,17 +45,37 @@ license.workspace = true
 # - Group opacity != 1 — applied directly to children's fills/strokes
 #   rather than via proper offscreen compositing.
 # - Embedded raster `<image>` elements — skipped.
-# - Text — usvg's `text` feature is off, so glyphs are dropped.
 #
 # The walker can be extended for any of these without touching the
-# per-backend painter surface — see `crates/sdk/svg/src/tree_walker.rs`
-# for the `SvgPainter` trait that bridges to native primitives.
+# per-backend painter surface — see `src/tree_walker.rs` for the
+# `SvgPainter` trait that bridges to native primitives.
+description = "Third-party SVG renderer SDK — browser SVG on web, native vector walk on iOS/Android."
 
 [dependencies]
-runtime-core = { workspace = true }
-# Self-registration of the per-backend external handler at construction.
-inventory = "0.3"
+# The scene registry + the vocabulary caps the handlers drive
+# (`ExternalOps::create_external` placeholder path) + `style_attach` for
+# the author-style channel + `runtime_world::effect` for the
+# reactive-markup binding.
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-world = { workspace = true }
+# The permanent shared substrate: `Ref` (the handle slot `.bind` fills),
+# `accessibility`, the style data model.
+runtime-shared = { workspace = true }
 
+[dev-dependencies]
+# tests/scene.rs mounts `Svg(...)` through the scene registry end-to-end
+# on the shared host-mock recording substrate.
+host-mock = { workspace = true }
+
+# The wasm32 handler is `WebBackend`-concrete (`innerHTML` has no
+# caps-trait expression), so `Registry<WebBackend>` needs the backend's
+# `Host` impl.
+#
+# COORDINATION (runtime-v2 deletion wave): `` is
+# still required because the backends' `Host` + caps impls are behind
+# that feature. Drop the forward once the backend crates make them
+# unconditional.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
 web-sys = { version = "0.3", features = [
@@ -63,9 +88,9 @@ web-sys = { version = "0.3", features = [
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 
-# `usvg` is only used by the iOS and Android backends — the web
-# backend uses native browser SVG, and host builds fall through to
-# the no-op fallback. We pull in `text` + `system-fonts` so usvg
+# `usvg` is only used by the iOS and Android painters — the web
+# backend uses native browser SVG, and other hosts fall through to
+# the placeholder. We pull in `text` + `system-fonts` so usvg
 # resolves and shapes <text> elements through whatever fonts the OS
 # exposes. The resulting `Text::flattened()` group is a tree of
 # paths the walker can render like any other group — no
@@ -74,7 +99,7 @@ js-sys = "0.3"
 # absent.
 #
 # `fontdb` is exposed publicly so we can construct a `Database` and
-# load system fonts at `register(&mut backend)` time.
+# load system fonts at registration time.
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
 usvg = { version = "0.42", default-features = false, features = ["text", "system-fonts"] }
 fontdb = "0.18"

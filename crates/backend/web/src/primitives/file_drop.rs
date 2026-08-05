@@ -1,6 +1,6 @@
 //! OS file drag-and-drop delivery for the web backend.
 //!
-//! Implements [`runtime_core::Backend::install_file_drop_handler`] using the
+//! Implements [`runtime_shared::Backend::install_file_drop_handler`] using the
 //! HTML5 drag-and-drop events. Four listeners on the subscribed element cover
 //! the drag lifecycle:
 //!
@@ -20,7 +20,7 @@
 //! those must not be swallowed.
 
 use crate::WebBackend;
-use runtime_core::{DroppedFile, FileDropEvent, FileDropPhase, FileDropHandler, TouchPoint};
+use runtime_shared::{DroppedFile, FileDropEvent, FileDropPhase, FileDropHandler, TouchPoint};
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;

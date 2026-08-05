@@ -1,9 +1,12 @@
 //! Third-party primitives page — built via the `docs!` macro.
 //!
-//! Covers `Element::External` as the framework's single extension
-//! hatch, the per-backend registry pattern, and the umbrella crate
-//! convention third-party SDKs use to ship a primitive across
-//! multiple platforms.
+//! Covers the scene `Registry` as the extension seam, the per-host
+//! handler pattern, and the umbrella-crate convention third-party SDKs
+//! use to ship a primitive across multiple platforms.
+//!
+//! The worked reference for everything on this page is the in-tree
+//! `maps` SDK (`crates/sdk/client/maps`): shared props crate, umbrella
+//! facade, per-backend leaves, one `register` per host.
 
 use docs_macro::docs;
 #[allow(unused_imports)]
@@ -15,66 +18,65 @@ docs! {
     slug = "third-party-primitives",
     title = "Third-party primitives",
     category = Advanced,
-    description = "Ship a new primitive (with its own native FFI) without forking runtime-core. One escape hatch — Element::External — plus a per-backend registry pattern and a small umbrella-crate convention.",
+    description = "Ship a new primitive (with its own native FFI) without forking the framework. One seam — the scene Registry — plus a per-host handler and a small umbrella-crate convention.",
     related = ["primitives", "backends", "writing-a-backend"],
     concepts = [External],
 
     section(heading = "What this is for") {
-        p("The framework ships a closed set of primitives (View, Text, Button, \
-           Portal, Image, …) and a closed ", code("Backend"), " trait whose \
-           job is to render that set. Closed-on-both-sides is what gives the \
-           framework its type-safety guarantee: every backend handles every \
-           primitive, checked at compile time."),
-        p("But sometimes you want a primitive the framework doesn't ship. A ",
-          code("MapView"), " that wraps MapKit on iOS and Google Maps on \
-           Android and a Leaflet iframe on web. A camera viewfinder. A \
-           Stripe card-element. An AR scene. These are real platform things \
-           with no business living in runtime-core, but they need to look \
-           and behave like primitives at the call site — they need styles, \
-           refs, scope-tied cleanup, the works."),
-        p(code("Element::External"), " is the one extension hatch the \
-           framework provides for this. It lets you ship a primitive in your \
-           own crate, register a handler per backend you care about, and \
-           call it like any other primitive from user code."),
+        p("The framework ships a set of primitives (view, text, button, \
+           overlay, image, …) as handlers on a registry, and each host \
+           implements a set of narrow capability traits those handlers call \
+           through. Nothing about that arrangement is closed: a primitive is \
+           just a payload type plus a mount handler."),
+        p("So when you want a primitive the framework doesn't ship — a ",
+          code("MapView"), " that wraps MapKit on iOS and an OpenStreetMap \
+           embed on web, a camera viewfinder, a Stripe card-element, an AR \
+           scene — you register it the same way the built-ins are \
+           registered. These are real platform things with no business \
+           living in the framework, but they behave like primitives at the \
+           call site: styles, refs, scope-tied cleanup, the works."),
+        p("There is no separate \"external\" concept to learn. The scene ",
+          code("Registry"),
+          " treats first-party primitives and third-party ones uniformly."),
     },
 
     section(heading = "The shape, at a glance") {
-        p("Everything below is one variant on the ", code("Element"),
-          " enum, one inherent method on each backend, and a small \
-           three-crate convention for SDK authors:"),
+        p("An SDK is a payload type, one mount handler per host it supports, \
+           and a small three-crate convention:"),
         list(
-            [code("runtime-core"),
-             " — defines ", code("Element::External { type_id, type_name, payload, .. }"),
-             " and a per-backend ", code("ExternalRegistry<B>"),
-             " helper. Knows nothing about specific external kinds."],
-            ["Each backend (", code("backend-web"), ", ",
-             code("backend-ios-mobile"), ", …) — holds an ",
-             code("ExternalRegistry<Self>"), " field and exposes an inherent ",
-             code("register_external::<T>(handler)"), " method. Looks the \
-              handler up by ", code("TypeId"), " in ", code("create_external"),
-             "; falls through to a platform-native \"not supported\" \
-              placeholder on a miss."],
-            ["Third-party SDK crates (e.g. ", code("maps"),
-             ", ", code("maps-web"), ", ", code("maps-core"),
-             ") — define their props type, expose a constructor, and ship \
-              one per-backend leaf for each platform they support. An \
-              umbrella crate cfg-routes the right leaf in per build."],
-            ["User app — calls ", code("maps::register(&mut backend)"),
-             " once at bootstrap. Done."],
+            ["The runtime — defines ", code("runtime_scene::Registry<H>"),
+             ", ", code("item(payload, children)"),
+             " for building a scene node from a payload, and the ",
+             code("runtime_vocabulary::caps"),
+             " capability traits handlers are generic over. It knows nothing \
+              about specific SDKs."],
+            ["A shared types crate (e.g. ", code("maps-core"),
+             ") — the props type. Pure data, zero platform deps, so the \
+              per-backend leaves and the umbrella can all depend on it \
+              without a cycle."],
+            ["Per-backend leaf crates (", code("maps-web"), ", ",
+             code("maps-ios"), ", …) — build the native node from the props. \
+              Pure platform code; nothing about the runtime leaks in."],
+            ["The umbrella crate (", code("maps"),
+             ") — defines the payload, the author-facing constructor, and \
+              one ", code("register"),
+             " per host, cfg-routed so exactly one is active per build."],
+            ["User app — passes ", code("maps::register"),
+             " to the boot entry's registration seam. One line."],
         ),
-        p("Closed-enum invariants stay intact for the first-party set; \
-           type erasure is paid at exactly one line per backend; user code \
-           stays fully typed."),
+        p("An UNREGISTERED payload panics at realize. That is deliberate: a \
+           missed ", code("register"),
+          " fails loud instead of silently rendering a placeholder box."),
     },
 
     section(heading = "Authoring a third-party primitive") {
-        p("Concrete example: a ", code("MapView"), " SDK with a web \
-           implementation. The pattern generalizes to camera, AR, video \
-           pickers, anything platform-native."),
+        p("Concrete example: the in-tree ", code("maps"),
+          " SDK — an OpenStreetMap iframe on web, a native ",
+          code("MKMapView"),
+          " on iOS. The pattern generalizes to camera, AR, video pickers, \
+           anything platform-native."),
 
-        p("First the shared types crate. Pure data, zero platform deps. \
-           Lives in its own crate so per-backend leaves and the umbrella \
-           crate can both depend on it without forming a cycle:"),
+        p("First the shared types crate. Pure data, zero platform deps:"),
         code(rust, r##"
             // crates/sdk/client/maps/core/src/lib.rs
 
@@ -86,92 +88,177 @@ docs! {
             }
         "##),
 
-        p("Then the per-backend leaf. Imports the shared props + the \
-           specific backend type, calls ", code("register_external"),
-          " with a handler that builds a native node:"),
+        p("Then the per-backend leaf. It only knows how to build a native \
+           node from the props — no runtime types at all:"),
         code(rust, r##"
             // crates/sdk/client/maps/web/src/lib.rs
 
-            use backend_web::WebBackend;
             use maps_core::MapViewProps;
 
-            pub fn register(backend: &mut WebBackend) {
-                backend.register_external::<MapViewProps, _>(|props, _backend| {
-                    // Build a web_sys::Element however you like.
-                    // (Real code would bind to Leaflet via wasm-bindgen;
-                    // an OSM iframe is a fine POC.)
-                    let doc = web_sys::window().unwrap().document().unwrap();
-                    let iframe = doc.create_element("iframe").unwrap();
-                    let src = format!(
-                        "https://www.openstreetmap.org/export/embed.html\
-                         ?marker={},{}",
-                        props.lat, props.lon,
-                    );
-                    let _ = iframe.set_attribute("src", &src);
-                    iframe
-                });
+            pub fn build_map_iframe(props: &MapViewProps) -> web_sys::Element {
+                let doc = web_sys::window().unwrap().document().unwrap();
+                let iframe = doc.create_element("iframe").unwrap();
+                let src = format!(
+                    "https://www.openstreetmap.org/export/embed.html?marker={},{}",
+                    props.lat, props.lon,
+                );
+                let _ = iframe.set_attribute("src", &src);
+                iframe
             }
         "##),
 
-        p("Finally the umbrella crate. This is what user apps import. It \
-           re-exports the props, exposes a constructor, and cfg-routes the \
-           per-backend ", code("register"), " function to the right leaf at \
-           compile time:"),
+        p("Now the umbrella. Three pieces: the PAYLOAD (the type the \
+           registry keys on), the author-facing BUILDER, and the ",
+          code("IntoElement"), " impl that wraps the payload in an ",
+          code("item"), " node:"),
         code(rust, r##"
             // crates/sdk/client/maps/src/lib.rs
 
-            use runtime_core::{external, Bound, ExternalHandle};
+            use std::cell::RefCell;
+            use std::rc::Rc;
+
+            use runtime_scene::{item, Element, MountCx, Registry};
+            use runtime_vocabulary::glue::IntoElement;
+            use runtime_vocabulary::style_attach::{
+                attach_style, on_teardown, IntoStyleProp, StyleProp, StyleServices,
+            };
+
             pub use maps_core::MapViewProps;
 
-            /// Public constructor. PascalCase so it reads as a primitive
-            /// at call sites — `{ MapView(...) }` inside a `ui!` block
-            /// has the visual cadence of `overlay { }` or `view { }`.
-            /// Returns a typed `Bound<...>` so `.bind(ref)` is
-            /// type-checked against `Ref<ExternalHandle<MapViewProps>>`.
-            #[allow(non_snake_case)]
-            pub fn MapView(props: MapViewProps) -> Bound<ExternalHandle<MapViewProps>> {
-                external(props)
+            /// The scene payload. Single-take style slot: the scene hands
+            /// the handler a shared `&Rc<Self>`, but `StyleProp` has to
+            /// MOVE at mount — hence the `RefCell<Option<_>>`.
+            struct MapsPrim {
+                props: Rc<MapViewProps>,
+                style: RefCell<Option<StyleProp>>,
             }
 
-            // Platform-routed `register`. Exactly one of these is active
-            // per build, picked by cfg.
-            #[cfg(target_arch = "wasm32")]
-            pub use maps_web::register;
+            /// Author-side builder returned by `MapView`.
+            pub struct MapViewBound {
+                props: Rc<MapViewProps>,
+                style: Option<StyleProp>,
+            }
 
-            #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-            pub use maps_ios::register;
+            /// PascalCase intentionally — it matches the visual cadence of
+            /// first-party primitives inside a `ui!` block.
+            #[allow(non_snake_case)]
+            pub fn MapView(props: MapViewProps) -> MapViewBound {
+                MapViewBound { props: Rc::new(props), style: None }
+            }
 
-            // Fallback for platforms with no leaf. User code compiles
-            // identically on every target; the framework renders its
-            // "not supported" placeholder at runtime.
-            #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
-            pub fn register<B>(_backend: &mut B) {}
+            impl MapViewBound {
+                pub fn with_style(mut self, style: impl IntoStyleProp) -> Self {
+                    self.style = Some(style.into_style_prop());
+                    self
+                }
+            }
+
+            impl IntoElement for MapViewBound {
+                fn into_element(self) -> Element {
+                    item(
+                        MapsPrim { props: self.props, style: RefCell::new(self.style) },
+                        Vec::new(),
+                    )
+                }
+            }
         "##),
+
+        p("Then the handler + registration, one pair per host. The handler \
+           receives a ", code("MountCx"),
+          " (which carries the backend handle), the payload, and the child \
+           elements; it returns the host's node type:"),
+        code(rust, r##"
+            /// Shared mount tail: author style, then scope-tied teardown.
+            fn finish_mount<H>(backend: &Rc<RefCell<H>>, node: &H::Node, prim: &MapsPrim)
+            where
+                H: ExternalOps + StyleServices,
+            {
+                if let Some(style) = prim.style.borrow_mut().take() {
+                    attach_style(backend, node, style);
+                }
+                let backend = backend.clone();
+                let node = node.clone();
+                on_teardown(move || backend.borrow_mut().release_external(&node));
+            }
+
+            #[cfg(target_arch = "wasm32")]
+            pub fn register(registry: &mut Registry<backend_web::WebBackend>) {
+                registry.register::<MapsPrim, _>(mount_map_web);
+            }
+
+            #[cfg(target_arch = "wasm32")]
+            fn mount_map_web(
+                cx: &mut MountCx<'_, backend_web::WebBackend>,
+                prim: &Rc<MapsPrim>,
+                _children: Vec<Element>,
+            ) -> web_sys::Node {
+                let backend = cx.backend().clone();
+                let node: web_sys::Node = maps_web::build_map_iframe(&prim.props).into();
+                finish_mount(&backend, &node, prim);
+                node
+            }
+        "##),
+
+        p("The iOS arm is the same three lines with a different leaf and a \
+           different node type (", code("MKMapView"),
+          " built by ", code("maps_ios::build_map_view"),
+          "). Hosts with no leaf get a generic degradation handler — see \
+           below."),
 
         p("And the umbrella's ", code("Cargo.toml"),
           " uses target-specific dependencies so non-web targets don't \
            even pull the web leaf into the dep graph:"),
         code(toml, r##"
             [dependencies]
-            runtime-core = { workspace = true }
+            runtime-scene = { workspace = true }
+            runtime-vocabulary = { workspace = true }
             maps-core = { workspace = true }
 
             [target.'cfg(target_arch = "wasm32")'.dependencies]
             maps-web = { workspace = true }
+            backend-web = { workspace = true }
 
             [target.'cfg(target_os = "ios")'.dependencies]
             maps-ios = { workspace = true }
+            backend-ios-mobile = { workspace = true }
         "##),
     },
 
-    section(heading = "Using it") {
-        p("From the user app's perspective the SDK is one line of \
-           bootstrap and one call site for the primitive:"),
+    section(heading = "Generic handlers vs per-host handlers") {
+        p("A handler generic over the capability traits it needs serves \
+           EVERY host at once. That is the right shape whenever the \
+           primitive can be expressed through the capability surface — the ",
+          code("codeblock"), " and ", code("markdown"),
+          " SDKs are both one generic handler for all hosts:"),
         code(rust, r##"
-            // App bootstrap (per target, but identical Rust)
-            let mut backend = WebBackend::new("#app");
-            maps::register(&mut backend);  // routes to maps-web on web,
-                                           // no-op on platforms with no leaf
+            pub fn register<H>(registry: &mut Registry<H>)
+            where
+                H: StyleServices + TextOps + 'static,
+            {
+                registry.register::<CodeBlockPrim, _>(mount_code_block::<H>);
+            }
+        "##),
+        p("Reach for a host-CONCRETE handler (", code("Registry<WebBackend>"),
+          ") only when the implementation genuinely needs the platform: \
+           building a ", code("web_sys::Element"), " directly, or an ",
+          code("MKMapView"),
+          ". A concrete handler is a deliberate narrowing, not the default."),
+    },
+
+    section(heading = "Using it") {
+        p("From the user app's perspective the SDK is one registration and \
+           one call site. The boot entry's ", code("register"),
+          " argument IS the seam:"),
+        code(rust, r##"
+            // App bootstrap. Compose several SDKs in one closure if needed.
+            backend_web::newcore::start_in("#app", maps::register, app);
+
+            // …or, with more than one SDK:
+            backend_web::newcore::start_in(
+                "#app",
+                |r| { maps::register(r); svg::register(r); },
+                app,
+            );
 
             // Inside any component, anywhere in the UI tree:
             use maps::{MapView, MapViewProps};
@@ -187,140 +274,125 @@ docs! {
                 }
             }
         "##),
-        p("The ", code("MapView(...)"), " call returns a ",
-          code("Bound<ExternalHandle<MapViewProps>>"),
-          ", which slots into the children list the same way ",
-          code("view(...)"), " or ", code("button(...)"),
-          " does. ", code(".with_style(...)"), ", ", code(".bind(r)"),
-          " and the rest of the standard builder surface all apply."),
-        p("The PascalCase name is intentional — it matches the visual \
-           cadence of first-party primitives (", code("overlay { }"),
-          ", ", code("view { }"), ") inside a ", code("ui!"),
-          " block. The ", code("{ ... }"),
-          " interpolation around it tells the macro \"this is an \
-           expression, not a tag\" — third-party primitives don't \
-           plumb into native ", code("ui!"), " block syntax because \
-           the macro only recognizes the first-party primitive set."),
+        p("The ", code("{ ... }"),
+          " interpolation tells the macro \"this is an expression, not a \
+           tag\" — third-party primitives don't plumb into ", code("ui!"),
+          " block syntax, because a PascalCase tag routes to ",
+          code("BuildElement"),
+          " component dispatch. An SDK that wants a real tag ships the tag \
+           contract itself: a props struct plus ", code("type WebView = "),
+          code("WebViewProps"), ", exactly like the ", code("webview"),
+          " SDK does, and then ", code("ui! { WebView(url = …) }"),
+          " is ordinary component dispatch."),
+        p("The generated per-platform wrappers pass the app's own \
+           registration fn — conventionally ",
+          code("register_scene_extensions"),
+          " — so an app composes its SDK registers there once and every \
+           target (web, SSR, iOS, macOS, Android, GPU) picks it up."),
     },
 
-    section(heading = "Refs and handles") {
-        p("Refs are typed against the props type, so different SDKs can't \
-           accidentally collide on a single ", code("Ref<H>"), " slot:"),
+    section(heading = "Refs, handles, and author callbacks") {
+        p("An SDK that exposes imperative operations gives its payload a \
+           ref slot and binds the handle at mount, the same way a \
+           first-party primitive does. ", code("maps"),
+          " deliberately doesn't: its props are plain data and its leaves \
+           expose no imperative ops, so there is nothing for a ref to \
+           carry."),
+        p("If your handler DOES run author callbacks from a raw platform \
+           event source outside the framework's wrapped dispatch sites — a ",
+          code("<form>"), " submit listener, an iframe ",
+          code("message"),
+          " event, a native toolbar action — call the backend's ",
+          code("newcore::schedule_flush()"),
+          " after the callback returns. Otherwise the writes that callback \
+           staged sit uncommitted until something else triggers a flush."),
         code(rust, r##"
-            use runtime_core::{Ref, ExternalHandle};
-            use maps::{MapView, MapViewProps};
-
-            let map_ref: Ref<ExternalHandle<MapViewProps>> = Ref::new();
-
-            MapView(MapViewProps { lat, lon, zoom })
-                .bind(map_ref.clone())
+            el.add_event_listener(&closure_that(move |ev| {
+                (author_on_submit)(ev);
+                backend_web::newcore::schedule_flush();   // commit the staged writes
+            }));
         "##),
-        p("The ", code("ExternalHandle<T>"), " carries the backend's \
-           native node behind an ", code("Rc<dyn Any>"), " — the SDK \
-           author exposes typed accessors (under ", code("#[cfg]"),
-          ") if they want call sites to reach into the native object:"),
-        code(rust, r##"
-            // In maps (umbrella):
-            impl ExternalHandle<MapViewProps> {
-                #[cfg(target_arch = "wasm32")]
-                pub fn element(&self) -> Option<&web_sys::Element> {
-                    self.node().downcast_ref::<web_sys::Element>()
-                }
-            }
-        "##),
-        p("Cross-platform code that doesn't reach into native types just \
-           uses the ", code("Ref"), " for lifecycle tracking and skips the \
-           accessor entirely."),
     },
 
     section(heading = "What happens on platforms without a leaf") {
-        p("Two stages of \"not supported\" fall out automatically:"),
-        list(
-            ["Compile-time: the umbrella's fallback ",
-             code("register<B>(_: &mut B) {}"), " is generic over any \
-              backend, so user code that calls ",
-             code("maps::register(&mut backend)"),
-             " compiles on every target — even ones the SDK author hasn't \
-              shipped a leaf for. The function just does nothing on those \
-              targets."],
-            ["Runtime: when the user actually mounts ",
-             code("MapView(...)"), " on a target with no registered \
-              handler, the backend's ", code("create_external"),
-             " looks up its registry, finds nothing for ",
-             code("TypeId::of::<MapViewProps>()"),
-             ", and renders a platform-native \"External MapViewProps not \
-              supported\" placeholder instead of panicking."],
-        ),
-        p("For graceful in-app degradation (\"if maps don't work here, \
-           show a static image instead\"), each backend exposes a ",
-          code("has_external::<T>()"), " discovery method:"),
+        p("An SDK that supports some hosts and not others registers a \
+           DEGRADATION handler on the rest, so the payload is always \
+           registered and realize never panics:"),
         code(rust, r##"
-            if backend.has_external::<MapViewProps>() {
+            #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+            pub fn register<H>(registry: &mut Registry<H>)
+            where
+                H: ExternalOps + StyleServices + 'static,
+            {
+                registry.register::<MapsPrim, _>(mount_placeholder::<H>);
+            }
+        "##),
+        p("The placeholder handler routes through ",
+          code("ExternalOps::create_external"),
+          ", which renders each host's \"not supported\" box (a bare ",
+          code("<div>"),
+          " on SSR) with author style and teardown still flowing. User code \
+           compiles and runs identically on every target; only the rendered \
+           node differs."),
+        p("For graceful in-app degradation — \"if maps don't work here, show \
+           a static image instead\" — branch in author code on the platform \
+           identity rather than probing the registry:"),
+        code(rust, r##"
+            if matches!(platform(), Platform::Web | Platform::Ios) {
                 MapView(MapViewProps { lat, lon, zoom }).into()
             } else {
                 image_asset(static_map_png).into()
             }
         "##),
-        p("Tree-shake works automatically — Cargo's target-specific deps \
+        p("Tree-shaking works automatically — Cargo's target-specific deps \
            keep the iOS leaf out of the web build's dep graph, so the iOS \
            FFI bindings aren't compiled or linked on web. You only pay for \
            the leaves your current target actually uses."),
     },
 
-    section(heading = "Why the closed enum + escape hatch") {
-        p("A natural question: why not just make the ", code("Element"),
-          " enum open, so third-party crates can add cases directly?"),
-        p("Two reasons. The first is a Rust language constraint: closed \
-           enums are the only way the framework can prove at compile time \
-           that every backend handles every primitive. Open the enum and \
-           that guarantee evaporates — backends would have to runtime-check \
-           every dispatch, with no way to know what primitives exist until \
-           the whole program is linked."),
-        p("The second is design discipline: first-party primitives are \
-           obligations on every backend, externals are opt-in capabilities. \
-           That split is what lets a custom backend (someone implementing ",
-          link("their own Backend", to = "writing-a-backend"),
-          ") inherit the entire third-party ecosystem for free — they \
-           implement the closed first-party trait and either choose to \
-           support some externals via their own registry, or leave the \
-           default placeholder behavior in place. Either way they're a \
-           working backend on day one."),
-        p("So: closed enum stays closed for the things the framework \
-           guarantees; one ", code("External"), " variant carries the long \
-           tail of platform-native primitives nobody wants to centralize. \
-           Type-erasure happens at exactly one line per backend, user code \
-           stays fully typed, and the third-party crate convention is just \
-           standard Rust dep-graph routing — no magic, no plugin loader, \
-           no link-time discovery."),
+    section(heading = "Why registration instead of an open enum") {
+        p("A natural question: the scene has a small structural ",
+          code("Element"),
+          " enum. Why do primitives live in a registry rather than as enum \
+           variants third-party crates could add?"),
+        p("Because registration is what makes the primitive set OPEN while \
+           keeping the structural set CLOSED. The five structural variants \
+           (item, dyn hole, keyed list, fragment, and the navigator outlet) \
+           are what the mount drivers reason about — those must be closed and \
+           exhaustively handled. What a given item DOES is a handler lookup, \
+           which costs one dispatch and lets a third-party crate participate \
+           without touching the runtime."),
+        p("The design payoff: a custom host implements the capability traits \
+           it can support and inherits the entire third-party ecosystem for \
+           free. Every SDK whose handler is capability-generic works on it \
+           on day one; the ones that need platform specifics register a \
+           degradation handler instead. See ",
+          link("writing your own backend", to = "writing-a-backend"), "."),
     },
 
-    section(heading = "When NOT to reach for External") {
+    section(heading = "When NOT to reach for a new primitive") {
         p("If your primitive is implementable purely in terms of existing \
-           framework primitives — Views, styles, gestures, animation — \
+           framework primitives — views, styles, gestures, animation — \
            write a regular ", link("Component", to = "components"),
           " instead. Components compose, refs work, the ", code("ui!"),
-          " macro understands them, no extension machinery needed."),
-        p(code("External"), " is the right tool only when you genuinely \
-           need a native platform widget the framework doesn't ship: \
-           system camera, MapKit-style native map, Stripe element, \
-           WKWebView with custom message channels, ARKit scene. If you \
-           can build it with a styled ", code("View"), " and a few \
-           reactive props, do that."),
+          " macro understands them, no registration needed."),
+        p("A registered payload is the right tool only when you genuinely \
+           need a native platform widget the framework doesn't ship: system \
+           camera, MapKit-style native map, Stripe element, WKWebView with \
+           custom message channels, ARKit scene. If you can build it with a \
+           styled ", code("view"),
+          " and a few reactive props, do that."),
     },
 
     section(heading = "Where to read more") {
         list(
             [link("Primitives", to = "primitives"),
-             " — the closed first-party set that ", code("External"),
-             " complements."],
+             " — the first-party set your SDK sits alongside."],
             [link("Backends", to = "backends"),
-             " — what each shipped backend supports today, including which \
-              ones have registered the placeholder behavior vs panic on \
-              externals."],
+             " — what each shipped backend supports today."],
             [link("Writing your own backend", to = "writing-a-backend"),
-             " — implementing the ", code("Backend"), " trait, including ",
-             code("create_external"), " and (optionally) a registry of \
-              your own."],
+             " — implementing the host contract, and which capability \
+              traits a handler can rely on."],
         ),
     },
 }

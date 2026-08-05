@@ -41,6 +41,58 @@ pub mod extensible;
 pub mod intent;
 mod theme_runtime;
 
+/// In-place signal read-modify-write.
+///
+/// The kernel's inherent [`Signal::update`] takes `FnOnce(&T) -> T` —
+/// it reads the current (staged-aware) value and stages the returned
+/// one. `modify` is the `&mut`-closure spelling on top of it, so
+/// `sig.modify(|v| v.push(x))` reads naturally for collection-valued
+/// signals. Kept in one place so every idea-* crate (and app code built
+/// on them) shares a single definition.
+///
+/// [`Signal::update`]: runtime_core::Signal::update
+pub mod compat {
+    /// In-place read-modify-write: `sig.modify(|v| v.push(x))`.
+    pub trait SignalModify<T> {
+        fn modify(&self, f: impl FnOnce(&mut T));
+    }
+
+    impl<T: PartialEq + Clone + 'static> SignalModify<T> for runtime_core::Signal<T> {
+        fn modify(&self, f: impl FnOnce(&mut T)) {
+            // The kernel's `update` reads the CURRENT (staged-aware)
+            // value and stages the returned one — the correct
+            // read-modify-write primitive under staged commits (a bare
+            // `set(get()+…)` would lose earlier same-turn writes).
+            self.update(|v| {
+                let mut next = v.clone();
+                f(&mut next);
+                next
+            });
+        }
+    }
+}
+
+/// Test-support shared by this crate's unit tests and idea-ui's.
+/// Hidden: not part of the theming surface.
+#[doc(hidden)]
+pub mod testing {
+    /// Run a test body inside a reactive context.
+    ///
+    /// Signals and effects are world-backed, so they need an ambient
+    /// world: `f` runs inside a fresh `World` (entered, flushed, and
+    /// dropped afterwards).
+    pub fn with_test_world<R>(f: impl FnOnce() -> R) -> R {
+        runtime_core::__with_fresh_world(f)
+    }
+
+    /// Commit staged signal writes mid-test — flushes the innermost
+    /// [`with_test_world`] world so a `set` is observable by a following
+    /// `get` (writes stage until the world flushes).
+    pub fn commit() {
+        runtime_core::__flush_test_world();
+    }
+}
+
 /// Compile-checked usage recipes (docs / MCP catalog). Present only under
 /// the `catalog` feature — see [`recipes`].
 #[cfg(feature = "catalog")]

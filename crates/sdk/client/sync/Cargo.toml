@@ -32,8 +32,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 storage = { workspace = true }
 # Reactive Signal + provide/inject + spawn_async for the per-partition
-# reactive binding. `async-driver` gives `spawn_async` (pollster fallback
-# on native, spawn_local on web).
+# reactive binding. Aliased as `runtime_core` at the crate root (see
+# lib.rs); `async-driver` gives `spawn_async` (pollster fallback on
+# native, spawn_local on web).
 runtime-core = { workspace = true, features = ["async-driver"] }
 
 # Web multi-tab coordination (the `coord` module): leader election via the

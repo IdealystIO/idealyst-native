@@ -1,0 +1,44 @@
+# scene-parity FULL-OP golden — scenario `full_presence_cycle`, mode `anchored`
+#
+# P3-set: presence with enter AND exit anims between two static
+# siblings (pins the placeholder's in-flow position and that the
+# handler never styles it). show: child mounts + snaps to the
+# enter state pre-paint; the pumped frame applies rest with the
+# enter transition. hide: the exit transform applies with the
+# node still attached; the pumped timer runs the deferred
+# detach + teardown. reshow mounts a fresh child. New-core
+# override: presence is re-expressed on the scene Dyn driver +
+# retire hook (README divergence #6).
+#
+# Complete backend-call stream (create_*/update_*/apply_style/release_*
+# + the structural ops). Node names are creation-order (n0, n1, ...).
+# Owned by the OLD core; regenerate after an INTENDED walker change
+# with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 text "before"
+insert n0 <- n1
+create n2 presence_placeholder
+insert n0 <- n2
+create n3 text "after"
+insert n0 <- n3
+
+== show (child mounts, snaps to the enter state pre-paint) ==
+create n4 text "card"
+insert n2 <- n4
+apply_presence n4 {opacity: Some(0.0), translate_y: Some(8.0)} snap
+
+== frame (animate to rest with the enter transition) ==
+apply_presence n4 rest 200ms EaseOut
+
+== hide (exit transform, node still attached) ==
+apply_presence n4 {opacity: Some(0.0), translate_y: Some(8.0)} 150ms EaseIn
+
+== exit elapses (deferred detach + teardown) ==
+clear_children n2
+
+== reshow (fresh child mounts) ==
+create n5 text "card"
+insert n2 <- n5
+apply_presence n5 {opacity: Some(0.0), translate_y: Some(8.0)} snap

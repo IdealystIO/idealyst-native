@@ -36,14 +36,28 @@ static FRAME_COUNT: AtomicU32 = AtomicU32::new(0);
 static LAST_WIDTH: AtomicU32 = AtomicU32::new(0);
 static LAST_HEIGHT: AtomicU32 = AtomicU32::new(0);
 
-/// No third-party `Element::External` SDKs to register — this demo uses the
-/// capture capability, which is a plain object API, not a rendered
-/// primitive. (When you render a `screen_recorder::PrivateLayer`, that's
-/// where you'd call `screen_recorder::register(backend)`.)
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam the CLI-generated wrappers invoke after
+/// `runtime_vocabulary::register_builtins`. No third-party payload handlers
+/// to register — this demo uses the capture *capability*, which is a plain
+/// object API, not a rendered primitive. (When you render a
+/// `screen_recorder::PrivateLayer`, that's where you'd call
+/// `screen_recorder::register(registry)` — see
+/// `screenshare-preview-demo`.)
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
+/// Runtime-server (sidecar) recorder seam — nothing to register host-side
+/// either. Gated by `sidecar` so device/web builds never pull `dev-server`.
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {}
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
+}
 
 pub fn app() -> Element {
     install_idea_theme(light_theme());
@@ -153,9 +167,12 @@ pub fn app() -> Element {
         }
     };
 
-    let body: Vec<Element> = vec![
-        ui! { Typography(content = "Screen recorder SDK demo".to_string(), kind = idea_ui::typography_kind::H1) },
-        ui! {
+    ui! {
+        Stack(gap = StackGap::Md, padding = StackPadding::Lg) {
+            Typography(
+                content = "Screen recorder SDK demo".to_string(),
+                kind = idea_ui::typography_kind::H1,
+            )
             Typography(
                 content = "Captures the current tab/window/screen via \
                     `getDisplayMedia` and streams raw frames through the \
@@ -165,15 +182,11 @@ pub fn app() -> Element {
                     .to_string(),
                 muted = true,
             )
-        },
-        status_text,
-        frames_text,
-        dims_text,
-        ui! { button(label = "Start recording".to_string(), on_click = on_start) },
-        ui! { button(label = "Stop recording".to_string(), on_click = on_stop) },
-    ];
-
-    ui! {
-        Stack(gap = StackGap::Md, padding = StackPadding::Lg) { body }
+            status_text
+            frames_text
+            dims_text
+            button(label = "Start recording".to_string(), on_click = on_start)
+            button(label = "Stop recording".to_string(), on_click = on_stop)
+        }
     }
 }

@@ -89,7 +89,7 @@ impl Default for SwitchProps {
     fn default() -> Self {
         Self {
             label: Reactive::Static(None),
-            value: Signal::new(false),
+            value: runtime_core::signal(false),
             on_change: Rc::new(|_| {}),
             tone: Reactive::Static(ToneRef::default()),
             variant: Reactive::Static(VariantRef::default()),
@@ -103,12 +103,6 @@ impl Default for SwitchProps {
 /// Renders a controlled slide-toggle: a tone-colored pill track with a
 /// thumb that animates between off (left) and on (right), with an
 /// optional inline label.
-///
-/// **Cargo features:** requires `prim-icon` (in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without it compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Switch(props: &SwitchProps) -> Element {
     let value = props.value;
@@ -176,17 +170,17 @@ pub fn Switch(props: &SwitchProps) -> Element {
             .with("size", size_key.clone())
     };
     let toggle = move || (on_change)(!value.get());
-    let track = runtime_core::pressable(vec![thumb], toggle)
-        .with_style(track_style)
-        .into_element();
+    let track = runtime_core::pressable(vec![thumb], toggle).with_style(track_style);
     // Forward the test id to the interactive track so a robot suite can
-    // locate + click it. Gated: `with_test_id` only exists under
-    // `runtime-core/robot`.
+    // locate + click it — set on the BUILDER (`.test_id` on the pressable
+    // wrapper). Gated: the id slot only registers under `robot`, and the
+    // prop only exists there.
     #[cfg(feature = "robot")]
     let track = match props.test_id {
-        Some(tid) => track.with_test_id(tid),
+        Some(tid) => track.test_id(tid),
         None => track,
     };
+    let track = track.into_element();
 
     match crate::components::optional_reactive_text(props.label.clone(), FieldLabel()) {
         Some(label) => ui! {

@@ -1,8 +1,11 @@
 //! Track 3 — Media queries. Breakpoint overlays, mobile-first, and the
 //! current_breakpoint escape hatch.
+//!
+//! Every snippet is `include_str!`-ed from `crate::samples`, so the
+//! breakpoint and container grammars the lessons teach are compiler-checked.
 
-use runtime_core::{ui, Element};
 use idea_ui::{typography_kind, Typography};
+use runtime_core::{ui, Element};
 
 use crate::common::{Callout, CodePanel, DocsLink, LessonPage};
 use crate::routes::{
@@ -24,21 +27,7 @@ pub fn breakpoints() -> Element {
                     merges the blocks whose width threshold the current viewport has \
                     crossed.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::{stylesheet, FlexDirection};
-
-stylesheet! {
-    pub Panel<()> {
-        base(_t) {                       // Xs — the mobile-first base
-            flex_direction: FlexDirection::Column,
-            padding: 12.0,
-        }
-        breakpoint md(_t) {              // >= 768 dp
-            flex_direction: FlexDirection::Row,
-            padding: 20.0,
-        }
-        breakpoint lg(_t) { padding: 32.0 }   // >= 1024 dp
-    }
-}"##.to_string())
+            CodePanel(src = include_str!("../samples/mq_breakpoints.rs").to_string())
 
             Typography(
                 content = "One declaration, two realizations".to_string(),
@@ -91,16 +80,7 @@ pub fn mobile_first() -> Element {
                     1024, xl 1280 dp. Override them once at startup if your design system uses a \
                     different scale.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::{install_breakpoints, Breakpoints};
-
-// Call once before mounting (or before the first current_breakpoint read).
-install_breakpoints(Breakpoints {
-    sm_min: 600.0,
-    md_min: 900.0,
-    lg_min: 1200.0,
-    xl_min: 1600.0,
-})
-.ok();"##.to_string())
+            CodePanel(src = include_str!("../samples/mq_install.rs").to_string())
 
             Callout(label = "Why min-width only".to_string()) {
                 Typography(
@@ -115,7 +95,7 @@ install_breakpoints(Breakpoints {
             DocsLink(
                 summary = "The bucket definitions, thresholds, and cascade order.".to_string(),
                 link_label = "Breakpoint module".to_string(),
-                doc_file = "../crates/runtime/core/src/breakpoint.rs".to_string(),
+                doc_file = "../crates/runtime/shared/src/breakpoint.rs".to_string(),
             )
         }
     })
@@ -136,14 +116,7 @@ pub fn signal_escape() -> Element {
                     conditional that reads it doesn't re-run on every pixel of a \
                     drag-resize.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::{current_breakpoint, Breakpoint, effect};
-
-effect!({
-    match current_breakpoint().get() {
-        Breakpoint::Xs | Breakpoint::Sm => { /* stacked layout */ }
-        _                               => { /* side-by-side layout */ }
-    }
-});"##.to_string())
+            CodePanel(src = include_str!("../samples/mq_signal.rs").to_string())
 
             Callout(label = "Prefer declarative blocks".to_string()) {
                 Typography(
@@ -158,7 +131,7 @@ effect!({
             DocsLink(
                 summary = "viewport_size, the memo, and which backends are wired.".to_string(),
                 link_label = "Breakpoint module".to_string(),
-                doc_file = "../crates/runtime/core/src/breakpoint.rs".to_string(),
+                doc_file = "../crates/runtime/shared/src/breakpoint.rs".to_string(),
             )
         }
     })
@@ -178,27 +151,7 @@ pub fn container_queries() -> Element {
                     one stylesheet. Thresholds are arbitrary lengths, not the named viewport \
                     buckets: a 360 dp sidebar can have its own 300 dp switch.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::{stylesheet, ui, FlexDirection};
-
-stylesheet! {
-    pub Card<()> {
-        base(_t) {                              // narrow: stacked
-            flex_direction: FlexDirection::Column,
-            padding: 12.0,
-        }
-        container (min_width: 400px)(_t) {      // container >= 400 dp: side-by-side
-            flex_direction: FlexDirection::Row,
-            padding: 20.0,
-        }
-    }
-}
-
-// Mark the box the card should measure itself against:
-ui! {
-    view(style = sidebar) {                     // establishes the context
-        Card()                                  // keys off `sidebar`'s width
-    }.container()                               // modifier trails the block
-}"##.to_string())
+            CodePanel(src = include_str!("../samples/mq_container.rs").to_string())
 
             Typography(
                 content = "The same two realizations as breakpoints".to_string(),
@@ -228,7 +181,7 @@ ui! {
             DocsLink(
                 summary = "the axis encoding, the cascade, and the native feedback loop.".to_string(),
                 link_label = "Container-query module".to_string(),
-                doc_file = "../crates/runtime/core/src/container_query.rs".to_string(),
+                doc_file = "../crates/runtime/shared/src/container_query.rs".to_string(),
             )
         }
     })

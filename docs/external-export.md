@@ -162,16 +162,19 @@ primitive-argument callbacks.
 
 ## How it works
 
-1. **Discover.** An ephemeral wrapper crate links the project with
-   `runtime-core/catalog` on (the same mechanism `idealyst docs` / `idealyst
-   mcp` use) and prints the external-component manifest as JSON — each
-   tagged component joined to its prop schema.
+1. **Discover.** An ephemeral wrapper crate links the project with the
+   framework's `catalog` feature on (the same mechanism `idealyst docs` /
+   `idealyst mcp` use) and prints the external-component manifest as JSON —
+   each tagged component joined to its prop schema.
 2. **Generate the bridge.** From that manifest the CLI generates an
    ephemeral `cdylib` crate with one `#[wasm_bindgen]` class per component:
    props → `Signal<T>`, callbacks → stored `js_sys::Function`. Each element
-   builds its own subtree into its host via `build_detached`, under a
-   **single shared `WebBackend`** ([`WebBackend::new_in`](../crates/backend/web/src/lib.rs))
-   and a unique identity seed.
+   realizes its own detached subtree into its host
+   ([`runtime_scene::realize`](../crates/runtime/scene/src/realize.rs)),
+   against a **single shared `WebBackend`**
+   ([`WebBackend::new_in`](../crates/backend/web/src/lib.rs)), one shared
+   scene `Registry` carrying the framework's primitive handlers, and one
+   page-wide `World`.
 3. **Build wasm.** `cargo build --target wasm32-unknown-unknown` then
    `wasm-bindgen --target web`.
 4. **Generate the JS/TS surface.** Custom-element shells, `.d.ts`, the
@@ -193,8 +196,21 @@ bridge:
 - **One shared backend.** All elements use the same `WebBackend`, so the
   backend's id-keyed JS shims (reactive-text/class batchers) and node-id
   counters are installed and allocated once.
-- **Unique identity per element.** Each subtree builds under a distinct
-  identity seed, so two elements' node ids never collide.
+- **One page-wide `World`.** Every element's signals AND subtree live in
+  it, so a single flush commits a write no matter which element it landed
+  on — and two elements can share state if the app hands them the same
+  signal handle. Writes stage until that flush: a JS property setter is not
+  one of the framework's wrapped dispatch sites, so the bridge flushes
+  explicitly after each setter, while framework-internal callbacks (timers,
+  animation frames, future polls) ride the installed post-dispatch hook.
+- **Teardown is drop.** `unmount()` drops the element's `Realized`, which
+  runs effect cleanups, frees its signals, and releases its nodes.
+
+One consequence worth stating: an exported component that renders a
+third-party SDK payload needs that SDK's handler on the bridge's registry,
+and a component bundle has no app boot seam to compose registers into. An
+unregistered payload panics at realize (the scene contract), so keep
+exported components on framework primitives + idea-ui.
 
 ## Requirements
 

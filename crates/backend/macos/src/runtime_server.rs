@@ -127,7 +127,12 @@ fn sample_viewport(view: &Retained<NSView>) -> Option<WireViewport> {
         // viewport signal. `set_viewport_size` dedupes by equality so
         // the per-tick sample only re-fires subscribers on actual
         // resize.
-        runtime_core::set_viewport_size(runtime_core::ViewportSize { width, height });
+        runtime_shared::set_viewport_size(runtime_shared::ViewportSize { width, height });
+        // New-core mirror — inert today (runtime-server mode drives the
+        // old core), but every seam that writes `set_viewport_size`
+        // forwards so a future new-core shell inherits live breakpoints
+        // for free. See newcore.rs, "Viewport source".
+        crate::newcore::forward_viewport(runtime_shared::ViewportSize { width, height });
         Some(WireViewport { width, height })
     } else {
         None

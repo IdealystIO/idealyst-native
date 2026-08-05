@@ -17,18 +17,18 @@
 //! ```no_run
 //! use idea_theme::{install_theme, set_theme, ThemeTokens, TokenEntry, TokenValue};
 //!
-//! struct MyTheme { accent: runtime_core::Color }
+//! struct MyTheme { accent: String }
 //! impl ThemeTokens for MyTheme {
 //!     fn tokens(&self) -> Vec<TokenEntry> {
 //!         vec![TokenEntry {
 //!             name: "accent",
-//!             value: TokenValue::Color(self.accent.clone()),
+//!             value: TokenValue::Color(self.accent.as_str().into()),
 //!         }]
 //!     }
 //! }
 //!
-//! install_theme(MyTheme { accent: "#06f".into() });
-//! set_theme(MyTheme { accent: "#39f".into() });
+//! install_theme(MyTheme { accent: "#06f".to_string() });
+//! set_theme(MyTheme { accent: "#39f".to_string() });
 //! ```
 
 use std::any::Any;
@@ -51,14 +51,77 @@ pub trait ThemeTokens: Any {
     fn tokens(&self) -> Vec<TokenEntry>;
 }
 
-thread_local! {
-    /// The active theme. Wrapped in a `Signal<Rc<dyn Any>>` so
-    /// effects subscribe via the existing reactivity system and
-    /// re-apply on swap. Only callers who use the theme-as-struct
-    /// pattern read this; nothing in runtime-core or backends
-    /// touches it.
-    static ACTIVE_THEME: RefCell<Option<Signal<Rc<dyn Any>>>> = const { RefCell::new(None) };
+/// Cloneable, identity-comparable wrapper for the stashed theme.
+/// World signals require `PartialEq` (the kernel's equality cut), which
+/// `Rc<dyn Any>` lacks; pointer identity is the honest comparison for
+/// "same theme object". Swaps go through `set_always`, so the eq impl
+/// never suppresses a re-install notification.
+#[derive(Clone)]
+pub(crate) struct ThemeSlot(pub(crate) Rc<dyn Any>);
 
+impl PartialEq for ThemeSlot {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// Storage for the active-theme signal.
+///
+/// Signals are world-backed and worlds are transient (one per SSR
+/// request / mounted app). The handle lives in the WORLD's typed context
+/// (`provide`/`inject`), mirroring how the vocabulary's own ThemeCtx is
+/// stored; each world's first `install_theme` creates its own slot. A TLS
+/// capture of the last-installed handle exists ALONGSIDE the context,
+/// consulted only OUTSIDE `World::enter`: platform event handlers run
+/// there and the context inject would panic (the docs-shell dark-button
+/// abort). Writes through a handle whose world died are silent kernel
+/// no-ops, so the capture can go stale but never dangle.
+mod active_slot {
+    use super::ThemeSlot;
+    use runtime_core::Signal;
+    use std::cell::RefCell;
+
+    /// Typed world-context key (contexts are keyed by `TypeId`).
+    #[derive(Clone)]
+    struct ActiveTheme(Signal<ThemeSlot>);
+
+    thread_local! {
+        /// The last-installed slot's HANDLE — the handler fallback.
+        /// Platform event handlers run OUTSIDE `World::enter`, where the
+        /// context `inject` panics — so `set_theme` from a button
+        /// handler must reach the slot through a handle captured at
+        /// install time: capture, don't inject. (Found live: the
+        /// idea-ui-docs dark-theme button aborted "outside
+        /// World::enter" through this module's inject.) The handle is
+        /// `Copy` and routes to its OWN world; a write after that world
+        /// died is a silent no-op, and any live world's fresh install
+        /// re-captures — so staleness is inert, never dangling.
+        static LAST_ACTIVE: RefCell<Option<Signal<ThemeSlot>>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn current() -> Option<Signal<ThemeSlot>> {
+        if runtime_core::__world_is_entered() {
+            // Ambient path: per-world isolation (an SSR request world
+            // never sees the app world's theme, and vice versa).
+            runtime_core::inject::<ActiveTheme>().map(|a| a.0)
+        } else {
+            // Handler path: the last ambient install's handle.
+            LAST_ACTIVE.with(|t| *t.borrow())
+        }
+    }
+
+    pub(super) fn store(sig: Signal<ThemeSlot>) {
+        // `unscope` the PROVISION too, not just the signal: a context
+        // entry is owned by the scope that made it, and `store` runs from
+        // whichever render scope first installed a theme. Scope-owned, the
+        // slot would stop being injectable on that subtree's unmount and
+        // the next `current()` would fall back to a fresh theme.
+        runtime_core::unscope(|| runtime_core::provide(ActiveTheme(sig)));
+        LAST_ACTIVE.with(|t| *t.borrow_mut() = Some(sig));
+    }
+}
+
+thread_local! {
     /// Owns [`install_themes`]'s theme-variant `watch` for the process
     /// lifetime. `install_themes` runs at app boot, outside any render
     /// scope, so the subscription is caller-owned and this is the caller.
@@ -68,7 +131,8 @@ thread_local! {
     /// effect. That way a hot-reload or fixture teardown that re-installs
     /// the theme system doesn't leak one subscription per call. Two
     /// concurrent active-theme signals never make sense — the new install
-    /// supersedes the old one.
+    /// supersedes the old one. (Dropping a stale-world subscription is a
+    /// guarded no-op — `Owned::drop` skips dead arenas.)
     static INSTALL_THEMES_KEEPALIVE: RefCell<Option<Subscription>> = const { RefCell::new(None) };
 }
 
@@ -84,30 +148,31 @@ pub fn install_theme<T: ThemeTokens + 'static>(theme: T) {
     apply_host_surface_from_tokens(&tokens);
 }
 
-/// Store `rc` as the active theme: reuse the existing thread-local signal
-/// slot when present, otherwise create it **outside any render scope**.
+/// Store `rc` as the active theme: reuse the existing signal slot when
+/// present, otherwise create it **outside any render scope**.
 ///
-/// `ACTIVE_THEME` is a thread-lifetime singleton owned by this module's
-/// thread-local — NOT by a reactive scope. Its backing signal must therefore
-/// be created via [`runtime_core::unscope`] so the *first* caller's scope
+/// The slot is owned by [`active_slot`] — the world's typed context plus
+/// the handler-path TLS capture — NOT by a reactive scope. Its backing
+/// signal must therefore be created via [`runtime_core::unscope`] so the *first* caller's scope
 /// doesn't adopt it. The hazard, concretely: an embedded sub-app (e.g. a
 /// whiteboard editor mounted on a navigator screen) re-installs the theme
 /// while building inside its screen's transient scope. If that scope owned
-/// the signal, popping the screen would free the slot while this thread-local
-/// kept pointing at it — and the next `active_theme()` from a still-mounted
+/// the signal, popping the screen would free the slot while the stored
+/// handle kept pointing at it — and the next `active_theme()` from a still-mounted
 /// sibling (a drawer header re-tinting on the back-nav, say) would read a
 /// recycled slot and abort with "signal used after its scope was dropped".
 /// Reusing the slot on re-install also keeps a stable signal id (no
 /// per-install leak across repeated installs).
 fn store_active_theme(rc: Rc<dyn Any>) {
-    ACTIVE_THEME.with(|t| {
-        if let Some(sig) = t.borrow().as_ref() {
-            sig.set(rc);
-            return;
-        }
-        let sig = runtime_core::unscope(|| Signal::new(rc));
-        *t.borrow_mut() = Some(sig);
-    });
+    if let Some(sig) = active_slot::current() {
+        // `set_always`: a theme re-install must notify even if the same
+        // Rc is re-stored (and `ThemeSlot`'s ptr-eq must never suppress
+        // a swap).
+        sig.set_always(ThemeSlot(rc));
+        return;
+    }
+    let sig = runtime_core::unscope(|| runtime_core::signal(ThemeSlot(rc)));
+    active_slot::store(sig);
 }
 
 /// Swap the active theme. Forwards the new tokens to
@@ -251,12 +316,10 @@ pub fn install_themes<T: ThemeTokens + Clone + 'static>(
 /// Panics if no theme has been installed. Call [`install_theme`]
 /// before render.
 pub fn active_theme() -> Rc<dyn Any> {
-    ACTIVE_THEME.with(|t| {
-        t.borrow()
-            .as_ref()
-            .expect("no theme installed; call idea_ui::install_theme(...) before rendering")
-            .get()
-    })
+    active_slot::current()
+        .expect("no theme installed; call idea_ui::install_theme(...) before rendering")
+        .get()
+        .0
 }
 
 /// Whether a theme has been installed on this thread yet — a non-panicking
@@ -268,7 +331,7 @@ pub fn active_theme() -> Rc<dyn Any> {
 /// doesn't clobber the host's global theme. Standalone (no host theme) it
 /// installs as usual.
 pub fn theme_installed() -> bool {
-    ACTIVE_THEME.with(|t| t.borrow().is_some())
+    active_slot::current().is_some()
 }
 
 /// Read the active theme *without* subscribing the current effect to theme
@@ -312,7 +375,6 @@ pub fn active_font_family() -> runtime_core::FontFamily {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::Signal;
 
     #[derive(Clone)]
     struct TestTheme {
@@ -375,6 +437,35 @@ mod tests {
         }
     }
 
+    /// The docs-shell dark-theme-button crash: the whole swap surface —
+    /// `set_theme` → slot `set_always` + token/host-surface forwarding —
+    /// used to be ambient-only (`inject` from the world context), and
+    /// platform event handlers run OUTSIDE `World::enter`, so the first
+    /// theme swap aborted "signal()/effect() called outside
+    /// World::enter". The swap must instead ride the install-time
+    /// captures (slot handle + vocabulary ThemeCtx), stage, and commit
+    /// on the owning world's next flush.
+    #[test]
+    fn regression_set_theme_from_handler_outside_enter_commits_on_flush() {
+        let world = runtime_core::__World::new();
+        world.enter(|| install_theme(TestTheme { name: "light" }));
+        world.flush();
+
+        // The button handler: no ambient world. Must not panic.
+        set_theme(TestTheme { name: "dark" });
+
+        // The flush driver commits afterwards; the entered read then
+        // sees the swapped theme through the per-world context.
+        world.flush();
+        let name = world.enter(|| {
+            active_theme()
+                .downcast_ref::<TestTheme>()
+                .expect("stashed theme keeps its concrete type")
+                .name
+        });
+        assert_eq!(name, "dark", "handler swap committed on flush");
+    }
+
     /// Regression test for the `INSTALL_THEMES_KEEPALIVE` Vec growth audit
     /// finding. Repeated calls to `install_themes` (hot-reload, fixture
     /// teardown, tests) must not append to the keepalive indefinitely.
@@ -382,13 +473,15 @@ mod tests {
     /// installs are superseded and dropped cleanly.
     #[test]
     fn install_themes_keepalive_is_bounded_across_repeated_calls() {
+        crate::testing::with_test_world(|| {
         let baseline = keepalive_len();
         let variants: [(&'static str, TestTheme); 2] = [
             ("light", TestTheme { name: "light" }),
             ("dark", TestTheme { name: "dark" }),
         ];
         for _ in 0..16 {
-            let active = Signal::new("light".to_string());
+            // `signal(...)` == old `Signal::new(...)`; see the theme.rs test.
+            let active = runtime_core::signal("light".to_string());
             install_themes(active, &variants);
         }
         let len_after = keepalive_len();
@@ -402,5 +495,6 @@ mod tests {
             "INSTALL_THEMES_KEEPALIVE grew by {leak} entries across 16 calls; \
              expected at most 1 (each install supersedes the previous)",
         );
+        });
     }
 }

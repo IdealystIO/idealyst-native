@@ -30,7 +30,10 @@ default = []
 runtime-server = ["dep:tungstenite", "dev-client/dev-hot-reload"]
 
 [dependencies]
-runtime-core = { workspace = true }
+runtime-shared = { workspace = true }
+# The shell is generic over the platform's capability surface
+# (`caps::AllCaps`), matching `dev_client::WireBackend`'s bound.
+runtime-vocabulary = { workspace = true }
 dev-client = { workspace = true }
 wire = { workspace = true }
 serde_json = { workspace = true }

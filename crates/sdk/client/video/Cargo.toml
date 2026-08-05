@@ -4,27 +4,55 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Third-party `Video` SDK — one crate, cfg-gated per-backend impl
+# Third-party `Video` SDK — one crate, cfg-gated per-platform player
 # modules. Mirrors the `webview` SDK's single-crate layout (see
-# `crates/sdk/webview/Cargo.toml` for the same rationale).
+# `crates/sdk/client/webview/Cargo.toml` for the same rationale).
 #
-# # Backend coverage
+# # Platform coverage
 #
 # - Web: `<video>` element.
-# - iOS: `AVPlayerLayer` over a `UIView` host.
-# - Android: `android.widget.VideoView`.
-# - Other targets (wgpu desktop, terminal, etc.): the framework's
-#   `External` placeholder. Apps that want video on those targets ship
-#   their own SDK module — the `register_external` surface is open.
+# - macOS / iOS: layer-backed host view — `AVPlayerLayer` sublayer for
+#   the URL path, per-frame CGImage/IOSurface `contents` for the live
+#   `MediaStream` path.
+# - Android: `FrameLayout` host filled by the Kotlin shim with a
+#   `VideoView` (URL) or an `ImageView` fed RGBA frames (stream).
+# - Other targets (SSR, wgpu desktop, terminal, …): the framework's
+#   External placeholder.
+#
+# `register` type-dispatches ONCE, by registry type (the toolbar SDK's
+# pattern) — a cfg split cannot express it, because `target_os = "macos"`
+# is also true for a macOS SSG build.
+description = "Third-party Video SDK — <video> on web, AVPlayer on Apple, VideoView on Android."
 
 [dependencies]
-runtime-core = { workspace = true }
 # A `Video` can display a live `MediaStream` (from `camera` /
 # `screen-recorder`), not just a URL `src`.
 media-stream = { workspace = true }
-# Self-registration of the per-backend Video external at construction.
-inventory = "0.3"
+# The scene registry + the vocabulary caps the handlers drive
+# (`ExternalOps::create_external` placeholder path) + `style_attach` for
+# the author-style channel + `runtime_world::effect` for the
+# reactive-source binding (and `scoped_scheduling::raf_loop_scoped` for
+# the native frame pumps).
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-world = { workspace = true }
+# The permanent shared substrate: `Ref` (the handle slot `.bind` fills),
+# `accessibility`, the style data model.
+runtime-shared = { workspace = true }
 
+[dev-dependencies]
+# tests/scene.rs mounts `Video(...)` through the scene registry
+# end-to-end on the shared host-mock recording substrate.
+host-mock = { workspace = true }
+
+# The wasm32 handler is `WebBackend`-concrete (`<video>` DOM has no
+# caps-trait expression), so `Registry<WebBackend>` needs the backend's
+# `Host` impl.
+#
+# COORDINATION (runtime-v2 deletion wave): `` is
+# still required because the backends' `Host` + caps impls are behind
+# that feature. Drop the forward once the backend crates make them
+# unconditional.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
 web-sys = { version = "0.3", features = [

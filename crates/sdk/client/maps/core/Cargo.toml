@@ -9,14 +9,16 @@ license.workspace = true
 # umbrella `maps` re-exports its public surface.
 #
 # The split exists because per-backend leaves (`maps-web` etc.) and
-# the umbrella (`maps`) would otherwise form a dep cycle — leaves need
-# `MapViewProps` to register a handler for its TypeId, the umbrella
-# needs the leaves' `register` function. This crate is the common base
-# both can depend on without involving the other.
+# the umbrella (`maps`) would otherwise form a dep cycle — leaves build
+# a node from `MapViewProps`, the umbrella needs the leaves' builders.
+# This crate is the common base both can depend on without involving the
+# other.
 
 [dependencies]
-# Pulled in solely for the `IdealystSchema` derive (re-exported from
-# runtime-core). The derive expands to a no-op without the `catalog`
-# feature, so this adds no runtime code or platform deps to a normal
-# build — `maps-core` stays "zero platform deps".
+# Pulled in solely for the `IdealystSchema` derive and the
+# `::runtime_core::__mcp::…` paths it emits (this crate aliases
+# `runtime_core` as `runtime_core` at its root). The derive expands to
+# a no-op without the `catalog` feature, so this adds no runtime code or
+# platform deps to a normal build — `maps-core` stays "zero platform
+# deps".
 runtime-core = { workspace = true }

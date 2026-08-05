@@ -17,7 +17,7 @@ use objc2::rc::Retained;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_foundation::{MainThreadMarker, NSObject, NSString};
 use objc2_ui_kit::UIView;
-use runtime_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
+use runtime_shared::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
 use std::cell::RefCell;
 
 use super::IosBackend;

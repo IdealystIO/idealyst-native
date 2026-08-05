@@ -214,14 +214,21 @@ docs! {
         code(rust, r##"
             let messages = signal(load_messages());
 
+            // `update` takes the current value by reference and returns the
+            // next one, so a collection edit clones, mutates, and returns.
+
             // Add an item:
-            messages.update(|v| v.push(new_message));
+            messages.update(|v| { let mut v = v.clone(); v.push(new_message); v });
 
             // Remove by id:
-            messages.update(|v| v.retain(|m| m.id != target_id));
+            messages.update(|v| v.iter().filter(|m| m.id != target_id).cloned().collect());
 
             // Sort:
-            messages.update(|v| v.sort_by_key(|m| m.timestamp));
+            messages.update(|v| {
+                let mut v = v.clone();
+                v.sort_by_key(|m| m.timestamp);
+                v
+            });
         "##),
 
         p("The framework reads the current snapshot whenever the virtualizer \
@@ -280,7 +287,7 @@ docs! {
                     render_item = |_, t| {
                         let done = t.done;
                         ui! {
-                            Pressable(on_click = move || done.update(|v| *v = !*v)) {
+                            Pressable(on_click = move || done.update(|v| !v)) {
                                 text { t.title.clone() }
                                 text { if done.get() { "✔" } else { "" } }
                             }

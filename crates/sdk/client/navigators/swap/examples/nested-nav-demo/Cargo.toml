@@ -9,18 +9,28 @@ description = "Nested navigators with two simultaneous sidebars — a primary se
 crate-type = ["rlib"]
 
 [features]
-sidecar = ["dep:dev-server", "swap-navigator/runtime-server"]
+# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
+# (build-runtime-server), which calls `register_scene_extensions_recorder`.
+# The swap navigator's runtime is a vocabulary BUILT-IN (installed on every
+# host by `register_builtins`, wire recorder included), so there is no SDK
+# feature to forward.
+sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The author-surface root: `extern crate runtime_core as runtime_core;`
+# in src/lib.rs maps every `runtime_core::…` path here.
+# `runtime-vocabulary` because the `ui!` emission spells absolute
+# `::runtime_vocabulary::glue::…` paths; `runtime-scene` because
+# `register_scene_extensions` is generic over the registry host.
 runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 swap-navigator = { workspace = true }
 dev-server = { workspace = true, optional = true }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { workspace = true }
-
-[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))'.dependencies]
-backend-terminal = { workspace = true }
+# No backend deps: `register_scene_extensions` is registry-generic (no
+# third-party scene handlers here), so the crate stays platform-agnostic and
+# the CLI-generated wrappers bring their own concrete backend.
 
 [package.metadata.idealyst.app]
 name      = "Nested Nav Demo"

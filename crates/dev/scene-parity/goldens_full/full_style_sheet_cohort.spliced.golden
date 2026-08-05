@@ -1,0 +1,40 @@
+# scene-parity FULL-OP golden — scenario `full_style_sheet_cohort`, mode `spliced`
+#
+# P3c: static SHEET applications through the token engine. Tokens
+# installed pre-mount are delivered (install_tokens) before the
+# first styled apply; each theme swap emits ONE backend
+# update_tokens then re-applies every registered static node (the
+# shared theme cohort, registration order). Hiding a styled branch
+# removes it structurally + fires on_node_unstyled; the FOLLOWING
+# swap re-applies only the survivor — the dead node's cohort entry
+# is gone.
+#
+# Complete backend-call stream (create_*/update_*/apply_style/release_*
+# + the structural ops). Node names are creation-order (n0, n1, ...).
+# Owned by the OLD core; regenerate after an INTENDED walker change
+# with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 view
+install_tokens ["color-surface"]
+apply_style n1 {background: Some(Token { name: "color-surface", fallback: Color("#000") }), width: Some(Literal(Px(100.0)))}
+insert n0 <- n1
+create n2 view
+apply_style n2 {background: Some(Token { name: "color-surface", fallback: Color("#000") }), width: Some(Literal(Px(400.0)))}
+insert_at n0 <- n2 @ 1
+
+== swap theme (update_tokens + cohort re-applies both) ==
+update_tokens ["color-surface"]
+apply_style n1 {background: Some(Token { name: "color-surface", fallback: Color("#000") }), width: Some(Literal(Px(100.0)))}
+apply_style n2 {background: Some(Token { name: "color-surface", fallback: Color("#000") }), width: Some(Literal(Px(400.0)))}
+
+== hide the styled branch (structural + on_node_unstyled) ==
+remove_child n0 -x n2
+on_node_unstyled n2
+create n3 text "hidden"
+insert_at n0 <- n3 @ 1
+
+== swap theme again (only the survivor re-applies) ==
+update_tokens ["color-surface"]
+apply_style n1 {background: Some(Token { name: "color-surface", fallback: Color("#000") }), width: Some(Literal(Px(100.0)))}

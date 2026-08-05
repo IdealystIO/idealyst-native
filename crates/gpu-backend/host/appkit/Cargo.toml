@@ -8,8 +8,8 @@ license.workspace = true
 #
 # Owns the NSApplication boot, the top-level NSWindow + content
 # view, the menu bar setup, and the run loop. Hands the backend a
-# content NSView (`set_host_root`) and calls `runtime_core::render`
-# with the user's `app()` function.
+# content NSView (`set_host_root`) and mounts the author's scene via
+# `backend_macos::newcore::start`.
 #
 # Mirrors `host-winit`'s role for the wgpu sim runtime — except this
 # is a real native AppKit host, not a winit-driven custom-drawn
@@ -29,7 +29,9 @@ default = []
 runtime-server = ["backend-macos/runtime-server"]
 
 [dependencies]
-runtime-core = { workspace = true }
+# The scene-element vocabulary the boot entries take. (`runtime-core` is
+# NOT a dependency: this host has no `Element`/`Backend` surface left.)
+runtime-scene = { workspace = true }
 # `async-driver`: install the libdispatch-backed cooperative async executor at
 # boot (this host calls `backend_apple_core::scheduler::install_scheduler`,
 # which only installs the executor when apple-core's `async-driver` is on).

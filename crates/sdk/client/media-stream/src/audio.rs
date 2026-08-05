@@ -313,6 +313,25 @@ pub struct AudioStream {
     inner: Rc<AudioStreamInner>,
 }
 
+/// Pointer identity — the exact mirror of [`MediaStream`](crate::MediaStream)'s
+/// impl, for the exact same reason. An `AudioStream` is a HANDLE to a live
+/// capture, so clones of one stream are equal and two independently opened
+/// streams never are.
+///
+/// There is no value equality to offer: the payload is a live sample channel
+/// plus a native source, and comparing buffered samples would be wrong (a
+/// stream is not its current window) and unbounded. `Signal<T>` is bounded on
+/// `T: PartialEq` at creation and `get`, and a microphone stream in app state
+/// is the common case — the video half of this crate was fixed in 1.0.1 and
+/// the audio half is the same defect.
+impl PartialEq for AudioStream {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
+impl Eq for AudioStream {}
+
 impl AudioStream {
     /// Create a stream and its producer [`AudioWriter`].
     #[allow(clippy::new_without_default)]
@@ -469,6 +488,32 @@ mod tests {
         assert!(stream.latest(&mut buf).is_none());
         assert!(stream.format().is_none());
         assert_eq!(stream.generation(), 0);
+    }
+
+    /// `AudioStream: PartialEq` is identity, mirroring `MediaStream`. It
+    /// exists so a mic stream can be held in a `Signal` (bounded on
+    /// `T: PartialEq` at creation and `get`); only this crate can supply
+    /// it, since the orphan rule blocks an app crate.
+    #[test]
+    fn audio_stream_clones_compare_equal() {
+        let (stream, _writer) = AudioStream::new();
+        assert!(stream == stream.clone(), "clones address the same capture");
+    }
+
+    /// Two independently opened streams are never the same stream — and
+    /// stay unequal after both have received identical samples, proving
+    /// the compare reads identity rather than the buffered window.
+    #[test]
+    fn independently_opened_audio_streams_compare_unequal() {
+        let (a, wa) = AudioStream::new();
+        let (b, wb) = AudioStream::new();
+        assert!(a != b);
+        wa.write_pcm_f32(FMT.sample_rate, FMT.channels, &[0.1, 0.2]);
+        wb.write_pcm_f32(FMT.sample_rate, FMT.channels, &[0.1, 0.2]);
+        assert!(
+            a != b,
+            "identical sample windows must not collapse two streams into one"
+        );
     }
 
     #[test]

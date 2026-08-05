@@ -11,7 +11,7 @@ license.workspace = true
 # `AndroidNdkWindowHandle`-bearing `GraphicsSurface`), runs the wgpu
 # init against the Vulkan/GL backend, constructs the
 # `render_wgpu::Host` + `Renderer`, mounts the caller's UI, and drives
-# per-frame paint through `runtime_core::driver::render_loop` — which
+# per-frame paint through `runtime_shared::driver::render_loop` — which
 # `backend-android-mobile` already installs as a Choreographer-driven
 # raf_loop.
 #
@@ -26,9 +26,17 @@ license.workspace = true
 [dependencies]
 render-api = { workspace = true }
 render-wgpu = { workspace = true }
-runtime-core = { workspace = true, features = ["async-driver"] }
+# `async-driver`: the crate's `spawn_async` executor, used by the
+# async wgpu init.
+runtime-shared = { workspace = true, features = ["async-driver"] }
+# The scene-element vocabulary `mount`'s build closure returns.
+runtime-scene = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
+# The embedding app host — `mount` reads its mounted world (the
+# `newcore` boot's accessor) and installs its render-loop driver
+# (behind the backend's `async-driver`).
+backend-android-mobile = { workspace = true, features = ["async-driver"] }
 # Match host-ios-mobile / host-web on wgpu 29. Vulkan is the modern
 # Android backend (API 24+); GL is the legacy fallback. Enabling both
 # lets wgpu pick whichever the device supports.

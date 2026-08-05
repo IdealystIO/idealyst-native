@@ -15,15 +15,21 @@ docs = ["idea-ui/docs"]
 robot = ["runtime-core/robot", "idea-ui/robot"]
 
 [dependencies]
-runtime-core = { workspace = true, features = ["prim-navigator"] }
+# The framework author surface, reached under the historical `runtime_core`
+# name via the crate-root `extern crate runtime_core as runtime_core;`
+# alias in lib.rs.
+runtime-core = { workspace = true }
+# The `ui!` / `#[component]` emission spells absolute
+# `::runtime_vocabulary::glue::…` paths.
+runtime-vocabulary = { workspace = true }
 # Same theme as idea-ui, and piggybacks on its components (Tabs strip, Icon,
 # Button) rather than reimplementing chrome from primitives.
 idea-theme = { workspace = true }
 idea-ui = { workspace = true }
 
 [dev-dependencies]
-# Theme install + resolve for component tests, and a live swap navigator to
-# exercise TabBar against a real SwapContext.
+# Theme install + resolve for component tests.
 idea-theme = { workspace = true }
-swap-navigator = { workspace = true }
-mock-backend = { workspace = true }
+# The recording scene `Host` + capability mock every render test mounts on
+# (`crates/dev/host-mock`).
+host-mock = { workspace = true }

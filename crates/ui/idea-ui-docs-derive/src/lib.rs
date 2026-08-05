@@ -102,8 +102,16 @@ pub fn derive_doc_controls(input: TokenStream) -> TokenStream {
                 state_fields.push(quote! {
                     pub #f_ident: ::runtime_core::Signal<::std::string::String>
                 });
+                // `::runtime_core::signal(v)` (the free fn), NOT
+                // `Signal::new(v)`: on the old core they're the same
+                // function, but the new-core glue facade
+                // (runtime-vocabulary/glue, aliased in as
+                // `runtime_core` by dual-core consumers) only mirrors
+                // the free fn — the world kernel's `Signal<T>` has no
+                // `new` associated fn. Emitting the free fn keeps the
+                // derive core-agnostic (idea-ui-docs new-core build).
                 init_field_inits.push(quote! {
-                    #f_ident: ::runtime_core::Signal::new(::std::string::String::default())
+                    #f_ident: ::runtime_core::signal(::std::string::String::default())
                 });
                 // `.into()` so this arm serves both `String` (reflexive)
                 // and `Reactive<String>` (`From<String>`) props.
@@ -123,7 +131,7 @@ pub fn derive_doc_controls(input: TokenStream) -> TokenStream {
                     pub #f_ident: ::runtime_core::Signal<bool>
                 });
                 init_field_inits.push(quote! {
-                    #f_ident: ::runtime_core::Signal::new(false)
+                    #f_ident: ::runtime_core::signal(false)
                 });
                 from_state_overrides.push(quote! {
                     props.#f_ident = state.#f_ident.get();
@@ -145,10 +153,10 @@ pub fn derive_doc_controls(input: TokenStream) -> TokenStream {
                     pub #f_ident: ::runtime_core::Signal<::std::string::String>
                 });
                 init_field_inits.push(quote! {
-                    #enabled_field: ::runtime_core::Signal::new(false)
+                    #enabled_field: ::runtime_core::signal(false)
                 });
                 init_field_inits.push(quote! {
-                    #f_ident: ::runtime_core::Signal::new(::std::string::String::default())
+                    #f_ident: ::runtime_core::signal(::std::string::String::default())
                 });
                 // `.into()` so this arm serves both `Option<String>`
                 // (reflexive) and `Reactive<Option<String>>`
@@ -185,7 +193,7 @@ pub fn derive_doc_controls(input: TokenStream) -> TokenStream {
                     pub #f_ident: ::runtime_core::Signal<#ty>
                 });
                 init_field_inits.push(quote! {
-                    #f_ident: ::runtime_core::Signal::new(
+                    #f_ident: ::runtime_core::signal(
                         <#ty as ::core::default::Default>::default(),
                     )
                 });
@@ -208,7 +216,7 @@ pub fn derive_doc_controls(input: TokenStream) -> TokenStream {
                     pub #f_ident: ::runtime_core::Signal<#ty>
                 });
                 init_field_inits.push(quote! {
-                    #f_ident: ::runtime_core::Signal::new(
+                    #f_ident: ::runtime_core::signal(
                         <#ty as ::core::default::Default>::default(),
                     )
                 });

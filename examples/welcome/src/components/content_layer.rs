@@ -8,8 +8,8 @@ use runtime_core::{
     StyleSheet,
 };
 
-use crate::components::subtitle::{Subtitle, SubtitleProps};
-use crate::components::welcome_phrase::{WelcomePhrase, WelcomePhraseProps};
+use crate::components::subtitle::Subtitle;
+use crate::components::welcome_phrase::WelcomePhrase;
 use crate::coordinator::WelcomeRefs;
 use crate::style_helpers::{px, static_sheet};
 
@@ -31,7 +31,7 @@ pub fn ContentLayer(props: &ContentLayerProps) -> Element {
 }
 
 fn sheet() -> Rc<StyleSheet> {
-    static_sheet(StyleRules {
+    static_sheet("content_layer", StyleRules {
         position: Some(Position::Absolute),
         top: Some(px(0.0)),
         left: Some(px(0.0)),

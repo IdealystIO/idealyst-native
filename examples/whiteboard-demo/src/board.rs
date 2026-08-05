@@ -8,8 +8,8 @@ use crate::{
     Strokes,
 };
 use runtime_core::{
-    component, ui, Element, IntoElement, Length, Overflow, Position, Signal, StyleRules, Tokenized,
-    TouchPhase, TouchResponse,
+    component, signal, ui, Element, IntoElement, Length, Overflow, Position, Signal, StyleRules,
+    Tokenized, TouchPhase, TouchResponse,
 };
 use runtime_core::animation::{AnimatedValue, TweenTo};
 use std::cell::{Cell, RefCell};
@@ -54,7 +54,7 @@ impl Default for BoardScreenProps {
             canvases: Rc::new(RefCell::new(Vec::new())),
             rec_handle: Rc::new(RefCell::new(None)),
             mic_handle: Rc::new(RefCell::new(None)),
-            version: Signal::new(0),
+            version: signal(0),
             capture: CanvasCapture::default(),
             focused: Rc::new(|| true),
         }
@@ -170,7 +170,7 @@ impl Default for DrawingSurfaceProps {
             state: BoardState::default(),
             strokes: Rc::new(RefCell::new(Vec::new())),
             canvases: Rc::new(RefCell::new(Vec::new())),
-            version: Signal::new(0),
+            version: signal(0),
             capture_writer: None,
         }
     }
@@ -277,7 +277,13 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
                 *last_rendered_settle.borrow_mut() = strokes_settle.borrow().clone();
             }
         });
-        runtime_core::on_cleanup(move || drop(sub));
+        // Park the subscription in a dependency-free effect: the effect is
+        // collected by this component's scope, so the subscription drops at
+        // unmount. (`on_cleanup` in a component body panics — it requires a
+        // running effect.)
+        runtime_core::effect!({
+            let _keep = &sub;
+        });
         let active_idx = props.state.active_canvas;
         let primed = Rc::new(Cell::new(false));
         runtime_core::effect!({

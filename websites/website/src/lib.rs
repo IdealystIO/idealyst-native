@@ -209,11 +209,21 @@ fn sync_body_background_to_theme() {
     #[cfg(target_arch = "wasm32")]
     {
         effect!({
-            let bg: Color = Tokenized::<Color>::token(
-                "color-background",
-                Color("#ffffff".into()),
-            )
-            .resolve();
+            // Tracked active-theme read instead of
+            // `Tokenized::resolve()`: the registry read is NOT reactive —
+            // it neither updates on `set_idea_theme` nor re-fires this
+            // effect (Tokenized freshness is a documented deferral).
+            let bg: Color = if idea_ui::theme_installed() {
+                use idea_ui::IdeaTheme as _;
+                let theme = idea_ui::active_theme();
+                match theme.downcast_ref::<idea_ui::IdeaThemeRef>() {
+                    Some(t) => t.colors().background.value().clone(),
+                    None => Color("#ffffff".into()),
+                }
+            } else {
+                Tokenized::<Color>::token("color-background", Color("#ffffff".into()))
+                    .resolve()
+            };
             if let Some(window) = web_sys::window() {
                 if let Some(doc) = window.document() {
                     if let Some(body) = doc.body() {
@@ -301,24 +311,66 @@ pub fn register_extensions(backend: &mut backend_windows::WindowsBackend) {
 #[cfg(all(not(feature = "ssr"), feature = "terminal"))]
 pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
 
-// Recorder-side registration for the runtime-server sidecar. Distinct fn
-// name (not an overload of `register_extensions`) so it never collides
-// with the host target's per-backend overload when both compile in the
-// sidecar build. Gated by `sidecar` (set only by the generated sidecar
-// wrapper) so device/web builds never pull `dev-server`.
+// Recorder-side registration for the runtime-server sidecar
+// (`dev_server::sidecar::run_newcore`). Distinct fn name (not an
+// overload of `register_extensions`) so it never collides with the host
+// target's per-backend overload when both compile in the sidecar build.
+// Gated by `sidecar` (set only by the generated sidecar wrapper) so
+// device/web builds never pull `dev-server`.
+//
+// Navigators need no registration here — they are vocabulary built-ins
+// installed by `register_builtins`. `codeblock` is the website's one
+// third-party scene primitive, and an unregistered payload panics at
+// realize, so the recorder gets the same handler the web/SSR seams do.
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {
-    swap_navigator::recording::register(backend);
+pub fn register_scene_extensions_recorder(registry: &mut dev_server::newcore::SceneRegistry) {
+    codeblock::register(registry);
 }
 
-/// SSR build path. The CLI's `idealyst dev --ssr` / `--static` wrapper
-/// calls this once per request to install the SDK chrome handlers
-/// `backend-ssr` invokes when it renders a navigator / external. Gated
-/// by the `ssr` cargo feature so non-SSR builds don't pay the
-/// `backend-ssr` dep cost. Separate symbol name (not
-/// `register_extensions`) so it coexists with the per-platform impls
-/// above without a cfg-collision on the wrapper's host triple.
+/// SSR/SSG registration seam for the CLI wrapper (`idealyst build
+/// --ssr` / `--ssg`): the scene-registry counterpart of
+/// [`register_extensions`], invoked per request / per crawled page with
+/// the fresh registry. Navigators are vocabulary built-ins; the
+/// codeblock payload handler is the website's one third-party scene
+/// primitive, so code panels server-render their real `<pre>`/span DOM
+/// — the same handler the web boot wires below, which is why SSG
+/// output and the hydrating client share one byte-identical DOM shape
+/// (pinned by `tests/ssg_parity.rs` against the frozen corpus).
+///
+/// Gated by the `ssr` cargo feature only so the symbol's existence
+/// tracks the `backend-ssr` dep; the handler itself is registry-generic.
 #[cfg(feature = "ssr")]
-pub fn register_ssr_extensions(backend: &mut backend_ssr::SsrBackend) {
-    swap_navigator::register_generic(backend);
+pub use codeblock::register as register_ssr_scene_handlers;
+
+/// WEB registration seam for the CLI wrapper (`idealyst build --web`):
+/// the scene-registry counterpart of [`register_extensions`], invoked
+/// once at boot with the fresh `Registry<WebBackend>` (generic —
+/// `codeblock::register` is registry-type-agnostic, same seam the SSR
+/// alias above uses).
+pub use codeblock::register as register_scene_extensions;
+
+// =============================================================================
+// Standalone web boot entry.
+// =============================================================================
+
+// Gated on `standalone-web` (NON-default) because the CLI web wrapper
+// (`idealyst build --web`) generates its own `#[wasm_bindgen(start)]`
+// and calls `register_scene_extensions` + `app()` itself — two start
+// fns in one module is a wasm-bindgen error. This module is only for
+// the manual wasm-pack vehicle (`standalone.html`).
+#[cfg(all(target_arch = "wasm32", feature = "standalone-web"))]
+mod web_entry {
+    use wasm_bindgen::prelude::*;
+
+    /// Web boot: mounts into `#app` (`standalone.html`). The wasm-pack
+    /// module's start fn — the CLI wrapper is not involved in this
+    /// build. `codeblock::register` is the boot registration seam, so
+    /// code panels render the SDK's `<pre>`/span handler.
+    #[wasm_bindgen(start)]
+    pub fn boot() {
+        // Console logger so framework warnings reach devtools (the CLI
+        // wrapper normally installs this).
+        backend_web::install_logger();
+        backend_web::newcore::start_in("#app", crate::register_scene_extensions, || crate::app());
+    }
 }

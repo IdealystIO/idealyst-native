@@ -10,12 +10,12 @@ tags = ["components", "core"]
 
 > **Before hand-rolling composite UI, check for an SDK.** Tables/grids,
 > code panels, rendered markdown, maps, SVG, and web views all ship as
-> first-party `Element::External` SDKs — don't rebuild a table out of
+> first-party extension SDKs — don't rebuild a table out of
 > `view`/`text` or a code panel out of styled spans. Run `list_sdks` /
 > `describe_sdk` (or read the [[sdks]] guide) first: `table`, `codeblock`,
-> `markdown`, `maps`, `svg`, `webview`, `toolbar`, `video`. These need an
-> explicit web registration step — see the sdks guide's "Registering
-> External UI SDKs (required for web)".
+> `markdown`, `maps`, `svg`, `webview`, `toolbar`, `video`. Each needs an
+> explicit registration step — an unregistered payload panics at realize;
+> see the sdks guide's "Registering extension SDKs".
 
 ## A minimal component
 
@@ -175,7 +175,7 @@ inference. See `describe_primitive("flat_list")` for its props.
 ## Accessibility
 
 Every primitive accepts a11y props (`a11y_label`, `a11y_role`, `a11y_hint`,
-`a11y_hidden`) and the `Bound` builder exposes the same as methods
+`a11y_hidden`) and each primitive's builder exposes the same as methods
 (`.a11y_role(Role::Header)`). Highlights of `runtime_core::accessibility::Role`:
 `Header`, `Link`, `List`, `ListItem`, `Button`.
 

@@ -29,8 +29,8 @@ use std::collections::HashSet;
 
 use idea_ui::{install_idea_theme, light_theme, Button, Stack, StackGap, StackPadding, Tab, Tabs};
 use runtime_core::{
-    component, rx, signal, text, ui, Element, FlexDirection, IntoElement, Length, Ref, Route,
-    Screen, Signal, StyleApplication, StyleRules, StyleSheet,
+    component, rx, signal, ui, Element, FlexDirection, Length, Ref, Route, Screen, Signal,
+    StyleApplication, StyleRules, StyleSheet,
 };
 use serde_json::Value;
 use idea_ui_nav::StackHeader;
@@ -85,7 +85,13 @@ fn client_action(cmd: &str, args: Value) {
     });
 }
 
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam the CLI-generated wrapper invokes after
+/// `runtime_vocabulary::register_builtins`. The stack navigator is a
+/// builtin scene handler, so there is nothing extra to register here.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
 #[component]
 pub fn app() -> Element {
@@ -112,18 +118,15 @@ pub fn app() -> Element {
         .layout(|nav: StackContext| {
             let screen_chrome = nav.screen_chrome;
             let state = rx!(header_state(&screen_chrome));
-            let header: Element = ui! {
-                StackHeader(
-                    state = state,
-                    show_back = nav.can_go_back,
-                    on_back = Some(nav.pop.clone()),
-                )
-            };
-            let body = nav.outlet;
-            let children: Vec<Element> = vec![header, body];
+            let outlet = nav.outlet;
             ui! {
                 view(style = nav_column_style) {
-                    children
+                    StackHeader(
+                        state = state,
+                        show_back = nav.can_go_back,
+                        on_back = Some(nav.pop.clone()),
+                    )
+                    outlet
                 }
             }
         });
@@ -147,20 +150,13 @@ fn nav_column_style() -> StyleApplication {
 
 fn schedule_poll(snapshot: Signal<Snapshot>) {
     runtime_core::after_ms_detached(POLL_MS, move || {
-        // Never write a signal while the reactive system is mid-mutation —
-        // a `set` during that window re-enters the arena borrow and panics.
-        // If we land in that window, skip this tick and catch the next one.
-        if !runtime_core::is_reactive_busy() {
-            // Only push when the data actually changed. The panels are now
-            // selectable `pressable` rows inside reactive `#[component]`
-            // scopes; an unconditional `set` every tick would rebuild every
-            // row 3×/s — wasted work, and a press could race a rebuild.
-            // `set` notifies subscribers unconditionally, so we gate here.
-            let next = client_snapshot();
-            if snapshot.get() != next {
-                snapshot.set(next);
-            }
-        }
+        // The write STAGES and the driver commits it after this callback
+        // returns, so a poll tick can never land mid-update. `set` is
+        // equality-guarded at commit time, so an unchanged snapshot wakes
+        // no subscriber — which is what keeps the selectable `pressable`
+        // rows from rebuilding 3×/s (the panels' selection state would
+        // otherwise race a rebuild).
+        snapshot.set(client_snapshot());
         schedule_poll(snapshot);
     });
 }
@@ -169,52 +165,50 @@ fn schedule_poll(snapshot: Signal<Snapshot>) {
 /// the inspector. Rescans by resetting the screen.
 fn picker_page(nav: Ref<StackHandle>) -> Element {
     let apps = discovery::list();
-
-    let mut children: Vec<Element> = Vec::new();
-    children.push(text("Running idealyst apps").into_element());
-
-    if apps.is_empty() {
-        children.push(
-            text(
-                "No apps found in ~/.idealyst/apps. Launch one with \
-                 `--features robot` (e.g. `idealyst dev --macos --local \
-                 crates/dev/robot-e2e/examples/conformance`), then Rescan.",
-            )
-            .into_element(),
-        );
-    } else {
-        for app in apps {
-            let label = format!(
-                "{}{}  (pid {}, :{})",
-                app.name,
-                app.bundle_id
-                    .as_deref()
-                    .map(|b| format!("  [{b}]"))
-                    .unwrap_or_default(),
-                app.pid,
-                app.port
-            );
-            let addr = app.addr();
-            let nav = nav;
-            let on_click: Rc<dyn Fn()> = Rc::new(move || {
-                connect_to(addr.clone());
-                // `.get()` (clone the handle out) NOT `.with()` — `with`
-                // holds the arena borrow across the closure, and `push`
-                // sets `active_route`, which re-enters `ARENA.borrow_mut`
-                // and panics ("RefCell already borrowed").
-                nav.get().map(|h| h.push(&INSPECTOR, ()));
-            });
-            children.push(ui! { Button(label = label, on_click = on_click) });
-        }
-    }
+    let empty = apps.is_empty();
 
     let nav_rescan = nav;
     let rescan: Rc<dyn Fn()> = Rc::new(move || {
         nav_rescan.get().map(|h| h.reset(&PICKER, ()));
     });
-    children.push(ui! { Button(label = "Rescan".to_string(), on_click = rescan) });
 
-    ui! { Stack(gap = StackGap::Md, padding = StackPadding::Lg) { children } }
+    ui! {
+        Stack(gap = StackGap::Md, padding = StackPadding::Lg) {
+            text { "Running idealyst apps" }
+            if empty {
+                text {
+                    "No apps found in ~/.idealyst/apps. Launch one with \
+                     `--features robot` (e.g. `idealyst dev --macos --local \
+                     crates/dev/robot-e2e/examples/conformance`), then Rescan."
+                }
+            }
+            for app in apps {
+                Button(
+                    label = format!(
+                        "{}{}  (pid {}, :{})",
+                        app.name,
+                        app.bundle_id
+                            .as_deref()
+                            .map(|b| format!("  [{b}]"))
+                            .unwrap_or_default(),
+                        app.pid,
+                        app.port
+                    ),
+                    on_click = {
+                        let addr = app.addr();
+                        Rc::new(move || {
+                            connect_to(addr.clone());
+                            // `.get()` (clone the handle out) NOT `.with()` —
+                            // `with` holds the slot borrow across the closure
+                            // while `push` writes the navigator's route.
+                            nav.get().map(|h| h.push(&INSPECTOR, ()));
+                        }) as Rc<dyn Fn()>
+                    },
+                )
+            }
+            Button(label = "Rescan".to_string(), on_click = rescan)
+        }
+    }
 }
 
 /// The live inspector screen: a status header, a tab strip, and the active
@@ -226,8 +220,6 @@ fn inspector_page(snapshot: Signal<Snapshot>, nav: Ref<StackHandle>) -> Element 
     let expanded: Signal<HashSet<u64>> = signal(HashSet::new());
     let log_filter: Signal<String> = signal(String::new());
     let invoke_arg: Signal<String> = signal(String::new());
-
-    let header = text(move || format::header(&snapshot.get())).into_element();
 
     // Current idea-ui Tabs API: id-keyed tabs in a Signal list, id-based
     // active + on_change. The body still branches on the index signal.
@@ -248,54 +240,41 @@ fn inspector_page(snapshot: Signal<Snapshot>, nav: Ref<StackHandle>) -> Element 
             _ => 2,
         })
     });
-    let strip = ui! { Tabs(tabs = tabs, active = active_id, on_change = on_tab) };
-
     let back: Rc<dyn Fn()> = Rc::new(move || {
         nav.get().map(|h| h.pop());
     });
-    let back_btn = ui! { Button(label = "Disconnect".to_string(), on_click = back) };
-
-    let body = ui! {
-        InspectorBody(
-            snapshot = snapshot,
-            tab = tab,
-            sel_node = sel_node,
-            expanded = expanded,
-            log_filter = log_filter,
-            invoke_arg = invoke_arg,
-        )
-    };
 
     ui! {
         scroll_view {
             Stack(gap = StackGap::Sm, padding = StackPadding::Sm) {
-                header
-                strip
-                body
-                back_btn
+                text { move || format::header(&snapshot.get()) }
+                Tabs(tabs = tabs, active = active_id, on_change = on_tab)
+                InspectorBody(
+                    snapshot = snapshot,
+                    tab = tab,
+                    sel_node = sel_node,
+                    expanded = expanded,
+                    log_filter = log_filter,
+                    invoke_arg = invoke_arg,
+                )
+                Button(label = "Disconnect".to_string(), on_click = back)
             }
         }
     }
-}
-
-/// Props for [`InspectorBody`]. All-`Signal` so `#[derive(Default)]` holds
-/// (`Signal<T>: Default` for every `T`).
-#[derive(Default)]
-struct InspectorBodyProps {
-    snapshot: Signal<Snapshot>,
-    tab: Signal<usize>,
-    sel_node: Signal<Option<u64>>,
-    expanded: Signal<HashSet<u64>>,
-    log_filter: Signal<String>,
-    invoke_arg: Signal<String>,
 }
 
 /// Reactive tab switch. The scrutinee reads `tab.get()`, so the `ui!`
 /// `match` lowers to `runtime_core::switch(...)` and rebuilds the active
 /// arm whenever the tab changes. Patterns use guards on the bound `&usize`.
 #[component]
-fn InspectorBody(props: InspectorBodyProps) -> Element {
-    let InspectorBodyProps { snapshot, tab, sel_node, expanded, log_filter, invoke_arg } = props;
+fn InspectorBody(
+    snapshot: Signal<Snapshot>,
+    tab: Signal<usize>,
+    sel_node: Signal<Option<u64>>,
+    expanded: Signal<HashSet<u64>>,
+    log_filter: Signal<String>,
+    invoke_arg: Signal<String>,
+) -> Element {
     ui! {
         match tab.get() {
             n if *n == 1 => {

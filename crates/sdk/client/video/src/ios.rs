@@ -43,7 +43,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{CGRect, NSObject, NSString};
 use objc2_ui_kit::UIView;
-use runtime_core::effect;
+use runtime_world::effect;
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -144,17 +144,6 @@ struct VideoEntry {
     loop_observer: Option<Retained<NSObject>>,
 }
 
-/// Register the Video handler against an `IosBackend`. One-line call from
-/// the app's bootstrap.
-pub fn register(backend: &mut IosBackend) {
-    backend.register_external::<VideoProps, _>(|props, b| build_video(props, b));
-}
-
-// Self-register at backend construction (no app-side `register` call needed).
-// See [[project_inventory_self_registration]].
-inventory::submit! {
-    backend_ios::IosExternalRegistrar(register)
-}
 
 /// Resolve a source to a URL for the AVPlayer path. A live `Stream` source
 /// has no native iOS player binding yet (that's the GPU/compositing phase);
@@ -166,7 +155,9 @@ fn resolved_url(props: &VideoProps) -> Option<String> {
     }
 }
 
-fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
+/// Build the native iOS video host view for `props`. Called by the
+/// `Registry<IosBackend>` mount handler in lib.rs.
+pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
     // Plain UIView — no subclass needed. UIView's CALayer hosts the
     // AVPlayerLayer; Taffy drives the UIView's bounds via the regular
     // apply_frames path.
@@ -241,7 +232,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
     // drop. Pause halts the rate; nil-ing the item releases the audio/decode
     // pipeline; removing the notification observer is required (the center
     // retains the token, and its block retains the player). Mirrors macOS.
-    runtime_core::on_cleanup(move || {
+    runtime_world::on_scope_drop(move || {
         let Some(entry) = PLAYER_TABLE.with(|t| t.borrow_mut().remove(&key)) else {
             return;
         };
@@ -277,7 +268,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
     let player_for_src = player.clone();
     let props_clone = props.clone();
     let last_url = RefCell::new(initial_src.clone());
-    effect!({
+    effect(move || {
         let url = resolved_url(&props_clone).unwrap_or_default();
         if url.is_empty() || url == *last_url.borrow() {
             return;
@@ -310,7 +301,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
         let mut last_gen: u64 = u64::MAX;
         let mut last_native_gen: u64 = u64::MAX;
         let mut scratch: Vec<u8> = Vec::new();
-        runtime_core::raf_loop_scoped(move || {
+        runtime_vocabulary::scoped_scheduling::raf_loop_scoped(move || {
             let source = props_for_stream.source.resolve();
             let is_stream = matches!(source, MediaContent::Stream(_));
             // Size both sublayers to the host view's bounds EVERY frame, and show

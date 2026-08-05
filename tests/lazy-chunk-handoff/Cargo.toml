@@ -9,7 +9,13 @@ description = "Framework regression test: a small app wrapping a lazy! { … } s
 crate-type = ["rlib"]
 
 [dependencies]
+# The author surface, aliased to `runtime_core` at the crate root.
+# `runtime-vocabulary` because the `ui!` emission spells absolute
+# `::runtime_vocabulary::glue::…` paths; `runtime-scene` for the
+# `Registry`/`Host` in the `register_scene_extensions` seam.
 runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 
 [package.metadata.idealyst.app]

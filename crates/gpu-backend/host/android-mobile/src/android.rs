@@ -23,9 +23,8 @@ use std::rc::Rc;
 
 use render_api::DeviceProfile;
 use render_wgpu::{Host, Painter, Renderer};
-use runtime_core::driver::{render_loop, RenderLoop};
-use runtime_core::primitives::graphics::GraphicsSurface;
-use runtime_core::Element;
+use runtime_shared::driver::{render_loop, RenderLoop};
+use runtime_shared::primitives::graphics::GraphicsSurface;
 
 // ---------------------------------------------------------------------------
 // Public surface
@@ -48,6 +47,12 @@ pub enum MountError {
     /// `Adapter::request_device` rejected the limits we asked for —
     /// even after clamping to `adapter.limits()`.
     RequestDevice,
+    /// [`mount`] was called before the embedding app booted its
+    /// tree (`backend_android::newcore::mounted_world()`
+    /// returned `None`). The embedded tree realizes into the app's
+    /// world — no app world, no embed. Only reachable from
+    /// [`mount`] (mirrors `host-web`'s variant).
+    NoHostWorld,
 }
 
 impl std::fmt::Display for MountError {
@@ -63,6 +68,11 @@ impl std::fmt::Display for MountError {
             MountError::RequestDevice => {
                 write!(f, "host-android-mobile: wgpu request_device failed")
             }
+            MountError::NoHostWorld => write!(
+                f,
+                "host-android-mobile: mount() before the app host's boot \
+                 (backend_android::newcore::mounted_world() is None)"
+            ),
         }
     }
 }
@@ -74,6 +84,12 @@ impl std::error::Error for MountError {}
 /// !Sync` because the interior state is single-threaded (Rc, wgpu
 /// objects, the render-loop guard).
 pub struct AndroidHostHandle {
+    /// The mounted `render_wgpu::newcore` app. Declared FIRST so the scene
+    /// unrealizes (author cleanups, node detach) while the wgpu host
+    /// in `inner` is still fully alive; `EmbeddedApp::drop` routes
+    /// through `NewCoreApp::stop`, whose embedded path leaves the
+    /// app-host flush driver alone.
+    _app: EmbeddedApp,
     inner: Rc<RefCell<HostInner>>,
     /// Holding the handle keeps the per-frame closure alive; drop =
     /// cancel the Choreographer raf-loop entry. Declared LAST so the
@@ -97,30 +113,30 @@ impl AndroidHostHandle {
         inner.surface.configure(&inner.device, &inner.config);
     }
 
-    /// Pause the embedded app: drop its reactive scope. Pair with
-    /// [`resume`] for navigator-style `unmountOnBlur` semantics — the
-    /// next `resume` rebuilds the embedded tree from initial state.
-    /// The wgpu device, surface, and renderer stay alive — only the
-    /// embedded `build_ui` tree drops — so a subsequent `resume()`
-    /// re-mounts fresh without paying the wgpu init cost.
+    /// Pause the embedded app.
+    ///
+    /// **Documented gap: this is a no-op.** The handle owns its
+    /// mounted app for its entire lifetime — drop is the only teardown
+    /// — so suspending would need a visibility gate on `render_wgpu`'s
+    /// `Host`/`Renderer` (stop ticking + drawing without unrealizing
+    /// the scene), which does not exist. Same gap as `host-web`'s
+    /// `WebHostHandle::pause`. Note this host DOES skip GPU encodes for
+    /// a hidden view (the per-frame visibility check), so the "hidden
+    /// screen keeps burning GPU" case pause() targeted is already
+    /// covered.
     pub fn pause(&self) {
-        let mut inner = self.inner.borrow_mut();
-        inner.host.unmount();
+        log::warn!("{}: pause() is a no-op (no host visibility gate)", env!("CARGO_PKG_NAME"));
     }
 
-    /// Re-mount the embedded app inside the existing wgpu host.
-    /// Pairs with [`pause`].
+    /// Resume the embedded app. No-op — see [`AndroidHostHandle::pause`].
     pub fn resume(&self) {
-        let mut inner = self.inner.borrow_mut();
-        let build_ui = inner.build_ui.clone();
-        inner.host.mount(move || (&*build_ui)());
+        log::warn!("{}: resume() is a no-op (no host visibility gate)", env!("CARGO_PKG_NAME"));
     }
 
-    /// Whether the embedded app is currently mounted (false after
-    /// [`pause`], true after [`resume`] / initial mount). Used by
-    /// SDK-level visibility plumbing.
+    /// True iff an embedded app is mounted. The handle owns its app
+    /// for its whole lifetime, so this is `true` while alive.
     pub fn is_running(&self) -> bool {
-        self.inner.borrow().host.is_mounted()
+        true
     }
 }
 
@@ -128,18 +144,76 @@ impl AndroidHostHandle {
 // Mount
 // ---------------------------------------------------------------------------
 
-/// Mount a wgpu render backend behind an Android `Graphics` primitive
-/// surface. Returns an `AndroidHostHandle` whose drop tears everything
-/// down. Call from the `Graphics` primitive's `on_ready` callback;
-/// stash the handle so `on_resize` can call [`AndroidHostHandle::resize`]
-/// and `on_lost` can drop it.
+/// Mount a wgpu render backend behind a `Graphics`-primitive surface
+/// and realize `build_ui`'s scene tree into the embedding app's world
+/// (`backend_android::newcore::mounted_world`), so the app-host's flush
+/// driver commits the embedded app's staged writes.
 pub async fn mount(
     surface_handle: GraphicsSurface,
     size: (u32, u32),
     profile: DeviceProfile,
     skin: Rc<dyn Painter>,
-    build_ui: Rc<dyn Fn() -> Element + 'static>,
+    build_ui: Rc<dyn Fn() -> runtime_scene::Element + 'static>,
 ) -> Result<AndroidHostHandle, MountError> {
+    // The app's world must exist BEFORE the async wgpu init runs —
+    // fail fast on a mis-sequenced boot.
+    let world = backend_android::newcore::mounted_world().ok_or(MountError::NoHostWorld)?;
+    // The per-frame loop below rides `runtime_shared::driver::render_loop`.
+    // The generated JNI wrapper installs the Choreographer driver at
+    // `attach`, but the driver contract belongs to the shell, not this
+    // embed — install idempotently (first install wins) so any host
+    // shell gets a painting embed, exactly like `host_web::mount`'s
+    // `backend_web::install_render_loop`.
+    backend_android::install_render_loop();
+
+    let init = init_wgpu(surface_handle, size).await?;
+
+    // Per-host session scope: the embedded app's `session::animated`
+    // AVs and epoch die with this handle, so a remount replays from
+    // initial state instead of resuming mid-animation.
+    let session_scope = runtime_shared::session::push_scope();
+    let renderer = Renderer::new(&init.device, &init.queue, init.config.format);
+    let mut host = Host::new(skin, profile.color_scheme);
+    let logical = (
+        profile.logical_size.0 as f32,
+        profile.logical_size.1 as f32,
+    );
+    host.set_viewport(logical.0, logical.1);
+    let app = render_wgpu::newcore::start_in_world(
+        host.backend().clone(),
+        |_| {},
+        move || (&*build_ui)(),
+        world,
+    );
+
+    let (inner, render_loop_handle) =
+        finish_mount(init, renderer, host, logical, session_scope);
+
+    Ok(AndroidHostHandle {
+        _app: EmbeddedApp(Some(app)),
+        inner,
+        _render_loop: render_loop_handle,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Internals
+// ---------------------------------------------------------------------------
+
+/// Everything the async wgpu init produces (the host-web `WgpuInit` shape).
+struct WgpuInit {
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+}
+
+/// Step 1 of both mounts: the async wgpu init (instance → surface →
+/// adapter → device → configure).
+async fn init_wgpu(
+    surface_handle: GraphicsSurface,
+    size: (u32, u32),
+) -> Result<WgpuInit, MountError> {
     // 1. wgpu init. Same shape as `host-ios-mobile` / `host-web`.
     // Vulkan only. The Android emulator advertises both Vulkan and
     // a GL backend, but the GL backend's `eglCreateWindowSurface`
@@ -204,29 +278,26 @@ pub async fn mount(
     config.present_mode = wgpu::PresentMode::Fifo;
     surface.configure(&device, &config);
 
-    // 2. Build the render-side stack + mount the user app.
-    //
-    // Push a fresh `session::REGISTRY` scope so the embedded app's
-    // `session::animated(…)` / `session::epoch_micros()` calls land in
-    // a per-host registry that disappears when this host's
-    // `AndroidHostHandle` drops. Matches the iOS host behavior —
-    // navigators using `MountPolicy::LazyDisposing` can truly reset
-    // the embedded app on remount.
-    let session_scope = runtime_core::session::push_scope();
-    let renderer = Renderer::new(&device, &queue, config.format);
-    let mut host = Host::new(skin, profile.color_scheme);
-    let logical = (
-        profile.logical_size.0 as f32,
-        profile.logical_size.1 as f32,
-    );
-    host.set_viewport(logical.0, logical.1);
-    {
-        let build_ui = build_ui.clone();
-        host.mount(move || (&*build_ui)());
-    }
+    Ok(WgpuInit {
+        surface,
+        device,
+        queue,
+        config,
+    })
+}
 
+/// Shared tail of both mounts: the pending-font log, `HostInner`
+/// assembly, and the per-frame render loop.
+fn finish_mount(
+    init: WgpuInit,
+    renderer: Renderer,
+    host: Host,
+    logical: (f32, f32),
+
+    session_scope: runtime_shared::session::ScopeGuard,
+) -> (Rc<RefCell<HostInner>>, RenderLoop) {
     // 2a. Drain any pending font URLs the host accumulated during
-    //     `mount`. Android doesn't fetch them today — `face!` fonts
+    //     mount. Android doesn't fetch them today — `face!` fonts
     //     are embedded into the binary via the `embed-font-bytes`
     //     feature, so cosmic-text falls back to the registered
     //     embedded faces (or its built-in default).
@@ -240,14 +311,13 @@ pub async fn mount(
     }
 
     let inner = Rc::new(RefCell::new(HostInner {
-        surface,
-        device,
-        queue,
-        config,
+        surface: init.surface,
+        device: init.device,
+        queue: init.queue,
+        config: init.config,
         renderer,
         host,
         logical,
-        build_ui,
         _session_scope: session_scope,
     }));
 
@@ -260,15 +330,23 @@ pub async fn mount(
         draw_frame(&mut inner);
     });
 
-    Ok(AndroidHostHandle {
-        inner,
-        _render_loop: render_loop_handle,
-    })
+    (inner, render_loop_handle)
 }
 
-// ---------------------------------------------------------------------------
-// Internals
-// ---------------------------------------------------------------------------
+/// Owns the embedded app for a [`mount`] handle.
+/// Drop routes through `render_wgpu::newcore::NewCoreApp::stop`
+/// (the embedded path: unrealize + guarded diagnostic clear, app-host
+/// flush driver untouched — a replacement embed may already have
+/// mounted).
+struct EmbeddedApp(Option<render_wgpu::newcore::NewCoreApp>);
+
+impl Drop for EmbeddedApp {
+    fn drop(&mut self) {
+        if let Some(app) = self.0.take() {
+            app.stop();
+        }
+    }
+}
 
 struct HostInner {
     surface: wgpu::Surface<'static>,
@@ -280,16 +358,13 @@ struct HostInner {
     /// Logical viewport in CSS px from the `DeviceProfile`. Fed to
     /// the renderer every frame.
     logical: (f32, f32),
-    /// Re-callable embedded-app builder. Cached so a paused→resumed
-    /// transition can remount the welcome subtree without bouncing
-    /// the wgpu device/surface.
-    build_ui: Rc<dyn Fn() -> Element + 'static>,
+
     /// RAII guard for this host's `session::REGISTRY` scope. Declared
     /// LAST so on `HostInner` drop the scope is popped AFTER the
     /// renderer, host (welcome `Owner` + reactive cleanups), wgpu
     /// surface, etc. drop — those cleanups may dispatch through
     /// scope-anchored timers whose bodies read session state.
-    _session_scope: runtime_core::session::ScopeGuard,
+    _session_scope: runtime_shared::session::ScopeGuard,
 }
 
 fn draw_frame(inner: &mut HostInner) {

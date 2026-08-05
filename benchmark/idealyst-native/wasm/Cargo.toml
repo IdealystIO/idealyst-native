@@ -21,12 +21,28 @@ crate-type = ["cdylib", "rlib"]
 # index.html dumps a `console.table` of them after each suite run.
 # Procedure: see CLAUDE.md §6 ("Profiling the framework").
 default = []
-debug-stats = ["runtime-core/debug-stats", "backend-web/debug-stats"]
+debug-stats = [
+    "runtime-vocabulary/debug-stats",
+    "backend-web/debug-stats",
+]
+
+# Build:
+#   wasm-pack build --target web --release
+#
+# The bench themes through `runtime_vocabulary::theme` directly rather
+# than idea-ui: the toggle suite measures the framework's token
+# install / update path, and a component library on top would only add
+# noise (and dep weight) to a leaf whose whole point is the raw path.
 
 [dependencies]
+# The author surface: `extern crate runtime_core as runtime_core;` in
+# lib.rs shadows the extern prelude, so `runtime_core::{ui, stylesheet,
+# Color, …}` resolves against `runtime_vocabulary::glue`.
 runtime-core = { workspace = true }
-idea-ui = { workspace = true }
 backend-web = { workspace = true }
+# Named directly for the theme surface (`runtime_vocabulary::theme`) and
+# for the `debug-stats` forward above.
+runtime-vocabulary = { workspace = true }
 wasm-bindgen = "0.2"
 console_error_panic_hook = "0.1"
 # Smaller allocator for the wasm target. The default `dlmalloc` pulls

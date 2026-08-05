@@ -29,12 +29,23 @@ sidecar = ["dep:dev-server"]
 # `lazy-fetch` brings the ready-made network loader for the opt-in locale.
 i18n = { workspace = true, features = ["lazy-fetch"] }
 idea-ui = { workspace = true }
+# The author surface. `runtime-core` is aliased to `runtime_core` at the
+# crate root (see src/lib.rs) — one core, no feature switch.
+# `runtime-vocabulary` is needed because the `ui!` emission spells
+# absolute `::runtime_vocabulary::glue::…` paths, and `runtime-scene`
+# because `register_scene_extensions` is generic over the scene `Registry`
+# host.
 runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 # Recorder backend for the runtime-server sidecar wrapper. Optional —
 # pulled in only by the `sidecar` feature (host-side build).
 dev-server = { workspace = true, optional = true }
 
 [dev-dependencies]
+# `tests/opt_in.rs` builds the app inside an explicit `World` (signal()
+# resolves the ambient world; a top-level `app()` call aborts).
+runtime-world = { workspace = true }
 # The SSG example renders on the host against the SSR backend.
 backend-ssr = { workspace = true }
 

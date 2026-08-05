@@ -1,5 +1,5 @@
 //! `robot-e2e` — a shared, **Playwright-flavoured E2E harness** built on the
-//! framework's in-process [`runtime_core::robot`] API.
+//! framework's in-process [`runtime_vocabulary::robot`] API.
 //!
 //! One harness, every backend: the same `locate → act → assert` vocabulary
 //! Playwright gives you for the web, but driving *our* introspection
@@ -41,7 +41,12 @@
 //!
 //! [`blur`]: Locator::blur
 
-use runtime_core::robot::{Element, ElementKind, Query, Robot};
+// The introspection registry: `runtime_vocabulary::robot`.
+// `ElementKind` is re-exported so suites written against the harness can
+// spell `page.get_by_role(ElementKind::Button)` without naming the
+// registry crate themselves.
+use runtime_vocabulary::robot::{Element, Query, Robot};
+pub use runtime_vocabulary::robot::ElementKind;
 
 /// Pacing between tests, in ms. Purely cosmetic: it lets the on-screen UI
 /// visibly change and the console stream one test at a time, like watching
@@ -61,6 +66,11 @@ const STEP_PACING_MS: i32 = 180;
 /// still present" flake). Drains run synchronously on the calling (UI)
 /// thread, mirroring what the browser does between tasks.
 fn settle() {
+    // Robot ACTIONS already settle themselves (the vocabulary Robot's
+    // driver env flushes staged writes before returning), but
+    // `Page::settle` is also the caller's tool after a DIRECT signal
+    // write — flush that staged work too before draining microtasks.
+    runtime_vocabulary::robot::settle();
     // Drain repeatedly: a deferred unit of work can schedule *another*
     // microtask (e.g. a stack pop's `release_screen` drops a scope, whose
     // `on_cleanup` deregisters robot entries on a follow-up tick). A single
@@ -68,7 +78,7 @@ fn settle() {
     // teardown fully settles before the next assertion. Bounded so a
     // pathological self-rescheduling task can't spin forever.
     for _ in 0..SETTLE_MAX_DRAINS {
-        runtime_core::drain_buffered_microtasks();
+        runtime_shared::drain_buffered_microtasks();
     }
 }
 
@@ -79,12 +89,12 @@ const SETTLE_MAX_DRAINS: usize = 8;
 
 /// `[e2e]`-prefixed info line to the platform console.
 fn log(line: impl AsRef<str>) {
-    runtime_core::log_info!("[e2e] {}", line.as_ref());
+    runtime_shared::log_info!("[e2e] {}", line.as_ref());
 }
 
 /// `[e2e]`-prefixed error line (failed assertions / actions).
 fn log_fail(line: impl AsRef<str>) {
-    runtime_core::log_error!("[e2e] {}", line.as_ref());
+    runtime_shared::log_error!("[e2e] {}", line.as_ref());
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +251,7 @@ impl Locator {
     /// The element's laid-out rect in parent coordinates. `Err` if it isn't
     /// present or hasn't been laid out yet. Used to assert layout outcomes
     /// (e.g. that a content-sized container reflows when its children change).
-    pub fn frame(&self) -> Result<runtime_core::primitives::portal::ViewportRect, String> {
+    pub fn frame(&self) -> Result<runtime_shared::primitives::portal::ViewportRect, String> {
         let el = self.resolve()?;
         Robot::new()
             .frame(&el)
@@ -654,7 +664,7 @@ fn schedule_step(
     attempt: usize,
     delay_ms: i32,
 ) {
-    runtime_core::after_ms_detached(delay_ms, move || drive_flow(state, i, step_idx, attempt));
+    runtime_shared::after_ms_detached(delay_ms, move || drive_flow(state, i, step_idx, attempt));
 }
 
 fn record_pass(state: &RunState, i: usize) {
@@ -677,7 +687,7 @@ fn record_fail(state: &RunState, i: usize, e: &str) {
 /// at the end of this function, killing the loop before the next test fires —
 /// the classic scheduled-handle pitfall.
 fn advance(state: std::rc::Rc<RunState>, i: usize) {
-    runtime_core::after_ms_detached(STEP_PACING_MS, move || run_one(state, i + 1));
+    runtime_shared::after_ms_detached(STEP_PACING_MS, move || run_one(state, i + 1));
 }
 
 fn emit_summary(state: &RunState) {
@@ -699,7 +709,7 @@ fn emit_summary(state: &RunState) {
         .map(|s| format!("\"{}\"", json_escape(s)))
         .collect::<Vec<_>>()
         .join(",");
-    runtime_core::log_info!(
+    runtime_shared::log_info!(
         "[E2E-RESULT] {{\"suites\":{},\"tests\":{},\"pass\":{},\"fail\":{},\"failures\":[{}]}}",
         state.suite_count,
         total,

@@ -43,7 +43,23 @@ mod imp;
 #[cfg(target_os = "android")]
 mod logger;
 
-/// Phase-timer wrapper around `runtime_core::debug`'s aggregator.
+/// Post-dispatch hook: thread-local `fn()` slot the scheduler /
+/// async-executor fire after invoking a callback that may run author
+/// code. No-op default; `newcore::start` installs the new-core flush
+/// driver here. Compiled unconditionally (mirrors
+/// `backend-web/src/dispatch_hook.rs`) — the slot is a const-init
+/// no-dtor `Cell`, so old-core builds pay one thread-local read per
+/// fire site and zero bionic pthread TLS keys.
+pub mod dispatch_hook;
+
+/// idea-lite new core (P5): `runtime_scene::Host` + the 30
+/// `runtime_vocabulary::caps` traits on `AndroidBackend`, the
+/// `newcore::start` boot path, and the dispatch-site flush driver.
+/// The caps/boot half is android-gated inside the module; the flush
+/// driver + its regression tests compile on the host.
+pub mod newcore;
+
+/// Phase-timer wrapper around `runtime_shared::debug`'s aggregator.
 /// Zero-cost stub when `debug-stats` is off (the macro expansion is
 /// a let-binding the optimizer elides). Enabled by passing
 /// `--features debug-stats` to the variant at build time. See
@@ -84,7 +100,6 @@ mod stub;
 #[cfg(target_os = "android")]
 pub use imp::{
     install_global_self, set_animated_color, set_animated_f32, AndroidBackend,
-    AndroidExternalRegistrar, AndroidNavigatorRegistrar,
 };
 
 /// SDK extension point: leaked-box callback wrapper for header bar
@@ -134,7 +149,7 @@ pub use jni::objects::GlobalRef as AndroidNode;
 pub use backend_android_core::render_loop::install_render_loop;
 
 /// Install the Android scheduler (Handler.postDelayed on the main
-/// Looper). Must be called once before `runtime_core::render(...)`
+/// Looper). Must be called once before `runtime_shared::render(...)`
 /// so timer-driven features (long-press recognizer, presence
 /// animations, anything calling `after_ms` / `schedule_microtask`)
 /// delay correctly instead of firing synchronously.
@@ -213,14 +228,14 @@ pub fn install_global_self(_weak: std::rc::Weak<std::cell::RefCell<AndroidBacken
 #[cfg(not(target_os = "android"))]
 pub fn set_animated_f32(
     _node: &AndroidNode,
-    _prop: runtime_core::animation::AnimProp,
+    _prop: runtime_shared::animation::AnimProp,
     _value: f32,
 ) {}
 
 #[cfg(not(target_os = "android"))]
 pub fn set_animated_color(
     _node: &AndroidNode,
-    _prop: runtime_core::animation::AnimProp,
+    _prop: runtime_shared::animation::AnimProp,
     _value: [f32; 4],
 ) {}
 

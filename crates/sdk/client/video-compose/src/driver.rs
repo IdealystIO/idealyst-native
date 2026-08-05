@@ -38,7 +38,7 @@ mod native {
     use canvas_core::Scene;
     use canvas_vello::HeadlessCompositor;
     use media_stream::Subscription;
-    use runtime_core::{raf_loop, RafLoop};
+    use runtime_shared::scheduling::{raf_loop, RafLoop};
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -293,7 +293,7 @@ mod web {
     use super::*;
     use crate::{normalized_crop, watermark_rect, Corner};
     use canvas_core::Fit;
-    use runtime_core::{raf_loop, RafLoop};
+    use runtime_shared::scheduling::{raf_loop, RafLoop};
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use wasm_bindgen::{prelude::Closure, Clamped, JsCast, JsValue};

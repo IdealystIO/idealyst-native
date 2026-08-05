@@ -17,17 +17,20 @@ impl DevService for Redis {
 
     fn fragment(&self, _variant: Option<&str>, _ctx: &Ctx) -> ServiceFragment {
         ServiceFragment {
-            service: serde_yaml::from_str(
-                r#"
+            service: Some(
+                serde_yaml::from_str(
+                    r#"
 image: redis:7
 restart: unless-stopped
 volumes:
   - idealyst-redis-data:/data
 "#,
-            )
-            .expect("valid redis service yaml"),
+                )
+                .expect("valid redis service yaml"),
+            ),
             app_env: vec![("REDIS_URL".into(), "redis://redis:6379".into())],
             volumes: vec!["idealyst-redis-data".into()],
+            ..Default::default()
         }
     }
 }

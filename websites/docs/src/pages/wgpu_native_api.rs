@@ -61,8 +61,10 @@ docs! {
              " trait. No wgpu, no winit, no platform-specific anything. \
               Every other layer depends on this; it depends on no one."],
             [code("render-wgpu"), " — the renderer + interaction host. \
-              Implements ", code("runtime_core::Backend"), " (so the \
-              framework can hand it a primitive tree) and ",
+              Implements ", code("runtime_scene::Host"),
+             " plus the ", code("runtime_vocabulary::caps"),
+             " capability traits (so the framework can realize a scene \
+              tree against it) and ",
              code("EventSink"), " (so a shell can hand it events). Owns \
               the wgpu pipeline, the Taffy layout tree, the animator, \
               and the ", code("Painter"), " trait. Holds an ",
@@ -404,15 +406,16 @@ docs! {
           code("render-api"), " only. Don't depend on ",
           code("render-wgpu"),
           "; you are the replacement for it."),
-        p("Two traits to implement:"),
+        p("Two contracts to implement:"),
         list(
-            [code("runtime_core::Backend"),
-             " — so the framework can hand you a primitive tree and \
-              drive ", code("create_*"), " / ", code("insert"), " / ",
+            [code("runtime_scene::Host"), " + the ",
+             code("runtime_vocabulary::caps"),
+             " capability traits — so the framework can realize a scene \
+              tree against you and drive ", code("insert"), " / ",
              code("apply_style"),
-             " calls. See ",
+             " and the per-primitive operations. See ",
              link("Writing your own backend", to = "writing-a-backend"),
-             " for the full surface."],
+             " for the layering."],
             [code("render_api::EventSink"),
              " — so any shell on the api side can forward events to \
               you. The eight methods above."],
@@ -466,13 +469,12 @@ docs! {
               renderer used by ", code("idealyst dev"),
              "; the production backends are web, iOS, and Android."],
             [link("Writing your own backend", to = "writing-a-backend"),
-             " — the full ", code("runtime_core::Backend"),
-             " trait surface a render backend has to implement, \
-              independent of the wgpu split."],
+             " — the host + capability-trait surface a render backend has \
+              to implement, independent of the wgpu split."],
             [link("Primitives", to = "primitives"),
              " — the vocabulary the render backend has to know how to \
-              put on screen. Each primitive corresponds to a method on \
-              the ", code("Backend"), " trait."],
+              put on screen. Each primitive family corresponds to one \
+              capability trait."],
         ),
     },
 }

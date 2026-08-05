@@ -462,14 +462,12 @@ docs! {
               transition mechanics underneath."],
         ),
 
-        p("For SSR/SSG, register the handlers on the SSR backend with ",
-          code("swap_navigator::register_generic"), " / ",
-          code("stack_navigator::register_generic"),
-          "; for ", code("idealyst dev"), " non-local mode, the sidecar \
-           registers the ", code("recording"),
-          " modules so screen swaps ship as plain node ops over the wire. \
-           On the app backends (web, iOS, Android, macOS) the SDKs \
-           self-register — building the navigator is enough."),
+        p("Navigators need no per-backend registration at all: the handler \
+           is a built-in, installed by ", code("register_builtins"),
+          " on every host including SSR/SSG and the runtime-server \
+           recorder. Building the navigator is enough — screen swaps ship \
+           as plain node ops over the wire in ", code("idealyst dev"),
+          "'s non-local mode for the same reason."),
     },
 
     section(heading = "The Link primitive") {
@@ -629,11 +627,11 @@ docs! {
             ["The ", code("Link"), " primitive — every prop and how the \
               ambient stack works in detail."],
             [link("Primitives", to = "primitives"), " — where ",
-             code("Element::Navigator"),
+             code("navigator"),
              " and the outlet sit among the other primitives."],
             [link("Writing a backend", to = "writing-a-backend"),
-             " — the ", code("create_navigator"), " / ",
-             code("NavigatorHost"), " contract a backend implements."],
+             " — the ", code("NavigatorOps"),
+             " contract a backend implements."],
             ["Hot reload — how navigation state survives source edits."],
         ),
     },

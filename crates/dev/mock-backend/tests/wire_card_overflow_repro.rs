@@ -1,8 +1,8 @@
 //! Investigation of arena finding #8: "the wgpu replay screenshot
 //! reproducibly crashed `aas-session-web` with a stack overflow whenever
-//! the scene contained idea-ui `Card` rows." Runs the exact crashing chain
-//! — real walker → wire record → replay → offscreen GPU — on real Card
-//! scenes, on a 16MB-stack thread matching the sidecar.
+//! the scene contained idea-ui `Card` rows." Runs the exact crashing
+//! chain — real realize → wire record → replay → offscreen GPU — on real
+//! Card scenes, on a 16MB-stack thread matching the sidecar.
 //!
 //! FINDINGS (2026-07-22):
 //! * The reported symptom does NOT reproduce on the current tree: static
@@ -14,11 +14,13 @@
 //! * There IS a real latent robustness gap these tests surfaced: the render
 //!   pipeline recurses on tree DEPTH at multiple un-guarded sites, so a
 //!   pathologically deep tree (thousands of levels) overflows the stack and
-//!   aborts the sidecar. A `walk`-only depth guard is insufficient — with
-//!   `walk` capped, a 5000-deep tree still overflows (in Taffy layout or the
-//!   recursive `Drop` of the deep `Rc` node tree). A complete fix spans
-//!   several sites (shrink `walk`'s frame + iterative/guarded layout +
-//!   non-recursive teardown) and is tracked as a scoped follow-up.
+//!   aborts the sidecar. A realize-only depth guard is insufficient — with
+//!   the mount pass capped, a 5000-deep tree still overflows (in Taffy
+//!   layout or the recursive `Drop` of the deep node tree). A complete fix
+//!   spans several sites (shrink the mount frame + iterative/guarded layout
+//!   + non-recursive teardown) and is tracked as a scoped follow-up.
+//!   `deep_tree_overflow_multi_site` below is the tree's only executable
+//!   record of that budget.
 //!
 //! Run: `cargo test -p mock-backend --features screenshot --test wire_card_overflow_repro -- --nocapture`
 

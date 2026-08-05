@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+    <base href="/" />
+    <title>Idealyst — One Rust codebase, every platform (standalone)</title>
+    <style>
+      /* Same mount conventions as index.html (the CLI web shell). */
+      html, body, #app { height: 100%; margin: 0; }
+      body {
+        background: #f7f8fb;
+        font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      // Built by:
+      //   rm -rf websites/website/pkg-standalone
+      //   wasm-pack build --target web --dev websites/website \
+      //       --out-dir pkg-standalone -- --features standalone-web
+      // (`standalone-web` compiles the crate's OWN
+      // `#[wasm_bindgen(start)]`. The CLI-built vehicle is
+      // `idealyst build --web websites/website`, whose generated wrapper
+      // has its own start fn and serves index.html with real wasm-split
+      // chunking — two start fns in one module is a wasm-bindgen error,
+      // which is why `standalone-web` is non-default. wasm-pack 0.12
+      // fails re-reading its own generated package.json on REbuilds —
+      // rm -rf pkg-standalone first.)
+      // Serve from the app dir (e.g. `python3 -m http.server`) and open
+      // /standalone.html.
+      import init from "./pkg-standalone/website.js";
+      init();
+    </script>
+  </body>
+</html>

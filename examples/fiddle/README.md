@@ -64,9 +64,10 @@ use crate::__rt::*;
 ```
 
 which re-exports the symbols most snippets reach for —
-`runtime_core::{view, button, text, signal, ui!, ...}`, `idea_ui::{card, heading, ...}`,
-and `std::rc::Rc`. Anything outside that prelude needs the usual
-fully-qualified path. Snippets must define:
+`runtime_core::{view, button, text, signal, ui!, ...}` (the author surface,
+which the template aliases onto `runtime-core`), `idea_ui::{Card, Stack,
+Typography, ...}`, and `std::rc::Rc`. Anything outside that prelude needs the
+usual fully-qualified path. Snippets must define:
 
 ```rust
 pub fn app() -> Element { /* ... */ }
@@ -87,10 +88,16 @@ pub fn app() -> Element { /* ... */ }
   a localhost dev fiddle; not fine if you ever expose this to the
   open internet.
 - **wgpu navigator dispatchers** are still WIP in `render-wgpu` —
-  a snippet whose `app()` uses a navigator (`DrawerNavigator`,
-  `TabNavigator`, …) will render the initial screen but log
-  "navigator push not yet wired" on transitions. Static layouts,
-  buttons, switches, sliders, scroll views all work.
+  a snippet whose `app()` uses a navigator will render the initial
+  screen but log "navigator push not yet wired" on transitions. Static
+  layouts, buttons, switches, sliders, scroll views all work.
+- **Writes stage until the flush.** A snippet handler that reads back a
+  signal it just wrote sees the previous value; two `set(get() + 1)`
+  calls in one handler net +1. Use `update(|n| n + 1)` to compose.
+- **No SDK is registered but `codeblock` / `webview`** (the editor's own
+  needs). A snippet payload with no registered scene handler panics at
+  realize — add its `register` call to the template's boot seam
+  (`template/src/lib.rs`) first.
 
 ## Why the `[workspace]` markers in `template/` and `webapp/`
 

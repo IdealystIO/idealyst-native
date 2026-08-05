@@ -3,7 +3,7 @@
 //! (`debug` / `info` / `warn` / `error`) so DevTools surfaces the
 //! native level styling, filter chips, and stack traces.
 
-use runtime_core::logging::{LogLevel, Logger};
+use runtime_shared::logging::{LogLevel, Logger};
 use wasm_bindgen::JsValue;
 use web_sys::console;
 
@@ -11,7 +11,7 @@ use web_sys::console;
 /// first install wins. Hosts typically call this from the same
 /// bootstrap that installs the scheduler and time source.
 pub fn install_logger() {
-    runtime_core::logging::install_logger(Box::new(WebLogger));
+    runtime_shared::logging::install_logger(Box::new(WebLogger));
 }
 
 struct WebLogger;

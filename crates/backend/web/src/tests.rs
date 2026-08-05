@@ -251,7 +251,7 @@ fn node_id_unique_across_many_create_drop_cycles() {
 /// `background-image` without re-walking the stylesheet.
 #[wasm_bindgen_test]
 fn apply_style_snapshots_gradient_shape_for_animation() {
-    use runtime_core::{Color, Gradient, GradientKind, GradientStop, StyleRules};
+    use runtime_shared::{Color, Gradient, GradientKind, GradientStop, StyleRules};
     use std::rc::Rc;
 
     install_mount();
@@ -276,8 +276,7 @@ fn apply_style_snapshots_gradient_shape_for_animation() {
     // Look up the id BEFORE apply so we know what to check.
     let id = backend.node_id(&node);
 
-    use runtime_core::Backend;
-    backend.apply_style(&node, &rules);
+    backend.apply_style_impl(&node, &rules);
 
     let snapshot = backend
         .animated_states
@@ -301,7 +300,7 @@ fn apply_style_snapshots_gradient_shape_for_animation() {
 /// the welcome example.
 #[wasm_bindgen_test]
 fn apply_styled_states_snapshots_gradient_shape_for_animation() {
-    use runtime_core::{Color, Gradient, GradientKind, GradientStop, StyleRules};
+    use runtime_shared::{Color, Gradient, GradientKind, GradientStop, StyleRules};
     use std::rc::Rc;
 
     install_mount();
@@ -317,7 +316,7 @@ fn apply_styled_states_snapshots_gradient_shape_for_animation() {
             kind: GradientKind::Radial {
                 center: (0.5, 0.5),
                 radius: 1.0,
-                extent: runtime_core::RadialExtent::FarthestCorner,
+                extent: runtime_shared::RadialExtent::FarthestCorner,
             },
             stops: vec![
                 GradientStop { offset: 0.0, color: Color("#fff".into()) },
@@ -329,11 +328,10 @@ fn apply_styled_states_snapshots_gradient_shape_for_animation() {
 
     let id = backend.node_id(&node);
 
-    use runtime_core::Backend;
     // `apply_styled_states` with an empty overlay list — same
     // shape the framework uses when `handles_states_natively`
     // returns true but the node has no per-state styling.
-    backend.apply_styled_states(&node, &base, &[]);
+    backend.apply_styled_states_impl(&node, &base, &[]);
 
     let snapshot = backend
         .animated_states
@@ -347,7 +345,7 @@ fn apply_styled_states_snapshots_gradient_shape_for_animation() {
     // Verify the extent round-tripped through the snapshot.
     match snapshot.gradient_shape.as_ref().unwrap().kind {
         crate::animated::GradientShapeKind::Radial { extent, .. } => {
-            assert_eq!(extent, runtime_core::RadialExtent::FarthestCorner);
+            assert_eq!(extent, runtime_shared::RadialExtent::FarthestCorner);
         }
         other => panic!("expected Radial in snapshot, got {:?}", other),
     }
@@ -365,7 +363,7 @@ fn apply_styled_states_snapshots_gradient_shape_for_animation() {
 /// host.
 #[wasm_bindgen_test]
 fn apply_styled_variants_emits_media_rule_for_breakpoint_overlay() {
-    use runtime_core::{Breakpoint, Length, StyleRules, Tokenized};
+    use runtime_shared::{Breakpoint, Length, StyleRules, Tokenized};
     use std::rc::Rc;
 
     install_mount();
@@ -388,8 +386,7 @@ fn apply_styled_variants_emits_media_rule_for_breakpoint_overlay() {
     });
     let bp_overlays = vec![(Breakpoint::Md, md_overlay)];
 
-    use runtime_core::Backend;
-    backend.apply_styled_variants(&node, &base, &[], &bp_overlays, &[]);
+    backend.apply_styled_variants_impl(&node, &base, &[], &bp_overlays, &[]);
 
     // Read back every rule the backend inserted into its stylesheet.
     let sheet = backend.sheet();
@@ -422,7 +419,7 @@ fn apply_styled_variants_emits_media_rule_for_breakpoint_overlay() {
 /// CSSOM stylesheet + a real element style object).
 #[wasm_bindgen_test]
 fn apply_styled_variants_emits_container_query_rule() {
-    use runtime_core::{Length, StyleRules, Tokenized};
+    use runtime_shared::{Length, StyleRules, Tokenized};
     use std::rc::Rc;
 
     install_mount();
@@ -436,8 +433,7 @@ fn apply_styled_variants_emits_container_query_rule() {
     doc.body().unwrap().append_child(&element).unwrap();
     let node: web_sys::Node = element.unchecked_into();
 
-    use runtime_core::Backend;
-    backend.mark_container(&container_node);
+    backend.mark_container_impl(&container_node);
 
     let base = Rc::new(StyleRules {
         width: Some(Tokenized::Literal(Length::Px(100.0))),
@@ -447,7 +443,7 @@ fn apply_styled_variants_emits_container_query_rule() {
         width: Some(Tokenized::Literal(Length::Px(500.0))),
         ..Default::default()
     });
-    backend.apply_styled_variants(&node, &base, &[], &[], &[(400.0, overlay)]);
+    backend.apply_styled_variants_impl(&node, &base, &[], &[], &[(400.0, overlay)]);
 
     let sheet = backend.sheet();
     let rules = sheet.css_rules().expect("css_rules");
@@ -501,7 +497,7 @@ fn apply_styled_variants_emits_container_query_rule() {
 /// same path every other rule uses, so no absolute index ever shifts.
 #[wasm_bindgen_test]
 fn scrollbar_reapply_preserves_other_rule_indices() {
-    use runtime_core::{Backend, Color, Length, StyleRules, Tokenized};
+    use runtime_shared::{Color, Length, StyleRules, Tokenized};
     use std::rc::Rc;
 
     install_mount();
@@ -513,7 +509,7 @@ fn scrollbar_reapply_preserves_other_rule_indices() {
     // Scrollbar rules go in FIRST, so the class rules below land at
     // higher indices — exactly the arrangement a real deleteRule would
     // renumber out from under the trackers.
-    backend.set_scrollbar_theme(&thumb, &track);
+    backend.set_scrollbar_theme_impl(&thumb, &track);
 
     // Three classes with distinctive bodies, appended after the
     // scrollbar rules.
@@ -526,20 +522,20 @@ fn scrollbar_reapply_preserves_other_rule_indices() {
     let a = mk(111.0);
     let b = mk(222.0);
     let c = mk(333.0);
-    backend.register_stylesheet(std::slice::from_ref(&a));
-    backend.register_stylesheet(std::slice::from_ref(&b));
-    backend.register_stylesheet(std::slice::from_ref(&c));
+    backend.register_stylesheet_impl(std::slice::from_ref(&a));
+    backend.register_stylesheet_impl(std::slice::from_ref(&b));
+    backend.register_stylesheet_impl(std::slice::from_ref(&c));
 
     // Re-apply the scrollbar theme — the per-toggle path that used to
     // shift every later index.
-    backend.set_scrollbar_theme(&thumb, &track);
-    backend.set_scrollbar_theme(&thumb, &track);
+    backend.set_scrollbar_theme_impl(&thumb, &track);
+    backend.set_scrollbar_theme_impl(&thumb, &track);
 
     // Drop B: its refcount hits zero, so its tracked rule index is freed.
-    backend.unregister_stylesheet(std::slice::from_ref(&b));
+    backend.unregister_stylesheet_impl(std::slice::from_ref(&b));
     // Mint a new class, which recycles the slot B just freed.
     let d = mk(444.0);
-    backend.register_stylesheet(std::slice::from_ref(&d));
+    backend.register_stylesheet_impl(std::slice::from_ref(&d));
 
     let sheet = backend.sheet();
     let rules = sheet.css_rules().expect("css_rules");
@@ -595,7 +591,7 @@ fn scrollbar_reapply_preserves_other_rule_indices() {
 /// the placeholder kept the slot occupied so no tracked index drifted.
 #[wasm_bindgen_test]
 fn rejected_css_rule_does_not_abort_or_drift_indices() {
-    use runtime_core::{Backend, Length, StyleRules, Tokenized};
+    use runtime_shared::{Length, StyleRules, Tokenized};
     use std::rc::Rc;
 
     install_mount();
@@ -606,7 +602,7 @@ fn rejected_css_rule_does_not_abort_or_drift_indices() {
         width: Some(Tokenized::Literal(Length::Px(111.0))),
         ..Default::default()
     });
-    backend.register_stylesheet(std::slice::from_ref(&a));
+    backend.register_stylesheet_impl(std::slice::from_ref(&a));
 
     // A rule no engine can parse. Pre-fix this `.expect()`-panics and
     // aborts the module; post-fix it backfills the placeholder.
@@ -619,7 +615,7 @@ fn rejected_css_rule_does_not_abort_or_drift_indices() {
         width: Some(Tokenized::Literal(Length::Px(222.0))),
         ..Default::default()
     });
-    backend.register_stylesheet(std::slice::from_ref(&b));
+    backend.register_stylesheet_impl(std::slice::from_ref(&b));
 
     let sheet = backend.sheet();
     let rules = sheet.css_rules().expect("css_rules");
@@ -668,7 +664,7 @@ fn rejected_css_rule_does_not_abort_or_drift_indices() {
 /// mapping and passes after the fix.
 #[wasm_bindgen_test]
 fn regression_web_disabled_state_styles_div_pressable() {
-    use runtime_core::{Backend, Length, StateBits, StyleRules, Tokenized};
+    use runtime_shared::{Length, StateBits, StyleRules, Tokenized};
     use std::rc::Rc;
 
     install_mount();
@@ -695,7 +691,7 @@ fn regression_web_disabled_state_styles_div_pressable() {
     });
     let overlays = vec![(StateBits::DISABLED, disabled_overlay)];
 
-    backend.apply_styled_states(&node, &base, &overlays);
+    backend.apply_styled_states_impl(&node, &base, &overlays);
 
     // Pull every CssStyleRule the backend inserted and locate the one
     // carrying the disabled overlay's selector.
@@ -770,8 +766,8 @@ fn regression_web_disabled_state_styles_div_pressable() {
 /// (never `blob:`) and checks the emitted `@font-face` rule links it.
 #[wasm_bindgen_test]
 fn regression_font_is_linked_as_served_file_not_blob() {
-    use runtime_core::{
-        AssetId, AssetSource, AssetTag, Backend, FontStyle, FontWeight, SystemFallback,
+    use runtime_shared::{
+        AssetId, AssetSource, AssetTag, FontStyle, FontWeight, SystemFallback,
         TypefaceFace, TypefaceId,
     };
 
@@ -780,7 +776,7 @@ fn regression_font_is_linked_as_served_file_not_blob() {
 
     // Shape 1: pure-web build (`embed-font-bytes` off) → `Bundled`.
     let bundled_id = AssetId(0xB00D);
-    backend.register_asset(
+    backend.register_asset_impl(
         bundled_id,
         AssetTag::Font,
         &AssetSource::Bundled { path: "fonts/Inter-Regular.ttf" },
@@ -790,7 +786,7 @@ fn regression_font_is_linked_as_served_file_not_blob() {
     // website's wgpu Simulator) → `BundledEmbedded`. Web must STILL
     // link the path and ignore the embedded bytes.
     let embedded_id = AssetId(0xB33F);
-    backend.register_asset(
+    backend.register_asset_impl(
         embedded_id,
         AssetTag::Font,
         &AssetSource::BundledEmbedded {
@@ -844,7 +840,7 @@ fn regression_font_is_linked_as_served_file_not_blob() {
             },
         },
     ];
-    backend.register_typeface(TypefaceId(0xFACE), "Inter", &faces, SystemFallback::SansSerif);
+    backend.register_typeface_impl(TypefaceId(0xFACE), "Inter", &faces, SystemFallback::SansSerif);
 
     // Walk the shared stylesheet and collect every @font-face rule text.
     let sheet = backend.sheet();
@@ -878,6 +874,21 @@ fn regression_font_is_linked_as_served_file_not_blob() {
 // ---------------------------------------------------------------------------
 // First-class-apply timing — regression for the boot/navigation FOUC
 // ---------------------------------------------------------------------------
+/// Shared setup for the text-batcher tests: mount + scheduler + the
+/// global self-handle (`install_text_batcher`), so the batched text /
+/// class paths are the ones under test rather than the detached
+/// fallbacks.
+fn install_for_text_bindings() -> std::rc::Rc<std::cell::RefCell<WebBackend>> {
+    install_mount();
+    // Scheduler is needed because `schedule_text_flush` calls
+    // `runtime_shared::schedule_microtask`. Idempotent — re-running
+    // is fine.
+    crate::install_scheduler();
+    let backend = std::rc::Rc::new(std::cell::RefCell::new(WebBackend::new("#app")));
+    crate::install_text_batcher(&backend);
+    backend
+}
+
 
 /// REGRESSION TEST.
 ///
@@ -904,7 +915,7 @@ fn regression_font_is_linked_as_served_file_not_blob() {
 /// class is present the instant `apply_style` returns.
 #[wasm_bindgen_test]
 fn regression_first_class_apply_is_synchronous_no_boot_transition() {
-    use runtime_core::{Backend, Color, StyleRules, Tokenized};
+    use runtime_shared::{Color, StyleRules, Tokenized};
     use std::rc::Rc;
 
     // `install_for_text_bindings` installs the scheduler + the global
@@ -925,7 +936,7 @@ fn regression_first_class_apply_is_synchronous_no_boot_transition() {
         ..Default::default()
     });
 
-    backend.borrow_mut().apply_style(&node, &rules);
+    backend.borrow_mut().apply_style_impl(&node, &rules);
 
     // No `await`, no microtask turn: the class must already be on the
     // element. A deferred (queued) first apply would leave this `None`.
@@ -1040,230 +1051,17 @@ fn benchmark_node_id_ffi_cost() {
         per_call_distinct_us,
     );
 }
-
-// ---------------------------------------------------------------------------
-// f-string reactive text — regression tests for the JS-binding fast path
-// ---------------------------------------------------------------------------
-//
-// The original bug (hit via the since-removed `text_fmt!` macro; the
-// f-string lowering emits the same `TextSource::JsBinding(JsBindingSpec)`):
-// the walker took the JS-binding fast path on web, and the web backend's
-// `register_reactive_text_binding` registered the binding on the JS
-// side but never registered a `signal_js_notifier` for the signal
-// ids. When `count.set/update` fired, `Signal::set` called
-// `notify_js_subscriber(sid)`, the lookup found no notifier, and the
-// text never updated.
-//
-// Fix: per-signal `stringifiers` flow through `JsBindingSpec` to the
-// web backend's `register_reactive_text_binding`, which auto-installs
-// per-signal JS notifiers at bind time (only if one isn't already
-// installed — preserves notifiers a class binding may have set up
-// first).
-//
-// These three tests exercise the wasm-side DOM mutation path that
-// the host-side `tests/fstring_text.rs` tests can't reach.
-
-/// Bootstrapping shared by every text-binding regression below. Mounts
-/// `#app`, builds a `WebBackend`, wraps it in `Rc<RefCell>`, and
-/// installs the text batcher (which sets `WEB_BACKEND_HANDLE` so
-/// `supports_js_text_bindings()` returns true). Returns the handle
-/// so each test can build its own bindings against it.
-fn install_for_text_bindings() -> std::rc::Rc<std::cell::RefCell<WebBackend>> {
-    install_mount();
-    // Scheduler is needed because `schedule_text_flush` calls
-    // `runtime_core::schedule_microtask`. Idempotent — re-running
-    // is fine.
-    crate::install_scheduler();
-    let backend = std::rc::Rc::new(std::cell::RefCell::new(WebBackend::new("#app")));
-    crate::install_text_batcher(&backend);
-    backend
-}
-
-/// REGRESSION — `signal.set(...)` must reach the DOM through the
-/// JS-binding fast path. Mount a `text { "{count}" }` f-string
-/// text node, walk + commit. The initial nodeValue is "0". After
-/// `count.set(42)`, the nodeValue must be "42". Before the fix the
-/// second assertion fails — no signal_js_notifier is installed at
-/// bind time, so `Signal::set` has nothing to call.
-#[wasm_bindgen_test]
-fn regression_fstring_signal_set_updates_dom_via_js_binding() {
-    let backend = install_for_text_bindings();
-    let count: runtime_core::Signal<u32> = runtime_core::signal(0u32);
-
-    // Mount through the public `render` entry point so we exercise
-    // the walker's JS-binding path (the same path real apps take).
-    let _owner = runtime_core::render(
-        backend.clone(),
-        runtime_core::ui! { text { "{count}" } },
-    );
-
-    // Find the only text node we created. `#app` has exactly one
-    // child span wrapping a Text node — `WebBackend::create_text_with_id`
-    // is what runs for the JS-binding path. Search the subtree.
-    fn find_first_text_node(root: &web_sys::Node) -> Option<web_sys::Text> {
-        if let Some(t) = root.dyn_ref::<web_sys::Text>() {
-            return Some(t.clone());
-        }
-        // Walk children via `first_child` / `next_sibling` so we
-        // don't need the `NodeList` web-sys feature.
-        let mut cursor = root.first_child();
-        while let Some(c) = cursor {
-            if let Some(found) = find_first_text_node(&c) {
-                return Some(found);
-            }
-            cursor = c.next_sibling();
-        }
-        None
-    }
-
-    let doc = web_sys::window().unwrap().document().unwrap();
-    let app: web_sys::Node = doc.get_element_by_id("app").unwrap().unchecked_into();
-    let text_node = find_first_text_node(&app)
-        .expect("the f-string binding must produce a real Text node under #app");
-
-    assert_eq!(
-        text_node.node_value().as_deref(),
-        Some("0"),
-        "initial nodeValue must reflect signal's starting value",
-    );
-
-    // Fire a signal change. The Rust subscriber fan-out runs, then
-    // `notify_js_subscriber` invokes whichever notifier the framework
-    // has registered for this signal. With the fix, the web backend's
-    // `register_reactive_text_binding` auto-installs that notifier;
-    // without the fix, the notifier slot is empty and this is a
-    // silent no-op.
-    count.set(42);
-
-    assert_eq!(
-        text_node.node_value().as_deref(),
-        Some("42"),
-        "after signal.set(42), JS dispatcher must have updated nodeValue",
-    );
-}
-
-/// REGRESSION — pre-existing JS notifier must NOT be clobbered.
-/// A class binding (or any other code) may register a custom notifier
-/// for a signal before a text binding mounts against it. The web
-/// backend's per-signal auto-register loop must call
-/// `signal_has_js_notifier` and skip signals that already have one —
-/// otherwise the class binding's teardown / dispatch path goes dark.
-#[wasm_bindgen_test]
-fn regression_fstring_existing_js_notifier_not_clobbered() {
-    let backend = install_for_text_bindings();
-    let s: runtime_core::Signal<u32> = runtime_core::signal(0u32);
-
-    // Pre-install a counter notifier that ALSO calls into the JS
-    // dispatcher (so the text binding still works downstream). The
-    // `Cell<u32>` confirms the original closure stays live across
-    // the subsequent `register_reactive_text_binding` call.
-    let custom_fires = std::rc::Rc::new(std::cell::Cell::new(0u32));
-    {
-        let custom_fires = custom_fires.clone();
-        let sid = s.id();
-        // We can't reach `ship_signal_change_to_js` from out here, so
-        // re-implement the body of `register_signal_for_js`'s closure
-        // inline. The point of the test is "is the closure I
-        // registered the one that runs?" — not "does it perfectly
-        // mimic what register_signal_for_js does."
-        runtime_core::register_signal_js_notifier(sid, move || {
-            custom_fires.set(custom_fires.get() + 1);
-        });
-    }
-    assert!(runtime_core::signal_has_js_notifier(s.id()));
-
-    // Mount a text binding on the same signal. The fix's "skip if a
-    // notifier already exists" branch must trigger here.
-    let _owner = runtime_core::render(
-        backend.clone(),
-        runtime_core::ui! { text { "{s}" } },
-    );
-
-    // Fire the signal. The CUSTOM notifier must run — not get
-    // replaced by the auto-installed text-binding stringifier.
-    s.set(7);
-
-    assert_eq!(
-        custom_fires.get(),
-        1,
-        "custom notifier must fire once; if it's 0 the text binding clobbered it",
-    );
-
-    // Second fire — same expectation. Catches the case where the
-    // first set somehow re-installed the auto notifier mid-dispatch.
-    s.set(8);
-    assert_eq!(custom_fires.get(), 2);
-}
-
-/// REGRESSION — two text bindings against the same signal must both
-/// update on signal.set. The second binding's auto-register branch
-/// hits `signal_has_js_notifier == true` (the first install put one
-/// in place), so the loop short-circuits. The previously-installed
-/// notifier still ships the change to JS, the JS dispatcher fans out
-/// to BOTH subscribers via its own internal subscriber set, and both
-/// DOM nodes update.
-///
-/// Catches the failure mode where the second binding either (a)
-/// stomps the first notifier (regression — fix's intent) or (b) the
-/// JS-side dispatcher doesn't track multiple subscribers per signal
-/// (pre-existing bug we don't want to regress).
-#[wasm_bindgen_test]
-fn regression_fstring_two_bindings_one_signal() {
-    let backend = install_for_text_bindings();
-    let s: runtime_core::Signal<u32> = runtime_core::signal(0u32);
-
-    // Render two Text leaves under one View — same signal feeds
-    // both via independent f-string bindings.
-    use runtime_core::view;
-    let _owner = runtime_core::render(
-        backend.clone(),
-        view(vec![
-            runtime_core::ui! { text { "a={s}" } },
-            runtime_core::ui! { text { "a={s}" } },
-        ])
-        .into(),
-    );
-
-    // Collect ALL text nodes under #app.
-    fn collect_text_nodes(root: &web_sys::Node, out: &mut Vec<web_sys::Text>) {
-        if let Some(t) = root.dyn_ref::<web_sys::Text>() {
-            out.push(t.clone());
-            return;
-        }
-        // Walk children via `first_child` / `next_sibling` so we
-        // don't need the `NodeList` web-sys feature.
-        let mut cursor = root.first_child();
-        while let Some(c) = cursor {
-            collect_text_nodes(&c, out);
-            cursor = c.next_sibling();
-        }
-    }
-    let doc = web_sys::window().unwrap().document().unwrap();
-    let app: web_sys::Node = doc.get_element_by_id("app").unwrap().unchecked_into();
-    let mut nodes = Vec::new();
-    collect_text_nodes(&app, &mut nodes);
-    assert_eq!(
-        nodes.len(),
-        2,
-        "expected exactly 2 text nodes under #app, got {}",
-        nodes.len(),
-    );
-
-    for n in &nodes {
-        assert_eq!(n.node_value().as_deref(), Some("a=0"));
-    }
-
-    s.set(99);
-
-    for n in &nodes {
-        assert_eq!(
-            n.node_value().as_deref(),
-            Some("a=99"),
-            "both text nodes must update after signal.set; one updating but not the other \
-             means the second binding's auto-register stomped the first's notifier",
-        );
-    }
-}
+// The three f-string JS-binding regressions that lived here
+// (`regression_fstring_signal_set_updates_dom_via_js_binding`,
+// `..._existing_js_notifier_not_clobbered`, `..._two_bindings_one_signal`)
+// drove `runtime_shared::render` + `ui!`, i.e. the deleted walker. Their
+// SUBJECT — the per-signal JS text-binding shim on this backend — is
+// covered on the surviving path by `newcore.rs`'s battery:
+// `regression_newcore_sids_stay_out_of_oldcore_arena_range` (set →
+// notifier → DOM, plus the sid namespace),
+// `regression_two_text_bindings_on_one_signal_both_update` (the fan-out
+// + no-clobber pair) and
+// `regression_class_binding_registered_after_text_binding_still_swaps`.
 
 // ---------------------------------------------------------------------------
 // Cross-backend @font-face dedup — the lazy-chunk double-download fix.
@@ -1273,7 +1071,7 @@ fn regression_fstring_two_bindings_one_signal() {
 /// `WebBackend` instances on the same wasm thread must inject the
 /// `@font-face` rule exactly ONCE.
 ///
-/// The bug this guards against: when a `lazy!` chunk's `mount_chunk`
+/// The bug this guards against: when a lazy chunk's `mount_chunk`
 /// spins up its own `WebBackend` (so the chunk's children get their
 /// own walker), it re-runs the theme's typeface registration. Each
 /// backend has its own `font_face_rule_indices`, so without a
@@ -1284,8 +1082,8 @@ fn regression_fstring_two_bindings_one_signal() {
 /// test pins it.
 #[wasm_bindgen_test]
 fn font_face_dedup_across_backends_inserts_rule_once() {
-    use runtime_core::assets::{AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId};
-    use runtime_core::{Backend, FontStyle, FontWeight};
+    use runtime_shared::assets::{AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId};
+    use runtime_shared::{FontStyle, FontWeight};
 
     install_mount();
 
@@ -1306,8 +1104,8 @@ fn font_face_dedup_across_backends_inserts_rule_once() {
 
     // ---- Backend A — first registration injects the rule.
     let mut a = WebBackend::new("#app");
-    a.register_asset(asset_id, AssetTag::Font, &AssetSource::Bundled { path: url_path });
-    a.register_typeface(type_id, family_name, &[face], SystemFallback::SansSerif);
+    a.register_asset_impl(asset_id, AssetTag::Font, &AssetSource::Bundled { path: url_path });
+    a.register_typeface_impl(type_id, family_name, &[face], SystemFallback::SansSerif);
     let a_indices = a
         .font_face_rule_indices
         .get(&type_id)
@@ -1323,8 +1121,8 @@ fn font_face_dedup_across_backends_inserts_rule_once() {
     // chunk's `mount_chunk` re-running the theme registration). The
     // dedup must catch it before the second @font-face is injected.
     let mut b = WebBackend::new("#app");
-    b.register_asset(asset_id, AssetTag::Font, &AssetSource::Bundled { path: url_path });
-    b.register_typeface(type_id, family_name, &[face], SystemFallback::SansSerif);
+    b.register_asset_impl(asset_id, AssetTag::Font, &AssetSource::Bundled { path: url_path });
+    b.register_typeface_impl(type_id, family_name, &[face], SystemFallback::SansSerif);
     let b_indices = b
         .font_face_rule_indices
         .get(&type_id)
@@ -1382,7 +1180,6 @@ fn font_face_dedup_across_backends_inserts_rule_once() {
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen_test]
 fn text_input_create_adopts_ssr_input_during_hydration() {
-    use runtime_core::Backend;
     use std::rc::Rc;
 
     install_mount();
@@ -1404,8 +1201,8 @@ fn text_input_create_adopts_ssr_input_during_hydration() {
 
     // Drive the walker's order: the View wrapper adopts first, then
     // the input inside it.
-    let _wrapper = backend.create_view(&Default::default());
-    let input_node = backend.create_text_input(
+    let _wrapper = backend.create_view_impl(&Default::default());
+    let input_node = backend.create_text_input_impl(
         "", // initial_value (overridden post-adopt)
         None,
         Rc::new(|_: String| {}),
@@ -1431,6 +1228,13 @@ fn text_input_create_adopts_ssr_input_during_hydration() {
         "exactly one input in the DOM after hydration; a fresh duplicate would be the \
          original bug's signature",
     );
+
+    // TEST HYGIENE: `WebBackend::hydrate` arms the scheduler's hydration
+    // microtask buffer; only `finish` (never called here) disarms it. A
+    // leaked armed buffer swallows LATER tests' scheduled microtasks —
+    // the `regression_image_on_load_cached_does_not_reenter_borrow`
+    // "deferred on_load must fire" failure under `--features hydrate`.
+    crate::scheduler::end_hydration_buffering();
 }
 
 // ---------------------------------------------------------------------------
@@ -1453,7 +1257,6 @@ fn text_input_create_adopts_ssr_input_during_hydration() {
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen_test]
 fn insert_at_removes_stale_ssr_node_on_divergence_remount() {
-    use runtime_core::Backend;
 
     install_mount();
     let doc = web_sys::window().unwrap().document().unwrap();
@@ -1468,17 +1271,17 @@ fn insert_at_removes_stale_ssr_node_on_divergence_remount() {
     let mut backend = WebBackend::hydrate("#app");
 
     // Adopt the app root `<div>`; the cursor descends onto the `<span>`.
-    let mut approot = backend.create_view(&Default::default());
+    let mut approot = backend.create_view_impl(&Default::default());
 
     // Client builds a `<div>` where SSR had a `<span>` → `create_view`'s
     // `hydrate_next("div")` mismatches and arms the remount (this fresh
     // `<div>` is the remount root; the `<span>` is the recorded stale).
-    let fresh_nav = backend.create_view(&Default::default());
+    let fresh_nav = backend.create_view_impl(&Default::default());
 
     // The anchorless-splice attach path: `build_when_spliced` calls exactly
     // this to parent its branch node. Before the fix it left the stale in
     // place; after the fix it swaps the stale out.
-    backend.insert_at(&mut approot, fresh_nav.clone(), 0);
+    backend.insert_at_impl(&mut approot, fresh_nav.clone(), 0);
 
     // Exactly one element child under `.approot`, and it's the fresh nav
     // `<div>` — the stale `<span>` is gone. Pre-fix this was 2 (span + div).
@@ -1501,6 +1304,13 @@ fn insert_at_removes_stale_ssr_node_on_divergence_remount() {
         0,
         "the stale SSR nav must not survive anywhere in the mount",
     );
+
+    // TEST HYGIENE: `WebBackend::hydrate` arms the scheduler's hydration
+    // microtask buffer; only `finish` (never called here) disarms it. A
+    // leaked armed buffer swallows LATER tests' scheduled microtasks —
+    // the `regression_image_on_load_cached_does_not_reenter_borrow`
+    // "deferred on_load must fire" failure under `--features hydrate`.
+    crate::scheduler::end_hydration_buffering();
 }
 
 /// Count element children of `el` via the sibling chain (`.children()` /
@@ -1524,7 +1334,6 @@ fn count_element_children(el: &web_sys::Element) -> u32 {
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen_test]
 fn insert_many_removes_stale_ssr_node_on_divergence_remount() {
-    use runtime_core::Backend;
 
     install_mount();
     let doc = web_sys::window().unwrap().document().unwrap();
@@ -1534,12 +1343,12 @@ fn insert_many_removes_stale_ssr_node_on_divergence_remount() {
     app.set_inner_html(r#"<div class="approot"><span class="ssr-row">STALE</span></div>"#);
 
     let mut backend = WebBackend::hydrate("#app");
-    let mut approot = backend.create_view(&Default::default());
+    let mut approot = backend.create_view_impl(&Default::default());
 
     // Fresh `<div>` where SSR had `<span>` → arms the remount.
-    let fresh_row = backend.create_view(&Default::default());
+    let fresh_row = backend.create_view_impl(&Default::default());
 
-    backend.insert_many(&mut approot, vec![fresh_row.clone()]);
+    backend.insert_many_impl(&mut approot, vec![fresh_row.clone()]);
 
     let approot_el: web_sys::Element = approot.unchecked_into();
     assert_eq!(
@@ -1552,79 +1361,19 @@ fn insert_many_removes_stale_ssr_node_on_divergence_remount() {
         0,
         "the stale SSR row must not survive after an insert_many remount resync",
     );
+
+    // TEST HYGIENE: `WebBackend::hydrate` arms the scheduler's hydration
+    // microtask buffer; only `finish` (never called here) disarms it. A
+    // leaked armed buffer swallows LATER tests' scheduled microtasks —
+    // the `regression_image_on_load_cached_does_not_reenter_borrow`
+    // "deferred on_load must fire" failure under `--features hydrate`.
+    crate::scheduler::end_hydration_buffering();
 }
-
-/// REGRESSION TEST — `Element::External` hydration. SSR renders an external
-/// as an empty host `<div>` (the server-side fallback, since the GPU canvas
-/// has no SSR renderer). On the client the handler builds a FRESH node
-/// (mounts a `<canvas>`) rather than adopting the SSR host. Before the fix,
-/// `create_external` never consumed the SSR host at the cursor, so the cursor
-/// stalled on it, the external's next sibling mismatched (the first
-/// `[hydrate] SSR/client diverge`), and the stale host `<div>` was orphaned in
-/// the DOM. After the fix `create_external` arms a subtree remount that swaps
-/// A handler registered LAZILY — via `runtime_core::defer_external_registration`
-/// from what would be a `lazy!` chunk body, never eagerly — must be installed by
-/// `create_external`'s drain and dispatched, instead of falling through to the
-/// "not supported" placeholder. This is the code-splitting seam: an SDK's heavy
-/// handler stays out of `main.wasm` by registering from inside its chunk, and
-/// the backend picks it up on first dispatch.
-#[wasm_bindgen_test]
-fn create_external_drains_lazily_deferred_handler_before_dispatch() {
-    use runtime_core::Backend;
-    use std::any::{Any, TypeId};
-    use std::cell::Cell;
-    use std::rc::Rc;
-
-    struct LazyWidget;
-
-    install_mount();
-    let mut backend = WebBackend::new("#app");
-
-    // No eager `register_external` here — mimic a heavy SDK that keeps its
-    // handler out of the main bundle. Instead defer it, as the SDK's chunk body
-    // would once the `lazy!` boundary loads. A flag proves the deferred handler
-    // (not the placeholder) actually ran.
-    let handler_ran = Rc::new(Cell::new(false));
-    let flag = handler_ran.clone();
-    runtime_core::defer_external_registration::<WebBackend, _>(move |b| {
-        let flag = flag.clone();
-        b.register_external::<LazyWidget, _>(move |_p, b| {
-            flag.set(true);
-            let el = b.doc.create_element("div").unwrap();
-            el.set_class_name("lazy-widget");
-            el
-        });
-    });
-
-    // Before dispatch the handler is NOT in the registry — it lives only in the
-    // pending queue.
-    assert!(!backend.external_handlers.has::<LazyWidget>(), "handler must be deferred, not eager");
-    assert!(runtime_core::has_pending_external_registrations());
-
-    let payload: Rc<dyn Any> = Rc::new(LazyWidget);
-    let node = backend.create_external(
-        TypeId::of::<LazyWidget>(),
-        "lazy-widget",
-        &payload,
-        &Default::default(),
-    );
-
-    // The drain installed the handler and dispatched to it: the built node is
-    // the handler's `.lazy-widget` div, not the not-supported placeholder.
-    assert!(handler_ran.get(), "deferred handler must run on first dispatch");
-    let el: web_sys::Element = node.unchecked_into();
-    assert_eq!(el.class_name(), "lazy-widget", "handler's node, not the placeholder");
-    // Queue consumed; handler now resident for subsequent dispatches.
-    assert!(!runtime_core::has_pending_external_registrations());
-    assert!(backend.external_handlers.has::<LazyWidget>());
-}
-
 /// the fresh node in for the stale host and resumes the cursor at the host's
 /// next sibling — so the sibling adopts cleanly.
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen_test]
 fn create_external_consumes_stale_ssr_host_when_handler_builds_fresh() {
-    use runtime_core::Backend;
     use std::any::{Any, TypeId};
     use std::rc::Rc;
 
@@ -1640,15 +1389,16 @@ fn create_external_consumes_stale_ssr_host_when_handler_builds_fresh() {
     );
 
     let mut backend = WebBackend::hydrate("#app");
-    // Non-adopting handler: builds a fresh <div> (mirrors the canvas SDK
-    // mounting a GPU <canvas> rather than adopting the SSR host).
-    backend.register_external::<CanvasLike, _>(|_p, b| b.doc.create_element("div").unwrap());
+    // Runtime v2: `create_external` always builds FRESH (it is the
+    // placeholder path — SDK handlers live on the scene registry now), so
+    // it is permanently on the non-adopting side of this contract, which
+    // is exactly what this regression guards.
 
     // Adopt approot; cursor descends onto the stale `ssr-ext` div.
-    let mut approot = backend.create_view(&Default::default());
+    let mut approot = backend.create_view_impl(&Default::default());
 
     let payload: Rc<dyn Any> = Rc::new(CanvasLike);
-    let ext = backend.create_external(
+    let ext = backend.create_external_impl(
         TypeId::of::<CanvasLike>(),
         "canvas-like",
         &payload,
@@ -1656,7 +1406,7 @@ fn create_external_consumes_stale_ssr_host_when_handler_builds_fresh() {
     );
     // The walker parents the external via insert_at → resync swaps the fresh
     // node in for the stale host.
-    backend.insert_at(&mut approot, ext.clone(), 0);
+    backend.insert_at_impl(&mut approot, ext.clone(), 0);
 
     // Stale SSR host detached — not left orphaned next to the fresh node.
     assert_eq!(
@@ -1683,54 +1433,22 @@ fn create_external_consumes_stale_ssr_host_when_handler_builds_fresh() {
             .unwrap_or(false),
         "cursor must resume at the external's next sibling for clean adoption",
     );
+
+    // TEST HYGIENE: `WebBackend::hydrate` arms the scheduler's hydration
+    // microtask buffer; only `finish` (never called here) disarms it. A
+    // leaked armed buffer swallows LATER tests' scheduled microtasks —
+    // the `regression_image_on_load_cached_does_not_reenter_borrow`
+    // "deferred on_load must fire" failure under `--features hydrate`.
+    crate::scheduler::end_hydration_buffering();
 }
-
-/// COMPLEMENT — a hydration-AWARE external handler (one that adopts the SSR
-/// host via `hydrate_next`) must NOT be forced into a remount: it advances the
-/// cursor by adopting, so the fresh-node path no-ops and the adopted SSR node
-/// is reused in place (no duplicate). Pins that the fix only fires for
-/// fresh-building handlers.
-#[cfg(feature = "hydrate")]
-#[wasm_bindgen_test]
-fn create_external_adopting_handler_reuses_ssr_host() {
-    use runtime_core::Backend;
-    use std::any::{Any, TypeId};
-    use std::rc::Rc;
-
-    struct Adopting;
-
-    install_mount();
-    let doc = web_sys::window().unwrap().document().unwrap();
-    let app = doc.get_element_by_id("app").unwrap();
-    app.set_inner_html(r#"<div class="approot"><div class="ssr-ext"></div></div>"#);
-
-    let mut backend = WebBackend::hydrate("#app");
-    // Adopting handler: takes the SSR host at the cursor via hydrate_next.
-    backend.register_external::<Adopting, _>(|_p, b| {
-        b.hydrate_next("div").unwrap_or_else(|| b.doc.create_element("div").unwrap())
-    });
-
-    let _approot = backend.create_view(&Default::default());
-    let payload: Rc<dyn Any> = Rc::new(Adopting);
-    let ext = backend.create_external(
-        TypeId::of::<Adopting>(),
-        "adopting",
-        &payload,
-        &Default::default(),
-    );
-
-    // The external node IS the adopted SSR host — no fresh node, no duplicate.
-    let ssr_ext = doc.query_selector("#app .ssr-ext").unwrap().unwrap();
-    assert!(
-        ext.is_same_node(Some(ssr_ext.as_ref())),
-        "an adopting external handler must reuse the SSR host, not remount it",
-    );
-    assert_eq!(
-        doc.query_selector_all("#app .ssr-ext").unwrap().length(),
-        1,
-        "exactly one host — the adopted SSR node",
-    );
-}
+// `create_external_drains_lazily_deferred_handler_before_dispatch` and
+// `create_external_adopting_handler_reuses_ssr_host` are gone with the
+// backend-side External registry (runtime v2: third-party primitives
+// register a payload handler on the scene `Registry`, which dispatches
+// before any backend cap, so there is no per-backend handler table and
+// no `defer_external_registration` drain). The SDK-side successors are
+// each SDK's `tests/newcore.rs` op-log suite; the "unregistered payload"
+// behaviour is the scene contract, pinned in runtime-scene/vocabulary.
 
 // ---------------------------------------------------------------------------
 // Pointer-keyed dynamic cache rejects stale entries on content mismatch.
@@ -1755,7 +1473,7 @@ fn create_external_adopting_handler_reuses_ssr_host() {
 /// path emits the correct class.
 #[wasm_bindgen_test]
 fn dynamic_by_ptr_stale_entry_does_not_misroute_class() {
-    use runtime_core::{Backend, Color, FlexDirection, StyleRules, Tokenized};
+    use runtime_shared::{Color, FlexDirection, StyleRules, Tokenized};
     use std::rc::Rc;
 
     install_mount();
@@ -1772,7 +1490,7 @@ fn dynamic_by_ptr_stale_entry_does_not_misroute_class() {
         color: Some(Tokenized::Literal(Color("#1f6e5f".into()))),
         ..Default::default()
     });
-    backend.apply_styled_states(&node1, &color_rules, &[]);
+    backend.apply_styled_states_impl(&node1, &color_rules, &[]);
     let color_class = el1.class_name();
     assert!(!color_class.is_empty(), "color apply must set a class");
 
@@ -1804,7 +1522,7 @@ fn dynamic_by_ptr_stale_entry_does_not_misroute_class() {
     let el2 = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&el2).unwrap();
     let node2: web_sys::Node = el2.clone().unchecked_into();
-    backend.apply_styled_states(&node2, &flex_rules, &[]);
+    backend.apply_styled_states_impl(&node2, &flex_rules, &[]);
     let flex_class = el2.class_name();
 
     assert_ne!(
@@ -1829,8 +1547,8 @@ fn dynamic_by_ptr_stale_entry_does_not_misroute_class() {
 // Icon fill vs stroke — regression test for the filled-icon support.
 // ---------------------------------------------------------------------------
 
-use runtime_core::primitives::icon::{FillRule, IconData};
-use runtime_core::Color;
+use runtime_shared::primitives::icon::{FillRule, IconData};
+use runtime_shared::Color;
 
 const FILLED_ICON: IconData = IconData {
     view_box: (24, 24),
@@ -2064,7 +1782,7 @@ fn dispatch_bubbling_pointerdown(target: &web_sys::Element) {
 /// overlay-tap-to-close-on-interior-press bug.
 #[wasm_bindgen_test]
 fn regression_web_touch_consumed_child_stops_ancestor_on_touch() {
-    use runtime_core::{Backend, TouchResponse};
+    use runtime_shared::{TouchResponse};
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -2084,7 +1802,7 @@ fn regression_web_touch_consumed_child_stops_ancestor_on_touch() {
     let child_fired = Rc::new(Cell::new(false));
 
     let pf = parent_fired.clone();
-    backend.install_touch_handler(
+    backend.install_touch_handler_impl(
         &parent.clone().unchecked_into(),
         Rc::new(move |_| {
             pf.set(true);
@@ -2092,7 +1810,7 @@ fn regression_web_touch_consumed_child_stops_ancestor_on_touch() {
         }),
     );
     let cf = child_fired.clone();
-    backend.install_touch_handler(
+    backend.install_touch_handler_impl(
         &child.clone().unchecked_into(),
         Rc::new(move |_| {
             cf.set(true);
@@ -2116,7 +1834,7 @@ fn regression_web_touch_consumed_child_stops_ancestor_on_touch() {
 /// re-tries one level up until someone consumes.
 #[wasm_bindgen_test]
 fn web_touch_ignored_child_still_bubbles_to_ancestor() {
-    use runtime_core::{Backend, TouchResponse};
+    use runtime_shared::{TouchResponse};
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -2133,7 +1851,7 @@ fn web_touch_ignored_child_still_bubbles_to_ancestor() {
     let child_fired = Rc::new(Cell::new(false));
 
     let pf = parent_fired.clone();
-    backend.install_touch_handler(
+    backend.install_touch_handler_impl(
         &parent.clone().unchecked_into(),
         Rc::new(move |_| {
             pf.set(true);
@@ -2141,7 +1859,7 @@ fn web_touch_ignored_child_still_bubbles_to_ancestor() {
         }),
     );
     let cf = child_fired.clone();
-    backend.install_touch_handler(
+    backend.install_touch_handler_impl(
         &child.clone().unchecked_into(),
         Rc::new(move |_| {
             cf.set(true);
@@ -2173,7 +1891,7 @@ fn web_touch_ignored_child_still_bubbles_to_ancestor() {
 /// plain child bubbles; an interactive-leaf child does not.
 #[wasm_bindgen_test]
 fn regression_web_pressable_swallows_ancestor_on_touch() {
-    use runtime_core::{Backend, TouchResponse};
+    use runtime_shared::{TouchResponse};
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -2187,7 +1905,7 @@ fn regression_web_pressable_swallows_ancestor_on_touch() {
     doc.body().unwrap().append_child(&row).unwrap();
     let row_fired = Rc::new(Cell::new(false));
     let rf = row_fired.clone();
-    backend.install_touch_handler(
+    backend.install_touch_handler_impl(
         &row.clone().unchecked_into(),
         Rc::new(move |_| {
             rf.set(true);
@@ -2197,7 +1915,7 @@ fn regression_web_pressable_swallows_ancestor_on_touch() {
 
     // A real Pressable, parented into the row.
     let pressable: web_sys::Node =
-        backend.create_pressable(Rc::new(|| {}), &Default::default());
+        backend.create_pressable_impl(Rc::new(|| {}), &Default::default());
     row.append_child(&pressable).unwrap();
     let pressable_el: web_sys::Element = pressable.unchecked_into();
 
@@ -2206,6 +1924,50 @@ fn regression_web_pressable_swallows_ancestor_on_touch() {
     assert!(
         !row_fired.get(),
         "a press on a Pressable must NOT reach the ancestor row's on_touch",
+    );
+}
+
+/// REGRESSION TEST.
+///
+/// A `mark_preserves_focus` region (a combobox's anchored option menu) must
+/// cancel the `pointerdown` default for presses ANYWHERE inside it — the
+/// browser's focus move is `mousedown`'s default action, so the canceled
+/// default is what keeps the anchoring input focused while a row is
+/// clicked. The press target being a Pressable row is the hard case: the
+/// row's own bubble-phase `stopPropagation` (the ancestor-touch swallow,
+/// asserted above) would starve a bubble-phase listener on the marked
+/// ancestor — the mark's listener must run in the CAPTURE phase to see the
+/// press at all.
+#[wasm_bindgen_test]
+fn regression_web_preserves_focus_cancels_pointerdown_through_pressable_swallow() {
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+
+    // The marked ancestor stands in for the combobox menu panel.
+    let panel = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&panel).unwrap();
+    backend.mark_preserves_focus_impl(&panel.clone().unchecked_into());
+
+    // A real Pressable row inside it — installs the pointerdown swallow.
+    let row: web_sys::Node = backend.create_pressable_impl(Rc::new(|| {}), &Default::default());
+    panel.append_child(&row).unwrap();
+    let row_el: web_sys::Element = row.unchecked_into();
+
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    let ev = web_sys::PointerEvent::new_with_event_init_dict("pointerdown", &init)
+        .expect("construct bubbling pointerdown");
+    row_el.dispatch_event(&ev).expect("dispatch pointerdown");
+
+    assert!(
+        ev.default_prevented(),
+        "a press inside a preserves_focus region must cancel the pointerdown \
+         default (the focus steal), even when the press target is a Pressable \
+         whose swallow stops bubble-phase propagation",
     );
 }
 
@@ -2233,7 +1995,6 @@ fn dispatch_bubbling_keydown(target: &web_sys::Element, key: &str) -> bool {
 /// Only a keydown whose target IS the pressable itself activates it.
 #[wasm_bindgen_test]
 fn regression_web_pressable_ignores_descendant_key() {
-    use runtime_core::Backend;
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -2246,7 +2007,7 @@ fn regression_web_pressable_ignores_descendant_key() {
     let pressed = Rc::new(Cell::new(false));
     let p = pressed.clone();
     let pressable: web_sys::Node =
-        backend.create_pressable(Rc::new(move || p.set(true)), &Default::default());
+        backend.create_pressable_impl(Rc::new(move || p.set(true)), &Default::default());
     let pressable_el: web_sys::Element = pressable.clone().unchecked_into();
     doc.body().unwrap().append_child(&pressable_el).unwrap();
 
@@ -2308,7 +2069,6 @@ fn dispatch_pointer(target: &web_sys::Element, kind: &str) {
 /// This is the web wiring behind `idea-ui`'s hover-driven `Tooltip`.
 #[wasm_bindgen_test]
 fn web_on_hover_fires_true_on_enter_false_on_leave() {
-    use runtime_core::Backend;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -2320,7 +2080,7 @@ fn web_on_hover_fires_true_on_enter_false_on_leave() {
 
     let states: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
     let s = states.clone();
-    backend.install_hover_handler(
+    backend.install_hover_handler_impl(
         &el.clone().unchecked_into(),
         Rc::new(move |entering: bool| s.borrow_mut().push(entering)),
     );
@@ -2343,7 +2103,6 @@ fn web_on_hover_fires_true_on_enter_false_on_leave() {
 /// (the `long_press` path) instead.
 #[wasm_bindgen_test]
 fn web_on_hover_ignores_touch_pointers() {
-    use runtime_core::Backend;
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -2355,7 +2114,7 @@ fn web_on_hover_ignores_touch_pointers() {
 
     let fired = Rc::new(Cell::new(0u32));
     let f = fired.clone();
-    backend.install_hover_handler(
+    backend.install_hover_handler_impl(
         &el.clone().unchecked_into(),
         Rc::new(move |_entering: bool| f.set(f.get() + 1)),
     );
@@ -2377,7 +2136,7 @@ fn web_on_hover_ignores_touch_pointers() {
 /// dimensions flow the same way once a bitmap decodes.
 #[wasm_bindgen_test]
 fn web_on_load_fires_on_img_load_event() {
-    use runtime_core::{Backend, ImageLoadEvent};
+    use runtime_shared::{ImageLoadEvent};
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -2389,7 +2148,7 @@ fn web_on_load_fires_on_img_load_event() {
 
     let seen: Rc<RefCell<Vec<(f32, f32)>>> = Rc::new(RefCell::new(Vec::new()));
     let s = seen.clone();
-    backend.install_image_load_handler(
+    backend.install_image_load_handler_impl(
         &img.clone().unchecked_into(),
         Rc::new(move |ev: &ImageLoadEvent| s.borrow_mut().push((ev.width, ev.height))),
     );
@@ -2405,7 +2164,6 @@ fn web_on_load_fires_on_img_load_event() {
 /// `on_error` fires when the `<img>` dispatches its `error` event.
 #[wasm_bindgen_test]
 fn web_on_error_fires_on_img_error_event() {
-    use runtime_core::Backend;
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -2417,7 +2175,7 @@ fn web_on_error_fires_on_img_error_event() {
 
     let fired = Rc::new(Cell::new(0u32));
     let f = fired.clone();
-    backend.install_image_error_handler(
+    backend.install_image_error_handler_impl(
         &img.clone().unchecked_into(),
         Rc::new(move || f.set(f.get() + 1)),
     );
@@ -2452,7 +2210,7 @@ fn web_on_error_fires_on_img_error_event() {
 /// same styled content and asserts the physical CSSOM order.
 #[wasm_bindgen_test]
 fn regression_breakpoint_overlay_survives_class_remint_in_cascade_order() {
-    use runtime_core::{Breakpoint, Length, StyleRules, Tokenized};
+    use runtime_shared::{Breakpoint, Length, StyleRules, Tokenized};
     use std::rc::Rc;
 
     install_mount();
@@ -2498,13 +2256,12 @@ fn regression_breakpoint_overlay_survives_class_remint_in_cascade_order() {
         )
     };
 
-    use runtime_core::Backend;
 
     // Initial mint on node 1: appended in source order, base < media.
     let element1 = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&element1).unwrap();
     let node1: web_sys::Node = element1.unchecked_into();
-    backend.apply_styled_variants(
+    backend.apply_styled_variants_impl(
         &node1,
         &make_base(),
         &[],
@@ -2536,7 +2293,7 @@ fn regression_breakpoint_overlay_survives_class_remint_in_cascade_order() {
     let element2 = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&element2).unwrap();
     let node2: web_sys::Node = element2.unchecked_into();
-    backend.apply_styled_variants(
+    backend.apply_styled_variants_impl(
         &node2,
         &make_base(),
         &[],
@@ -2627,7 +2384,7 @@ async fn regression_image_on_load_cached_does_not_reenter_borrow() {
     // A handler that re-enters the backend borrow — the shape a
     // signal-writing `on_load` produces once its style effect runs.
     let fired = Rc::new(Cell::new(false));
-    let handler: runtime_core::ImageLoadHandler = {
+    let handler: runtime_shared::ImageLoadHandler = {
         let backend = backend.clone();
         let fired = fired.clone();
         Rc::new(move |_ev| {
@@ -2641,9 +2398,8 @@ async fn regression_image_on_load_cached_does_not_reenter_borrow() {
 
     // Install exactly as the walker does: under a live `borrow_mut`.
     {
-        use runtime_core::Backend;
         let mut b = backend.borrow_mut();
-        b.install_image_load_handler(&node, handler);
+        b.install_image_load_handler_impl(&node, handler);
     }
 
     // Inline firing would already have panicked above. It must not have

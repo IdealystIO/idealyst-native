@@ -5,7 +5,7 @@
 //! Apple backend:
 //!
 //! - **Video frames** — a hidden `HtmlVideoElement` drives decode + the clock.
-//!   Each animation frame (a [`runtime_core::scheduling::raf_loop`], the same
+//!   Each animation frame (a [`runtime_shared::scheduling::raf_loop`], the same
 //!   pump the Apple backend uses) we `drawImage` the video's *current* frame
 //!   into a reused offscreen `HtmlCanvasElement`, sized to the (optionally
 //!   `max_dimension`-downscaled, aspect-preserving) target, then `getImageData`
@@ -167,11 +167,11 @@ impl TransportControl for WebTransport {
 
 /// Holds everything decode needs alive. Dropping it pauses the video,
 /// disconnects + tears down the WebAudio graph, removes the element from the
-/// DOM, and stops the rAF pump (the [`RafLoop`](runtime_core::scheduling::RafLoop)
+/// DOM, and stops the rAF pump (the [`RafLoop`](runtime_shared::scheduling::RafLoop)
 /// cancels on its own drop).
 struct StreamHandle {
     video: HtmlVideoElement,
-    _raf: runtime_core::scheduling::RafLoop,
+    _raf: runtime_shared::scheduling::RafLoop,
     /// WebAudio tap, present only if the `AudioContext` built successfully. The
     /// `onaudioprocess` `Closure` is held here so it isn't dropped while the node
     /// still references it.
@@ -349,7 +349,7 @@ pub(crate) async fn open(
         let redraw = redraw.clone();
         let mut last_t = -1.0_f64;
         let mut drew_once = false;
-        runtime_core::scheduling::raf_loop(move || {
+        runtime_shared::scheduling::raf_loop(move || {
             // Only push a frame when there's actually a NEW one: while playing
             // (currentTime advances) or right after a seek. A paused, unchanged
             // frame is pushed once then skipped — so a paused video stops driving

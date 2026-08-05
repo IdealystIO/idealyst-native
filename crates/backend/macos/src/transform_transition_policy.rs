@@ -14,7 +14,7 @@
 
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
-use runtime_core::Easing;
+use runtime_shared::Easing;
 
 /// Should this static-transform apply animate rather than snap?
 /// Mirrors `backend-ios-mobile::transform_transition_policy` — the

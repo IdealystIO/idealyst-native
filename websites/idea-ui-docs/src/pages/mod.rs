@@ -1,13 +1,13 @@
 //! Page bodies, one module per design group. Each `pub fn name() ->
 //! Element` returns the page **body only** — a column of demo
-//! `Section`s. The central frame in `lib.rs` adds the group overline,
-//! title, status badge, lead, and the `Usage` panel from the catalog,
-//! so bodies never render their own title/lead/scroll wrapper.
+//! `Section`s. The central frame (`shell::page_frame_content`, inside
+//! each page's lazy chunk) adds the group overline, title, status
+//! badge, lead, and the `Usage` panel from the catalog, so bodies
+//! never render their own title/lead/scroll wrapper.
 
 use runtime_core::{ui, Element};
 use idea_ui::{Stack, StackGap};
 
-pub mod all;
 pub mod overview;
 pub mod foundations;
 pub mod primitives;

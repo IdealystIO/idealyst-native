@@ -38,7 +38,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, pressable, recipe, ui, Cursor, Element, IdealystSchema, IntoElement, Reactive,
+    component, pressable, recipe, ui, Element, IdealystSchema, IntoElement, Reactive,
     StyleApplication,
 };
 
@@ -126,21 +126,16 @@ pub fn Chip(props: &ChipProps) -> Element {
                 variant::Ghost.key()
             };
             let appearance_key = format!("{}_{}", tone.get().key(), variant_key);
-            // `hug` keeps the chip sized to content instead of stretching to a
-            // flex parent's cross axis (see `components::hug_self`); a clickable
-            // chip also gets a pointer cursor so it reads as selectable (the
-            // "anything selectable shows a pointer" rule). Both ride one
-            // computed slot (`StyleApplication` has a single computed layer) — a
-            // second `with_computed` would overwrite, not stack.
+            // Hug lives in the tag sheet's base (it's unconditional). The
+            // pointer cursor — "anything selectable shows a pointer" — rides
+            // the sheet's `interactive` variant, so `clickable` is part of the
+            // resolution cache identity. It used to ride a `with_computed`
+            // layer under the constant key `"chip-box"`, which left `clickable`
+            // out of that identity and let two chips with the same
+            // tone+variant but different `on_select` share one resolved style.
             StyleApplication::new(installed_tag_sheet())
                 .with("appearance", appearance_key)
-                .with_computed("chip-box", move || {
-                    let mut r = crate::components::hug_self();
-                    if clickable {
-                        r.cursor = Some(Cursor::Pointer);
-                    }
-                    r
-                })
+                .with("interactive", if clickable { "on" } else { "off" }.to_string())
         }
     };
 
@@ -191,13 +186,58 @@ recipe!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P};
+    use idea_theme::testing::with_test_world;
 
     #[test]
     fn defaults_are_unselected_and_inert() {
-        let p = ChipProps::default();
-        assert!(!p.selected.get());
-        assert!(p.on_select.is_none());
-        assert_eq!(p.size.get(), ControlSize::Md);
+        with_test_world(|| {
+            let p = ChipProps::default();
+            assert!(!p.selected.get());
+            assert!(p.on_select.is_none());
+            assert_eq!(p.size.get(), ControlSize::Md);
+    });
+    }
+
+    /// Two chips with the SAME tone+variant but different `on_select` must
+    /// resolve to different cursors.
+    ///
+    /// The pointer used to ride `with_computed("chip-box", …)`, whose closure
+    /// captured `clickable` while the KEY was the constant `"chip-box"`. The
+    /// resolution cache is keyed on
+    /// `(sheet, variants, computed_key, overrides)`, so both chips hashed
+    /// identically and shared one resolved `StyleRules` — whichever resolved
+    /// first decided the cursor for both. Resolving both in ONE world is what
+    /// exercises that shared cache; the fix moves `clickable` onto the sheet's
+    /// `interactive` variant, which is part of the identity by construction.
+    #[test]
+    fn regression_clickable_and_inert_chips_do_not_share_a_cursor() {
+        with_test_world(|| {
+            use idea_theme::theme::{install_idea_theme, light_theme};
+            install_idea_theme(light_theme());
+
+            let cursor_of = |on_select: Option<std::rc::Rc<dyn Fn()>>| {
+                let el = Chip(&ChipProps {
+                    label: Reactive::Static("Tag".to_string()),
+                    on_select,
+                    ..Default::default()
+                });
+                match classify(el) {
+                    P::Pressable { style, .. } => {
+                        style.expect("chip carries a style").resolve().cursor.clone()
+                    }
+                    _ => panic!("a chip builds a pressable"),
+                }
+            };
+
+            // Inert FIRST so a shared cache entry would be seeded without a
+            // cursor — the ordering that made the old bug visible.
+            let inert = cursor_of(None);
+            let clickable = cursor_of(Some(std::rc::Rc::new(|| {})));
+
+            assert_ne!(inert, Some(runtime_core::Cursor::Pointer));
+            assert_eq!(clickable, Some(runtime_core::Cursor::Pointer));
+        });
     }
 
     /// A chip with no `on_select` still renders (it just doesn't react to
@@ -206,13 +246,15 @@ mod tests {
     /// other style-resolving component tests do.)
     #[test]
     fn inert_chip_renders_without_callback() {
-        use idea_theme::theme::{install_idea_theme, light_theme};
-        install_idea_theme(light_theme());
+        with_test_world(|| {
+            use idea_theme::theme::{install_idea_theme, light_theme};
+            install_idea_theme(light_theme());
 
-        let el = Chip(&ChipProps {
-            label: Reactive::Static("Tag".to_string()),
-            ..Default::default()
-        });
-        assert!(matches!(el, Element::Pressable { .. }));
+            let el = Chip(&ChipProps {
+                label: Reactive::Static("Tag".to_string()),
+                ..Default::default()
+            });
+            assert!(matches!(classify(el), P::Pressable { .. }));
+    });
     }
 }

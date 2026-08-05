@@ -2,9 +2,9 @@
 
 use std::rc::Rc;
 
-use runtime_core::color::Rgba;
-use runtime_core::primitives::key::KeyDownHandler;
-use runtime_core::{Length, StyleRules};
+use runtime_shared::color::Rgba;
+use runtime_shared::primitives::key::KeyDownHandler;
+use runtime_shared::{Length, StyleRules};
 use runtime_layout::LayoutNode;
 
 /// Public handle the framework holds in its `Self::Node` slot. Just
@@ -149,7 +149,7 @@ pub(crate) struct NodeData {
 /// every paint.
 #[derive(Clone)]
 pub(crate) struct ResolvedGradient {
-    pub kind: runtime_core::GradientKind,
+    pub kind: runtime_shared::GradientKind,
     pub stops: Vec<(f32, Rgba)>,
     /// Per-stop animated color overrides written by
     /// `set_animated_color(GradientStopColor(idx))`. `None` means

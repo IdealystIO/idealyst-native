@@ -14,7 +14,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::primitives::scroll_view::ScrollViewHandle;
+use runtime_core::ScrollViewHandle;
 use runtime_core::{
     component, derived, effect, icon, pressable, signal, text, ui, view, when, Easing,
     IntoElement, Element, Ref, Route, SafeAreaSides, Signal, StrokeAnimation, StyleApplication,
@@ -173,19 +173,28 @@ pub fn layout_with_toc(content: Element, entries: Vec<TocEntry>) -> Element {
     // holds the entire scrolled tree (the page row + the footer) so a
     // single `absolute_frame().height` reads the total content height.
     let content_col_style = PageScrollColumn();
+    let column = ui! {
+        view(style = content_col_style) {
+            view(style = row_style) {
+                view(style = column_style) { content }
+                toc
+            }
+            footer()
+        }.bind(content_ref)
+    };
+    // The scroll surface with a bound [`ScrollViewHandle`] +
+    // `on_scroll`. Same-source both cores: `GlueScrollView` mirrors
+    // `Bound::<ScrollViewHandle>::bind`.
+    let body: Element = ui! {
+        scroll_view(style = body_style) {
+            column
+        }
+            .bind(scroll_ref)
+            .on_scroll(move |_x, y| scroll_y.set(y))
+    };
     ui! {
         view(style = viewport_wrap_style) {
-            scroll_view(style = body_style) {
-                view(style = content_col_style) {
-                    view(style = row_style) {
-                        view(style = column_style) { content }
-                        toc
-                    }
-                    footer()
-                }.bind(content_ref)
-            }
-                .bind(scroll_ref)
-                .on_scroll(move |_x, y| scroll_y.set(y))
+            body
         }.bind(viewport_ref)
     }
 }
@@ -357,7 +366,7 @@ pub fn mobile_header(
     let header_style = move || {
         let app = collapse_style();
         let insets = runtime_core::safe_area_insets().get();
-        if crate::responsive::sidebar_collapsed().get() && insets.top > 0.0 {
+        if crate::responsive::sidebar_collapsed_now() && insets.top > 0.0 {
             app.with_computed("mobile_header_safe_top", move || runtime_core::StyleRules {
                 // Base vertical padding (8) + the platform inset.
                 padding_top: Some(runtime_core::Length::Px(8.0 + insets.top).into()),
@@ -407,15 +416,16 @@ fn render_toc(
     let panel_style = TocPanel();
     let header_style = TocHeader();
 
-    let mut children: Vec<Element> = Vec::with_capacity(entries.len() + 1);
-    children.push(ui! {
-        text(style = header_style) { "On this page" }
-    });
-    for (i, entry) in entries.iter().enumerate() {
-        children.push(toc_link(i, *entry, active_idx, scroll_y, scroll_ref, viewport_ref, content_ref));
+    // Children authored inside the macro (CLAUDE.md §9.3/§9.4) — the
+    // previous shape pre-built a `Vec<Element>` with a push loop.
+    ui! {
+        view(style = panel_style) {
+            text(style = header_style) { "On this page" }
+            for (i, entry) in entries.iter().enumerate() {
+                { toc_link(i, *entry, active_idx, scroll_y, scroll_ref, viewport_ref, content_ref) }
+            }
+        }
     }
-
-    ui! { view(style = panel_style) { children } }
 }
 
 /// One TOC link. The style closure reads `active_idx` reactively
@@ -614,13 +624,14 @@ fn install_scroll_spy(
 pub fn shell_column_style() -> runtime_core::StyleApplication {
     static KEY: u8 = 0;
     let sheet = runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
-        std::rc::Rc::new(runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
+        runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
             flex_direction: Some(runtime_core::FlexDirection::Column),
             width: Some(runtime_core::Length::Percent(100.0).into()),
             height: Some(runtime_core::Length::Percent(100.0).into()),
             min_height: Some(runtime_core::Length::Px(0.0).into()),
             ..Default::default()
-        }))
+        })
+        .premint_as("website.v1.shell_column")
     });
     runtime_core::StyleApplication::new(sheet)
 }
@@ -631,12 +642,13 @@ pub fn shell_column_style() -> runtime_core::StyleApplication {
 pub fn outlet_grow_style() -> runtime_core::StyleApplication {
     static KEY: u8 = 0;
     let sheet = runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
-        std::rc::Rc::new(runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
+        runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
             flex_direction: Some(runtime_core::FlexDirection::Column),
             flex_grow: Some(1.0f32.into()),
             min_height: Some(runtime_core::Length::Px(0.0).into()),
             ..Default::default()
-        }))
+        })
+        .premint_as("website.v1.outlet_grow")
     });
     runtime_core::StyleApplication::new(sheet)
 }
@@ -720,9 +732,20 @@ pub fn sidebar(active_route: NavSignal<&'static str>, is_dark: Signal<bool>) -> 
 /// Promoted from the snake_case `theme_toggle` helper because it has
 /// props (CLAUDE.md §9.5); the wrapper `SidebarFooter` style is now
 /// computed inside the component instead of being passed in.
-#[derive(Default)]
 pub struct ThemeToggleProps {
     pub is_dark: Signal<bool>,
+}
+
+// Manual `Default` (not derived): the world-backed `Signal<T>` has no
+// `Default` — a fresh default signal comes from the free `signal(…)`
+// constructor. Call sites always pass `is_dark`, so this exists only to
+// satisfy the struct-literal dispatch `#[component]` relies on.
+impl Default for ThemeToggleProps {
+    fn default() -> Self {
+        Self {
+            is_dark: signal(false),
+        }
+    }
 }
 
 #[component]
@@ -760,11 +783,22 @@ pub fn ThemeToggle(props: ThemeToggleProps) -> Element {
 /// in `styles.rs` — promoting the helper to `NavLink` would collide
 /// with the `pub type NavLink = NavLinkProps` alias `#[component]`
 /// emits.
-#[derive(Default)]
 pub struct SidebarLinkProps {
     pub route: Option<&'static Route<()>>,
     pub label: &'static str,
     pub active_route: Signal<&'static str>,
+}
+
+// Manual `Default` — same rationale as `ThemeToggleProps` above
+// (`Signal<T>` has no `Default`).
+impl Default for SidebarLinkProps {
+    fn default() -> Self {
+        Self {
+            route: None,
+            label: "",
+            active_route: signal(""),
+        }
+    }
 }
 
 #[component]

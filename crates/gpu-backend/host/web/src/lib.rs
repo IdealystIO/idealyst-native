@@ -18,9 +18,9 @@
 //!    and modern Chrome rejects any non-undefined value for that
 //!    field (the WebGPU spec removed it). The GL backend dodges the
 //!    WebGPU code path entirely.
-//! 3. Builds the `render_wgpu::Host` + `Renderer` and mounts the
-//!    caller's `build_ui` closure.
-//! 4. Starts a `runtime_core::driver::render_loop` that draws one
+//! 3. Builds the `render_wgpu::Host` + `Renderer` and realizes the
+//!    caller's `build_ui` closure into the embedding page's world.
+//! 4. Starts a `runtime_shared::driver::render_loop` that draws one
 //!    frame per `rAF` tick + advances the host's tween / momentum
 //!    / caret state via `Host::tick`.
 //! 5. Attaches `pointerdown` / `pointermove` / `pointerup` /
@@ -44,6 +44,13 @@ mod web;
 
 #[cfg(target_arch = "wasm32")]
 pub use web::{mount, MountError, WebHostHandle};
+
+/// Compatibility alias. This entry was `mount_newcore` while the
+/// framework carried two cores; there is one mount now and it is
+/// [`mount`]. Kept so existing call sites (the website Simulator, the
+/// fiddle template) keep resolving.
+#[cfg(target_arch = "wasm32")]
+pub use web::mount as mount_newcore;
 
 // Re-export the shapes consumers most often need so they can depend
 // on `host-web` alone and not also pull `render-wgpu` / `render-api`

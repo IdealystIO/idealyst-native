@@ -1,0 +1,59 @@
+# scene-parity FULL-OP golden — scenario `full_static_kitchen_sink`, mode `spliced`
+#
+# One static tree containing all 13 P2 primitives with static
+# styles on the root + one leaf. Pins every create_* signature's
+# argument rendering, the per-primitive mount sequences (create ->
+# style -> handlers -> initial write-backs), and child insertion
+# order. Controlled widgets (toggle/slider/input/area) emit one
+# initial update_* at mount (the controlled write-back's first
+# fire); static text/button/link/image-alt emit none.
+#
+# Complete backend-call stream (create_*/update_*/apply_style/release_*
+# + the structural ops). Node names are creation-order (n0, n1, ...).
+# Owned by the OLD core; regenerate after an INTENDED walker change
+# with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 text "hello"
+insert n0 <- n1
+create n2 styled_text "styled runs" runs=2
+insert n0 <- n2
+create n3 text "leaf"
+apply_style n3 {background: Some(Literal(Color("#445566"))), width: Some(Literal(Px(80.0)))}
+insert n0 <- n3
+create n4 button "Go" on_click=<fn>
+insert n0 <- n4
+create n5 pressable on_click=<fn>
+create n6 text "press me"
+insert n5 <- n6
+insert n0 <- n5
+create n7 image src="logo.png" alt="Logo"
+update_image_src n7 "logo.png"
+insert n0 <- n7
+create n8 icon(vb=(24, 24) paths=1 filled=false) color=none
+insert n0 <- n8
+create n9 toggle true on_change=<fn>
+update_toggle_value n9 true
+insert n0 <- n9
+create n10 slider 2.5 [0,10] step=0.5 on_change=<fn>
+update_slider_value n10 2.5
+insert n0 <- n10
+create n11 activity_indicator Small color=none
+insert n0 <- n11
+create n12 link route="" url="https://example.com" external=true on_activate=<fn>
+create n13 text "docs"
+insert n12 <- n13
+insert n0 <- n12
+create n14 scroll_view horizontal=false on_scroll=none
+create n15 text "scrollable"
+insert n14 <- n15
+apply_scroll_view_safe_area_inset n14 SafeAreaSides(1)
+insert n0 <- n14
+create n16 text_input "hi" placeholder="Type here" secure=false on_change=<fn> on_key_down=none on_blur=none
+update_text_input_value n16 "hi"
+insert n0 <- n16
+create n17 text_area "hello\nworld" placeholder="notes" wrap=true rows=[Some(2),Some(6)] on_change=<fn> on_key_down=none
+update_text_area_value n17 "hello\nworld"
+insert n0 <- n17
+apply_style n0 {background: Some(Literal(Color("#112233"))), width: Some(Literal(Px(120.0)))}

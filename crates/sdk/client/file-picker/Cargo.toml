@@ -27,16 +27,20 @@ license.workspace = true
 default = ["drop"]
 # `FileDropZone` — the OS file drag-and-drop surface (drag a Finder file /
 # desktop file / browser file onto a view). It's a view handler plus a reactive
-# signal, so it pulls in `runtime-core`; the imperative `FilePicker::pick` needs
+# signal, so it pulls in the framework; the imperative `FilePicker::pick` needs
 # neither, so the drop surface is an opt-out feature (default-on).
-drop = ["dep:runtime-core"]
+drop = ["dep:runtime-core", "dep:runtime-shared"]
 
 [dependencies]
 thiserror = { workspace = true }
-# Only for the `drop` feature (`FileDropZone`): the `on_file_drop` handler type
-# and a reactive `Signal<bool>` for the drag-active state. `pick`-only users
-# who disable `drop` don't pull in the UI core.
+# Only for the `drop` feature (`FileDropZone`): a reactive `Signal<bool>` for
+# the drag-active state, aliased to `runtime_core` at the crate root (see
+# src/lib.rs — the alias is `drop`-gated because these deps are optional, which
+# is an optional-dependency gate, not a core selector). `pick`-only users who
+# disable `drop` don't pull in the framework at all.
 runtime-core = { workspace = true, optional = true }
+# `DroppedFile` in the per-platform `picked_from_dropped` adapters.
+runtime-shared = { workspace = true, optional = true }
 
 # iOS / macOS: drive NSOpenPanel (macOS) / UIDocumentPickerViewController +
 # PHPickerViewController (iOS) through the Obj-C runtime, the same posture

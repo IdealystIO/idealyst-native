@@ -1,11 +1,11 @@
-//! Windows implementation of the toolbar SDK.
+//! Windows leg — the `WindowsBackend`-concrete scene handler.
 //!
 //! Creates a `ToolbarWindow32` child control (the Win32 Common
 //! Controls toolbar — same widget Explorer's address bar / Notepad's
 //! historical toolbar use) parented under the host HWND, populates it
-//! with buttons matching the reactive [`ToolbarProps::items`] closure,
-//! and routes clicks back through [`WindowsBackend::dispatch_command`]
-//! via the existing WM_COMMAND control-id dispatch path.
+//! with buttons matching the reactive [`crate::ToolbarProps::items`] closure,
+//! and routes clicks back through the backend's WM_COMMAND control-id
+//! dispatch path.
 //!
 //! # Rendering
 //!
@@ -24,10 +24,19 @@
 //!
 //! # Reactive items
 //!
-//! Same shape as the macOS impl: an `effect!` inside the
-//! handler subscribes to whatever signals `props.items()` reads, and
-//! re-fires to rebuild the button list (clear-then-add via
+//! Same shape as the macOS handler: a [`runtime_world::effect`] created
+//! during realize subscribes to whatever signals `props.items()` reads,
+//! and re-fires to rebuild the button list (clear-then-add via
 //! `TB_DELETEBUTTON` / `TB_ADDBUTTONS`).
+//!
+//! # Click flush discipline
+//!
+//! WM_COMMAND dispatch fires OUTSIDE the runtime's wrapped dispatch
+//! sites, so every button `on_click` is wrapped to call
+//! [`backend_windows::newcore::schedule_flush`] after the author code
+//! returns — otherwise a signal write inside a click handler would stay
+//! staged in the world forever. Same residual the macOS NSToolbar leg
+//! closes.
 //!
 //! # Icon support
 //!
@@ -38,8 +47,9 @@
 //! method still works on Windows; the icon name is just ignored at
 //! render time.
 
-use crate::{ToolbarItem, ToolbarOps, ToolbarProps};
+use crate::{finish_mount, ToolbarItem, ToolbarOps, ToolbarPrim};
 use backend_windows::{WindowsBackend, WindowsNode};
+use runtime_scene::{Element, MountCx};
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -51,10 +61,22 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 pub(crate) static OPS: &dyn ToolbarOps = &WindowsToolbarOps;
 
-/// Register the Windows `Toolbar` external handler on `backend`. Call once
-/// at app boot so `Toolbar` elements lower to the native toolbar.
-pub fn register(backend: &mut WindowsBackend) {
-    backend.register_external::<ToolbarProps, _>(|props, b| build_toolbar(props, b));
+/// Mount handler for `Registry<WindowsBackend>`: the Common-Controls
+/// toolbar HWND created + registered with the layout tree, reactive
+/// items via a world effect, then the standard mount tail (style / ref
+/// fill / `release_external` teardown).
+pub(crate) fn mount_toolbar_windows(
+    cx: &mut MountCx<'_, WindowsBackend>,
+    prim: &Rc<ToolbarPrim>,
+    _children: Vec<Element>,
+) -> WindowsNode {
+    let backend = cx.backend().clone();
+    let node = {
+        let mut b = backend.borrow_mut();
+        build_toolbar(&prim.props, &mut b)
+    };
+    finish_mount(&backend, &node, prim);
+    node
 }
 
 // =========================================================================
@@ -122,7 +144,7 @@ struct TBBUTTON {
 // Build + reactive items wiring
 // =========================================================================
 
-fn build_toolbar(props: &Rc<ToolbarProps>, b: &mut WindowsBackend) -> WindowsNode {
+fn build_toolbar(props: &Rc<crate::ToolbarProps>, b: &mut WindowsBackend) -> WindowsNode {
     let host_hwnd = b.host_hwnd();
 
     // Toolbar styles: TBSTYLE_FLAT for the modern non-bezeled look,
@@ -194,7 +216,7 @@ fn build_toolbar(props: &Rc<ToolbarProps>, b: &mut WindowsBackend) -> WindowsNod
     // ADD new commands reactively (only labels can change). Stable-
     // item authors get correct behavior; the corner case where the
     // item list changes ITS LENGTH is a follow-up.
-    runtime_core::effect!({
+    runtime_world::effect(move || {
         let items = (props_for_effect.items)();
         apply_items(hwnd_for_effect, &items);
     });
@@ -243,7 +265,10 @@ fn apply_items(toolbar_hwnd: HWND, items: &[ToolbarItem]) {
                     label_storage.push(label_w);
                     let id = state.alloc_next_id();
                     if let Some(cb) = &btn.on_click {
-                        state.pending.push((id, cb.clone()));
+                        // WM_COMMAND fires outside the runtime's wrapped
+                        // dispatch sites — append the flush so writes
+                        // inside the author's click land (see module docs).
+                        state.pending.push((id, wrap_click(cb.clone())));
                     }
                     buttons.push(TBBUTTON {
                         i_bitmap: -1, // No icon for v1
@@ -364,6 +389,15 @@ pub fn flush_pending(backend: &mut WindowsBackend) -> usize {
 // =========================================================================
 // Wide-string helper
 // =========================================================================
+
+/// Wrap an author click callback so `schedule_flush` runs AFTER the
+/// author code returns. Mirrors the macOS leg's `wrap_click`.
+fn wrap_click(cb: Rc<dyn Fn()>) -> Rc<dyn Fn()> {
+    Rc::new(move || {
+        cb();
+        backend_windows::newcore::schedule_flush();
+    })
+}
 
 fn wide(s: &str) -> Vec<u16> {
     let mut buf: Vec<u16> = s.encode_utf16().collect();

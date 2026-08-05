@@ -78,10 +78,34 @@ pub fn perf(s: &Snapshot) -> String {
 /// The reactive profile — the `reactive_profile` verb returns the fully
 /// rendered report as a string (or an error when the target lacks
 /// `debug-stats`), so this just surfaces it.
+///
+/// # Why the empty case says more than "no transactions"
+///
+/// On runtime v2 the reactive kernel is `runtime-world`, and it emits
+/// **nothing** into `runtime_shared::debug`: the only callers of
+/// `record_txn_enter` / `record_effect_run` / `record_commit` live in
+/// `runtime_shared::reactive`, the legacy arena the world kernel replaced.
+/// So a `debug-stats` build of a runtime-v2 app answers the verb
+/// successfully with an empty report — indistinguishable, to this panel,
+/// from a genuinely idle interval.
+///
+/// Rendering both as "(no reactive transactions this interval)" makes a
+/// missing feature look like a quiet app, which is the worst failure mode
+/// for a diagnostic tool. Until the kernel emits, say so explicitly.
+/// Delete this arm's caveat once `runtime-world`'s flush calls the
+/// recorders — the panel needs no other change, the wiring is complete.
 pub fn reactive_profile(s: &Snapshot) -> String {
     match (&s.reactive_profile, &s.reactive_profile_error) {
         (Some(text), _) if !text.trim().is_empty() => text.clone(),
-        (Some(_), _) => "(no reactive transactions this interval)".to_string(),
+        (Some(_), _) => concat!(
+            "(no reactive transactions recorded)\n\n",
+            "NOTE: on runtime v2 this is expected regardless of activity — the\n",
+            "world kernel does not yet emit transaction events into the\n",
+            "`runtime_shared::debug` stream this verb drains, so the report is\n",
+            "always empty. The panel is wired and will display real data as\n",
+            "soon as the kernel emits.",
+        )
+        .to_string(),
         (None, Some(err)) => err.clone(),
         (None, None) => "(unavailable)".to_string(),
     }

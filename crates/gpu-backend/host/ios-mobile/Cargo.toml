@@ -11,7 +11,7 @@ license.workspace = true
 # iOS backend's `IosSurfaceProvider`), runs the wgpu init against the
 # Metal backend, constructs the `render_wgpu::Host` + `Renderer`,
 # mounts the caller's UI, and drives per-frame paint through
-# `runtime_core::driver::render_loop` — which the iOS backend already
+# `runtime_shared::driver::render_loop` — which the iOS backend already
 # installs as an NSTimer at ~60 Hz.
 #
 # Used to embed a live preview of an idealyst app (the welcome
@@ -30,9 +30,17 @@ license.workspace = true
 [dependencies]
 render-api = { workspace = true }
 render-wgpu = { workspace = true }
-runtime-core = { workspace = true, features = ["async-driver"] }
+# `async-driver`: the crate's `spawn_async` executor, used by the
+# async wgpu init.
+runtime-shared = { workspace = true, features = ["async-driver"] }
+# The scene-element vocabulary `mount`'s build closure returns.
+runtime-scene = { workspace = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]
+# The embedding app host — `mount` reads its mounted world (the
+# `newcore` boot's accessor) and installs its render-loop driver
+# (behind the backend's `async-driver`).
+backend-ios-mobile = { workspace = true, features = ["async-driver"] }
 # Match host-web's wgpu major (29). Different feature set: Metal
 # instead of WebGL2. wgpu 29 ships the Metal backend behind the
 # `metal` feature flag.

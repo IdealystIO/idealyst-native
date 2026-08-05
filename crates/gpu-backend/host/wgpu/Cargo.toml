@@ -31,7 +31,9 @@ license.workspace = true
 [dependencies]
 render-api = { workspace = true }
 render-wgpu = { workspace = true }
-runtime-core = { workspace = true }
+runtime-shared = { workspace = true }
+# The scene-element vocabulary `mount`'s build closure returns.
+runtime-scene = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 host-web = { workspace = true }

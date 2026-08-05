@@ -19,7 +19,7 @@
 //! its `apply_style` effect, and a theme swap re-fires exactly as it does for an
 //! authored `background:` / `color:` token.
 
-use runtime_core::{Color, Tokenized};
+use runtime_shared::{Color, Tokenized};
 
 /// Theme token for the surface (input/card) background — the same token
 /// idea-theme installs (`#ffffff` light / `#1a1d24` dark) and idea-ui's field

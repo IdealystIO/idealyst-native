@@ -33,7 +33,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_core::{Backend, Color, StateBits, StyleRules};
+use runtime_shared::{Color, StateBits, StyleRules};
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id, ClassType};
@@ -162,13 +162,6 @@ pub struct MacosBackend {
     /// `create_image` / `update_image_src` when the framework hands
     /// us an `asset://{id}` src.
     pub(crate) image_cache: image::ImageCache,
-    /// Third-party `Element::External` registry. Populated by
-    /// `register_external::<T>(...)` calls from per-platform leaf
-    /// crates (e.g. a future `maps-macos::register`). `create_external`
-    /// looks up the handler by payload TypeId; unregistered kinds
-    /// fall through to a "not supported" placeholder NSTextField.
-    /// Mirrors the iOS pattern.
-    pub(crate) external_handlers: runtime_core::ExternalRegistry<MacosBackend>,
     /// Per-virtualizer side state. NSCollectionView's `dataSource`
     /// and `delegate` are weak refs, so the data source needs to
     /// outlive the collection view via this map. Keyed by the
@@ -178,30 +171,6 @@ pub struct MacosBackend {
     /// release count goes to zero.
     pub(crate) virtualizer_instances:
         HashMap<usize, virtualizer::VirtualizerInstance>,
-    /// Registry of `Element::Navigator` handler factories. SDK
-    /// leaf crates (`stack_navigator::register`, `tab_navigator::
-    /// register`, `drawer_navigator::register`, …) install factories
-    /// keyed by their presentation TypeId at app bootstrap. The
-    /// macOS handlers — once added to those SDKs — implement the
-    /// single-window-with-sidebar shape per
-    /// `project_macos_navigator_design`. Until those SDK leaves
-    /// land, `create_navigator` falls through to a "kind not
-    /// registered" placeholder text node.
-    pub(crate) navigator_handlers:
-        runtime_core::NavigatorRegistry<MacosBackend>,
-    /// Per-navigator-instance handler. Mirrors iOS's
-    /// `nav_handler_instances`. Keyed by the navigator container's
-    /// NSView pointer. `create_navigator` resolves the factory,
-    /// runs `init`, stashes the handler here so subsequent
-    /// `navigator_attach_initial` / `release_navigator` /
-    /// `apply_navigator_slot_style` trait methods can route through
-    /// it.
-    pub(crate) nav_handler_instances: HashMap<
-        usize,
-        std::rc::Rc<
-            std::cell::RefCell<Box<dyn runtime_core::NavigatorHandler<MacosBackend>>>,
-        >,
-    >,
     /// screen_recorder `PrivateLayer` overlay windows, keyed by their
     /// content view's pointer → the borderless `NSWindow` that hosts it.
     /// Mirrors iOS's `detached_window_roots`. Two jobs:
@@ -315,7 +284,7 @@ thread_local! {
     static PASS_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static IDLE_FIRE_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 
-    /// Last viewport size mirrored into `runtime_core::set_viewport_size`, so
+    /// Last viewport size mirrored into `runtime_shared::set_viewport_size`, so
     /// `finish` schedules exactly one deferred mirror per actual change and
     /// none in the steady state (unchanged bounds every paint). See the long
     /// comment at the call site in `finish` for why the mirror is deferred.
@@ -353,7 +322,7 @@ pub fn install_global_self(weak: std::rc::Weak<RefCell<MacosBackend>>) {
     // `schedule_layout_pass` microtask remains the fallback for the rare
     // change that isn't inside a reactive window. No-op when nothing's
     // pending, so it's cheap on every update.
-    runtime_core::install_reactive_idle_hook(std::rc::Rc::new(|| {
+    runtime_shared::install_reactive_idle_hook(std::rc::Rc::new(|| {
         if layout_trace_enabled() {
             IDLE_FIRE_COUNT.with(|c| c.set(c.get() + 1));
         }
@@ -372,7 +341,7 @@ pub fn install_global_self(weak: std::rc::Weak<RefCell<MacosBackend>>) {
 /// value on its next frame).
 pub fn set_animated_f32(
     node: &MacosNode,
-    prop: runtime_core::animation::AnimProp,
+    prop: runtime_shared::animation::AnimProp,
     value: f32,
 ) {
     let weak = MACOS_BACKEND_SELF.with(|s| s.borrow().clone());
@@ -383,8 +352,7 @@ pub fn set_animated_f32(
     // outlives `rc` per the new borrow rules.
     let borrow = rc.try_borrow_mut();
     if let Ok(mut b) = borrow {
-        use runtime_core::Backend;
-        b.set_animated_f32(node, prop, value);
+        b.set_animated_f32_impl(node, prop, value);
     }
 }
 
@@ -392,7 +360,7 @@ pub fn set_animated_f32(
 /// the global backend's `set_animated_color`.
 pub fn set_animated_color(
     node: &MacosNode,
-    prop: runtime_core::animation::AnimProp,
+    prop: runtime_shared::animation::AnimProp,
     value: [f32; 4],
 ) {
     let weak = MACOS_BACKEND_SELF.with(|s| s.borrow().clone());
@@ -400,8 +368,7 @@ pub fn set_animated_color(
     let Some(rc) = weak.upgrade() else { return };
     let borrow = rc.try_borrow_mut();
     if let Ok(mut b) = borrow {
-        use runtime_core::Backend;
-        b.set_animated_color(node, prop, value);
+        b.set_animated_color_impl(node, prop, value);
     }
 }
 
@@ -468,7 +435,7 @@ pub fn schedule_layout_pass() {
     if !should_post {
         return;
     }
-    runtime_core::schedule_microtask(|| {
+    runtime_shared::schedule_microtask(|| {
         run_pending_layout_pass("microtask");
     });
 }
@@ -597,33 +564,9 @@ fn run_pending_layout_pass(origin: &str) {
 // Construction + host wiring
 // =========================================================================
 
-/// An inventory-collected external registrar. An SDK's macOS module
-/// `inventory::submit!`s one of these (carrying a `fn(&mut MacosBackend)`);
-/// `MacosBackend::new` drains them so the SDK self-registers its
-/// `Element::External` handler without the app naming the concrete backend.
-/// See [[project_inventory_self_registration]].
-pub struct MacosExternalRegistrar(pub fn(&mut MacosBackend));
-inventory::collect!(MacosExternalRegistrar);
 
-/// Navigator analogue of [`MacosExternalRegistrar`]; a navigator SDK's macOS
-/// module submits one so the app needn't call `<nav>::register` per platform.
-/// See [[project_inventory_self_registration]].
-pub struct MacosNavigatorRegistrar(pub fn(&mut MacosBackend));
-inventory::collect!(MacosNavigatorRegistrar);
 
 impl MacosBackend {
-    /// Install every SDK-submitted external + navigator handler. Native
-    /// (non-wasm) so inventory's link-time ctors populate the slices before
-    /// construction.
-    fn drain_self_registrars(&mut self) {
-        for r in inventory::iter::<MacosExternalRegistrar> {
-            (r.0)(self);
-        }
-        for r in inventory::iter::<MacosNavigatorRegistrar> {
-            (r.0)(self);
-        }
-    }
-
     pub fn new(mtm: MainThreadMarker) -> Self {
         let mut backend = Self {
             mtm,
@@ -643,49 +586,14 @@ impl MacosBackend {
             styled_texts: HashMap::new(),
             external_content_measures: HashMap::new(),
             image_cache: HashMap::new(),
-            external_handlers: runtime_core::ExternalRegistry::new(),
             virtualizer_instances: HashMap::new(),
-            navigator_handlers: runtime_core::NavigatorRegistry::new(),
-            nav_handler_instances: HashMap::new(),
             detached_window_roots: HashMap::new(),
             portal_roots: std::collections::HashSet::new(),
             portal_instances: HashMap::new(),
             presence_placeholders: std::collections::HashSet::new(),
             root_layout: None,
         };
-        backend.drain_self_registrars();
         backend
-    }
-
-    /// Register a `Element::Navigator` handler factory keyed by
-    /// the presentation type `P`. SDK leaf crates call this once at
-    /// bootstrap. Mirrors `IosBackend::register_navigator`.
-    pub fn register_navigator<P, F>(&mut self, factory: F)
-    where
-        P: 'static,
-        F: Fn() -> Box<dyn runtime_core::NavigatorHandler<MacosBackend>> + 'static,
-    {
-        self.navigator_handlers.register::<P, _>(factory);
-    }
-
-    /// Register a handler for the third-party external primitive whose
-    /// payload type is `T`. Called by per-platform leaf crates (e.g.
-    /// a future `maps_macos::register`) during app bootstrap. The
-    /// handler receives the typed payload plus a mutable borrow of
-    /// the backend and produces the `MacosNode` to mount.
-    pub fn register_external<T, F>(&mut self, handler: F)
-    where
-        T: 'static,
-        F: Fn(&std::rc::Rc<T>, &mut MacosBackend) -> MacosNode + 'static,
-    {
-        self.external_handlers.register::<T, _>(handler);
-    }
-
-    /// `true` if a handler for payload type `T` has been registered.
-    /// Useful for opt-in graceful degradation in user code (render a
-    /// static fallback if the SDK isn't available on macOS).
-    pub fn has_external<T: 'static>(&self) -> bool {
-        self.external_handlers.has::<T>()
     }
 
     /// SDK extension helper: register an NSView (or subclass) with
@@ -1289,7 +1197,7 @@ unsafe impl Encode for CGColorRef {
 /// trait is empty, so the inert impl is just a marker; the handle
 /// constructed against it ignores all dispatch attempts.
 struct NoopNavOps;
-impl runtime_core::primitives::navigator::NavigatorOps for NoopNavOps {}
+impl runtime_shared::primitives::navigator::NavigatorOps for NoopNavOps {}
 static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
 
 /// Maximum pointer travel (in points, window space) between mouse-down and
@@ -1305,12 +1213,14 @@ const TAP_SLOP_PT: f32 = 10.0;
 /// delivery mechanism. Consuming every phase keeps the gesture on this view for
 /// the whole down→up sequence; a drag beyond slop disarms the tap so dragging a
 /// finger off a link doesn't navigate.
-fn make_tap_handler(on_click: Rc<dyn Fn()>) -> runtime_core::TouchHandler {
-    use runtime_core::{TouchEvent, TouchPhase, TouchResponse};
+fn make_tap_handler(on_click: Rc<dyn Fn()>) -> runtime_shared::TouchHandler {
+    use runtime_shared::{TouchEvent, TouchPhase, TouchResponse};
     use std::cell::Cell;
     let start = Rc::new(Cell::new((0.0f32, 0.0f32)));
     let armed = Rc::new(Cell::new(false));
     Rc::new(move |ev: &TouchEvent| match ev.phase {
+        // Hover isn't part of a tap.
+        TouchPhase::Hovered => TouchResponse::IGNORED,
         TouchPhase::Began => {
             start.set((ev.window_position.x, ev.window_position.y));
             armed.set(true);
@@ -1368,19 +1278,19 @@ pub(crate) fn style_color_rgba(color: &Color) -> [f32; 4] {
 }
 
 /// Well-known theme token for body text color — sourced from the shared
-/// framework decision (`runtime_core::text_defaults`) so macOS stays
+/// framework decision (`runtime_shared::text_defaults`) so macOS stays
 /// byte-identical with web/iOS/Android (CLAUDE.md §7). An UNSTYLED `text()`
 /// resolves to the *theme's* text color through the identical
 /// `Tokenized<Color>::resolve()` path a styled token goes through, NOT the
 /// OS system label color.
-pub(crate) const THEME_TEXT_TOKEN: &str = runtime_core::THEME_TEXT_COLOR_TOKEN;
+pub(crate) const THEME_TEXT_TOKEN: &str = runtime_shared::THEME_TEXT_COLOR_TOKEN;
 
 /// Fallback when the `color-text` token isn't installed yet — the framework
 /// light theme's text color, a concrete dark value (never a
 /// system-appearance color, or a light-theme app would render white text in
-/// macOS dark mode). Sourced from `runtime_core::text_defaults` so all
+/// macOS dark mode). Sourced from `runtime_shared::text_defaults` so all
 /// backends share one value.
-const THEME_TEXT_FALLBACK: &str = runtime_core::THEME_TEXT_COLOR_FALLBACK;
+const THEME_TEXT_FALLBACK: &str = runtime_shared::THEME_TEXT_COLOR_FALLBACK;
 
 /// Resolve the editable text control's effective BACKGROUND `Color` through the
 /// shared, host-tested `backend_apple_core::text_control_style` decision and the
@@ -1390,7 +1300,7 @@ const THEME_TEXT_FALLBACK: &str = runtime_core::THEME_TEXT_COLOR_FALLBACK;
 /// what stops the idea-ui `Textarea` rendering as a near-black box. iOS shares
 /// the same decision module (CLAUDE.md §7).
 pub(crate) fn input_background_color(
-    explicit: Option<&runtime_core::Tokenized<Color>>,
+    explicit: Option<&runtime_shared::Tokenized<Color>>,
 ) -> Color {
     backend_apple_core::text_control_style::effective_input_background(explicit).resolve()
 }
@@ -1400,7 +1310,7 @@ pub(crate) fn input_background_color(
 /// color, white in dark mode). Shared decision; mirrors `theme_text_color`'s
 /// fallback by design.
 pub(crate) fn input_text_color(
-    explicit: Option<&runtime_core::Tokenized<Color>>,
+    explicit: Option<&runtime_shared::Tokenized<Color>>,
 ) -> Color {
     backend_apple_core::text_control_style::effective_input_text_color(explicit).resolve()
 }
@@ -1491,7 +1401,7 @@ pub(crate) fn editable_text_target(view: &NSView) -> Retained<NSView> {
 /// content width (the width Taffy is resolving, minus the symmetric horizontal
 /// `textContainerInset`), forces a glyph layout, and reads the used rect, then
 /// hands the content height + the REAL font line height + the vertical inset to
-/// the shared [`runtime_core::primitives::text_area::resolve_text_area_height`]
+/// the shared [`runtime_shared::primitives::text_area::resolve_text_area_height`]
 /// so the row floor/cap is computed from macOS's true line metrics. Independent
 /// of the view's current frame, which Taffy hasn't applied yet at measure time.
 /// `target_width` may be `f32::INFINITY` (MaxContent probe) → an unbounded
@@ -1535,7 +1445,7 @@ fn measure_text_view_height(
         } else {
             msg_send![layout_manager, defaultLineHeightForFont: font]
         };
-        use runtime_core::primitives::text_area::resolve_text_area_height;
+        use runtime_shared::primitives::text_area::resolve_text_area_height;
         let uncapped =
             resolve_text_area_height(used.size.height as f32, line_h as f32, inset.height as f32, None, None);
         // Taffy gets the CAPPED height (floor `min_rows`, cap `max_rows`). The
@@ -1582,7 +1492,7 @@ fn text_area_autosize_height(used_h: f32, line_h: f32, inset_v: f32) -> f32 {
 /// dark-appearance Mac. An EXPLICIT `style.color` set later in `apply_style`
 /// still wins (that path only writes when `style.color.is_some()`).
 pub(crate) fn theme_text_color() -> Color {
-    runtime_core::Tokenized::Token {
+    runtime_shared::Tokenized::Token {
         name: THEME_TEXT_TOKEN,
         fallback: Color(THEME_TEXT_FALLBACK.to_string()),
     }
@@ -1667,9 +1577,9 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     .filter_map(|r| r.map(|t| length_to_px(&t.resolve())))
     .fold(0.0_f64, f64::max);
     if radius > 0.0 {
-        fn px_half(t: &runtime_core::Tokenized<runtime_core::Length>) -> Option<f64> {
+        fn px_half(t: &runtime_shared::Tokenized<runtime_shared::Length>) -> Option<f64> {
             match t.resolve() {
-                runtime_core::Length::Px(v) => Some(v as f64 / 2.0),
+                runtime_shared::Length::Px(v) => Some(v as f64 / 2.0),
                 _ => None,
             }
         }
@@ -1772,7 +1682,7 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     // text isn't selectable without any opt-in, matching `user-select: none`
     // on web.
     if let Some(u) = style.user_select {
-        use runtime_core::UserSelect;
+        use runtime_shared::UserSelect;
         let selectable = match u {
             UserSelect::None => Some(false),
             UserSelect::Text | UserSelect::All => Some(true),
@@ -1812,7 +1722,7 @@ fn overflow_masks_to_bounds(style: &StyleRules) -> Option<bool> {
     style
         .overflow
         .as_ref()
-        .map(|o| matches!(o, runtime_core::Overflow::Hidden))
+        .map(|o| matches!(o, runtime_shared::Overflow::Hidden))
 }
 
 /// Pure half of [`MacosBackend::sync_external_scroller_padding`]: resolve the
@@ -1826,7 +1736,7 @@ fn external_scroller_insets_change(
     style: &StyleRules,
     current: (f32, f32, f32, f32),
 ) -> Option<(f32, f32, f32, f32)> {
-    let resolve = |t: &Option<runtime_core::Tokenized<runtime_core::Length>>| {
+    let resolve = |t: &Option<runtime_shared::Tokenized<runtime_shared::Length>>| {
         t.as_ref()
             .map(|tok| length_to_px(&tok.resolve()) as f32)
             .unwrap_or(0.0)
@@ -1843,7 +1753,7 @@ fn external_scroller_insets_change(
 #[cfg(test)]
 mod external_scroller_padding_tests {
     use super::external_scroller_insets_change;
-    use runtime_core::{Length, StyleRules, Tokenized};
+    use runtime_shared::{Length, StyleRules, Tokenized};
 
     // Regression: external scrollers (the `codeblock` SDK leaf) used to bake a
     // 20pt inset in the handler AND receive the author's panel padding via
@@ -1952,7 +1862,7 @@ mod text_area_autosize_tests {
 #[cfg(test)]
 mod overflow_tests {
     use super::overflow_masks_to_bounds;
-    use runtime_core::{Overflow, StyleRules};
+    use runtime_shared::{Overflow, StyleRules};
 
     // Regression: macOS used to ignore `overflow` on non-scroll views entirely,
     // so a styled `overflow: Hidden` parent never clipped its children (iOS /
@@ -2169,9 +2079,9 @@ mod scroll_compositing_tests {
 /// single content child within that frame. Mirrors iOS
 /// `portal::container_style_for_placement` / `container_style_for_anchor` (Rule
 /// #7 — keep the two backends' portal placement identical). Pure → host-testable.
-fn portal_container_style(target: &runtime_core::primitives::portal::PortalTarget) -> StyleRules {
-    use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement};
-    use runtime_core::{AlignItems, FlexDirection, JustifyContent};
+fn portal_container_style(target: &runtime_shared::primitives::portal::PortalTarget) -> StyleRules {
+    use runtime_shared::primitives::portal::{PortalTarget, ViewportPlacement};
+    use runtime_shared::{AlignItems, FlexDirection, JustifyContent};
 
     let mut rules = StyleRules { flex_direction: Some(FlexDirection::Column), ..Default::default() };
     let placement = match target {
@@ -2212,8 +2122,8 @@ fn portal_container_style(target: &runtime_core::primitives::portal::PortalTarge
 #[cfg(test)]
 mod portal_tests {
     use super::portal_container_style;
-    use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement};
-    use runtime_core::{AlignItems, JustifyContent};
+    use runtime_shared::primitives::portal::{PortalTarget, ViewportPlacement};
+    use runtime_shared::{AlignItems, JustifyContent};
 
     // Regression: a `FullScreen` portal (idea-ui `Modal`) rendered inline at the
     // bottom of its screen on macOS — `insert` reparented it into the main tree
@@ -2360,10 +2270,10 @@ fn sync_corner_radius(view: &NSView) {
     let _: () = unsafe { msg_send![layer, setCornerRadius: effective] };
 }
 
-fn length_to_px(len: &runtime_core::Length) -> CGFloat {
+fn length_to_px(len: &runtime_shared::Length) -> CGFloat {
     match len {
-        runtime_core::Length::Px(v) => *v as CGFloat,
-        runtime_core::Length::Percent(_) | runtime_core::Length::Auto => 0.0,
+        runtime_shared::Length::Px(v) => *v as CGFloat,
+        runtime_shared::Length::Percent(_) | runtime_shared::Length::Auto => 0.0,
     }
 }
 
@@ -2845,33 +2755,20 @@ impl MacosBackend {
     }
 }
 
-/// Lets SDKs register an `Element::External` handler via the generic
-/// `register<B: RegisterExternal>(b)` entry without naming `MacosBackend` —
-/// the same path web/ssr expose. Forwards to the same `external_handlers`
-/// registry as the inherent [`MacosBackend::register_external`], so an explicit
-/// call (e.g. `canvas_vello::register`) overrides an inventory-registered
-/// handler for the same payload type (last-registration-wins). Mirrors
-/// `impl RegisterExternal for WebBackend`.
-impl runtime_core::RegisterExternal for MacosBackend {
-    fn register_external<T, F>(&mut self, handler: F)
-    where
-        T: 'static,
-        F: Fn(&std::rc::Rc<T>, &mut MacosBackend) -> MacosNode + 'static,
-    {
-        self.external_handlers.register::<T, _>(handler);
-    }
-}
-
-impl Backend for MacosBackend {
-    type Node = MacosNode;
+// The backend mechanism, as inherent methods (runtime v2: the `Backend`
+// mega-trait is gone). Bodies are verbatim what the trait impl carried;
+// `newcore.rs` adapts them onto `runtime_scene::Host` + the
+// `runtime_vocabulary::caps::*Ops` capability traits, one delegation per
+// method. `_impl` suffix keeps the adapter's call sites unambiguous.
+impl MacosBackend {
 
     /// Navigator abstraction calls this after every command (see the trait doc).
-    fn schedule_layout_pass() {
+    pub(crate) fn schedule_layout_pass_impl() {
         crate::imp::schedule_layout_pass();
     }
 
-    fn platform(&self) -> runtime_core::Platform {
-        runtime_core::Platform::MacOs
+    pub(crate) fn platform_impl(&self) -> runtime_shared::Platform {
+        runtime_shared::Platform::MacOs
     }
 
     /// Theme the host surface behind the rendered tree — the AppKit window's
@@ -2885,7 +2782,7 @@ impl Backend for MacosBackend {
     /// (no `var(--…)` indirection), and the SDK re-calls this on theme swap so
     /// the window re-resolves. No-op before the host root is installed — the
     /// next call (every swap re-invokes) repaints once it exists.
-    fn set_app_background(&mut self, color: &runtime_core::Tokenized<runtime_core::Color>) {
+    pub(crate) fn set_app_background_impl(&mut self, color: &runtime_shared::Tokenized<runtime_shared::Color>) {
         let Some(host) = self.host_root.as_ref() else {
             return;
         };
@@ -2915,7 +2812,7 @@ impl Backend for MacosBackend {
         }
     }
 
-    fn set_app_key_handler(&mut self, handler: Option<runtime_core::primitives::key::KeyDownHandler>) {
+    pub(crate) fn set_app_key_handler_impl(&mut self, handler: Option<runtime_shared::primitives::key::KeyDownHandler>) {
         keyboard::set_app_key_handler(self, handler);
     }
 
@@ -2923,18 +2820,11 @@ impl Backend for MacosBackend {
     // NSView/CALayer/NSFont state. Available whenever the robot bridge can
     // call it (no extra feature needed); only the phase-timer cost
     // attribution inside stays behind `debug-stats`. See `imp/introspect.rs`.
-    fn supports_native_introspection(&self) -> bool {
+    pub(crate) fn supports_native_introspection_impl(&self) -> bool {
         true
     }
 
-    fn introspect_native(
-        &self,
-        node: &Self::Node,
-    ) -> Option<runtime_core::introspect::NativeNode> {
-        self.introspect_native_impl(node)
-    }
-
-    fn supports_screenshot(&self) -> bool {
+    pub(crate) fn supports_screenshot_impl(&self) -> bool {
         // Capability, not current state: AppKit can always rasterize a
         // view hierarchy. A capture before the host root is installed
         // (or before first layout) returns an error rather than failing
@@ -2942,9 +2832,9 @@ impl Backend for MacosBackend {
         true
     }
 
-    fn capture_screenshot(
+    pub(crate) fn capture_screenshot_impl(
         &self,
-        done: Box<dyn FnOnce(Result<runtime_core::Screenshot, String>)>,
+        done: Box<dyn FnOnce(Result<runtime_shared::Screenshot, String>)>,
     ) {
         let result = match self.host_root.as_ref() {
             Some(view) => screenshot::capture(view),
@@ -2953,7 +2843,7 @@ impl Backend for MacosBackend {
         done(result);
     }
 
-    fn url_opener(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {
+    pub(crate) fn url_opener_impl(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {
         Some(std::rc::Rc::new(|url: &str| {
             // NSWorkspace.sharedWorkspace.openURL: hands the URL to the
             // user's default handler (browser, mail client, …). Raw
@@ -2976,7 +2866,7 @@ impl Backend for MacosBackend {
         }))
     }
 
-    fn fullscreen_setter(&self) -> Option<std::rc::Rc<dyn Fn(bool)>> {
+    pub(crate) fn fullscreen_setter_impl(&self) -> Option<std::rc::Rc<dyn Fn(bool)>> {
         Some(std::rc::Rc::new(|enabled: bool| {
             // NSApp.mainWindow.toggleFullScreen: — raw msg_send + class!()
             // to avoid pulling typed NSApplication/NSWindow bindings,
@@ -3005,7 +2895,7 @@ impl Backend for MacosBackend {
         }))
     }
 
-    fn color_scheme(&self) -> runtime_core::ColorScheme {
+    pub(crate) fn color_scheme_impl(&self) -> runtime_shared::ColorScheme {
         // Read the *application's* effective appearance, NOT
         // `NSAppearance.currentAppearance`: the latter is a per-draw thread-local
         // that is `nil` outside a drawing pass (e.g. at mount, when the app reads
@@ -3024,23 +2914,23 @@ impl Backend for MacosBackend {
             }
         };
         if appearance.is_null() {
-            return runtime_core::ColorScheme::Auto;
+            return runtime_shared::ColorScheme::Auto;
         }
         let name_ptr: *const NSString = unsafe { msg_send![appearance, name] };
         if name_ptr.is_null() {
-            return runtime_core::ColorScheme::Auto;
+            return runtime_shared::ColorScheme::Auto;
         }
         let s = unsafe { (*name_ptr).to_string() };
         if s.contains("Dark") {
-            runtime_core::ColorScheme::Dark
+            runtime_shared::ColorScheme::Dark
         } else if s.contains("Aqua") {
-            runtime_core::ColorScheme::Light
+            runtime_shared::ColorScheme::Light
         } else {
-            runtime_core::ColorScheme::Auto
+            runtime_shared::ColorScheme::Auto
         }
     }
 
-    fn create_view(&mut self, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
+    pub(crate) fn create_view_impl(&mut self, a11y: &runtime_shared::accessibility::AccessibilityProps) -> MacosNode {
         let view = FlippedView::new(self.mtm);
         let view: Retained<NSView> = Retained::into_super(view);
         let _ = self.layout_for_view(&view);
@@ -3051,8 +2941,8 @@ impl Backend for MacosBackend {
         a11y::apply(
             &node,
             a11y,
-            runtime_core::accessibility::default_role(
-                runtime_core::accessibility::PrimitiveKind::View,
+            runtime_shared::accessibility::default_role(
+                runtime_shared::accessibility::PrimitiveKind::View,
             ),
         );
         node
@@ -3079,10 +2969,10 @@ impl Backend for MacosBackend {
     /// shows no cursor, never hovers. So `insert` upgrades the placeholder to
     /// fill its parent when (and only when) the inserted child is absolute;
     /// here we register the key and leave the in-flow default.
-    fn create_presence_placeholder(
+    pub(crate) fn create_presence_placeholder_impl(
         &mut self,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
         let view = callbacks::PresencePlaceholderView::new(self.mtm);
         let view: Retained<NSView> = Retained::into_super(view);
         let _ = self.layout_for_view(&view);
@@ -3094,17 +2984,17 @@ impl Backend for MacosBackend {
         a11y::apply(
             &node,
             a11y,
-            runtime_core::accessibility::default_role(
-                runtime_core::accessibility::PrimitiveKind::View,
+            runtime_shared::accessibility::default_role(
+                runtime_shared::accessibility::PrimitiveKind::View,
             ),
         );
         node
     }
 
-    fn install_touch_handler(
+    pub(crate) fn install_touch_handler_impl(
         &mut self,
-        node: &Self::Node,
-        handler: runtime_core::TouchHandler,
+        node: &MacosNode,
+        handler: runtime_shared::TouchHandler,
     ) {
         // Every `create_view` mints a `FlippedView`, which translates
         // `mouseDown/Dragged/Up` into the handler (see `view.rs`). Other node
@@ -3124,10 +3014,10 @@ impl Backend for MacosBackend {
         flipped.set_handler(handler);
     }
 
-    fn install_wheel_handler(
+    pub(crate) fn install_wheel_handler_impl(
         &mut self,
-        node: &Self::Node,
-        handler: runtime_core::WheelHandler,
+        node: &MacosNode,
+        handler: runtime_shared::WheelHandler,
     ) {
         // Same FlippedView path as `install_touch_handler`: the view's
         // `magnify:` / `scrollWheel:` overrides route to this handler.
@@ -3145,10 +3035,10 @@ impl Backend for MacosBackend {
         flipped.set_wheel_handler(handler);
     }
 
-    fn install_hover_handler(
+    pub(crate) fn install_hover_handler_impl(
         &mut self,
-        node: &Self::Node,
-        handler: runtime_core::HoverHandler,
+        node: &MacosNode,
+        handler: runtime_shared::HoverHandler,
     ) {
         // Same FlippedView path as `install_touch_handler`: the view's
         // tracking-area `mouseEntered:` / `mouseExited:` route to this handler.
@@ -3166,10 +3056,10 @@ impl Backend for MacosBackend {
         flipped.set_hover_handler(handler);
     }
 
-    fn install_file_drop_handler(
+    pub(crate) fn install_file_drop_handler_impl(
         &mut self,
-        node: &Self::Node,
-        handler: runtime_core::FileDropHandler,
+        node: &MacosNode,
+        handler: runtime_shared::FileDropHandler,
     ) {
         // Same FlippedView path as `install_hover_handler`: the view's
         // NSDraggingDestination overrides (`draggingEntered:` /
@@ -3189,11 +3079,30 @@ impl Backend for MacosBackend {
         flipped.set_file_drop_handler(handler);
     }
 
-    fn create_pressable(
+    pub(crate) fn mark_preserves_focus_impl(&mut self, node: &MacosNode) {
+        // Same FlippedView path as `install_hover_handler`: flag the view;
+        // `mouseDown:`'s blur-on-outside-click resign walks the pressed
+        // view's ancestor chain (`subtree_preserves_focus`) and skips
+        // resigning the field editor when it finds the flag.
+        let MacosNode::View(view) = node else {
+            return;
+        };
+        let cls = objc2::class!(IdealystFlippedView);
+        let is_flipped: bool = unsafe { msg_send![&**view, isKindOfClass: cls] };
+        if !is_flipped {
+            return;
+        }
+        // SAFETY: dynamic class confirmed `IdealystFlippedView`; layout is
+        // `NSView` + our ivars, ABI-compatible here.
+        let flipped: &FlippedView = unsafe { &*(Retained::as_ptr(view) as *const FlippedView) };
+        flipped.set_preserves_focus();
+    }
+
+    pub(crate) fn create_pressable_impl(
         &mut self,
         on_click: Rc<dyn Fn()>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
         // The trait-default `create_pressable` drops `on_click` (it just calls
         // `create_view`), so Pressable-backed controls (idea-ui Button, Tabs, …)
         // never fired on macOS. Mirror iOS: a tappable view wired to the click.
@@ -3210,15 +3119,15 @@ impl Backend for MacosBackend {
         let view: Retained<NSView> = Retained::into_super(flipped);
         let _ = self.layout_for_view(&view);
         let node = MacosNode::View(view);
-        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Button));
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::Button));
         node
     }
 
-    fn create_link(
+    pub(crate) fn create_link_impl(
         &mut self,
-        config: runtime_core::primitives::link::LinkConfig,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        config: runtime_shared::primitives::link::LinkConfig,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
         // Same tappable-view wiring as `create_pressable`; navigation lives in
         // `config.on_activate` (the framework's Link primitive turns it into the
         // right `NavCommand` — `Select` for the drawer). The trait default drops
@@ -3234,7 +3143,7 @@ impl Backend for MacosBackend {
         // must converge on the pointing hand (Rule #7). An author `cursor`
         // style still overwrites this on `apply_style` (which runs after
         // create).
-        flipped.set_cursor(view::cursor_for(runtime_core::Cursor::Pointer));
+        flipped.set_cursor(view::cursor_for(runtime_shared::Cursor::Pointer));
         let view: Retained<NSView> = Retained::into_super(flipped);
         let _ = self.layout_for_view(&view);
         let node = MacosNode::View(view);
@@ -3247,19 +3156,19 @@ impl Backend for MacosBackend {
                 config.route.to_string()
             }
         });
-        let effective_a11y = runtime_core::accessibility::AccessibilityProps {
+        let effective_a11y = runtime_shared::accessibility::AccessibilityProps {
             label: Some(resolved_label),
             ..a11y.clone()
         };
         a11y::apply(
             &node,
             &effective_a11y,
-            Some(runtime_core::accessibility::Role::Link),
+            Some(runtime_shared::accessibility::Role::Link),
         );
         node
     }
 
-    fn create_text(&mut self, content: &str, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
+    pub(crate) fn create_text_impl(&mut self, content: &str, a11y: &runtime_shared::accessibility::AccessibilityProps) -> MacosNode {
         // NSTextField in label mode is AppKit's UILabel equivalent.
         // `+[NSTextField labelWithString:]` configures it as
         // non-editable, non-selectable, no border, no background.
@@ -3342,26 +3251,26 @@ impl Backend for MacosBackend {
         a11y::apply(
             &node,
             a11y,
-            runtime_core::accessibility::default_role(
-                runtime_core::accessibility::PrimitiveKind::Text,
+            runtime_shared::accessibility::default_role(
+                runtime_shared::accessibility::PrimitiveKind::Text,
             ),
         );
         node
     }
 
-    fn create_styled_text(
+    pub(crate) fn create_styled_text_impl(
         &mut self,
-        runs: &[runtime_core::TextRun],
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        runs: &[runtime_shared::TextRun],
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
         // Reuse the full `create_text` path (label subclass, wrap
         // config, theme text color, measure_fn — `cellSizeForBounds:`
         // measures the attributed string once it's set), then replace
         // the plain string with the attributed realization. The
         // paragraph style arrives via `apply_style` right after and
         // re-realizes with the real base.
-        let plain = runtime_core::styled_text::plain_text_of(runs);
-        let node = self.create_text(&plain, a11y);
+        let plain = runtime_shared::styled_text::plain_text_of(runs);
+        let node = self.create_text_impl(&plain, a11y);
         if let MacosNode::Label(label) = &node {
             styled_text::realize(label, runs, None, &self.font_registry);
             let key = &**label as *const NSTextField as *const NSView as usize;
@@ -3373,7 +3282,7 @@ impl Backend for MacosBackend {
         node
     }
 
-    fn update_styled_text(&mut self, node: &Self::Node, runs: &[runtime_core::TextRun]) {
+    pub(crate) fn update_styled_text_impl(&mut self, node: &MacosNode, runs: &[runtime_shared::TextRun]) {
         // Theme-cohort re-realization (and any direct caller): keep the
         // stored runs current and rebuild against the last-applied
         // paragraph style so run token colors resolve on the NEW theme.
@@ -3389,14 +3298,14 @@ impl Backend for MacosBackend {
         styled_text::realize(label, runs, para.as_deref(), &self.font_registry);
     }
 
-    fn create_button(
+    pub(crate) fn create_button_impl(
         &mut self,
         label: &str,
-        on_click: &runtime_core::Action,
-        _leading_icon: Option<&runtime_core::IconData>,
-        _trailing_icon: Option<&runtime_core::IconData>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        on_click: &runtime_shared::Action,
+        _leading_icon: Option<&runtime_shared::IconData>,
+        _trailing_icon: Option<&runtime_shared::IconData>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
         // Real NSButton. `+[NSButton buttonWithTitle:target:action:]`
         // produces a system-styled push button (rounded bezel, system
         // font) and wires the target/action in one call. Leading /
@@ -3456,14 +3365,14 @@ impl Backend for MacosBackend {
         a11y::apply(
             &node,
             a11y,
-            runtime_core::accessibility::default_role(
-                runtime_core::accessibility::PrimitiveKind::Button,
+            runtime_shared::accessibility::default_role(
+                runtime_shared::accessibility::PrimitiveKind::Button,
             ),
         );
         node
     }
 
-    fn update_button_label(&mut self, node: &Self::Node, label: &str) {
+    pub(crate) fn update_button_label_impl(&mut self, node: &MacosNode, label: &str) {
         // NSButton's title is set via `setTitle:` (NSString). Same
         // selector works whether the button was created by us or by
         // someone else's code — Obj-C dispatch on the concrete class.
@@ -3477,12 +3386,12 @@ impl Backend for MacosBackend {
         }
     }
 
-    fn create_image(
+    pub(crate) fn create_image_impl(
         &mut self,
         src: &str,
         alt: Option<&str>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
         let node = image::create_image(self.mtm, &self.image_cache, src, alt);
         if let MacosNode::View(view) = &node {
             let view_clone = view.clone();
@@ -3491,12 +3400,12 @@ impl Backend for MacosBackend {
         a11y::apply(
             &node,
             a11y,
-            Some(runtime_core::accessibility::Role::Image),
+            Some(runtime_shared::accessibility::Role::Image),
         );
         node
     }
 
-    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
+    pub(crate) fn update_image_src_impl(&mut self, node: &MacosNode, src: &str) {
         image::update_image_src(node, &self.image_cache, src);
         if let MacosNode::View(view) = node {
             // Image swap can change intrinsicContentSize; re-mark the
@@ -3506,32 +3415,32 @@ impl Backend for MacosBackend {
         }
     }
 
-    fn install_image_load_handler(
+    pub(crate) fn install_image_load_handler_impl(
         &mut self,
-        node: &Self::Node,
-        handler: runtime_core::ImageLoadHandler,
+        node: &MacosNode,
+        handler: runtime_shared::ImageLoadHandler,
     ) {
         image::install_load_handler(node, handler);
     }
 
-    fn install_image_error_handler(
+    pub(crate) fn install_image_error_handler_impl(
         &mut self,
-        node: &Self::Node,
-        handler: runtime_core::ImageErrorHandler,
+        node: &MacosNode,
+        handler: runtime_shared::ImageErrorHandler,
     ) {
         image::install_error_handler(node, handler);
     }
 
-    fn create_text_input(
+    pub(crate) fn create_text_input_impl(
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
+        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
         secure: bool,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
         // Build an editable NSTextField. `+[NSTextField alloc, init]`
         // gives a bezeled, editable field by default — the same shape
         // as iOS's `UITextField::new` (which starts editable but
@@ -3646,7 +3555,7 @@ impl Backend for MacosBackend {
                     unsafe { msg_send![&field_for_measure, intrinsicContentSize] };
                 let h = (intrinsic.height as f32).max(0.0);
                 runtime_layout::Size {
-                    width: runtime_core::primitives::text_input::measured_width(
+                    width: runtime_shared::primitives::text_input::measured_width(
                         known_dimensions.width,
                     ),
                     height: known_dimensions.height.unwrap_or(h),
@@ -3659,7 +3568,7 @@ impl Backend for MacosBackend {
         node
     }
 
-    fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
+    pub(crate) fn update_text_input_value_impl(&mut self, node: &MacosNode, value: &str) {
         let view = node.as_view();
         // Read the current `stringValue` first; only write if it
         // differs, otherwise we re-fire `controlTextDidChange:` and
@@ -3675,16 +3584,16 @@ impl Backend for MacosBackend {
         let _: () = unsafe { msg_send![view, setStringValue: &*ns] };
     }
 
-    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
+    pub(crate) fn update_text_input_secure_impl(&mut self, node: &MacosNode, secure: bool) {
         // In-place cell swap (VCenterSecureTextFieldCell ↔ VCenterTextFieldCell)
         // — keeps the node's NSView so the walker handle + controlled value
         // survive the toggle. See `set_text_field_secure` for the invariant.
         crate::imp::view::set_text_field_secure(self.mtm, node.as_view(), secure);
     }
 
-    fn set_text_input_focus_handler(
+    pub(crate) fn set_text_input_focus_handler_impl(
         &mut self,
-        node: &Self::Node,
+        node: &MacosNode,
         handler: std::rc::Rc<dyn Fn(bool)>,
     ) {
         // Store the author `on_focus` on the field's framework cell; the cell's
@@ -3695,13 +3604,13 @@ impl Backend for MacosBackend {
         crate::imp::view::set_text_field_author_focus(node.as_view(), handler);
     }
 
-    fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
+    pub(crate) fn update_text_input_placeholder_impl(&mut self, node: &MacosNode, placeholder: Option<&str>) {
         let view = node.as_view();
         let ns = NSString::from_str(placeholder.unwrap_or(""));
         let _: () = unsafe { msg_send![view, setPlaceholderString: &*ns] };
     }
 
-    fn create_text_area(
+    pub(crate) fn create_text_area_impl(
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
@@ -3716,9 +3625,9 @@ impl Backend for MacosBackend {
         min_rows: Option<u32>,
         max_rows: Option<u32>,
         on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
         // A `text_area` is an NSTextView hosted in an NSScrollView so it
         // SCROLLS once content passes the `max_rows` cap — exactly like iOS
         // (UITextView) / Android (EditText) / web (overflow). The two-view
@@ -3894,7 +3803,7 @@ impl Backend for MacosBackend {
         MacosNode::View(container)
     }
 
-    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
+    pub(crate) fn update_text_area_value_impl(&mut self, node: &MacosNode, value: &str) {
         let view = node.as_view();
         // String ops target the inner NSTextView (the node is its NSScrollView
         // wrapper); layout/window queries stay on the scroll view (the Taffy
@@ -3935,12 +3844,12 @@ impl Backend for MacosBackend {
         }
     }
 
-    fn create_toggle(
+    pub(crate) fn create_toggle_impl(
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
         // NSSwitch is the macOS 10.15+ equivalent of UISwitch — same
         // rounded-pill toggle visual. It's an NSControl so
         // target/action wiring is the same pattern as NSButton.
@@ -3982,14 +3891,14 @@ impl Backend for MacosBackend {
         a11y::apply(
             &node,
             a11y,
-            runtime_core::accessibility::default_role(
-                runtime_core::accessibility::PrimitiveKind::Toggle,
+            runtime_shared::accessibility::default_role(
+                runtime_shared::accessibility::PrimitiveKind::Toggle,
             ),
         );
         node
     }
 
-    fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
+    pub(crate) fn update_toggle_value_impl(&mut self, node: &MacosNode, value: bool) {
         let view = node.as_view();
         let state: isize = if value { 1 } else { 0 };
         // Read first; skip write if the state already matches so the
@@ -4002,15 +3911,15 @@ impl Backend for MacosBackend {
         let _: () = unsafe { msg_send![view, setState: state] };
     }
 
-    fn create_slider(
+    pub(crate) fn create_slider_impl(
         &mut self,
         initial_value: f32,
         min: f32,
         max: f32,
         _step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
         // NSSlider with continuous tracking. `setMinValue:` /
         // `setMaxValue:` / `setDoubleValue:` configure the range +
         // initial. `setContinuous:true` makes the action fire as the
@@ -4069,14 +3978,14 @@ impl Backend for MacosBackend {
         a11y::apply(
             &node,
             a11y,
-            runtime_core::accessibility::default_role(
-                runtime_core::accessibility::PrimitiveKind::Slider,
+            runtime_shared::accessibility::default_role(
+                runtime_shared::accessibility::PrimitiveKind::Slider,
             ),
         );
         node
     }
 
-    fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
+    pub(crate) fn update_slider_value_impl(&mut self, node: &MacosNode, value: f32) {
         let view = node.as_view();
         let current: f64 = unsafe { msg_send![view, doubleValue] };
         if (current - value as f64).abs() < f64::EPSILON {
@@ -4085,12 +3994,12 @@ impl Backend for MacosBackend {
         let _: () = unsafe { msg_send![view, setDoubleValue: value as f64] };
     }
 
-    fn create_scroll_view(
+    pub(crate) fn create_scroll_view_impl(
         &mut self,
         horizontal: bool,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
         // Real two-view shape: outer NSScrollView wraps a
         // `FlippedView` documentView. Children mount inside the
         // documentView (via `insert`'s scroll-view-aware
@@ -4246,7 +4155,7 @@ impl Backend for MacosBackend {
             // only writes frames and must track the scroll beat-for-beat.
             let deferred: Rc<dyn Fn(f32, f32)> = Rc::new(move |x, y| {
                 let cb = cb.clone();
-                runtime_core::schedule_microtask(move || cb(x, y));
+                runtime_shared::schedule_microtask(move || cb(x, y));
             });
             let target = crate::imp::callbacks::ScrollObserverTarget::new(self.mtm, deferred);
             let clip_view: *mut objc2::runtime::AnyObject =
@@ -4281,20 +4190,20 @@ impl Backend for MacosBackend {
         a11y::apply(
             &node,
             a11y,
-            runtime_core::accessibility::default_role(
-                runtime_core::accessibility::PrimitiveKind::ScrollView,
+            runtime_shared::accessibility::default_role(
+                runtime_shared::accessibility::PrimitiveKind::ScrollView,
             ),
         );
         node
     }
 
-    fn create_activity_indicator(
+    pub(crate) fn create_activity_indicator_impl(
         &mut self,
-        size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
+        size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
         _color: Option<&Color>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
+        use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
         // NSProgressIndicator in spinning style — same shape as
         // UIActivityIndicatorView. `setStyle: 1` =
         // NSProgressIndicatorStyleSpinning. `setIndeterminate: true`
@@ -4348,14 +4257,14 @@ impl Backend for MacosBackend {
         a11y::apply(
             &node,
             a11y,
-            runtime_core::accessibility::default_role(
-                runtime_core::accessibility::PrimitiveKind::ActivityIndicator,
+            runtime_shared::accessibility::default_role(
+                runtime_shared::accessibility::PrimitiveKind::ActivityIndicator,
             ),
         );
         node
     }
 
-    fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
+    pub(crate) fn insert_impl(&mut self, parent: &mut MacosNode, child: MacosNode) {
         let parent_view = parent.as_view();
         let child_view = child.as_view();
 
@@ -4472,7 +4381,7 @@ impl Backend for MacosBackend {
             && self.layout.is_absolute(child_layout)
         {
             let fill = StyleRules {
-                position: Some(runtime_core::Position::Absolute),
+                position: Some(runtime_shared::Position::Absolute),
                 top: Some(0.0.into()),
                 left: Some(0.0.into()),
                 right: Some(0.0.into()),
@@ -4561,7 +4470,7 @@ impl Backend for MacosBackend {
     /// swallowed every click. Splicing gives the absolute branch the real parent
     /// as its containing block (matching web's `display: contents` anchor), so it
     /// both paints AND hit-tests. Mirrors iOS/Android, which already opt in.
-    fn supports_child_splice(&self) -> bool {
+    pub(crate) fn supports_child_splice_impl(&self) -> bool {
         true
     }
 
@@ -4571,7 +4480,7 @@ impl Backend for MacosBackend {
     /// auto-invalidate a parent's cached size on a child-set change) and reflows
     /// so a content-sized ancestor shrinks to fit the now-shorter child set.
     /// Mirror of the per-child teardown `clear_children` does. Mirrors iOS.
-    fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
+    pub(crate) fn remove_child_impl(&mut self, parent: &MacosNode, child: &MacosNode) {
         let parent_view = parent.as_view();
         let child_view = child.as_view();
         let child_key = child.view_key();
@@ -4644,7 +4553,7 @@ impl Backend for MacosBackend {
     /// appending. Preserves every special case `insert` has: the portal /
     /// detached-window-root skips, the scroll-view `documentView` routing, and
     /// the window-attached layout-pass gate. Mirrors iOS.
-    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
+    pub(crate) fn insert_at_impl(&mut self, parent: &mut MacosNode, child: MacosNode, index: usize) {
         let parent_view = parent.as_view();
         let child_view = child.as_view();
         let child_key = child.view_key();
@@ -4718,7 +4627,7 @@ impl Backend for MacosBackend {
         }
     }
 
-    fn update_text(&mut self, node: &Self::Node, content: &str) {
+    pub(crate) fn update_text_impl(&mut self, node: &MacosNode, content: &str) {
         if let MacosNode::Label(label) = node {
             let ns = NSString::from_str(content);
             let _: () = unsafe { msg_send![label, setStringValue: &*ns] };
@@ -4731,7 +4640,7 @@ impl Backend for MacosBackend {
         }
     }
 
-    fn clear_children(&mut self, node: &Self::Node) {
+    pub(crate) fn clear_children_impl(&mut self, node: &MacosNode) {
         let view = node.as_view();
         // A scroll view hosts its content inside the documentView (see
         // `insert`), so walk THAT subview list — `view.subviews` is just the
@@ -4806,7 +4715,7 @@ impl Backend for MacosBackend {
         }
     }
 
-    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
+    pub(crate) fn apply_style_impl(&mut self, node: &MacosNode, style: &Rc<StyleRules>) {
         let view = node.as_view();
         apply_style_to_view(view, style);
 
@@ -4817,7 +4726,7 @@ impl Backend for MacosBackend {
         // image-only.
         image::apply_object_fit(
             view,
-            style.object_fit.unwrap_or(runtime_core::ObjectFit::Contain),
+            style.object_fit.unwrap_or(runtime_shared::ObjectFit::Contain),
         );
 
         // Gradient install lives outside `apply_style_to_view` because
@@ -4842,12 +4751,12 @@ impl Backend for MacosBackend {
         {
             let sticky_key = view as *const NSView as usize;
             match style.position {
-                Some(runtime_core::Position::Sticky) => {
+                Some(runtime_shared::Position::Sticky) => {
                     let threshold_top = style
                         .top
                         .as_ref()
                         .map(|t| match t.resolve() {
-                            runtime_core::Length::Px(v) => v,
+                            runtime_shared::Length::Px(v) => v,
                             // Percent/Auto pin offsets aren't meaningful
                             // for sticky (see the iOS twin). Treat as 0.
                             _ => 0.0,
@@ -4964,7 +4873,7 @@ impl Backend for MacosBackend {
                 // `view::IdealystLabelCell`) so the text lands in the content
                 // rect. `length_to_px` yields 0 for Percent/Auto (no defined
                 // sizing parent for a leaf), matching the iOS handler.
-                let resolve = |t: &Option<runtime_core::Tokenized<runtime_core::Length>>| {
+                let resolve = |t: &Option<runtime_shared::Tokenized<runtime_shared::Length>>| {
                     t.as_ref().map(|tok| length_to_px(&tok.resolve())).unwrap_or(0.0)
                 };
                 view::set_label_insets(
@@ -5046,7 +4955,7 @@ impl Backend for MacosBackend {
                 // centering cell so the text doesn't touch the border; vertical
                 // padding is reproduced by the cell's centering. `length_to_px`
                 // yields 0 for Percent/Auto (a leaf has no sizing parent).
-                let resolve = |t: &Option<runtime_core::Tokenized<runtime_core::Length>>| {
+                let resolve = |t: &Option<runtime_shared::Tokenized<runtime_shared::Length>>| {
                     t.as_ref().map(|tok| length_to_px(&tok.resolve())).unwrap_or(0.0)
                 };
                 let pad = view::LabelInsets {
@@ -5120,9 +5029,9 @@ impl Backend for MacosBackend {
                         // background (the "scrollbar disappeared" report). The
                         // forced appearance also keeps any native controls in the
                         // scrolled content consistent with the author's theme.
-                        let rgba = runtime_core::color::parse_or(
+                        let rgba = runtime_shared::color::parse_or(
                             &bg_val.0,
-                            runtime_core::color::Rgba::BLACK,
+                            runtime_shared::color::Rgba::BLACK,
                         );
                         let lum = 0.299 * rgba.r as f32
                             + 0.587 * rgba.g as f32
@@ -5180,7 +5089,7 @@ impl Backend for MacosBackend {
     /// NSSwitch, …) render their own system states, so they're skipped.
     /// macOS has no touch, so this is the desktop analogue of web's CSS
     /// `:hover`/`:active`.
-    fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
+    pub(crate) fn attach_states_impl(&mut self, node: &MacosNode, setter: Rc<dyn Fn(StateBits, bool)>) {
         let view = node.as_view();
         if let Some(fv) = as_flipped_view(view) {
             fv.set_state_setter(setter.clone());
@@ -5222,10 +5131,10 @@ impl Backend for MacosBackend {
         }
     }
 
-    fn set_animated_f32(
+    pub(crate) fn set_animated_f32_impl(
         &mut self,
-        node: &Self::Node,
-        prop: runtime_core::animation::AnimProp,
+        node: &MacosNode,
+        prop: runtime_shared::animation::AnimProp,
         value: f32,
     ) {
         // `MaxHeight` is the one layout-affecting animated prop (the rest
@@ -5239,7 +5148,7 @@ impl Backend for MacosBackend {
         // leaving a tall empty box (the "doesn't collapse all the way"
         // bug). Mirrors the prop's documented "iOS Taffy max_size
         // constraint" intent.
-        if let runtime_core::animation::AnimProp::MaxHeight = prop {
+        if let runtime_shared::animation::AnimProp::MaxHeight = prop {
             let view = node.as_view();
             if let Some(layout) = self.layout_of(view) {
                 self.layout.set_animated_max_height(layout, Some(value));
@@ -5256,10 +5165,10 @@ impl Backend for MacosBackend {
         animated::set_animated_f32(node, prop, value, &mut self.animated_states);
     }
 
-    fn set_animated_color(
+    pub(crate) fn set_animated_color_impl(
         &mut self,
-        node: &Self::Node,
-        prop: runtime_core::animation::AnimProp,
+        node: &MacosNode,
+        prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
         // Gradient stop writes need the per-view cache (layer +
@@ -5267,7 +5176,7 @@ impl Backend for MacosBackend {
         // rather than into the standalone `animated::set_animated_color`
         // helper. Background / foreground writes still go through
         // the helper.
-        if let runtime_core::animation::AnimProp::GradientStopColor(idx) = prop {
+        if let runtime_shared::animation::AnimProp::GradientStopColor(idx) = prop {
             let view = node.as_view();
             let key = view as *const NSView as usize;
             if let Some(state) = self.gradient_states.get_mut(&key) {
@@ -5285,11 +5194,11 @@ impl Backend for MacosBackend {
     /// the same engine shape as the color `transitions` module, since AppKit has
     /// no single API that animates both `NSView.alphaValue` and a layer-backed
     /// view's transform.
-    fn apply_presence(
+    pub(crate) fn apply_presence_impl(
         &mut self,
-        node: &Self::Node,
-        state: runtime_core::PresenceState,
-        transition: Option<(u32, runtime_core::Easing)>,
+        node: &MacosNode,
+        state: runtime_shared::PresenceState,
+        transition: Option<(u32, runtime_shared::Easing)>,
     ) {
         presence::apply_presence(node.as_view(), state, transition);
     }
@@ -5302,39 +5211,39 @@ impl Backend for MacosBackend {
     // AppKit walks each NSView's NSAccessibility attributes directly —
     // there's no parallel semantics tree to dump.
 
-    fn update_accessibility(
+    pub(crate) fn update_accessibility_impl(
         &mut self,
-        node: &Self::Node,
-        a11y_props: &runtime_core::accessibility::AccessibilityProps,
-        inferred_role: Option<runtime_core::accessibility::Role>,
+        node: &MacosNode,
+        a11y_props: &runtime_shared::accessibility::AccessibilityProps,
+        inferred_role: Option<runtime_shared::accessibility::Role>,
     ) {
         a11y::apply(node, a11y_props, inferred_role);
     }
 
-    fn announce_for_accessibility(
+    pub(crate) fn announce_for_accessibility_impl(
         &mut self,
         msg: &str,
-        priority: runtime_core::accessibility::LiveRegionPriority,
+        priority: runtime_shared::accessibility::LiveRegionPriority,
     ) {
         a11y::announce(msg, priority);
     }
 
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
+    pub(crate) fn make_view_handle_impl(&self, node: &MacosNode) -> runtime_shared::ViewHandle {
         handles::make_view_handle(node)
     }
 
-    fn make_button_handle(&self, node: &Self::Node) -> runtime_core::ButtonHandle {
+    pub(crate) fn make_button_handle_impl(&self, node: &MacosNode) -> runtime_shared::ButtonHandle {
         handles::make_button_handle(node)
     }
 
-    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_core::PressableHandle {
+    pub(crate) fn make_pressable_handle_impl(&self, node: &MacosNode) -> runtime_shared::PressableHandle {
         handles::make_pressable_handle(node)
     }
 
-    fn make_scroll_view_handle(
+    pub(crate) fn make_scroll_view_handle_impl(
         &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::scroll_view::ScrollViewHandle {
+        node: &MacosNode,
+    ) -> runtime_shared::primitives::scroll_view::ScrollViewHandle {
         handles::make_scroll_view_handle(node)
     }
 
@@ -5344,10 +5253,10 @@ impl Backend for MacosBackend {
     /// pass writes. Enables the robot bridge's `get_frame` verb on macOS
     /// (used by the inspector + e2e drivers); previously the default
     /// `None` stub left every element frame-less here.
-    fn frame(&self, node: &Self::Node) -> Option<runtime_core::primitives::portal::ViewportRect> {
+    pub(crate) fn frame_impl(&self, node: &MacosNode) -> Option<runtime_shared::primitives::portal::ViewportRect> {
         let view = node.as_view();
         let frame: CGRect = unsafe { msg_send![view, frame] };
-        Some(runtime_core::primitives::portal::ViewportRect {
+        Some(runtime_shared::primitives::portal::ViewportRect {
             x: frame.origin.x as f32,
             y: frame.origin.y as f32,
             width: frame.size.width as f32,
@@ -5365,7 +5274,7 @@ impl Backend for MacosBackend {
     // `ScrollDocumentView`, so `y` grows downward — same coordinate meaning
     // as iOS/web scroll offsets. Non-scroll nodes read (0,0) / ignore writes,
     // matching the trait defaults.
-    fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
+    pub(crate) fn node_scroll_impl(&self, node: &MacosNode) -> (f32, f32) {
         let view = node.as_view();
         if !is_scroll_view(view) {
             return (0.0, 0.0);
@@ -5380,7 +5289,7 @@ impl Backend for MacosBackend {
         }
     }
 
-    fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
+    pub(crate) fn set_node_scroll_impl(&mut self, node: &MacosNode, x: f32, y: f32) {
         let view = node.as_view();
         if !is_scroll_view(view) {
             return;
@@ -5396,31 +5305,31 @@ impl Backend for MacosBackend {
         }
     }
 
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
+    pub(crate) fn make_text_handle_impl(&self, node: &MacosNode) -> runtime_shared::TextHandle {
         handles::make_text_handle(node)
     }
 
-    fn make_text_input_handle(
+    pub(crate) fn make_text_input_handle_impl(
         &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::text_input::TextInputHandle {
+        node: &MacosNode,
+    ) -> runtime_shared::primitives::text_input::TextInputHandle {
         handles::make_text_input_handle(node)
     }
 
-    fn make_text_area_handle(
+    pub(crate) fn make_text_area_handle_impl(
         &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::text_area::TextAreaHandle {
+        node: &MacosNode,
+    ) -> runtime_shared::primitives::text_area::TextAreaHandle {
         handles::make_text_area_handle(node)
     }
 
-    fn create_virtualizer(
+    pub(crate) fn create_virtualizer_impl(
         &mut self,
-        callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
+        callbacks: runtime_shared::VirtualizerCallbacks<MacosNode>,
         overscan: f32,
-        layout: runtime_core::VirtualLayout,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        layout: runtime_shared::VirtualLayout,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
         // Real NSCollectionView wrap with cell reuse — see
         // `imp/virtualizer.rs` for the AppKit-flavored adapter.
         // Mirrors iOS's UICollectionView pattern: data source +
@@ -5440,12 +5349,12 @@ impl Backend for MacosBackend {
         a11y::apply(
             &node,
             a11y,
-            Some(runtime_core::accessibility::Role::List),
+            Some(runtime_shared::accessibility::Role::List),
         );
         node
     }
 
-    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
+    pub(crate) fn virtualizer_data_changed_impl(&mut self, node: &MacosNode) {
         // Tell the NSCollectionView to `reloadData`. Future
         // performBatchUpdates optimisation lands when the iOS
         // counterpart does — same shape (key-keyed diff, batched
@@ -5454,7 +5363,7 @@ impl Backend for MacosBackend {
         virtualizer::data_changed(view);
     }
 
-    fn release_virtualizer(&mut self, node: &Self::Node) {
+    pub(crate) fn release_virtualizer_impl(&mut self, node: &MacosNode) {
         // Mirrors iOS's teardown — disconnect dataSource/delegate so
         // queued AppKit events become no-ops, drain mounted scopes,
         // drop the side-state entry. Without this, AppKit's lingering
@@ -5464,143 +5373,13 @@ impl Backend for MacosBackend {
         virtualizer::release(&mut self.virtualizer_instances, view);
     }
 
-    fn create_navigator(
+    pub(crate) fn create_graphics_impl(
         &mut self,
-        type_id: std::any::TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn std::any::Any>,
-        host: runtime_core::primitives::navigator::NavigatorHost<Self::Node>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        // Consult the registry. SDK leaf crates (`drawer_navigator`,
-        // `stack_navigator`, `tab_navigator`) call
-        // `register_navigator::<TheirPresentation, _>(factory)` at
-        // bootstrap; when one matches, we run `init` and stash the
-        // handler under the returned view's pointer for subsequent
-        // `navigator_attach_initial` / `release_navigator` /
-        // `apply_navigator_slot_style` dispatches.
-        //
-        // No-match: render a visible placeholder noting WHICH kind
-        // wasn't registered. This is the path for navigator SDKs
-        // that haven't shipped a macOS handler yet — author code
-        // running on macOS sees the missing wiring at runtime
-        // (matching the External + placeholder posture across the
-        // workspace; see `feedback_cpu_unsupported_placeholders`).
-        if let Some(factory) = self.navigator_handlers.get(type_id) {
-            let mut handler: Box<dyn runtime_core::NavigatorHandler<MacosBackend>> =
-                (factory)();
-            let node = handler.init(self, host, presentation);
-
-            // Stash the handler keyed by the resolved node's NSView
-            // pointer. Future trait calls
-            // (`navigator_attach_initial`, etc.) look the handler up
-            // by the same key.
-            let view = node.as_view();
-            let key = view as *const NSView as usize;
-            self.nav_handler_instances.insert(
-                key,
-                std::rc::Rc::new(std::cell::RefCell::new(handler)),
-            );
-
-            a11y::apply(&node, a11y, None);
-            return node;
-        }
-
-        let text = format!(
-            "Navigator kind \"{type_name}\" not registered for macOS \
-             — SDK leaf needs `register_navigator(&mut backend)` \
-             on macOS targets (per `project_macos_navigator_design`)"
-        );
-        let ns = NSString::from_str(&text);
-        let label: Retained<NSTextField> = unsafe {
-            msg_send_id![objc2::class!(NSTextField), labelWithString: &*ns]
-        };
-        let cell: Retained<NSObject> = unsafe { msg_send_id![&label, cell] };
-        let _: () = unsafe { msg_send![&cell, setWraps: true] };
-        let _: () = unsafe { msg_send![&cell, setUsesSingleLineMode: false] };
-        let red: Retained<NSColor> = unsafe {
-            msg_send_id![objc2::class!(NSColor), systemRedColor]
-        };
-        let _: () = unsafe { msg_send![&label, setTextColor: &*red] };
-        let view: Retained<NSView> = unsafe {
-            Retained::retain(Retained::as_ptr(&label) as *mut NSView)
-                .expect("retain NSTextField as NSView")
-        };
-        let _ = self.layout_for_view(&view);
-        let node = MacosNode::Label(label);
-        a11y::apply(&node, a11y, None);
-        node
-    }
-
-    fn release_navigator(&mut self, node: &Self::Node) {
-        let view = node.as_view();
-        let key = view as *const NSView as usize;
-        if let Some(handler_cell) = self.nav_handler_instances.remove(&key) {
-            // Run the SDK's `release` so it can drop native
-            // resources. The handler's Box drops after the
-            // borrow_mut block returns (the Rc's strong count
-            // falls to zero once the map entry is gone).
-            handler_cell.borrow_mut().release(self);
-        }
-    }
-
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn std::any::Any>,
-    ) {
-        let view = navigator.as_view();
-        let key = view as *const NSView as usize;
-        if let Some(handler_cell) = self.nav_handler_instances.get(&key).cloned() {
-            handler_cell
-                .borrow_mut()
-                .attach_initial(self, screen, scope_id, options);
-        }
-    }
-
-    fn apply_navigator_slot_style(
-        &mut self,
-        node: &Self::Node,
-        slot: &'static str,
-        style: &Rc<runtime_core::StyleRules>,
-    ) {
-        let view = node.as_view();
-        let key = view as *const NSView as usize;
-        if let Some(handler_cell) = self.nav_handler_instances.get(&key).cloned() {
-            handler_cell
-                .borrow_mut()
-                .apply_slot_style(self, slot, style);
-        }
-    }
-
-    fn make_navigator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::navigator::NavigatorHandle {
-        let view = node.as_view();
-        let key = view as *const NSView as usize;
-        if let Some(handler_cell) = self.nav_handler_instances.get(&key) {
-            return handler_cell.borrow().make_handle();
-        }
-        // No handler — return the trait's default inert handle.
-        // Author code that bound a `Ref<NavigatorHandle>` against
-        // an unregistered navigator kind silently gets a no-op
-        // handle (matches what the trait default would do).
-        runtime_core::primitives::navigator::NavigatorHandle::new(
-            std::rc::Rc::new(()),
-            &NOOP_NAV_OPS,
-        )
-    }
-
-    fn create_graphics(
-        &mut self,
-        on_ready: runtime_core::primitives::graphics::OnReady,
-        on_resize: runtime_core::primitives::graphics::OnResize,
-        on_lost: runtime_core::primitives::graphics::OnLost,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        on_ready: runtime_shared::primitives::graphics::OnReady,
+        on_resize: runtime_shared::primitives::graphics::OnResize,
+        on_lost: runtime_shared::primitives::graphics::OnLost,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
         // CAMetalLayer-backed NSView wrapping a wgpu Surface.
         // Mirrors the iOS `imp/graphics.rs` pattern — MetalView
         // (NSView subclass with `-makeBackingLayer` returning
@@ -5622,12 +5401,12 @@ impl Backend for MacosBackend {
         node
     }
 
-    fn create_icon(
+    pub(crate) fn create_icon_impl(
         &mut self,
-        data: &runtime_core::primitives::icon::IconData,
+        data: &runtime_shared::primitives::icon::IconData,
         color: Option<&Color>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
         // Real vector-path rendering via `CAShapeLayer` with a
         // CGPath built by the shared SVG parser in
         // `backend_apple_core::icon_path`. Identical render output
@@ -5656,24 +5435,24 @@ impl Backend for MacosBackend {
         a11y::apply(
             &node,
             a11y,
-            runtime_core::accessibility::default_role(
-                runtime_core::accessibility::PrimitiveKind::Icon,
+            runtime_shared::accessibility::default_role(
+                runtime_shared::accessibility::PrimitiveKind::Icon,
             ),
         );
         node
     }
 
-    fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
+    pub(crate) fn update_icon_color_impl(&mut self, node: &MacosNode, color: &Color) {
         icon::update_icon_color(node, color);
     }
 
-    fn create_portal(
+    pub(crate) fn create_portal_impl(
         &mut self,
-        target: runtime_core::primitives::portal::PortalTarget,
+        target: runtime_shared::primitives::portal::PortalTarget,
         _on_dismiss: Option<Rc<dyn Fn()>>,
         _trap_focus: bool,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
         // Full-viewport overlay attached to the host window's contentView. Scrim
         // styling, named-slot routing, on_dismiss event firing, and focus
         // trapping are deferred. For a VIEWPORT target the container's flex
@@ -5684,7 +5463,7 @@ impl Backend for MacosBackend {
         // absolutely against the trigger rect + tracked each frame (see
         // `insert` / `imp::portal`); without that the content laid out at the
         // container's top-left — the tooltip/popover "renders in the corner" bug.
-        use runtime_core::primitives::portal::PortalTarget;
+        use runtime_shared::primitives::portal::PortalTarget;
         let anchor_spec = match &target {
             PortalTarget::Anchor { target: t, side, align, offset } => Some(portal::AnchorSpec {
                 target: t.clone(),
@@ -5738,7 +5517,7 @@ impl Backend for MacosBackend {
         node
     }
 
-    fn release_portal(&mut self, node: &Self::Node) {
+    pub(crate) fn release_portal_impl(&mut self, node: &MacosNode) {
         let key = node.view_key();
         self.portal_roots.remove(&key);
         // Drop the anchored-portal entry FIRST so its `raf_loop` tracker stops
@@ -5750,7 +5529,7 @@ impl Backend for MacosBackend {
         unsafe { view.removeFromSuperview() };
     }
 
-    fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
+    pub(crate) fn set_portal_hidden_impl(&mut self, node: &MacosNode, hidden: bool) {
         // Toggle the portal container's visibility without tearing it down, so
         // an overlay opened on one screen doesn't float over the next after a
         // navigation (the portal is parented to the window's contentView and a
@@ -5763,31 +5542,27 @@ impl Backend for MacosBackend {
         let _: () = unsafe { msg_send![view, setHidden: hidden] };
     }
 
-    fn create_external(
+    pub(crate) fn create_external_impl(
         &mut self,
-        type_id: std::any::TypeId,
+        _type_id: std::any::TypeId,
         type_name: &'static str,
-        payload: &Rc<dyn std::any::Any>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let node = if let Some(handler) = self.external_handlers.get(type_id) {
-            handler(payload, self)
-        } else {
-            // No handler registered — render an explicit placeholder
-            // so the missing SDK binding is visible at run-time. The
-            // user-facing pattern for graceful degradation is
-            // `backend.has_external::<T>()` BEFORE building the
-            // primitive; this placeholder is the safety net for code
-            // that mounts unconditionally.
-            external_placeholder_node(self, type_name)
-        };
+        _payload: &Rc<dyn std::any::Any>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
+        // Runtime v2: there is no backend-side External registry any more.
+        // Third-party primitives register a payload handler on the scene
+        // `Registry` (`runtime_scene::Registry::register`), which dispatches
+        // BEFORE reaching a backend cap — so this method is only ever the
+        // last-resort placeholder an SDK's own degradation handler asks for
+        // on a host it has no leg for. Placeholder body unchanged.
+        let node = external_placeholder_node(self, type_name);
         // Third-party externals declare their own role via
         // `props.role` if needed — we don't infer one here.
         a11y::apply(&node, a11y, None);
         node
     }
 
-    fn release_external(&mut self, node: &Self::Node) {
+    pub(crate) fn release_external_impl(&mut self, node: &MacosNode) {
         // Detached window root (screen_recorder private layer): tear down its
         // borderless overlay window so it stops compositing when the layer
         // unmounts. `release_private_layer_window` returns early for any node
@@ -5802,7 +5577,7 @@ impl Backend for MacosBackend {
         self.external_content_measures.remove(&node.view_key());
     }
 
-    fn finish(&mut self, root: Self::Node) {
+    pub(crate) fn finish_impl(&mut self, root: MacosNode) {
         // Compute layout against the host's bounds and walk every
         // registered view to assign frames. The iOS backend does the
         // same thing with `apply_frames`; this is the AppKit-flavored
@@ -5877,8 +5652,19 @@ impl Backend for MacosBackend {
             let changed = LAST_MIRRORED_VIEWPORT.with(|c| c.get()) != Some(next);
             if changed {
                 LAST_MIRRORED_VIEWPORT.with(|c| c.set(Some(next)));
-                runtime_core::schedule_microtask(move || {
-                    runtime_core::set_viewport_size(runtime_core::ViewportSize {
+                runtime_shared::schedule_microtask(move || {
+                    runtime_shared::set_viewport_size(runtime_shared::ViewportSize {
+                        width: next.0,
+                        height: next.1,
+                    });
+                    // New-core mirror (see newcore.rs, "Viewport
+                    // source"): on a new-core boot this microtask is
+                    // the FIRST live push — it lands the real window
+                    // size in the world's viewport ctx right after
+                    // mount (the ctx seeded from the pre-`finish` TLS
+                    // value, which is stale on macOS because AppKit
+                    // can run `finish` before the first window paint).
+                    crate::newcore::forward_viewport(runtime_shared::ViewportSize {
                         width: next.0,
                         height: next.1,
                     });
@@ -5911,11 +5697,11 @@ impl Backend for MacosBackend {
     // routed through the cross-Apple `FontRegistry` lifted in Phase 0.
     // ---------------------------------------------------------------
 
-    fn register_asset(
+    pub(crate) fn register_asset_impl(
         &mut self,
-        id: runtime_core::AssetId,
-        kind: runtime_core::AssetTag,
-        source: &runtime_core::AssetSource,
+        id: runtime_shared::AssetId,
+        kind: runtime_shared::AssetTag,
+        source: &runtime_shared::AssetSource,
     ) {
         // Font branch routes through `apple-core`'s shared registry;
         // image branch decodes `NSImage` into the per-backend cache
@@ -5925,26 +5711,26 @@ impl Backend for MacosBackend {
         image::register_asset(&mut self.image_cache, id, kind, source);
     }
 
-    fn unregister_asset(
+    pub(crate) fn unregister_asset_impl(
         &mut self,
-        id: runtime_core::AssetId,
-        kind: runtime_core::AssetTag,
+        id: runtime_shared::AssetId,
+        kind: runtime_shared::AssetTag,
     ) {
         self.font_registry.unregister_asset(id, kind);
     }
 
-    fn register_typeface(
+    pub(crate) fn register_typeface_impl(
         &mut self,
-        id: runtime_core::assets::TypefaceId,
+        id: runtime_shared::assets::TypefaceId,
         family_name: &str,
-        faces: &[runtime_core::assets::TypefaceFace],
-        fallback: runtime_core::assets::SystemFallback,
+        faces: &[runtime_shared::assets::TypefaceFace],
+        fallback: runtime_shared::assets::SystemFallback,
     ) {
         self.font_registry
             .register_typeface(id, family_name, faces, fallback);
     }
 
-    fn unregister_typeface(&mut self, id: runtime_core::assets::TypefaceId) {
+    pub(crate) fn unregister_typeface_impl(&mut self, id: runtime_shared::assets::TypefaceId) {
         self.font_registry.unregister_typeface(id);
     }
 }

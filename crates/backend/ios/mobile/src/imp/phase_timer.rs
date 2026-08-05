@@ -7,9 +7,9 @@
 //!     away and call sites become a no-op `let _ = ();` that the
 //!     optimizer fully strips.
 //!   * `debug-stats` ON: each guard's `Drop` calls
-//!     `runtime_core::debug::record_apply_phase` with the elapsed
+//!     `runtime_shared::debug::record_apply_phase` with the elapsed
 //!     duration; consumers drain via
-//!     `runtime_core::debug::take_phase_counters()` (and
+//!     `runtime_shared::debug::take_phase_counters()` (and
 //!     [`take_and_dump`] gives a quick stderr summary).
 //!
 //! Usage:
@@ -25,7 +25,7 @@
 //! `backend-ios-core::style` for the convention.
 
 #[cfg(feature = "debug-stats")]
-use runtime_core::debug;
+use runtime_shared::debug;
 
 #[cfg(feature = "debug-stats")]
 pub(crate) struct PhaseTimer {
@@ -66,7 +66,7 @@ impl PhaseTimer {
 }
 
 /// Wire `backend-ios-core::phase_record::scope` to push into the
-/// shared `runtime_core::debug::record_apply_phase` aggregator so
+/// shared `runtime_shared::debug::record_apply_phase` aggregator so
 /// timings from both crates surface in the same counter map. Called
 /// once during `IosBackend::new`. No-op when `debug-stats` is off
 /// (`phase_record::scope` is itself a zero-cost guard at that point).
@@ -75,7 +75,7 @@ pub(crate) fn install_core_bridge() {
     backend_ios_core::phase_record::install_recorder(|phase, ns| {
         // `record_apply_phase` takes microseconds; convert from the
         // `Instant::elapsed().as_nanos()` the core indirection uses.
-        runtime_core::debug::record_apply_phase(phase, (ns / 1000) as u64);
+        runtime_shared::debug::record_apply_phase(phase, (ns / 1000) as u64);
     });
 }
 
@@ -89,7 +89,7 @@ pub(crate) fn install_core_bridge() {}
 /// are empty by construction).
 #[cfg(feature = "debug-stats")]
 pub(crate) fn take_and_dump(label: &str) {
-    let counters = runtime_core::debug::take_phase_counters();
+    let counters = runtime_shared::debug::take_phase_counters();
     if !counters.is_empty() {
         let mut snapshot: Vec<_> = counters.into_iter().collect();
         snapshot.sort_by_key(|(_, p)| std::cmp::Reverse(p.total_us));
@@ -116,8 +116,8 @@ pub(crate) fn take_and_dump(label: &str) {
     // Reactive profile: which signal caused a long render. Drained from the
     // same window as the phase counters. Logged line-by-line so it survives
     // the platform log's line handling.
-    let events = runtime_core::debug::take_events();
-    let profile = runtime_core::debug::format_reactive_profile(&events, 15);
+    let events = runtime_shared::debug::take_events();
+    let profile = runtime_shared::debug::format_reactive_profile(&events, 15);
     if !profile.is_empty() {
         for line in profile.lines() {
             backend_ios_core::ios_log(&format!("[reactive] {line}"));

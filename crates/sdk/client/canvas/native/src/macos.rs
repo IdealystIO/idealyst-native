@@ -21,8 +21,8 @@
 //!   op-replay dispatches identically on both platforms.
 
 use backend_macos::MacosBackend;
-use canvas_core::{CanvasProps, Color};
-use runtime_core::effect;
+use canvas_core::{CanvasPrim, CanvasProps, Color};
+use runtime_scene::{Element, MountCx};
 
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, NSObject};
@@ -245,19 +245,18 @@ impl IdealystCanvasMacView {
 // register + build
 // ============================================================================
 
-/// Register the macOS canvas renderer against a `MacosBackend`.
-pub fn register(backend: &mut MacosBackend) {
-    canvas_core::ensure_wire_serde();
-    backend.register_external::<CanvasProps, _>(|props, b| build_canvas(props, b));
-}
-
-// Self-register at backend construction (no app-side `register` call needed).
-// See [[project_inventory_self_registration]]. Behind the default-on
-// `self-register` feature so delegate-only consumers can opt out (matters
-// for web bundle size; gated on every target for feature consistency).
-#[cfg(feature = "self-register")]
-inventory::submit! {
-    backend_macos::MacosExternalRegistrar(register)
+pub(crate) fn mount_canvas(
+    cx: &mut MountCx<'_, MacosBackend>,
+    prim: &std::rc::Rc<CanvasPrim>,
+    _children: Vec<Element>,
+) -> backend_macos::MacosNode {
+    let backend = cx.backend().clone();
+    let node = {
+        let mut b = backend.borrow_mut();
+        build_canvas(&prim.props, &mut b)
+    };
+    crate::finish_mount(&backend, &node, prim);
+    node
 }
 
 fn build_canvas(
@@ -272,9 +271,11 @@ fn build_canvas(
     let view_canvas: Retained<IdealystCanvasMacView> =
         unsafe { Retained::cast(view_nsview.clone()) };
 
+    // Reactive repaint. Realize runs world-entered, so this effect is
+    // collected into the mounting subtree and dies at unmount.
     let view_for_effect = view_canvas.clone();
     let props_clone = props.clone();
-    effect!({
+    runtime_world::effect(move || {
         let scene = canvas_core::paint_scene(&props_clone);
         view_for_effect.install_scene(scene);
     });

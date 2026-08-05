@@ -12,7 +12,7 @@
 //! a keyboard-reachable button for assistive tech.
 
 use crate::WebBackend;
-use runtime_core::{PressableHandle, PressableOps, ViewportRect};
+use runtime_shared::{PressableHandle, PressableOps, ViewportRect};
 use std::any::Any;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;

@@ -16,7 +16,7 @@
 
 #![cfg_attr(not(target_os = "android"), allow(dead_code))]
 
-use runtime_core::Easing;
+use runtime_shared::Easing;
 
 /// Should this static-transform apply animate rather than snap?
 /// Same rules as the iOS / macOS siblings (CSS semantics): animate

@@ -4,9 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Third-party `WebView` SDK — one crate, cfg-gated per-backend impl
-# modules. Demonstrates the single-crate variant of the third-party
-# primitive pattern (as opposed to the multi-crate maps SDK split).
+# Third-party `WebView` SDK — one crate, cfg-gated per-backend glue.
+# Demonstrates the single-crate variant of the third-party primitive
+# pattern (as opposed to the multi-crate maps SDK split).
 #
 # Why one crate: this SDK has a single owner and ships every backend
 # from the same release. Cargo's `[target.'cfg(...)'.dependencies]`
@@ -18,7 +18,7 @@ license.workspace = true
 #
 # # Android Kotlin contributions
 #
-# When the Android impl grows a `WebViewClient` shim (for
+# When an Android renderer lands and grows a `WebViewClient` shim (for
 # `onPageFinished`/`onReceivedError`) or a `@JavascriptInterface`
 # bridge (for `postMessage`), declare the source files under
 # `[package.metadata.idealyst.android]` and they'll get picked up
@@ -28,11 +28,26 @@ license.workspace = true
 # own runtime sources.
 
 [dependencies]
-runtime-core = { workspace = true }
-# Self-registration of the per-backend external handler at construction.
-inventory = "0.3"
+# The scene registry + the vocabulary caps the handlers drive
+# (`ExternalOps::create_external` placeholder path) + `style_attach` for
+# the author-style channel + `runtime_world::effect` for the
+# reactive-URL binding. `runtime-shared` supplies `Ref` and
+# `accessibility::AccessibilityProps` (the permanent substrate types).
+runtime-scene = { workspace = true }
+runtime-shared = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-world = { workspace = true }
+
+[dev-dependencies]
+# tests/webview.rs mounts `WebView(...)` through the scene registry
+# end-to-end on the shared host-mock recording substrate.
+host-mock = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# The wasm32 handler is `WebBackend`-concrete (the `<iframe>` DOM has no
+# caps-trait expression) so `Registry<WebBackend>` needs the backend's
+# `Host` impl — and the DOM event listeners must call
+# `backend_web::newcore::schedule_flush` after author callbacks.
 backend-web = { workspace = true }
 web-sys = { version = "0.3", features = [
     "Document",

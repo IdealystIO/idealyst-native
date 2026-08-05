@@ -25,11 +25,11 @@ macro_rules! ios_log {
     };
 }
 
-use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
-use runtime_core::primitives::graphics::{OnLost, OnReady, OnResize};
-use runtime_core::primitives::link::LinkConfig;
-use runtime_core::primitives::navigator::NavigatorOps;
-use runtime_core::{Backend, Color, StyleRules};
+use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
+use runtime_shared::primitives::graphics::{OnLost, OnReady, OnResize};
+use runtime_shared::primitives::link::LinkConfig;
+use runtime_shared::primitives::navigator::NavigatorOps;
+use runtime_shared::{Color, StyleRules};
 
 /// No-op `NavigatorOps` returned by `make_navigator_handle` when no
 /// SDK handler is stored for the requested node (e.g. the node id
@@ -190,37 +190,10 @@ pub struct IosBackend {
     pub(crate) keyboard_overlap: f32,
     /// Per-view cached animation state. Mirrors the web backend's
     /// `animated_states` map; see [`animated`] for the routing
-    /// from [`AnimProp`](runtime_core::animation::AnimProp) to
+    /// from [`AnimProp`](runtime_shared::animation::AnimProp) to
     /// UIKit setters and the rationale for caching the transform
     /// components.
     pub(crate) animated_states: animated::AnimatedStateMap,
-    /// Registry of third-party `Element::External` handlers,
-    /// populated by `register_external::<T>(...)` calls from
-    /// per-platform leaf crates (e.g. `webview-ios::register`).
-    /// `create_external` looks the handler up by payload TypeId;
-    /// unregistered kinds fall through to a "not supported" placeholder
-    /// UILabel.
-    pub(crate) external_handlers:
-        runtime_core::ExternalRegistry<IosBackend>,
-    /// Registry of `Element::Navigator` handler factories.
-    /// SDK leaf crates (`stack_navigator::register`, etc.) install
-    /// factories keyed by their presentation TypeId.
-    pub(crate) navigator_handlers:
-        runtime_core::NavigatorRegistry<IosBackend>,
-    /// Per-navigator-instance SDK handler. Keyed by the navigator
-    /// container's `IosNode::view_key()`. `Backend::create_navigator`
-    /// resolves the factory, runs `init`, and stores the returned
-    /// handler here so subsequent `navigator_attach_initial` /
-    /// `release_navigator` / `make_navigator_handle` /
-    /// `apply_navigator_slot_style` trait methods can route through
-    /// the handler's kind-specific logic instead of branching on a
-    /// kind discriminant + calling per-kind inherent helpers.
-    pub(crate) nav_handler_instances: HashMap<
-        usize,
-        std::rc::Rc<
-            std::cell::RefCell<Box<dyn runtime_core::NavigatorHandler<IosBackend>>>,
-        >,
-    >,
     /// Per-virtualizer side state — keyed by the `UICollectionView`'s
     /// pointer. UIKit holds dataSource + delegate as weak refs, so
     /// we keep the `VirtualizerDataSource` retained here for the
@@ -251,7 +224,7 @@ pub struct IosBackend {
     /// `insert`, so the superview walk couldn't yet find an
     /// enclosing `UIScrollView`. The walker calls `apply_style`
     /// (via `attach_style`) inside the per-primitive `build`, then
-    /// the parent's `insert_children` does `backend.insert(...)`
+    /// the parent's `insert_children` does `backend.insert_impl(...)`
     /// afterwards — so at apply-style time the child is still a
     /// detached floating view. We stash `(view_ptr, threshold)`
     /// here and complete the registration in `insert` once the
@@ -372,13 +345,12 @@ pub fn with_backend<R>(f: impl FnOnce(&mut IosBackend) -> R) -> Option<R> {
 /// or the install has been dropped (post-teardown), or if the
 /// backend is already borrowed (the in-flight Rust call will see
 /// the new value on its next frame).
-pub fn set_animated_f32(node: &IosNode, prop: runtime_core::animation::AnimProp, value: f32) {
+pub fn set_animated_f32(node: &IosNode, prop: runtime_shared::animation::AnimProp, value: f32) {
     let weak = IOS_BACKEND_SELF.with(|s| s.borrow().clone());
     let Some(weak) = weak else { return };
     let Some(rc) = weak.upgrade() else { return };
     if let Ok(mut b) = rc.try_borrow_mut() {
-        use runtime_core::Backend;
-        b.set_animated_f32(node, prop, value);
+        b.set_animated_f32_impl(node, prop, value);
     };
 }
 
@@ -386,15 +358,14 @@ pub fn set_animated_f32(node: &IosNode, prop: runtime_core::animation::AnimProp,
 /// the global backend's `set_animated_color`.
 pub fn set_animated_color(
     node: &IosNode,
-    prop: runtime_core::animation::AnimProp,
+    prop: runtime_shared::animation::AnimProp,
     value: [f32; 4],
 ) {
     let weak = IOS_BACKEND_SELF.with(|s| s.borrow().clone());
     let Some(weak) = weak else { return };
     let Some(rc) = weak.upgrade() else { return };
     if let Ok(mut b) = rc.try_borrow_mut() {
-        use runtime_core::Backend;
-        b.set_animated_color(node, prop, value);
+        b.set_animated_color_impl(node, prop, value);
     };
 }
 
@@ -568,33 +539,9 @@ fn promote_pending_sticky_recursive(
 // Helpers
 // =========================================================================
 
-/// An inventory-collected external registrar. An SDK's iOS module
-/// `inventory::submit!`s one of these (carrying a `fn(&mut IosBackend)`);
-/// [`IosBackend::new`] drains them so the SDK self-registers its
-/// `Element::External` handler without the app naming the concrete backend.
-/// See [[project_inventory_self_registration]].
-pub struct IosExternalRegistrar(pub fn(&mut IosBackend));
-inventory::collect!(IosExternalRegistrar);
 
-/// Navigator analogue of [`IosExternalRegistrar`]; a navigator SDK's iOS module
-/// submits one so the app needn't call `<nav>::register` per platform.
-/// See [[project_inventory_self_registration]].
-pub struct IosNavigatorRegistrar(pub fn(&mut IosBackend));
-inventory::collect!(IosNavigatorRegistrar);
 
 impl IosBackend {
-    /// Install every SDK-submitted external + navigator handler. Native
-    /// (non-wasm) so inventory's link-time ctors populate the slices before
-    /// construction.
-    fn drain_self_registrars(&mut self) {
-        for r in inventory::iter::<IosExternalRegistrar> {
-            (r.0)(self);
-        }
-        for r in inventory::iter::<IosNavigatorRegistrar> {
-            (r.0)(self);
-        }
-    }
-
     pub fn new(mtm: MainThreadMarker) -> Self {
         phase_timer::install_core_bridge();
         let mut backend = Self {
@@ -616,51 +563,13 @@ impl IosBackend {
             last_viewport: None,
             keyboard_overlap: 0.0,
             animated_states: HashMap::new(),
-            external_handlers: runtime_core::ExternalRegistry::new(),
-            navigator_handlers: runtime_core::NavigatorRegistry::new(),
-            nav_handler_instances: HashMap::new(),
             virtualizer_instances: HashMap::new(),
             collection_views: std::collections::HashSet::new(),
             sticky_registry: HashMap::new(),
             pending_sticky: HashMap::new(),
             detached_window_roots: HashMap::new(),
         };
-        backend.drain_self_registrars();
         backend
-    }
-
-    /// Register a handler for the third-party external primitive whose
-    /// payload type is `T`. Called by per-platform leaf crates (e.g.
-    /// `webview_ios::register`) during app bootstrap. The handler
-    /// receives the typed payload + a mutable borrow of the backend
-    /// and produces the `IosNode` to mount.
-    pub fn register_external<T, F>(&mut self, handler: F)
-    where
-        T: 'static,
-        F: Fn(&std::rc::Rc<T>, &mut IosBackend) -> IosNode + 'static,
-    {
-        self.external_handlers.register::<T, _>(handler);
-    }
-
-    /// `true` if a handler for payload type `T` has been registered.
-    /// Useful for opt-in graceful degradation in user code (render a
-    /// static fallback if the SDK isn't available on iOS).
-    pub fn has_external<T: 'static>(&self) -> bool {
-        self.external_handlers.has::<T>()
-    }
-
-    /// Register a navigator-kind handler factory for the per-backend
-    /// `NavigatorRegistry`. Mirrors `register_external` but for
-    /// `Element::Navigator`. SDK leaf crates
-    /// (`stack_navigator::register`, `tab_navigator::register`,
-    /// `drawer_navigator::register`) call this once during app
-    /// bootstrap.
-    pub fn register_navigator<P, F>(&mut self, factory: F)
-    where
-        P: 'static,
-        F: Fn() -> Box<dyn runtime_core::NavigatorHandler<IosBackend>> + 'static,
-    {
-        self.navigator_handlers.register::<P, _>(factory);
     }
 
     /// `MainThreadMarker` accessor for third-party SDK extension code
@@ -1262,33 +1171,23 @@ pub fn mount_screen_in_vc(mtm: MainThreadMarker, screen: &UIView) -> Retained<UI
 // Backend trait implementation
 // =========================================================================
 
-/// Generic external-registration entry (mirrors the macOS/Android impls): lets
-/// `register<B: RegisterExternal>(b)` — e.g. `canvas_vello::register` — target
-/// iOS without naming the concrete backend. Forwards to the same
-/// `external_handlers` registry as the inherent [`IosBackend::register_external`].
-impl runtime_core::RegisterExternal for IosBackend {
-    fn register_external<T, F>(&mut self, handler: F)
-    where
-        T: 'static,
-        F: Fn(&std::rc::Rc<T>, &mut IosBackend) -> IosNode + 'static,
-    {
-        self.external_handlers.register::<T, _>(handler);
-    }
-}
-
-impl Backend for IosBackend {
-    type Node = IosNode;
+// The backend mechanism, as inherent methods (runtime v2: the `Backend`
+// mega-trait is gone). Bodies are verbatim what the trait impl carried;
+// `newcore.rs` adapts them onto `runtime_scene::Host` + the
+// `runtime_vocabulary::caps::*Ops` capability traits, one delegation per
+// method. `_impl` suffix keeps the adapter's call sites unambiguous.
+impl IosBackend {
 
     /// Navigator abstraction calls this after every command (see the trait doc).
-    fn schedule_layout_pass() {
+    pub(crate) fn schedule_layout_pass_impl() {
         crate::imp::schedule_layout_pass();
     }
 
-    fn set_app_key_handler(&mut self, handler: Option<runtime_core::primitives::key::KeyDownHandler>) {
+    pub(crate) fn set_app_key_handler_impl(&mut self, handler: Option<runtime_shared::primitives::key::KeyDownHandler>) {
         keyboard::set_app_key_handler(self, handler);
     }
 
-    fn platform(&self) -> runtime_core::Platform {
+    pub(crate) fn platform_impl(&self) -> runtime_shared::Platform {
         // ALWAYS `Ios`, simulator included. The simulator IS iOS — same UIKit,
         // same touch model — so `platform()` must report `Ios` there too, or
         // `is_mobile()`-gated behavior silently flips on the sim. It did exactly
@@ -1300,19 +1199,19 @@ impl Backend for IosBackend {
         // compile-time `cfg(target_abi = "sim")` marker (see the camera /
         // canvas-native / vello gates), which is precise and doesn't leak into
         // runtime author code.
-        runtime_core::Platform::Ios
+        runtime_shared::Platform::Ios
     }
 
-    fn supports_screenshot(&self) -> bool {
+    pub(crate) fn supports_screenshot_impl(&self) -> bool {
         // Capability, not current state: UIKit can always rasterize a
         // view hierarchy. A capture before the host root is installed
         // returns an error rather than failing this gate.
         true
     }
 
-    fn capture_screenshot(
+    pub(crate) fn capture_screenshot_impl(
         &self,
-        done: Box<dyn FnOnce(Result<runtime_core::Screenshot, String>)>,
+        done: Box<dyn FnOnce(Result<runtime_shared::Screenshot, String>)>,
     ) {
         let result = match self.host_root.as_ref() {
             Some(view) => screenshot::capture(view),
@@ -1321,7 +1220,7 @@ impl Backend for IosBackend {
         done(result);
     }
 
-    fn url_opener(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {
+    pub(crate) fn url_opener_impl(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {
         Some(std::rc::Rc::new(|url: &str| {
             // [[UIApplication sharedApplication] openURL:] hands the URL
             // to the system (Safari, Mail, the app registered for the
@@ -1347,7 +1246,7 @@ impl Backend for IosBackend {
         }))
     }
 
-    fn fullscreen_setter(&self) -> Option<std::rc::Rc<dyn Fn(bool)>> {
+    pub(crate) fn fullscreen_setter_impl(&self) -> Option<std::rc::Rc<dyn Fn(bool)>> {
         // Drive the host `ViewController`'s `prefersStatusBarHidden` /
         // `prefersHomeIndicatorAutoHidden` via its `applyFullscreen:`
         // method (defined in the generated `ViewController.swift`). The
@@ -1392,20 +1291,20 @@ impl Backend for IosBackend {
         }))
     }
 
-    fn color_scheme(&self) -> runtime_core::ColorScheme {
+    pub(crate) fn color_scheme_impl(&self) -> runtime_shared::ColorScheme {
         // UITraitCollection.currentTraitCollection.userInterfaceStyle
         // 0 = Unspecified, 1 = Light, 2 = Dark (UIUserInterfaceStyle).
         let tc: Retained<NSObject> =
             unsafe { msg_send_id![objc2::class!(UITraitCollection), currentTraitCollection] };
         let style: isize = unsafe { msg_send![&tc, userInterfaceStyle] };
         match style {
-            1 => runtime_core::ColorScheme::Light,
-            2 => runtime_core::ColorScheme::Dark,
-            _ => runtime_core::ColorScheme::Auto,
+            1 => runtime_shared::ColorScheme::Light,
+            2 => runtime_shared::ColorScheme::Dark,
+            _ => runtime_shared::ColorScheme::Auto,
         }
     }
 
-    fn create_view(&mut self, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
+    pub(crate) fn create_view_impl(&mut self, a11y: &runtime_shared::accessibility::AccessibilityProps) -> IosNode {
         // IdealystTouchView is a UIView subclass that overrides the
         // four `touchesBegan:/Moved:/Ended:/Cancelled:` entry points
         // so a later `install_touch_handler` can attach a raw-touch
@@ -1431,7 +1330,7 @@ impl Backend for IosBackend {
         node
     }
 
-    fn create_text(&mut self, content: &str, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
+    pub(crate) fn create_text_impl(&mut self, content: &str, a11y: &runtime_shared::accessibility::AccessibilityProps) -> IosNode {
         // `IdealystLabel` is a UILabel subclass with per-side text
         // insets. The framework's `StyleRules.padding_*` values get
         // applied by Taffy as the node's padding rect, which insets
@@ -1521,18 +1420,18 @@ impl Backend for IosBackend {
         node
     }
 
-    fn create_styled_text(
+    pub(crate) fn create_styled_text_impl(
         &mut self,
-        runs: &[runtime_core::TextRun],
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        runs: &[runtime_shared::TextRun],
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> IosNode {
         // Reuse the full `create_text` path (inset label subclass, wrap
         // config, measure_fn — `sizeThatFits:` measures the attributed
         // string once it's set), then replace the plain string with the
         // attributed realization. The paragraph style arrives via
         // `apply_style` right after and re-realizes with the real base.
-        let plain = runtime_core::styled_text::plain_text_of(runs);
-        let node = self.create_text(&plain, a11y);
+        let plain = runtime_shared::styled_text::plain_text_of(runs);
+        let node = self.create_text_impl(&plain, a11y);
         if let IosNode::Label(label) = &node {
             styled_text::realize(label, runs, None, &self.font_registry);
             let key = &**label as *const UILabel as *const UIView as usize;
@@ -1544,7 +1443,7 @@ impl Backend for IosBackend {
         node
     }
 
-    fn update_styled_text(&mut self, node: &Self::Node, runs: &[runtime_core::TextRun]) {
+    pub(crate) fn update_styled_text_impl(&mut self, node: &IosNode, runs: &[runtime_shared::TextRun]) {
         // Theme-cohort re-realization (and any direct caller): keep the
         // stored runs current and rebuild against the last-applied
         // paragraph style so run token colors resolve on the NEW theme.
@@ -1560,14 +1459,14 @@ impl Backend for IosBackend {
         styled_text::realize(label, runs, para.as_deref(), &self.font_registry);
     }
 
-    fn create_button(
+    pub(crate) fn create_button_impl(
         &mut self,
         label: &str,
-        on_click: &runtime_core::Action,
-        leading_icon: Option<&runtime_core::IconData>,
-        _trailing_icon: Option<&runtime_core::IconData>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        on_click: &runtime_shared::Action,
+        leading_icon: Option<&runtime_shared::IconData>,
+        _trailing_icon: Option<&runtime_shared::IconData>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> IosNode {
         let button = unsafe {
             UIButton::buttonWithType(UIButtonType::System, self.mtm)
         };
@@ -1637,7 +1536,7 @@ impl Backend for IosBackend {
         node
     }
 
-    fn update_button_label(&mut self, node: &Self::Node, label: &str) {
+    pub(crate) fn update_button_label_impl(&mut self, node: &IosNode, label: &str) {
         if let IosNode::Button(button) = node {
             let ns = NSString::from_str(label);
             let _: () = unsafe { msg_send![button, setTitle: &*ns, forState: 0u64] };
@@ -1651,16 +1550,16 @@ impl Backend for IosBackend {
         }
     }
 
-    fn create_text_input(
+    pub(crate) fn create_text_input_impl(
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
+        on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
         secure: bool,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> IosNode {
         // IdealystTextField (not a plain UITextField): insets its text by the
         // author `padding_*` and fires StateBits::FOCUSED on first-responder
         // changes — the iOS half of the macOS/web padded-input + focus-ring
@@ -1722,7 +1621,7 @@ impl Backend for IosBackend {
                 let intrinsic: objc2_foundation::CGSize =
                     unsafe { msg_send![&field_for_measure, intrinsicContentSize] };
                 runtime_layout::Size {
-                    width: runtime_core::primitives::text_input::measured_width(
+                    width: runtime_shared::primitives::text_input::measured_width(
                         known_dimensions.width,
                     ),
                     height: known_dimensions
@@ -1746,7 +1645,7 @@ impl Backend for IosBackend {
         node
     }
 
-    fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
+    pub(crate) fn update_text_input_value_impl(&mut self, node: &IosNode, value: &str) {
         if let IosNode::TextField(field) = node {
             let current: Option<Retained<NSString>> = unsafe { msg_send_id![field, text] };
             let current_str = current.map(|ns| ns.to_string()).unwrap_or_default();
@@ -1757,7 +1656,7 @@ impl Backend for IosBackend {
         }
     }
 
-    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
+    pub(crate) fn update_text_input_secure_impl(&mut self, node: &IosNode, secure: bool) {
         // Live mask toggle — `isSecureTextEntry` flips in place on the same
         // UITextField, so the controlled value survives (password show/hide).
         if let IosNode::TextField(field) = node {
@@ -1773,19 +1672,19 @@ impl Backend for IosBackend {
     /// the framework's state setter on the `IdealystTextField` so its
     /// become/resignFirstResponder flips FOCUSED; no-op for every other node
     /// (preserving today's behavior where iOS doesn't track interaction state).
-    fn attach_states(
+    pub(crate) fn attach_states_impl(
         &mut self,
-        node: &Self::Node,
-        setter: Rc<dyn Fn(runtime_core::StateBits, bool)>,
+        node: &IosNode,
+        setter: Rc<dyn Fn(runtime_shared::StateBits, bool)>,
     ) {
         let focus_setter = setter.clone();
         text_inset::set_text_field_focus_setter(
             node.as_view(),
-            Rc::new(move |on: bool| focus_setter(runtime_core::StateBits::FOCUSED, on)),
+            Rc::new(move |on: bool| focus_setter(runtime_shared::StateBits::FOCUSED, on)),
         );
     }
 
-    fn create_text_area(
+    pub(crate) fn create_text_area_impl(
         &mut self,
         initial_value: &str,
         _placeholder: Option<&str>,
@@ -1793,9 +1692,9 @@ impl Backend for IosBackend {
         min_rows: Option<u32>,
         max_rows: Option<u32>,
         on_change: Rc<dyn Fn(String)>,
-        on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> IosNode {
         // UITextView is the multi-line equivalent of UITextField. It
         // ships with `editable: true` already, so we don't need to
         // flip it. Note: UITextView has no `placeholder` property —
@@ -1879,7 +1778,7 @@ impl Backend for IosBackend {
                             msg_send![&view_for_measure, font];
                         if font.is_null() { 0.0 } else { msg_send![font, lineHeight] }
                     };
-                    let h = runtime_core::primitives::text_area::resolve_text_area_height(
+                    let h = runtime_shared::primitives::text_area::resolve_text_area_height(
                         content_h, line_h as f32, v_pad, min_rows, max_rows,
                     );
                     runtime_layout::Size {
@@ -1902,7 +1801,7 @@ impl Backend for IosBackend {
         node
     }
 
-    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
+    pub(crate) fn update_text_area_value_impl(&mut self, node: &IosNode, value: &str) {
         if let IosNode::TextView(view) = node {
             let current: Option<Retained<NSString>> = unsafe { msg_send_id![view, text] };
             let current_str = current.map(|ns| ns.to_string()).unwrap_or_default();
@@ -1925,12 +1824,12 @@ impl Backend for IosBackend {
         }
     }
 
-    fn create_toggle(
+    pub(crate) fn create_toggle_impl(
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> IosNode {
         let switch = unsafe { UISwitch::new(self.mtm) };
         unsafe { switch.setOn_animated(initial_value, false) };
 
@@ -1969,7 +1868,7 @@ impl Backend for IosBackend {
         node
     }
 
-    fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
+    pub(crate) fn update_toggle_value_impl(&mut self, node: &IosNode, value: bool) {
         if let IosNode::Switch(switch) = node {
             let current: bool = unsafe { msg_send![switch, isOn] };
             if current != value {
@@ -1978,12 +1877,12 @@ impl Backend for IosBackend {
         }
     }
 
-    fn create_scroll_view(
+    pub(crate) fn create_scroll_view_impl(
         &mut self,
         horizontal: bool,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> IosNode {
         // Plain UIScrollView, frame-based. Children are added directly as
         // subviews (no inner UIStackView); their frames come from Taffy via
         // `apply_frames`. We sync `contentSize` to the bounding rect of the Taffy
@@ -2028,7 +1927,7 @@ impl Backend for IosBackend {
         if let Some(cb) = on_scroll {
             let deferred: Rc<dyn Fn(f32, f32)> = Rc::new(move |x, y| {
                 let cb = cb.clone();
-                runtime_core::schedule_microtask(move || cb(x, y));
+                runtime_shared::schedule_microtask(move || cb(x, y));
             });
             let delegate = crate::imp::callbacks::ScrollDelegate::new(self.mtm, deferred);
             let _: () = unsafe { msg_send![&scroll, setDelegate: &*delegate] };
@@ -2069,15 +1968,15 @@ impl Backend for IosBackend {
         node
     }
 
-    fn create_slider(
+    pub(crate) fn create_slider_impl(
         &mut self,
         initial_value: f32,
         min: f32,
         max: f32,
         _step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> IosNode {
         let slider = unsafe { UISlider::new(self.mtm) };
         unsafe {
             slider.setMinimumValue(min);
@@ -2115,18 +2014,18 @@ impl Backend for IosBackend {
         node
     }
 
-    fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
+    pub(crate) fn update_slider_value_impl(&mut self, node: &IosNode, value: f32) {
         if let IosNode::Slider(slider) = node {
             unsafe { slider.setValue_animated(value, true) };
         }
     }
 
-    fn create_activity_indicator(
+    pub(crate) fn create_activity_indicator_impl(
         &mut self,
         size: ActivityIndicatorSize,
         color: Option<&Color>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> IosNode {
         let style = match size {
             ActivityIndicatorSize::Small => UIActivityIndicatorViewStyle::Medium,
             ActivityIndicatorSize::Large => UIActivityIndicatorViewStyle::Large,
@@ -2147,17 +2046,17 @@ impl Backend for IosBackend {
         a11y::apply(
             &node,
             a11y,
-            Some(runtime_core::accessibility::Role::Spinner),
+            Some(runtime_shared::accessibility::Role::Spinner),
         );
         node
     }
 
-    fn create_icon(
+    pub(crate) fn create_icon_impl(
         &mut self,
-        data: &runtime_core::primitives::icon::IconData,
+        data: &runtime_shared::primitives::icon::IconData,
         color: Option<&Color>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> IosNode {
         let node = icon::create_icon(self.mtm, data, color);
         // Give the icon a Taffy intrinsic size so flex layout reserves
         // its box (otherwise the glyph collapses to 0 width and row
@@ -2168,16 +2067,16 @@ impl Backend for IosBackend {
         a11y::apply(
             &node,
             a11y,
-            Some(runtime_core::accessibility::Role::Image),
+            Some(runtime_shared::accessibility::Role::Image),
         );
         node
     }
 
-    fn register_asset(
+    pub(crate) fn register_asset_impl(
         &mut self,
-        id: runtime_core::AssetId,
-        kind: runtime_core::AssetTag,
-        source: &runtime_core::AssetSource,
+        id: runtime_shared::AssetId,
+        kind: runtime_shared::AssetTag,
+        source: &runtime_shared::AssetSource,
     ) {
         // Font branch routes into the CoreText-backed registry first;
         // when the asset isn't a font, the call falls through to the
@@ -2189,33 +2088,33 @@ impl Backend for IosBackend {
         }
     }
 
-    fn unregister_asset(
+    pub(crate) fn unregister_asset_impl(
         &mut self,
-        id: runtime_core::AssetId,
-        kind: runtime_core::AssetTag,
+        id: runtime_shared::AssetId,
+        kind: runtime_shared::AssetTag,
     ) {
         self.font_registry.unregister_asset(id, kind);
-        if kind == runtime_core::AssetTag::Image {
+        if kind == runtime_shared::AssetTag::Image {
             self.image_cache.remove(&id);
         }
     }
 
-    fn register_typeface(
+    pub(crate) fn register_typeface_impl(
         &mut self,
-        id: runtime_core::assets::TypefaceId,
+        id: runtime_shared::assets::TypefaceId,
         family_name: &str,
-        faces: &[runtime_core::assets::TypefaceFace],
-        fallback: runtime_core::assets::SystemFallback,
+        faces: &[runtime_shared::assets::TypefaceFace],
+        fallback: runtime_shared::assets::SystemFallback,
     ) {
         self.font_registry
             .register_typeface(id, family_name, faces, fallback);
     }
 
-    fn unregister_typeface(&mut self, id: runtime_core::assets::TypefaceId) {
+    pub(crate) fn unregister_typeface_impl(&mut self, id: runtime_shared::assets::TypefaceId) {
         self.font_registry.unregister_typeface(id);
     }
 
-    fn create_image(&mut self, src: &str, alt: Option<&str>, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
+    pub(crate) fn create_image_impl(&mut self, src: &str, alt: Option<&str>, a11y: &runtime_shared::accessibility::AccessibilityProps) -> IosNode {
         let node = image::create_image(self.mtm, &self.image_cache, src, alt);
         // Register with the layout tree so Taffy gives it a frame.
         // Image views need an intrinsic-size measurer so they don't
@@ -2228,12 +2127,12 @@ impl Backend for IosBackend {
         a11y::apply(
             &node,
             a11y,
-            Some(runtime_core::accessibility::Role::Image),
+            Some(runtime_shared::accessibility::Role::Image),
         );
         node
     }
 
-    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
+    pub(crate) fn update_image_src_impl(&mut self, node: &IosNode, src: &str) {
         image::update_image_src(node, &self.image_cache, src);
         if let IosNode::View(view) = node {
             // Image swap can change intrinsicContentSize → re-measure.
@@ -2242,29 +2141,29 @@ impl Backend for IosBackend {
         }
     }
 
-    fn install_image_load_handler(
+    pub(crate) fn install_image_load_handler_impl(
         &mut self,
-        node: &Self::Node,
-        handler: runtime_core::ImageLoadHandler,
+        node: &IosNode,
+        handler: runtime_shared::ImageLoadHandler,
     ) {
         image::install_load_handler(node, handler);
     }
 
-    fn install_image_error_handler(
+    pub(crate) fn install_image_error_handler_impl(
         &mut self,
-        node: &Self::Node,
-        handler: runtime_core::ImageErrorHandler,
+        node: &IosNode,
+        handler: runtime_shared::ImageErrorHandler,
     ) {
         image::install_error_handler(node, handler);
     }
 
-    fn create_virtualizer(
+    pub(crate) fn create_virtualizer_impl(
         &mut self,
-        callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
+        callbacks: runtime_shared::VirtualizerCallbacks<IosNode>,
         overscan: f32,
-        virt_layout: runtime_core::VirtualLayout,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        virt_layout: runtime_shared::VirtualLayout,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> IosNode {
         let horizontal = virt_layout.axis.is_horizontal();
         // Build the UICollectionView + flow layout + data source.
         // Supports vertical and horizontal single-section lists and
@@ -2361,12 +2260,12 @@ impl Backend for IosBackend {
         a11y::apply(
             &node,
             a11y,
-            Some(runtime_core::accessibility::Role::List),
+            Some(runtime_shared::accessibility::Role::List),
         );
         node
     }
 
-    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
+    pub(crate) fn virtualizer_data_changed_impl(&mut self, node: &IosNode) {
         // Phase-1: full reload. Phase-2 would diff item keys against
         // the previous snapshot and issue `performBatchUpdates` so
         // surviving rows animate in place. `reloadData()` is correct
@@ -2389,7 +2288,7 @@ impl Backend for IosBackend {
         let view_retained: Retained<UIView> = unsafe {
             Retained::retain(view as *const UIView as *mut UIView).expect("retain UIView")
         };
-        runtime_core::scheduling::schedule_microtask(move || {
+        runtime_shared::scheduling::schedule_microtask(move || {
             virtualizer::data_changed(&view_retained);
         });
         // The item count changed, so the list's content size changed. Mark
@@ -2404,7 +2303,7 @@ impl Backend for IosBackend {
         schedule_layout_pass();
     }
 
-    fn release_virtualizer(&mut self, node: &Self::Node) {
+    pub(crate) fn release_virtualizer_impl(&mut self, node: &IosNode) {
         // Tear down — runs from the cleanup Effect installed by the
         // walker when the surrounding Scope drops. We do this BEFORE
         // the UICollectionView itself goes out of scope so any UIKit
@@ -2420,38 +2319,38 @@ impl Backend for IosBackend {
         virtualizer::release(&mut self.virtualizer_instances, view);
     }
 
-    fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
+    pub(crate) fn update_icon_color_impl(&mut self, node: &IosNode, color: &Color) {
         icon::update_icon_color(node, color)
     }
 
-    fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
+    pub(crate) fn update_icon_stroke_impl(&mut self, node: &IosNode, progress: f32) {
         icon::update_icon_stroke(node, progress)
     }
 
-    fn animate_icon_stroke(
+    pub(crate) fn animate_icon_stroke_impl(
         &mut self,
-        node: &Self::Node,
+        node: &IosNode,
         from: f32,
         to: f32,
         duration_ms: u32,
-        easing: runtime_core::Easing,
+        easing: runtime_shared::Easing,
         infinite: bool,
         autoreverses: bool,
     ) {
         icon::animate_icon_stroke(node, from, to, duration_ms, easing, infinite, autoreverses)
     }
 
-    fn make_icon_handle(&self, node: &Self::Node) -> runtime_core::IconHandle {
+    pub(crate) fn make_icon_handle_impl(&self, node: &IosNode) -> runtime_shared::IconHandle {
         icon::make_handle(node)
     }
 
-    fn create_graphics(
+    pub(crate) fn create_graphics_impl(
         &mut self,
         on_ready: OnReady,
         on_resize: OnResize,
         on_lost: OnLost,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> IosNode {
         let node = graphics::create_graphics(self.mtm, &mut self.callback_targets, on_ready, on_resize, on_lost);
         // Graphics surfaces are GPU-rendered content with no inherent
         // a11y role; authors opt in via props.role / props.label.
@@ -2459,7 +2358,7 @@ impl Backend for IosBackend {
         node
     }
 
-    fn create_link(&mut self, config: LinkConfig, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
+    pub(crate) fn create_link_impl(&mut self, config: LinkConfig, a11y: &runtime_shared::accessibility::AccessibilityProps) -> IosNode {
         // Plain UIView (was UIStackView). UIStackView injected internal
         // UISV-canvas-connection constraints that fought Taffy's
         // frame-based positioning — manifested as sibling links in the
@@ -2502,19 +2401,19 @@ impl Backend for IosBackend {
                 config.route.to_string()
             }
         });
-        let effective_a11y = runtime_core::accessibility::AccessibilityProps {
+        let effective_a11y = runtime_shared::accessibility::AccessibilityProps {
             label: Some(resolved_label),
             ..a11y.clone()
         };
         a11y::apply(
             &node,
             &effective_a11y,
-            Some(runtime_core::accessibility::Role::Link),
+            Some(runtime_shared::accessibility::Role::Link),
         );
         node
     }
 
-    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
+    pub(crate) fn create_pressable_impl(&mut self, on_click: Rc<dyn Fn()>, a11y: &runtime_shared::accessibility::AccessibilityProps) -> IosNode {
         // Mirror `create_link`'s tap-gesture wiring so `Pressable`
         // children actually fire their click handlers. The default
         // `Backend::create_pressable` (see
@@ -2565,15 +2464,15 @@ impl Backend for IosBackend {
         a11y::apply(
             &node,
             a11y,
-            Some(runtime_core::accessibility::Role::Button),
+            Some(runtime_shared::accessibility::Role::Button),
         );
         node
     }
 
-    fn install_touch_handler(
+    pub(crate) fn install_touch_handler_impl(
         &mut self,
-        node: &Self::Node,
-        handler: runtime_core::TouchHandler,
+        node: &IosNode,
+        handler: runtime_shared::TouchHandler,
     ) {
         // `create_view` mints `IdealystTouchView` instances; every
         // framework View should pass this `isKindOfClass:` check.
@@ -2599,10 +2498,19 @@ impl Backend for IosBackend {
         touch_view.set_handler(handler);
     }
 
-    fn claim_touch(
+    pub(crate) fn mark_preserves_focus_impl(&mut self, node: &IosNode) {
+        // Tag the view with the focus-preservation sentinel; the
+        // keyboard-dismiss tap recognizer's `shouldReceiveTouch:` walks the
+        // touched view's ancestors and skips `endEditing:` when it finds it
+        // (see `callbacks::PRESERVES_FOCUS_TAG` for why `tag`).
+        let view = node.as_view();
+        let _: () = unsafe { msg_send![view, setTag: callbacks::PRESERVES_FOCUS_TAG] };
+    }
+
+    pub(crate) fn claim_touch_impl(
         &mut self,
-        node: &Self::Node,
-        _touch_id: runtime_core::TouchId,
+        node: &IosNode,
+        _touch_id: runtime_shared::TouchId,
     ) {
         // Walk up the responder chain looking for any UIScrollView
         // ancestor and force-cancel its in-flight pan. See
@@ -2612,7 +2520,7 @@ impl Backend for IosBackend {
         touch::claim_touch_internal(node.as_view());
     }
 
-    fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
+    pub(crate) fn insert_impl(&mut self, parent: &mut IosNode, child: IosNode) {
         let parent_view = parent.as_view();
         let parent_key = parent_view as *const UIView as usize;
         let child_view = child.as_view();
@@ -2815,7 +2723,7 @@ impl Backend for IosBackend {
     /// the real parent as its containing block — both matching web's
     /// `display: contents` anchor, with no per-case wrapper hack. It also
     /// upgrades reactive `for` to keyed reconciliation.
-    fn supports_child_splice(&self) -> bool {
+    pub(crate) fn supports_child_splice_impl(&self) -> bool {
         true
     }
 
@@ -2827,7 +2735,7 @@ impl Backend for IosBackend {
     /// recomputed (Taffy doesn't auto-invalidate on a child-set change —
     /// without this the parent could keep a stale size from when the prior,
     /// taller branch was active).
-    fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
+    pub(crate) fn remove_child_impl(&mut self, parent: &IosNode, child: &IosNode) {
         let parent_view = parent.as_view();
         let child_view = child.as_view();
         let child_key = child_view as *const UIView as usize;
@@ -2911,7 +2819,7 @@ impl Backend for IosBackend {
     /// targets the real container the `when`/`each` lives in (see
     /// `walker::view::insert_children` → `build_when_spliced`), never a
     /// portal content holder — portals take the anchored `insert` path.
-    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
+    pub(crate) fn insert_at_impl(&mut self, parent: &mut IosNode, child: IosNode, index: usize) {
         let parent_view = parent.as_view();
         let child_view = child.as_view();
         let child_key = child_view as *const UIView as usize;
@@ -2983,7 +2891,7 @@ impl Backend for IosBackend {
         }
     }
 
-    fn update_text(&mut self, node: &Self::Node, content: &str) {
+    pub(crate) fn update_text_impl(&mut self, node: &IosNode, content: &str) {
         match node {
             IosNode::Label(label) => {
                 let ns = NSString::from_str(content);
@@ -3012,7 +2920,7 @@ impl Backend for IosBackend {
         }
     }
 
-    fn clear_children(&mut self, node: &Self::Node) {
+    pub(crate) fn clear_children_impl(&mut self, node: &IosNode) {
         // Mirror the UIKit teardown in Taffy. The earlier shape only
         // called `removeFromSuperview()` — UIKit dropped the child
         // views but Taffy still tracked them as children of the
@@ -3100,7 +3008,7 @@ impl Backend for IosBackend {
         }
     }
 
-    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
+    pub(crate) fn apply_style_impl(&mut self, node: &IosNode, style: &Rc<StyleRules>) {
         let view = node.as_view();
         apply_style_to_view(view, style);
 
@@ -3128,7 +3036,7 @@ impl Backend for IosBackend {
         // image-only.
         image::apply_object_fit(
             view,
-            style.object_fit.unwrap_or(runtime_core::ObjectFit::Contain),
+            style.object_fit.unwrap_or(runtime_shared::ObjectFit::Contain),
         );
 
         // Position::Sticky → register against the enclosing
@@ -3152,12 +3060,12 @@ impl Backend for IosBackend {
         // subtree and promotes any entries it can now resolve.
         let view_key = view as *const UIView as usize;
         match style.position {
-            Some(runtime_core::Position::Sticky) => {
+            Some(runtime_shared::Position::Sticky) => {
                 let threshold_top = style
                     .top
                     .as_ref()
                     .map(|t| match t.resolve() {
-                        runtime_core::Length::Px(v) => v,
+                        runtime_shared::Length::Px(v) => v,
                         // Percent / Auto for sticky's pin offset
                         // isn't meaningful (the spec resolves
                         // percent against the scroll container's
@@ -3271,10 +3179,10 @@ impl Backend for IosBackend {
                 // `sizeThatFits:`, which the measure_fn reports — so like
                 // the Label branch above, Taffy padding must be stripped or
                 // the box double-counts it.
-                let resolve = |t: &Option<runtime_core::Tokenized<runtime_core::Length>>| {
+                let resolve = |t: &Option<runtime_shared::Tokenized<runtime_shared::Length>>| {
                     t.as_ref()
                         .map(|tok| match tok.resolve() {
-                            runtime_core::Length::Px(px) => px as f64,
+                            runtime_shared::Length::Px(px) => px as f64,
                             // Percent/Auto have no defined sizing parent on
                             // a measured leaf; treat as zero (same policy as
                             // `apply_text_insets_if_label`).
@@ -3456,39 +3364,39 @@ impl Backend for IosBackend {
         }
     }
 
-    fn set_animated_f32(
+    pub(crate) fn set_animated_f32_impl(
         &mut self,
-        node: &Self::Node,
-        prop: runtime_core::animation::AnimProp,
+        node: &IosNode,
+        prop: runtime_shared::animation::AnimProp,
         value: f32,
     ) {
         self.impl_set_animated_f32(node, prop, value);
     }
 
-    fn set_animated_color(
+    pub(crate) fn set_animated_color_impl(
         &mut self,
-        node: &Self::Node,
-        prop: runtime_core::animation::AnimProp,
+        node: &IosNode,
+        prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
         self.impl_set_animated_color(node, prop, value);
     }
 
-    fn apply_presence(
+    pub(crate) fn apply_presence_impl(
         &mut self,
-        node: &Self::Node,
-        state: runtime_core::PresenceState,
-        transition: Option<(u32, runtime_core::Easing)>,
+        node: &IosNode,
+        state: runtime_shared::PresenceState,
+        transition: Option<(u32, runtime_shared::Easing)>,
     ) {
         self.impl_apply_presence(node, state, transition);
     }
 
-    fn frame(&self, node: &Self::Node) -> Option<runtime_core::primitives::portal::ViewportRect> {
+    pub(crate) fn frame_impl(&self, node: &IosNode) -> Option<runtime_shared::primitives::portal::ViewportRect> {
         // UIView.frame is already in superview coordinates — that's
         // the relative-to-parent rect.
         let view = node.as_view();
         let frame: objc2_foundation::CGRect = unsafe { msg_send![view, frame] };
-        Some(runtime_core::primitives::portal::ViewportRect {
+        Some(runtime_shared::primitives::portal::ViewportRect {
             x: frame.origin.x as f32,
             y: frame.origin.y as f32,
             width: frame.size.width as f32,
@@ -3496,7 +3404,7 @@ impl Backend for IosBackend {
         })
     }
 
-    fn absolute_frame(&self, node: &Self::Node) -> Option<runtime_core::primitives::portal::ViewportRect> {
+    pub(crate) fn absolute_frame_impl(&self, node: &IosNode) -> Option<runtime_shared::primitives::portal::ViewportRect> {
         // Same conversion as `rect_of_node` in handles.rs: convert
         // bounds to window coordinates. Returns None if the view
         // isn't yet mounted in a window.
@@ -3510,7 +3418,7 @@ impl Backend for IosBackend {
         let frame_in_window: objc2_foundation::CGRect = unsafe {
             msg_send![view, convertRect: bounds, toView: &*window]
         };
-        Some(runtime_core::primitives::portal::ViewportRect {
+        Some(runtime_shared::primitives::portal::ViewportRect {
             x: frame_in_window.origin.x as f32,
             y: frame_in_window.origin.y as f32,
             width: frame_in_window.size.width as f32,
@@ -3518,7 +3426,7 @@ impl Backend for IosBackend {
         })
     }
 
-    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
+    pub(crate) fn set_disabled_impl(&mut self, node: &IosNode, disabled: bool) {
         let enabled = !disabled;
         match node {
             IosNode::Button(b) => {
@@ -3546,13 +3454,13 @@ impl Backend for IosBackend {
     // Portal
     // =================================================================
 
-    fn create_portal(
+    pub(crate) fn create_portal_impl(
         &mut self,
-        target: runtime_core::primitives::portal::PortalTarget,
+        target: runtime_shared::primitives::portal::PortalTarget,
         _on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> IosNode {
         // On iOS-mobile we don't use `presentViewController:` for
         // portals — they're window-level `UIView` subviews. There's
         // no native dismiss event for that path (no swipe-down on
@@ -3561,7 +3469,7 @@ impl Backend for IosBackend {
         // response to whatever interaction the composition wires up
         // (backdrop tap, swipe handler on a sheet child, etc.). We
         // accept the callback but never fire it from this backend.
-        use runtime_core::primitives::portal::PortalTarget;
+        use runtime_shared::primitives::portal::PortalTarget;
 
         let (anchor_spec, container_rules) = match &target {
             PortalTarget::Viewport(placement) => {
@@ -3585,7 +3493,7 @@ impl Backend for IosBackend {
                     "[ios-portal] PortalTarget::Named({:?}) not implemented — falling back to FullScreen",
                     name
                 );
-                use runtime_core::primitives::portal::ViewportPlacement;
+                use runtime_shared::primitives::portal::ViewportPlacement;
                 (None, portal::container_style_for_placement(ViewportPlacement::FullScreen))
             }
         };
@@ -3616,7 +3524,7 @@ impl Backend for IosBackend {
         node
     }
 
-    fn release_portal(&mut self, node: &Self::Node) {
+    pub(crate) fn release_portal_impl(&mut self, node: &IosNode) {
         let key = IosBackend::node_key(node);
         let Some(entry) = self.portal_instances.remove(&key) else {
             return;
@@ -3681,29 +3589,27 @@ impl Backend for IosBackend {
         portal::release_portal(entry);
     }
 
-    fn create_external(
+    pub(crate) fn create_external_impl(
         &mut self,
-        type_id: std::any::TypeId,
+        _type_id: std::any::TypeId,
         type_name: &'static str,
-        payload: &std::rc::Rc<dyn std::any::Any>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let node = if let Some(handler) = self.external_handlers.get(type_id) {
-            handler(payload, self)
-        } else {
-            // No handler registered → render a placeholder UILabel so
-            // the dev/user sees that an SDK binding is missing on iOS
-            // rather than a silent hole. `has_external::<T>()` is the
-            // supported way to render custom degradation in user space.
-            external_placeholder_node(self, type_name)
-        };
+        _payload: &std::rc::Rc<dyn std::any::Any>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> IosNode {
+        // Runtime v2: there is no backend-side External registry any more.
+        // Third-party primitives register a payload handler on the scene
+        // `Registry` (`runtime_scene::Registry::register`), which dispatches
+        // BEFORE reaching a backend cap — so this method is only ever the
+        // last-resort placeholder an SDK's own degradation handler asks for
+        // on a host it has no leg for. Placeholder body unchanged.
+        let node = external_placeholder_node(self, type_name);
         // Third-party externals declare their own role via
         // `props.role` if needed — we don't infer one here.
         a11y::apply(&node, a11y, None);
         node
     }
 
-    fn release_external(&mut self, node: &Self::Node) {
+    pub(crate) fn release_external_impl(&mut self, node: &IosNode) {
         // Detached window root (screen_recorder private layer): tear
         // down its separate UIWindow so the overlay stops compositing
         // when the layer unmounts. `release_private_layer_window`
@@ -3722,7 +3628,7 @@ impl Backend for IosBackend {
 
     /// UIScrollView content offset, in points. Non-scroll nodes read (0,0),
     /// matching the trait contract.
-    fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
+    pub(crate) fn node_scroll_impl(&self, node: &IosNode) -> (f32, f32) {
         if let IosNode::ScrollView(scroll) = node {
             let p: objc2_foundation::CGPoint = unsafe { msg_send![&**scroll, contentOffset] };
             (p.x as f32, p.y as f32)
@@ -3735,17 +3641,17 @@ impl Backend for IosBackend {
     /// navigator's scroll restore and the robot's `set_scroll` drive, both
     /// of which want the final position, not a tween). Non-scroll nodes are
     /// a no-op, matching the trait contract.
-    fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
+    pub(crate) fn set_node_scroll_impl(&mut self, node: &IosNode, x: f32, y: f32) {
         if let IosNode::ScrollView(scroll) = node {
             let p = objc2_foundation::CGPoint { x: x as f64, y: y as f64 };
             let _: () = unsafe { msg_send![&**scroll, setContentOffset: p] };
         }
     }
 
-    fn apply_safe_area_padding(
+    pub(crate) fn apply_safe_area_padding_impl(
         &mut self,
-        node: &Self::Node,
-        sides: runtime_core::SafeAreaSides,
+        node: &IosNode,
+        sides: runtime_shared::SafeAreaSides,
     ) {
         // Read the platform's current safe-area insets from the host
         // root. `LayoutObserverView` mirrors the host's insets, so
@@ -3756,10 +3662,10 @@ impl Backend for IosBackend {
         // Mask per-side: only contribute on sides the author opted
         // into. `set_safe_area_extra` always takes all four sides;
         // we pass zero for unopted ones so the math stays uniform.
-        let top = if sides.contains(runtime_core::SafeAreaSides::TOP) { insets.top } else { 0.0 };
-        let right = if sides.contains(runtime_core::SafeAreaSides::RIGHT) { insets.right } else { 0.0 };
-        let bottom = if sides.contains(runtime_core::SafeAreaSides::BOTTOM) { insets.bottom } else { 0.0 };
-        let left = if sides.contains(runtime_core::SafeAreaSides::LEFT) { insets.left } else { 0.0 };
+        let top = if sides.contains(runtime_shared::SafeAreaSides::TOP) { insets.top } else { 0.0 };
+        let right = if sides.contains(runtime_shared::SafeAreaSides::RIGHT) { insets.right } else { 0.0 };
+        let bottom = if sides.contains(runtime_shared::SafeAreaSides::BOTTOM) { insets.bottom } else { 0.0 };
+        let left = if sides.contains(runtime_shared::SafeAreaSides::LEFT) { insets.left } else { 0.0 };
 
         let view = node.as_view();
         let layout_node = self.layout_for_view(view);
@@ -3767,10 +3673,10 @@ impl Backend for IosBackend {
         schedule_layout_pass();
     }
 
-    fn apply_scroll_view_safe_area_inset(
+    pub(crate) fn apply_scroll_view_safe_area_inset_impl(
         &mut self,
-        node: &Self::Node,
-        sides: runtime_core::SafeAreaSides,
+        node: &IosNode,
+        sides: runtime_shared::SafeAreaSides,
     ) {
         // Delegate inset math to UIKit by toggling
         // `contentInsetAdjustmentBehavior` and leaving
@@ -3828,161 +3734,66 @@ impl Backend for IosBackend {
     // (Popover, Select).
     // =================================================================
 
-    fn make_button_handle(&self, node: &Self::Node) -> runtime_core::ButtonHandle {
-        runtime_core::ButtonHandle::new(Rc::new(node.clone()), &handles::IOS_BUTTON_OPS)
+    pub(crate) fn make_button_handle_impl(&self, node: &IosNode) -> runtime_shared::ButtonHandle {
+        runtime_shared::ButtonHandle::new(Rc::new(node.clone()), &handles::IOS_BUTTON_OPS)
     }
 
-    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_core::PressableHandle {
-        runtime_core::PressableHandle::new(Rc::new(node.clone()), &handles::IOS_PRESSABLE_OPS)
+    pub(crate) fn make_pressable_handle_impl(&self, node: &IosNode) -> runtime_shared::PressableHandle {
+        runtime_shared::PressableHandle::new(Rc::new(node.clone()), &handles::IOS_PRESSABLE_OPS)
     }
 
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
-        runtime_core::ViewHandle::new(Rc::new(node.clone()), &handles::IOS_VIEW_OPS)
+    pub(crate) fn make_view_handle_impl(&self, node: &IosNode) -> runtime_shared::ViewHandle {
+        runtime_shared::ViewHandle::new(Rc::new(node.clone()), &handles::IOS_VIEW_OPS)
     }
 
-    fn make_scroll_view_handle(
+    pub(crate) fn make_scroll_view_handle_impl(
         &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::scroll_view::ScrollViewHandle {
-        runtime_core::primitives::scroll_view::ScrollViewHandle::new(
+        node: &IosNode,
+    ) -> runtime_shared::primitives::scroll_view::ScrollViewHandle {
+        runtime_shared::primitives::scroll_view::ScrollViewHandle::new(
             Rc::new(node.clone()),
             &handles::IOS_SCROLL_OPS,
         )
     }
 
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
-        runtime_core::TextHandle::new(Rc::new(node.clone()), &handles::IOS_TEXT_OPS)
+    pub(crate) fn make_text_handle_impl(&self, node: &IosNode) -> runtime_shared::TextHandle {
+        runtime_shared::TextHandle::new(Rc::new(node.clone()), &handles::IOS_TEXT_OPS)
     }
 
-    fn make_text_input_handle(
+    pub(crate) fn make_text_input_handle_impl(
         &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::text_input::TextInputHandle {
+        node: &IosNode,
+    ) -> runtime_shared::primitives::text_input::TextInputHandle {
         if let IosNode::TextField(field) = node {
-            runtime_core::primitives::text_input::TextInputHandle::new(
+            runtime_shared::primitives::text_input::TextInputHandle::new(
                 Rc::new(field.clone()),
                 &handles::IOS_TEXT_INPUT_OPS,
             )
         } else {
             // Shouldn't happen — walker only calls this for TextInput
             // nodes. Fall back to a no-op handle wrapping an empty box.
-            runtime_core::primitives::text_input::TextInputHandle::new(
+            runtime_shared::primitives::text_input::TextInputHandle::new(
                 Rc::new(()),
                 &handles::IOS_TEXT_INPUT_OPS,
             )
         }
     }
 
-    fn make_text_area_handle(
+    pub(crate) fn make_text_area_handle_impl(
         &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::text_area::TextAreaHandle {
+        node: &IosNode,
+    ) -> runtime_shared::primitives::text_area::TextAreaHandle {
         if let IosNode::TextView(view) = node {
-            runtime_core::primitives::text_area::TextAreaHandle::new(
+            runtime_shared::primitives::text_area::TextAreaHandle::new(
                 Rc::new(view.clone()),
                 &handles::IOS_TEXT_AREA_OPS,
             )
         } else {
-            runtime_core::primitives::text_area::TextAreaHandle::new(
+            runtime_shared::primitives::text_area::TextAreaHandle::new(
                 Rc::new(()),
                 &handles::IOS_TEXT_AREA_OPS,
             )
         }
-    }
-
-    // =================================================================
-    // Tab Navigator
-    // =================================================================
-
-
-    // ------------------------------------------------------------------
-    // Navigator — unified path for SDK-supplied navigator kinds.
-    //
-    // `create_navigator` resolves the SDK-registered factory, runs
-    // `init`, and stashes the returned handler on
-    // `nav_handler_instances` keyed by the container's `view_key`.
-    // Subsequent post-init dispatch (`attach_initial` / `release` /
-    // `make_handle` / `apply_slot_style`) looks the handler up and
-    // forwards through it — the handler then calls whichever
-    // per-kind inherent helper (`stack_navigator_attach_initial`,
-    // `apply_drawer_sidebar_style`, …) is appropriate for its kind.
-    // ------------------------------------------------------------------
-
-    fn create_navigator(
-        &mut self,
-        type_id: std::any::TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn std::any::Any>,
-        host: runtime_core::NavigatorHost<Self::Node>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let factory = self
-            .navigator_handlers
-            .get(type_id)
-            .unwrap_or_else(|| {
-                panic!(
-                    "IosBackend::create_navigator: navigator kind '{}' \
-                     is not registered. Did the app forget to call \
-                     `<navigator-sdk>::register(&mut backend)` during bootstrap?",
-                    type_name
-                )
-            });
-        let mut handler = factory();
-        let node = handler.init(self, host, presentation);
-        // Apply author-set accessibility props to the navigator root,
-        // matching every other create_* path and the macOS/wgpu backends
-        // — otherwise navigator a11y silently vanishes on iOS.
-        a11y::apply(&node, a11y, None);
-        // Stash the handler keyed by the container's view key so
-        // subsequent dispatch routes through the SDK handler instead
-        // of through a kind switch. The handler internally remembers
-        // its container `IosNode` so its post-init methods can call
-        // back into the backend's legacy per-kind helpers.
-        self.nav_handler_instances.insert(
-            node.view_key(),
-            std::rc::Rc::new(std::cell::RefCell::new(handler)),
-        );
-        node
-    }
-
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn std::any::Any>,
-    ) {
-        let handler = self.nav_handler_instances.get(&navigator.view_key()).cloned();
-        let Some(handler) = handler else { return };
-        handler.borrow_mut().attach_initial(self, screen, scope_id, options);
-    }
-
-    fn release_navigator(&mut self, node: &Self::Node) {
-        let handler = self.nav_handler_instances.remove(&node.view_key());
-        let Some(handler) = handler else { return };
-        handler.borrow_mut().release(self);
-    }
-
-    fn make_navigator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::NavigatorHandle {
-        let handler = self.nav_handler_instances.get(&node.view_key()).cloned();
-        match handler {
-            Some(h) => h.borrow().make_handle(),
-            None => runtime_core::NavigatorHandle::new(Rc::new(()), &NOOP_NAV_OPS),
-        }
-    }
-
-    fn apply_navigator_slot_style(
-        &mut self,
-        navigator: &Self::Node,
-        slot: &'static str,
-        style: &Rc<runtime_core::StyleRules>,
-    ) {
-        let handler = self.nav_handler_instances.get(&navigator.view_key()).cloned();
-        let Some(handler) = handler else { return };
-        handler.borrow_mut().apply_slot_style(self, slot, style);
     }
 
     // =================================================================
@@ -3994,24 +3805,24 @@ impl Backend for IosBackend {
     // `accessibilityLabel`/`accessibilityHint`/`accessibilityTraits`
     // directly — there's no parallel semantics tree to dump.
 
-    fn update_accessibility(
+    pub(crate) fn update_accessibility_impl(
         &mut self,
-        node: &Self::Node,
-        a11y_props: &runtime_core::accessibility::AccessibilityProps,
-        inferred_role: Option<runtime_core::accessibility::Role>,
+        node: &IosNode,
+        a11y_props: &runtime_shared::accessibility::AccessibilityProps,
+        inferred_role: Option<runtime_shared::accessibility::Role>,
     ) {
         a11y::apply(node, a11y_props, inferred_role);
     }
 
-    fn announce_for_accessibility(
+    pub(crate) fn announce_for_accessibility_impl(
         &mut self,
         msg: &str,
-        priority: runtime_core::accessibility::LiveRegionPriority,
+        priority: runtime_shared::accessibility::LiveRegionPriority,
     ) {
         a11y::announce(msg, priority);
     }
 
-    fn finish(&mut self, root: Self::Node) {
+    pub(crate) fn finish_impl(&mut self, root: IosNode) {
         if let Some(host) = &self.host_root {
             pin_to_edges(host, root.as_view());
         }
@@ -4025,7 +3836,7 @@ impl Backend for IosBackend {
     /// self-ref is never installed). Delegates to the existing
     /// public [`Self::run_layout`] wrapper around
     /// `run_layout_pass_global`.
-    fn run_layout(&mut self) {
+    pub(crate) fn run_layout_impl(&mut self) {
         IosBackend::run_layout(self);
     }
 }
@@ -4465,13 +4276,13 @@ impl IosBackend {
     /// `apply_safe_area_padding` to avoid trusting a stale framework
     /// signal value during the build/layout flow — UIKit's value is
     /// the source of truth.
-    fn platform_safe_area_insets(&self) -> runtime_core::EdgeInsets {
+    fn platform_safe_area_insets(&self) -> runtime_shared::EdgeInsets {
         let Some(host) = &self.host_root else {
-            return runtime_core::EdgeInsets::ZERO;
+            return runtime_shared::EdgeInsets::ZERO;
         };
         let insets: callbacks::UIEdgeInsets =
             unsafe { msg_send![&**host, safeAreaInsets] };
-        runtime_core::EdgeInsets {
+        runtime_shared::EdgeInsets {
             top: insets.top as f32,
             right: insets.right as f32,
             bottom: insets.bottom as f32,
@@ -4535,7 +4346,7 @@ mod backend_self_handle_tests {
     //! never called `install_global_self`. SDK code reached outside
     //! the framework's normal call path — specifically the drawer
     //! handler's `schedule_microtask`-deferred `drawer_attach_sidebar`,
-    //! which calls `with_backend(|b| b.run_layout())` to size the
+    //! which calls `with_backend(|b| b.run_layout_impl())` to size the
     //! freshly-attached, *parentless* sidebar Taffy node — therefore
     //! found NO installed self, so `with_backend` returned `None` and
     //! the layout pass never ran. The sidebar UIView stayed 0×0: on

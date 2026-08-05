@@ -9,16 +9,15 @@
 //!   embedded into the CLI binary via `include_str!` /
 //!   `include_bytes!`, so the scaffold is always identical to the
 //!   reference welcome example — no separate template to drift.
-//! - **Library** — a third-party External-primitive extension. Pure
-//!   `rlib`, defines a `*Props` struct + a PascalCase constructor,
-//!   per-backend `register` stubs gated on `target_arch` /
-//!   `target_os`. Mirrors the in-tree `crates/sdk/client/maps/` pattern
-//!   (umbrella + nested `core`/`ios`/`web` leaves).
+//! - **Library** — a third-party primitive extension. Pure `rlib`,
+//!   defines a `*Props` payload + a PascalCase constructor + a scene
+//!   `Registry` handler per backend, gated on `target_arch` /
+//!   `target_os`. Mirrors the in-tree `crates/sdk/client/svg` pattern.
 //!
-//! Both flavours emit a `runtime-core = { git = "...", rev = "..." }`
-//! dep using the source the CLI resolved (workspace path-deps in-tree,
-//! git deps outside). Same dep specs the build crates write into
-//! their generated wrapper Cargo.tomls — keeps the convention single.
+//! Both flavours emit framework deps using the source the CLI resolved
+//! (workspace path-deps in-tree, git deps outside). Same dep specs the
+//! build crates write into their generated wrapper Cargo.tomls — keeps
+//! the convention single.
 
 use std::fs;
 use std::path::Path;
@@ -183,11 +182,11 @@ fn write_project(
 
     // No project-level catalog binary or `catalog` feature is scaffolded:
     // `idealyst mcp` generates its own ephemeral wrapper crate that turns
-    // on `runtime-core/catalog` (and each component-library dep's own
+    // the `catalog` feature on (and each component-library dep's own
     // `catalog` feature) for the whole graph — so a project carrying its
-    // own `catalog = ["runtime-core/catalog"]` feature + emitter bin is
-    // redundant, and worse, can't enable dependency-only catalog features.
-    // See `super::catalog_wrapper`.
+    // own `catalog` feature + emitter bin is redundant, and worse, can't
+    // enable dependency-only catalog features. See
+    // `super::catalog_wrapper`.
 
     for (rel_path, bytes) in INTER_FONTS {
         fs::write(dir.join(rel_path), bytes)
@@ -203,10 +202,16 @@ fn project_cargo_toml(
     bundle_id: &str,
     source: &FrameworkSource,
 ) -> String {
-    // The framework core crate lives at `crates/runtime/core` (renamed from
-    // the old `crates/framework/core`). Pointing at the stale path makes a
-    // path-dep'd scaffold fail to resolve `runtime-core`.
-    let fcore_dep = source.dep("crates/runtime/core", &[]);
+    // The author surface: `runtime-core` is what the project aliases
+    // to `runtime_core` at its crate root, `runtime-vocabulary` is where
+    // the `ui!` emission's absolute `::runtime_vocabulary::glue::…`
+    // paths land, and `runtime-scene` carries the `Registry` the
+    // registration seam is generic over. Mirrors
+    // `examples/welcome/Cargo.toml` — the scaffold's source of truth.
+    let runtime_core_dep = source.dep("crates/runtime/core", &[]);
+    let vocab_dep = source.dep("crates/runtime/vocabulary", &[]);
+    let scene_dep = source.dep("crates/runtime/scene", &[]);
+    let dev_server_dep = source.dep("crates/dev/server", &[]);
 
     format!(
         r##"[package]
@@ -229,13 +234,37 @@ crate-type = ["rlib"]
 
 # No `catalog` feature or `[[bin]] catalog` is needed for the MCP server:
 # `idealyst mcp` generates an ephemeral wrapper crate on demand that turns
-# on `runtime-core/catalog` (and each component-library dependency's own
+# on the `catalog` feature (and each component-library dependency's own
 # `catalog` feature) across the whole graph and force-links those deps, so
 # every `#[component]` plus dependency-provided catalog entries (icon sets,
 # …) surface. See the `catalog_wrapper` module in the CLI.
 
+[features]
+# `sidecar`: enabled ONLY by the CLI-generated runtime-server sidecar
+# wrapper (`idealyst dev`). Pulls `dev-server` so the recorder-side
+# registration seams compile.
+sidecar = ["dep:dev-server"]
+
 [dependencies]
-runtime-core = {fcore_dep}
+# The author surface. `runtime-core` is the crate this project aliases
+# to `runtime_core` at its root (see src/lib.rs). `runtime-vocabulary` is
+# needed because the `ui!` emission spells absolute
+# `::runtime_vocabulary::glue::…` paths, and `runtime-scene` because
+# `register_scene_extensions` is generic over the scene `Registry` host.
+runtime-core = {runtime_core_dep}
+runtime-vocabulary = {vocab_dep}
+runtime-scene = {scene_dep}
+# Recorder backend for the runtime-server sidecar wrapper. Optional —
+# pulled in only by the `sidecar` feature (host-side sidecar build);
+# never compiled for device/web targets.
+dev-server = {dev_server_dep_opt}
+
+# No backend deps: `register_scene_extensions` is generic over the scene
+# `Host` (this scaffold registers no third-party SDKs), so the app crate
+# is fully platform-agnostic — the CLI-generated wrappers bring their own
+# concrete backend. A project that adds an SDK with a backend-CONCRETE
+# scene handler specializes `register_scene_extensions` to that backend's
+# registry type and adds the matching backend dep then.
 
 # Idealyst project config. The CLI reads this on `idealyst build`,
 # `idealyst run`, `idealyst dev`, etc.
@@ -255,7 +284,18 @@ version   = "0.0.1"
 # leave this alone and invoke them directly.
 targets   = ["web"]
 "##,
+        runtime_core_dep = runtime_core_dep,
+        vocab_dep = vocab_dep,
+        scene_dep = scene_dep,
+        dev_server_dep_opt = optional_dep(&dev_server_dep),
     )
+}
+
+/// Splice `optional = true` into a `source.dep(..)`-produced dep spec
+/// (`{ path = "…" }` / `{ git = "…", rev = "…" }`).
+fn optional_dep(dep: &str) -> String {
+    let inner = dep.trim().trim_start_matches('{').trim_end_matches('}').trim();
+    format!("{{ {inner}, optional = true }}")
 }
 
 fn project_index_html(title: &str, lib_name: &str) -> String {
@@ -304,10 +344,14 @@ fn write_library(
 
     let pascal = pascal_case(name);
     let props_type = format!("{pascal}Props");
-    // The framework core crate lives at `crates/runtime/core` (renamed from
-    // the old `crates/framework/core`). Pointing at the stale path makes a
-    // path-dep'd scaffold fail to resolve `runtime-core`.
-    let fcore_dep = source.dep("crates/runtime/core", &[]);
+    // The author surface (`runtime_core::…` via the crate-root alias) +
+    // the two crates a third-party primitive needs directly: the scene
+    // `Registry`/`item` contract and the vocabulary capability traits its
+    // handlers are generic over.
+    let runtime_core_dep = source.dep("crates/runtime/core", &[]);
+    let vocab_dep = source.dep("crates/runtime/vocabulary", &[]);
+    let scene_dep = source.dep("crates/runtime/scene", &[]);
+    let world_dep = source.dep("crates/runtime/world", &[]);
     let bweb_dep = source.dep("crates/backend/web", &[]);
     let bios_dep = source.dep("crates/backend/ios/mobile", &[]);
     let bandroid_dep = source.dep("crates/backend/android/mobile", &[]);
@@ -318,13 +362,26 @@ name = "{name}"
 version = "0.0.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Third-party Idealyst External-primitive extension."
+description = "Third-party Idealyst primitive extension."
 
 [lib]
 crate-type = ["rlib"]
 
 [dependencies]
-runtime-core = {fcore_dep}
+# `runtime-core` is aliased to `runtime_core` at the crate root (see
+# src/lib.rs) so this crate spells the author surface the same way app
+# code and the framework docs do.
+runtime-core = {runtime_core_dep}
+# The scene registry: `Registry` (where handlers install), `item` (the
+# payload-carrying element), `MountCx` (what a handler receives).
+runtime-scene = {scene_dep}
+# The capability traits a handler is generic over (`ExternalOps`,
+# `StyleServices`, …) plus `style_attach` for the author-style channel.
+runtime-vocabulary = {vocab_dep}
+# `runtime_world::effect` — for reactive props, a handler subscribes with
+# a world effect created during mount; it is collected into the enclosing
+# subtree and dies at unmount.
+runtime-world = {world_dep}
 
 # Web leaf. `web-sys` is pulled in for the DOM-construction path in
 # `src/web.rs`. Add bindings as you need them
@@ -333,12 +390,12 @@ runtime-core = {fcore_dep}
 backend-web = {bweb_dep}
 web-sys = {{ version = "0.3", features = ["Document", "Element", "Window"] }}
 
-# iOS leaf. `backend-ios-mobile`'s `register_external` is the entry
-# point your `src/ios.rs` will hook into once it lands.
+# iOS leaf — a `Registry<IosBackend>`-concrete handler (src/ios.rs).
 [target.'cfg(target_os = "ios")'.dependencies]
 backend-ios-mobile = {bios_dep}
 
-# Android leaf. Same shape as iOS — wire up in `src/android.rs`.
+# Android leaf — a `Registry<AndroidBackend>`-concrete handler
+# (src/android.rs).
 [target.'cfg(target_os = "android")'.dependencies]
 backend-android-mobile = {bandroid_dep}
 "##,
@@ -346,71 +403,141 @@ backend-android-mobile = {bandroid_dep}
 
     fs::write(dir.join("Cargo.toml"), cargo_toml)?;
     fs::write(dir.join("src/lib.rs"), library_lib_rs(lib_name, &pascal, &props_type))?;
-    fs::write(dir.join("src/web.rs"), library_web_rs(&props_type))?;
-    fs::write(dir.join("src/ios.rs"), library_ios_rs(&props_type))?;
-    fs::write(dir.join("src/android.rs"), library_android_rs(&props_type))?;
+    fs::write(dir.join("src/web.rs"), library_web_rs(&pascal, &props_type))?;
+    fs::write(dir.join("src/ios.rs"), library_ios_rs(&pascal, &props_type))?;
+    fs::write(dir.join("src/android.rs"), library_android_rs(&pascal, &props_type))?;
     fs::write(dir.join(".gitignore"), GITIGNORE)?;
     Ok(())
 }
 
 fn library_lib_rs(lib_name: &str, pascal: &str, props_type: &str) -> String {
     format!(
-        r##"//! `{lib_name}` — third-party Idealyst External-primitive extension.
+        r##"//! `{lib_name}` — third-party Idealyst primitive extension.
 //!
 //! Edit [`{props_type}`] to match the data your primitive needs, then
 //! implement the per-platform handlers in `web.rs` / `ios.rs` /
 //! `android.rs`. App code uses your primitive via the PascalCase
 //! constructor [`{pascal}`].
 //!
+//! ## How a third-party primitive works
+//!
+//! The framework has no separate "external" concept: the scene
+//! [`Registry`] dispatches first-party primitives and third-party ones
+//! through the same contract. You define a payload type, hand it to
+//! [`item`] inside an [`Element`], and register a handler that turns the
+//! payload into a native node. A payload with no registered handler
+//! **panics at realize**, so a missed `register` fails loudly rather
+//! than rendering a silent placeholder box.
+//!
 //! ## Usage from an app crate
 //!
 //! ```ignore
-//! // Bootstrap: register once per backend (one line per third-party SDK).
-//! let mut backend = WebBackend::new("#app");
-//! {lib_name}::register(&mut backend);
+//! // Bootstrap: compose your registration into the boot entry's
+//! // `register` seam (one line per third-party SDK).
+//! backend_web::newcore::start_in("#app", {lib_name}::register, app);
 //!
-//! // In a `ui!` block. Third-party primitives interpolate as expressions:
+//! // In a `ui!` block. Third-party primitives interpolate as
+//! // expressions:
 //! ui! {{
-//!     View {{
+//!     view {{
 //!         {{ {pascal}({props_type} {{ example: "hi".into() }}) }}
 //!     }}
 //! }}
 //! ```
-//!
-//! On platforms with no matching leaf, `register` is a no-op and the
-//! framework renders its "External not supported" placeholder when
-//! the primitive mounts.
 
-use runtime_core::{{external, Bound, ExternalHandle}};
+use std::any::Any;
+use std::cell::RefCell;
+use std::rc::Rc;
 
-/// Props for the [`{pascal}`] external primitive. Backends downcast
-/// the type-erased payload back to this concrete type via the
-/// `TypeId` captured at construction.
-#[derive(Clone, Debug)]
+use runtime_core::AccessibilityProps;
+use runtime_scene::{{item, Element, MountCx, Registry}};
+use runtime_vocabulary::caps::ExternalOps;
+use runtime_vocabulary::glue::IntoElement;
+use runtime_vocabulary::style_attach::{{
+    attach_style, on_teardown, IntoStyleProp, StyleProp, StyleServices,
+}};
+
+/// Props for the [`{pascal}`] primitive. Handlers receive the payload as
+/// `&Rc<{pascal}Prim>` and read these fields back out.
+#[derive(Clone, Debug, Default)]
 pub struct {props_type} {{
     /// Replace with your own fields.
     pub example: String,
 }}
 
-/// Construct an instance of the primitive. Interpolate inside a
-/// `ui!` block: `{{ {pascal}({props_type} {{ example: "...".into() }}) }}`.
+/// The scene payload: the author's props plus the two single-take slots
+/// every primitive carries — the author style, and the mount-time work
+/// the builder recorded.
+pub(crate) struct {pascal}Prim {{
+    pub(crate) props: Rc<{props_type}>,
+    style: RefCell<Option<StyleProp>>,
+}}
+
+/// Author-side builder returned by [`{pascal}`].
+pub struct {pascal}Bound {{
+    props: Rc<{props_type}>,
+    style: Option<StyleProp>,
+}}
+
+/// Construct an instance of the primitive. Interpolate inside a `ui!`
+/// block: `{{ {pascal}({props_type} {{ example: "...".into() }}) }}`.
 ///
-/// PascalCase intentionally — matches the visual cadence of
-/// first-party primitives like `View` / `Overlay` / `Button` inside
-/// `ui!`.
+/// PascalCase intentionally — inside `ui!`, lowercase tags are the
+/// framework's own leaf primitives and PascalCase tags route to
+/// component / third-party dispatch.
 #[allow(non_snake_case)]
-pub fn {pascal}(props: {props_type}) -> Bound<ExternalHandle<{props_type}>> {{
-    external(props)
+pub fn {pascal}(props: {props_type}) -> {pascal}Bound {{
+    {pascal}Bound {{ props: Rc::new(props), style: None }}
+}}
+
+impl {pascal}Bound {{
+    /// Attach the author style — lands on the node your handler returns.
+    pub fn with_style(mut self, style: impl IntoStyleProp) -> Self {{
+        self.style = Some(style.into_style_prop());
+        self
+    }}
+}}
+
+impl IntoElement for {pascal}Bound {{
+    fn into_element(self) -> Element {{
+        item(
+            {pascal}Prim {{ props: self.props, style: RefCell::new(self.style) }},
+            Vec::new(),
+        )
+    }}
+}}
+
+impl From<{pascal}Bound> for Element {{
+    fn from(b: {pascal}Bound) -> Element {{
+        b.into_element()
+    }}
+}}
+
+/// Shared mount tail: attach the author style and register teardown.
+/// Call it from every platform handler after the node exists.
+pub(crate) fn finish_mount<H>(backend: &Rc<RefCell<H>>, node: &H::Node, prim: &{pascal}Prim)
+where
+    H: ExternalOps + StyleServices,
+{{
+    if let Some(style) = prim.style.borrow_mut().take() {{
+        attach_style(backend, node, style);
+    }}
+    let backend = backend.clone();
+    let node = node.clone();
+    on_teardown(move || {{
+        backend.borrow_mut().release_external(&node);
+    }});
 }}
 
 // =============================================================================
-// Platform-routed `register` re-export.
+// Platform-routed `register`.
 //
 // Exactly one of the cfg-gated re-exports is active per build. Each
-// per-platform leaf takes the platform-specific backend type by
-// `&mut` and calls `backend.register_external::<{props_type}>(...)`.
-// The fallback `register<B>` keeps user code uniform across targets
-// the SDK hasn't grown a leaf for.
+// per-platform leaf takes that backend's concrete `Registry` and
+// installs a handler that builds a real native node. The fallback
+// `register<H>` is generic over the capability traits, so a host without
+// a leaf still mounts (as the backend's "not supported" placeholder)
+// instead of panicking.
 // =============================================================================
 
 #[cfg(target_arch = "wasm32")] mod web;
@@ -422,94 +549,169 @@ pub fn {pascal}(props: {props_type}) -> Bound<ExternalHandle<{props_type}>> {{
 #[cfg(target_os = "android")] mod android;
 #[cfg(target_os = "android")] pub use android::register;
 
-/// No-op fallback for targets without a registered leaf. The
-/// framework renders its `External not supported` placeholder at
-/// mount time.
+/// Fallback registration for targets without a native leaf: installs the
+/// framework's "primitive not supported on this backend" degradation
+/// path, so the app still mounts and the app's bootstrap call site is
+/// uniform across every target.
 #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
-pub fn register<B>(_backend: &mut B) {{}}
+pub fn register<H>(registry: &mut Registry<H>)
+where
+    H: ExternalOps + StyleServices + 'static,
+{{
+    registry.register::<{pascal}Prim, _>(mount_placeholder::<H>);
+}}
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+fn mount_placeholder<H>(
+    cx: &mut MountCx<'_, H>,
+    prim: &Rc<{pascal}Prim>,
+    _children: Vec<Element>,
+) -> H::Node
+where
+    H: ExternalOps + StyleServices,
+{{
+    let backend = cx.backend().clone();
+    let payload: Rc<dyn Any> = prim.props.clone();
+    let node = backend.borrow_mut().create_external(
+        std::any::TypeId::of::<{props_type}>(),
+        std::any::type_name::<{props_type}>(),
+        &payload,
+        &AccessibilityProps::default(),
+    );
+    finish_mount(&backend, &node, prim);
+    node
+}}
 "##
     )
 }
 
-fn library_web_rs(props_type: &str) -> String {
+fn library_web_rs(pascal: &str, props_type: &str) -> String {
     format!(
-        r##"//! Web leaf — registers a handler against `WebBackend` that
-//! produces a `web_sys::Element` from {props_type}.
+        r##"//! Web leaf — a `Registry<WebBackend>`-concrete handler that builds a
+//! DOM node from [`{props_type}`].
+
+use std::rc::Rc;
 
 use backend_web::WebBackend;
+use runtime_scene::{{Element, MountCx, Registry}};
 
-use crate::{props_type};
+use crate::{{finish_mount, {pascal}Prim, {props_type}}};
 
-/// Install the handler. Call once at app bootstrap:
+/// Install the handler. Compose it into the boot entry's register seam:
 ///
 /// ```ignore
-/// let mut backend = WebBackend::new("#app");
-/// crate_name::register(&mut backend);
+/// backend_web::newcore::start_in("#app", crate_name::register, app);
 /// ```
-pub fn register(backend: &mut WebBackend) {{
-    backend.register_external::<{props_type}, _>(|props, _backend| {{
-        build_element(props)
-    }});
+pub fn register(registry: &mut Registry<WebBackend>) {{
+    registry.register::<{pascal}Prim, _>(mount);
 }}
 
-fn build_element(props: &std::rc::Rc<{props_type}>) -> web_sys::Element {{
+fn mount(
+    cx: &mut MountCx<'_, WebBackend>,
+    prim: &Rc<{pascal}Prim>,
+    _children: Vec<Element>,
+) -> web_sys::Node {{
+    let backend = cx.backend().clone();
     let document = web_sys::window()
         .expect("no window")
         .document()
         .expect("no document");
 
     // Replace with your real DOM construction.
-    let el = document
-        .create_element("div")
-        .expect("create_element(div)");
-    let _ = el.set_text_content(Some(&props.example));
-    let _ = el.set_attribute("data-external-kind", "{props_type}");
-    el
+    let el = document.create_element("div").expect("create_element(div)");
+    let _ = el.set_text_content(Some(&prim.props.example));
+    let _ = el.set_attribute("data-primitive", "{props_type}");
+
+    let node: web_sys::Node = el.into();
+    finish_mount(&backend, &node, prim);
+    node
 }}
 "##
     )
 }
 
-fn library_ios_rs(props_type: &str) -> String {
+fn library_ios_rs(pascal: &str, props_type: &str) -> String {
     format!(
-        r##"//! iOS leaf — placeholder until `backend-ios-mobile` exposes
-//! `register_external`. The `register` fn is intentionally a
-//! generic no-op so the app's bootstrap call site compiles on
-//! every target uniformly.
+        r##"//! iOS leaf — a `Registry<IosBackend>`-concrete handler.
 //!
-//! Once `IosBackend::register_external::<{props_type}, _>(...)` is
-//! available, replace the body with a real registration that
-//! returns a `UIView` (or your preferred UIKit type) from
-//! [`{props_type}`].
+//! Build your `UIView` (or any UIKit type) from [`{props_type}`] and
+//! return it as the backend's node type. Until you do, this mounts the
+//! framework's "not supported" degradation path so the app still runs on
+//! iOS while you develop the web leaf.
 
-#[allow(unused_imports)]
-use crate::{props_type};
+use std::any::Any;
+use std::rc::Rc;
 
-/// Install the handler. No-op on iOS until the backend grows
-/// `register_external` support.
-pub fn register<B>(_backend: &mut B) {{
-    // TODO: when backend-ios-mobile gains `register_external`,
-    // downcast `_backend` to `IosBackend` and register a closure
-    // that produces a UIView from `{props_type}`.
+use backend_ios::IosBackend;
+use runtime_core::AccessibilityProps;
+use runtime_scene::{{Element, MountCx, Registry}};
+use runtime_vocabulary::caps::ExternalOps;
+
+use crate::{{finish_mount, {pascal}Prim, {props_type}}};
+
+/// Install the handler.
+pub fn register(registry: &mut Registry<IosBackend>) {{
+    registry.register::<{pascal}Prim, _>(mount);
+}}
+
+fn mount(
+    cx: &mut MountCx<'_, IosBackend>,
+    prim: &Rc<{pascal}Prim>,
+    _children: Vec<Element>,
+) -> <IosBackend as runtime_scene::Host>::Node {{
+    let backend = cx.backend().clone();
+    // TODO: construct your UIView here and return it instead.
+    let payload: Rc<dyn Any> = prim.props.clone();
+    let node = backend.borrow_mut().create_external(
+        std::any::TypeId::of::<{props_type}>(),
+        std::any::type_name::<{props_type}>(),
+        &payload,
+        &AccessibilityProps::default(),
+    );
+    finish_mount(&backend, &node, prim);
+    node
 }}
 "##
     )
 }
 
-fn library_android_rs(props_type: &str) -> String {
+fn library_android_rs(pascal: &str, props_type: &str) -> String {
     format!(
-        r##"//! Android leaf — placeholder until `backend-android-mobile`
-//! exposes `register_external`. Same pattern as the iOS leaf.
+        r##"//! Android leaf — a `Registry<AndroidBackend>`-concrete handler.
+//! Same shape as the iOS leaf: build an `android.view.View` from
+//! [`{props_type}`] and return it as the backend's node type.
 
-#[allow(unused_imports)]
-use crate::{props_type};
+use std::any::Any;
+use std::rc::Rc;
 
-/// Install the handler. No-op on Android until the backend grows
-/// `register_external` support.
-pub fn register<B>(_backend: &mut B) {{
-    // TODO: when backend-android-mobile gains `register_external`,
-    // downcast `_backend` to `AndroidBackend` and register a closure
-    // that produces a `View` from `{props_type}`.
+use backend_android::AndroidBackend;
+use runtime_core::AccessibilityProps;
+use runtime_scene::{{Element, MountCx, Registry}};
+use runtime_vocabulary::caps::ExternalOps;
+
+use crate::{{finish_mount, {pascal}Prim, {props_type}}};
+
+/// Install the handler.
+pub fn register(registry: &mut Registry<AndroidBackend>) {{
+    registry.register::<{pascal}Prim, _>(mount);
+}}
+
+fn mount(
+    cx: &mut MountCx<'_, AndroidBackend>,
+    prim: &Rc<{pascal}Prim>,
+    _children: Vec<Element>,
+) -> <AndroidBackend as runtime_scene::Host>::Node {{
+    let backend = cx.backend().clone();
+    // TODO: construct your View here and return it instead.
+    let payload: Rc<dyn Any> = prim.props.clone();
+    let node = backend.borrow_mut().create_external(
+        std::any::TypeId::of::<{props_type}>(),
+        std::any::type_name::<{props_type}>(),
+        &payload,
+        &AccessibilityProps::default(),
+    );
+    finish_mount(&backend, &node, prim);
+    node
 }}
 "##
     )

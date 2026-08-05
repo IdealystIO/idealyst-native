@@ -35,9 +35,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::scheduling::{after_ms, ScheduledTask};
-use runtime_core::{
-    AsyncNotifier, GestureState, Platform, Recognizer, RecognizerCtx, RecognizerKind,
-    RecognizerUpdate, TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint, TouchResponse,
+use runtime_core::{Platform, TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint,
+    TouchResponse};
+// The `Recognizer` trait family is a permanent-substrate item set that
+// `runtime_vocabulary::glue` does not re-export yet (it carries the concrete
+// recognizers but not the trait they implement), so it comes from the
+// substrate directly rather than through the `runtime_core` facade. Re-point
+// at the facade when glue grows the re-exports (a one-line gap, reported).
+use runtime_shared::{
+    AsyncNotifier, GestureState, Recognizer, RecognizerCtx, RecognizerKind, RecognizerUpdate,
 };
 
 /// Default activation slop for [`Activation::Immediate`] — matches the pan
@@ -459,6 +465,8 @@ impl Recognizer for DragRecognizer {
         let activation = self.activation;
         let cur = *self.state.borrow();
         let (state, response): (GestureState, TouchResponse) = match (ev.phase, cur) {
+            // Hover is not part of any gesture — never advances or resets state.
+            (TouchPhase::Hovered, _) => (self.state(), TouchResponse::IGNORED),
             // ---- Began -------------------------------------------------
             (TouchPhase::Began, State::Idle) => {
                 *self.state.borrow_mut() = State::Tracking {
@@ -472,7 +480,9 @@ impl Recognizer for DragRecognizer {
                 // synchronous dispatch). A LongPress commit later fires from the
                 // timer, off-stream, where it's no longer available — so we hold
                 // our own clone. `None` on backends without the claim protocol.
-                *self.claim.borrow_mut() = runtime_core::active_touch_claim();
+                // `active_touch_claim` is a substrate touch-model entry glue
+                // does not re-export yet (a one-line gap, reported).
+                *self.claim.borrow_mut() = runtime_shared::active_touch_claim();
                 if let Some(threshold_ms) = activation.long_press_ms() {
                     self.arm_timer(ev.id, threshold_ms);
                 }

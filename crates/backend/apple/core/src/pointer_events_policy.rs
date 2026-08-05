@@ -31,7 +31,7 @@
 //! `none` host below it has already declined — the chain walk here only
 //! needs the nearest-explicit rule.
 
-use runtime_core::PointerEvents;
+use runtime_shared::PointerEvents;
 
 /// Should a hit that the platform's default hit-test resolved inside a
 /// `pointer-events: none` view's subtree stand?

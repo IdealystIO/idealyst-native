@@ -5,12 +5,12 @@ Not every platform has a native UI toolkit to translate into. The
 surface, with its own input dispatch, layout, text shaping, and
 accessibility bridge. With no native toolkit underneath, the GPU
 Backend has to *provide* the substrate internally — so it ships as
-three plug-and-play layers behind one `runtime_core::Backend`
-impl.
+three plug-and-play layers behind one `Host` + capability-trait
+implementation.
 
 ```
                 ┌────────────────────────────────┐
-                │      runtime_core::Backend   │
+                │  Host + caps *Ops traits       │
                 │      (the seam)                │
                 └───────────────┬────────────────┘
                                 │
@@ -46,9 +46,9 @@ impl.
 | Layer | Path | Role |
 | --- | --- | --- |
 | Contract | [`api/`](./api) | `EventSink`, `DeviceProfile`, input vocabulary — the small contract crate that lets any Host pair with any Engine without either knowing the other's internals. |
-| Engine | [`engine/`](./engine) | The wgpu renderer itself. Implements `runtime_core::Backend` + `render_api::EventSink`. Owns the surface, pipeline, frame management, text shaping. Knows nothing about specific primitives — delegates to the Painter. |
+| Engine | [`engine/`](./engine) | The wgpu renderer itself. Implements `runtime_scene::Host` + the `runtime_vocabulary::caps` traits + `render_api::EventSink`. Owns the surface, pipeline, frame management, text shaping. Knows nothing about specific primitives — delegates to the Painter. |
 | Host | [`host/`](./host) | Platform integration. Owns window + drawing surface + event source; translates platform events into the api vocabulary. One crate per platform: `winit`, `appkit`, `web`, `terminal`, `wgpu-accesskit` (the accessibility bridge). |
-| Painter | [`painter/`](./painter) | Per-primitive look. The Engine receives `create_button` from the Backend trait and asks the Painter what a button looks like. Sub-crates: `ios-sim`, `android-sim`. Each defines the platform's chrome. |
+| Painter | [`painter/`](./painter) | Per-primitive look. The Engine receives `create_button` from the capability traits and asks the Painter what a button looks like. Sub-crates: `ios-sim`, `android-sim`. Each defines the platform's chrome. |
 | Variant | [`variant/`](./variant) | Form-factor bundles. `phone`, `tablet`, `tv` — each picks a (host, painter, profile) trio and exposes one `run(...)` entry point. |
 
 ## Why three layers instead of one crate

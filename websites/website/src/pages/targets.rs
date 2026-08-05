@@ -145,7 +145,7 @@ fn native_gpu() -> Element {
             TargetRow(
                 title = "wgpu renderer".to_string(),
                 blurb = "A second-implementation backend that drives the framework over wgpu. \
-                 Same Backend trait, but rendering goes through a GPU pipeline instead of \
+                 Same backend seam, but rendering goes through a GPU pipeline instead of \
                  a native toolkit. Useful when you want pixel-perfect control of the \
                  render output (custom widgets, novel visual styles, embedded devices \
                  with a GPU).".to_string(),
@@ -175,7 +175,7 @@ fn embedded() -> Element {
                 title = "Custom rendering".to_string(),
                 blurb = "If your target is none of the above \u{2014} a pixel buffer you draw \
                  yourself, a proprietary embedded surface, a server-side renderer \u{2014} \
-                 implement the Backend trait. There's no architectural assumption that the \
+                 implement the backend traits. There's no architectural assumption that the \
                  target has a windowing system or a GPU or anything else.".to_string(),
             )
         }
@@ -226,14 +226,16 @@ fn extending() -> Element {
                 kind = typography_kind::H2,
             )
             Typography(
-                content = "Adding a new target is implementing the Backend trait. \
-                    A trait. One file's worth of contract.".to_string(),
+                content = "Adding a new target is implementing a set of traits. \
+                    Traits. One crate's worth of contract.".to_string(),
             )
             Typography(
-                content = "The trait surface is moderately large \u{2014} one \
-                    method per primitive (create / update / insert / remove), plus a handful \
-                    of cross-cutting hooks (style apply, animated values, layout, refs). But \
-                    it's a fixed surface; the framework doesn't ask the backend to know about \
+                content = "`Host` is small \u{2014} seven structural operations for \
+                    parenting, reordering and removing nodes. Everything else arrives as \
+                    focused capability traits (create / update per primitive, plus \
+                    cross-cutting hooks for style apply, animated values, layout, refs), \
+                    so a backend implements the capabilities it actually supports. The \
+                    framework doesn't ask the backend to know about \
                     routing, theming, components, or any higher-level concept. Get the \
                     primitive surface right and everything else just works.".to_string(),
                 muted = true,

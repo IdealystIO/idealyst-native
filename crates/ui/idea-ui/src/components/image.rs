@@ -69,12 +69,6 @@ impl Default for ImageProps {
 /// Themed wrapper over the framework's `image` primitive. Adds opt-in
 /// explicit `width`/`height` sizing and a `rounded` (circular) clip on
 /// top of the raw image.
-///
-/// **Cargo features:** requires `prim-image` (in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without it compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Image(props: &ImageProps) -> Element {
     // The style is REACTIVE when any style-driving dim prop is live; otherwise
@@ -98,7 +92,9 @@ pub fn Image(props: &ImageProps) -> Element {
                 h.map(|x| x as i32).unwrap_or(-1),
                 rounded as u8
             );
-            StyleApplication::new(ImageBox::sheet()).with_computed(key, move || {
+            // Author-supplied pixel dims are continuous, so the whole layer
+            // goes inline rather than minting a cache entry per (w, h).
+            StyleApplication::new(ImageBox::sheet()).with_inline({
                 let mut r = StyleRules::default();
                 if let Some(w) = w {
                     r.width = Some(Tokenized::Literal(Length::Px(w)));

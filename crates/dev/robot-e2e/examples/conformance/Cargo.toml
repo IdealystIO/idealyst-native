@@ -6,7 +6,9 @@ license.workspace = true
 description = "Cross-platform conformance app: mounts the framework's primitives, idea-ui components, and navigators in deliberately weird configurations, each tagged with a stable test_id, and drives them with an in-app robot-e2e suite. Run it on any backend to get a pass/fail verdict on the framework core."
 
 [lib]
-crate-type = ["rlib"]
+# `cdylib` for the standalone web build (`wasm-pack build --target web`);
+# the CLI's generated wrappers consume the rlib.
+crate-type = ["rlib", "cdylib"]
 
 [features]
 # `robot` MUST be a default feature: the `ui!` macro's
@@ -15,23 +17,36 @@ crate-type = ["rlib"]
 # suite is blind. It also pulls the `robot-e2e` harness + turns on the real
 # Robot API. `--no-default-features` still builds a plain, untested app.
 default = ["robot"]
-robot = ["runtime-core/robot", "idea-ui/robot", "dep:robot-e2e"]
+robot = [
+    "runtime-vocabulary/robot",
+    "idea-ui/robot",
+    "dep:robot-e2e",
+    # The web host's robot surface: `newcore::start` installs the
+    # vocabulary Robot driver env (queries enter the world, actions
+    # settle via flush_sync) behind backend-web's `robot` feature —
+    # without it the in-app suite's actions stage writes that never
+    # commit.
+    "backend-web/robot",
+]
 
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
-# (build-runtime-server). Pulls `dev-server` + the navigators' recorder
-# registration so the suite can run over the runtime-server wire too.
-sidecar = ["dep:dev-server", "stack-navigator/runtime-server"]
+# (build-runtime-server). Pulls `dev-server` so the recorder-side
+# registration seam compiles.
+sidecar = ["dep:dev-server"]
 
 [dependencies]
-runtime-core = { workspace = true }
+runtime-macros = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-world = { workspace = true }
 idea-ui = { workspace = true }
 icons-lucide = { workspace = true }
-stack-navigator = { workspace = true }
 robot-e2e = { workspace = true, optional = true }
 dev-server = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
+wasm-bindgen = "0.2"
 
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
 backend-ios-mobile = { workspace = true }

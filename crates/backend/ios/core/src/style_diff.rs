@@ -25,14 +25,14 @@
 //!      is the "layout runs on every press" churn. See
 //!      `regression_ios_paint_only_skips_layout`.
 
-use runtime_core::{Color, Length, StyleRules, Tokenized};
+use runtime_shared::{Color, Length, StyleRules, Tokenized};
 
 // The unstyled-`text()` color decision is shared by every native backend
-// and now lives once in `runtime_core::text_defaults` (CLAUDE.md §7 — the
+// and now lives once in `runtime_shared::text_defaults` (CLAUDE.md §7 — the
 // resolved bytes must be byte-identical across iOS/Android/macOS/web).
 // Re-exported here under the historical names so this crate's call sites
 // (and `backend-ios-mobile`'s `apply_style`) are unchanged.
-pub use runtime_core::text_defaults::{
+pub use runtime_shared::text_defaults::{
     effective_text_color, THEME_TEXT_COLOR_FALLBACK, THEME_TEXT_COLOR_TOKEN,
 };
 
@@ -274,10 +274,10 @@ pub fn layout_affecting_key(style: &StyleRules) -> String {
     // applies share a family iff the id/name matches.
     let _ = write!(s, "ff=");
     match style.font_family.as_ref() {
-        Some(runtime_core::FontFamily::Typeface(t)) => {
+        Some(runtime_shared::FontFamily::Typeface(t)) => {
             let _ = write!(s, "t{}", t.id.0);
         }
-        Some(runtime_core::FontFamily::System(name)) => {
+        Some(runtime_shared::FontFamily::System(name)) => {
             let _ = write!(s, "s{}", name);
         }
         None => {
@@ -308,7 +308,7 @@ pub fn is_layout_affecting(prev: Option<&str>, next_key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::{Color, Length, StyleRules, Tokenized};
+    use runtime_shared::{Color, Length, StyleRules, Tokenized};
 
     fn px(v: f32) -> Tokenized<Length> {
         Tokenized::Literal(Length::Px(v))
@@ -424,10 +424,10 @@ mod tests {
     /// second per styled container on iOS).
     #[test]
     fn regression_typeface_key_is_id_based_not_debug_of_bytes() {
-        use runtime_core::assets::{
+        use runtime_shared::assets::{
             AssetId, AssetSource, SystemFallback, Typeface, TypefaceFace, TypefaceId,
         };
-        use runtime_core::{FontStyle, FontWeight};
+        use runtime_shared::{FontStyle, FontWeight};
 
         // A face with a big embedded payload — stand-in for a real TTF.
         static BYTES: [u8; 64 * 1024] = [7u8; 64 * 1024];
@@ -449,7 +449,7 @@ mod tests {
         };
 
         let mut styled = StyleRules::default();
-        styled.font_family = Some(runtime_core::FontFamily::Typeface(FACE));
+        styled.font_family = Some(runtime_shared::FontFamily::Typeface(FACE));
         let key = layout_affecting_key(&styled);
         assert!(
             key.len() < 600,
@@ -465,7 +465,7 @@ mod tests {
             fallback: SystemFallback::SansSerif,
         };
         let mut styled2 = StyleRules::default();
-        styled2.font_family = Some(runtime_core::FontFamily::Typeface(FACE2));
+        styled2.font_family = Some(runtime_shared::FontFamily::Typeface(FACE2));
         assert_ne!(key, layout_affecting_key(&styled2));
     }
 

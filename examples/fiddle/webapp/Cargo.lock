@@ -43,7 +43,7 @@ checksum = "4288f83726785267c6f2ef073a3d83dc3f9b81464e9f99898240cced85fce35a"
 
 [[package]]
 name = "backend-android-core"
-version = "0.0.1"
+version = "0.4.0"
 dependencies = [
  "android_logger",
  "jni",
@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "0.0.1"
+version = "0.4.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -67,11 +67,14 @@ dependencies = [
  "raw-window-handle",
  "runtime-core",
  "runtime-layout",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
 ]
 
 [[package]]
 name = "backend-apple-core"
-version = "0.0.1"
+version = "0.4.0"
 dependencies = [
  "block2",
  "objc2",
@@ -81,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-core"
-version = "0.0.1"
+version = "0.4.0"
 dependencies = [
  "backend-apple-core",
  "block2",
@@ -95,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "0.0.1"
+version = "0.4.0"
 dependencies = [
  "backend-apple-core",
  "backend-ios-core",
@@ -107,11 +110,14 @@ dependencies = [
  "raw-window-handle",
  "runtime-core",
  "runtime-layout",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
 ]
 
 [[package]]
 name = "backend-macos"
-version = "0.0.1"
+version = "0.4.0"
 dependencies = [
  "backend-apple-core",
  "block2",
@@ -122,17 +128,23 @@ dependencies = [
  "raw-window-handle",
  "runtime-core",
  "runtime-layout",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
 ]
 
 [[package]]
 name = "backend-web"
-version = "0.0.1"
+version = "0.4.0"
 dependencies = [
  "css",
  "inventory",
  "js-sys",
  "raw-window-handle",
  "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -195,22 +207,21 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "codeblock"
-version = "0.0.1"
+version = "0.4.0"
 dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
  "backend-ios-mobile",
  "backend-macos",
- "backend-web",
- "inventory",
  "jni",
  "log",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "objc2-ui-kit",
- "runtime-core",
- "serde_json",
+ "runtime-scene",
+ "runtime-shared",
+ "runtime-vocabulary",
 ]
 
 [[package]]
@@ -254,9 +265,9 @@ dependencies = [
 
 [[package]]
 name = "css"
-version = "0.0.1"
+version = "0.4.0"
 dependencies = [
- "runtime-core",
+ "runtime-shared",
 ]
 
 [[package]]
@@ -289,7 +300,8 @@ dependencies = [
  "idea-ui",
  "js-sys",
  "lol_alloc",
- "runtime-core",
+ "runtime-facade",
+ "runtime-vocabulary",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -338,17 +350,19 @@ checksum = "36119f3a540b086b4e436bb2b588cf98a68863470e0e880f4d0842f112a3183a"
 
 [[package]]
 name = "idea-theme"
-version = "0.0.1"
+version = "0.4.0"
 dependencies = [
- "runtime-core",
+ "runtime-facade",
+ "runtime-vocabulary",
 ]
 
 [[package]]
 name = "idea-ui"
-version = "0.0.1"
+version = "0.4.0"
 dependencies = [
  "idea-theme",
- "runtime-core",
+ "runtime-facade",
+ "runtime-vocabulary",
  "table",
 ]
 
@@ -749,13 +763,11 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "runtime-core"
-version = "0.0.1"
+version = "0.4.0"
 dependencies = [
- "bitflags",
- "log",
- "pollster",
  "raw-window-handle",
  "runtime-macros",
+ "runtime-shared",
  "rustc-hash",
  "serde",
  "serde_json",
@@ -763,21 +775,68 @@ dependencies = [
 ]
 
 [[package]]
-name = "runtime-layout"
-version = "0.0.1"
+name = "runtime-facade"
+version = "0.4.0"
 dependencies = [
- "runtime-core",
+ "runtime-macros",
+ "runtime-shared",
+ "runtime-vocabulary",
+]
+
+[[package]]
+name = "runtime-layout"
+version = "0.4.0"
+dependencies = [
+ "runtime-shared",
  "taffy",
 ]
 
 [[package]]
 name = "runtime-macros"
-version = "0.0.1"
+version = "0.4.0"
 dependencies = [
  "proc-macro2",
  "quote",
  "sha2",
  "syn",
+]
+
+[[package]]
+name = "runtime-scene"
+version = "0.4.0"
+dependencies = [
+ "runtime-world",
+ "rustc-hash",
+]
+
+[[package]]
+name = "runtime-shared"
+version = "0.4.0"
+dependencies = [
+ "bitflags",
+ "log",
+ "pollster",
+ "raw-window-handle",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "wasm-splitter",
+]
+
+[[package]]
+name = "runtime-vocabulary"
+version = "0.4.0"
+dependencies = [
+ "runtime-scene",
+ "runtime-shared",
+ "runtime-world",
+]
+
+[[package]]
+name = "runtime-world"
+version = "0.4.0"
+dependencies = [
+ "rustc-hash",
 ]
 
 [[package]]
@@ -898,11 +957,12 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "0.0.1"
+version = "0.4.0"
 dependencies = [
  "backend-web",
- "inventory",
- "runtime-core",
+ "runtime-scene",
+ "runtime-shared",
+ "runtime-vocabulary",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -1024,7 +1084,7 @@ dependencies = [
 
 [[package]]
 name = "wasm-split-macro"
-version = "0.0.1"
+version = "0.4.0"
 dependencies = [
  "base16",
  "digest",
@@ -1036,7 +1096,7 @@ dependencies = [
 
 [[package]]
 name = "wasm-splitter"
-version = "0.0.1"
+version = "0.4.0"
 dependencies = [
  "async-once-cell",
  "wasm-split-macro",
@@ -1054,19 +1114,14 @@ dependencies = [
 
 [[package]]
 name = "webview"
-version = "0.0.1"
+version = "0.4.0"
 dependencies = [
- "backend-android-core",
- "backend-android-mobile",
- "backend-ios-mobile",
  "backend-web",
- "inventory",
- "jni",
  "js-sys",
- "objc2",
- "objc2-foundation",
- "objc2-ui-kit",
- "runtime-core",
+ "runtime-scene",
+ "runtime-shared",
+ "runtime-vocabulary",
+ "runtime-world",
  "wasm-bindgen",
  "web-sys",
 ]

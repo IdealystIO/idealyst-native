@@ -9,7 +9,24 @@ description = "Two `#[component(external)]` components exported to every support
 crate-type = ["rlib"]
 
 [dependencies]
-runtime-core = { workspace = true }
+# The author surface. `runtime-core` is the crate this project aliases
+# to `runtime_core` at its root (see src/lib.rs) — one core, no feature
+# switch.
+#
+# `catalog` is on here rather than left to the ephemeral extractor
+# wrapper: `#[component(external)]` is USELESS without it (the attribute
+# only emits an `ExternalEntry` under the catalog gate, and
+# `idealyst export` discovers components by reading exactly those
+# entries), and the one facade switch turns on BOTH halves the
+# retargeted emission needs — `runtime-macros/catalog` (emit) and
+# `runtime-vocabulary/catalog` (the `glue::__mcp` anchor the emitted
+# `::runtime_core::__mcp::…` paths resolve to).
+runtime-core = { workspace = true, features = ["catalog"] }
+# The `#[component]` / `ui!` expansions spell ABSOLUTE
+# `::runtime_vocabulary::glue::…` paths, so the crate that hosts them
+# needs the vocabulary as a direct dependency — the `runtime_core`
+# alias only covers paths the author writes.
+runtime-vocabulary = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "External Export Suite"

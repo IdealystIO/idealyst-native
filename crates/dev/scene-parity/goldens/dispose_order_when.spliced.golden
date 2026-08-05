@@ -1,0 +1,30 @@
+# scene-parity golden — scenario `dispose_order_when`, mode `spliced`
+#
+# Dispose ordering for `when` branch teardown — the two modes
+# deliberately DIFFER and both orders are pinned:
+# Anchored: old scope drops FIRST (cleanup marker), THEN
+# clear_children(anchor), then the new branch builds.
+# Spliced: the old node is remove_child'd FIRST, THEN the scope
+# drops (cleanup marker), then the new branch builds + splices.
+#
+# Structural ops only. Node names are creation-order (n0, n1, ...);
+# `cleanup <label>` lines are scenario-registered on_cleanup markers
+# pinning dispose ordering. Regenerate after an INTENDED behavior
+# change with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 text "then"
+insert_at n0 <- n1 @ 0
+
+== set show = false (then-branch teardown ordering) ==
+remove_child n0 -x n1
+cleanup then-branch
+create n2 text "else"
+insert_at n0 <- n2 @ 0
+
+== set show = true (else-branch teardown ordering) ==
+remove_child n0 -x n2
+cleanup else-branch
+create n3 text "then"
+insert_at n0 <- n3 @ 0

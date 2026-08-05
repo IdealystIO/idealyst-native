@@ -6,25 +6,28 @@
 //! on GTK. On platforms with no menu-bar concept (iOS, Android, web,
 //! terminal, wgpu, ESP, CPU), [`install`] is a silent no-op.
 //!
-//! # Why not a `Element::External`?
+//! # Why not a rendered primitive?
 //!
 //! The system menu bar is a process-level chrome surface — there is
 //! exactly one, it lives outside every window's view tree, and macOS
 //! and Windows both treat it as application state set once at boot.
-//! `Element::External` is the right fit for content that has an
+//! A scene payload with its own mount handler is the right fit for
+//! content that has an
 //! in-tree position (size, layout, parent); the menu bar has none of
 //! those. Modeling it as a primitive would force authors to mount it
 //! "somewhere" arbitrary in the tree (where exactly? the navigator?
 //! the root?), and the lifetime of that "somewhere" doesn't match
 //! the lifetime of the menu bar.
 //!
-//! Instead, the API is a direct call against the backend:
+//! Instead, the API is a direct call against the backend. Get the concrete
+//! backend from its global self-handle — the boot entry's `register` argument
+//! hands you the scene *registry*, not the backend, so the menu bar is
+//! installed from the app's root component body instead:
 //!
 //! ```ignore
-//! host_appkit::run_with(
-//!     app,
-//!     host_appkit::RunOptions::default(),
-//!     |backend| {
+//! #[component]
+//! fn app() -> Element {
+//!     backend_macos::with_global_backend(|backend| {
 //!         menu::install(backend, menu::MenuBarSpec {
 //!             menus: vec![
 //!                 menu::Menu::new("File").items(vec![
@@ -43,8 +46,9 @@
 //!                 ]),
 //!             ],
 //!         });
-//!     },
-//! )?;
+//!     });
+//!     ui! { /* … */ }
+//! }
 //! ```
 //!
 //! # Reactive updates
@@ -55,6 +59,11 @@
 //! checkmarks on view modes), use [`install_reactive`] which takes a
 //! closure and re-fires whenever any signal it reads changes. Same
 //! shape as the toolbar SDK's reactive `items` closure.
+//!
+//! [`install_reactive`] creates a reactive subscription, so it must be called
+//! where effect creation is legal — a component body, an effect, or any
+//! world-entered build scope. Calling it from a pre-world boot hook or from an
+//! event handler panics.
 #![deny(missing_docs)]
 
 use std::rc::Rc;
@@ -367,21 +376,23 @@ where
 )))]
 mod fallback {
     use super::MenuBarSpec;
-    use runtime_core::Backend;
+
+    // The `B` type parameter is deliberately UNBOUNDED. Each real leg takes
+    // its own concrete backend (`MacosBackend`, `WindowsBackend`, …), so the
+    // no-op leg only has to accept whatever the caller already holds — and
+    // there is no cross-backend trait to bound it by (the old `Backend`
+    // mega-trait was deleted with the pre-v2 walker; capability traits are
+    // per-capability and none of them describes "has a menu bar").
 
     /// No-op `install` for targets with no menu-bar concept. User
     /// code calls this unconditionally; on iOS / Android / web /
     /// etc. it's the right thing (no menu bar exists).
-    pub fn install<B: Backend>(_backend: &mut B, _spec: MenuBarSpec) {}
+    pub fn install<B>(_backend: &mut B, _spec: MenuBarSpec) {}
 
     /// No-op reactive `install` for the same targets. Drops the
     /// closure without calling it; user code that mounts shortcuts
     /// inside the closure gets nothing on these platforms.
-    pub fn install_reactive<B: Backend, F: Fn() -> MenuBarSpec + 'static>(
-        _backend: &mut B,
-        _spec_fn: F,
-    ) {
-    }
+    pub fn install_reactive<B, F: Fn() -> MenuBarSpec + 'static>(_backend: &mut B, _spec_fn: F) {}
 }
 
 #[cfg(not(any(

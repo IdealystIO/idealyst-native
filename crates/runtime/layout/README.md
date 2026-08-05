@@ -2,8 +2,9 @@
 
 Flex-layout helper for native backends (iOS, Android, macOS). Wraps
 [`taffy`](https://crates.io/crates/taffy), a pure-Rust flex engine matching
-CSS semantics, and translates `runtime_core::StyleRules` into Taffy
-styles.
+CSS semantics, and translates `runtime_shared::StyleRules` into Taffy
+styles. (This crate depends on `runtime-shared` only — backends do not
+depend on `runtime-core`.)
 
 The DOM gives the web backend layout for free. UIKit / AppKit / Android
 don't, so each native backend builds a parallel layout tree alongside its
@@ -22,23 +23,34 @@ struct MyBackend {
     // native view in an enum variant.
 }
 
-impl Backend for MyBackend {
-    fn create_view(&mut self) -> Self::Node {
-        let layout = self.layout.new_node();
-        let native = make_native_view();
-        MyNode::View { view: native, layout }
-    }
+// The structural seam (`runtime_scene::Host`) and the capability traits
+// (`runtime_vocabulary::caps::*`) are separate impls over the same struct.
+impl Host for MyBackend {
+    type Node = MyNode;
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
         self.layout.add_child(parent.layout(), child.layout());
         attach_native(parent.view(), child.view());
     }
+    // … insert_at / remove_child / clear_children / create_anchor / supports_splice
+}
 
+impl caps::ViewOps for MyBackend {
+    fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
+        let layout = self.layout.new_node();
+        let native = make_native_view();
+        MyNode::View { view: native, layout }
+    }
+}
+
+impl caps::StyleOps for MyBackend {
     fn apply_style(&mut self, node: &Self::Node, rules: &Rc<StyleRules>) {
         self.layout.set_style(node.layout(), rules);
         paint_native(node.view(), rules);
     }
+}
 
+impl caps::LifecycleOps for MyBackend {
     fn finish(&mut self, root: Self::Node) {
         let (w, h) = self.viewport_size();
         self.layout.compute(root.layout(), w, h);
@@ -81,8 +93,8 @@ then come back here. The gotchas above are what you'll hit if you don't.
 ## Style translation
 
 The `LayoutTree::set_style(node, rules)` call is the single point where
-`runtime_core::StyleRules` becomes a Taffy `Style`. Adding new layout
-properties to the core style model means extending this translation
+`runtime_shared::StyleRules` becomes a Taffy `Style`. Adding new layout
+properties to the shared style model means extending this translation
 alongside whatever native paint changes the backend needs.
 
 Layout-only properties (flex direction, justify, gap, padding, …) go

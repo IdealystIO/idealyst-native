@@ -4,17 +4,18 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# A headless, queryable `runtime_core::Backend` implementation plus an
-# over-the-wire test harness. Lets runtime-server / hot-reload behavior
-# be exercised without a real device (iOS / Android emulator):
+# A headless, queryable `runtime_scene::Host` + `runtime_vocabulary::caps`
+# implementation plus an over-the-wire test harness. Lets runtime-server /
+# hot-reload behavior be exercised without a real device (iOS / Android
+# emulator):
 #
-#   real app (walker) → WireRecordingBackend → wire::codec (JSON) →
+#   real app (realize) → WireRecordingBackend → wire::codec (JSON) →
 #     dev_client::WireBackend → MockBackend (reconstructs a queryable
 #     scene tree)
 #
-# Tests assert against the reconstructed tree, so a bug in the
-# framework-core walker, the wire codec, or the dev-client receiver
-# surfaces as a wrong/missing node — not a blank emulator screen.
+# Tests assert against the reconstructed tree, so a bug in the runtime,
+# the wire codec, or the dev-client receiver surfaces as a wrong/missing
+# node — not a blank emulator screen.
 #
 # This is a dev/test utility crate: nothing in a shipped app depends on
 # it. Consumers pull it in via `[dev-dependencies]`.
@@ -31,19 +32,22 @@ default = []
 screenshot = ["dep:headless-screenshot"]
 
 [dependencies]
-# `robot` is forced on (not optional) so the `runtime_core::Element`
-# field set is deterministic regardless of who else is in the build
-# graph. `Element::Text { test_id, .. }` is `#[cfg(feature = "robot")]`;
-# without pinning robot here, a build that also pulls dev-server (which
-# enables robot) would unify the feature on and break this crate's
-# struct literals, while a standalone build would have them right —
-# i.e. it would compile xor not depending on the build set. Pinning it
-# makes `test_id` always present. Robot also makes the populated
-# query registry available to harness consumers for free.
-runtime-core = { workspace = true, features = ["robot"] }
+# `robot` makes the populated query registry available to harness
+# consumers for free; this is a test-only crate, so it costs nothing
+# shipped.
+runtime-shared = { workspace = true, features = ["robot"] }
 wire = { workspace = true }
 dev-client = { workspace = true }
+# The recorder's caps adoption (`dev_server::newcore`) lets this crate's
+# `NewCoreWireHarness` mount scene trees through a per-session `World` +
+# `realize` — the wire-behavior gate
+# (`tests/wire_behavior_newcore.rs`). Test-only crate, so the extra deps
+# cost nothing shipped.
 dev-server = { workspace = true }
+# Scene trees + world signals for the harness / tests.
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-world = { workspace = true }
 # The over-socket harness drives the real native client shell against a
 # loopback dev-server. `runtime-server` activates the tungstenite worker.
 runtime-server-shell-native = { workspace = true, features = ["runtime-server"] }
@@ -53,22 +57,23 @@ runtime-server-shell-native = { workspace = true, features = ["runtime-server"] 
 headless-screenshot = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Frozen old-core wire snapshot for the cross-core wire gate, so it
+# survives the deletion of the old core. See tests/goldens/README.md.
+parity-goldens = { workspace = true }
 # Decode captured PNGs + parse the bridge JSON response in the
 # `screenshot`-feature integration tests.
 image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"
 serde_json = { workspace = true }
-# Local-mount test for the swap navigator's backend-neutral handler
-# (author layout + outlet capture + Select swap + Link→Select). Runs the
-# generic handler directly on MockBackend — no wire / recording handler.
-swap-navigator = { workspace = true, features = ["runtime-server"] }
-# URL-sync tests drive the outlet-model stack (push/pop over the substrate
-# URL layer) alongside swap; wire tests exercise both over the recorder.
-stack-navigator = { workspace = true, features = ["runtime-server"] }
-# External-payload-over-wire round-trip test: `code_block(...)` is an
-# `Element::External` whose payload must serialize across the wire.
-codeblock = { workspace = true }
 # Repro for the wgpu-replay stack overflow on idea-ui Card scenes (arena #8):
 # mount real Cards through the record→replay→GPU chain.
 idea-ui = { workspace = true }
 idea-theme = { workspace = true }
+# `wire_card_overflow_repro.rs` writes `ui!`-authored trees, so it needs
+# the author surface at its canonical `runtime_core::…` spelling (the
+# facade alias every app and SDK uses).
+runtime-core = { workspace = true }
+# Third-party-primitive-over-wire test: `code_block(...)`'s portable
+# handler runs against the recorder, so its content crosses as generic
+# node ops.
+codeblock = { workspace = true }

@@ -12,7 +12,12 @@ license.workspace = true
 # depends on it and supplies its kind-specific callback bundle.
 
 [dependencies]
-runtime-core = { workspace = true }
+# Substrate only: the navigator DATA model (`NavigatorControl` / `NavState` /
+# `MountResult` / `NavigatorHandle`) and the substrate `Signal` those nav-state
+# slots are built from. No author surface (no `ui!`, no `Element`), so this
+# depends on `runtime-shared` directly rather than through the `runtime_core`
+# facade.
+runtime-shared = { workspace = true }
 
 [target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
 backend-android-mobile = { workspace = true }

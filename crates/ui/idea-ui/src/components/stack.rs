@@ -98,8 +98,10 @@ pub fn Stack(props: StackProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P, TStyle};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, AlignItems, StyleSource};
+    use runtime_core::{resolve_style, AlignItems};
 
     // A row Stack with `align = Center` (alongside axis/gap/justify) must
     // resolve to `align_items: Center`. Guards that chaining the `align`
@@ -107,22 +109,24 @@ mod tests {
     // which turned out to be a stale build — this pins the resolution).
     #[test]
     fn align_center_resolves_to_align_items_center() {
-        install_idea_theme(light_theme());
-        let el = Stack(StackProps {
-            axis: Reactive::Static(StackAxis::Row),
-            gap: Reactive::Static(StackGap::Lg),
-            align: Reactive::Static(StackAlign::Center),
-            justify: Reactive::Static(StackJustify::Start),
-            ..Default::default()
-        });
-        let app = match el {
-            Element::View { style: Some(StyleSource::Static(a)), .. } => a,
-            _ => panic!("Stack renders a statically-styled View"),
-        };
-        assert_eq!(
-            resolve_style(&app).align_items,
-            Some(AlignItems::Center),
-            "align = Center must resolve to align_items: Center even with axis/gap/justify set"
-        );
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let el = Stack(StackProps {
+                axis: Reactive::Static(StackAxis::Row),
+                gap: Reactive::Static(StackGap::Lg),
+                align: Reactive::Static(StackAlign::Center),
+                justify: Reactive::Static(StackJustify::Start),
+                ..Default::default()
+            });
+            let app = match classify(el) {
+                P::View { style: Some(TStyle::App(a)), .. } => a,
+                _ => panic!("Stack renders a statically-styled View"),
+            };
+            assert_eq!(
+                resolve_style(&app).align_items,
+                Some(AlignItems::Center),
+                "align = Center must resolve to align_items: Center even with axis/gap/justify set"
+            );
+    });
     }
 }

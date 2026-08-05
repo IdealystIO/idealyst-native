@@ -220,7 +220,7 @@ docs! {
           " on the backend, which removes the binding from the JS \
            registry. There's no leak across mount/unmount cycles."),
         p("Per-signal notifier closures are dropped automatically \
-           when their signal's arena slot is freed (",
+           when their signal's slot is freed (",
           code("take_signals_batched"),
           " removes them from ", code("signal_js_notifiers"),
           " when the slot is recycled). Manual ",

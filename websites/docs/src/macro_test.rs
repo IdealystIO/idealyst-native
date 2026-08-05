@@ -55,7 +55,7 @@ mod reactivity {
             code(rust, r#"
                 let count = signal(0);
                 count.set(5);
-                count.update(|n| *n += 1);
+                count.update(|n| n + 1);
             "#),
             p("Signals are the only kind of state the framework knows about."),
         },
@@ -233,9 +233,17 @@ fn note_block() {
 
 #[test]
 fn page_function_renders() {
-    // The page renders idea-ui `Typography`, whose sheet lookup panics
-    // unless a theme is installed first (enforced since the extensible
-    // theme sheets landed) — same call `app()` makes before mounting.
-    idea_ui::install_idea_theme(idea_ui::light_theme());
-    let _prim: runtime_core::Element = reactivity::page();
+    // Inside a `World`: `install_idea_theme` and the page body both
+    // create reactive state, which panics outside `World::enter` — the
+    // real boot entries enter the world around the build for the same
+    // reason.
+    //
+    // The theme install has to come first regardless: the page renders
+    // idea-ui `Typography`, whose sheet lookup panics with no installed
+    // theme (same call `app()` makes before mounting).
+    let world = runtime_world::World::new();
+    world.enter(|| {
+        idea_ui::install_idea_theme(idea_ui::light_theme());
+        let _prim: runtime_core::Element = reactivity::page();
+    });
 }

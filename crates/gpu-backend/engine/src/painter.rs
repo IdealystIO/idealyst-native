@@ -53,7 +53,10 @@ pub struct ButtonPressVisual {
 
 impl ButtonPressVisual {
     pub fn rest() -> Self {
-        Self { text_alpha_factor: 1.0, bg_overlay: None }
+        Self {
+            text_alpha_factor: 1.0,
+            bg_overlay: None,
+        }
     }
 }
 
@@ -64,15 +67,15 @@ pub trait Painter {
 
     /// The platform identity this skin presents to the framework.
     /// `WgpuBackend::platform` delegates here so author code reading
-    /// `runtime_core::platform()` sees the skin's emulated host
+    /// `runtime_shared::platform()` sees the skin's emulated host
     /// (e.g. `Custom("Sim")` for the ios-sim / android-sim skins
     /// — the renderer is wgpu under the hood, but as far as the
     /// app is concerned it's running in a simulator).
     ///
     /// Default is `Custom("")` (no identity declared) for skins
     /// that don't care to opinion the platform read-out.
-    fn platform(&self) -> runtime_core::Platform {
-        runtime_core::Platform::Custom("")
+    fn platform(&self) -> runtime_shared::Platform {
+        runtime_shared::Platform::Custom("")
     }
 
     // -----------------------------------------------------------
@@ -85,8 +88,8 @@ pub trait Painter {
     /// filled-pill) while any field the author explicitly sets
     /// still wins. Painters that don't want to opinion buttons can
     /// leave the default impl, which returns an empty rules struct.
-    fn button_defaults(&self) -> runtime_core::StyleRules {
-        runtime_core::StyleRules::default()
+    fn button_defaults(&self) -> runtime_shared::StyleRules {
+        runtime_shared::StyleRules::default()
     }
 
     /// Visual modulation applied to a Button at press progress
@@ -246,8 +249,8 @@ pub trait Painter {
     ///
     /// Default: all zeros — backwards-compatible for any future
     /// skin that doesn't paint device chrome.
-    fn safe_area_insets(&self) -> runtime_core::EdgeInsets {
-        runtime_core::EdgeInsets::ZERO
+    fn safe_area_insets(&self) -> runtime_shared::EdgeInsets {
+        runtime_shared::EdgeInsets::ZERO
     }
 
     /// Paint the simulator's mock device chrome — top status
@@ -269,7 +272,7 @@ pub trait Painter {
     fn paint_device_chrome<'a>(
         &self,
         viewport: (f32, f32),
-        insets: runtime_core::EdgeInsets,
+        insets: runtime_shared::EdgeInsets,
         now: web_time::Instant,
         glyphs: &'a HashMap<&'static str, Buffer>,
         rects: &mut Vec<RectInstance>,

@@ -17,7 +17,7 @@
 //! `apply_color` is called from `apply_style` instead of snapping the color. It
 //! diffs against the LAST applied value (tracked here, so no native read-back);
 //! if a `Transition` is set and the value changed, it registers an animation and
-//! drives it off `runtime_core::scheduling::raf_loop`. The raf is installed lazily
+//! drives it off `runtime_shared::scheduling::raf_loop`. The raf is installed lazily
 //! when the first transition starts and dropped (via a microtask, never from
 //! inside its own tick) when the last one finishes.
 
@@ -28,8 +28,8 @@ use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2::runtime::NSObject;
 use objc2_app_kit::{NSColor, NSView};
-use runtime_core::scheduling::RafLoop;
-use runtime_core::{Easing, Transition};
+use runtime_shared::scheduling::RafLoop;
+use runtime_shared::{Easing, Transition};
 
 use crate::imp::CGColorRef;
 
@@ -63,7 +63,7 @@ thread_local! {
 }
 
 fn now_ms() -> u64 {
-    runtime_core::time::now_micros() / 1000
+    runtime_shared::time::now_micros() / 1000
 }
 
 /// Apply `to` to `view`'s `prop`, animating over `transition` if one is set and
@@ -277,7 +277,7 @@ fn set_color(view: &NSView, prop: ColorProp, is_scroll: bool, c: [f32; 4]) {
 fn ensure_raf() {
     RAF.with(|r| {
         if r.borrow().is_none() {
-            let handle = runtime_core::scheduling::raf_loop(tick);
+            let handle = runtime_shared::scheduling::raf_loop(tick);
             *r.borrow_mut() = Some(handle);
         }
     });
@@ -314,7 +314,7 @@ fn tick() {
         // Drop the raf OUTSIDE this tick — dropping the `RafLoop` (which owns
         // this closure) from within would free the running closure. Re-check
         // emptiness in the microtask in case a new transition started.
-        runtime_core::schedule_microtask(|| {
+        runtime_shared::schedule_microtask(|| {
             if ACTIVE.with(|a| a.borrow().is_empty()) {
                 RAF.with(|r| *r.borrow_mut() = None);
             }

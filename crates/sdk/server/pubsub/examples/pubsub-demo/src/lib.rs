@@ -120,7 +120,11 @@ pub fn app() -> Element {
             let log = log.clone();
             effect!({
                 if let Some(m) = live.latest() {
-                    log.update(|v| v.push(format!("{}: {}", m.from, m.text)));
+                    log.update(|v| {
+                        let mut v = v.clone();
+                        v.push(format!("{}: {}", m.from, m.text));
+                        v
+                    });
                 }
             });
         }
@@ -173,4 +177,11 @@ pub fn app() -> Element {
 }
 
 /// SDK-registration hook the platform wrappers call before mount.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+// SDK-handler registration seam, invoked by the CLI-generated wrappers
+// after `runtime_vocabulary::register_builtins`. Registry-generic over
+// the scene `Host` so ONE seam serves every backend. This app registers
+// no third-party scene handlers.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}

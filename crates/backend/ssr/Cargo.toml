@@ -5,22 +5,31 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-# `serve` pulls in a tiny blocking HTTP server (`backend_ssr::serve`)
+# `serve` pulls in a tiny blocking HTTP server (`backend_ssr::newcore::serve`)
 # that renders each route per request. Off by default so the library
 # stays a lean, dependency-light renderer.
 serve = ["dep:tiny_http"]
 
 [dependencies]
-runtime-core = { workspace = true }
+# The permanent substrate both cores compiled against (style engine,
+# tokens, prop/handle structs, scheduling, viewport). `runtime-core` is
+# NOT a dependency: this backend has no `Element`/`Backend` surface left.
+runtime-shared = { workspace = true }
 css = { workspace = true }
 # Only with the `serve` feature. Same minimal HTTP lib the static dev
 # server (`dev-http`) uses.
 tiny_http = { version = "0.12", optional = true }
-# NOTE: backend-ssr stays SDK-free. Navigator SDKs depend on backend-ssr
-# (for their SSR handlers), so a dev-dep back on a nav SDK would create a
-# crate cycle + duplicate `backend-ssr`. Navigator render-at-path + chrome
-# tests/examples live in the SDK crates (e.g. stack-navigator/tests/ssr.rs).
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+# NOTE: backend-ssr's NORMAL deps stay SDK-free. Navigator SDKs dev-dep
+# backend-ssr (for their SSR handler tests), so their render-at-path +
+# chrome tests/examples live in the SDK crates (e.g.
+# stack-navigator/tests/ssr.rs).
 
 [dev-dependencies]
+# Frozen old-core output for the cross-core parity corpus, so the gate
+# survives the deletion of the old core. See tests/goldens/README.md.
+parity-goldens = { workspace = true }
 # `resolve_bundle_module` tests build synthetic `pkg/` dirs.
 tempfile = "3"

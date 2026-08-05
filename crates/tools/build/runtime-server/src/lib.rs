@@ -119,7 +119,13 @@ fn build_sidecar_mode(
     let sidecar_dir = wrapper_root.join("runtime-server/app");
     let cargo_target = opts.source.cargo_target_dir(project_dir);
 
-    generate_sidecar_wrapper(&sidecar_dir, project_dir, &opts.source, &cargo_target, manifest)?;
+    generate_sidecar_wrapper(
+        &sidecar_dir,
+        project_dir,
+        &opts.source,
+        &cargo_target,
+        manifest,
+    )?;
     generate_host_wrapper(
         &wrapper_dir,
         &sidecar_dir,
@@ -251,12 +257,6 @@ fn generate_sidecar_wrapper(
         .with_context(|| format!("create {}", sidecar_dir.display()))?;
 
     let sidecar_name = sidecar_binary_name(&manifest.name);
-    // `hot-reload` flips the `#[component]` macro into its split form
-    // (`__<Name>_hot_impl` + outer dispatch via `dev_hot::call`).
-    // Without it, subsecond's jump table is never consulted, so the
-    // user crate has to keep the feature on regardless of how thin the
-    // wrapper gets.
-    //
     // `dev` enables the framework's Robot bridge auto-start + the
     // MCP catalog inventory — without it the sidecar runs the user's
     // components but `idealyst mcp` finds no components via mDNS.
@@ -264,9 +264,25 @@ fn generate_sidecar_wrapper(
     // runtime-core/dev` at cargo invocation; the sidecar build is
     // driven by build-runtime-server (not the launcher's cargo
     // command), so we declare it on the dep here instead.
-    let fcore_dep = source.dep("crates/runtime/core", &["hot-reload", "dev"]);
+    // The facade's `dev` feature (robot + catalog) switches the catalog
+    // + automation surface on: `runtime-macros/catalog` (the emission
+    // gate, which unifies build-graph-wide) + `runtime-vocabulary/catalog`
+    // (the `glue::__mcp` anchor the retargeted emission resolves) +
+    // `runtime-vocabulary/robot` (the element registry the session's verb
+    // router dispatches against). Without it the user crate's
+    // `#[component]`s never register and a dev session has no MCP
+    // catalog. `runtime-shared/robot` is the bridge TRANSPORT that serves
+    // those registrations to the MCP server.
+    //
+    // No `hot-reload` anywhere: the `#[component]` emission has no
+    // `dev_hot` split, so a subsecond jump table cannot rebind patched
+    // bodies and the feature would only inflate the build (the host
+    // wrapper rides rebuild-and-respawn for the same reason — see
+    // `BuilderAdapter` in the generated host `main`).
+    let runtime_core_dep = source.dep("crates/runtime/core", &["dev"]);
+    let shared_dep = source.dep("crates/runtime/shared", &["robot"]);
     // `runtime-server` is dev-server's opt-in for both `host::run` and
-    // `sidecar::run`. It pulls `dev-hot`, `subsecond-types`,
+    // `sidecar::run_newcore`. It pulls `dev-hot`, `subsecond-types`,
     // `libc`, and `anyhow` into the wrapper transitively — we no
     // longer name those deps from this Cargo.toml.
     //
@@ -275,8 +291,13 @@ fn generate_sidecar_wrapper(
     // mocked app's scene to a PNG. It pulls `render-wgpu` (wgpu is
     // already compiled for the workspace, so the marginal cost is the
     // engine crate, not the whole GPU stack). The sidecar already runs
-    // the Robot bridge (`runtime-core/dev` → `robot`), so this only
+    // the Robot bridge (the dev surface above), so this only
     // adds the verb + the offscreen renderer.
+    //
+    // The recorder's caps adoption + `run_newcore` (per-session World +
+    // realize) are unconditional now that there is one core, so no
+    // feature selects them — `new-core` used to be named here and no
+    // longer exists on dev-server.
     let dev_server_dep = source.dep("crates/dev/server", &["runtime-server", "screenshot"]);
 
     let cargo_toml = format!(
@@ -284,7 +305,7 @@ fn generate_sidecar_wrapper(
 # every build.
 #
 # Sidecar binary: statically links the user's crate and calls
-# `dev_server::sidecar::run` to host the runtime-server frame loop. Pre-refactor
+# `dev_server::sidecar::run_newcore` to host the runtime-server frame loop. Pre-refactor
 # this crate carried dev-hot, wire, subsecond-types, libc, and
 # serde_json directly — every one of those moved into dev-server
 # behind its `sidecar-runtime` feature, so a framework API tweak no
@@ -298,14 +319,15 @@ version = "0.0.1"
 edition = "2021"
 
 [dependencies]
-runtime-core = {fcore_dep}
+runtime-core = {runtime_core_dep}
+runtime-shared = {shared_dep}
 dev-server = {dev_server_dep}
 # `sidecar` feature: pulls the user crate's recorder-side extension
 # registration (navigator recording handlers) + its `dev-server` dep, so
-# the generated `register_extensions_recorder` resolves. Distinct from
-# the web wrapper's `runtime-server` feature (which must NOT pull
-# dev-server — it'd break the wasm client build).
-{user_name} = {{ path = "{user_path}", features = ["sidecar"] }}
+# the generated register fn resolves. Distinct from the web wrapper's
+# `runtime-server` feature (which must NOT pull dev-server — it'd break
+# the wasm client build).
+{user_name} = {user_dep}
 
 # Sidecar is short-lived dev infra — strip everything that costs
 # link time. debug = 0 cuts ~half the link work; the patch dylib's
@@ -316,23 +338,26 @@ strip = "debuginfo"
 {patch_block}
 "#,
         sidecar_name = sidecar_name,
-        fcore_dep = fcore_dep,
+        runtime_core_dep = runtime_core_dep,
+        shared_dep = shared_dep,
         dev_server_dep = dev_server_dep,
         user_name = manifest.name,
-        user_path = project_dir.display(),
+        user_dep =
+            format!("{{ path = \"{}\", features = [\"sidecar\"] }}", project_dir.display()),
         patch_block = source.patch_block(),
     );
 
 
     let main_rs = format!(
         r#"//! GENERATED by `idealyst build aas`. Sidecar binary for the
-//! split-process runtime-server dev host. Delegates the entire frame loop to
-//! `dev_server::sidecar::run` — anything beyond pointing at the
-//! user crate's `app()` belongs in that library function, not
-//! here.
+//! split-process runtime-server dev host: each session mounts the
+//! user's scene through `dev_server::newcore::SceneSession`
+//! (per-session `World` + `realize`). Delegates the entire frame loop
+//! to `dev_server::sidecar::run_newcore` — anything beyond pointing at
+//! the user crate's `app()` belongs in that library function, not here.
 
 fn main() -> std::io::Result<()> {{
-    dev_server::sidecar::run({lib}::app, {lib}::register_extensions_recorder)
+    dev_server::sidecar::run_newcore({lib}::app, {lib}::register_scene_extensions_recorder)
 }}
 "#,
         lib = manifest.lib_name,
@@ -442,6 +467,14 @@ use dev_server::host::{{HostConfig, HotPatchAdapter, JumpTable, run}};
 
 const DEFAULT_ADDR: &str = "{default_addr}";
 
+/// Hot-patch rebinding needs the `#[component]` hot-dispatch split,
+/// which the macro's scene emission does not have — applying a jump
+/// table would silently re-render OLD component bodies. The host
+/// therefore runs with `hot_patch: None` (rebuild-and-respawn, which
+/// stays fully live: clients keep their sockets and sessions re-mint on
+/// respawn). This adapter is the seam that re-enables it once the split
+/// lands, so it stays compiled and type-checked.
+#[allow(dead_code)]
 struct BuilderAdapter(HotPatchBuilder);
 
 impl HotPatchAdapter for BuilderAdapter {{
@@ -468,17 +501,10 @@ fn main() -> std::io::Result<()> {{
     let captures_dir = PathBuf::from("{captures_dir}");
     let patch_target_dir = PathBuf::from("{patch_target_dir}");
 
-    let hot_patch: Option<Box<dyn HotPatchAdapter>> =
-        match HotPatchBuilder::new(captures_dir, &sidecar_path, patch_target_dir) {{
-            Ok(b) => Some(Box::new(BuilderAdapter(b))),
-            Err(e) => {{
-                eprintln!(
-                    "[runtime-server-host] hot-patch builder init failed: {{e:#}} — \
-                     falling back to respawn on every change"
-                );
-                None
-            }}
-        }};
+    // See `BuilderAdapter` above: no hot-dispatch split, so no jump
+    // table. Respawn-on-change keeps saves applying live.
+    let _ = (&captures_dir, &patch_target_dir);
+    let hot_patch: Option<Box<dyn HotPatchAdapter>> = None;
 
     let cfg = HostConfig {{
         bind_addr,
@@ -631,6 +657,8 @@ mod regression_tests {
                 targets: Vec::new(),
                 server_bin: None,
                 server_manifest: None,
+                worker_bin: None,
+                worker_manifest: None,
                 server_port: 3000,
                 web: Default::default(),
                 macos: Default::default(),
@@ -645,55 +673,145 @@ mod regression_tests {
         }
     }
 
-    /// The sidecar wrapper's `runtime-core` dep MUST request both
-    /// `hot-reload` AND `dev`. Pre-fix the dev feature was omitted,
-    /// so the user crate inside the sidecar had `runtime-core/dev`
-    /// off — the MCP catalog inventory never registered, and
-    /// `idealyst mcp` returned zero components in runtime-server
-    /// mode while local mode (which passes `--features
-    /// runtime-core/dev` via cargo) worked. This regression test
-    /// fails any change that drops the `dev` feature from the
-    /// sidecar's runtime-core line.
-    #[test]
-    fn sidecar_wrapper_enables_runtime_core_dev_feature() {
+    /// Generate both wrappers into a temp dir; the `TempDir` guard is
+    /// returned so the caller keeps them alive.
+    fn generate_both() -> (PathBuf, PathBuf, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project_dir = tmp.path().join("project");
         let sidecar_dir = tmp.path().join("sidecar");
+        let host_dir = tmp.path().join("host");
         let cargo_target = tmp.path().join("target");
         let workspace_root = tmp.path().join("framework_workspace");
         std::fs::create_dir_all(&project_dir).unwrap();
         std::fs::create_dir_all(&workspace_root).unwrap();
-
         let manifest = fake_manifest();
         let source = fake_source(&workspace_root);
+        generate_sidecar_wrapper(
+            &sidecar_dir,
+            &project_dir,
+            &source,
+            &cargo_target,
+            &manifest,
+        )
+        .expect("generate sidecar wrapper");
+        generate_host_wrapper(
+            &host_dir,
+            &sidecar_dir,
+            &project_dir,
+            &source,
+            &cargo_target,
+            &manifest,
+        )
+        .expect("generate host wrapper");
+        (sidecar_dir, host_dir, tmp)
+    }
 
-        generate_sidecar_wrapper(&sidecar_dir, &project_dir, &source, &cargo_target, &manifest)
-            .expect("generate sidecar wrapper");
+    fn dep_features(deps: &toml::Value, name: &str) -> Vec<String> {
+        deps.get(name)
+            .and_then(|d| d.get("features"))
+            .and_then(|f| f.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The sidecar must enable the dev surface (robot + catalog) and must
+    /// NOT enable `hot-reload`.
+    ///
+    /// dev surface: pre-fix it was omitted, so the MCP catalog inventory
+    /// never registered and `idealyst mcp` returned zero components in
+    /// runtime-server mode, while local mode (which passes the dev
+    /// feature via cargo) worked.
+    ///
+    /// `hot-reload`: the `#[component]` scene emission has no `dev_hot`
+    /// split, so a subsecond jump table cannot rebind patched bodies —
+    /// the feature would only inflate the build, and the host rides
+    /// rebuild-and-respawn instead (asserted below).
+    #[test]
+    fn sidecar_wrapper_enables_dev_and_omits_hot_reload() {
+        let (sidecar_dir, host_dir, _tmp) = generate_both();
 
         let cargo_toml = std::fs::read_to_string(sidecar_dir.join("Cargo.toml"))
             .expect("read generated sidecar Cargo.toml");
         let parsed: toml::Value = toml::from_str(&cargo_toml).expect("valid TOML");
-        let fcore = parsed
-            .get("dependencies")
-            .and_then(|d| d.get("runtime-core"))
-            .expect("sidecar wrapper has runtime-core dep");
-        let features = fcore
-            .get("features")
-            .and_then(|f| f.as_array())
-            .expect("runtime-core dep has [features] array");
-        let names: Vec<&str> = features.iter().filter_map(|v| v.as_str()).collect();
+        let deps = parsed.get("dependencies").expect("deps table");
 
+        // `runtime-core/dev` is the emission gate
+        // (`runtime-macros/catalog`) + the `glue::__mcp` anchor + the
+        // vocabulary robot registry; `runtime-shared/robot` is the bridge
+        // transport that serves them. Dropping either regresses dev
+        // sessions to an empty MCP catalog.
+        let facade_feats = dep_features(deps, "runtime-core");
         assert!(
-            names.contains(&"hot-reload"),
-            "sidecar runtime-core dep missing `hot-reload` feature; got {:?}",
-            names,
+            facade_feats.iter().any(|f| f == "dev"),
+            "sidecar runtime-core dep must enable `dev`: {facade_feats:?}",
+        );
+        let shared_feats = dep_features(deps, "runtime-shared");
+        assert!(
+            shared_feats.iter().any(|f| f == "robot"),
+            "sidecar runtime-shared dep must enable `robot` (the bridge \
+             transport): {shared_feats:?}",
         );
         assert!(
-            names.contains(&"dev"),
-            "sidecar runtime-core dep missing `dev` feature — \
-             MCP catalog will be empty in runtime-server mode. \
-             Got features = {:?}",
-            names,
+            !cargo_toml.contains("hot-reload"),
+            "sidecar must not enable hot-reload (no dev_hot split):\n{cargo_toml}",
+        );
+
+        let host_main = std::fs::read_to_string(host_dir.join("src/main.rs")).unwrap();
+        assert!(
+            host_main.contains("let hot_patch: Option<Box<dyn HotPatchAdapter>> = None;"),
+            "host must ride the respawn path (no hot-patch adapter):\n{host_main}",
+        );
+        assert!(
+            !host_main.contains("HotPatchBuilder::new(captures_dir"),
+            "host must not construct the hot-patch builder:\n{host_main}",
+        );
+    }
+
+    /// The sidecar boots through `dev_server::sidecar::run_newcore` with
+    /// the `register_scene_extensions_recorder` seam, enables
+    /// dev-server's scene feature, and takes a plain
+    /// `features = ["sidecar"]` dep on the user crate (no core pin —
+    /// there is one core).
+    #[test]
+    fn sidecar_wrapper_boots_run_newcore_with_recorder_seam() {
+        let (sidecar_dir, _host_dir, _tmp) = generate_both();
+
+        let cargo_toml = std::fs::read_to_string(sidecar_dir.join("Cargo.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&cargo_toml).expect("valid TOML");
+        let deps = parsed.get("dependencies").expect("deps table");
+
+        let user = deps.get("demo").expect("user crate dep");
+        assert!(
+            user.get("default-features").is_none(),
+            "user crate keeps its own defaults (one core):\n{cargo_toml}",
+        );
+        assert_eq!(dep_features(deps, "demo"), vec!["sidecar".to_string()], "{cargo_toml}");
+        assert!(
+            !cargo_toml.contains("old-core"),
+            "wrapper must not mention old-core:\n{cargo_toml}",
+        );
+        // The scene-session module is unconditional now; assert the wrapper
+        // does NOT resurrect the deleted feature (naming a feature that no
+        // longer exists is a hard cargo resolution error, and a generated
+        // Cargo.toml is not type-checked — see
+        // docs/runtime-v2-deletion-baseline.md §7.7).
+        assert!(
+            !dep_features(deps, "dev-server").iter().any(|f| f == "new-core"),
+            "dev-server has no `new-core` feature any more:\n{cargo_toml}",
+        );
+
+        let main_rs = std::fs::read_to_string(sidecar_dir.join("src/main.rs")).unwrap();
+        assert!(
+            main_rs.contains("dev_server::sidecar::run_newcore"),
+            "sidecar boots through run_newcore:\n{main_rs}",
+        );
+        assert!(
+            main_rs.contains("demo::register_scene_extensions_recorder"),
+            "sidecar registers through the scene-registry seam:\n{main_rs}",
         );
     }
 }

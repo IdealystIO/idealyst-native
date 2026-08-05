@@ -1,46 +1,108 @@
-//! The conformance screens. The **root** screen is a single scrollable
-//! column packing every covered primitive in a weird-but-legal
-//! configuration; the **detail** screen exists purely to exercise stack
-//! push/pop.
+//! The conformance screens — a deliberately weird torture layout
+//! (reactive labels, conditional mount/unmount, a portal modal whose card
+//! wraps interactive content, nested scroll, a keyed list), every asserted
+//! element carrying a stable `test_id`.
 //!
-//! Every element the suite asserts against carries a `.test_id(...)` set via
-//! the *builder* form (not `ui!`-attribute form): the builder method is
-//! gated only on `runtime-core/robot` (always on under `idealyst dev`),
-//! whereas the macro-attribute form needs this crate's own `robot` feature.
-//! An E2E screen lives or dies by its `test_id`s resolving, so the builder
-//! form is the reliable choice.
+//! Notable shapes the suites depend on:
+//!
+//! - The `Modal` is the primitive composition idea-ui's Modal wraps: an
+//!   `overlay` (Center placement, dismissable backdrop) whose card is a
+//!   `pressable` WRAPPING the confirm button — the exact
+//!   nested-pressability regression the modal suite exists to catch.
+//!   Primitives on purpose: this suite pins the PRIMITIVE composition,
+//!   and idea-ui coverage lives on the COMPONENTS screen.
+//! - The COMPONENTS screen drives the real idea-ui Switch / Checkbox /
+//!   Button; the back affordance pops via the vocabulary `NavHandle`.
+//! - `MethodCounter` exercises `#[method]` in the inline-props form (the
+//!   shape `#[method]` supports) with a REACTIVE label, which is what the
+//!   `component methods` suite asserts against.
+//!
+//! Elements the suite asserts against use the *builder* `.test_id(...)`
+//! form where they're built by builders and the `ui!` attribute form
+//! inside components — both lower to the same registry slot.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
-use idea_ui::{Modal, Stack, StackGap, StackPadding};
 use icons_lucide::HOME;
-use runtime_core::presence;
-use runtime_core::primitives::activity_indicator::activity_indicator;
-use runtime_core::primitives::scroll_view::scroll_view;
-use runtime_core::primitives::slider::slider;
-use runtime_core::{
-    button, component, icon, pressable, signal, text, text_input, toggle, ui, view, when,
-    Bindable, Element, IntoElement, Ref, Signal,
+use runtime_macros::{component, ui};
+use runtime_vocabulary::glue::primitives::activity_indicator::activity_indicator;
+use runtime_vocabulary::glue::primitives::overlay::{overlay, BackdropMode, ViewportPlacement};
+use runtime_vocabulary::glue::primitives::scroll_view::scroll_view;
+use runtime_vocabulary::glue::primitives::slider::slider;
+use runtime_vocabulary::glue::primitives::text_input::text_input;
+use runtime_vocabulary::glue::primitives::toggle::toggle;
+use runtime_vocabulary::glue::{
+    button, icon, memo, signal, text, view, when, Element, IntoElement, Signal,
 };
-use stack_navigator::StackHandle;
+use runtime_vocabulary::prims::NavHandle;
 
-use crate::State;
+/// The stack handle arrives at mount via `.on_handle` — screens share it
+/// through this cell.
+pub(crate) type NavCell = Rc<RefCell<Option<NavHandle>>>;
 
-/// The root torture screen.
-pub(crate) fn root_page(state: State, nav: Ref<StackHandle>) -> Element {
+/// App-wide reactive state. Lives in the root scope so it survives
+/// navigation — the suite asserts against it across push/pop.
+#[derive(Clone, Copy)]
+pub struct State {
+    pub count: Signal<i32>,
+    pub show_extra: Signal<bool>,
+    pub slider: Signal<f32>,
+    pub name: Signal<String>,
+    pub modal_open: Signal<bool>,
+    pub confirmed: Signal<i32>,
+}
+
+/// Build the app root: the vocabulary stack navigator over the same
+/// The root screen: the primitives torture layout.
+/// Must run with the owning world ambient (`newcore::start` wraps the
+/// build in `World::enter`).
+pub fn app() -> Element {
+    // The idea-ui screens style through the installed theme sheets. This
+    // runs inside `newcore::start`'s `World::enter`, so it lands in this
+    // world's ThemeCtx.
+    idea_ui::install_idea_theme(idea_ui::light_theme());
+
+    let state = State {
+        count: signal(0),
+        show_extra: signal(false),
+        slider: signal(0.0_f32),
+        name: signal(String::new()),
+        modal_open: signal(false),
+        confirmed: signal(0),
+    };
+
+    let nav: NavCell = Rc::new(RefCell::new(None));
+
+    #[cfg(feature = "robot")]
+    runtime_vocabulary::glue::after_ms_detached(crate::INITIAL_RUN_DELAY_MS, crate::suites::run_all);
+
+    let nav_root = nav.clone();
+    let nav_detail = nav.clone();
+    let nav_fill = nav.clone();
+    let nav_components = nav.clone();
+    runtime_vocabulary::builders::stack_navigator(&crate::ROOT)
+        .screen(crate::ROOT, move |_| root_page(state, nav_root.clone()))
+        .screen(crate::DETAIL, move |_| detail_page(nav_detail.clone()))
+        .screen(crate::COMPONENTS, move |_| components_page(nav_components.clone()))
+        .on_handle(move |h| *nav_fill.borrow_mut() = Some(h))
+        .build()
+}
+
+/// The root torture screen (mirror of `screens.rs::root_page`).
+pub(crate) fn root_page(state: State, nav: NavCell) -> Element {
     // — Counter, driven by a button, a decrement button, and a pressable
     //   container (three distinct click paths into one signal). —
-    let inc = move || state.count.update(|n| *n += 1);
-    let dec = move || state.count.update(|n| *n -= 1);
-    let press5 = move || state.count.update(|n| *n += 5);
+    let inc = move || state.count.update(|n| n + 1);
+    let dec = move || state.count.update(|n| n - 1);
+    let press5 = move || state.count.update(|n| n + 5);
 
     let counter = text(move || format!("Counter: {}", state.count.get()))
         .test_id("counter")
         .into_element();
 
     // — Toggle reveals a `when` branch (mount/unmount of the slider + an
-    //   extra marker). The hidden branch is fully disposed, so the suite can
-    //   assert count 0 → 1 as it toggles. —
+    //   extra marker). —
     let toggle_extra = toggle(state.show_extra, move |v| state.show_extra.set(v))
         .test_id("toggle")
         .into_element();
@@ -77,11 +139,10 @@ pub(crate) fn root_page(state: State, nav: Ref<StackHandle>) -> Element {
     .test_id("greeting")
     .into_element();
 
-    // — Modal: a portal whose card is a Pressable WRAPPING an interactive
-    //   button. This is the iOS/macOS modal-pressability regression — the
-    //   confirm button must still fire while nested inside the card's tap
-    //   recognizer. The suite opens it, clicks confirm, and asserts the
-    //   `confirmed` counter ticked. —
+    // — Modal: the primitive composition idea-ui's Modal wraps (module
+    //   docs) — an overlay whose card is a Pressable WRAPPING an
+    //   interactive button. The suite opens it, clicks confirm, and
+    //   asserts the `confirmed` counter ticked. —
     let open_modal = move || state.modal_open.set(true);
     let confirmed = text(move || format!("Confirmed: {}", state.confirmed.get()))
         .test_id("confirmed")
@@ -90,40 +151,38 @@ pub(crate) fn root_page(state: State, nav: Ref<StackHandle>) -> Element {
     let modal_branch = when(
         move || state.modal_open.get(),
         move || {
-            let dismiss: Rc<dyn Fn()> = Rc::new(move || state.modal_open.set(false));
-            // Modal body is a `content = move || …` closure now (the `presence`
-            // rebuild needs a reconstructable builder, not a `{ children }`
-            // block). `State` is `Copy`, so rebuild the body — and its
-            // `confirm` handler — fresh on each open. The `when` gate already
-            // drives mount/unmount, so `open = true` while mounted.
-            ui! {
-                Modal(open = true, on_dismiss = Some(dismiss), content = move || {
-                    let confirm = move || {
-                        state.confirmed.update(|n| *n += 1);
-                        state.modal_open.set(false);
-                    };
-                    ui! {
-                        view() {
-                            text("Confirm action?").test_id("modal-title")
-                            button("Confirm", confirm).test_id("modal-confirm")
-                        }
-                    }
-                })
-            }
+            let confirm = move || {
+                state.confirmed.update(|n| n + 1);
+                state.modal_open.set(false);
+            };
+            // Card = pressable wrapping the button (the nested-tap
+            // regression shape); overlay = Center + dismissable
+            // backdrop, the Modal defaults.
+            let card = runtime_vocabulary::builders::pressable(|| {})
+                .child(text("Confirm action?").test_id("modal-title").into_element())
+                .child(button("Confirm", confirm).test_id("modal-confirm").into_element())
+                .build();
+            overlay(vec![card])
+                .placement(ViewportPlacement::Center)
+                .backdrop(BackdropMode::Dismiss)
+                .on_dismiss(move || state.modal_open.set(false))
+                .trap_focus(true)
+                .into_element()
         },
         || view(vec![]).into_element(),
     );
 
-    // — Stack push. Native back chrome exists on iOS/Android/web; the
-    //   detail screen also carries an in-content Back for terminal + the
-    //   suite. —
-    let push = move || {
-        nav.get().map(|h| h.push(&crate::DETAIL, ())).unwrap_or_default();
-    };
+    // — Stack push. —
+    let nav_components = nav.clone();
     let goto_components = move || {
-        nav.get()
-            .map(|h| h.push(&crate::COMPONENTS, ()))
-            .unwrap_or_default();
+        if let Some(h) = nav_components.borrow().as_ref() {
+            h.push(&crate::COMPONENTS, ());
+        }
+    };
+    let push = move || {
+        if let Some(h) = nav.borrow().as_ref() {
+            h.push(&crate::DETAIL, ());
+        }
     };
 
     let children: Vec<Element> = vec![
@@ -131,9 +190,10 @@ pub(crate) fn root_page(state: State, nav: Ref<StackHandle>) -> Element {
         counter,
         button("Increment", inc).test_id("inc").into_element(),
         button("Decrement", dec).test_id("dec").into_element(),
-        pressable(vec![text("Press me (+5)").into_element()], press5)
+        runtime_vocabulary::builders::pressable(press5)
+            .child(text("Press me (+5)").into_element())
             .test_id("press5")
-            .into_element(),
+            .build(),
         toggle_extra,
         extra_branch,
         text_input(name, move |s: String| name.set(s))
@@ -149,11 +209,8 @@ pub(crate) fn root_page(state: State, nav: Ref<StackHandle>) -> Element {
         confirmed,
         modal_branch,
         ui! { ReflowBox() },
-        // A `#[method]`-bearing component: exercises robot/inspector method
-        // invocation (`bump_by` / `reset`) + the element↔component link. The
-        // `ui!` tag form works now that `BuildElement::build` coerces a
-        // `Bindable<Handle>` return via `IntoElement` (the handle is dropped —
-        // the inspector invokes over the bridge by instance id, not a `Ref`).
+        // A `#[method]`-bearing component: exercises robot/inspector
+        // method invocation (same placement as the old file).
         ui! { MethodCounter(initial = 10i32) },
         button("Push detail", push).test_id("push-detail").into_element(),
         button("Components", goto_components)
@@ -161,90 +218,65 @@ pub(crate) fn root_page(state: State, nav: Ref<StackHandle>) -> Element {
             .into_element(),
     ];
 
-    // Wrap in a scroll view (weird condition: scrollable content) around a
-    // spaced Stack.
-    let column = ui! { Stack(gap = StackGap::Md, padding = StackPadding::Lg) { children } };
+    // Wrap in a scroll view (weird condition: scrollable content). The
+    // idea-ui Stack becomes a plain column view on this core.
+    let column = view(children).into_element();
     scroll_view(vec![column]).into_element()
 }
 
-/// Reactive list with a PER-ROW conditional affordance — the exact shape of
-/// the whiteboard Layers popover's `CanvasRow`: a `for` over a `Signal<Vec>`
-/// where each KEPT row renders `if rows.len() > 1 { DelMarker }`. When the list
-/// shrinks to a single row, every surviving row's `when` must re-evaluate to
-/// false and REMOVE its marker. The suite asserts the marker count drops to 0.
-/// Guards the iOS bug where a kept row's conditional didn't drop on list
-/// shrink (the whiteboard "delete button won't disappear on the last canvas").
+/// Reactive list with a PER-ROW conditional affordance — the whiteboard
+/// `CanvasRow` shape ported 1:1 from `screens.rs::ReflowBox` (see that
+/// file's docs for the bug this guards).
 #[component]
 fn ReflowBox() -> Element {
     let rows: Signal<Vec<i32>> = signal(vec![0, 1, 2]);
     let active: Signal<usize> = signal(0);
     let remove = move || {
-        // Mimic `delete_canvas`: CHANGE `active` to a different value FIRST
-        // (re-running the row's sibling effect that reads active + the list),
-        // THEN shrink the list.
-        active.set(active.get().wrapping_add(1));
+        // Mimic `delete_canvas`: CHANGE `active` first, THEN shrink.
+        active.update(|a| a.wrapping_add(1));
         rows.update(|v| {
+            let mut v = v.clone();
             if v.len() > 1 {
                 v.remove(0);
             }
+            v
         });
     };
 
-    let remove_btn = button("Remove row", remove)
-        .test_id("remove-row")
-        .into_element();
-
-    // Wrap the list in TWO NESTED presences — the whiteboard popover is
-    // `focus_gate(presence(... Each ...))`, and `focus_gate` is itself a
-    // `presence`. Tests whether a `when` inside an `Each` inside nested
-    // presences still drops on list shrink.
-    let list_presence = presence(move || {
-        presence(move || {
-            ui! {
-                view {
-                    for r in rows, key = *r {
-                        ReflowRow(rows = rows, active = active, id = r)
+    ui! {
+        view {
+            // TWO NESTED presences around the keyed list, exactly like
+            // the old file (focus_gate(presence(...Each...))).
+            presence(present = || true) {
+                presence(present = || true) {
+                    view {
+                        for r in rows, key = r {
+                            ReflowRow(rows = rows, active = active, id = r)
+                        }
                     }
                 }
             }
-        })
-        .into_element()
-    })
-    .into_element();
-
-    ui! {
-        view {
-            list_presence
-            remove_btn
+            button(label = "Remove row", test_id = "remove-row", on_click = remove)
         }
     }
 }
 
-/// One row — a `#[component]` (like the whiteboard's `CanvasRow`) that holds the
-/// `if rows.len() > 1 { DelMarker }` conditional and reads the LIST signal via a
-/// prop. This is the faithful shape: a `when` INSIDE a kept component INSIDE an
-/// `Each`, gated on the same list that drives the `Each`.
+/// One row — the `when`-inside-kept-component-inside-`Each` shape.
 #[component]
-fn ReflowRow(props: &ReflowRowProps) -> Element {
-    let rows = props.rows;
-    let active = props.active;
-    let id = props.id;
-    // This row's POSITION in the (reactive) list — exactly the whiteboard's
-    // `index_of = canvas_ids.position(id)`. Read it in a SIBLING reactive effect
-    // (like `row_style`/`label_style` read `active == index_of()`), so multiple
-    // per-row effects subscribe to the list signal via `position`, and a delete
-    // SHIFTS those positions.
+fn ReflowRow(
+    rows: Signal<Vec<i32>>,
+    active: Signal<usize>,
+    /// Row identity (static — it IS the key).
+    #[prop(static)]
+    id: i32,
+) -> Element {
     let index_of = move || rows.get().iter().position(|x| *x == id).unwrap_or(0);
-    // EXACTLY like the whiteboard's `del_visible`: a `memo` (a `Signal<bool>`),
-    // branched on as a BARE `if del_visible`. `ui!` is type-driven, so this is
-    // reactive because the condition's *type* is a reactive signal — and it
-    // must re-evaluate to false (dropping the marker) when the list shrinks to
-    // one. A plain `move || …` closure here would be an opaque `fn() -> bool`,
-    // which the macro treats as STATIC — the original "won't disappear" bug.
-    let del_visible = runtime_core::memo(move || rows.get().len() > 1);
+    // A memo branched on as a bare `if` — reactive because the
+    // condition's TYPE is a signal (the original "won't disappear" bug).
+    let del_visible = memo(move || rows.get().len() > 1);
     ui! {
         view {
-            text(move || format!("i{} a{}", index_of(), active.get()))
+            text { move || format!("i{} a{}", index_of(), active.get()) }
             if del_visible {
                 DelMarker()
             }
@@ -252,60 +284,85 @@ fn ReflowRow(props: &ReflowRowProps) -> Element {
     }
 }
 
-pub struct ReflowRowProps {
-    pub rows: Signal<Vec<i32>>,
-    pub active: Signal<usize>,
-    pub id: i32,
-}
-
-impl Default for ReflowRowProps {
-    fn default() -> Self {
-        Self {
-            rows: Signal::new(Vec::new()),
-            active: Signal::new(0),
-            id: 0,
-        }
+/// The per-row conditional affordance; all rows share the `del-marker`
+/// test_id (the suite counts them).
+#[component]
+fn DelMarker() -> Element {
+    ui! {
+        text(test_id = "del-marker") { "del" }
     }
 }
 
-/// The per-row conditional affordance. A `#[component]` (like the whiteboard's
-/// `DeleteCanvasButton`) so the `if` branch holds no captures. All rows share
-/// the `del-marker` test_id; the suite counts them.
+// ---------------------------------------------------------------------------
+// MethodCounter — the `#[method]`-bearing component the methods suite
+// drives via `list_components` → `invoke_method` (mirror of screens.rs;
+// module docs cover the two deliberate deltas: inline-props shape and
+// the reactive label).
+// ---------------------------------------------------------------------------
+
 #[component]
-fn DelMarker() -> Element {
-    text("del").test_id("del-marker").into_element()
+fn MethodCounter(
+    /// Mount-time starting value (static — the suite asserts it).
+    #[prop(static)]
+    initial: i32,
+) -> Element {
+    let value = signal(initial);
+    // Bodies use `set(get() + n)`: the two cores' `update` closure
+    // shapes differ, and this file's methods mirror the old file's
+    // BEHAVIOR, not its core-specific spelling.
+    /// No-arg increment — the inspector's easy manual case.
+    #[method]
+    fn increment() {
+        value.set(value.get() + 1);
+    }
+    #[method]
+    fn reset() {
+        value.set(0);
+    }
+    #[method]
+    fn bump_by(n: i32) {
+        value.set(value.get() + n);
+    }
+
+    // Builder-form tail like the old file; the `#[component]` macro
+    // wraps this root view in the instance link (`__component_root`).
+    let label = text(move || format!("methods: {}", value.get()))
+        .test_id("method-counter-val")
+        .into_element();
+    view(vec![label]).test_id("method-counter").into_element()
 }
 
-/// The pushed detail screen — proves stack push/pop. Its `detail-marker`
-/// test_id is unique, so its presence/absence is an unambiguous proxy for
-/// "is the detail screen on top".
-pub(crate) fn detail_page(nav: Ref<StackHandle>) -> Element {
+/// The pushed detail screen — proves stack push/pop.
+pub(crate) fn detail_page(nav: NavCell) -> Element {
     let back = move || {
-        nav.get().map(|h| h.pop()).unwrap_or_default();
+        if let Some(h) = nav.borrow().as_ref() {
+            h.pop();
+        }
     };
     let children: Vec<Element> = vec![
         text("Detail screen").test_id("detail-marker").into_element(),
         button("Back", back).test_id("back").into_element(),
     ];
-    ui! { Stack(gap = StackGap::Lg, padding = StackPadding::Lg) { children } }
+    view(children).into_element()
 }
 
-/// idea-ui component coverage — `Switch`, `Checkbox`, `Button` (idea-ui "as a
-/// key implementor"). Each carries a forwarded `test_id` so the robot can
-/// drive it; each is paired with a primitive status `text` (whose own
-/// `test_id` the suite asserts on) reflecting the component's state.
-pub(crate) fn components_page(nav: Ref<StackHandle>) -> Element {
+/// idea-ui component coverage — a `Switch`/`Checkbox`/`Button` screen
+/// with stable `test_id`s and status texts the idea-ui suite asserts
+/// against. The back affordance pops via the vocabulary `NavHandle`.
+pub(crate) fn components_page(nav: NavCell) -> Element {
     use idea_ui::{Button, Checkbox, Switch};
 
-    let sw = runtime_core::signal(false);
-    let cb = runtime_core::signal(false);
-    let clicks = runtime_core::signal(0_i32);
+    let sw = signal(false);
+    let cb = signal(false);
+    let clicks = signal(0_i32);
 
     let on_sw: Rc<dyn Fn(bool)> = Rc::new(move |v| sw.set(v));
     let on_cb: Rc<dyn Fn(bool)> = Rc::new(move |v| cb.set(v));
-    let on_btn: Rc<dyn Fn()> = Rc::new(move || clicks.update(|n| *n += 1));
+    let on_btn: Rc<dyn Fn()> = Rc::new(move || clicks.update(|n| n + 1));
     let on_back: Rc<dyn Fn()> = Rc::new(move || {
-        nav.get().map(|h| h.pop()).unwrap_or_default();
+        if let Some(h) = nav.borrow().as_ref() {
+            h.pop();
+        }
     });
 
     let sw_status = text(move || format!("switch={}", sw.get()))
@@ -342,45 +399,5 @@ pub(crate) fn components_page(nav: Ref<StackHandle>) -> Element {
         btn_status,
         ui! { Button(label = "Back".to_string(), on_click = on_back, test_id = Some("comp-back")) },
     ];
-    ui! { Stack(gap = StackGap::Md, padding = StackPadding::Lg) { children } }
-}
-
-// ---------------------------------------------------------------------------
-// MethodCounter — a `#[method]`-bearing component for exercising component
-// method invocation (robot bridge + the inspector's "select element → call
-// its methods"). The `#[component]` macro registers the methods AND links
-// this instance to its root element id, so selecting the `method-counter`
-// view in the inspector surfaces `bump_by` / `reset` as Invoke buttons.
-// ---------------------------------------------------------------------------
-
-#[derive(Default)]
-pub(crate) struct MethodCounterProps {
-    pub initial: i32,
-}
-
-#[component]
-pub(crate) fn MethodCounter(props: &MethodCounterProps) -> Bindable<MethodCounterHandle> {
-    let value = signal(props.initial);
-    // No-arg — the easy manual test: Invoke it and the value visibly
-    // ticks up (no JSON args to type). Watch the value in the TARGET
-    // app window (it's this component's own label), not the inspector.
-    #[method]
-    fn increment() {
-        value.update(|v| *v += 1);
-    }
-    #[method]
-    fn reset() {
-        value.set(0);
-    }
-    #[method]
-    fn bump_by(n: i32) {
-        value.update(|v| *v += n);
-    }
-    
-    // Builder-form tail (reliable `test_id` under `runtime-core/robot`); the
-    // `#[component]` macro wraps this root view in the instance link.
-    let label = text(format!("methods: {}", value.get()))
-        .test_id("method-counter-val")
-        .into_element();
-    view(vec![label]).test_id("method-counter")
+    view(children).into_element()
 }

@@ -50,10 +50,18 @@ pub fn colors() -> Element {
 
 fn swatch(name: &str, token: &'static str, fallback: &'static str) -> Element {
     let fb = fallback.to_string();
+    // The per-token fill rides the INLINE layer, not an override: an
+    // override disqualified every swatch from preminting (11 live-engine
+    // fall-throughs on this page under `--premint-report`). Inline still
+    // carries the token reference, so it re-tints on theme swap.
     let block = view(vec![])
         .with_style(move || {
-            StyleApplication::new(SwatchBlock::sheet())
-                .override_background(Tokenized::token(token, Color(fb.clone().into())))
+            StyleApplication::new(SwatchBlock::sheet()).with_inline(
+                runtime_core::StyleRules {
+                    background: Some(Tokenized::token(token, Color(fb.clone().into()))),
+                    ..Default::default()
+                },
+            )
         })
         .into_element();
     let name = name.to_string();

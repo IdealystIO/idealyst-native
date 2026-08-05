@@ -29,7 +29,6 @@ license.workspace = true
 # not yet wired.
 
 [features]
-default = []
 # Server-side execution. Off by default so client / wasm builds never pull
 # async-graphql. Mirrors how `crates/api/server` gates axum behind `server`.
 server = ["dep:async-graphql"]
@@ -44,7 +43,9 @@ thiserror = { workspace = true }
 net = { workspace = true }
 
 # Reactive Signal + resource/mutation + driver::spawn_async for the
-# `use_query` / `use_mutation` hooks.
+# `use_query` / `use_mutation` hooks. Aliased as `runtime_core` at the
+# crate root (see lib.rs); `async-driver` gives the facade's root the glue
+# `resource`/`mutation` mirrors + `driver::spawn_async`.
 runtime-core = { workspace = true, features = ["async-driver"] }
 
 # Typed client codegen + the transport-agnostic wire types

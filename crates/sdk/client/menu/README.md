@@ -7,7 +7,7 @@ concept (iOS, Android, web, terminal, wgpu, ESP, CPU), [`install`] is a
 silent no-op.
 
 Unlike most SDKs in this directory, `menu` is **not** an
-`Element::External` primitive — it's a plain Rust capability API. The
+rendered primitive at all — it's a plain Rust capability API. The
 system menu bar is process-level chrome: there's exactly one, it lives
 outside every window's view tree, and the OS treats it as application
 state set once at boot. It has no in-tree size/layout/parent, so a

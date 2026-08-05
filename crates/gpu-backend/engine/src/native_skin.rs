@@ -17,7 +17,7 @@
 //! the sim skins (which report `Custom("Sim")` so author code thinks it's
 //! on a simulator), `NativeSkin` reports the **actual host OS** it was
 //! constructed for (`MacOs`, `Windows`, `Linux`). Author code reading
-//! `runtime_core::platform()` then takes its genuine native branch — e.g.
+//! `runtime_shared::platform()` then takes its genuine native branch — e.g.
 //! idea-ui-docs renders its desktop custom-header + pinned-sidebar layout
 //! under `Platform::MacOs`, exactly as the AppKit backend would. This is
 //! what makes the wgpu backend a universal native target rather than a
@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 
 use glyphon::Buffer;
-use runtime_core::Platform;
+use runtime_shared::Platform;
 
 use crate::keyboard::{KeySpec, LaidKey, LayoutMetrics};
 use crate::painter::{NavigatorHeaderChrome, NavigatorHeaderHit, Painter};
@@ -43,7 +43,7 @@ pub struct NativeSkin {
 impl NativeSkin {
     /// Build a native skin reporting `platform` to author code. Pick the
     /// value matching the host the window actually runs on (`MacOs` on
-    /// macOS, etc.) so `runtime_core::platform()` branches natively.
+    /// macOS, etc.) so `runtime_shared::platform()` branches natively.
     pub fn new(platform: Platform) -> Self {
         Self { platform }
     }

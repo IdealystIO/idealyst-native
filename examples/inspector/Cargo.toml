@@ -10,23 +10,25 @@ crate-type = ["rlib"]
 
 [dependencies]
 # The inspector is a CLIENT of the robot bridge, not a robot target — it
-# does NOT enable `runtime-core/robot`. It just renders an idealyst UI and
-# speaks the bridge's newline-JSON protocol over std::net.
+# does NOT enable the runtime's `robot` feature. It just renders an
+# idealyst UI and speaks the bridge's newline-JSON protocol over std::net.
+#
+# `runtime-core` is aliased to `runtime_core` at the crate root (see
+# src/lib.rs); `runtime-vocabulary` because the `ui!` emission spells
+# absolute `::runtime_vocabulary::glue::…` paths; `runtime-scene` because
+# `register_scene_extensions` is generic over the registry host.
 runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 icons-lucide = { workspace = true }
 stack-navigator = { workspace = true }
 idea-ui-nav = { workspace = true }
 serde_json = "1"
 
-[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
-backend-macos = { workspace = true }
-
-# Non-macOS native fallback so `cargo build`/check on a Linux CI host (or a
-# dev box building for the host target) still compiles the crate. The MVP
-# host is macOS; the terminal backend keeps the workspace green elsewhere.
-[target.'cfg(not(any(target_arch = "wasm32", target_os = "macos", target_os = "ios", target_os = "android")))'.dependencies]
-backend-terminal = { workspace = true }
+# No backend deps: this crate is a platform-agnostic app library (the
+# CLI-generated macOS wrapper brings `backend-macos` and calls
+# `host_appkit::newcore::run_with`), so it compiles on any host target.
 
 [package.metadata.idealyst.app]
 name      = "Inspector"

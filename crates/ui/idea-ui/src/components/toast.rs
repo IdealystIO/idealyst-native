@@ -45,12 +45,13 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use idea_theme::compat::SignalModify as _;
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::ViewportPlacement;
 use runtime_core::{
     after_ms_detached, component, presence, ui, unscope, AlignItems, Easing, FlexDirection,
     IdealystSchema, IntoElement, JustifyContent, Length, PointerEvents, PresenceAnim,
-    PresenceState, Element, Reactive, Signal, StyleRules, StyleSheet, Tokenized, VariantSet,
+    PresenceState, Element, Reactive, Signal, StyleRules, StyleSheet, Tokenized
 };
 
 use idea_theme::extensible::{ToneRef, VariantRef};
@@ -97,6 +98,19 @@ pub struct ToastEntry {
     pub leaving: bool,
 }
 
+/// Equality for `Signal<Vec<ToastEntry>>` (world signals carry an
+/// equality cut; `T: PartialEq` is required on the
+/// guarded `set`). `render` is closure identity — pointer equality is
+/// the honest comparison; `id`/`leaving` carry the queue's observable
+/// state, so a `leaving` flip or membership change always notifies.
+impl PartialEq for ToastEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.leaving == other.leaving
+            && Rc::ptr_eq(&self.render, &other.render)
+    }
+}
+
 impl Default for ToastEntry {
     fn default() -> Self {
         Self {
@@ -108,20 +122,68 @@ impl Default for ToastEntry {
 }
 
 thread_local! {
-    static QUEUE: std::cell::RefCell<Option<Signal<Vec<ToastEntry>>>> =
-        const { std::cell::RefCell::new(None) };
     static NEXT_ID: Cell<u64> = const { Cell::new(0) };
 }
 
-/// The process-global toast queue, lazily created off any render scope.
+/// The toast queue, lazily created off any render scope.
+///
+/// Stored the same way idea-theme's active-theme slot is: signals are
+/// world-backed and worlds are transient (one per SSR request), so the
+/// handle lives in the WORLD's typed context and each world lazily
+/// creates its own queue.
 fn queue() -> Signal<Vec<ToastEntry>> {
-    QUEUE.with(|q| {
-        if q.borrow().is_none() {
-            let sig = unscope(|| Signal::new(Vec::new()));
-            *q.borrow_mut() = Some(sig);
-        }
-        *q.borrow().as_ref().unwrap()
-    })
+    #[derive(Clone)]
+    struct ToastQueue(Signal<Vec<ToastEntry>>);
+    if let Some(q) = runtime_core::inject::<ToastQueue>() {
+        LAST_QUEUE.with(|h| h.set(Some(q.0)));
+        return q.0;
+    }
+    // Both the signal and its provision are world-root: a context entry is
+    // owned by the scope that made it, and this runs from whichever render
+    // scope first raised a toast. Scope-owned, the queue would stop being
+    // injectable on that subtree's unmount and the next toast would build a
+    // second queue that no mounted ToastHost is rendering.
+    let sig = unscope(|| {
+        let sig = runtime_core::signal(Vec::new());
+        runtime_core::provide(ToastQueue(sig));
+        sig
+    });
+    // Park the HANDLE for the outside-enter push path (below).
+    LAST_QUEUE.with(|h| h.set(Some(sig)));
+    sig
+}
+
+thread_local! {
+    /// The queue handle from the most recent in-world [`queue`] call
+    /// (`ToastHost`'s build parks it here). Exists because the imperative
+    /// `push_toast*`/`dismiss_toast` API is documented as callable "from
+    /// anywhere" — and on web, anywhere includes event handlers, which
+    /// the backend dispatches OUTSIDE `World::enter` by design (author
+    /// callbacks stage writes through CAPTURED handles; see
+    /// backend-web's dispatch-site glue). `queue()`'s `inject` lookup
+    /// needs the ambient world, so the first `push_toast` from a click
+    /// handler panicked with the kernel's outside-enter message. Writes
+    /// through this parked handle are the sanctioned staged-write shape,
+    /// and a handle from a dead world degrades to a safe no-op
+    /// (generational signal handles).
+    static LAST_QUEUE: Cell<Option<Signal<Vec<ToastEntry>>>> = const { Cell::new(None) };
+}
+
+/// The queue handle for the IMPERATIVE API (`push_toast*` /
+/// `dismiss_toast` / internal timers): the parked handle when one
+/// exists, else the in-world `queue()` (tests and in-render pushes that
+/// precede any `ToastHost`). Callers outside a reactive context before
+/// any host has built get `None` — there is nothing that could render
+/// the toast yet, so the push is dropped (with a dev log) rather than
+/// panicking.
+fn queue_for_push() -> Option<Signal<Vec<ToastEntry>>> {
+    if let Some(h) = LAST_QUEUE.with(|h| h.get()) {
+        return Some(h);
+    }
+    if runtime_core::world_is_entered() {
+        return Some(queue());
+    }
+    None
 }
 
 fn next_id() -> u64 {
@@ -297,7 +359,13 @@ pub fn push_toast_node(render: impl Fn(u64) -> Element + 'static) -> u64 {
 /// sweep away.
 fn enqueue(build: impl FnOnce(u64) -> ToastEntry) -> u64 {
     let id = next_id();
-    queue().update(|v| v.push(build(id)));
+    let Some(q) = queue_for_push() else {
+        runtime_core::log_warn!(
+            "push_toast: no reactive context and no ToastHost has mounted yet — toast dropped"
+        );
+        return id;
+    };
+    q.modify(|v| v.push(build(id)));
     after_ms_detached(TOAST_SHOW_MS, move || begin_leaving(id));
     after_ms_detached(TOAST_SHOW_MS + TOAST_ANIM_MS as i32, move || remove_toast(id));
     id
@@ -306,7 +374,8 @@ fn enqueue(build: impl FnOnce(u64) -> ToastEntry) -> u64 {
 /// Begin dismissing a toast immediately (e.g. on a close click). The
 /// card animates out, then removes itself.
 pub fn dismiss_toast(id: u64) {
-    if queue().get().iter().any(|e| e.id == id) {
+    let Some(q) = queue_for_push() else { return };
+    if q.with_untracked(|v| v.iter().any(|e| e.id == id)) {
         begin_leaving(id);
         after_ms_detached(TOAST_ANIM_MS as i32, move || remove_toast(id));
     }
@@ -315,7 +384,9 @@ pub fn dismiss_toast(id: u64) {
 /// Flip an entry's `leaving` flag through the queue signal so every
 /// `ToastCard` reading the queue re-evaluates its `present()`.
 fn begin_leaving(id: u64) {
-    queue().update(|v| {
+    // Timer callbacks (`after_ms_detached`) also fire outside enter.
+    let Some(q) = queue_for_push() else { return };
+    q.modify(|v| {
         if let Some(e) = v.iter_mut().find(|e| e.id == id) {
             e.leaving = true;
         }
@@ -323,7 +394,8 @@ fn begin_leaving(id: u64) {
 }
 
 fn remove_toast(id: u64) {
-    queue().update(|v| v.retain(|e| e.id != id));
+    let Some(q) = queue_for_push() else { return };
+    q.modify(|v| v.retain(|e| e.id != id));
 }
 
 // =============================================================================
@@ -355,12 +427,6 @@ impl Default for ToastCardProps {
 /// [`Alert`](crate::Alert) surface, or caller-supplied content) and
 /// fades/slides itself in and out via `presence`, driven by the entry's
 /// `leaving` flag.
-///
-/// **Cargo features:** requires `prim-icon` + `prim-activity` + `prim-portal` + `prim-presence` (all in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without them compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn ToastCard(props: &ToastCardProps) -> Element {
     let entry = props.entry.clone();
@@ -405,10 +471,19 @@ pub fn ToastCard(props: &ToastCardProps) -> Element {
 /// A card-local stylesheet whose sole job is to re-enable pointer events
 /// under the click-through toast host. See [`ToastCard`].
 fn interactive_card_sheet() -> Rc<StyleSheet> {
-    Rc::new(StyleSheet::r#static(StyleRules {
-        pointer_events: Some(PointerEvents::Auto),
-        ..Default::default()
-    }))
+    ToastCardHitSheet::sheet()
+}
+
+// `stylesheet!` (LINK-time), not `r#static`: a toast card first
+// constructs at PUSH time, after the premint dump's crawl, so a
+// construction-registered sheet (auto-preminted statics included) gets
+// no build-time CSS and the first push panics under `--premint-only`.
+runtime_core::stylesheet! {
+    ToastCardHitSheet<()> {
+        base(_t) {
+            pointer_events: PointerEvents::Auto,
+        }
+    }
 }
 
 // =============================================================================
@@ -549,12 +624,6 @@ impl Default for ToastHostProps {
 /// root; the `push_toast*` family (from anywhere) enqueues entries that
 /// appear here as a non-modal, touch-passthrough overlay anchored per
 /// `placement`.
-///
-/// **Cargo features:** requires `prim-icon` + `prim-activity` + `prim-portal` + `prim-presence` (all in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without them compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn ToastHost(props: &ToastHostProps) -> Element {
     let q = queue();
@@ -580,8 +649,11 @@ pub fn ToastHost(props: &ToastHostProps) -> Element {
     // A positioner fills the portal strip and pushes the stack into the
     // requested corner with `gap` px from the hugged edge(s). Built once —
     // placement/gap are static props, so no reactive style closure needed.
+    // `r#static` so the positioner auto-premints by content (one class
+    // per distinct placement/gap the app actually mounts) — a closure
+    // sheet here was a live-engine fall-through on the docs corpus.
     let positioner_sheet: Rc<StyleSheet> =
-        Rc::new(StyleSheet::new(move |_vs: &VariantSet| placement.positioner_rules(gap)));
+        Rc::new(StyleSheet::r#static(placement.positioner_rules(gap)));
     let positioner = runtime_core::view(vec![stack]).with_style(positioner_sheet).into_element();
 
     runtime_core::overlay(vec![positioner])
@@ -599,9 +671,56 @@ pub fn ToastHost(props: &ToastHostProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P, TStyle};
     use idea_theme::extensible::{installed_alert_sheet, tone, variant};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{arena_stats, resolve_style, Color, StyleApplication, StyleSource};
+    use runtime_core::{resolve_style, Color, StyleApplication};
+
+    /// User-reported (docs toast page, web): the FIRST `push_toast` from
+    /// a click handler panicked with the kernel's "signal()/effect()
+    /// called outside World::enter". Web dispatches author callbacks
+    /// OUTSIDE the world by design (staged writes through captured
+    /// handles), and the queue lookup was an in-world `inject`. The
+    /// imperative API must work from outside a reactive context once any
+    /// in-world caller (ToastHost's build) has parked the handle — and
+    /// must DROP a pre-host outside-world push instead of panicking.
+    /// Fails against the inject-only lookup: the outside-enter push
+    /// panics at the world's TLS check.
+    #[test]
+    fn regression_push_toast_outside_world_enter_does_not_panic() {
+        // A pre-host, out-of-world push has nowhere to render — dropped,
+        // not a panic. (Fresh test thread ⇒ no parked handle yet.)
+        let _ = push_toast("too early", tone::Neutral);
+
+        let world = runtime_core::__World::new();
+        world.enter(|| {
+            install_idea_theme(light_theme());
+            // ToastHost's build parks the queue handle in-world.
+            let _ = queue();
+        });
+
+        // OUTSIDE enter — the web click-handler shape. Pre-fix this line
+        // panicked at the kernel's outside-enter TLS check (the queue
+        // lookup was an in-world `inject`); the toast's lifecycle timers
+        // additionally run SYNCHRONOUSLY here (no scheduler in tests), so
+        // the entry is pushed and auto-removed in the same turn — the
+        // assertion below therefore drives the parked handle directly,
+        // timer-free, to pin that outside-enter writes land.
+        let _ = push_toast("hello", tone::Success);
+
+        let q = queue_for_push().expect("the in-world build parked the handle");
+        q.modify(|v| {
+            v.push(ToastEntry { id: 424242, ..Default::default() });
+        });
+        world.flush();
+        world.enter(|| {
+            assert!(
+                queue().get().iter().any(|e| e.id == 424242),
+                "an outside-enter write through the parked handle commits on flush"
+            );
+        });
+    }
 
     /// Regression (empty ToastHost swallowed clicks): the host overlay is
     /// click-through (`pointer-events: none` on web) so its viewport strip
@@ -611,70 +730,46 @@ mod tests {
     /// outermost element must resolve `pointer-events: auto`.
     #[test]
     fn regression_toast_card_opts_into_pointer_events() {
-        let card = ToastCard(&ToastCardProps { entry: ToastEntry { id: 1, ..Default::default() } });
-        let pe = match &card {
-            Element::View { style: Some(StyleSource::Static(app)), .. } => {
-                resolve_style(app).pointer_events
-            }
-            _ => panic!("a toast card wraps its content in a styled view"),
-        };
-        assert_eq!(
-            pe,
-            Some(PointerEvents::Auto),
-            "toast card must opt back into pointer-events under the click-through host",
-        );
+        with_test_world(|| {
+            let card = ToastCard(&ToastCardProps { entry: ToastEntry { id: 1, ..Default::default() } });
+            let pe = match classify(card) {
+                P::View { style: Some(TStyle::App(app)), .. } => {
+                    resolve_style(&app).pointer_events
+                }
+                _ => panic!("a toast card wraps its content in a styled view"),
+            };
+            assert_eq!(
+                pe,
+                Some(PointerEvents::Auto),
+                "toast card must opt back into pointer-events under the click-through host",
+            );
+    });
     }
 
     /// Walk the rendered tree and return the first `Text` node's resolved
     /// color (DFS, into Views and Pressables — enough for an Alert's
     /// title/body/close shape).
-    fn first_text_color(el: &Element) -> Option<Color> {
-        match el {
-            Element::Text { style, .. } => {
-                let app = match style.as_ref()? {
-                    StyleSource::Static(a) => a.clone(),
+    fn first_text_color(el: Element) -> Option<Color> {
+        match classify(el) {
+            P::Text { style, .. } => {
+                let app = match style? {
+                    TStyle::App(a) => a,
                     _ => return None,
                 };
                 resolve_style(&app).color.clone().map(|c| c.resolve())
             }
-            Element::View { children, .. } => children.iter().find_map(first_text_color),
-            Element::Pressable { children, .. } => children.iter().find_map(first_text_color),
+            P::View { children, .. } | P::Pressable { children, .. } => {
+                children.into_iter().find_map(first_text_color)
+            }
             _ => None,
         }
     }
 
     fn alert_children(el: Element) -> Vec<Element> {
-        match el {
-            Element::View { children, .. } => children,
+        match classify(el) {
+            P::View { children, .. } => children,
             _ => panic!("a standard toast renders an Alert View"),
         }
-    }
-
-    /// Regression: a standard (Filled) toast must not leak an arena signal
-    /// slot. Previously each toast stored a per-entry `unscope`d
-    /// `Signal<bool>` that was never disposed (no public `Signal::dispose`
-    /// exists), so every toast shown permanently consumed one slot. The
-    /// `leaving` flag now rides as a plain `bool` inside the queue's
-    /// `Signal<Vec<_>>`.
-    #[test]
-    fn pushing_toasts_does_not_leak_signal_slots() {
-        // Materialize the one global queue signal so it's part of the
-        // baseline (it persists for the process — that's expected).
-        let _ = queue();
-        let baseline = arena_stats().signals_in_use;
-
-        // With no scheduler installed (unit test), `after_ms` runs its
-        // synchronous fallback, so each push fully cycles inline
-        // (push → begin_leaving → remove). 64 toasts come and go.
-        for i in 0..64 {
-            push_toast_with(format!("toast {i}"), ToneRef::default(), VariantRef::default());
-        }
-
-        assert_eq!(
-            arena_stats().signals_in_use,
-            baseline,
-            "toasts must not leak signal slots"
-        );
     }
 
     /// Regression: a standard (Filled) toast must render its text in the
@@ -687,52 +782,58 @@ mod tests {
     /// stamping, so the title text node carries the intent foreground.
     #[test]
     fn regression_filled_toast_text_carries_intent_color() {
-        install_idea_theme(light_theme());
+        with_test_world(|| {
+            install_idea_theme(light_theme());
 
-        let expected = resolve_style(
-            &StyleApplication::new(installed_alert_sheet())
-                .with("appearance", "primary_filled".to_string()),
-        )
-        .color
-        .clone()
-        .expect("the filled container resolves a foreground")
-        .resolve();
+            let expected = resolve_style(
+                &StyleApplication::new(installed_alert_sheet())
+                    .with("appearance", "primary_filled".to_string()),
+            )
+            .color
+            .clone()
+            .expect("the filled container resolves a foreground")
+            .resolve();
 
-        let surface =
-            Toast::new("Saved").tone(tone::Primary).variant(variant::Filled).into_render(1)();
+            let surface =
+                Toast::new("Saved").tone(tone::Primary).variant(variant::Filled).into_render(1)();
 
-        let title_color =
-            first_text_color(&surface).expect("the toast's title carries its own color");
-        assert_eq!(title_color, expected, "toast title is the intent text color");
-        assert_eq!(expected.0.to_ascii_lowercase(), "#ffffff");
+            let title_color =
+                first_text_color(surface).expect("the toast's title carries its own color");
+            assert_eq!(title_color, expected, "toast title is the intent text color");
+            assert_eq!(expected.0.to_ascii_lowercase(), "#ffffff");
+    });
     }
 
     /// The builder shows a close × by default; `closable(false)` removes it
     /// (the Alert then renders just its content column).
     #[test]
     fn builder_closable_toggles_the_close() {
-        install_idea_theme(light_theme());
+        with_test_world(|| {
+            install_idea_theme(light_theme());
 
-        let with_close = alert_children(Toast::new("hi").into_render(1)());
-        assert_eq!(with_close.len(), 2, "content + default close ×");
+            let with_close = alert_children(Toast::new("hi").into_render(1)());
+            assert_eq!(with_close.len(), 2, "content + default close ×");
 
-        let no_close = alert_children(Toast::new("hi").closable(false).into_render(2)());
-        assert_eq!(no_close.len(), 1, "closable(false) → content only");
+            let no_close = alert_children(Toast::new("hi").closable(false).into_render(2)());
+            assert_eq!(no_close.len(), 1, "closable(false) → content only");
+    });
     }
 
     /// An action slot renders between the content and the (default) close.
     #[test]
     fn builder_action_renders_between_content_and_close() {
-        install_idea_theme(light_theme());
+        with_test_world(|| {
+            install_idea_theme(light_theme());
 
-        let surface = Toast::new("hi")
-            .action(|| runtime_core::text("Undo".to_string()).into_element())
-            .into_render(7)();
-        let children = alert_children(surface);
-        assert_eq!(children.len(), 3, "content + action + close");
-        match &children[1] {
-            Element::Text { .. } => {}
-            _ => panic!("action slot renders the provided element"),
-        }
+            let surface = Toast::new("hi")
+                .action(|| runtime_core::text("Undo".to_string()).into_element())
+                .into_render(7)();
+            let mut children = alert_children(surface);
+            assert_eq!(children.len(), 3, "content + action + close");
+            match classify(children.remove(1)) {
+                P::Text { .. } => {}
+                _ => panic!("action slot renders the provided element"),
+            }
+    });
     }
 }

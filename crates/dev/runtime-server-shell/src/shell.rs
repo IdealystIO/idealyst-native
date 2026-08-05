@@ -39,7 +39,7 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use runtime_core::Backend;
+use runtime_vocabulary::caps::AllCaps;
 use wire::{AppToDev, DevToApp};
 
 use dev_client::{RuntimeServerClient, OutboundSender};
@@ -82,7 +82,7 @@ pub fn endpoint_or_panic() -> String {
 /// `client` is `Rc<RefCell<...>>` because the host can hand out
 /// references for re-entrant access (e.g. `backend_mut()` after a
 /// batch apply, to run a layout pass).
-pub struct RuntimeServerShell<B: Backend + 'static> {
+pub struct RuntimeServerShell<B: AllCaps + 'static> {
     pub client: Rc<RefCell<RuntimeServerClient<B>>>,
     inbound: mpsc::Receiver<DevToApp>,
     /// Last viewport reported via [`Self::report_viewport`] (or the
@@ -129,12 +129,12 @@ pub struct RuntimeServerShellOptions {
 /// lives exclusively inside the shell). `Shared` is what the
 /// wgpu sim path uses to keep the same `Rc<RefCell<WgpuBackend>>`
 /// in the shell AND in `render-wgpu::Host` simultaneously.
-enum SpawnBackend<B: Backend> {
+enum SpawnBackend<B: AllCaps> {
     ByValue(B),
     Shared(Rc<RefCell<B>>),
 }
 
-impl<B: Backend + 'static> RuntimeServerShell<B> {
+impl<B: AllCaps + 'static> RuntimeServerShell<B> {
     /// Build the shell, install an outbound channel that survives
     /// reconnects, and spawn the background WebSocket worker that
     /// connects to `url` (`ws://host:port`).
@@ -350,7 +350,7 @@ pub fn protocol_mismatch(server_version: u32) -> bool {
 
 /// Decide what to do with one inbound `DevToApp` message. Split out
 /// of [`RuntimeServerShell::drain`] so per-message handling stays trivial.
-fn apply_dev_msg<B: Backend + 'static>(client: &mut RuntimeServerClient<B>, msg: DevToApp) {
+fn apply_dev_msg<B: AllCaps + 'static>(client: &mut RuntimeServerClient<B>, msg: DevToApp) {
     match msg {
         DevToApp::Hello { session, protocol_version, .. } => {
             // A protocol mismatch means the commands that follow may

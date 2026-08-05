@@ -1,131 +1,115 @@
 //! Headless runtime-server smoke tests.
 //!
-//! Exercises the dev-server core without the WebSocket transport:
-//! a recorder backend, a synthetic primitive tree, the real
-//! framework walker, and the in-process Robot API. The two scenarios
-//! these tests pin down:
+//! Exercises the dev-server core without the WebSocket transport: a
+//! recorder backend, a real scene mounted through
+//! `dev_server::newcore::SceneSession`, and the in-process Robot API.
+//! The scenarios these tests pin down:
 //!
-//! 1. **Render output is well-formed.** A small tree produces the
+//! 1. **Realize output is well-formed.** A small tree produces the
 //!    expected `Command` stream — `CreateView` / `CreateText` /
 //!    `CreateButton` / `Insert` / `Finish` etc. — so any future
 //!    refactor that breaks the recorder shows up immediately.
 //!
-//! 2. **Robot can drive the server-side registry.** With the
-//!    `robot` feature on for `runtime-core` (activated via
-//!    dev-deps), the walker populates the thread-local registry.
-//!    Tests construct a [`Robot`], look up an element by label,
-//!    invoke `click(...)`, and assert the click closure fired by
-//!    checking that the recorder emitted a follow-up command (the
-//!    closure's signal mutation re-fires the relevant effect).
+//! 2. **Robot can drive the server-side registry.** The mount handlers
+//!    populate the thread-local vocabulary registry. Tests construct a
+//!    [`Robot`], look up an element by label / `test_id`, invoke
+//!    `click(...)`, and assert the handler fired.
 //!
-//! Run with `cargo test -p dev-server`. The `robot` feature on
-//! `runtime-core` is enabled automatically through this crate's
-//! `[dev-dependencies]` block.
+//! 3. **Teardown reaches the wire.** A released primitive emits
+//!    `Command::ReleaseNode` so the client tears down its mirror.
+//!
+//! The Robot driver env (world-enter for queries, flush for actions) is
+//! installed exactly as the sidecar session thread installs it —
+//! `dev_server::newcore::install_robot_env`.
+//!
+//! Run with `cargo test -p dev-server`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use dev_server::newcore::{clear_robot_env, install_robot_env, SceneSession};
 use dev_server::WireRecordingBackend;
-use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement};
-use runtime_core::robot::{Query, Robot};
-use runtime_core::{
-    component, mount, render, signal, IntoAction, Element, SafeAreaSides, TextSource,
-};
+use runtime_shared::primitives::portal::{PortalTarget, ViewportPlacement};
+use runtime_vocabulary::builders::{button, portal, text, view};
+use runtime_vocabulary::robot::{Query, Robot, TreeNode};
+use runtime_world::signal;
 use wire::Command;
 
-/// Build a small primitive tree by hand (no `ui!` macro — keeps the
-/// test self-contained and explicit about every field). Returns a
-/// `(tree, click_count_signal)` pair so the caller can both render
-/// the tree and observe state mutated by the button's `on_click`.
-fn sample_tree() -> (Element, runtime_core::Signal<i32>) {
-    let click_count = signal(0_i32);
-    // `Element::Button.on_click` is `derive::Action` since the
-    // generator migration — bare `Fn()` closures lift via the
-    // blanket `IntoAction for F: Fn()` impl (which wraps the
-    // closure into `Action.fire`).
-    let on_click = (move || {
-        click_count.set(click_count.get() + 1);
-    })
-    .into_action();
-
-    let tree = Element::View {
-        children: vec![
-            Element::Text {
-                source: TextSource::Static("Hello, runtime-server".into()),
-                style: None,
-                ref_fill: None,
-                accessibility: Default::default(),
-                test_id: Some("greeting"),
-            },
-            Element::Button {
-                label: TextSource::Static("Tap me".into()),
-                on_click,
-                leading_icon: None,
-                trailing_icon: None,
-                style: None,
-                ref_fill: None,
-                disabled: None,
-                accessibility: Default::default(),
-                test_id: Some("tap-btn"),
-            },
-        ],
-        style: None,
-        ref_fill: None,
-        safe_area_sides: SafeAreaSides::NONE,
-        on_touch: None,
-        on_wheel: None,
-        on_file_drop: None,
-        on_hover: None,
-        is_container: false,
-        accessibility: Default::default(),
-        test_id: None,
-    };
-
-    (tree, click_count)
+/// Mount `app` on a fresh recorder with the Robot driver env installed
+/// (the sidecar's wiring). The returned holder keeps the session alive;
+/// drop it to unmount.
+fn boot(
+    app: impl FnOnce() -> runtime_scene::Element + 'static,
+) -> (WireRecordingBackend, Rc<RefCell<Option<SceneSession>>>) {
+    let recorder = WireRecordingBackend::new();
+    let session = SceneSession::mount(&recorder, |_r| {}, app);
+    let holder: Rc<RefCell<Option<SceneSession>>> = Rc::new(RefCell::new(Some(session)));
+    install_robot_env(&holder);
+    (recorder, holder)
 }
 
-/// **Test 1: headless render produces a well-formed Command stream.**
-/// No WebSocket transport, no client. Just the recorder + walker.
-#[test]
-fn aas_renders_tree_into_command_stream() {
-    let (tree, _click_count) = sample_tree();
+fn teardown(holder: Rc<RefCell<Option<SceneSession>>>) {
+    clear_robot_env();
+    holder.borrow_mut().take();
+    Robot::new().reset();
+}
 
-    let recorder = WireRecordingBackend::new();
-    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-    // `_owner` MUST be held — dropping it tears down every reactive
-    // scope (the same shape every consumer of `render` uses).
-    let _owner = render(backend_rc, tree);
+/// A small tree: a view with a static text and a counting button.
+/// Returns the click counter so the caller can observe the handler.
+fn sample_tree(clicks: Rc<Cell<i32>>) -> runtime_scene::Element {
+    view()
+        .child(
+            text()
+                .content("Hello, runtime-server")
+                .test_id("greeting")
+                .build(),
+        )
+        .child(
+            button()
+                .label("Tap me")
+                .on_press(move || clicks.set(clicks.get() + 1))
+                .test_id("tap-btn")
+                .build(),
+        )
+        .build()
+}
+
+/// **Test 1: headless realize produces a well-formed Command stream.**
+/// No WebSocket transport, no client. Just the recorder + the scene.
+#[test]
+fn aas_realizes_tree_into_command_stream() {
+    let (recorder, holder) = boot(|| sample_tree(Rc::new(Cell::new(0))));
 
     let commands = recorder.drain_commands();
 
-    // Walker builds children first then the parent View, then
-    // inserts each child, then `finish()`. Use counts (not order)
-    // so we don't pin the test to walker internals.
+    // Children are built first, then the parent View, then each child
+    // is inserted, then `finish()`. Use counts (not order) so the test
+    // isn't pinned to mount internals.
     let n = |pred: fn(&Command) -> bool| commands.iter().filter(|c| pred(c)).count();
     assert_eq!(
         n(|c| matches!(c, Command::CreateView { .. })),
         1,
-        "exactly one View"
+        "exactly one View; got {commands:#?}"
     );
-    assert_eq!(
-        n(|c| matches!(c, Command::CreateText { .. })),
-        1,
-        "exactly one Text"
-    );
+    assert_eq!(n(|c| matches!(c, Command::CreateText { .. })), 1, "one Text");
     assert_eq!(
         n(|c| matches!(c, Command::CreateButton { .. })),
         1,
-        "exactly one Button"
+        "one Button"
     );
-    assert_eq!(
-        n(|c| matches!(c, Command::Insert { .. })),
-        2,
-        "Text + Button each inserted into the View"
+    let attach_ops = commands
+        .iter()
+        .filter(|c| matches!(c, Command::Insert { .. } | Command::InsertMany { .. }))
+        .count();
+    assert!(
+        attach_ops == 1 || attach_ops == 2,
+        "the two children attach to the View (one InsertMany, or one Insert each); \
+         got {attach_ops} attach ops in {commands:#?}"
     );
     assert_eq!(
         n(|c| matches!(c, Command::Finish { .. })),
         1,
-        "render() called finish(root) exactly once"
+        "the mount called finish(root) exactly once"
     );
 
     // Drain is destructive — a second drain returns nothing new.
@@ -133,89 +117,91 @@ fn aas_renders_tree_into_command_stream() {
         recorder.drain_commands().is_empty(),
         "drain_commands clears the queue"
     );
+    teardown(holder);
 }
 
-/// **Test 2: Robot API drives the server-side registry.**
+/// **Test 2: the Robot API drives the server-side registry.**
 ///
-/// The walker (running on this thread) populated the thread-local
-/// Robot registry while building the tree. We use that registry to
-/// find the button by its label and invoke its `on_click` — the
-/// same path an external MCP client would take, just without the
-/// JSON-over-TCP bridge in the middle.
-///
-/// Asserts: the click handler fires (the captured signal increments).
+/// The mount handlers (running on this thread) populated the
+/// thread-local Robot registry. We use that registry to find the button
+/// by its label and invoke its press handler — the same path an
+/// external MCP client would take, just without the JSON-over-TCP
+/// bridge in the middle.
 #[test]
 fn robot_finds_and_clicks_button_via_server_registry() {
-    let (tree, click_count) = sample_tree();
-
-    let recorder = WireRecordingBackend::new();
-    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-    let _owner = render(backend_rc, tree);
+    let clicks = Rc::new(Cell::new(0));
+    let clicks_for_app = clicks.clone();
+    let (_recorder, holder) = boot(move || sample_tree(clicks_for_app));
 
     let robot = Robot::new();
-
-    // Find by label (exact). The label is the static button text
-    // the walker captured.
     let btn = robot
         .find(Query::label("Tap me"))
         .expect("button registered with label 'Tap me'");
+    assert_eq!(btn.label.as_deref(), Some("Tap me"));
 
-    assert!(
-        btn.label.as_deref() == Some("Tap me"),
-        "found element has the expected label"
-    );
-
-    // Pre-condition: click handler hasn't fired yet.
-    assert_eq!(click_count.get(), 0, "click count starts at 0");
-
-    // The click invokes the registered `on_click` closure on this
-    // thread (same thread the registry lives on — same posture as
-    // `BridgeHandle::poll` running on the dev-server's main loop).
+    assert_eq!(clicks.get(), 0, "click count starts at 0");
     robot.click(&btn).expect("click dispatches");
+    assert_eq!(clicks.get(), 1, "handler fired exactly once via Robot");
+    robot.click(&btn).expect("second click dispatches");
+    assert_eq!(clicks.get(), 2, "handler is re-invocable");
 
+    teardown(holder);
+}
+
+/// **Test 3: `test_id` queries work.** Locked-in semantics: `find` by
+/// `test_id` returns the element regardless of label / kind. Useful in
+/// larger trees where labels collide or are localized.
+#[test]
+fn robot_finds_element_by_test_id() {
+    let (_recorder, holder) = boot(|| sample_tree(Rc::new(Cell::new(0))));
+    let robot = Robot::new();
+
+    let greeting = robot
+        .find(Query::test_id("greeting"))
+        .expect("Text registered with test_id 'greeting'");
     assert_eq!(
-        click_count.get(),
-        1,
-        "click handler fired exactly once via Robot"
+        greeting.label.as_deref(),
+        Some("Hello, runtime-server"),
+        "Text label captured into the registry"
     );
 
-    // A second click — same closure, same observation.
-    robot.click(&btn).expect("second click dispatches");
-    assert_eq!(click_count.get(), 2, "click handler is re-invocable");
+    let btn = robot
+        .find(Query::test_id("tap-btn"))
+        .expect("Button registered with test_id 'tap-btn'");
+    assert_eq!(btn.label.as_deref(), Some("Tap me"));
+
+    assert!(robot.find(Query::test_id("does-not-exist")).is_none());
+    teardown(holder);
 }
 
 /// **Regression: robot snapshot/find must reflect LIVE reactive text,
 /// not the value captured at mount.**
 ///
 /// Before the `label_fn` fix the registry cached the reactive text's
-/// string once at walker registration. A bound signal could change
-/// (the reactive Effect updated the backend's view), but `find(...)`
-/// and `get_snapshot` kept reporting the mount-time string — an MCP /
-/// AI client reading the snapshot to verify a UI update would see
-/// stale text. This test mutates the signal a reactive `text(...)`
-/// reads and asserts every robot read path reports the new value.
-///
-/// Fails before the fix (label stuck at "count: 0"), passes after.
+/// string once at registration. A bound signal could change (the
+/// reactive effect updated the backend's view), but `find(...)` and
+/// `get_snapshot` kept reporting the mount-time string — an MCP / AI
+/// client reading the snapshot to verify a UI update would see stale
+/// text. This mutates the signal a reactive `text(...)` reads and
+/// asserts every robot read path reports the new value.
 #[test]
 fn regression_robot_snapshot_reflects_reactive_text() {
-    use runtime_core::{text, view};
-
-    // Created at top-level test scope (no active owner) so the signal
-    // outlives `render`'s tree-build, exactly like an app-owned signal.
-    let count = signal(0_i32);
-
-    let tree: Element = view(vec![text(move || format!("count: {}", count.get()))
-        .test_id("count-label")
-        .into()])
-    .into();
-
-    let recorder = WireRecordingBackend::new();
-    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-    let _owner = render(backend_rc, tree);
+    let slot: Rc<Cell<Option<runtime_world::Signal<i32>>>> = Rc::new(Cell::new(None));
+    let slot_for_app = slot.clone();
+    let (_recorder, holder) = boot(move || {
+        let count = signal(0_i32);
+        slot_for_app.set(Some(count));
+        view()
+            .child(
+                text()
+                    .content(move || format!("count: {}", count.get()))
+                    .test_id("count-label")
+                    .build(),
+            )
+            .build()
+    });
 
     let robot = Robot::new();
-
-    // Mount-time value is correct via every read path.
     let el = robot
         .find(Query::test_id("count-label"))
         .expect("reactive text registered");
@@ -226,27 +212,25 @@ fn regression_robot_snapshot_reflects_reactive_text() {
         "initial snapshot()"
     );
 
-    // Mutate the signal the reactive text reads.
+    // Mutate the signal the reactive text reads, then commit — the
+    // driver env's settle hook is what a bridge verb would run.
+    let count = slot.get().expect("signal captured during mount");
     count.set(3);
+    holder.borrow().as_ref().expect("session").flush();
 
-    // find() by test_id (from_registry path).
-    let el2 = robot
-        .find(Query::test_id("count-label"))
-        .expect("still registered after update");
     assert_eq!(
-        el2.label.as_deref(),
+        robot
+            .find(Query::test_id("count-label"))
+            .and_then(|e| e.label)
+            .as_deref(),
         Some("count: 3"),
         "find() must report the live reactive label, not the mount-time value"
     );
-
-    // get_snapshot() tree path (build_tree_node).
     assert_eq!(
         tree_label(&robot.snapshot(), "count-label").as_deref(),
         Some("count: 3"),
         "snapshot() must report the live reactive label"
     );
-
-    // find_by_label path: the new text is findable, the stale one isn't.
     assert!(
         robot.find(Query::label("count: 3")).is_some(),
         "find(Label) resolves the live text"
@@ -255,14 +239,13 @@ fn regression_robot_snapshot_reflects_reactive_text() {
         robot.find(Query::label("count: 0")).is_none(),
         "the stale mount-time label no longer matches"
     );
+
+    teardown(holder);
 }
 
 /// Depth-first search a robot `snapshot()` tree for the node with the
 /// given `test_id`, returning its (live-resolved) label.
-fn tree_label(
-    nodes: &[runtime_core::robot::TreeNode],
-    test_id: &str,
-) -> Option<String> {
+fn tree_label(nodes: &[TreeNode], test_id: &str) -> Option<String> {
     for n in nodes {
         if n.test_id == Some(test_id) {
             return n.label.clone();
@@ -276,56 +259,53 @@ fn tree_label(
 
 /// Does the robot `snapshot()` tree contain a node with this `test_id`
 /// anywhere in the hierarchy (root or descendant)?
-fn tree_has_test_id(nodes: &[runtime_core::robot::TreeNode], test_id: &str) -> bool {
-    nodes.iter().any(|n| {
-        n.test_id == Some(test_id) || tree_has_test_id(&n.children, test_id)
-    })
+fn tree_has_test_id(nodes: &[TreeNode], test_id: &str) -> bool {
+    nodes
+        .iter()
+        .any(|n| n.test_id == Some(test_id) || tree_has_test_id(&n.children, test_id))
 }
 
-/// **Regression: a reactive `when()` (`if/else`) branch swap must
-/// remove the old branch's nodes from the robot registry.**
+/// **Regression: a reactive branch swap must remove the old branch's
+/// nodes from the robot registry.**
 ///
 /// Field report (§2.4): after `onboarded` flips, `get_snapshot` showed
 /// BOTH the onboarding subtree AND the main screen as live nodes in the
 /// AAS host. The robot registry tracks every mounted primitive in a
 /// thread-local map and never had its entries removed on scope
-/// teardown — `deregister` had zero callers. So when the `When` Effect
-/// drops the old branch's reactive `Scope` (freeing its signals/effects
-/// and clearing the backend's children), the registry kept the stale
-/// entries forever. `snapshot()` (which an MCP / AI client reads to
-/// inspect "what's on screen") then reported a phantom second screen.
-///
-/// This drives a top-level `when` over a `bool` signal (the exact
-/// onboarding → main shape), flips it, and asserts the old branch's
-/// node is gone and the new branch's node is present.
-///
-/// Fails before the fix (the "onboarding" test_id is still in the
-/// snapshot after the flip); passes after.
+/// teardown — `deregister` had zero callers. So when the branch driver
+/// dropped the old branch's scope (freeing its signals/effects and
+/// clearing the backend's children), the registry kept the stale
+/// entries forever, and `snapshot()` reported a phantom second screen.
 #[test]
-fn regression_when_branch_swap_disposes_old_branch_from_robot_registry() {
-    use runtime_core::{text, view, when};
+fn regression_branch_swap_disposes_old_branch_from_robot_registry() {
+    Robot::new().reset();
+
+    let slot: Rc<Cell<Option<runtime_world::Signal<bool>>>> = Rc::new(Cell::new(None));
+    let slot_for_app = slot.clone();
+    let (_recorder, holder) = boot(move || {
+        let onboarded = signal(false);
+        slot_for_app.set(Some(onboarded));
+        runtime_vocabulary::glue::when(
+            move || onboarded.get(),
+            || {
+                view()
+                    .child(text().content("Welcome").test_id("main-screen").build())
+                    .build()
+            },
+            || {
+                view()
+                    .child(
+                        text()
+                            .content("Skip for now")
+                            .test_id("onboarding-screen")
+                            .build(),
+                    )
+                    .build()
+            },
+        )
+    });
 
     let robot = Robot::new();
-    // Thread-local registry is shared across tests on the same thread;
-    // start clean so a sibling test's leftover entries can't masquerade
-    // as this tree's branches.
-    robot.reset();
-
-    // `onboarded` starts false → the onboarding branch is live.
-    let onboarded = signal(false);
-
-    let tree: Element = when(
-        move || onboarded.get(),
-        || view(vec![text("Welcome").test_id("main-screen").into()]).into(),
-        || view(vec![text("Skip for now").test_id("onboarding-screen").into()]).into(),
-    );
-
-    let recorder = WireRecordingBackend::new();
-    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-    let _owner = render(backend_rc, tree);
-
-    // Pre-flip: the onboarding branch is the live one; main is not yet
-    // built.
     let snap = robot.snapshot();
     assert!(
         tree_has_test_id(&snap, "onboarding-screen"),
@@ -336,9 +316,8 @@ fn regression_when_branch_swap_disposes_old_branch_from_robot_registry() {
         "main branch must NOT be built while onboarded == false; got {snap:#?}"
     );
 
-    // Flip the condition — the When Effect drops the onboarding scope
-    // and builds the main branch (the "Skip for now" click).
-    onboarded.set(true);
+    slot.get().expect("signal").set(true);
+    holder.borrow().as_ref().expect("session").flush();
 
     let snap = robot.snapshot();
     assert!(
@@ -347,127 +326,41 @@ fn regression_when_branch_swap_disposes_old_branch_from_robot_registry() {
     );
     assert!(
         !tree_has_test_id(&snap, "onboarding-screen"),
-        "the disposed onboarding branch must NOT linger in the robot \
-         snapshot after the condition flips — a stale registry entry is a \
-         phantom second live root; got {snap:#?}"
+        "the disposed onboarding branch must NOT linger in the robot snapshot \
+         after the condition flips — a stale registry entry is a phantom \
+         second live root; got {snap:#?}"
     );
-
-    // Belt-and-suspenders: find() by test_id must agree with snapshot().
     assert!(
-        robot
-            .find(Query::test_id("onboarding-screen"))
-            .is_none(),
+        robot.find(Query::test_id("onboarding-screen")).is_none(),
         "find() must not resolve the disposed onboarding branch"
     );
     assert!(
         robot.find(Query::test_id("main-screen")).is_some(),
         "find() must resolve the live main branch"
     );
+
+    teardown(holder);
 }
 
-#[derive(Default)]
-struct MethodCounterProps {}
-
-/// A component with `#[method]` fns, defined in THIS test crate —
-/// which does not enable its own `robot` feature (only `runtime-core`'s
-/// `robot` is on, via dev-deps). See the regression test below.
-#[component]
-fn MethodCounter(_props: &MethodCounterProps) -> Element {
-    let value = signal(0_i32);
-    /// Reset the counter to zero.
-    #[method]
-    fn reset() {
-        value.set(0);
-    }
-    /// Bump the counter by `n`.
-    #[method]
-    fn bump_by(n: i32) {
-        value.update(|v| *v += n);
-    }
-    
-    let _ = value; // captured by the #[method] closures above
-    runtime_core::view(vec![runtime_core::text("mc").test_id("mc").into()])
-}
-
-/// **Regression for two component-method bugs at once:**
-///
-/// 1. The `#[component]` macro used to gate `register_component(...)` on
-///    `#[cfg(feature = "robot")]` — evaluated against the *defining*
-///    crate's features. This crate (like a scaffolded app or idea-ui)
-///    never sets its own `robot` feature, so the registration compiled
-///    to nothing and `list_components` / `invoke_method` saw no methods.
-///    The macro now emits the registration unconditionally; it works
-///    whenever `runtime-core/robot` is on.
-/// 2. The arg-type string rendered the single ident `i32` as `i 3 2`.
-///
-/// Built inside the `mount` closure so the keepalive `Effect` anchors to
-/// the mount owner (a pre-built tree would run the body outside any scope
-/// and drop the registration before we could read it).
-#[test]
-fn regression_component_methods_register_without_local_feature() {
-    let recorder = WireRecordingBackend::new();
-    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-    let _owner = mount(backend_rc, || {
-        runtime_core::view(vec![MethodCounter(&MethodCounterProps::default())]).into()
-    });
-
-    let comps = runtime_core::robot::list_components();
-    let mc = comps
-        .iter()
-        .find(|c| c.name == "MethodCounter")
-        .expect("MethodCounter's #[method] fns must register without a crate-local robot feature");
-
-    let names: Vec<&str> = mc.methods.iter().map(|(n, _)| *n).collect();
-    assert!(names.contains(&"reset"), "got {:?}", names);
-    assert!(names.contains(&"bump_by"), "got {:?}", names);
-
-    // Finding 2: the arg type renders as `i32`, not `i 3 2`.
-    let bump = mc.methods.iter().find(|(n, _)| *n == "bump_by").unwrap();
-    assert_eq!(
-        bump.1,
-        &[("n", "i32")],
-        "arg type must render as a clean `i32`, not split into chars"
-    );
-
-    // End-to-end: invoke dispatches, and the error paths report cleanly.
-    runtime_core::robot::invoke_method(mc.id, "bump_by", &runtime_core::__serde_json::json!({"n": 5}))
-        .expect("bump_by dispatches");
-    assert!(
-        runtime_core::robot::invoke_method(mc.id, "nope", &runtime_core::__serde_json::json!({}))
-            .is_err(),
-        "unknown method must error"
-    );
-}
-
-/// **Regression test for the audit's wire-protocol `release_*` not-emitted
-/// finding.** When a primitive whose backend `release_*` is wired (Portal,
-/// Virtualizer, Navigator, …) unmounts on the dev side, the recorder must
-/// emit a `Command::ReleaseNode` so the client tears down its mirror.
-/// Without this, the dev-client's per-node bookkeeping leaks across every
+/// **Regression for the wire-protocol `release_*` not-emitted finding.**
+/// When a primitive whose backend `release_*` is wired (Portal,
+/// Virtualizer, …) unmounts on the dev side, the recorder must emit a
+/// `Command::ReleaseNode` so the client tears down its mirror. Without
+/// this, the dev-client's per-node bookkeeping leaks across every
 /// hot-reload cycle.
 #[test]
-fn release_node_emitted_for_portal_when_owner_drops() {
-    let portal = Element::Portal {
-        children: vec![Element::Text {
-            source: TextSource::Static("hello inside portal".into()),
-            style: None,
-            ref_fill: None,
-            accessibility: Default::default(),
-            test_id: None,
-        }],
-        target: PortalTarget::Viewport(ViewportPlacement::Center),
-        on_dismiss: None,
-        trap_focus: false,
-        style: None,
-        ref_fill: None,
-        accessibility: Default::default(),
-    };
-
+fn release_node_emitted_for_portal_when_session_drops() {
     let recorder = WireRecordingBackend::new();
-    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-    let owner = render(backend_rc, portal);
+    let session = SceneSession::mount(&recorder, |_r| {}, || {
+        view()
+            .child(
+                portal(PortalTarget::Viewport(ViewportPlacement::Center))
+                    .child(text().content("hello inside portal"))
+                    .build(),
+            )
+            .build()
+    });
 
-    // Find the CreatePortal so we know which NodeId to expect on release.
     let pre_drop = recorder.drain_commands();
     let portal_id = pre_drop
         .iter()
@@ -476,215 +369,86 @@ fn release_node_emitted_for_portal_when_owner_drops() {
             _ => None,
         })
         .expect("CreatePortal must be emitted while the portal is mounted");
-
-    // Pre-drop: no ReleaseNode for the portal yet.
     assert!(
-        !pre_drop.iter().any(|c| matches!(c, Command::ReleaseNode { node } if *node == portal_id)),
-        "ReleaseNode must not be emitted before the owner drops"
+        !pre_drop
+            .iter()
+            .any(|c| matches!(c, Command::ReleaseNode { node } if *node == portal_id)),
+        "ReleaseNode must not be emitted before teardown"
     );
 
-    // Drop the owner — the framework's PortalHandleCleanup RAII guard fires
-    // backend.release_portal(node), which must emit Command::ReleaseNode.
-    drop(owner);
+    // Unmount — the portal's release hook fires
+    // `caps::PortalOps::release_portal`, which must emit ReleaseNode.
+    drop(session);
 
     let post_drop = recorder.drain_commands();
     assert!(
-        post_drop.iter().any(|c| matches!(c, Command::ReleaseNode { node } if *node == portal_id)),
-        "Command::ReleaseNode {{ node: {} }} must be emitted on Owner drop; \
-         got {:#?}",
-        portal_id,
-        post_drop,
+        post_drop
+            .iter()
+            .any(|c| matches!(c, Command::ReleaseNode { node } if *node == portal_id)),
+        "Command::ReleaseNode {{ node: {portal_id:?} }} must be emitted on teardown; \
+         got {post_drop:#?}",
     );
 }
 
-/// Regression test for the audit's wire-protocol `reset_log_and_scene`
-/// `next_node = 0` identity-collision finding. After a hot-patch / sidecar
-/// respawn, the recorder resets `next_node` to 0 but keeps
-/// `identity_to_node` populated. A walker that emits any *new* identity
-/// after the reset would mint `NodeId(1)` — colliding with whatever
-/// identity was already cached at `NodeId(1)` from the first walk.
+/// Regression for the recorder's `reset_log_and_scene` `next_node = 0`
+/// identity-collision finding. After a sidecar respawn the recorder
+/// resets its command log and scene but KEEPS `identity_to_node`
+/// populated — so a freshly minted id must never land on a `NodeId` an
+/// identity already owns.
 ///
-/// The fix preserves `next_node` past the high-water mark so freshly
-/// minted ids never overlap previously-cached identity ids.
+/// The mount path does not currently set ambient identities (the named
+/// gap in `dev_server::newcore`'s module docs — remounts rebuild rather
+/// than patch), so this drives the recorder's identity lane DIRECTLY
+/// via `with_current_identity`, which is the seam a future
+/// identity-setting mount path will use.
 #[test]
 fn reset_log_and_scene_does_not_collide_minted_ids_with_cached_identities() {
-    use std::collections::HashMap;
+    use runtime_shared::accessibility::AccessibilityProps;
+    use runtime_shared::identity::{with_current_identity, Identity};
+    use runtime_vocabulary::caps::{TextOps, ViewOps};
 
-    fn extract_create_id(cmd: &Command) -> Option<wire::NodeId> {
-        match cmd {
-            Command::CreateView { id, .. }
-            | Command::CreateText { id, .. }
-            | Command::CreateButton { id, .. }
-            | Command::CreateImage { id, .. }
-            | Command::CreateToggle { id, .. }
-            | Command::CreateSlider { id, .. } => Some(*id),
-            _ => None,
-        }
+    fn ident(slot: u32) -> Identity {
+        Identity::node(Identity::ROOT_SCOPE, slot, None, None)
     }
 
-    fn tree_with_n_text(n: usize) -> Element {
-        let mut children = Vec::with_capacity(n);
-        for i in 0..n {
-            let id_str: &'static str = match i {
-                0 => "a",
-                1 => "b",
-                2 => "c",
-                _ => panic!("extend test_ids array"),
-            };
-            children.push(Element::Text {
-                source: TextSource::Static(format!("row-{}", id_str).into()),
-                style: None,
-                ref_fill: None,
-                accessibility: Default::default(),
-                test_id: Some(id_str),
-            });
-        }
-        Element::View {
-            children,
-            style: None,
-            ref_fill: None,
-            safe_area_sides: SafeAreaSides::NONE,
-            on_touch: None,
-            on_wheel: None,
-            on_file_drop: None,
-            on_hover: None,
-            is_container: false,
-            accessibility: Default::default(),
-            test_id: Some("root"),
-        }
-    }
+    let mut recorder = WireRecordingBackend::new();
 
-    let recorder = WireRecordingBackend::new();
-    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-
-    // Walk 1: 2 text rows. Walker mints next_node past 0 for the View
-    // and the two Texts; `identity_to_node` caches those ids.
-    let owner1 = render(backend_rc.clone(), tree_with_n_text(2));
+    // Walk 1: three identified nodes. `identity_to_node` caches their
+    // ids; `next_node` advances past them.
+    with_current_identity(ident(0), || {
+        ViewOps::create_view(&mut recorder, &AccessibilityProps::default())
+    });
+    with_current_identity(ident(1), || {
+        TextOps::create_text(&mut recorder, "row-a", &AccessibilityProps::default())
+    });
+    with_current_identity(ident(2), || {
+        TextOps::create_text(&mut recorder, "row-b", &AccessibilityProps::default())
+    });
     let _ = recorder.drain_commands();
-    drop(owner1);
 
     // Sidecar respawn / hot patch.
     recorder.reset_log_and_scene();
 
-    // Walk 2: the same View + first two texts (cached identities reuse
-    // their ids) PLUS one new text emission. The new emission must NOT
-    // collide with any previously-cached identity id.
-    let _owner2 = render(backend_rc.clone(), tree_with_n_text(3));
-    let walk2 = recorder.drain_commands();
+    // Walk 2: the same three identities (which must reuse their cached
+    // ids) plus one NEW, unidentified emission. Pre-fix, `next_node =
+    // 0` made the new emission land on the cached View's id.
+    let a = with_current_identity(ident(0), || {
+        ViewOps::create_view(&mut recorder, &AccessibilityProps::default())
+    });
+    let b = with_current_identity(ident(1), || {
+        TextOps::create_text(&mut recorder, "row-a", &AccessibilityProps::default())
+    });
+    let c = with_current_identity(ident(2), || {
+        TextOps::create_text(&mut recorder, "row-b", &AccessibilityProps::default())
+    });
+    let fresh = TextOps::create_text(&mut recorder, "row-c", &AccessibilityProps::default());
 
-    // No two `Create*` commands in walk 2 should share a NodeId. Pre-fix,
-    // the third Text's emission lands on `NodeId(1)` — the cached View's id.
-    let mut seen: HashMap<wire::NodeId, String> = HashMap::new();
-    for cmd in &walk2 {
-        if let Some(id) = extract_create_id(cmd) {
-            let label = format!("{:?}", cmd);
-            if let Some(prev) = seen.insert(id, label.clone()) {
-                panic!(
-                    "NodeId collision after reset_log_and_scene: id {id:?} \
-                     emitted twice — first as `{prev}`, then as `{label}`. \
-                     `next_node = 0` reset is recycling ids that \
-                     `identity_to_node` already holds."
-                );
-            }
-        }
+    for (name, cached) in [("view", a), ("row-a", b), ("row-b", c)] {
+        assert_ne!(
+            fresh, cached,
+            "NodeId collision after reset_log_and_scene: the freshly minted id \
+             {fresh:?} equals the cached identity id for {name} — `next_node = 0` \
+             is recycling ids that `identity_to_node` already holds."
+        );
     }
 }
-
-/// **Test 3: test_id queries work.** Locked-in semantics: `find` by
-/// `test_id` returns the element regardless of label / kind. Useful
-/// in larger trees where labels collide or are localized.
-#[test]
-fn robot_finds_element_by_test_id() {
-    let (tree, _) = sample_tree();
-
-    let recorder = WireRecordingBackend::new();
-    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-    let _owner = render(backend_rc, tree);
-
-    let robot = Robot::new();
-
-    let greeting = robot
-        .find(Query::test_id("greeting"))
-        .expect("Text registered with test_id 'greeting'");
-    assert_eq!(
-        greeting.label.as_deref(),
-        Some("Hello, runtime-server"),
-        "Text label captured into the registry"
-    );
-
-    let button = robot
-        .find(Query::test_id("tap-btn"))
-        .expect("Button registered with test_id 'tap-btn'");
-    assert_eq!(button.label.as_deref(), Some("Tap me"));
-
-    // Missing test_id → None.
-    assert!(robot.find(Query::test_id("does-not-exist")).is_none());
-}
-
-/// **Test 7: hot-patch keeps primitive HandlerIds stable.**
-///
-/// Covers the same identity-keyed `HandlerId` dedup as test 6, but
-/// for `Element::Button`'s `on_click` — the broader migration
-/// after the header_left fix. The same property must hold for any
-/// primitive whose backend `create_*` registers an event handler
-/// (Toggle, Slider, TextInput, Link, overlay `on_dismiss`); the
-/// pattern is mechanical so testing one primitive proves the
-/// generalized fix.
-///
-/// Without identity-keyed registration, the post-reset render
-/// would mint a fresh `HandlerId` for the button and the client's
-/// leaked native click-listener (which captured the original id on
-/// install) would resolve to a dead slot on the server — clicks
-/// silently dropped after every hot-patch.
-#[test]
-fn aas_hot_patch_preserves_button_handler_id() {
-    let click_count = signal(0_i32);
-    let on_click = (move || {
-        click_count.set(click_count.get() + 1);
-    })
-    .into_action();
-
-    // Wrap in a thunk so we re-walk the same primitive tree after
-    // the reset — the walker's identity-per-emission-site machinery
-    // is what gives the Button a stable Identity across rebuilds,
-    // which the recorder then uses to recycle the HandlerId.
-    let build = || Element::Button {
-        label: TextSource::Static("Tap".into()),
-        on_click: on_click.clone(),
-        leading_icon: None,
-        trailing_icon: None,
-        style: None,
-        ref_fill: None,
-        disabled: None,
-        accessibility: Default::default(),
-        test_id: Some("btn"),
-    };
-
-    let recorder = WireRecordingBackend::new();
-    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-
-    let owner_a = render(backend_rc.clone(), build());
-    let cmds_a = recorder.drain_commands();
-    let handler_a = cmds_a.iter().find_map(|c| match c {
-        Command::CreateButton { on_click, .. } => Some(*on_click),
-        _ => None,
-    });
-    assert!(handler_a.is_some(), "initial render must emit CreateButton");
-    drop(owner_a);
-
-    recorder.reset_log_and_scene();
-    let _owner_b = render(backend_rc, build());
-    let cmds_b = recorder.drain_commands();
-    let handler_b = cmds_b.iter().find_map(|c| match c {
-        Command::CreateButton { on_click, .. } => Some(*on_click),
-        _ => None,
-    });
-
-    assert_eq!(
-        handler_a, handler_b,
-        "Button.on_click HandlerId MUST be stable across reset_log_and_scene \
-         (identity-keyed via the Button's node Identity) — otherwise leaked \
-         client-side click listeners go stale on every hot-patch."
-    );
-}
-

@@ -133,7 +133,19 @@
     var set = subs.get(binding.signalIdLo);
     if (set) {
       set.delete(bindingId);
-      if (set.size === 0) subs.delete(binding.signalIdLo);
+      if (set.size === 0) {
+        subs.delete(binding.signalIdLo);
+        // Mirror text_bindings.js: drop the cached signal value once
+        // NOTHING (class here + text subscribers) reads this sid —
+        // stale entries poison an id-aliasing signal's first paint.
+        var textSubs = window.__idealystSignalSubscribers;
+        var textSet = textSubs && textSubs.get(binding.signalIdLo);
+        if (!textSet || textSet.size === 0) {
+          if (window.__idealystSignalValues) {
+            window.__idealystSignalValues.delete(binding.signalIdLo);
+          }
+        }
+      }
     }
     window.__idealystClassBindings.delete(bindingId);
     window.__idealystClassBindingStats.releases += 1;

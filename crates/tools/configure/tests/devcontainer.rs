@@ -128,17 +128,212 @@ fn service_fragments_have_expected_shape() {
     let db = devcontainer::service::find("database").unwrap();
     // Default (postgres) + explicit mysql.
     let pg = db.fragment(None, &devcontainer::service::Ctx { app_service: "dev".into() });
-    assert_eq!(pg.service.get("image").unwrap().as_str().unwrap(), "postgres:16");
+    let pg_service = pg.service.unwrap();
+    assert_eq!(pg_service.get("image").unwrap().as_str().unwrap(), "postgres:16");
     assert!(pg.app_env.iter().any(|(k, v)| k == "DATABASE_URL" && v.starts_with("postgres://")));
     assert_eq!(pg.volumes, vec!["idealyst-database-data".to_string()]);
 
     let my = db.fragment(Some("mysql"), &devcontainer::service::Ctx { app_service: "dev".into() });
-    assert_eq!(my.service.get("image").unwrap().as_str().unwrap(), "mysql:8");
+    assert_eq!(my.service.unwrap().get("image").unwrap().as_str().unwrap(), "mysql:8");
     assert!(my.app_env.iter().any(|(k, v)| k == "DATABASE_URL" && v.starts_with("mysql://")));
 
     assert!(devcontainer::service::find("redis").is_some());
     assert!(devcontainer::service::find("minio").is_some());
+    assert!(devcontainer::service::find("claude").is_some());
+    assert!(devcontainer::service::find("codex").is_some());
     assert!(devcontainer::service::find("nope").is_none());
+}
+
+// --- AI agent CLIs (claude / codex) ---
+
+#[test]
+fn claude_host_variant_installs_natively_and_mounts_host_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let report = devcontainer::apply(dir, &req(vec![enable("claude")])).unwrap();
+    assert_eq!(report.added, vec!["claude".to_string()]);
+
+    // Claude Code installs via the NATIVE installer (npm distribution is
+    // deprecated; Anthropic's devcontainer feature still wraps it and its
+    // Node auto-install breaks on the rust base image) — a keyed postCreate
+    // entry, no devcontainer feature at all.
+    let dc = devcontainer_json(dir);
+    assert!(dc.get("features").is_none(), "claude must not add features: {dc}");
+    let post = dc.get("postCreateCommand").unwrap().as_object().unwrap();
+    let install = post.get("idealyst-claude-install").unwrap().as_str().unwrap();
+    assert!(install.contains("claude.ai/install.sh"), "native installer expected: {install}");
+    assert!(!install.contains("npm"), "must not use the deprecated npm install: {install}");
+    // No chown for the host variant (bind mounts carry host ownership).
+    assert!(!post.contains_key("idealyst-claude-chown"));
+
+    // The managed compose file mounts the host config dir onto the app
+    // service and points CLAUDE_CONFIG_DIR at it — this is what carries the
+    // host's credentials into the container.
+    let m = managed(dir);
+    assert!(m.contains("~/.claude:/idealyst/agents/claude"), "host bind mount missing:\n{m}");
+    assert!(m.contains("CLAUDE_CONFIG_DIR"), "env missing:\n{m}");
+    assert!(!m.contains("depends_on"), "tools must not add a depends_on edge:\n{m}");
+
+    // Ownership of the postCreate key is recorded for later removal.
+    assert!(m.contains("idealyst-claude-install"));
+}
+
+#[test]
+fn claude_volume_variant_uses_named_volume_and_chown() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    devcontainer::apply(dir, &req(vec![enable_variant("claude", "volume")])).unwrap();
+
+    let m = managed(dir);
+    assert!(m.contains("idealyst-claude-config:/idealyst/agents/claude"), "volume mount:\n{m}");
+    assert!(m.contains("idealyst-claude-config:"), "named volume declared:\n{m}");
+    assert!(!m.contains("~/.claude"), "volume variant must not touch the host dir:\n{m}");
+
+    // Fresh named volumes mount root-owned → a keyed postCreate chown hands
+    // the dir to the container user so the CLI can write credentials.
+    let dc = devcontainer_json(dir);
+    let post = dc.get("postCreateCommand").unwrap().as_object().unwrap();
+    assert!(post.get("idealyst-claude-chown").unwrap().as_str().unwrap().contains("chown"));
+}
+
+#[test]
+fn codex_installs_node_feature_and_npm_post_create() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    devcontainer::apply(dir, &req(vec![enable("codex")])).unwrap();
+
+    let dc = devcontainer_json(dir);
+    let features = dc.get("features").unwrap().as_object().unwrap();
+    assert!(features.contains_key("ghcr.io/devcontainers/features/node:1"), "{features:?}");
+    let post = dc.get("postCreateCommand").unwrap().as_object().unwrap();
+    assert!(
+        post.get("idealyst-codex-install").unwrap().as_str().unwrap().contains("@openai/codex")
+    );
+
+    let m = managed(dir);
+    assert!(m.contains("~/.codex:/idealyst/agents/codex"), "host bind mount:\n{m}");
+    assert!(m.contains("CODEX_HOME"), "env:\n{m}");
+}
+
+#[test]
+fn removing_agent_drops_only_idealyst_owned_json_keys() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    devcontainer::apply(dir, &req(vec![enable("claude"), enable("codex"), enable("redis")]))
+        .unwrap();
+
+    devcontainer::apply(dir, &req(vec![remove("claude"), remove("codex")])).unwrap();
+
+    // Everything the agents added to devcontainer.json is gone again…
+    let dc = devcontainer_json(dir);
+    assert!(dc.get("features").is_none(), "features should be empty+removed: {dc}");
+    assert!(dc.get("postCreateCommand").is_none(), "postCreate should be removed: {dc}");
+    // …while redis (and its managed file) survives, with no agent leftovers.
+    let m = managed(dir);
+    assert!(m.contains("redis:7"));
+    assert!(!m.contains("CLAUDE_CONFIG_DIR") && !m.contains("CODEX_HOME"), "{m}");
+    assert!(!m.contains("idealyst-claude-config") && !m.contains("idealyst-codex-config"), "{m}");
+}
+
+#[test]
+fn user_owned_feature_and_post_create_survive_agent_lifecycle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+
+    // User already installs the node feature (their own pin, different tag)
+    // and has a bare-string postCreateCommand.
+    std::fs::create_dir_all(dir.join(".devcontainer")).unwrap();
+    std::fs::write(
+        dir.join(".devcontainer/devcontainer.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "name": "myapp",
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "dev",
+            "features": { "ghcr.io/devcontainers/features/node:1.6": {} },
+            "postCreateCommand": "cargo fetch"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(".devcontainer/docker-compose.yml"),
+        "services:\n  dev:\n    image: rust:1\n",
+    )
+    .unwrap();
+
+    devcontainer::apply(dir, &req(vec![enable("claude"), enable("codex")])).unwrap();
+
+    // The user's pinned node feature is respected — no duplicate `:1` entry
+    // added for codex.
+    let dc = devcontainer_json(dir);
+    let features = dc.get("features").unwrap().as_object().unwrap();
+    assert!(features.contains_key("ghcr.io/devcontainers/features/node:1.6"));
+    assert!(
+        !features.contains_key("ghcr.io/devcontainers/features/node:1"),
+        "must not duplicate a feature the user already has: {features:?}"
+    );
+    // Their bare-string command was converted to a keyed entry beside ours.
+    let post = dc.get("postCreateCommand").unwrap().as_object().unwrap();
+    assert_eq!(post.get("main").unwrap().as_str(), Some("cargo fetch"));
+    assert!(post.contains_key("idealyst-claude-install"));
+    assert!(post.contains_key("idealyst-codex-install"));
+
+    devcontainer::apply(dir, &req(vec![remove("claude"), remove("codex")])).unwrap();
+
+    // Removal deletes only what idealyst added: the user's pinned feature and
+    // converted command remain.
+    let dc = devcontainer_json(dir);
+    let features = dc.get("features").unwrap().as_object().unwrap();
+    assert!(
+        features.contains_key("ghcr.io/devcontainers/features/node:1.6"),
+        "user's own feature must survive agent removal: {features:?}"
+    );
+    let post = dc.get("postCreateCommand").unwrap().as_object().unwrap();
+    assert_eq!(post.get("main").unwrap().as_str(), Some("cargo fetch"));
+    assert!(!post.contains_key("idealyst-claude-install"));
+    assert!(!post.contains_key("idealyst-codex-install"));
+}
+
+#[test]
+fn idealyst_cli_installs_from_git_with_cached_volume() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    devcontainer::apply(dir, &req(vec![enable("idealyst-cli")])).unwrap();
+
+    // Source build in a keyed postCreate, guarded so the cached volume skips
+    // the rebuild, symlinked onto PATH.
+    let dc = devcontainer_json(dir);
+    let post = dc.get("postCreateCommand").unwrap().as_object().unwrap();
+    let install = post.get("idealyst-cli-install").unwrap().as_str().unwrap();
+    assert!(install.contains("cargo install --git"), "{install}");
+    assert!(install.contains("test -x /idealyst/cli/bin/idealyst ||"), "cache guard: {install}");
+    assert!(install.contains("/usr/local/bin/idealyst"), "PATH symlink: {install}");
+
+    // Install root rides a named volume so the build survives rebuilds.
+    let m = managed(dir);
+    assert!(m.contains("idealyst-cli-cache:/idealyst/cli"), "volume mount:\n{m}");
+
+    devcontainer::apply(dir, &req(vec![remove("idealyst-cli")])).unwrap();
+    let dc = devcontainer_json(dir);
+    assert!(dc.get("postCreateCommand").is_none(), "cleanup: {dc}");
+}
+
+#[test]
+fn agent_enable_is_idempotent_byte_stable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    devcontainer::apply(dir, &req(vec![enable("claude")])).unwrap();
+    let first_managed = managed(dir);
+    let first_json = std::fs::read_to_string(dir.join(".devcontainer/devcontainer.json")).unwrap();
+
+    let report = devcontainer::apply(dir, &req(vec![enable("claude")])).unwrap();
+    assert!(report.warnings.iter().any(|w| w.contains("already configured")));
+    assert_eq!(first_managed, managed(dir), "managed file must be byte-stable");
+    assert_eq!(
+        first_json,
+        std::fs::read_to_string(dir.join(".devcontainer/devcontainer.json")).unwrap(),
+        "devcontainer.json must be untouched on a no-op re-run"
+    );
 }
 
 #[test]

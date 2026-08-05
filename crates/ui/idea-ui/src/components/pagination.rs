@@ -46,7 +46,7 @@ pub struct PaginationProps {
 
 impl Default for PaginationProps {
     fn default() -> Self {
-        Self { page: Signal::new(1), total: Reactive::Static(1), on_change: Rc::new(|_| {}) }
+        Self { page: runtime_core::signal(1), total: Reactive::Static(1), on_change: Rc::new(|_| {}) }
     }
 }
 
@@ -104,12 +104,6 @@ fn nav_button(glyph: &str, target: Option<usize>, on_change: Rc<dyn Fn(usize)>) 
 /// window never slid — only the fine-grained active-highlight updated).
 /// `switch` re-runs the builder with the live page on every change, so the
 /// targets, the sliding window, and the highlight all stay correct.
-///
-/// **Cargo features:** requires `prim-icon` (in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without it compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Pagination(props: PaginationProps) -> Element {
     let page = props.page;
@@ -173,60 +167,82 @@ fn build_row(current: usize, total: usize, on_change: Rc<dyn Fn(usize)>) -> Elem
 mod tests {
     use super::*;
     use super::cells;
+    use crate::test_support::{classify, P};
+    use idea_theme::testing::with_test_world;
 
     /// REGRESSION: the row must be REACTIVE on `page` so the prev/next arrows
     /// (and the windowed cells) recompute as the page changes. The original
     /// built the row once in the component body, freezing the nav targets —
     /// `›` advanced one page then stuck. A reactive `switch` fixes it, so
-    /// `Pagination` must build an `Element::Switch`, not a static `View`.
+    /// `Pagination` must build a reactive node, not a static `View` row.
+    /// (The switch root is opaque to build-tree introspection — a `Dyn`
+    /// hole — so `classify` maps it to `P::Other`, which is exactly what
+    /// distinguishes it from the buggy static `P::View`.)
     #[test]
     fn pagination_is_reactive_switch_not_static_row() {
-        let el = Pagination(PaginationProps {
-            page: Signal::new(3),
-            total: Reactive::Static(20),
-            on_change: Rc::new(|_| {}),
-        });
-        assert!(
-            matches!(el, Element::Switch { .. }),
-            "Pagination must rebuild reactively via switch (else the arrows freeze)",
-        );
+        with_test_world(|| {
+            let el = Pagination(PaginationProps {
+                page: runtime_core::signal(3),
+                total: Reactive::Static(20),
+                on_change: Rc::new(|_| {}),
+            });
+            let p = classify(el);
+            assert!(
+                !matches!(p, P::View { .. }),
+                "Pagination must not build a static View row (the arrows would freeze)",
+            );
+            assert!(
+                matches!(p, P::Other(_)),
+                "Pagination must rebuild reactively via switch (else the arrows freeze)",
+            );
+    });
     }
 
     #[test]
     fn small_total_shows_every_page_no_ellipsis() {
-        assert_eq!(
-            cells(1, 5),
-            vec![Some(1), Some(2), Some(3), Some(4), Some(5)]
-        );
-        assert!(cells(3, 7).iter().all(|c| c.is_some()));
+        with_test_world(|| {
+            assert_eq!(
+                cells(1, 5),
+                vec![Some(1), Some(2), Some(3), Some(4), Some(5)]
+            );
+            assert!(cells(3, 7).iter().all(|c| c.is_some()));
+    });
     }
 
     #[test]
     fn first_and_last_always_present() {
-        let c = cells(10, 20);
-        assert_eq!(c.first(), Some(&Some(1)));
-        assert_eq!(c.last(), Some(&Some(20)));
-        assert!(c.contains(&Some(10)), "current page present");
+        with_test_world(|| {
+            let c = cells(10, 20);
+            assert_eq!(c.first(), Some(&Some(1)));
+            assert_eq!(c.last(), Some(&Some(20)));
+            assert!(c.contains(&Some(10)), "current page present");
+    });
     }
 
     #[test]
     fn middle_collapses_to_ellipses_around_current() {
-        // current=10/20 → 1 … 9 10 11 … 20
-        assert_eq!(
-            cells(10, 20),
-            vec![Some(1), None, Some(9), Some(10), Some(11), None, Some(20)]
-        );
+        with_test_world(|| {
+            // current=10/20 → 1 … 9 10 11 … 20
+            assert_eq!(
+                cells(10, 20),
+                vec![Some(1), None, Some(9), Some(10), Some(11), None, Some(20)]
+            );
+    });
     }
 
     #[test]
     fn near_start_has_only_trailing_ellipsis() {
-        // current=2/20 → 1 2 3 … 20
-        assert_eq!(cells(2, 20), vec![Some(1), Some(2), Some(3), None, Some(20)]);
+        with_test_world(|| {
+            // current=2/20 → 1 2 3 … 20
+            assert_eq!(cells(2, 20), vec![Some(1), Some(2), Some(3), None, Some(20)]);
+    });
     }
 
     #[test]
     fn near_end_has_only_leading_ellipsis() {
-        // current=19/20 → 1 … 18 19 20
-        assert_eq!(cells(19, 20), vec![Some(1), None, Some(18), Some(19), Some(20)]);
+        with_test_world(|| {
+            // current=19/20 → 1 … 18 19 20
+            assert_eq!(cells(19, 20), vec![Some(1), None, Some(18), Some(19), Some(20)]);
+    });
     }
 }

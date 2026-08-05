@@ -1,6 +1,6 @@
 //! Android `RenderLoopDriver`: per-frame callback on the main looper.
 //!
-//! Runs the closure on the UI thread via `runtime_core`'s main-thread
+//! Runs the closure on the UI thread via `runtime_shared`'s main-thread
 //! [`raf_loop`], matching web (rAF) and iOS (NSTimer). Earlier this
 //! drove a dedicated `std::thread`, which forced a `Send` bound up
 //! through the author-facing `render_loop` signature (and a
@@ -10,9 +10,9 @@
 //! backend that later wants to offload GPU work to a worker thread
 //! marshals across the boundary itself rather than leaking `Send`.
 
-use runtime_core::driver::{install_render_loop_driver, RenderLoopDriver, RenderLoopHandle};
-use runtime_core::scheduling::{raf_loop, RafLoop};
-use runtime_core::time::now_micros;
+use runtime_shared::driver::{install_render_loop_driver, RenderLoopDriver, RenderLoopHandle};
+use runtime_shared::scheduling::{raf_loop, RafLoop};
+use runtime_shared::time::now_micros;
 
 /// Register this backend's driver with `runtime-core`. Idempotent —
 /// first install wins.

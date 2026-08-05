@@ -16,7 +16,7 @@
 
 #![cfg_attr(not(target_os = "ios"), allow(dead_code))]
 
-use runtime_core::Easing;
+use runtime_shared::Easing;
 
 /// `UIViewAnimationOptions` bits. Curves occupy bits 16-19
 /// (`UIViewAnimationOptionCurveEaseInOut` = 0 << 16 … `Linear` =

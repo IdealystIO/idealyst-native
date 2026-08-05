@@ -36,8 +36,13 @@ use runtime_core::{
 // Code-reachability cost on web: `host_wgpu` transitively pulls the
 // same `host-web` → `render-wgpu` → `glyphon` / `cosmic-text` / `wgpu`
 // / `naga` graph the previous direct `host_web` import did. wasm-split
-// keeps that behind the same `lazy!` chunk as before because the
+// keeps that behind the same lazy chunk as before because the
 // `mount`/`DeviceProfile` reachability surface is unchanged.
+//
+// The embedded `welcome` app mounts through
+// `host_wgpu::mount_newcore`, i.e. `render_wgpu::newcore::start_in_world`
+// into the PAGE's own world — so the page's flush driver commits the
+// embedded app's staged writes. See `Simulator`'s on_ready closure below.
 use host_wgpu::{DeviceProfile, Painter};
 use runtime_core::driver::spawn_async;
 
@@ -113,8 +118,8 @@ pub struct SimulatorProps {
     /// corners + drop shadow + clip) so the embedded device reads
     /// as a complete handset rather than a bare wgpu surface.
     /// Matches the chassis used by [`simulator_placeholder`], so a
-    /// `lazy! { simulator(...) }` + `placeholder(simulator_placeholder)`
-    /// pair has zero on-load layout shift and a continuous bezel
+    /// lazy simulator component with `loading = simulator_placeholder`
+    /// has zero on-load layout shift and a continuous bezel
     /// across the loading→loaded transition. Defaults to `true`.
     pub chassis: bool,
 }
@@ -151,7 +156,9 @@ fn screen_inner_radius() -> f32 {
 }
 
 fn chassis_sheet() -> Rc<StyleSheet> {
-    Rc::new(StyleSheet::r#static(StyleRules {
+    // Named so it premints (an anonymous static sheet has no build-time
+    // CSS; this was a website premint-report fall-through).
+    StyleSheet::r#static(StyleRules {
         background: Some(Color("#000000".into()).into()),
         border_top_left_radius: Some(Length::Px(CHASSIS_RADIUS_PX).into()),
         border_top_right_radius: Some(Length::Px(CHASSIS_RADIUS_PX).into()),
@@ -170,7 +177,8 @@ fn chassis_sheet() -> Rc<StyleSheet> {
         }),
         flex_shrink: Some(0.0_f32.into()),
         ..Default::default()
-    }))
+    })
+    .premint_as("website.v1.sim.chassis")
 }
 
 /// Outer device chassis — bezel + corner clip + drop shadow. Sits
@@ -206,7 +214,7 @@ fn preview_dimensions(logical: (u32, u32)) -> (f32, f32) {
 
 /// Renders the same outer chassis the loaded simulator uses, with
 /// an "off" screen inside (welcome's `COLOR_LIGHT_BG`). Designed to
-/// be the placeholder for a `lazy! { simulator(...) }` block so the
+/// be the loading UI for a lazily-split simulator component so the
 /// hero layout reserves the device's exact footprint while the
 /// chunk fetches and the only visual delta on load is the canvas
 /// painting INSIDE the chassis.
@@ -227,7 +235,9 @@ pub fn simulator_placeholder(logical_size: Option<(u32, u32)>) -> Element {
     let logical = logical_size.unwrap_or((DEFAULT_LOGICAL_W, DEFAULT_LOGICAL_H));
     let (w, h) = preview_dimensions(logical);
 
-    let screen_style = Rc::new(StyleSheet::r#static(StyleRules {
+    // Dims parameterize the content, so they key the premint identity
+    // (whole-px dims; the preview sizes are a small fixed set per page).
+    let screen_style = StyleSheet::r#static(StyleRules {
         width: Some(Length::Px(w).into()),
         height: Some(Length::Px(h).into()),
         background: Some(Color(SCREEN_FILL.into()).into()),
@@ -236,7 +246,8 @@ pub fn simulator_placeholder(logical_size: Option<(u32, u32)>) -> Element {
         border_bottom_left_radius: Some(Length::Px(inner_radius).into()),
         border_bottom_right_radius: Some(Length::Px(inner_radius).into()),
         ..Default::default()
-    }));
+    })
+    .premint_as(&format!("website.v1.sim.screen.{w}x{h}x{inner_radius}"));
 
     let off_screen = view(Vec::new())
         .with_style(screen_style)
@@ -321,27 +332,31 @@ pub fn Simulator(props: SimulatorProps) -> Element {
         // and on web wasm-split keeps that behind the lazy chunk
         // that materializes this on_ready closure.
         let profile = default_profile();
+        let surface = event.surface;
         let size = event.size;
-        // Hand the target through as-is: `host_wgpu::mount` routes on
-        // its shape (raw-window handle on web/iOS/macOS/Android, a lent
-        // GL context on GTK) and picks the matching platform host.
-        let target = event.target;
         // `spawn_async` is the runtime-installed executor. On wasm it
         // rides wasm-bindgen-futures; on iOS the `async-driver`
         // feature on `backend-ios-mobile` plugs into libdispatch.
         // Either way the `request_adapter` / `request_device`
         // futures resolve on the main thread without blocking.
         spawn_async(async move {
-            match host_wgpu::mount(target, size, profile, painter, build_ui).await {
+            // Surface + size + profile + painter + build closure in,
+            // HostHandle out. `mount_newcore` realizes the embedded
+            // tree via `render_wgpu::newcore::start_in_world` against
+            // the hosting page's world.
+            let mounted = host_wgpu::mount_newcore(surface, size, profile, painter, build_ui)
+                .await
+                .map_err(|e| e.to_string());
+            match mounted {
                 Ok(handle) => shared::fill(&slot, handle),
                 Err(err) => {
                     // On wasm this goes to the browser console via
                     // the runtime's panic-hook routing; on native
                     // it lands on stderr captured by the dev loop.
-                    // Targets without a wgpu host hit
-                    // `MountError::Unsupported` here — that's the
-                    // documented "no preview, fall back to chassis"
-                    // path and not a real failure.
+                    // Targets without a wgpu host hit the Unsupported
+                    // error here — that's the documented "no preview,
+                    // fall back to chassis" path and not a real
+                    // failure.
                     eprintln!("[website-simulator] host-wgpu mount failed: {err}");
                 }
             }
@@ -399,10 +414,16 @@ pub fn Simulator(props: SimulatorProps) -> Element {
         height: Some(Length::pct(100.0).into()),
         ..Default::default()
     };
+    // Named identities: the graphics fill is constant; the wrapper's
+    // content is keyed by its dims + whether the chassis rounds it.
+    let wrapper_id = format!(
+        "website.v1.sim.wrapper.{preview_w_px}x{preview_height_px}.{}",
+        if chassis { "chassis" } else { "bare" },
+    );
     let wrapper = view(vec![graphics
-        .with_style(Rc::new(StyleSheet::r#static(graphics_rules)))
+        .with_style(StyleSheet::r#static(graphics_rules).premint_as("website.v1.sim.graphics_fill"))
         .into_element()])
-        .with_style(Rc::new(StyleSheet::r#static(wrapper_rules)))
+        .with_style(StyleSheet::r#static(wrapper_rules).premint_as(&wrapper_id))
         .into_element();
 
     if chassis {

@@ -518,6 +518,22 @@ fn strip_app(mut v: serde_json::Value) -> serde_json::Value {
 /// it, so we decode + write the file here. Best-effort: any failure leaves the
 /// response untouched (the caller still strips `png_base64` either way).
 fn ensure_screenshot_saved(label: &str, value: &mut serde_json::Value) {
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let dir = std::path::Path::new(&home).join(".idealyst").join("screenshots");
+    ensure_screenshot_saved_in(&dir, label, value)
+}
+
+/// Inner half of [`ensure_screenshot_saved`] with the target directory
+/// explicit. Split out so the unit test can pass a temp dir instead of
+/// repointing `HOME` — process-wide env mutation raced parallel tests
+/// that resolve `~/.idealyst` (the dev_runner log-glob test flaked).
+fn ensure_screenshot_saved_in(
+    dir: &std::path::Path,
+    label: &str,
+    value: &mut serde_json::Value,
+) {
     use base64::Engine as _;
     let Some(obj) = value.as_object_mut() else {
         return;
@@ -531,11 +547,7 @@ fn ensure_screenshot_saved(label: &str, value: &mut serde_json::Value) {
     let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) else {
         return;
     };
-    let Some(home) = std::env::var_os("HOME") else {
-        return;
-    };
-    let dir = std::path::Path::new(&home).join(".idealyst").join("screenshots");
-    if std::fs::create_dir_all(&dir).is_err() {
+    if std::fs::create_dir_all(dir).is_err() {
         return;
     }
     let millis = std::time::SystemTime::now()
@@ -636,10 +648,14 @@ pub struct LintRequest {
 /// One service instruction for `configure_devcontainer`.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ConfigureServiceArg {
-    /// Canonical service id: `database`, `redis`, or `minio`.
+    /// Canonical service id: `database`, `redis`, `minio`, `claude`
+    /// (Claude Code CLI), `codex` (OpenAI Codex CLI), or `idealyst-cli`
+    /// (the `idealyst` CLI, volume-cached source build).
     pub id: String,
-    /// Variant for the service (`database` accepts `postgres`/`mysql`).
-    /// Omit for the default; ignored by variantless services.
+    /// Variant for the service (`database` accepts `postgres`/`mysql`;
+    /// `claude`/`codex` accept `host` — bind-mount the host's config dir so
+    /// its login carries over — or `volume` for an isolated named-volume
+    /// login). Omit for the default; ignored by variantless services.
     #[serde(default)]
     pub variant: Option<String>,
     /// What to do: `enable` (default; no-op + warning if already configured),
@@ -2241,7 +2257,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "List the opt-in SDK crates — peripheral capabilities that ship OUTSIDE runtime-core (networking, persistence, camera, the component library, …) and are invisible to list_components/list_primitives/list_utilities because they expose plain functions/types or `Element::External` primitives. THIS is how you discover which crate makes a network request (`net`), persists data (`storage`/`credentials`), or renders a map (`maps`). Lightweight { name, category, kind, dep_line, summary }; pass `filter` (case-insensitive, glob `*`, matches name/category/kind) to narrow, then `describe_sdk` for the full record. Prose home: the `sdks` guide (read_guide).")]
+    #[tool(description = "List the opt-in SDK crates — peripheral capabilities that ship OUTSIDE runtime-core (networking, persistence, camera, the component library, …) and are invisible to list_components/list_primitives/list_utilities because they expose plain functions/types or scene-registry extension primitives. THIS is how you discover which crate makes a network request (`net`), persists data (`storage`/`credentials`), or renders a map (`maps`). Lightweight { name, category, kind, dep_line, summary }; pass `filter` (case-insensitive, glob `*`, matches name/category/kind) to narrow, then `describe_sdk` for the full record. Prose home: the `sdks` guide (read_guide).")]
     async fn list_sdks(
         &self,
         Parameters(req): Parameters<FilterRequest>,
@@ -2268,7 +2284,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "Get the full record for one opt-in SDK crate: summary, the `Cargo.toml` dependency line to add, capability category, whether its surface is plain API or a `ui!` `Element::External` primitive, and the guide that documents it. Accepts the crate name (`net`, `storage`, `idea-ui`).")]
+    #[tool(description = "Get the full record for one opt-in SDK crate: summary, the `Cargo.toml` dependency line to add, capability category, whether its surface is plain API or a `ui!` extension primitive, and the guide that documents it. Accepts the crate name (`net`, `storage`, `idea-ui`).")]
     async fn describe_sdk(
         &self,
         Parameters(req): Parameters<NameRequest>,
@@ -2675,7 +2691,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "Initialize or update a project's devcontainer, toggling idealyst-managed sidecar services that run alongside the main dev container. Same engine as the `idealyst configure devcontainer` CLI (non-interactive path). Managed services (database [postgres|mysql], redis, minio) live ENTIRELY in `.devcontainer/docker-compose.idealyst.yml` (owned + regenerated by idealyst, referenced from `devcontainer.json`'s `dockerComposeFile`); the user's own `docker-compose.yml` and any services they added there are never touched. When no devcontainer exists, a minimal compose-based one is scaffolded. Pass `services` as a list of { id (database|redis|minio), variant?, action (enable|reconfigure|remove) }: `enable` adds a service (no-op + warning if already configured), `reconfigure` resets it to the given/default variant, `remove` drops it; removing the last service deletes the managed file. An empty `services` list just ensures a base devcontainer exists. `config` targets a named devcontainer config (`.devcontainer/<config>/devcontainer.json`, which must already exist) instead of the default; managed services are shared across configs. `dir` defaults to the single live app's project root, else the server's working directory. Returns { added, removed, reconfigured, unchanged, warnings, wrote } (wrote = files created/modified).")]
+    #[tool(description = "Initialize or update a project's devcontainer, toggling idealyst-managed add-ons. Same engine as the `idealyst configure devcontainer` CLI (non-interactive path). Sidecar services (database [postgres|mysql], redis, minio) live ENTIRELY in `.devcontainer/docker-compose.idealyst.yml` (owned + regenerated by idealyst, referenced from `devcontainer.json`'s `dockerComposeFile`); the user's own `docker-compose.yml` and any services they added there are never touched. AI agent CLIs (claude = Claude Code via its native installer — no Node.js needed; codex = OpenAI Codex via the node feature + npm) install through `devcontainer.json` `features`/`postCreateCommand` entries — idealyst records which keys it added and only ever removes those — with credentials wired via the managed compose file: variant `host` (default) bind-mounts the host's ~/.claude / ~/.codex so an existing host login carries over automatically (CLAUDE_CONFIG_DIR / CODEX_HOME point the CLI at the mount), `volume` keeps an isolated login in a named volume. When no devcontainer exists, a minimal compose-based one is scaffolded. The `idealyst-cli` add-on installs the `idealyst` CLI itself (source build via `cargo install --git`, cached in a named volume so rebuilds skip the compile). Pass `services` as a list of { id (database|redis|minio|claude|codex|idealyst-cli), variant?, action (enable|reconfigure|remove) }: `enable` adds (no-op + warning if already configured), `reconfigure` resets to the given/default variant, `remove` drops it; removing the last add-on deletes the managed file. An empty `services` list just ensures a base devcontainer exists. `config` targets a named devcontainer config (`.devcontainer/<config>/devcontainer.json`, which must already exist) instead of the default; managed add-ons are shared across configs. `dir` defaults to the single live app's project root, else the server's working directory. Returns { added, removed, reconfigured, unchanged, warnings, wrote } (wrote = files created/modified).")]
     async fn configure_devcontainer(
         &self,
         Parameters(req): Parameters<ConfigureDevcontainerRequest>,
@@ -3189,8 +3205,20 @@ fn docs_excerpt_around(docs: &str, needle: &str) -> String {
     let Some(pos) = lower.find(needle) else {
         return docs.chars().take(160).collect();
     };
-    let start = pos.saturating_sub(80);
-    let end = (pos + needle.len() + 80).min(docs.len());
+    // `pos` is an offset into `lower`, which only approximates an offset
+    // into `docs` (lowercasing can change byte lengths, e.g. 'İ' → "i̇"),
+    // and ±80 can land inside a multi-byte char. Clamp into range and
+    // snap outward to char boundaries — the raw `docs[pos-80..pos+80]`
+    // slice panicked (process-fatal under panic=abort) whenever the
+    // window split a '—' or '…' in the docs.
+    let mut start = pos.saturating_sub(80).min(docs.len());
+    while !docs.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = (pos + needle.len() + 80).min(docs.len());
+    while !docs.is_char_boundary(end) {
+        end += 1;
+    }
     docs[start..end].to_string()
 }
 
@@ -3471,7 +3499,7 @@ mod tests {
     //! test binary must appear in the `list_components` tool's
     //! response.
     //!
-    //! Pre-fix the sidecar wrapper omitted `runtime-core/dev`, so
+    //! Pre-fix the sidecar wrapper omitted the `dev` feature, so
     //! `#[component]` macro emissions were stubbed out and the
     //! linked inventory was empty even though the user's source had
     //! components in it. `idealyst mcp` returned `[]` in runtime-
@@ -3493,7 +3521,8 @@ mod tests {
     #[allow(dead_code)]
     #[component]
     pub fn list_components_regression_canary() -> Element {
-        ::runtime_core::view(::std::vec::Vec::new())
+        // `view(..)` returns a builder, not an `Element` — coerce it.
+        ::runtime_core::IntoElement::into_element(::runtime_core::view(::std::vec::Vec::new()))
     }
 
     /// Parse a `list_*` tool result into `(name, has_summary, keys)`
@@ -3639,6 +3668,32 @@ mod tests {
             scores.windows(2).all(|w| w[0] >= w[1]),
             "search results must be ranked best-first; got scores {scores:?}",
         );
+    }
+
+    /// Regression: `search` aborted the whole MCP server ("MCP error
+    /// -32000: Connection closed" client-side, since the release profile
+    /// is panic=abort) whenever the ±80-byte excerpt window around a hit
+    /// split a multi-byte char — the framework docs are full of '—' and
+    /// '…', so this fired on ordinary queries. `docs_excerpt_around`
+    /// sliced `docs[pos-80..pos+len+80]` at raw byte offsets, and also
+    /// indexed `docs` with an offset found in `docs.to_lowercase()`,
+    /// whose byte offsets can drift (e.g. 'İ' lowercases to 2 chars).
+    #[test]
+    fn regression_search_excerpt_multibyte_no_panic() {
+        // Window START lands mid-'—': needle at byte 180, start = 100,
+        // and 100 is not a char boundary in a run of 3-byte dashes.
+        let leading = format!("{}needle", "—".repeat(60));
+        assert!(docs_excerpt_around(&leading, "needle").contains("needle"));
+
+        // Window END lands mid-'—': end = 86 falls inside a dash.
+        let trailing = format!("needle {}", "—".repeat(40));
+        assert!(docs_excerpt_around(&trailing, "needle").contains("needle"));
+
+        // Lowercased offset drift: 'İ' (2 bytes) lowercases to "i̇"
+        // (3 bytes), so the match offset in `lower` can exceed
+        // `docs.len()` entirely — an out-of-bounds slice pre-fix.
+        let drifted = format!("{}needle", "İ".repeat(100));
+        let _ = docs_excerpt_around(&drifted, "needle");
     }
 
     /// A2 (coverage half): the search index must span more than guide
@@ -3886,28 +3941,22 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&tmp);
-        // Point HOME at the temp dir so the default screenshots dir lands there.
-        // Safe in this single-threaded unit test.
-        let prev_home = std::env::var_os("HOME");
-        unsafe { std::env::set_var("HOME", &tmp); }
 
         let mut v = json!({
             "png_base64": "aGVsbG8=", // "hello"
             "width": 10,
             "height": 20,
         });
-        ensure_screenshot_saved("myapp", &mut v);
+        // Target the temp dir directly — repointing HOME here raced
+        // parallel tests that resolve `~/.idealyst` (dev_runner's
+        // log-glob test flaked whenever it ran in this window).
+        ensure_screenshot_saved_in(&tmp, "myapp", &mut v);
 
         let path = v["path"].as_str().expect("path was injected");
         assert!(path.contains("myapp-"));
         let bytes = std::fs::read(path).expect("file written");
         assert_eq!(bytes, b"hello");
 
-        // Restore HOME and clean up.
-        match prev_home {
-            Some(h) => unsafe { std::env::set_var("HOME", h) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

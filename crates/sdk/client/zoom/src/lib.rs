@@ -49,8 +49,13 @@ use std::rc::Rc;
 use runtime_core::animation::{AnimProp, AnimatedValue};
 use runtime_core::{
     pinch as pinch_recognizer, PinchEvent, PinchRecognizer, Ref, TouchHandler, TouchPoint,
-    TouchResponse, ViewHandle, WheelHandler, WheelKind,
+    TouchResponse, ViewHandle, WheelHandler,
 };
+// The wheel EVENT types are substrate items glue does not re-export yet (it
+// carries only `WheelHandler`), so they come from the substrate directly
+// rather than through the `runtime_core` facade. Re-point at the facade when
+// glue grows the re-exports (a one-line gap, reported).
+use runtime_shared::{WheelEvent, WheelKind};
 
 /// Snapshot delivered to [`Zoom::on_start`] and [`Zoom::on_change`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -312,7 +317,8 @@ mod tests {
     //! two-finger logic is tested in `runtime_core::touch::recognizers`.
 
     use super::*;
-    use runtime_core::{TouchEvent, TouchId, TouchPhase, WheelEvent, WheelKind};
+    use runtime_core::{TouchEvent, TouchId, TouchPhase};
+    use runtime_shared::{WheelEvent, WheelKind};
     use std::cell::RefCell;
 
     fn touch(phase: TouchPhase, id: u64, x: f32, y: f32, ts_ns: u64) -> TouchEvent {
@@ -371,7 +377,9 @@ mod tests {
         // The `recognizer()` composition path (for GestureGroup) must wire
         // the same scale as `pinch_handler()`. Drive it through the
         // Recognizer trait directly.
-        use runtime_core::{Recognizer, RecognizerCtx};
+        // `Recognizer` / `RecognizerCtx` are substrate traits glue does not
+        // re-export yet (reported gap); the trait is the same item either way.
+        use runtime_shared::{Recognizer, RecognizerCtx};
         let zoom = Zoom::new();
         let mut rec = zoom.recognizer();
         let ctx = RecognizerCtx::UNGATED;

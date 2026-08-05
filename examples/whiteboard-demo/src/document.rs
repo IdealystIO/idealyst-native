@@ -337,7 +337,8 @@ pub(crate) fn paint_stroke(s: &mut canvas::Scene, stroke: &Stroke, rgba: (u8, u8
 
 /// Parse a CSS color string into RGBA bytes (black on failure).
 pub(crate) fn parse_rgba(css: &str) -> (u8, u8, u8, u8) {
-    let c = runtime_core::color::parse_or(css, runtime_core::color::Rgba::BLACK);
+    // `color` is a shared-substrate module the facade root does not mirror yet.
+    let c = runtime_shared::color::parse_or(css, runtime_shared::color::Rgba::BLACK);
     (c.r, c.g, c.b, c.a)
 }
 

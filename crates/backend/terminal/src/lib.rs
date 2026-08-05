@@ -1,4 +1,4 @@
-//! ASCII / terminal backend for `runtime_core::Backend`.
+//! ASCII / terminal backend for `runtime_shared::Backend`.
 //!
 //! Renders the framework's primitive tree into a character grid. The
 //! companion `host-terminal` crate paints the grid to stdout (ANSI
@@ -12,9 +12,35 @@
 //! **terminal cell** (1 col x 1 row), not pixel — author stylesheets
 //! that say `width: 40` get 40 columns wide.
 
+//! # New core (`new-core` feature)
+//!
+//! The crate also carries the idea-lite (new-core) mount leg:
+//! [`newcore::start`] mounts a scene-element tree on a
+//! `runtime_world::World` through the vocabulary's builtin handlers,
+//! with [`TerminalBackend`] implementing `runtime_scene::Host` + all 30
+//! capability traits directly and a dispatch-hook flush driver (input
+//! events → staged writes → one deduped flush before the next paint;
+//! timers through the host scheduler, which fires [`dispatch_hook`]
+//! after author callbacks). The grid mechanism (`render_to_grid`,
+//! hit-testing, Taffy layout) is shared verbatim, so the same scene
+//! paints the same cells on both cores — pinned by
+//! `tests/newcore_parity.rs`. Additive: the old-core mount path is
+//! untouched with or without the feature. The live crossterm loop's
+//! new-core leg is `host_terminal::newcore::run`.
+
 mod handles;
 mod node;
 mod render;
+
+// Post-dispatch hook slot — UNCONDITIONAL (the fire sites live in
+// host-terminal's scheduler, which can't see this crate's features);
+// a no-op single Cell read unless `newcore::start` installed the
+// flush driver.
+pub mod dispatch_hook;
+
+/// `runtime_scene::Host` + the 30 capability traits on
+/// [`TerminalBackend`], plus the boot entry and flush driver.
+pub mod newcore;
 
 pub use node::{NodeKind, TermNode};
 pub use render::{Cell, Grid};
@@ -49,11 +75,6 @@ impl std::fmt::Debug for ClickOutcome {
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::animation::AnimProp;
-use runtime_core::color::{parse_or, Rgba};
-use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
-use runtime_core::{Action, Backend, Color as FwColor, ColorScheme, Platform, StyleRules};
 use runtime_layout::{AvailableSpace, LayoutNode, LayoutTree, Size as TaffySize};
 
 use node::NodeData;
@@ -88,22 +109,9 @@ pub struct TerminalBackend {
     /// `(8.0, 16.0)` so `width: px(14)` lands at a sane ~2 cells
     /// instead of overflowing the viewport.
     pub(crate) cell_size: (f32, f32),
-    /// Registry of `Element::Navigator` handler factories,
-    /// populated by SDK leaf crates calling `register_navigator::<P, _>(...)`
-    /// during app bootstrap. `create_navigator` looks the factory up
-    /// by presentation TypeId.
-    pub(crate) navigator_handlers:
-        runtime_core::NavigatorRegistry<TerminalBackend>,
-    /// Per-navigator-instance SDK handler. Keyed by the outlet/root
-    /// node id the handler returned from `init`. Subsequent navigator
-    /// dispatch routes through the handler stored here.
-    pub(crate) nav_handler_instances: HashMap<
-        u32,
-        Rc<std::cell::RefCell<Box<dyn runtime_core::NavigatorHandler<TerminalBackend>>>>,
-    >,
     /// App-level key handler (fires for every key before the focused-input path),
     /// installed by `set_app_key_handler`.
-    pub(crate) app_key_handler: Option<runtime_core::primitives::key::KeyDownHandler>,
+    pub(crate) app_key_handler: Option<runtime_shared::primitives::key::KeyDownHandler>,
 }
 
 impl Default for TerminalBackend {
@@ -112,24 +120,9 @@ impl Default for TerminalBackend {
     }
 }
 
-/// An inventory-collected navigator registrar. A navigator SDK's terminal
-/// module `inventory::submit!`s one (carrying a `fn(&mut TerminalBackend)`);
-/// [`TerminalBackend::new`] drains them so the app needn't call
-/// `<nav>::register` per platform. See [[project_inventory_self_registration]].
-pub struct TerminalNavigatorRegistrar(pub fn(&mut TerminalBackend));
-inventory::collect!(TerminalNavigatorRegistrar);
-
 impl TerminalBackend {
-    /// Install every SDK-submitted navigator handler. Native (non-wasm) so
-    /// inventory's link-time ctors populate the slice before construction.
-    fn drain_self_registrars(&mut self) {
-        for r in inventory::iter::<TerminalNavigatorRegistrar> {
-            (r.0)(self);
-        }
-    }
-
     pub fn new() -> Self {
-        let mut backend = Self {
+        Self {
             layout: LayoutTree::new(),
             nodes: HashMap::new(),
             next_id: 1,
@@ -137,25 +130,8 @@ impl TerminalBackend {
             viewport: (80, 24),
             focused_id: None,
             cell_size: (1.0, 1.0),
-            navigator_handlers: runtime_core::NavigatorRegistry::new(),
-            nav_handler_instances: HashMap::new(),
             app_key_handler: None,
-        };
-        backend.drain_self_registrars();
-        backend
-    }
-
-    /// Register a `NavigatorHandler` factory for the SDK-defined
-    /// presentation type `P`. SDK leaf crates call this once per app
-    /// bootstrap; on subsequent `Element::Navigator { type_id =
-    /// TypeId::of::<P>(), .. }` builds the framework invokes the
-    /// factory to produce a fresh handler.
-    pub fn register_navigator<P, F>(&mut self, factory: F)
-    where
-        P: 'static,
-        F: Fn() -> Box<dyn runtime_core::NavigatorHandler<TerminalBackend>> + 'static,
-    {
-        self.navigator_handlers.register::<P, _>(factory);
+        }
     }
 
     /// Read the laid-out frame `(x, y, w, h)` of `node` in layout-px
@@ -318,7 +294,14 @@ impl TerminalBackend {
         // `cell_size` if it needs sub-cell math; the breakpoint use
         // case ("is the terminal wide enough for a sidebar?")
         // generally only cares about cell counts.
-        runtime_core::set_viewport_size(runtime_core::ViewportSize {
+        runtime_shared::set_viewport_size(runtime_shared::ViewportSize {
+            width: cols as f32,
+            height: rows as f32,
+        });
+        // Forward the same cell counts into the mounted world's viewport
+        // ctx (captured signal + deduped flush — the backend-web
+        // resize-listener discipline). No-op unless an app is booted.
+        newcore::forward_viewport(runtime_shared::ViewportSize {
             width: cols as f32,
             height: rows as f32,
         });
@@ -685,7 +668,7 @@ impl TerminalBackend {
         // Claiming the key (`PreventDefault`) stops both the focused-input path
         // and the host's own `on_key` callback.
         if let Some(handler) = self.app_key_handler.clone() {
-            let ev = runtime_core::primitives::key::KeyEvent {
+            let ev = runtime_shared::primitives::key::KeyEvent {
                 key: key.key.clone(),
                 shift: key.shift,
                 ctrl: key.ctrl,
@@ -694,7 +677,7 @@ impl TerminalBackend {
                 selection_start: 0,
                 selection_end: 0,
             };
-            if matches!(handler(&ev), runtime_core::KeyOutcome::PreventDefault) {
+            if matches!(handler(&ev), runtime_shared::KeyOutcome::PreventDefault) {
                 return true;
             }
         }
@@ -710,7 +693,7 @@ impl TerminalBackend {
         let on_key_down = data.input.as_ref().and_then(|i| i.on_key_down.clone());
 
         if let Some(handler) = on_key_down {
-            if matches!(handler(&ev), runtime_core::KeyOutcome::PreventDefault) {
+            if matches!(handler(&ev), runtime_shared::KeyOutcome::PreventDefault) {
                 return true;
             }
         }
@@ -739,13 +722,13 @@ pub struct TerminalKey {
 fn make_key_event(
     key: &TerminalKey,
     data: &node::NodeData,
-) -> (String, runtime_core::primitives::key::KeyEvent) {
+) -> (String, runtime_shared::primitives::key::KeyEvent) {
     let cursor = data
         .input
         .as_ref()
         .map(|i| i.cursor)
         .unwrap_or(0);
-    let ev = runtime_core::primitives::key::KeyEvent {
+    let ev = runtime_shared::primitives::key::KeyEvent {
         key: key.key.clone(),
         shift: key.shift,
         ctrl: key.ctrl,
@@ -766,662 +749,16 @@ fn make_key_event(
 // Backend trait impl
 // =========================================================================
 
-impl Backend for TerminalBackend {
-    type Node = TermNode;
-
-    fn platform(&self) -> Platform {
-        Platform::Custom("Terminal")
-    }
-
-    fn color_scheme(&self) -> ColorScheme {
-        // Most terminals these days are dark by default. Apps that
-        // care can branch on `Platform::Custom("Terminal")` for a
-        // proper choice.
-        ColorScheme::Dark
-    }
-
-    fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
-        self.alloc_node(NodeKind::View, String::new())
-    }
-
-    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
-        let node = self.alloc_node(NodeKind::Text, content.to_string());
-        self.install_text_measure(node.id);
-        node
-    }
-
-    fn create_external(
-        &mut self,
-        _type_id: std::any::TypeId,
-        type_name: &'static str,
-        _payload: &std::rc::Rc<dyn std::any::Any>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // The terminal backend has no external-primitive registry, so every
-        // `Element::External` (codeblock, maps, webview, …) lands here. The
-        // default `Backend::create_external` is `unimplemented!()`, which
-        // PANICS — a terminal app that mounts any external aborts at render
-        // (the tutorial mounts `codeblock`, so local `--terminal` crashed
-        // here). Render the framework's standard "not supported" text
-        // placeholder instead, mirroring the macOS/iOS backends. When a
-        // terminal external handler is genuinely needed, add a registry +
-        // inventory registrar here (see `MacosBackend::external_handlers`);
-        // until then graceful degradation beats a crash.
-        let text = format!("[external \"{type_name}\" not supported in terminal]");
-        self.create_text(&text, a11y)
-    }
-
-    fn create_button(
-        &mut self,
-        label: &str,
-        on_click: &Action,
-        _leading_icon: Option<&runtime_core::primitives::icon::IconData>,
-        _trailing_icon: Option<&runtime_core::primitives::icon::IconData>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Render Button as `[ label ]` for a consistent at-a-glance
-        // affordance on terminal — matches the existing Toggle's
-        // `[ ● ]` bracket convention. Store the bracketed form
-        // directly so the captured `measure_fn` (which reads
-        // `data.content`) sizes the node for the bracketed width.
-        // Paint goes through `paint_text` unchanged.
-        let bracketed = format_button_label(label);
-        let node = self.alloc_node(NodeKind::Button, bracketed);
-        let fire = on_click.fire.clone();
-        if let Some(data) = self.nodes.get_mut(&node.id) {
-            data.on_click = Some(fire);
-        }
-        self.install_text_measure(node.id);
-        node
-    }
-
-    fn create_pressable(
-        &mut self,
-        on_click: Rc<dyn Fn()>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        let node = self.alloc_node(NodeKind::Pressable, String::new());
-        if let Some(data) = self.nodes.get_mut(&node.id) {
-            data.on_click = Some(on_click);
-        }
-        node
-    }
-
-    // ------------------------------------------------------------------
-    // Visual-only primitives that the terminal collapses to a plain
-    // View. No clipping, no scrolling, no actual image/icon rendering —
-    // per [[feedback_terminal_minimalism]] the terminal is a flat
-    // character grid, so these primitives behave as transparent flex
-    // containers and any visual semantics (scroll, image content,
-    // portal teleportation) are dropped silently.
-    // ------------------------------------------------------------------
-
-    fn create_scroll_view(
-        &mut self,
-        horizontal: bool,
-        on_scroll: Option<std::rc::Rc<dyn Fn(f32, f32)>>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Terminal owns its own mouse-wheel dispatch (see
-        // `dispatch_scroll` + `apply_scroll_delta`) which mutates
-        // each ScrollView's `(scroll_x, scroll_y)` in cell units.
-        // We stash the `on_scroll` callback on the node and fire it
-        // from `apply_scroll_delta` after the offset is clamped.
-        // Offsets are reported in cells \u{2014} the terminal's
-        // native unit \u{2014} matching the other backends'
-        // "current offset in native coordinate space" semantic
-        // (web pixels, iOS points, Android dp post-conversion).
-        let node = self.alloc_node(NodeKind::ScrollView, String::new());
-        let layout = self.nodes.get(&node.id).map(|d| d.layout);
-        if let Some(d) = self.nodes.get_mut(&node.id) {
-            d.horizontal = horizontal;
-            d.on_scroll = on_scroll;
-        }
-        // Tell Taffy this node behaves like CSS `overflow: scroll` on
-        // the chosen axis. Without this, Taffy sizes the scroll view
-        // to its content's intrinsic size — i.e. the content fits
-        // inside it exactly and there's nothing to scroll. The
-        // helper also sets `flex_grow: 1, flex_basis: 0` so the
-        // scroll view fills its parent's available main-axis space
-        // (matches how an unsized ScrollView behaves on
-        // iOS/Android/web where the native scroll view's frame is
-        // set by its parent and content has its own coordinate
-        // space).
-        if let Some(l) = layout {
-            self.layout.set_overflow_scroll(l, horizontal);
-        }
-        node
-    }
-
-    fn create_image(
-        &mut self,
-        _src: &str,
-        _alt: Option<&str>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.create_view(a11y)
-    }
-
-    fn create_icon(
-        &mut self,
-        _data: &runtime_core::primitives::icon::IconData,
-        _color: Option<&FwColor>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.create_view(a11y)
-    }
-
-    fn create_portal(
-        &mut self,
-        _target: runtime_core::primitives::portal::PortalTarget,
-        _on_dismiss: Option<Rc<dyn Fn()>>,
-        _trap_focus: bool,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.create_view(a11y)
-    }
-
-    fn create_link(
-        &mut self,
-        config: runtime_core::primitives::link::LinkConfig,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Terminal renders links as plain Pressable wrappers — a click
-        // anywhere inside fires `on_activate`. The trait default
-        // collapses to `create_view` and drops `on_activate` entirely,
-        // which is why nav-link clicks were silently no-op'ing
-        // before. The on_click slot mirrors what `create_pressable`
-        // sets, so the existing hit-test path picks it up.
-        let node = self.alloc_node(NodeKind::Pressable, String::new());
-        if let Some(data) = self.nodes.get_mut(&node.id) {
-            data.on_click = Some(config.on_activate);
-        }
-        node
-    }
-
-    fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
-        let (parent_layout, child_layout) = match (
-            self.nodes.get(&parent.id).map(|d| d.layout),
-            self.nodes.get(&child.id).map(|d| d.layout),
-        ) {
-            (Some(p), Some(c)) => (p, c),
-            _ => return,
-        };
-        self.layout.add_child(parent_layout, child_layout);
-        if let Some(p) = self.nodes.get_mut(&parent.id) {
-            p.children.push(child.id);
-        }
-    }
-
-    fn update_text(&mut self, node: &Self::Node, content: &str) {
-        let layout = match self.nodes.get(&node.id) {
-            Some(d) if d.content == content => return,
-            Some(d) => d.layout,
-            None => return,
-        };
-        if let Some(data) = self.nodes.get_mut(&node.id) {
-            data.content = content.to_string();
-        }
-        // The Taffy measure_fn captures its content snapshot by
-        // value (we can't borrow `&mut self` inside the closure), so
-        // the measure_fn still believes the text is the original
-        // empty string until we re-install it. Without this, the
-        // text node measures 0x0 and the rendered glyphs land in
-        // a zero-size frame — nothing visible. Re-installing is
-        // cheap (one Rc clone per swap).
-        self.install_text_measure(node.id);
-        self.layout.mark_dirty(layout);
-    }
-
-    fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-        // Re-wrap reactive label updates to keep the bracketed
-        // form in sync with what `create_button` stored.
-        self.update_text(node, &format_button_label(label));
-    }
-
-    fn clear_children(&mut self, node: &Self::Node) {
-        let Some(data) = self.nodes.get(&node.id) else { return };
-        let parent_layout = data.layout;
-        let children = data.children.clone();
-        for cid in &children {
-            let cdata = self.nodes.remove(cid);
-            if let Some(cd) = cdata {
-                // Strip the Taffy edge first, then drop the slot.
-                // Mirrors the iOS pattern; see
-                // [[project_ios_clear_children_taffy_sync]].
-                self.layout.remove_child(parent_layout, cd.layout);
-                self.layout.remove_node(cd.layout);
-                self.layout_to_id.remove(&cd.layout);
-                // Also tear down any grandchildren that this node
-                // owned — recursive free.
-                self.drop_subtree(&cd.children);
-            }
-        }
-        self.layout.mark_dirty(parent_layout);
-        if let Some(p) = self.nodes.get_mut(&node.id) {
-            p.children.clear();
-        }
-    }
-
-    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
-        let layout_node = match self.nodes.get(&node.id) {
-            Some(d) => d.layout,
-            None => return,
-        };
-        // Eagerly resolve `background` and `color` BEFORE handing the
-        // rules to `runtime-layout`'s `set_style`. This is load-
-        // bearing: the cohort driver Effect re-fires on token-signal
-        // changes, calls `apply_one` → this `apply_style`, which
-        // resolves the same Tokenized values to cache `bg`/`fg`
-        // further down. Without this early read, the cohort path's
-        // sidebar updates went through (`d.bg` was updated, the
-        // log even showed the dark color), but the render didn't
-        // visually pick up the change — the framework's token-
-        // subscription bookkeeping needs the resolve to happen
-        // BEFORE other style processing for the per-token edges to
-        // land in this Effect's dependency set on the first
-        // post-toggle re-fire. Without it, the sidebar darkened
-        // only on the second-or-later toggle, which read to the
-        // user as "doesn't update".
-        let _ = style.background.as_ref().map(|t| t.resolve());
-        let _ = style.color.as_ref().map(|t| t.resolve());
-        self.layout.set_style(layout_node, style);
-
-        // Cache the resolved fg/bg + gradient so the renderer's hot
-        // path doesn't re-parse on every cell write.
-        let fg = style
-            .color
-            .as_ref()
-            .map(|t| parse_or(&t.resolve().0, Rgba::default()));
-        let bg = style
-            .background
-            .as_ref()
-            .map(|t| parse_or(&t.resolve().0, Rgba::TRANSPARENT));
-        let gradient = style.background_gradient.as_ref().map(|g| {
-            let stops: Vec<(f32, Rgba)> = g
-                .stops
-                .iter()
-                .map(|s| (s.offset, parse_or(&s.color.0, Rgba::TRANSPARENT)))
-                .collect();
-            let animated_stops = vec![None; stops.len()];
-            node::ResolvedGradient {
-                kind: g.kind.clone(),
-                stops,
-                animated_stops,
-            }
-        });
-
-        // Extract static translate from `style.transform: [...]`.
-        // We only support TranslateX/Y on this backend — Scale /
-        // Rotate / Skew don't translate to cell semantics. Last-write
-        // wins per axis (matches the RN/web "matrix multiply" feel
-        // for the translates-only subset).
-        let mut static_tx: Option<runtime_core::Length> = None;
-        let mut static_ty: Option<runtime_core::Length> = None;
-        if let Some(transforms) = style.transform.as_ref() {
-            for t in transforms {
-                match t {
-                    runtime_core::Transform::TranslateX(l) => static_tx = Some(*l),
-                    runtime_core::Transform::TranslateY(l) => static_ty = Some(*l),
-                    _ => {}
-                }
-            }
-        }
-
-        // Static opacity from the stylesheet. Without this, an
-        // element declared with `opacity: 0.0` (welcome's sun, the
-        // vignette wrapper, planets pre-Act-2) starts fully visible
-        // because `NodeData.opacity` defaults to 1.0 — only the
-        // animation path (`set_animated_f32(Opacity, …)`) ever
-        // touched it. Read the resolved value and seed `data.opacity`
-        // up front; the animation Effect later overwrites at every
-        // frame.
-        let static_opacity = style
-            .opacity
-            .as_ref()
-            .map(|t| t.resolve().clamp(0.0, 1.0));
-
-        if let Some(d) = self.nodes.get_mut(&node.id) {
-            d.style = Some(style.clone());
-            d.fg = fg;
-            d.bg = bg;
-            d.static_translate_x = static_tx;
-            d.static_translate_y = static_ty;
-            if let Some(o) = static_opacity {
-                d.opacity = o;
-            }
-            // Preserve any already-animated stop overrides if the
-            // gradient's shape didn't change — re-applying a static
-            // stylesheet (state overlays, theme refresh) shouldn't
-            // reset per-frame animation state. Conservative: only
-            // preserve when the new gradient has the same stop
-            // count as the old one. Anything more aggressive risks
-            // mismatched indices.
-            let preserved = d
-                .gradient
-                .as_ref()
-                .and_then(|old| {
-                    gradient
-                        .as_ref()
-                        .filter(|new| new.stops.len() == old.stops.len())
-                        .map(|_| old.animated_stops.clone())
-                });
-            d.gradient = gradient.map(|mut g| {
-                if let Some(p) = preserved {
-                    g.animated_stops = p;
-                }
-                g
-            });
-        }
-    }
-
-    fn create_toggle(
-        &mut self,
-        initial_value: bool,
-        on_change: Rc<dyn Fn(bool)>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Render: `[ ]` (off) / `[●]` (on). 3 cells wide intrinsic.
-        let node = self.alloc_node(NodeKind::Toggle, String::new());
-        if let Some(d) = self.nodes.get_mut(&node.id) {
-            d.toggle_value = initial_value;
-            // Wrap `on_change` so the click handler (no args) reads
-            // the *current* value at click time, flips it, and
-            // forwards the new value. The framework's controlled-
-            // value Effect re-fires `update_toggle_value` so the
-            // backend's `toggle_value` stays in sync with the
-            // signal.
-            //
-            // We pull the current value from the backend via the
-            // shared id — no need for a separate Cell.
-            let id = node.id;
-            let oc = on_change.clone();
-            d.on_click = Some(Rc::new(move || {
-                // The framework's controlled-value cycle: this fires
-                // on press, we flip and call on_change with the new
-                // value; the parent updates its `Signal<bool>`; the
-                // framework's effect calls `update_toggle_value`
-                // with the same new value, which is a no-op (we
-                // skip on equality). One coherent state.
-                terminal_toggle_press(id, &oc);
-            }));
-            // Cells: "[ x ]" — 5 cells wide for breathing room.
-            let (cw, ch) = self.cell_size;
-            self.layout.set_intrinsic_size(d.layout, 5.0 * cw, 1.0 * ch);
-        }
-        node
-    }
-
-    fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
-        if let Some(d) = self.nodes.get_mut(&node.id) {
-            d.toggle_value = value;
-        }
-    }
-
-    fn create_text_input(
-        &mut self,
-        initial_value: &str,
-        placeholder: Option<&str>,
-        on_change: Rc<dyn Fn(String)>,
-        on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        _on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
-        secure: bool,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        let node = self.alloc_node(NodeKind::TextInput, String::new());
-        if let Some(d) = self.nodes.get_mut(&node.id) {
-            let placeholder_owned = placeholder.map(|s| s.to_string());
-            // Seed an intrinsic width that fits the placeholder (so
-            // empty inputs aren't 0-wide) plus 2 cells of breathing
-            // room. Authors can override with explicit `width` in
-            // the stylesheet.
-            let intrinsic_cells = placeholder_owned
-                .as_ref()
-                .map(|s| s.chars().count() as f32)
-                .unwrap_or(0.0)
-                .max(initial_value.chars().count() as f32)
-                .max(8.0)
-                + 2.0;
-            let (cw, ch) = self.cell_size;
-            self.layout
-                .set_intrinsic_size(d.layout, intrinsic_cells * cw, 1.0 * ch);
-            d.input = Some(Box::new(node::InputState {
-                value: initial_value.to_string(),
-                cursor: initial_value.chars().count(),
-                placeholder: placeholder_owned,
-                secure,
-                on_change,
-                on_key_down,
-            }));
-        }
-        node
-    }
-
-    fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
-        let Some(d) = self.nodes.get_mut(&node.id) else { return };
-        let Some(input) = d.input.as_mut() else { return };
-        if input.value == value {
-            return;
-        }
-        input.value = value.to_string();
-        // Clamp the cursor in case the controlled value got
-        // truncated below the previous cursor position.
-        let max = input.value.chars().count();
-        if input.cursor > max {
-            input.cursor = max;
-        }
-    }
-
-    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
-        // Flip the stored mask flag; the next render bullet-masks (or reveals)
-        // the value. No rebuild — the cursor/value state is untouched.
-        let Some(d) = self.nodes.get_mut(&node.id) else { return };
-        let Some(input) = d.input.as_mut() else { return };
-        input.secure = secure;
-    }
-
-    fn create_activity_indicator(
-        &mut self,
-        size: ActivityIndicatorSize,
-        color: Option<&FwColor>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        let node = self.alloc_node(NodeKind::ActivityIndicator, String::new());
-        if let Some(d) = self.nodes.get_mut(&node.id) {
-            // Color seed: optional explicit color, otherwise muted.
-            if let Some(c) = color {
-                d.fg = Some(parse_or(&c.0, Rgba::new(180, 180, 180, 255)));
-            }
-            // Small = 1 cell tall, Large = 1 cell tall too — we
-            // can't actually grow a single braille glyph. Width: 3
-            // cells either way to give the spinner some space.
-            let w_cells = match size {
-                ActivityIndicatorSize::Small => 3.0,
-                ActivityIndicatorSize::Large => 5.0,
-            };
-            let (cw, ch) = self.cell_size;
-            self.layout.set_intrinsic_size(d.layout, w_cells * cw, 1.0 * ch);
-        }
-        // The walker fires no per-frame effect for this primitive,
-        // so we install our own `raf_loop` to advance the phase.
-        // Each tick bumps `anim_phase` by ~one frame's worth of the
-        // 10-step braille cycle. The render path samples
-        // `anim_phase` to pick the current glyph.
-        let id = node.id;
-        let task = runtime_core::raf_loop(move || {
-            terminal_advance_spinner(id);
-        });
-        // Anchor to the current reactive scope so unmount cancels
-        // the loop. `on_cleanup` is a no-op outside a scope, which
-        // is fine — top-level binaries leak the handle until exit.
-        runtime_core::on_cleanup(move || drop(task));
-        node
-    }
-
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
-        handles::make_view_handle(node)
-    }
-
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
-        handles::make_text_handle(node)
-    }
-
-    fn set_animated_f32(
-        &mut self,
-        node: &Self::Node,
-        prop: AnimProp,
-        value: f32,
-    ) {
-        let Some(d) = self.nodes.get_mut(&node.id) else { return };
-        match prop {
-            // Route to the animated slot — apply_style replays
-            // (hot-patch path) would otherwise clobber the in-
-            // flight value with the stylesheet's static starting
-            // opacity. See [`NodeData::animated_opacity`].
-            AnimProp::Opacity => d.animated_opacity = Some(value.clamp(0.0, 1.0)),
-            AnimProp::TranslateX => d.translate_x = value,
-            AnimProp::TranslateY => d.translate_y = value,
-            // Sibling-relative ordering. Higher value renders on top
-            // of lower. Welcome's planets sweep through positive and
-            // negative values as they orbit so they pass in front of
-            // and behind the headline.
-            AnimProp::ZIndex => d.z_index = value,
-            // Scale / Rotate don't map cleanly to a cell grid —
-            // documented no-ops so author code stays portable.
-            _ => {}
-        }
-    }
-
-    fn set_animated_color(
-        &mut self,
-        node: &Self::Node,
-        prop: AnimProp,
-        value: [f32; 4],
-    ) {
-        let Some(d) = self.nodes.get_mut(&node.id) else { return };
-        let rgba = Rgba::from_srgb_f32(value);
-        match prop {
-            AnimProp::BackgroundColor => d.animated_bg = Some(rgba),
-            AnimProp::ForegroundColor => d.animated_fg = Some(rgba),
-            AnimProp::GradientStopColor(idx) => {
-                if let Some(g) = d.gradient.as_mut() {
-                    let i = idx as usize;
-                    if i < g.animated_stops.len() {
-                        g.animated_stops[i] = Some(rgba);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Called by the framework after every render pass. We don't run
-    /// layout here — the host drives `render_to_grid` on its own
-    /// schedule (after input + before paint) so we have the most
-    /// current viewport size. `finish` would compute against stale
-    /// dimensions if the terminal got resized between builds.
-    fn set_app_key_handler(
-        &mut self,
-        handler: Option<runtime_core::primitives::key::KeyDownHandler>,
-    ) {
-        self.app_key_handler = handler;
-    }
-
-    fn finish(&mut self, _root: Self::Node) {}
-
-    // ------------------------------------------------------------------
-    // Navigator extension wiring. Mirrors the web/iOS/Android pattern —
-    // SDK leaf crates install a handler factory keyed by presentation
-    // TypeId; `create_navigator` resolves the factory, runs its `init`,
-    // and stores the returned handler under the outlet node id so
-    // subsequent dispatch (`attach_initial` / `release` / `make_handle`
-    // / `apply_slot_style`) can route through the kind-specific logic.
-    // ------------------------------------------------------------------
-
-    fn create_navigator(
-        &mut self,
-        type_id: std::any::TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn std::any::Any>,
-        host: runtime_core::NavigatorHost<Self::Node>,
-        _a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let factory = self
-            .navigator_handlers
-            .get(type_id)
-            .unwrap_or_else(|| {
-                panic!(
-                    "TerminalBackend::create_navigator: navigator kind '{}' \
-                     is not registered. Did the app forget to call \
-                     `<navigator-sdk>::register(&mut backend)` during bootstrap?",
-                    type_name
-                )
-            });
-        let mut handler = factory();
-        let node = handler.init(self, host, presentation);
-        // Key by outlet node id — unlike web there's no separate
-        // navigator-id attribute, but TermNode.id is already a stable
-        // per-instance handle.
-        self.nav_handler_instances.insert(
-            node.id,
-            Rc::new(std::cell::RefCell::new(handler)),
-        );
-        node
-    }
-
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn std::any::Any>,
-    ) {
-        let handler = self.nav_handler_instances.get(&navigator.id).cloned();
-        let Some(handler) = handler else { return };
-        handler.borrow_mut().attach_initial(self, screen, scope_id, options);
-    }
-
-    fn release_navigator(&mut self, node: &Self::Node) {
-        let handler = self.nav_handler_instances.remove(&node.id);
-        let Some(handler) = handler else { return };
-        handler.borrow_mut().release(self);
-    }
-
-    fn make_navigator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::NavigatorHandle {
-        match self.nav_handler_instances.get(&node.id) {
-            Some(h) => h.borrow().make_handle(),
-            None => runtime_core::NavigatorHandle::new(
-                Rc::new(()),
-                &NOOP_NAV_OPS,
-            ),
-        }
-    }
-
-    fn apply_navigator_slot_style(
-        &mut self,
-        navigator: &Self::Node,
-        slot: &'static str,
-        style: &Rc<StyleRules>,
-    ) {
-        let handler = self.nav_handler_instances.get(&navigator.id).cloned();
-        let Some(handler) = handler else { return };
-        handler.borrow_mut().apply_slot_style(self, slot, style);
-    }
-}
-
-struct NoopNavOps;
-impl runtime_core::primitives::navigator::NavigatorOps for NoopNavOps {}
-static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
 
 #[cfg(test)]
 mod regression_tests {
     use super::*;
-    use runtime_core::{
-        accessibility::AccessibilityProps, animation::AnimProp, Backend, StyleRules, Tokenized,
+    use runtime_shared::{
+        accessibility::AccessibilityProps, animation::AnimProp, StyleRules, Tokenized,
     };
+    // The mechanism now lives on the capability traits (the `Backend`
+    // mega-trait is gone), so the unit tests reach it through them.
+    use runtime_vocabulary::caps::{AnimationOps, ExternalOps, StyleOps, ViewOps};
     use std::rc::Rc;
 
     /// `apply_style` replay must not clobber an in-flight animated
@@ -1457,13 +794,15 @@ mod regression_tests {
         );
     }
 
-    /// Regression: an unregistered `Element::External` must render a
-    /// placeholder, NOT panic. The default `Backend::create_external` is
+    /// Regression: an unregistered external payload must render a
+    /// placeholder, NOT panic. The caps DEFAULT `create_external` is
     /// `unimplemented!()`; the terminal backend has no external registry, so
-    /// before the override every external aborted the app at render time —
-    /// the tutorial mounts `codeblock`, so local `--terminal` crashed with
-    /// "create_external not implemented for this backend". The placeholder
-    /// is the documented graceful-degradation path (mirrors macOS/iOS).
+    /// without the override every unsupported primitive family aborted the
+    /// app at render time — the tutorial mounts `codeblock`, so local
+    /// `--terminal` crashed with "create_external not implemented for this
+    /// backend". The placeholder is the documented graceful-degradation
+    /// path (mirrors macOS/iOS), and it is also what
+    /// `missing_primitive_placeholder` routes through on the new core.
     #[test]
     fn create_external_renders_placeholder_instead_of_panicking() {
         let mut be = TerminalBackend::new();
@@ -1670,7 +1009,7 @@ impl TerminalBackend {
             // `update_text_input_value`. The host's per-frame
             // `scheduler::tick()` drains microtasks before
             // re-rendering, so the value lands the same frame.
-            runtime_core::scheduling::schedule_microtask(move || {
+            runtime_shared::scheduling::schedule_microtask(move || {
                 on_change(value);
             });
         }

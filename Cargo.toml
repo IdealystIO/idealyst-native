@@ -1,9 +1,28 @@
 [workspace]
 resolver = "2"
 members = [
-    # Runtime — platform-agnostic upper half (above the Backend Interface).
+    # The author surface: a paper-thin re-export of
+    # `runtime_vocabulary::glue` plus the macro set, published under the
+    # name every consumer already spells (`runtime_core::…`). The pre-v2
+    # walker that used to live here — Element, the Backend mega-trait,
+    # the render walker, Bound/builders — is deleted.
     "crates/runtime/core",
+    # The permanent shared substrate: the style engine, assets, animation,
+    # touch, scheduling, robot, and the shared prop/handle types — every
+    # part of the old runtime-core that outlives the walker.
+    "crates/runtime/shared",
     "crates/runtime/macros",
+    # The reactive kernel: worlds, staged commits, derivation-class flush.
+    "crates/runtime/world",
+    # The scene core: Element/realize/Host/Registry + the Dyn/Keyed
+    # structural drivers, on the runtime-world kernel. Its recorded
+    # behavior is pinned by the committed goldens in crates/dev/scene-parity.
+    "crates/runtime/scene",
+    # Capability-trait split of the deleted Backend mega-trait:
+    # per-primitive Ops traits over the scene Host seam, the built-in
+    # primitive handlers, and `glue` — the author-surface module
+    # `runtime-core` re-exports.
+    "crates/runtime/vocabulary",
     "crates/runtime/reactive/arena",
     "crates/runtime/reactive/refs",
     "crates/runtime/layout",
@@ -11,7 +30,8 @@ members = [
     # Shared StyleRules → CSS conversion (used by web + ssr backends).
     "crates/css",
 
-    # Native backends — implement Backend on top of a platform's UI toolkit.
+    # Native backends — implement the scene Host + capability traits on
+    # top of a platform's UI toolkit.
     "crates/backend/apple/core",
     "crates/backend/macos",
     "crates/backend/ios/core",
@@ -68,12 +88,54 @@ members = [
     "crates/dev/web-host",
     "crates/dev/runtime-server-shell",
     "crates/dev/mock-backend",
+    # New-core test substrate: scene Host + all-30-caps recording mock
+    # (replaces the per-suite `impl Backend for Mini` + LegacyBridge
+    # combos, so new-core tests survive the old Backend trait's deletion).
+    "crates/dev/host-mock",
+    # Frozen-artifact substrate for the cross-core parity suites (wave 2c).
+    "crates/dev/parity-goldens",
     "crates/dev/headless-screenshot",
     "crates/dev/robot-e2e",
     "crates/dev/robot-relay",
     "crates/dev/robot-test",
     "crates/dev/robot-test-macros",
     "crates/dev/native-parity",
+    "crates/dev/scene-parity",
+    # Smoke app for backend-web's new-core boot path (idea-lite P3b).
+    "crates/dev/newcore-web-smoke",
+    # Smoke app for the External-SDK wave: the canvas SDK (scene-registry
+    # renderer) on the new-core web boot — the wave's live-verification
+    # vehicle (an author draw closure + reactive repaint through a world
+    # effect, rendered by canvas-native's Canvas2D handler).
+    "crates/dev/newcore-canvas-smoke",
+    # Smoke app for backend-macos's new-core boot path (idea-lite P4a).
+    "crates/dev/newcore-macos-smoke",
+    # Smoke app for backend-ios-mobile's new-core boot path (idea-lite,
+    # iOS mirror of P4a). Staticlib + checked-in Swift shell; see its
+    # host/run-sim.sh for the simulator launch.
+    "crates/dev/newcore-ios-smoke",
+    # Smoke app for backend-android-mobile's new-core boot path
+    # (idea-lite P5). A normal idealyst project hosted by the generated
+    # JNI wrapper's `new-core` feature; `--features launcher --bin
+    # launch` drives the existing build/run tooling end-to-end.
+    "crates/dev/newcore-android-smoke",
+    # Smoke app for render-wgpu's new-core boot path (idea-lite P5, GPU).
+    # Windowed via host-winit's `new-core` feature; also a headless
+    # offscreen-capture mode (NEWCORE_SMOKE_HEADLESS) for real-GPU PNG
+    # evidence without a window.
+    "crates/dev/newcore-gpu-smoke",
+    # End-to-end integration app for the ui!/#[component] lowering and the
+    # vocabulary handlers: real button/toggle/virtualizer handlers driven
+    # through macro -> builders -> handlers -> drivers -> kernel, plus the
+    # recipe compile-and-realize gate.
+    "crates/dev/newcore-app",
+    # New-core leg of the MCP catalog-emission suite (idea-lite wave 2c):
+    # compiles the SAME shared suite body as
+    # crates/mcp/catalog/tests/registers_component.rs under the facade
+    # alias, so both `__mcp` anchors are covered and the resulting
+    # inventory is proven identical. Its own crate because mcp-catalog
+    # can neither depend on the facade (cargo cycle) nor gate a dev-dep.
+    "crates/dev/newcore-catalog",
 
     # MCP — project-aware catalog + stdio server (catalog + Robot tools).
     "crates/mcp/catalog",
@@ -189,6 +251,10 @@ members = [
     # Project configuration engine — powers `idealyst configure` (devcontainer
     # today) and the shared MCP `configure_devcontainer` tool.
     "crates/tools/configure",
+    # Premint style-dump assembly — the ephemeral dump wrapper the CLI
+    # generates links this to turn `runtime_core::premint::PREMINT_SHEETS`
+    # into the shipped `.css` asset.
+    "crates/tools/premint-dump",
     # wasm-split toolchain (vendored from DioxusLabs/dioxus alpha-0.8.0
     # — we own the snapshot, fix bugs as they fire on our codebase).
     # See `crates/tools/wasm-split/README.md`.
@@ -282,10 +348,6 @@ members = [
     "examples/welcome-gtk",
     "examples/fiddle",
     "examples/baseline",
-    "examples/lazy-canvas",
-    "examples/eager-canvas",
-    "examples/probe-canvas",
-    "examples/prune-repro",
     "examples/inspector",
     "examples/login-demo",
     "examples/nav-showcase",
@@ -300,9 +362,10 @@ members = [
     "tests/vtable-dispatch",
     "tests/theme-swap",
     "tests/lazy-chunk-handoff",
-    "tests/lazy-external-split/heavy",
-    "tests/lazy-external-split/eager",
-    "tests/lazy-external-split/lazy",
+    "tests/lazy-many-splits",
+    "tests/lazy-payload-split/heavy",
+    "tests/lazy-payload-split/eager",
+    "tests/lazy-payload-split/lazy",
     "tests/prune-regression",
 ]
 
@@ -326,11 +389,15 @@ exclude = [
 
 [workspace.package]
 edition = "2021"
-version = "0.4.0"
+version = "1.2.2"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 runtime-core = { path = "crates/runtime/core" }
+runtime-shared = { path = "crates/runtime/shared" }
+runtime-world = { path = "crates/runtime/world" }
+runtime-scene = { path = "crates/runtime/scene" }
+runtime-vocabulary = { path = "crates/runtime/vocabulary" }
 # Fast non-cryptographic integer hasher (rustc's own FxHash). Used in the
 # reactive core's hot-path collections keyed by internal Signal/Effect ids,
 # which are never attacker-controlled — SipHash's DoS-resistance is pure
@@ -344,6 +411,13 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 css = { path = "crates/css" }
+premint-dump = { path = "crates/tools/premint-dump" }
+# Link-time distributed slices — the premint style-dump registry
+# (`runtime_core::premint`, `style-dump` feature). Link-section
+# collection instead of first-use registration because the dump must
+# see EVERY `stylesheet!` in the binary, including sheets on screens
+# the dump run never renders.
+linkme = "0.3"
 dev-hot = { path = "crates/dev/hot" }
 runtime-macros = { path = "crates/runtime/macros" }
 mcp-catalog = { path = "crates/mcp/catalog" }
@@ -354,6 +428,8 @@ wire = { path = "crates/dev/wire" }
 dev-client = { path = "crates/dev/client" }
 dev-server = { path = "crates/dev/server" }
 mock-backend = { path = "crates/dev/mock-backend" }
+host-mock = { path = "crates/dev/host-mock" }
+parity-goldens = { path = "crates/dev/parity-goldens" }
 headless-screenshot = { path = "crates/dev/headless-screenshot" }
 robot-e2e = { path = "crates/dev/robot-e2e" }
 robot-relay = { path = "crates/dev/robot-relay" }
@@ -428,6 +504,9 @@ variant-tablet = { path = "crates/gpu-backend/variant/tablet" }
 variant-tv = { path = "crates/gpu-backend/variant/tv" }
 runtime-server-shell-native = { path = "crates/dev/runtime-server-shell" }
 posix-log-capture = { path = "crates/backend/posix-log-capture" }
+# One core: these crates carry no core-selector feature any more, so the
+# workspace specs are plain — a `{ workspace = true }` consumer gets each
+# crate's own defaults.
 idea-theme = { path = "crates/ui/idea-theme" }
 idea-ui = { path = "crates/ui/idea-ui" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail" }
@@ -448,7 +527,7 @@ video = { path = "crates/sdk/client/video" }
 svg = { path = "crates/sdk/client/svg" }
 canvas = { path = "crates/sdk/client/canvas" }
 canvas-core = { path = "crates/sdk/client/canvas/core" }
-canvas-native = { path = "crates/sdk/client/canvas/native" }
+canvas-native = { path = "crates/sdk/client/canvas/native", features = ["self-register"] }
 canvas-vello = { path = "crates/sdk/client/canvas/vello" }
 toolbar = { path = "crates/sdk/client/toolbar" }
 pdf = { path = "crates/sdk/client/pdf" }

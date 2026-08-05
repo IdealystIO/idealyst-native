@@ -17,9 +17,12 @@ use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
 use runtime_core::primitives::presence::PresenceAnim;
 use runtime_core::{
-    component, signal, styled_text, ui, Color, Easing, Element, FontFamily, Ref, TextRun,
-    TextRunStyle, Tokenized, ViewHandle,
+    component, signal, ui, Color, Easing, Element, FontFamily, Ref, Tokenized, ViewHandle,
 };
+// `styled_text(runs)` + the run types come through the facade's mirror
+// over the vocabulary text builder (`TextRun`/`TextRunStyle` are
+// runtime-shared types).
+use runtime_core::{styled_text, TextRun, TextRunStyle};
 use idea_ui::{Stack, StackGap, Typography};
 
 use crate::branding::LIGHT_LOGO;
@@ -231,7 +234,7 @@ fn inputs() -> Element {
         ) {
             PrimCell(tag = "button", blurb = "A labeled tappable with native button semantics.") {
                 view(style = PrimRow()) {
-                    button(label = "Tap me", on_click = move || clicks.update(|n| *n += 1))
+                    button(label = "Tap me", on_click = move || clicks.set(clicks.get() + 1))
                     text { format!("{} clicks", clicks.get()) }
                 }
             }
@@ -395,7 +398,7 @@ fn anchored_overlay_cell() -> Element {
     ui! {
         PrimCell(tag = "anchored_overlay", blurb = "A portal that tracks a trigger element — popovers, dropdowns, tooltips.") {
             view(style = PrimRow()) {
-                button(label = "Toggle popover", on_click = move || open.update(|o| *o = !*o))
+                button(label = "Toggle popover", on_click = move || open.set(!open.get()))
             }.bind(anchor)
             if open.get() {
                 anchored_overlay(
@@ -420,7 +423,7 @@ fn presence_cell() -> Element {
     ui! {
         PrimCell(tag = "presence", blurb = "Mounts and unmounts with enter/exit animations — the exit plays before the node leaves.") {
             view(style = PrimRow()) {
-                button(label = "Toggle", on_click = move || shown.update(|s| *s = !*s))
+                button(label = "Toggle", on_click = move || shown.set(!shown.get()))
             }
             presence(
                 present = move || shown.get(),
@@ -448,7 +451,7 @@ fn control_flow() -> Element {
         ) {
             PrimCell(tag = "when", blurb = "Reactive if/else. Toggling the signal swaps the branch.") {
                 view(style = PrimRow()) {
-                    button(label = "Flip", on_click = move || on.update(|v| *v = !*v))
+                    button(label = "Flip", on_click = move || on.set(!on.get()))
                     if on.get() {
                         text(style = PrimTag()) { "Branch: ON" }
                     } else {

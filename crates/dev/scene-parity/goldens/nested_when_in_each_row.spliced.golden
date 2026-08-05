@@ -1,0 +1,54 @@
+# scene-parity golden — scenario `nested_when_in_each_row`, mode `spliced`
+#
+# A `when` inside each keyed row (row = view[text, when]).
+# Toggling the shared flag rebuilds each row's branch IN PLACE
+# (in row-creation order) with no row remount; appending a row
+# builds a fresh nested when; removing a row tears its when down
+# with the row scope, so later flag flips only fire survivors.
+#
+# Structural ops only. Node names are creation-order (n0, n1, ...);
+# `cleanup <label>` lines are scenario-registered on_cleanup markers
+# pinning dispose ordering. Regenerate after an INTENDED behavior
+# change with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 view
+create n2 text "row-1"
+insert n1 <- n2
+create n3 text "inner-on"
+insert_at n1 <- n3 @ 1
+create n4 view
+create n5 text "row-2"
+insert n4 <- n5
+create n6 text "inner-on"
+insert_at n4 <- n6 @ 1
+insert_at n0 <- n1 @ 0
+insert_at n0 <- n4 @ 1
+
+== toggle inner flag (both rows rebuild branch in place) ==
+remove_child n1 -x n3
+create n7 text "inner-off"
+insert_at n1 <- n7 @ 1
+remove_child n4 -x n6
+create n8 text "inner-off"
+insert_at n4 <- n8 @ 1
+
+== append row 3 ==
+create n9 view
+create n10 text "row-3"
+insert n9 <- n10
+create n11 text "inner-off"
+insert_at n9 <- n11 @ 1
+insert_at n0 <- n9 @ 2
+
+== remove row 1 (its inner when dies with the row scope) ==
+remove_child n0 -x n1
+
+== toggle inner flag again (only surviving rows fire) ==
+remove_child n9 -x n11
+create n12 text "inner-on"
+insert_at n9 <- n12 @ 1
+remove_child n4 -x n8
+create n13 text "inner-on"
+insert_at n4 <- n13 @ 1

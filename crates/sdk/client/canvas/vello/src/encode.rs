@@ -405,10 +405,24 @@ fn font_data_cached(font: &FontResource) -> FontData {
 }
 
 /// Get-or-build the cached [`ImageData`] for a canvas image. Caller has already
-/// checked `is_valid()`. Re-uploads (overwriting the id's slot) when the image's
-/// `generation` changed, so a video frame pumped under one stable id animates
-/// instead of serving the cached first frame.
+/// checked `is_valid()`.
+///
+/// Static images (`generation == 0`) build their Blob once and reuse it —
+/// vello dedupes the GPU upload on the stable blob id.
+///
+/// ANIMATED images (`generation > 0`, the video-frame pump) must NOT rebuild
+/// the Blob per frame: vello's atlas caches residency by **blob id**, so a
+/// fresh Blob every frame claims a fresh atlas slot — the atlas grows/evicts/
+/// repacks continuously at frame rate and the WebGPU device dies within
+/// seconds (silently). Instead each animated id gets ONE stable, fake-blob
+/// `ImageData` handle (vello's `register_texture` pattern): the pixels ride in
+/// a pending-upload entry the renderer drains into a per-id override texture
+/// (`Renderer::override_image` + `mark_override_image_dirty`), so the atlas
+/// slot is allocated once and only its CONTENTS update per frame.
 fn image_data_cached(src: &CanvasImage) -> ImageData {
+    if src.generation != 0 {
+        return anim_image_data(src);
+    }
     IMAGE_CACHE.with(|c| {
         let mut c = c.borrow_mut();
         if let Some((gen, data)) = c.get(&src.id) {
@@ -425,6 +439,133 @@ fn image_data_cached(src: &CanvasImage) -> ImageData {
         };
         c.insert(src.id, (src.generation, data.clone()));
         data
+    })
+}
+
+// ===========================================================================
+// Animated images — stable handle + pending per-frame pixel uploads
+// ===========================================================================
+
+/// One frame of pixels for an animated image, waiting for a renderer to copy
+/// it into that image's override texture. Drained by [`take_anim_uploads`].
+pub(crate) struct AnimUpload {
+    /// The stable fake-blob handle this image is encoded under (the
+    /// `override_image` key).
+    pub image: ImageData,
+    pub width: u32,
+    pub height: u32,
+    /// Straight RGBA8, `width * height * 4` bytes.
+    pub rgba: Vec<u8>,
+}
+
+/// Per-id state for an animated image.
+struct AnimEntry {
+    /// The stable handle encoded into every scene for this id.
+    data: ImageData,
+    width: u32,
+    height: u32,
+    /// Generation of the newest pixels staged (or already drained) — dedupes
+    /// multiple encode passes of the same frame.
+    staged_gen: u64,
+    /// Newest not-yet-drained pixels.
+    pending: Option<AnimUpload>,
+    /// `tick` of the last encode that referenced this id (staleness GC).
+    last_seen: u64,
+}
+
+thread_local! {
+    /// Animated-image registry. Bounded: one entry per concurrently animated
+    /// image id; entries unreferenced for [`ANIM_STALE_TICKS`] drains are
+    /// returned by [`take_anim_uploads`] as expired so the renderer can drop
+    /// their override textures.
+    static ANIM_IMAGES: RefCell<(u64 /* tick */, HashMap<u64, AnimEntry>)> =
+        RefCell::new((0, HashMap::new()));
+    /// Stable handles retired before expiry (an id's dimensions changed, so it
+    /// got a fresh handle) — drained into `take_anim_uploads`'s expired list so
+    /// renderers release the old override texture.
+    static ANIM_RETIRED: RefCell<Vec<ImageData>> = RefCell::new(Vec::new());
+}
+
+/// How many [`take_anim_uploads`] drains an animated id may go unreferenced
+/// before its entry (and the renderer's override texture) is dropped. Drains
+/// happen at most a few times per rendered frame, so ~600 ≈ several seconds.
+const ANIM_STALE_TICKS: u64 = 600;
+
+/// The stable handle for an animated image, staging its newest pixels for the
+/// renderer. See [`image_data_cached`].
+fn anim_image_data(src: &CanvasImage) -> ImageData {
+    ANIM_IMAGES.with(|m| {
+        let mut m = m.borrow_mut();
+        let (tick, map) = &mut *m;
+        let tick = *tick;
+        let entry = map.entry(src.id).or_insert_with(|| AnimEntry {
+            data: ImageData {
+                // Fake blob, never read by vello — the override texture is the
+                // pixel source. Its (stable) blob id is the cache/override key.
+                data: Blob::new(std::sync::Arc::new(Vec::<u8>::new())),
+                format: ImageFormat::Rgba8,
+                alpha_type: ImageAlphaType::Alpha,
+                width: src.width,
+                height: src.height,
+            },
+            width: src.width,
+            height: src.height,
+            staged_gen: 0,
+            pending: None,
+            last_seen: tick,
+        });
+        entry.last_seen = tick;
+        // Dimension change → new stable handle + a recreate upload (an override
+        // texture must match its image's dimensions exactly). Retire the old
+        // handle so renderers release its texture.
+        if entry.width != src.width || entry.height != src.height {
+            ANIM_RETIRED.with(|r| r.borrow_mut().push(entry.data.clone()));
+            entry.data = ImageData {
+                data: Blob::new(std::sync::Arc::new(Vec::<u8>::new())),
+                format: ImageFormat::Rgba8,
+                alpha_type: ImageAlphaType::Alpha,
+                width: src.width,
+                height: src.height,
+            };
+            entry.width = src.width;
+            entry.height = src.height;
+            entry.staged_gen = 0;
+        }
+        if entry.staged_gen != src.generation {
+            entry.staged_gen = src.generation;
+            entry.pending = Some(AnimUpload {
+                image: entry.data.clone(),
+                width: src.width,
+                height: src.height,
+                rgba: src.rgba.clone(),
+            });
+        }
+        entry.data.clone()
+    })
+}
+
+/// Drain the pending animated-image uploads (newest frame per id) plus the
+/// stable handles of EXPIRED ids (unreferenced for [`ANIM_STALE_TICKS`] drains
+/// — the renderer should `override_image(.., None)` and drop their textures).
+/// Renderers call this after encoding and before rendering, every frame.
+pub(crate) fn take_anim_uploads() -> (Vec<AnimUpload>, Vec<ImageData>) {
+    ANIM_IMAGES.with(|m| {
+        let mut m = m.borrow_mut();
+        let (tick, map) = &mut *m;
+        *tick += 1;
+        let now = *tick;
+        let uploads: Vec<AnimUpload> =
+            map.values_mut().filter_map(|e| e.pending.take()).collect();
+        let mut expired = ANIM_RETIRED.with(|r| std::mem::take(&mut *r.borrow_mut()));
+        map.retain(|_, e| {
+            if now.saturating_sub(e.last_seen) > ANIM_STALE_TICKS {
+                expired.push(e.data.clone());
+                false
+            } else {
+                true
+            }
+        });
+        (uploads, expired)
     })
 }
 

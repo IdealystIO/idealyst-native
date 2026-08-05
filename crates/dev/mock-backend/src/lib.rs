@@ -1,16 +1,18 @@
-//! A headless, queryable [`Backend`] plus over-the-wire test harnesses.
+//! A headless, queryable platform backend (`runtime_scene::Host` + the
+//! 30 `runtime_vocabulary::caps::*Ops` traits) plus over-the-wire test
+//! harnesses.
 //!
 //! The point: exercise the **runtime-server / hot-reload pipeline**
-//! without a real device. A bug in the framework-core walker, the
-//! `wire` codec, or the `dev-client` receiver normally only shows up as
-//! a blank iOS/Android screen — impossible to unit-test. [`MockBackend`]
-//! is a stand-in platform backend that reconstructs a queryable scene
-//! tree from the commands it's told to apply, so those bugs surface as a
-//! wrong/missing node in an assertion instead.
+//! without a real device. A bug in the runtime, the `wire` codec, or the
+//! `dev-client` receiver normally only shows up as a blank iOS/Android
+//! screen — impossible to unit-test. [`MockBackend`] is a stand-in
+//! platform backend that reconstructs a queryable scene tree from the
+//! commands it's told to apply, so those bugs surface as a wrong/missing
+//! node in an assertion instead.
 //!
 //! Two harnesses tie it to the real pipeline:
 //!
-//! - [`WireHarness`] (in-process): mounts a real app against the
+//! - [`WireHarness`] (in-process): realizes a scene against the
 //!   dev-side [`WireRecordingBackend`], ships the recorded commands
 //!   through the **real `wire::codec`** (JSON encode→decode, so
 //!   serialization bugs surface), and replays them into a
@@ -35,9 +37,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::animation::AnimProp;
-use runtime_core::{Backend, Color, Element, Owner, StateBits, StyleRules};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::animation::AnimProp;
+use runtime_shared::{Color, StateBits, StyleRules};
+use runtime_scene::Host;
+use runtime_vocabulary::caps;
 use wire::{AppToDev, DevToApp};
 
 use dev_client::WireBackend;
@@ -108,7 +112,7 @@ pub struct MockNode {
     /// Latest safe-area opt-in applied to this node (`.safe_area(sides)`),
     /// and how many times it's been (re)applied. Lets tests assert the
     /// opt-in crossed the wire AND that a device-insets change re-applies.
-    pub safe_area_sides: Option<runtime_core::SafeAreaSides>,
+    pub safe_area_sides: Option<runtime_shared::SafeAreaSides>,
     pub safe_area_apply_count: u32,
     /// Scroll offset written via `Backend::set_node_scroll` (read back by
     /// `node_scroll`). The mock treats every node as scrollable so
@@ -138,12 +142,6 @@ impl MockNode {
     }
 }
 
-/// Inert `NavigatorOps` for the `make_navigator_handle` fallback when a node
-/// isn't a registered navigator.
-struct NoopMockNavOps;
-impl runtime_core::primitives::navigator::NavigatorOps for NoopMockNavOps {}
-static NOOP_MOCK_NAV_OPS: NoopMockNavOps = NoopMockNavOps;
-
 /// A headless [`Backend`] that records the structural + content calls a
 /// real platform backend would receive and exposes them as a queryable
 /// tree. `Node = u64` (ids minted internally; the receiver maps wire
@@ -156,24 +154,6 @@ pub struct MockBackend {
     roots: Vec<u64>,
     /// Total `finish` calls — a hot-reload re-render bumps this.
     pub finish_count: usize,
-    /// Registered native navigator handler factories, keyed by the SDK
-    /// presentation's `TypeId` (e.g. `DrawerPresentation`). Lets the mock
-    /// exercise the dev-client's NATIVE navigator reconstruction path
-    /// (`create_drawer_navigator_native`) — the path real iOS/Android/web
-    /// backends take — instead of only the structural fallback. Empty by
-    /// default, so tests that don't register a handler still hit the
-    /// fallback exactly as before.
-    #[allow(clippy::type_complexity)]
-    nav_factories: HashMap<
-        std::any::TypeId,
-        Rc<dyn Fn() -> Box<dyn runtime_core::NavigatorHandler<MockBackend>>>,
-    >,
-    /// Live handler instances keyed by their navigator node id, so
-    /// `navigator_attach_initial` / `release_navigator` can route back to
-    /// the handler that owns the node.
-    #[allow(clippy::type_complexity)]
-    nav_instances:
-        HashMap<u64, Rc<RefCell<Box<dyn runtime_core::NavigatorHandler<MockBackend>>>>>,
     /// `Element::External` payloads the dev-client reconstructed from the
     /// wire and dispatched here, keyed by node id as `(type_name,
     /// payload)`. Lets tests assert the External-over-wire serde round-trip
@@ -186,21 +166,6 @@ pub struct MockBackend {
 impl MockBackend {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Register a native navigator handler factory, keyed by the SDK
-    /// presentation type `P` (mirrors `WireRecordingBackend::register_navigator`
-    /// and the real backends' registries). Call this on the client's
-    /// MockBackend BEFORE the first wire `sync`, alongside the SDK's
-    /// `register_wire_*_factory`, so `create_navigator` finds the handler
-    /// and the dev-client takes its native reconstruction path.
-    pub fn register_navigator<P, F>(&mut self, factory: F)
-    where
-        P: 'static,
-        F: Fn() -> Box<dyn runtime_core::NavigatorHandler<MockBackend>> + 'static,
-    {
-        self.nav_factories
-            .insert(std::any::TypeId::of::<P>(), Rc::new(factory));
     }
 
     fn mint(&mut self, kind: NodeKind) -> u64 {
@@ -247,7 +212,7 @@ impl MockBackend {
     /// The first node (if any) that had a safe-area opt-in applied, as
     /// `(sides, apply_count)`. Tests opt in on exactly one node, so this
     /// is unambiguous; `None` means the opt-in never reached the client.
-    pub fn safe_area_applied(&self) -> Option<(runtime_core::SafeAreaSides, u32)> {
+    pub fn safe_area_applied(&self) -> Option<(runtime_shared::SafeAreaSides, u32)> {
         self.nodes
             .values()
             .find_map(|n| n.safe_area_sides.map(|s| (s, n.safe_area_apply_count)))
@@ -424,186 +389,11 @@ impl MockBackend {
 // implemented because the trait defaults for those panic.
 // ---------------------------------------------------------------------------
 
-impl Backend for MockBackend {
+impl Host for MockBackend {
     type Node = u64;
 
-    fn create_view(&mut self, a11y: &AccessibilityProps) -> u64 {
-        let id = self.mint(NodeKind::View);
-        self.nodes.get_mut(&id).unwrap().a11y_label = a11y.label.clone();
-        id
-    }
-
-    fn create_text(&mut self, content: &str, a11y: &AccessibilityProps) -> u64 {
-        let id = self.mint(NodeKind::Text);
-        let n = self.nodes.get_mut(&id).unwrap();
-        n.text = Some(content.to_string());
-        n.a11y_label = a11y.label.clone();
-        id
-    }
-
-    fn create_button(
-        &mut self,
-        label: &str,
-        _on_click: &runtime_core::Action,
-        _leading_icon: Option<&runtime_core::primitives::icon::IconData>,
-        _trailing_icon: Option<&runtime_core::primitives::icon::IconData>,
-        a11y: &AccessibilityProps,
-    ) -> u64 {
-        let id = self.mint(NodeKind::Button);
-        let n = self.nodes.get_mut(&id).unwrap();
-        n.text = Some(label.to_string());
-        n.a11y_label = a11y.label.clone();
-        id
-    }
-
-    fn create_pressable(&mut self, _on_click: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> u64 {
-        let id = self.mint(NodeKind::Pressable);
-        self.nodes.get_mut(&id).unwrap().a11y_label = a11y.label.clone();
-        id
-    }
-
-    fn create_reactive_anchor(&mut self) -> u64 {
+    fn create_anchor(&mut self) -> u64 {
         self.mint(NodeKind::ReactiveAnchor)
-    }
-
-    fn create_image(&mut self, src: &str, _alt: Option<&str>, a11y: &AccessibilityProps) -> u64 {
-        let id = self.mint(NodeKind::Image);
-        let n = self.nodes.get_mut(&id).unwrap();
-        n.image_src = Some(src.to_string());
-        n.a11y_label = a11y.label.clone();
-        id
-    }
-
-    fn create_icon(
-        &mut self,
-        _data: &runtime_core::primitives::icon::IconData,
-        _color: Option<&Color>,
-        a11y: &AccessibilityProps,
-    ) -> u64 {
-        let id = self.mint(NodeKind::Icon);
-        self.nodes.get_mut(&id).unwrap().a11y_label = a11y.label.clone();
-        id
-    }
-
-    fn create_text_input(
-        &mut self,
-        initial_value: &str,
-        _placeholder: Option<&str>,
-        _on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        _on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
-        secure: bool,
-        a11y: &AccessibilityProps,
-    ) -> u64 {
-        let id = self.mint(NodeKind::TextInput);
-        let n = self.nodes.get_mut(&id).unwrap();
-        n.text = Some(initial_value.to_string());
-        n.secure = secure;
-        n.a11y_label = a11y.label.clone();
-        id
-    }
-
-    fn create_text_area(
-        &mut self,
-        initial_value: &str,
-        _placeholder: Option<&str>,
-        _wrap: bool,
-        _min_rows: Option<u32>,
-        _max_rows: Option<u32>,
-        _on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        a11y: &AccessibilityProps,
-    ) -> u64 {
-        let id = self.mint(NodeKind::TextArea);
-        let n = self.nodes.get_mut(&id).unwrap();
-        n.text = Some(initial_value.to_string());
-        n.a11y_label = a11y.label.clone();
-        id
-    }
-
-    fn create_toggle(
-        &mut self,
-        initial_value: bool,
-        _on_change: Rc<dyn Fn(bool)>,
-        a11y: &AccessibilityProps,
-    ) -> u64 {
-        let id = self.mint(NodeKind::Toggle);
-        let n = self.nodes.get_mut(&id).unwrap();
-        n.toggle_value = Some(initial_value);
-        n.a11y_label = a11y.label.clone();
-        id
-    }
-
-    fn create_slider(
-        &mut self,
-        initial_value: f32,
-        _min: f32,
-        _max: f32,
-        _step: Option<f32>,
-        _on_change: Rc<dyn Fn(f32)>,
-        a11y: &AccessibilityProps,
-    ) -> u64 {
-        let id = self.mint(NodeKind::Slider);
-        let n = self.nodes.get_mut(&id).unwrap();
-        n.slider_value = Some(initial_value);
-        n.a11y_label = a11y.label.clone();
-        id
-    }
-
-    fn create_scroll_view(
-        &mut self,
-        _horizontal: bool,
-        _on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
-        a11y: &AccessibilityProps,
-    ) -> u64 {
-        let id = self.mint(NodeKind::ScrollView);
-        self.nodes.get_mut(&id).unwrap().a11y_label = a11y.label.clone();
-        id
-    }
-
-    fn create_activity_indicator(
-        &mut self,
-        _size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
-        _color: Option<&Color>,
-        a11y: &AccessibilityProps,
-    ) -> u64 {
-        let id = self.mint(NodeKind::ActivityIndicator);
-        self.nodes.get_mut(&id).unwrap().a11y_label = a11y.label.clone();
-        id
-    }
-
-    fn create_link(
-        &mut self,
-        _config: runtime_core::primitives::link::LinkConfig,
-        a11y: &AccessibilityProps,
-    ) -> u64 {
-        let id = self.mint(NodeKind::Link);
-        self.nodes.get_mut(&id).unwrap().a11y_label = a11y.label.clone();
-        id
-    }
-
-    fn create_portal(
-        &mut self,
-        _target: runtime_core::primitives::portal::PortalTarget,
-        _on_dismiss: Option<Rc<dyn Fn()>>,
-        _trap_focus: bool,
-        a11y: &AccessibilityProps,
-    ) -> u64 {
-        let id = self.mint(NodeKind::Portal);
-        self.nodes.get_mut(&id).unwrap().a11y_label = a11y.label.clone();
-        id
-    }
-
-    fn create_graphics(
-        &mut self,
-        _on_ready: runtime_core::primitives::graphics::OnReady,
-        _on_resize: runtime_core::primitives::graphics::OnResize,
-        _on_lost: runtime_core::primitives::graphics::OnLost,
-        a11y: &AccessibilityProps,
-    ) -> u64 {
-        let id = self.mint(NodeKind::Graphics);
-        self.nodes.get_mut(&id).unwrap().a11y_label = a11y.label.clone();
-        id
     }
 
     // ----- structure ------------------------------------------------------
@@ -646,16 +436,58 @@ impl Backend for MockBackend {
     /// Advertise the anchorless child-splice path so the receiver
     /// exercises `remove_child` / `insert_at` (keyed `for`
     /// reconciliation) against the mock instead of clear+rebuild.
-    fn supports_child_splice(&self) -> bool {
+    fn supports_splice(&self) -> bool {
         true
     }
 
-    // ----- content updates ------------------------------------------------
+}
 
-    fn update_text(&mut self, node: &u64, content: &str) {
+impl caps::ActivityIndicatorOps for MockBackend {
+    fn create_activity_indicator(
+        &mut self,
+        _size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
+        _color: Option<&Color>,
+        a11y: &AccessibilityProps,
+    ) -> u64 {
+        let id = self.mint(NodeKind::ActivityIndicator);
+        self.nodes.get_mut(&id).unwrap().a11y_label = a11y.label.clone();
+        id
+    }
+
+}
+
+impl caps::AnimationOps for MockBackend {
+    fn set_animated_f32(&mut self, node: &u64, prop: AnimProp, value: f32) {
         if let Some(n) = self.node_mut(*node) {
-            n.text = Some(content.to_string());
+            n.animated.push((format!("{prop:?}"), value));
         }
+    }
+
+    fn set_animated_color(&mut self, node: &u64, prop: AnimProp, value: [f32; 4]) {
+        if let Some(n) = self.node_mut(*node) {
+            // Record the alpha channel as a representative scalar; the
+            // assertion surface is "did an animated color write arrive,"
+            // not the exact channel values.
+            n.animated.push((format!("{prop:?}"), value[3]));
+        }
+    }
+
+}
+
+impl caps::ButtonOps for MockBackend {
+    fn create_button(
+        &mut self,
+        label: &str,
+        _on_click: &runtime_shared::Action,
+        _leading_icon: Option<&runtime_shared::primitives::icon::IconData>,
+        _trailing_icon: Option<&runtime_shared::primitives::icon::IconData>,
+        a11y: &AccessibilityProps,
+    ) -> u64 {
+        let id = self.mint(NodeKind::Button);
+        let n = self.nodes.get_mut(&id).unwrap();
+        n.text = Some(label.to_string());
+        n.a11y_label = a11y.label.clone();
+        id
     }
 
     fn update_button_label(&mut self, node: &u64, label: &str) {
@@ -664,40 +496,152 @@ impl Backend for MockBackend {
         }
     }
 
+}
+
+impl caps::ExternalOps for MockBackend {
+    fn create_external(
+        &mut self,
+        _type_id: std::any::TypeId,
+        type_name: &'static str,
+        payload: &Rc<dyn std::any::Any>,
+        a11y: &AccessibilityProps,
+    ) -> u64 {
+        // The dev-client deserialized the wire payload and dispatched here.
+        // Record it so tests can assert the round-trip; render as a plain
+        // view node (the mock doesn't model the SDK's native widget).
+        let id = self.mint(NodeKind::View);
+        if let Some(n) = self.node_mut(id) {
+            n.a11y_label = a11y.label.clone();
+        }
+        self.external_payloads
+            .insert(id, (type_name.to_string(), payload.clone()));
+        id
+    }
+
+}
+
+impl caps::GraphicsOps for MockBackend {
+    fn create_graphics(
+        &mut self,
+        _on_ready: runtime_shared::primitives::graphics::OnReady,
+        _on_resize: runtime_shared::primitives::graphics::OnResize,
+        _on_lost: runtime_shared::primitives::graphics::OnLost,
+        a11y: &AccessibilityProps,
+    ) -> u64 {
+        let id = self.mint(NodeKind::Graphics);
+        self.nodes.get_mut(&id).unwrap().a11y_label = a11y.label.clone();
+        id
+    }
+
+}
+
+impl caps::IconOps for MockBackend {
+    fn create_icon(
+        &mut self,
+        _data: &runtime_shared::primitives::icon::IconData,
+        _color: Option<&Color>,
+        a11y: &AccessibilityProps,
+    ) -> u64 {
+        let id = self.mint(NodeKind::Icon);
+        self.nodes.get_mut(&id).unwrap().a11y_label = a11y.label.clone();
+        id
+    }
+
+}
+
+impl caps::ImageOps for MockBackend {
+    fn create_image(&mut self, src: &str, _alt: Option<&str>, a11y: &AccessibilityProps) -> u64 {
+        let id = self.mint(NodeKind::Image);
+        let n = self.nodes.get_mut(&id).unwrap();
+        n.image_src = Some(src.to_string());
+        n.a11y_label = a11y.label.clone();
+        id
+    }
+
     fn update_image_src(&mut self, node: &u64, src: &str) {
         if let Some(n) = self.node_mut(*node) {
             n.image_src = Some(src.to_string());
         }
     }
 
-    fn update_text_input_value(&mut self, node: &u64, value: &str) {
-        if let Some(n) = self.node_mut(*node) {
-            n.text = Some(value.to_string());
+}
+
+impl caps::LifecycleOps for MockBackend {
+    // ----- lifecycle ------------------------------------------------------
+
+    fn finish(&mut self, root: u64) {
+        self.finish_count += 1;
+        if !self.roots.contains(&root) {
+            self.roots.push(root);
         }
     }
 
-    fn update_text_input_secure(&mut self, node: &u64, secure: bool) {
+}
+
+impl caps::LinkOps for MockBackend {
+    fn create_link(
+        &mut self,
+        _config: runtime_shared::primitives::link::LinkConfig,
+        a11y: &AccessibilityProps,
+    ) -> u64 {
+        let id = self.mint(NodeKind::Link);
+        self.nodes.get_mut(&id).unwrap().a11y_label = a11y.label.clone();
+        id
+    }
+
+}
+
+impl caps::PortalOps for MockBackend {
+    fn create_portal(
+        &mut self,
+        _target: runtime_shared::primitives::portal::PortalTarget,
+        _on_dismiss: Option<Rc<dyn Fn()>>,
+        _trap_focus: bool,
+        a11y: &AccessibilityProps,
+    ) -> u64 {
+        let id = self.mint(NodeKind::Portal);
+        self.nodes.get_mut(&id).unwrap().a11y_label = a11y.label.clone();
+        id
+    }
+
+}
+
+impl caps::PressableOps for MockBackend {
+    fn create_pressable(&mut self, _on_click: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> u64 {
+        let id = self.mint(NodeKind::Pressable);
+        self.nodes.get_mut(&id).unwrap().a11y_label = a11y.label.clone();
+        id
+    }
+
+}
+
+impl caps::SafeAreaOps for MockBackend {
+    fn apply_safe_area_padding(&mut self, node: &u64, sides: runtime_shared::SafeAreaSides) {
         if let Some(n) = self.node_mut(*node) {
-            n.secure = secure;
+            n.safe_area_sides = Some(sides);
+            n.safe_area_apply_count += 1;
         }
     }
 
-    fn update_text_area_value(&mut self, node: &u64, value: &str) {
+    fn apply_scroll_view_safe_area_inset(&mut self, node: &u64, sides: runtime_shared::SafeAreaSides) {
         if let Some(n) = self.node_mut(*node) {
-            n.text = Some(value.to_string());
+            n.safe_area_sides = Some(sides);
+            n.safe_area_apply_count += 1;
         }
     }
 
-    fn update_toggle_value(&mut self, node: &u64, value: bool) {
-        if let Some(n) = self.node_mut(*node) {
-            n.toggle_value = Some(value);
-        }
-    }
+}
 
-    fn update_slider_value(&mut self, node: &u64, value: f32) {
-        if let Some(n) = self.node_mut(*node) {
-            n.slider_value = Some(value);
-        }
+impl caps::ScrollOps for MockBackend {
+    fn create_scroll_view(
+        &mut self,
+        _horizontal: bool,
+        _on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
+        a11y: &AccessibilityProps,
+    ) -> u64 {
+        let id = self.mint(NodeKind::ScrollView);
+        self.nodes.get_mut(&id).unwrap().a11y_label = a11y.label.clone();
+        id
     }
 
     // ----- scroll ---------------------------------------------------------
@@ -712,6 +656,34 @@ impl Backend for MockBackend {
         }
     }
 
+}
+
+impl caps::SliderOps for MockBackend {
+    fn create_slider(
+        &mut self,
+        initial_value: f32,
+        _min: f32,
+        _max: f32,
+        _step: Option<f32>,
+        _on_change: Rc<dyn Fn(f32)>,
+        a11y: &AccessibilityProps,
+    ) -> u64 {
+        let id = self.mint(NodeKind::Slider);
+        let n = self.nodes.get_mut(&id).unwrap();
+        n.slider_value = Some(initial_value);
+        n.a11y_label = a11y.label.clone();
+        id
+    }
+
+    fn update_slider_value(&mut self, node: &u64, value: f32) {
+        if let Some(n) = self.node_mut(*node) {
+            n.slider_value = Some(value);
+        }
+    }
+
+}
+
+impl caps::StyleOps for MockBackend {
     // ----- style + animation ----------------------------------------------
 
     fn apply_style(&mut self, node: &u64, style: &Rc<StyleRules>) {
@@ -733,162 +705,172 @@ impl Backend for MockBackend {
         }
     }
 
-    fn create_external(
+}
+
+impl caps::TextInputOps for MockBackend {
+    fn create_text_input(
         &mut self,
-        _type_id: std::any::TypeId,
-        type_name: &'static str,
-        payload: &Rc<dyn std::any::Any>,
+        initial_value: &str,
+        _placeholder: Option<&str>,
+        _on_change: Rc<dyn Fn(String)>,
+        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        _on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
+        secure: bool,
         a11y: &AccessibilityProps,
     ) -> u64 {
-        // The dev-client deserialized the wire payload and dispatched here.
-        // Record it so tests can assert the round-trip; render as a plain
-        // view node (the mock doesn't model the SDK's native widget).
-        let id = self.mint(NodeKind::View);
-        if let Some(n) = self.node_mut(id) {
-            n.a11y_label = a11y.label.clone();
-        }
-        self.external_payloads
-            .insert(id, (type_name.to_string(), payload.clone()));
+        let id = self.mint(NodeKind::TextInput);
+        let n = self.nodes.get_mut(&id).unwrap();
+        n.text = Some(initial_value.to_string());
+        n.secure = secure;
+        n.a11y_label = a11y.label.clone();
         id
     }
 
-    fn apply_safe_area_padding(&mut self, node: &u64, sides: runtime_core::SafeAreaSides) {
-        if let Some(n) = self.node_mut(*node) {
-            n.safe_area_sides = Some(sides);
-            n.safe_area_apply_count += 1;
-        }
-    }
-
-    fn apply_scroll_view_safe_area_inset(&mut self, node: &u64, sides: runtime_core::SafeAreaSides) {
-        if let Some(n) = self.node_mut(*node) {
-            n.safe_area_sides = Some(sides);
-            n.safe_area_apply_count += 1;
-        }
-    }
-
-    fn set_animated_f32(&mut self, node: &u64, prop: AnimProp, value: f32) {
-        if let Some(n) = self.node_mut(*node) {
-            n.animated.push((format!("{prop:?}"), value));
-        }
-    }
-
-    fn set_animated_color(&mut self, node: &u64, prop: AnimProp, value: [f32; 4]) {
-        if let Some(n) = self.node_mut(*node) {
-            // Record the alpha channel as a representative scalar; the
-            // assertion surface is "did an animated color write arrive,"
-            // not the exact channel values.
-            n.animated.push((format!("{prop:?}"), value[3]));
-        }
-    }
-
-    // ----- native navigators ----------------------------------------------
-    //
-    // Routes `create_navigator` / `navigator_attach_initial` to a handler
-    // registered via [`MockBackend::register_navigator`], so the dev-client
-    // takes its native reconstruction path (the one real backends use).
-    // With no handler registered, `create_navigator` falls back to a text
-    // node — the same graceful fallback the recorder uses — keeping older
-    // structural-path tests unaffected.
-
-    fn create_navigator(
+    fn create_text_area(
         &mut self,
-        type_id: std::any::TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn std::any::Any>,
-        host: runtime_core::primitives::navigator::NavigatorHost<u64>,
+        initial_value: &str,
+        _placeholder: Option<&str>,
+        _wrap: bool,
+        _min_rows: Option<u32>,
+        _max_rows: Option<u32>,
+        _on_change: Rc<dyn Fn(String)>,
+        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
         a11y: &AccessibilityProps,
     ) -> u64 {
-        let factory = self.nav_factories.get(&type_id).cloned();
-        let Some(factory) = factory else {
-            return self.create_text(
-                &format!("Navigator \"{type_name}\" not registered on the mock"),
-                a11y,
-            );
-        };
-        let mut handler = factory();
-        let node = handler.init(self, host, presentation);
-        self.nav_instances
-            .insert(node, Rc::new(RefCell::new(handler)));
-        node
+        let id = self.mint(NodeKind::TextArea);
+        let n = self.nodes.get_mut(&id).unwrap();
+        n.text = Some(initial_value.to_string());
+        n.a11y_label = a11y.label.clone();
+        id
     }
 
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &u64,
-        screen: u64,
-        scope_id: u64,
-        options: Box<dyn std::any::Any>,
-    ) {
-        let handler = self.nav_instances.get(navigator).cloned();
-        if let Some(handler) = handler {
-            handler
-                .borrow_mut()
-                .attach_initial(self, screen, scope_id, options);
+    fn update_text_input_value(&mut self, node: &u64, value: &str) {
+        if let Some(n) = self.node_mut(*node) {
+            n.text = Some(value.to_string());
         }
     }
 
-    /// Route to the registered handler's `make_handle` (like the real
-    /// backends) so a locally-mounted navigator's `.bind(...)` handle is
-    /// wired to the live control plane — otherwise dispatch through the
-    /// handle silently no-ops. Falls back to the trait default when the node
-    /// isn't a known navigator.
-    fn make_navigator_handle(
-        &self,
-        node: &u64,
-    ) -> runtime_core::primitives::navigator::NavigatorHandle {
-        match self.nav_instances.get(node) {
-            Some(handler) => handler.borrow().make_handle(),
-            None => runtime_core::primitives::navigator::NavigatorHandle::new(
-                Rc::new(()),
-                &NOOP_MOCK_NAV_OPS,
-            ),
+    fn update_text_input_secure(&mut self, node: &u64, secure: bool) {
+        if let Some(n) = self.node_mut(*node) {
+            n.secure = secure;
         }
     }
 
-    fn release_navigator(&mut self, node: &u64) {
-        if let Some(handler) = self.nav_instances.remove(node) {
-            handler.borrow_mut().release(self);
+    fn update_text_area_value(&mut self, node: &u64, value: &str) {
+        if let Some(n) = self.node_mut(*node) {
+            n.text = Some(value.to_string());
         }
     }
 
-    // ----- lifecycle ------------------------------------------------------
-
-    fn finish(&mut self, root: u64) {
-        self.finish_count += 1;
-        if !self.roots.contains(&root) {
-            self.roots.push(root);
-        }
-    }
 }
+
+impl caps::TextOps for MockBackend {
+    fn create_text(&mut self, content: &str, a11y: &AccessibilityProps) -> u64 {
+        let id = self.mint(NodeKind::Text);
+        let n = self.nodes.get_mut(&id).unwrap();
+        n.text = Some(content.to_string());
+        n.a11y_label = a11y.label.clone();
+        id
+    }
+
+    // ----- content updates ------------------------------------------------
+
+    fn update_text(&mut self, node: &u64, content: &str) {
+        if let Some(n) = self.node_mut(*node) {
+            n.text = Some(content.to_string());
+        }
+    }
+
+}
+
+impl caps::ToggleOps for MockBackend {
+    fn create_toggle(
+        &mut self,
+        initial_value: bool,
+        _on_change: Rc<dyn Fn(bool)>,
+        a11y: &AccessibilityProps,
+    ) -> u64 {
+        let id = self.mint(NodeKind::Toggle);
+        let n = self.nodes.get_mut(&id).unwrap();
+        n.toggle_value = Some(initial_value);
+        n.a11y_label = a11y.label.clone();
+        id
+    }
+
+    fn update_toggle_value(&mut self, node: &u64, value: bool) {
+        if let Some(n) = self.node_mut(*node) {
+            n.toggle_value = Some(value);
+        }
+    }
+
+}
+
+impl caps::ViewOps for MockBackend {
+    fn create_view(&mut self, a11y: &AccessibilityProps) -> u64 {
+        let id = self.mint(NodeKind::View);
+        self.nodes.get_mut(&id).unwrap().a11y_label = a11y.label.clone();
+        id
+    }
+
+}
+
+
+
+// Capability families the mock does not model — every method takes the
+// caps default (no-op / `false` / type-correct inert handle), which is
+// exactly what the replayer saw before this backend was de-`Backend`-ed.
+impl caps::A11yOps for MockBackend {}
+impl caps::AppEnvOps for MockBackend {}
+impl caps::AssetOps for MockBackend {}
+impl caps::BatchOps for MockBackend {}
+impl caps::DocumentOps for MockBackend {}
+impl caps::InputOps for MockBackend {}
+impl caps::IntrospectionOps for MockBackend {}
+impl caps::NavigatorOps for MockBackend {}
+impl caps::PresenceOps for MockBackend {}
+impl caps::VirtualizerOps for MockBackend {}
+impl caps::WireBindingOps for MockBackend {}
 
 // ---------------------------------------------------------------------------
 // In-process wire harness
 // ---------------------------------------------------------------------------
 
-/// Mounts a real app, ships its recorded commands through the real
-/// `wire::codec`, and replays them into a [`MockBackend`] — all
-/// in-process and synchronous. The closest thing to "run the app on a
-/// device and look at the screen" that a unit test can do.
+/// Mounts a scene tree (`runtime_scene::Element`) through
+/// `dev_server::newcore::SceneSession` — per-session `World`,
+/// `runtime_vocabulary::register_builtins`, `realize` — against a
+/// `WireRecordingBackend`, ships the recorded commands through the real
+/// `wire::codec` (JSON encode→decode, so serialization bugs surface),
+/// and replays them into a `WireBackend<MockBackend>`. All in-process
+/// and synchronous: the closest thing to "run the app on a device and
+/// look at the screen" that a unit test can do.
+///
+/// The wire protocol is the compatibility contract, so the assertion
+/// surface (`scene()`, `sync()`) is stated in terms of the reconstructed
+/// CLIENT tree, never the recorder's internals.
 pub struct WireHarness {
-    // Order matters for Drop: the receiver and recorder can go first;
-    // `_owner` tears down the reactive tree last.
+    // Drop order: client/recorder first, the scene session (world +
+    // realized tree) last — cleanups fire against a live world.
     client: WireBackend<MockBackend>,
     recorder: WireRecordingBackend,
-    _owner: Owner,
+    _session: dev_server::newcore::SceneSession,
     _outbound_rx: mpsc::Receiver<AppToDev>,
 }
 
 impl WireHarness {
-    /// Mount `app` and perform the initial render → wire → replay pass.
-    /// The returned harness keeps the reactive scope alive; drop it to
-    /// tear everything down.
+    /// Mount `app`'s scene and perform the initial realize → wire →
+    /// replay pass. The closure runs inside the session world's
+    /// `enter`, so free `runtime_world::signal()` calls work.
     pub fn mount<F>(app: F) -> Self
     where
-        F: FnOnce() -> Element + 'static,
+        F: FnOnce() -> runtime_scene::Element + 'static,
     {
+        // Same scheduler the sidecar installs — deferred microtasks
+        // (navigator chrome et al.) queue instead of re-entering the
+        // recorder borrow, and `drain_commands` flushes them.
+        dev_server::scheduler::install();
+
         let recorder = WireRecordingBackend::new();
-        let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-        let owner = runtime_core::mount(backend_rc, app);
+        let session = dev_server::newcore::SceneSession::mount(&recorder, |_r| {}, app);
 
         let (tx, rx) = mpsc::channel();
         let client = WireBackend::new(MockBackend::new(), tx);
@@ -896,35 +878,28 @@ impl WireHarness {
         let mut h = Self {
             client,
             recorder,
-            _owner: owner,
+            _session: session,
             _outbound_rx: rx,
         };
         h.sync();
         h
     }
 
-    /// Like [`mount`](Self::mount) but runs `setup(&mut recorder)` before
-    /// the render — the seam for registering SDK extensions (navigator
-    /// recording handlers, externals) on the recorder, exactly as the
-    /// sidecar's `register_extensions` does.
-    ///
-    /// Also installs the sidecar scheduler and ticks once after mount, so
-    /// deferred navigator chrome (e.g. a drawer's sidebar, built via a
-    /// `after_ms(0)` past the walker's `create_navigator` borrow) is in
-    /// the command stream before the first `sync`. Without the scheduler
-    /// `after_ms` runs synchronously and would re-enter that borrow.
-    pub fn mount_with<S, F>(setup: S, app: F) -> Self
+    /// Like [`mount`](Self::mount) but runs `register` against the
+    /// session's `runtime_scene::Registry` before realize — the seam an
+    /// app/SDK uses to add its own scene handlers, exactly as the
+    /// sidecar's `register_scene_extensions_recorder` does.
+    pub fn mount_with<S, F>(register: S, app: F) -> Self
     where
-        S: FnOnce(&mut WireRecordingBackend),
-        F: FnOnce() -> Element + 'static,
+        S: FnOnce(&mut dev_server::newcore::SceneRegistry),
+        F: FnOnce() -> runtime_scene::Element + 'static,
     {
         dev_server::scheduler::install();
 
-        let mut recorder = WireRecordingBackend::new();
-        setup(&mut recorder);
-        let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-        let owner = runtime_core::mount(backend_rc, app);
-        // Fire deferred nav chrome (sidebar) before the first sync.
+        let recorder = WireRecordingBackend::new();
+        let session = dev_server::newcore::SceneSession::mount(&recorder, register, app);
+        // Fire deferred chrome (navigator sidebars et al., built past the
+        // mount borrow via a microtask) before the first sync.
         recorder.tick_animations(std::time::Duration::from_millis(16));
 
         let (tx, rx) = mpsc::channel();
@@ -933,7 +908,7 @@ impl WireHarness {
         let mut h = Self {
             client,
             recorder,
-            _owner: owner,
+            _session: session,
             _outbound_rx: rx,
         };
         h.sync();
@@ -941,34 +916,49 @@ impl WireHarness {
     }
 
     /// Tick the recorder's deferred scheduler (deadlines / raf loops),
-    /// then drain + replay. Use when an interaction schedules deferred
-    /// work (e.g. a drawer `Select` that defers chrome). Returns the
-    /// number of commands applied during the follow-up sync.
+    /// then [`sync`](Self::sync). Use when an interaction schedules
+    /// deferred work (e.g. a navigator swap that defers chrome), or when
+    /// a client-side effect must re-run. Returns the number of commands
+    /// applied during the follow-up sync.
     pub fn tick_and_sync(&mut self) -> usize {
         self.recorder
             .tick_animations(std::time::Duration::from_millis(16));
         self.sync()
     }
 
-    /// Drain whatever commands the recorder has accumulated since the
-    /// last call, round-trip them through `wire::codec`, and replay into
-    /// the mock. Call after mutating a signal so the reactive delta
-    /// propagates to the client. Returns the number of commands applied.
+    /// The session's world — for tests that need `enter` (creating
+    /// signals in the app's world up front, driving a flush by hand).
+    pub fn world(&self) -> &runtime_world::World {
+        self._session.world()
+    }
+
+    /// Commit pending world work (`World::flush` — the sidecar's
+    /// after-event commit), then drain + codec-round-trip + replay.
+    /// Returns the number of commands applied.
     pub fn sync(&mut self) -> usize {
+        // World signals have no ambient flush driver in a test process
+        // — this is the same explicit commit `sidecar::run_newcore`
+        // performs after every dispatched event.
+        self._session.flush();
         let cmds = self.recorder.drain_commands();
         let n = cmds.len();
         if n == 0 {
             return 0;
         }
-        // Encode→decode through the actual wire codec so a serialization
-        // regression (a non-roundtrippable Command, a renamed field)
-        // fails here, exactly as it would on a real socket.
         let bytes = wire::codec::encode(&DevToApp::Commands(cmds)).expect("wire encode");
         match wire::codec::decode::<DevToApp>(&bytes).expect("wire decode") {
             DevToApp::Commands(c) => self.client.apply_batch(c).expect("replay into MockBackend"),
             other => panic!("expected DevToApp::Commands, got {other:?}"),
         }
         n
+    }
+
+    /// Canonical catch-up command stream for the CURRENT scene (the
+    /// recorder's `SceneModel::snapshot_commands`) — what a
+    /// late-joining client would receive. Compared against the frozen
+    /// wire snapshot in `tests/goldens/` by the wire-behavior gate.
+    pub fn snapshot(&self) -> Vec<wire::Command> {
+        self.recorder.snapshot()
     }
 
     /// Borrow the reconstructed scene for querying.
@@ -1008,7 +998,7 @@ mod socket {
         /// thread, so it must be `Send`.
         pub fn mount<F>(app: F) -> Self
         where
-            F: FnOnce() -> Element + Send + 'static,
+            F: FnOnce() -> runtime_scene::Element + Send + 'static,
         {
             let port = pick_free_port();
             let addr = format!("127.0.0.1:{port}");
@@ -1017,11 +1007,11 @@ mod socket {
             let addr_for_thread = addr.clone();
             thread::spawn(move || {
                 let recorder = WireRecordingBackend::new();
-                let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-                // Keep the reactive tree alive for the server's lifetime;
-                // the serve loop below never returns.
-                let owner = runtime_core::mount(backend_rc, app);
-                std::mem::forget(owner);
+                // Keep the session (world + realized tree) alive for the
+                // server's lifetime; the serve loop below never returns.
+                let session =
+                    dev_server::newcore::SceneSession::mount(&recorder, |_r| {}, app);
+                std::mem::forget(session);
                 let _ = dev_server::serve(addr_for_thread, recorder);
             });
 
@@ -1111,13 +1101,12 @@ mod screenshot {
     /// One call: app → wire → GPU → PNG.
     pub fn screenshot_app<F>(width: u32, height: u32, app: F) -> Result<Vec<u8>, String>
     where
-        F: FnOnce() -> Element + 'static,
+        F: FnOnce() -> runtime_scene::Element + 'static,
     {
         let recorder = WireRecordingBackend::new();
-        let backend_rc = std::rc::Rc::new(std::cell::RefCell::new(recorder.clone()));
-        // Hold the owner across the drain so reactive effects that emit
-        // initial commands have fired.
-        let _owner = runtime_core::mount(backend_rc, app);
+        // Hold the session across the drain so realize-time effects that
+        // emit initial commands have fired.
+        let _session = dev_server::newcore::SceneSession::mount(&recorder, |_r| {}, app);
         let commands = recorder.drain_commands();
         screenshot_commands(width, height, commands)
     }

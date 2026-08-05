@@ -23,6 +23,9 @@ thread_local! {
 fn spinner_hug_sheet() -> Rc<StyleSheet> {
     SPINNER_HUG_SHEET.with(|s| {
         if s.borrow().is_none() {
+            // See the note on `premint_as`: this sheet is built at mount,
+            // so the dump never sees it and a preminted class would have
+            // no CSS.
             *s.borrow_mut() = Some(Rc::new(StyleSheet::r#static(crate::components::hug_self())));
         }
         s.borrow().as_ref().cloned().unwrap()
@@ -68,12 +71,6 @@ pub struct SpinnerProps {
 
 /// Renders an indeterminate loading spinner — a thin passthrough to the
 /// framework's `activity_indicator` primitive with a small/large size knob.
-///
-/// **Cargo features:** requires `prim-activity` (in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without it compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Spinner(props: &SpinnerProps) -> Element {
     fn to_native(s: SpinnerSize) -> ActivityIndicatorSize {

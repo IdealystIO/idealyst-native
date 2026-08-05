@@ -12,8 +12,21 @@ license.workspace = true
 [lib]
 crate-type = ["rlib"]
 
+[features]
+
 [dependencies]
-runtime-core = { workspace = true }
+# The permanent substrate both cores compiled against (style engine,
+# tokens, prop/handle structs, scheduling, viewport). `runtime-core` is
+# NOT a dependency: this backend has no `Element`/`Backend` surface left.
+runtime-shared = { workspace = true }
 backend-roku-macros = { workspace = true }
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+
+[dev-dependencies]
+# Frozen old-core output for the cross-core parity corpus, so the gate
+# survives the deletion of the old core. See tests/goldens/README.md.
+parity-goldens = { workspace = true }

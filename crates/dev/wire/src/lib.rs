@@ -1,10 +1,10 @@
 //! Dev-mode hot-reload wire protocol.
 //!
 //! The dev machine runs the user's component code in a normal Rust
-//! process; a `WireRecordingBackend` translates each `Backend` trait
-//! call the walker makes into a [`Command`] on the wire. The app's
-//! `WireBackend<B>` replays those commands against its real
-//! platform backend.
+//! process; a `WireRecordingBackend` translates each capability call the
+//! realize pass makes into a [`Command`] on the wire. The app's
+//! `WireBackend<B>` replays those commands against its real platform
+//! backend.
 //!
 //! Three id namespaces are minted on the dev side and held opaquely
 //! on the app side:
@@ -17,14 +17,29 @@
 //!   rule body once via [`Command::RegisterStyle`]; subsequent
 //!   [`Command::ApplyStyle`]s reference by id.
 //!
-//! Everything in this crate is pure data — no `runtime-core`
-//! dependency. Conversion to/from in-memory types lives in
-//! `dev-client` (app side) and `dev-server` (dev
-//! side).
+//! Everything in this crate is data — no runtime dependency. Conversion
+//! to/from in-memory types lives in `dev-client` (app side) and
+//! `dev-server` (dev side). The one exception is
+//! [`payload_serde`], the wire serde registry for third-party primitive
+//! payloads: it holds SDK-supplied closures, names no runtime type, and
+//! exists because the payload contract is a property of the protocol,
+//! not of any core.
+//!
+//! **Runtime-agnostic by design.** The protocol carries backend
+//! operations, not scene semantics: the dev side records a realize pass
+//! (`dev_server::newcore::SceneSession`) and the client replays the
+//! stream against a caps-only backend
+//! (`dev_client::newcore::WireBackend`). The frozen wire snapshot in
+//! `mock-backend/tests/goldens/` pins the resulting command stream.
 
 #![deny(missing_debug_implementations)]
 
 use serde::{Deserialize, Serialize};
+
+pub mod payload_serde;
+pub use payload_serde::{
+    deserialize_external_payload, register_external_serde, serialize_external_payload,
+};
 
 /// Protocol version. Bumped on any breaking wire change. Dev/app
 /// versions must match exactly — this is a dev-mode tool, so we don't
@@ -156,6 +171,16 @@ use serde::{Deserialize, Serialize};
 /// `Select`, `AttachNavigatorLayout`) remains. serde's external tagging is
 /// name-based, so surviving variants encode identically; the bump follows
 /// the remove-a-variant policy above.
+///
+/// **NOT bumped for the runtime-v2 deletion.** Removing the old core did
+/// not touch the serialized surface: every [`Command`] / `AppToDev`
+/// variant and every field kept its name, type and `serde` attribute.
+/// What changed is Rust-side only — the recorder now records a realize
+/// pass instead of a walker, and the external-payload serde registry
+/// moved from `runtime_core` into [`payload_serde`] in this crate (same
+/// bytes, different home). A bump is a compatibility signal to a peer
+/// binary; there is nothing here for a peer to be incompatible with, so
+/// bumping would have forced a needless dev/app lockstep upgrade.
 pub const PROTOCOL_VERSION: u32 = 17;
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
@@ -590,7 +615,7 @@ pub enum Command {
         #[serde(default)]
         a11y: WireAccessibilityProps,
     },
-    /// Third-party `Element::External` node. Only `type_name` crosses
+    /// Third-party primitive node. Only `type_name` crosses
     /// the wire because the underlying `Rc<dyn Any>` props are arbitrary
     /// Rust types with no serialization contract. Clients that have
     /// registered an external factory under `type_name` may consult it
@@ -600,7 +625,7 @@ pub enum Command {
         id: NodeId,
         type_name: String,
         /// Serialized payload from the SDK's registered external serde
-        /// (`runtime_core::register_external_serde`). Empty for sentinel
+        /// ([`register_external_serde`]). Empty for sentinel
         /// externals that register no serde (e.g. the drawer
         /// sidebar-adopt) — the client then renders the not-available
         /// placeholder. Non-empty → the client deserializes it back to a
@@ -1640,8 +1665,14 @@ pub struct WireHeaderButton {
     pub tint: Option<WireColor>,
 }
 
-/// Cross-axis lane subdivision for a virtualizer, wire form. Mirrors
-/// `runtime_core::Lanes`. `Fixed(1)` is a plain list.
+/// Cross-axis lane subdivision for a virtualizer, wire form. Serde
+/// mirror of `runtime_shared::primitives::virtualizer::Lanes` (the ONE
+/// in-memory definition, re-exported through `runtime_core` and shared
+/// by both cores). `Fixed(1)` is a plain list. Conversions live in
+/// `dev-server::convert_out::virtual_layout_to_wire` /
+/// `dev-client::convert::wire_virtual_layout` (exhaustive matches, so a
+/// new variant fails compile there); the bijection is pinned by
+/// `mock-backend/tests/wire_virtual_layout_roundtrip.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum WireLanes {
     Fixed(usize),
@@ -1654,10 +1685,14 @@ impl Default for WireLanes {
     }
 }
 
-/// Virtualizer layout descriptor, wire form. Mirrors
-/// `runtime_core::VirtualLayout`: scroll axis (as `horizontal`), lane
-/// subdivision, and gaps. All fields `#[serde(default)]` so an older
-/// peer that omits them decodes as a single-lane vertical list.
+/// Virtualizer layout descriptor, wire form. Serde mirror of
+/// `runtime_shared::primitives::virtualizer::VirtualLayout` (the ONE
+/// in-memory definition — this crate stays runtime-free, so the mirror
+/// carries the wire encoding: scroll axis as `horizontal`, lane
+/// subdivision, gaps). All fields `#[serde(default)]` so an older peer
+/// that omits them decodes as a single-lane vertical list. See
+/// [`WireLanes`] for where the conversions live and what pins the
+/// bijection.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct WireVirtualLayout {
     #[serde(default)]

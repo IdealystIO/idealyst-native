@@ -13,7 +13,7 @@ use crate::{node_key, AndroidNavCallbacks, AndroidScreenOptions};
 use backend_android::{with_jni_env, AndroidBackend};
 use jni::objects::{GlobalRef, JValue};
 use jni::sys::jlong;
-use runtime_core::primitives::navigator::{NavCommand, NavigatorControl, NavigatorHandle, NavigatorOps};
+use runtime_shared::primitives::navigator::{NavCommand, NavigatorControl, NavigatorHandle, NavigatorOps};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;

@@ -9,15 +9,27 @@ description = "Theming abstraction + extensibility for the idealyst design syste
 crate-type = ["rlib"]
 
 [dependencies]
-# PATH dep with `default-features = false` (cargo ignores that flag on
-# `workspace = true` lines): idea-theme sits under idea-ui in every app's
-# dep tree, and a workspace dep would silently re-enable all `prim-*`
-# defaults, defeating idea-ui's per-component gating. Themes only touch
-# style/token types, which are ungated.
-runtime-core = { path = "../../runtime/core", default-features = false }
+# The framework author surface. `lib.rs` declares `extern crate
+# runtime_core as runtime_core;` at its root, which shadows the
+# extern-prelude for the whole crate — so every `runtime_core::X` path
+# in this crate resolves against `runtime_vocabulary::glue`'s author
+# surface. The alias (rather than a tree-wide rename) keeps `runtime_core::…`
+# spellings stable in this crate, in idea-ui, and in the docs that
+# quote them.
+runtime-core = { workspace = true }
+# `recipe!` (and every other catalog-capturing macro) emits absolute
+# `::runtime_vocabulary::glue::…` paths, so the vocabulary must be a DIRECT
+# dependency, not only a transitive one through the facade. Unconditional
+# rather than `optional = true` + `catalog = ["dep:…"]`: the catalog feature
+# is turned on graph-wide by whichever tool wants capture, and a missing
+# direct dep here surfaced as `cannot find runtime_vocabulary in the crate
+# root` when it was.
+runtime-vocabulary = { workspace = true }
 
+[features]
 # Compile-checked usage recipes for the docs/MCP catalog (see
 # src/recipes.rs). Off in every production build — the `recipe!` macro
 # expands to nothing without it, so recipes cost zero in shipped apps.
-[features]
+# No `default`: this crate has no core selector any more, so a plain
+# `idea-theme = "…"` dep is the whole surface.
 catalog = ["runtime-core/catalog"]

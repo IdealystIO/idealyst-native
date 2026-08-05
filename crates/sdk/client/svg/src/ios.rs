@@ -30,7 +30,7 @@
 use crate::tree_walker::{map_point, render_tree, MaskKind, Rect as SvgRect, StrokeParams, SvgPainter};
 use crate::{SvgOps, SvgProps};
 use backend_ios::{IosBackend, IosNode};
-use runtime_core::effect;
+use runtime_world::effect;
 
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, AnyObject, NSObject};
@@ -906,19 +906,9 @@ fn build_cg_gradient(
 
 pub(crate) static OPS: &dyn SvgOps = &IosSvgOps;
 
-/// Register the SVG handler against an `IosBackend`. One-line call from
-/// app bootstrap.
-pub fn register(backend: &mut IosBackend) {
-    backend.register_external::<SvgProps, _>(|props, b| build_svg(props, b));
-}
-
-// Self-register at backend construction (no app-side `register` call needed).
-// See [[project_inventory_self_registration]].
-inventory::submit! {
-    backend_ios::IosExternalRegistrar(register)
-}
-
-fn build_svg(props: &Rc<SvgProps>, b: &mut IosBackend) -> IosNode {
+/// Build the native iOS SVG view for `props`. Called by the
+/// `Registry<IosBackend>` mount handler in lib.rs.
+pub(crate) fn build_svg(props: &Rc<SvgProps>, b: &mut IosBackend) -> IosNode {
     let view = IdealystSvgView::new(b.mtm());
     // Cast to UIView so we can register it with the backend's
     // layout tree + return a generic IosNode::View. Obj-C dispatch
@@ -933,7 +923,7 @@ fn build_svg(props: &Rc<SvgProps>, b: &mut IosBackend) -> IosNode {
 
     let view_for_effect = view_svg.clone();
     let props_clone = props.clone();
-    effect!({
+    effect(move || {
         let markup = (props_clone.markup)();
         match usvg::Tree::from_str(&markup, &usvg::Options::default()) {
             Ok(tree) => {

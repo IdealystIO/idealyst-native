@@ -39,7 +39,7 @@ pub fn Subtitle(props: &SubtitleProps) -> Element {
 }
 
 fn wrapper_sheet() -> Rc<StyleSheet> {
-    static_sheet(StyleRules {
+    static_sheet("subtitle.wrapper", StyleRules {
         flex_direction: Some(FlexDirection::Column),
         align_items: Some(AlignItems::Center),
         opacity: Some(Tokenized::Literal(0.0)),
@@ -48,7 +48,7 @@ fn wrapper_sheet() -> Rc<StyleSheet> {
 }
 
 fn text_sheet() -> Rc<StyleSheet> {
-    static_sheet(StyleRules {
+    static_sheet("subtitle.text", StyleRules {
         font_family: Some((&INTER).into()),
         font_size: Some(px(SUBTITLE_SIZE_PX)),
         font_weight: Some(FontWeight::Normal),

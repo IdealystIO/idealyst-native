@@ -46,7 +46,7 @@ use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use tungstenite::{Message, WebSocket};
-use runtime_core::ColorScheme;
+use runtime_shared::ColorScheme;
 use wire::{AppToDev, ClientIdentity, DevToApp, WireColorScheme, WireTheme, PROTOCOL_VERSION};
 
 /// How the host assigns sessions to incoming clients. Controls the
@@ -1169,7 +1169,7 @@ where
 pub fn serve_with_robot_bridge(
     addr: impl ToSocketAddrs,
     recorder: WireRecordingBackend,
-    bridge: runtime_core::robot::bridge::BridgeHandle,
+    bridge: runtime_shared::robot::bridge::BridgeHandle,
 ) -> std::io::Result<()> {
     serve_with_tick(addr, recorder, move || bridge.poll())
 }

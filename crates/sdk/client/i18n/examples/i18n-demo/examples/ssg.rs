@@ -13,7 +13,13 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use backend_ssr::{render_document, render_path};
+// `render_path` is the surviving entry after the old-core renderer was
+// deleted: `backend_ssr::newcore::render_path` builds a fresh `World` per
+// request, realizes, flushes once, serializes, and drops it — so the
+// per-locale thread isolation this file relies on still holds.
+// `render_document` (pure HTML-document assembly) never moved.
+use backend_ssr::newcore::render_path;
+use backend_ssr::render_document;
 use i18n_demo::t::Locale;
 
 fn main() {
@@ -39,7 +45,7 @@ fn main() {
             }
             let page = render_path("/", i18n_demo::app);
             // Static SSR/SEO preview (no hydration bundle script).
-            render_document(&page, None, None)
+            render_document(&page, None, None, None)
         })
         .join()
         .expect("render thread panicked");

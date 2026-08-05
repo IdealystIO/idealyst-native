@@ -1,10 +1,11 @@
 //! `markdown-demo` — exercises the `markdown` SDK end to end.
 //!
 //! Renders one rich CommonMark/GFM document through the [`Markdown`]
-//! component. On native backends the whole document is ONE styled-text
-//! node (`NSAttributedString` / `SpannableString`); on web it's semantic
-//! DOM. A light/dark toggle swaps the `MdTheme` — proving the styles
-//! re-apply on theme change.
+//! component. The SDK resolves the document author-side and hands ONE
+//! payload to the scene registry; a single caps-generic mount handler
+//! lowers it into semantic host DOM, so every backend (web, SSR, native)
+//! mounts the identical tree. A light/dark toggle swaps the `MdTheme` —
+//! proving the styles re-apply on theme change.
 //!
 //! The page is wrapped in a top-level reactive `switch` keyed on the
 //! `dark` signal: toggling rebuilds the themed container (so the page
@@ -23,11 +24,28 @@ use runtime_core::{
     Tokenized,
 };
 
-/// No per-platform registration needed: the `markdown` external
-/// self-registers via `inventory::submit!` at backend construction (see
-/// [[project_inventory_self_registration]]). The crate stays linked through
-/// the `Markdown`/`MdTheme` references in this module.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam, invoked by the CLI-generated wrappers
+/// after `runtime_vocabulary::register_builtins`. There is no inventory
+/// self-registration on the scene registry — an UNREGISTERED payload
+/// panics at realize — so the `Markdown` handler MUST be composed in
+/// here.
+///
+/// The bound is `markdown::register`'s own (the caps its one generic
+/// mount handler drives) rather than the bare `runtime_scene::Host` the
+/// no-SDK scaffold uses: every caps-complete backend satisfies it, so
+/// this is still ONE seam for web / iOS / Android.
+pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
+where
+    H: runtime_vocabulary::style_attach::StyleServices + runtime_vocabulary::caps::TextOps + 'static,
+{
+    markdown::register(registry);
+}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
+}
 
 /// The document we render — covers every block + inline feature the SDK
 /// supports.

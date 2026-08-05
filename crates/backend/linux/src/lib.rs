@@ -148,6 +148,18 @@ pub fn build_gl_area_for_test(
     graphics::build_gl_area(on_ready, on_resize, on_lost)
 }
 
+
+use gtk4::glib;
+
+// Post-dispatch flush-hook slot (new-core flush driver). Unconditional
+// — the fire sites live in the out-of-repo host shell, which cannot
+// see this crate's features; no-op default so the old core never pays.
+pub mod dispatch_hook;
+
+/// `runtime_scene::Host` + the 30 capability traits on [`LinuxBackend`],
+/// plus the boot entry and flush driver.
+pub mod newcore;
+
 // =========================================================================
 // Node
 // =========================================================================
@@ -820,6 +832,11 @@ impl LinuxBackend {
         self.external_handlers.has::<T>()
     }
 
+    /// SDK extension helper: register an existing widget with the
+    /// backend's layout tree so flex parents can size + position it.
+    /// Returns the wrapped LinuxNode. Mirrors
+    /// `IosBackend::register_external_view` /
+    /// `WindowsBackend::register_external_view`.
     pub fn register_external_view(&mut self, widget: gtk4::Widget) -> LinuxNode {
         let node = self.wrap(widget.clone(), NodeKind::Other);
         // Give Taffy the widget's intrinsic size so `Element::External`

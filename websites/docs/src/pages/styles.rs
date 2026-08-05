@@ -400,11 +400,15 @@ docs! {
             ["Position: ", code("position"), ", ", code("top"), ", ", code("right"),
               ", ", code("bottom"), ", ", code("left"), "."],
             ["Visual: ", code("opacity"), ", ", code("overflow"), ", ", code("shadow"),
-              ", ", code("transform"), "."],
+              " (box), ", code("text_shadow"), " (glyphs, text nodes), ",
+              code("transform"), ", ", code("cursor"), ", ", code("user_select"), "."],
             ["Per-property transitions for every animatable property above."],
         ),
-        p("There is no display/grid/float. Every node uses flexbox; the \
-           framework relies on the browser (web) or Taffy (native) to do the layout."),
+        p("Layout is flexbox by default on every node, with real CSS grid \
+           available via ", code("display: DisplayKind::Grid"), " + ",
+          code("grid_template_columns"),
+          " (idea-ui's ", code("Grid"), " component rides it). There is no \
+           float; the browser (web) or Taffy (native) does the layout."),
     },
 
     // The "Building your own theme system" section moved to a
@@ -455,6 +459,26 @@ docs! {
            It's the framework calling backends; mentioned here only \
            so the next section about backend internals is less \
            surprising."),
+    },
+
+    section(heading = "Build-time CSS (premint)") {
+        p("On web, the rule emission can move to BUILD time entirely: ",
+          code("idealyst build --web --premint"),
+          " runs the app in a build step, resolves every static \
+           stylesheet, and ships the result as a content-addressed CSS \
+           asset — styled nodes get class names stamped instead of rules \
+           resolved in wasm. Styles the build can't enumerate fall back \
+           to the runtime engine, so the flag is always safe."),
+        p(code("--premint-report"),
+          " logs each style that still reaches the runtime engine, with \
+           the source line that constructed it. Once that list is empty, ",
+          code("--premint-only"),
+          " compiles the style engine out of the wasm — on this repo's \
+           component catalog that removes about a third of the raw \
+           bundle, and the extracted CSS compresses to a few KB that \
+           caches independently of code deploys. Native targets never \
+           see these flags and render identically. The full mechanics \
+           live in the repo's ", code("docs/styling.md"), "."),
     },
 
     section(heading = "Where to read more") {

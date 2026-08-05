@@ -29,10 +29,26 @@ use runtime_core::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+// SDK-handler registration seam, invoked by the CLI-generated wrappers
+// after `runtime_vocabulary::register_builtins`. Registry-generic over
+// the scene `Host` so ONE seam serves every backend. This app registers
+// no third-party scene handlers.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
+/// Recorder-side seam for the runtime-server sidecar
+/// (`dev_server::sidecar::run_newcore`). Gated by `sidecar` so device/web
+/// builds never pull `dev-server`.
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {}
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
+}
 
 struct EmptyTheme;
 impl ThemeTokens for EmptyTheme {
@@ -82,7 +98,10 @@ const CARDS: [Card; 5] = [
 /// Shared board state. `cols` is the logical id-order per column; cards position
 /// themselves by their `(column, slot)` in it. `Default` is required by the
 /// `#[component]` props derive; the real value is always passed explicitly.
-#[derive(Clone, Default)]
+/// `Default` is hand-written: the world kernel's `Signal<T>` is a handle into
+/// the ambient world's arena, so it has no `Default` — a default value has to
+/// *create* a slot, which `signal(..)` does.
+#[derive(Clone)]
 struct Board {
     ctx: DragContext<u32>,
     cols: [Signal<Vec<u32>>; 3],
@@ -100,6 +119,21 @@ struct Board {
     /// Per-frame autoscroll + geometric drop-detection loop. Alive only while a
     /// card is being dragged (started in `on_start`, dropped in `on_release`).
     autoscroll: Rc<RefCell<Option<RafLoop>>>,
+}
+
+impl Default for Board {
+    fn default() -> Self {
+        Self {
+            ctx: DragContext::default(),
+            cols: [signal(Vec::new()), signal(Vec::new()), signal(Vec::new())],
+            dragging: signal(None),
+            over: signal(None),
+            scroll_x: signal(0.0),
+            scroll_ref: Ref::default(),
+            viewport_ref: Ref::default(),
+            autoscroll: Rc::default(),
+        }
+    }
 }
 
 /// One autoscroll + drop-detection frame. Maps the ghost's window-space center

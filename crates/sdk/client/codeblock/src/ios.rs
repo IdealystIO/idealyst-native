@@ -21,7 +21,6 @@
 //! with author padding on a wrapping panel that doubled the visible
 //! padding and clipped scrolled content 20pt before the panel edge.
 
-use crate::CodeBlockProps;
 use backend_ios::{IosBackend, IosNode};
 use backend_ios_core::style::color_to_uicolor;
 use objc2::runtime::NSObject;
@@ -31,15 +30,14 @@ use objc2_foundation::{
     NSAttributedString, NSDictionary, NSMutableAttributedString, NSString,
 };
 use objc2_ui_kit::UIScrollView;
-use runtime_core::Color;
-use std::rc::Rc;
+use runtime_shared::Color;
 
-/// `Element::External` handler for the iOS codeblock kind. Returns
+/// Scene-`Registry` mount handler for the iOS codeblock payload. Returns
 /// the wrapping UIScrollView so the framework parents it into the
 /// surrounding view tree; the inner label + NSAttributedString are
 /// invisible to Taffy / the layout pass (one external node, one
 /// layout entry).
-pub(crate) fn build(props: &Rc<CodeBlockProps>, backend: &mut IosBackend) -> IosNode {
+pub(crate) fn build(spans: &[(String, Color)], backend: &mut IosBackend) -> IosNode {
     let mtm = backend.mtm();
 
     // Build the label. An inset-honoring UILabel subclass so the
@@ -56,7 +54,7 @@ pub(crate) fn build(props: &Rc<CodeBlockProps>, backend: &mut IosBackend) -> Ios
     // NSMutableAttributedString down to its NSAttributedString
     // superclass for setAttributedText: — UILabel doesn't care
     // which subclass we hand it.
-    let attributed = build_attributed_string(&props.spans);
+    let attributed = build_attributed_string(spans);
     let _: () = unsafe {
         msg_send![&label, setAttributedText: &*attributed as &NSAttributedString]
     };

@@ -20,7 +20,7 @@ use objc2::msg_send;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{CGFloat, CGRect, CGSize};
 use objc2_ui_kit::UIView;
-use runtime_core::Screenshot;
+use runtime_shared::Screenshot;
 
 extern "C" {
     fn UIGraphicsBeginImageContextWithOptions(size: CGSize, opaque: bool, scale: CGFloat);

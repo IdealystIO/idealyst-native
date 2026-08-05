@@ -30,6 +30,7 @@ license.workspace = true
 # rendered once and behaves identically on every backend. `async-driver`
 # supplies `spawn_async` (with a pollster fallback) for the launch / interval
 # checks — same posture the `sync` SDK takes.
+# Aliased to `runtime_core` at the crate root (see src/lib.rs).
 runtime-core = { workspace = true, features = ["async-driver"] }
 
 # Fetching the release manifest is genuinely cross-platform (works on native

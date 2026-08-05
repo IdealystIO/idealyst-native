@@ -6,7 +6,9 @@ the *rendering strategy*. Each backend interprets a `StyleRules` value
 however suits its platform: the web backend mints CSS classes, native
 backends call view setters directly.
 
-Implementation: `runtime_core::style` plus `runtime_macros::stylesheet`.
+Implementation: `runtime_shared::style` (the data model, re-exported under
+`runtime_core::…`) plus `runtime_vocabulary::style_attach` (the attach engine)
+and `runtime_macros::stylesheet`.
 
 ---
 
@@ -30,7 +32,7 @@ pub struct StyleRules {
 }
 ```
 
-The walker hands this to `Backend::apply_style(node, rules)` as
+The style binding hands this to `StyleOps::apply_style(node, rules)` as
 `Rc<StyleRules>`. The backend's job is to translate it into the
 platform's native style format. Caching strategy is the backend's
 problem.
@@ -257,20 +259,23 @@ token is exactly the set that needs to re-apply, by construction.
 
 ## How styles reach the backend
 
-The render walker's `attach_style(backend, node, source)` is the
-seam between author-facing style values and the backend.
+`runtime_vocabulary::style_attach::attach_style(backend, node, prop)` is
+the seam between author-facing style values and the backend. The author
+value arrives as a `StyleProp` with six arms — `Static`, `Dynamic`,
+`Sheet`, `SheetDynamic`, `SignalClass`, `Preminted` — and each primitive
+handler calls `attach_style` once with whatever the builder collected.
 
-For each styled node:
+For each styled node on the sheet paths:
 
 1. Allocate a per-node `Signal<StateBits>` (initially `NONE`). This is
    the state machinery for `state hovered { ... }` overlays.
-2. Build an `Effect` that:
+2. Build an effect that:
    - Calls the source closure to get a `StyleApplication`.
    - Calls `ensure_registered_with(sheet, register=…, unregister=…)`
      to lazily pre-generate this sheet's variants for the active
      theme (the first time the backend sees it).
    - Resolves to `Rc<StyleRules>` against the active theme.
-   - If `Backend::handles_states_natively() == true`, calls
+   - If `StyleOps::handles_states_natively() == true`, calls
      `apply_styled_states(node, base, &overlays)`.
    - Else calls `apply_style(node, &resolved)` where `resolved` is
      the base merged with any active state overlay.
@@ -311,23 +316,462 @@ input there.
 
 ---
 
+## Preminted styles (build-time CSS)
+
+`idealyst build --web --premint` moves static styles out of the wasm
+entirely. The pipeline has two halves, coordinated by nothing but a
+shared naming scheme:
+
+1. **Dump build.** The CLI generates an ephemeral native binary that
+   links the app with `--cfg idealyst_premint_dump` and the
+   `style-dump` feature. The registry itself lives in `runtime-shared`
+   (`runtime_shared::premint`); `runtime-core/style-dump` forwards it
+   through the vocabulary so the macro's registration — which spells
+   `::runtime_core::premint::…` and retargets to
+   `::runtime_vocabulary::glue::premint::…` — resolves. Every
+   `stylesheet!` in the app and its
+   dependencies registers into a link-time distributed slice; the
+   binary enumerates each sheet's full variant space, resolves it
+   through the same layer resolution the live web engine uses, and
+   emits the result as CSS. The output lands in the bundle as a
+   content-addressed `pkg/premint.<hash>.css`, linked from
+   `index.html`.
+
+   The dump does not just BUILD the app — it **mounts it, on every
+   literal route**, reusing the SSG crawl (the navigator's headless
+   deep-link slot plus the shared route collector, one fresh `World`
+   per route). Both halves of that are load-bearing, and each was
+   learned from a silent breakage:
+
+   - A sheet assembled at MOUNT rather than during `app()` — inside a
+     component body, or behind a style closure that runs when a node
+     attaches — is invisible to a build-only pass. It gets no CSS, and
+     the shipped bundle then stamps a build-time class with nothing
+     behind it: a silently unstyled node. AppShell's scrim/panel/content
+     broke 144 of 400 catalog elements this way.
+   - A sheet that first appears on a LATER route is invisible to a
+     pass that only mounts `/`. Same failure, one level out.
+
+   Parameterized routes (`/user/:id`) are reported and skipped — the
+   crawl cannot invent a param value, the same limitation `--ssg` has.
+   Styles reachable only through one of those, or only after an
+   interaction, are still not seen — but no longer silently: at boot a
+   premint build scans the loaded CSS asset for the classes it actually
+   contains (`backend-web`'s minted-class guard →
+   `runtime_shared::install_minted_classes`), and the attach paths
+   consult that set per evaluation. A sheet whose class has no CSS
+   falls back to the live engine on `--premint` (correct rendering,
+   plus a once-per-class console warning naming the class — the
+   dev-time tripwire, since the fallback would otherwise hide the bug
+   until a `--premint-only` build hits it; `--premint-report` also
+   names it), or panics on `--premint-only` with a message that says
+   "constructed after the dump crawl" rather than the generic
+   violation.
+
+   **The crawl contract**, in authoring terms: the crawl mounts routes
+   but never opens, pushes, or focuses anything, so a
+   construction-registered sheet (`premint_as`, auto-preminted
+   `r#static`) must be constructed by *mounting a route*. Anything
+   that first constructs on interaction — a modal's body, a toast
+   card, a drawer's open state — needs a construction-independent
+   spelling:
+
+   - a `stylesheet!` declaration (link-time registration) for the
+     subtree's sheets;
+   - a **variant axis** for enumerable state. Sheet *identity* must
+     never depend on runtime state: two sheets keyed by
+     `open`/`closed` mean the `open` one first constructs on the
+     user's tap, after the crawl (AppShell's drawer panel had exactly
+     this bug — the fix is one sheet with an `open` axis, both arms
+     registered while the crawl constructs the closed shell);
+   - the **inline layer** (`with_inline`) for continuous or open-set
+     per-instance values (safe-area insets, a per-instance typeface).
+     `with_computed` is a premint disqualifier and additionally has
+     only one slot — prefer the other three spellings in library code.
+
+   **Lazy boundaries are NOT interaction-gated.** A
+   `#[component(lazy)]` screen is route-reachable, so the crawl
+   resolves it: the dump installs host-mock's queue executor and, after
+   each route's mount + flush, pumps the executor and re-flushes to a
+   fixed point, which resolves every lazy load (native lazy bodies are
+   compiled inline and their futures are ready on the first poll) and
+   executes the bodies — one round per *nesting* generation, siblings
+   together. Styles constructed inside a lazy body therefore mint like
+   any other mount-time sheet. This was a real gap once: before the
+   dump pumped, every lazily-split screen contributed only its loading
+   placeholder, and a 50-page `--premint-only` catalog panicked on its
+   first navigation. Sheets a lazy body constructs *on interaction*
+   still follow the contract above.
+
+   Both traps are also caught statically: `idealyst lint` flags a sheet
+   identity or `cached_stylesheet` key selected by a runtime conditional
+   (`premint-state-keyed-sheet`) and any `with_computed` layer
+   (`premint-computed-layer`). The runtime warning only fires on paths a
+   dev actually exercises; the lint covers the untested ones.
+
+   The whole pipeline also runs in the dev loop: `idealyst dev --web
+   --local --premint` (or `--premint-report` / `--premint-only`)
+   re-runs the dump on every save, serves the fresh `pkg/premint.css`
+   with the `<link>` spliced into the served HTML, and compiles the
+   wasm with the same cfgs the deploy build gets — so guard warnings
+   and po panics surface while iterating, not after a deploy. Requires
+   `--local` (runtime-server mode resolves styles server-side).
+   Composes with `dev --ssr`: the SSR wrapper builds with the same
+   premint cfgs, stamps the same classes, and links `premint.css` from
+   every served page.
+2. **Shipped build.** The wasm compiles with `--cfg idealyst_premint`,
+   which flips each `stylesheet!` builder's `into_style_prop` to a
+   fast path: an all-constant application (plain variant values, no
+   overrides, nothing reactive) returns
+   `StyleProp::Preminted { class }`. `attach_style` stamps the classes
+   on the node via `DocumentOps::attach_html_class` and stops — no
+   `StyleRules`, no resolution, no rule minting. State overlays (`state hovered { … }`), breakpoints, and
+   container queries ship as pseudo-class/`@media`/`@container` rules
+   inside the same `.css`, so the browser drives them.
+
+Class names derive from an FNV-1a hash of each sheet's source text,
+computed inside the macro — the dump build and the shipped build agree
+byte-for-byte with no manifest or build coordination between them.
+
+Sheets with no macro expansion site register at runtime instead, and
+there are two kinds:
+
+- **Runtime-assembled builders** (idea-theme's component sheets) carry
+  an explicit `premint_as("identity")` — the identity string hashes to
+  the class, and the author owns keeping it content-descriptive.
+- **Static sheets need no identity at all.** `StyleSheet::r#static`
+  derives its class from the RULES' content key automatically — the
+  dump and the shipped bundle compute the same name from the same
+  rules independently, so "extract the CSS from the build" is the
+  default for every plain-rules sheet in every app, with zero
+  ceremony. Content-equal sheets share one class and one rule.
+  `premint_as`/`premint_with_class` still REPLACE the auto class when
+  a stable name matters (parameterized identities like per-px icon
+  sizes), and any layer-adding mutator (`variant`, `variant_default`,
+  `compound`) RETRACTS it — the auto class names exactly the base
+  rules, so a sheet that grows layers falls back to explicit identity
+  or the live engine rather than stamping a class whose CSS misses a
+  layer.
+
+### The delta model
+
+Emission is **per layer, not per combination**: the dump writes the
+sheet's base as `.iy-<hash>`, and each variant arm as its own DELTA
+rule `.iy-<hash>-<axis>-<value>` containing only that arm's
+properties. The runtime stamps one class per selected axis (an unset
+axis contributes its `#[default]` arm's class, or nothing when the
+axis declares none), and the browser's cascade performs the merge the
+resolver does live. CSS size is therefore the *sum* of a sheet's arms
+rather than their cartesian product — on the website this is the
+difference between 3 MB / 5,068 rules (per-combo) and 116 KB / 430
+rules.
+
+The equivalence rests on two facts, both load-bearing:
+
+- **Every emitted selector has specificity (0,1,0)** — single classes,
+  state pseudo-classes wrapped in `:where()` (which contributes no
+  specificity), and `@media`/`@container` preludes (which never do).
+  Equal-specificity rules cascade by source order per property, which
+  is exactly `StyleRules::merge`'s later-wins.
+- **Source order mirrors the resolver's merge order**, which iterates
+  variant axes alphabetically (`BTreeMap`): the `__bp_*` < `__cq_*` <
+  `__state_*` overlay prefixes sort before every lowercase author
+  axis, so emission is base → breakpoints (rank ascending) →
+  containers (threshold ascending) → states → author axes. This also
+  reproduces the live web backend's cross-rule outcomes (a variant arm
+  beats a state overlay on conflicting properties; a state overlay
+  beats a breakpoint overlay) — verified by the A/B computed-style
+  harness against the live engine on the full website.
+
+A sheet whose base declares a non-flex `display` (a `display: grid`
+container) is **display-locked**: its arm/overlay deltas lower with the
+`display: flex` auto-promotion suppressed and emit no
+`flex-direction: column` pin companions, because the merged set's
+explicit display wins and the live engine never pins a grid. (A
+gap-only arm of a grid sheet used to stomp the base's `grid` back to
+`flex` from later source order.)
+
+Compound variants premint as CSS compound selectors
+(`.iy-abc-appearance-solid.iy-abc-size-md`, specificity (0,2,0) —
+above the single-axis arms, reproducing "compounds merge after every
+axis"). No extra stamped class is needed; the selector does the
+matching.
+
+### What stays on the live engine
+
+A sheet (or application) falls back to live minting when the build
+can't prove the CSS at build time:
+
+- **Reactive inputs** — a setter received a `Signal`/`derived`.
+- **Runtime overrides** — `.override_*` values at the call site, or
+  `with_style_overrides` layers.
+- **A `font_family` the build can't prove constant** — a call like
+  `active_font_family()` can vary at runtime. String literals (system
+  stacks) and path/`&`-reference expressions (`&INTER` — a `static`
+  `Typeface`, constant by construction) DO premint: the dump emits the
+  family's `@font-face` rules into the same `.css` with served-file
+  URLs, standing in for the runtime `register_typeface` that sheet
+  registration would have performed. The `<link>` carries a
+  `data-iy-font-families` attribute listing the shipped families, and
+  the web backend's runtime registration skips those — an attribute
+  rather than a stylesheet/`FontFaceSet` probe because those race the
+  link's async load against wasm boot and double-fetch the files.
+  `Embedded`-bytes faces have no build-time URL and are skipped with a
+  dump warning (use a bundled source for preminted fonts).
+
+Fallback is per-application and silent: the same build can serve one
+`Card()` preminted and another `Card().padding(sig)` live.
+
+### Theme state without registrations
+
+A fully-preminted app registers no sheets, so the host-state flush
+that normally rides registration gets its own driver: the first
+`Preminted` attach installs a per-thread Effect that drains queued
+theme tokens (as `:root` CSS variables), app background, scrollbar
+theme, and the app key handler into the backend, re-firing on every
+token-version bump. Theme swap therefore works identically — preminted
+rules reference `var(--token, fallback)` like live-minted ones.
+
+The theme's *default text font* is the one apply-time fill a
+build-time rule can't reproduce — and it is the one place the live
+engine's behavior differs **per attach path**, so the dump encodes it
+in cascade rank rather than in any rule body:
+
+- A sheet whose base names no `font_family` gets a specificity-(0,0,0)
+  companion — `:where(.iy-<hash>) { font-family:
+  var(--iy-default-font, inherit) }` — and the driver defines that
+  variable from the installed theme
+  (`StyleOps::apply_default_text_font`; web sets it on the document
+  element, SSR emits it in the head CSS). With no default font
+  installed the `inherit` fallback reproduces the plain cascade.
+- The asset's FIRST rule is `.iy-font-inherit { font-family: inherit }`
+  at (0,1,0). The **reactive** preminted attach paths
+  (`PremintedDynamic`, the runtime-assembled-sheet diversion, the
+  `--premint-only` dynamic arm) stamp that class alongside the sheet
+  classes; the static path never does.
+
+That sandwich reproduces both live behaviors from one static file: a
+STATIC application takes the hook — the theme-default fold
+(`fill_default_text_font`) — while a REACTIVE one takes `inherit`,
+because the live reactive engine never folds and under an author font
+on an ancestor (a brand `font_family: &TYPEFACE` on the root
+container) inheritance yields the *author's* font, not the theme
+default. Any `font-family` a sheet actually declares (base, arm, or
+overlay) beats both: arms are (0,1,0) after `.iy-font-inherit` in
+source order, overlays are (0,2,0), and the hook is (0,0,0) under
+everything. Measured before this encoding: every reactive-styled node
+on a brand-fonted site rendered the theme default under `--premint`
+while the live build rendered the brand font.
+
+`apply_default_text_font` publishes the font **two** ways, and both are
+load-bearing:
+
+1. the `--iy-default-font` **variable**, which preminted rule bodies
+   read as above; and
+2. a real `font-family` declaration **on the document root**, which
+   every other node inherits.
+
+The second exists because the two live apply paths treat the default
+font asymmetrically. A **static** style application folds the theme
+font into the node's own resolved rules (`fill_default_text_font`). A
+**reactive** one deliberately does not — folding there would change the
+minted class hash for every reactive-styled node and break SSR/live
+class-name parity. So a reactively-styled node has no `font-family` of
+its own and inheritance is its only supply; with the variable alone it
+inherited past the root into the browser's serif fallback while an
+identically-styled static sibling rendered in the theme font. The two
+halves are pinned by `dynamic_sheet_path_does_not_fold_default_font`
+(runtime-vocabulary) and
+`regression_reactive_styled_node_inherits_theme_font` (backend-ssr).
+
+**Every world publishes this, not just preminted ones.** The delivery
+was originally gated on premint use, on the reasoning that only
+preminted rule bodies read the variable — which covered the variable
+but not the inheritance half: a live (non-preminted) build published no
+document font at all, so `<body>`, plain containers, and every
+reactively-styled node rendered in the browser serif. The font rides
+the pending host-state queue (like app background and scrollbar theme)
+so it reaches the backend even in a purely static app that never
+installs the theme driver. Pinned by
+`regression_live_world_publishes_the_default_text_font`
+(runtime-vocabulary).
+
+### Dropping the engine: `--premint-only`
+
+`--premint` alone changes *when* rules are made, not what ships: the
+engine still compiles in for the fallback paths.
+
+`idealyst build --web --premint-only` (implies `--premint`) is the
+build that actually removes it — **the styles stop existing in the wasm
+code**. Under `--cfg idealyst_premint_only` the `StyleSheet`
+constructors drop the author's rule closures at construction, so their
+bodies are never named and LLVM removes them, together with the resolve
+machinery they fed. What replaces each closure is a stub that panics
+with the full explanation if anything resolves it at runtime. Measured
+on the website corpus: wire 762,361 → 737,386 br; on idea-ui-docs, raw
+wasm −34.6%.
+
+The contract: with no engine on board, two things become build errors
+in spirit (loud runtime panics in practice, at the first offender):
+
+1. **Runtime rule composition.** Any application that can't premint —
+   runtime slot `overrides`, a `with_computed` layer, a plain
+   `Rc<StyleSheet>` with no `premint_as` identity — has nothing to fall
+   back to. Run `--premint-report` first and drive the fall-through
+   list to zero; `--premint` alone is always safe while offenders
+   remain.
+2. **Reading resolved `StyleRules` back in Rust.** A component that
+   resolves a sheet to *use a value* (tint an icon with the container's
+   fill color) is running the engine, even though it never attaches the
+   result.
+
+Framework components satisfy (2) through
+`StyleApplication::attaches_preminted()` — true exactly when the build
+carries build-time CSS (`--cfg idealyst_premint`) and the application
+premints, checked per evaluation like the attach paths. On that path
+Button (icon + loading spinner), Checkbox (custom checkmark icon), and
+Tabs/SegmentedControl (label color) skip their resolve-reads: the
+foreground already ships in the box's preminted class, so the web node
+inherits it as `currentColor`/cascade color. That is strictly *more*
+correct on web — the tint follows `__state_hovered` compound arms,
+which the Rust-side snapshot never did. Native builds never see the
+cfg, so they keep the resolved reads (native nodes don't inherit
+color). Author code holding a resolve-read can apply the same gate, or
+drop `--premint-only`.
+
+**Recommendation:** `--premint-only` is the web production build to
+reach for once `--premint-report` is clean. Historical note: the old
+`style-dynamic` cargo feature that claimed this role is deleted — it
+had stopped gating anything, and feature unification made it
+unturnoffable. The cfg-at-construction approach above is its
+structural successor: one home (the sheet constructors), one decision.
+
+### Finding what didn't premint: `--premint-report`
+
+`idealyst build --web --premint-report` builds exactly like `--premint`
+— the engine is present, everything still works — but logs one warning
+per DISTINCT style that fell through to the live engine, deduped across
+the session:
+
+```
+[premint-report] #7 SheetDynamic at crates/ui/idea-theme/src/extensible/sheets.rs:401:21 \
+  css=iy-167c896b0df2 overrides=false computed=hug axes=[appearance=primary_soft] rules=bg=T:…
+```
+
+The **origin** is the field that makes it usable: `#[track_caller]` on
+the `StyleSheet` constructors captures the author's line, so a
+fall-through names itself. Everything after it says WHY — `css=NONE…`
+means the sheet was never given a `premint_as` identity, `overrides=true`
+and `computed=<key>` are the two disqualifiers above, and `SheetDynamic`
+means the application is reactive.
+
+Walk the app's routes with the console open; the deduped set is the work
+list. (Historical scale: the idea-ui catalog started at 218 entries
+across 47 routes; after the text-slot sheets, the shadow split, the
+static auto-premint, and the Table axis conversion it reached zero.)
+
+### Premint × SSR/SSG
+
+`--premint`/`--premint-only` compose with `--ssg`/`--ssr`. The server
+binary is compiled with the same `--cfg idealyst_premint*` posture as
+the wasm bundle (build-ssr injects the cfgs; premint server builds get
+an isolated `target-premint/` dir because the RUSTFLAGS change would
+otherwise invalidate the project's shared native cache), so the generic
+`Preminted` attach arm stamps the same deterministic `iy-*` classes on
+the server that the hydrating client stamps — and since hydration's
+preminted re-stamp is `classList.add`, adoption meets the classes
+already present and no-ops. Three pieces make the agreement exact:
+
+- **Same guard set.** The generated wrapper resolves the staged
+  `premint.css` (`backend_ssr::resolve_premint_css`, the premint twin of
+  `resolve_bundle_module`), scans its `iy-*` selectors
+  (`runtime_shared::scan_minted_classes` — the text twin of the web
+  boot's JS stylesheet scan) and arms the same minted-class guard per
+  render thread, so server and client make identical
+  premint-vs-engine-fallback decisions per sheet.
+- **Same fall-through names.** Engine-rendered sheets (overrides,
+  `with_computed`, identity-less closures under plain `--premint`) mint
+  `css::hash_class_name(content_key)` `ui-*` classes — one pure function
+  shared by web and SSR, so those agree byte-for-byte too, exactly as
+  they always did for non-premint SSR.
+- **Cascade order.** Every rendered document links `premint.css` BEFORE
+  its inline `<style>`s, mirroring the live web document order, so
+  `ui-*` override/fall-through rules beat premint rules on source order
+  at their shared (0,1,0) specificity.
+
+Under `--ssg-static` the link is the page's only CSS for preminted
+classes — no wasm exists to repair a missing rule — which is why the
+wrapper emits it independent of hydration mode. `--premint-report` on a
+serve-mode server re-warns per request (each renders on a fresh thread
+with a fresh dedup set); dev-only noise, by design. Known follow-up:
+font preloads are extracted from the inline head CSS only, so a font
+used exclusively by preminted rules loads without a preload hint
+(correctness unaffected).
+
+### Current limits
+- What premints: `stylesheet!` builder applications (link-time
+  registration), runtime-assembled sheets with a `premint_as` identity,
+  and every plain `StyleSheet::r#static` (auto, by content key). A
+  closure-built `StyleSheet::new` with no identity is the shape that
+  stays live.
+- A component that INTROSPECTS a built element's style (re-deriving a
+  cell's application to select axes on it — `Table`'s clickable rows)
+  must hand the style over as an explicit **`StyleProp::Sheet`**:
+
+  ```rust
+  bound.with_style(StyleProp::Sheet(Box::new(TableBodyCell().into_style_application())))
+  ```
+
+  `into_style_application()` alone is NOT enough, despite reading like
+  it should be. `IntoStyleProp for StyleApplication` has a preminted
+  fast path, so a bare application premints to an OPAQUE class and the
+  introspection silently finds nothing. That shipped: `Table`'s
+  clickable rows lost their pointer cursor and their hover highlight in
+  every `--premint` build, because `cell_base_application` returned
+  `None` and the overlay was skipped without a word.
+
+  The explicit spelling costs the premint nothing, because what the
+  introspector COMPOSES must itself be premintable: `Table`'s row
+  overlay selects the cell sheet's `interactive`/`row_hovered` AXES
+  (every arm has build-time CSS; the whole-row hover is a class swap
+  through the reactive diversion), and the `--premint-only` attach
+  premints an explicit `Sheet` whose application qualifies. Composing
+  with `with_overrides` instead would drag the application back to the
+  live engine — which is exactly what the old override-based row
+  overlay did.
+- Anything with **runtime slot overrides** or a **`with_computed`
+  layer** falls through to the live engine by construction. Overrides
+  are per-call-site rules and a computed key maps to an arbitrary
+  closure, so neither is a layer the dump could have enumerated.
+- Native backends never see either cfg — they keep the full rules
+  closures and the apply-time default-font fill. The observable
+  styling is identical everywhere; premint changes only *when* the
+  web's rules are produced.
+
+---
+
 ## Shadows: box vs. text
 
-`StyleRules::shadow` is a single `Shadow { x, y, blur, color }`. What it
-*renders* as depends on the node it lands on:
+Two fields, one CSS property each, on every node kind:
 
-- On a **box** element (`view`, `image`, `pressable`, …) it's a box
-  shadow — the shadow of the element's rectangle.
-- On the **text** primitive it's a *glyph* shadow — the shadow hugs the
-  letter outlines, not the inline box. There's no separate `text_shadow`
-  field; the text primitive reinterprets the one `shadow` field.
+- `StyleRules::shadow` — the **box** shadow (the element's rectangle).
+- `StyleRules::text_shadow` — the **glyph** shadow on a text node (hugs
+  the letter outlines). Ignored by non-text primitives.
 
-Each backend converges on that output through its own mechanism
+They used to be one field that lowered per node kind (`box-shadow` on
+boxes, `text-shadow` on text). That forced shadowed text nodes onto
+distinct class keys AND disqualified every shadowed sheet from
+preminting — a build-time rule body can't know what kind of node will
+wear the class. One field per property removes both: shadowed sheets
+premint like any other, and a text and box node with equal rules share
+one class.
+
+Each backend converges on the output through its own mechanism
 (CLAUDE.md §7):
 
-| Backend | Box element | Text primitive |
+| Backend | `shadow` (box) | `text_shadow` (glyphs) |
 | --- | --- | --- |
-| Web / SSR | `box-shadow` | `text-shadow` (`css::rules_to_css_text`) |
+| Web / SSR | `box-shadow` | `text-shadow` |
 | iOS / macOS | CALayer shadow | CALayer shadow on the label (layer content is the glyphs) |
 | Android | *(elevation, n/a in v1)* | `TextView.setShadowLayer` |
 
@@ -337,12 +781,6 @@ offset is positive-**down** on every backend — the coordinate flips
 (AppKit's y-up layer, UIKit's y-down) are absorbed by the backend so a
 `shadow { y: 2 }` lands below the glyphs everywhere.
 
-Because a shadowed text node and a box element with an otherwise
-identical `StyleRules` must render different CSS, the web/SSR backends
-mint the text node a distinct class (`css::text_shadow_class_key`) so the
-two never collide in the content-keyed style cache. This only diverges
-when a shadow is actually present — unshadowed text still shares classes
-with views.
 
 ---
 
@@ -446,7 +884,7 @@ match current_breakpoint().get() {
 
 Prefer declarative `breakpoint` blocks where you can — they keep web
 and native in lockstep and survive SSR. The signal is the escape hatch.
-See [`breakpoint.rs`](../crates/runtime/core/src/breakpoint.rs) for the
+See [`breakpoint.rs`](../crates/runtime/shared/src/breakpoint.rs) for the
 bucket definitions and thresholds.
 
 ---

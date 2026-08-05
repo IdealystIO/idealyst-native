@@ -8,15 +8,15 @@ priority framework, inspired by `UIGestureRecognizer` + `UIGestureRecognizerDele
 Where it lives:
 
 - **`Recognizer` trait + `GestureState` / `RecognizerKind` / `RecognizerCtx` /
-  `RecognizerUpdate`** — [`crates/runtime/core/src/touch/recognizer.rs`](../crates/runtime/core/src/touch/recognizer.rs).
+  `RecognizerUpdate`** — [`crates/runtime/shared/src/touch/recognizer.rs`](../crates/runtime/shared/src/touch/recognizer.rs).
 - **The stock recognizers** (`Tap` / `LongPress` / `Pan` / `Pinch` / `Swipe` /
   `Rotate`), each an `impl Recognizer` with a thin factory wrapper preserving the
-  old `tap()/…` `TouchHandler` API — [`recognizers.rs`](../crates/runtime/core/src/touch/recognizers.rs).
+  old `tap()/…` `TouchHandler` API — [`recognizers.rs`](../crates/runtime/shared/src/touch/recognizers.rs).
 - **`GestureGroup` arbiter** — [`crates/sdk/client/gesture/`](../crates/sdk/client/gesture/).
 
 ## Motivation
 
-What exists today (`crates/runtime/core/src/touch/`):
+What exists today (`crates/runtime/shared/src/touch/`):
 
 - Raw per-finger `TouchEvent` stream, one `on_touch` slot per view
   (`TouchHandler = Rc<dyn Fn(&TouchEvent) -> TouchResponse>`).
@@ -41,8 +41,9 @@ that layer.
 ## Design tenets
 
 - **Core gets the primitive; the SDK gets the composition.** Per CLAUDE.md §3,
-  the bare `Recognizer` trait + state enum live in `runtime_core::touch`
-  (so the four stock recognizers can implement them and stay in core). The
+  the bare `Recognizer` trait + state enum live in `runtime_shared::touch`
+  (so the four stock recognizers can implement them and stay in the shared
+  substrate; they are re-exported flat under `runtime_core::…`). The
   *arbiter* — the composable multi-recognizer coordinator — lives in a new
   `crates/sdk/client/gesture`.
 - **No new backend surface.** The arbiter installs exactly one `TouchHandler`
@@ -60,7 +61,7 @@ A recognizer is a finite state machine fed the raw touch stream. The state enum
 mirrors `UIGestureRecognizer.State`:
 
 ```rust
-// runtime_core::touch
+// runtime_shared::touch
 
 /// Lifecycle state of a single recognizer for one interaction.
 /// Mirrors UIKit's UIGestureRecognizerState.
@@ -273,7 +274,7 @@ arbiter is a no-op overhead of one `Vec` of length 1.
 ## Part 4 — Crate & module layout
 
 ```
-crates/runtime/core/src/touch/
+crates/runtime/shared/src/touch/
   mod.rs              # + GestureState, RecognizerKind (new public types)
   recognizer.rs       # + Recognizer trait (new)
   recognizers.rs      # the 4 stock FSMs, refactored to impl Recognizer;
@@ -286,7 +287,7 @@ crates/sdk/client/gesture/   # NEW
                       #   simultaneous, cancel-on-loss
 ```
 
-`sdk/gesture` depends only on `runtime-core` (no backend deps), matching
+`sdk/gesture` depends only on `runtime-shared` (no backend deps), matching
 `sdk/pan` and `sdk/zoom`. The existing pan/zoom SDKs can later grow a
 `GestureGroup`-based constructor so they compose, but their current standalone
 APIs stay.
@@ -332,7 +333,7 @@ tests to mirror):
    `long_press_fires_through_arbiter_timer` and
    `long_press_cancelled_by_competing_pan_before_timer`.
 4. **`GestureState`/`Recognizer` in core or SDK?** *Core, as leaned.* The trait +
-   state/ctx/update types live in `runtime_core::touch::recognizer`; only the
+   state/ctx/update types live in `runtime_shared::touch::recognizer`; only the
    composable `GestureGroup` arbiter is in `crates/sdk/client/gesture`.
 
 ## Stock recognizer set (all `impl Recognizer`)
@@ -353,7 +354,7 @@ tests to mirror):
   `WheelEvent::rotation`, radians, clockwise-positive to match the recognizer);
   browsers expose no native trackpad rotation, so it is macOS-only — exactly
   how `Pinch` pairs with `WheelKind::Zoom` (`magnify:`). See
-  [`crates/runtime/core/src/wheel.rs`](../crates/runtime/core/src/wheel.rs).
+  [`crates/runtime/shared/src/wheel.rs`](../crates/runtime/shared/src/wheel.rs).
 
 ## SDK composition
 

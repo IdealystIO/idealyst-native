@@ -8,7 +8,7 @@
 //! `on_ready` callback. We take that `GraphicsSurface`, build a wgpu
 //! Metal surface against it, spin up the `render_wgpu::Host` +
 //! `Renderer`, mount the caller's UI, and drive per-frame paint via
-//! `runtime_core::driver::render_loop` (the NSTimer driver installed
+//! `runtime_shared::driver::render_loop` (the NSTimer driver installed
 //! by `host-appkit` at boot).
 //!
 //! The returned [`MacosHostHandle`] owns the wgpu objects and the
@@ -27,7 +27,16 @@
 mod macos;
 
 #[cfg(target_os = "macos")]
-pub use macos::{mount, MacosHostHandle, MountError};
+pub use macos::{MacosHostHandle, MountError};
+
+#[cfg(target_os = "macos")]
+pub use macos::mount;
+
+/// Compatibility alias. This entry was `mount_newcore` while the
+/// framework carried two cores; there is one mount now and it is
+/// [`mount`]. Kept so existing call sites keep resolving.
+#[cfg(target_os = "macos")]
+pub use macos::mount as mount_newcore;
 
 #[cfg(target_os = "macos")]
 pub use render_api::DeviceProfile;

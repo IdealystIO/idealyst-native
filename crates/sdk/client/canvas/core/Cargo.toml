@@ -5,18 +5,25 @@ edition.workspace = true
 license.workspace = true
 
 # The renderer-agnostic 2D drawing abstraction for the `canvas` SDK.
-# Owns the retained `Scene` model + the `Canvas` `Element::External`
-# primitive; contains NO rendering code. No renderer/backend deps so the
+# Owns the retained `Scene` model + the `Canvas` scene primitive;
+# contains NO rendering code. No renderer/backend deps so the
 # per-renderer crates (`canvas-vello`, `canvas-native`) and the `canvas`
 # umbrella can all depend on it without a dep cycle — same split
 # rationale as `maps-core`.
 
 [dependencies]
-# `Element::External` plumbing, the canonical `color::Rgba`, and the
+# The style vocabulary (`StyleRules`/`StyleSheet`/`Length`) and the
 # `IdealystSchema` derive (a no-op without the `catalog` feature, so this
-# adds no platform code to a normal build).
+# adds no platform code to a normal build). Aliased as `runtime_core` at
+# the crate root so the derive's `::runtime_core::__mcp::…` emission
+# resolves.
 runtime-core = { workspace = true }
-# Scene wire serialization (snapshot crosses the runtime-server wire). `rc` so
+# The scene registry (`item` + `Registry`/`MountCx`) + the vocabulary
+# style channel (`attach_style`) the renderer handlers drive.
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+# Scene serialization (a painted snapshot is what crosses a process
+# boundary — a painter closure can't). `rc` so
 # `DrawOp::Image`'s `Arc<ImageSource>` serializes (the buffer is sent as before;
 # the `Arc` only avoids a per-frame clone in-process — sharing isn't preserved
 # across the wire, which is fine).
@@ -41,3 +48,10 @@ image = { version = "0.25", optional = true, default-features = false, features 
 # Decode encoded image containers (PNG/JPEG) into `ImageSource` via the
 # `image` crate. Off by default — renderers only ever consume raw RGBA.
 decode = ["dep:image"]
+
+[dev-dependencies]
+# tests/canvas.rs mounts `Canvas(...)` through the scene registry on the
+# shared host-mock recording substrate; `runtime-shared` names the style
+# vocabulary the assertions build.
+host-mock = { workspace = true }
+runtime-shared = { workspace = true }

@@ -18,7 +18,7 @@ The repo's author of record is the user. Tools that helped write the code don't 
 
 ## 1. Test changes — especially in framework core
 
-Run the test suite when you make changes. Architectural changes to framework core (anything in `crates/runtime/core/`, the Backend trait, reactive system, wire protocol, scene model) MUST be accompanied by tests that cover the new behavior. Framework stability is non-negotiable — a change without test coverage is incomplete.
+Run the test suite when you make changes. Architectural changes to framework core MUST be accompanied by tests that cover the new behavior. "Framework core" means the runtime crates — `runtime-world` (reactive kernel), `runtime-scene` (scene model, `Host` seam, `Registry`), `runtime-vocabulary` (capability traits, builtin handlers, `glue`), `runtime-shared` (style/animation/input substrate), `runtime-layout` — plus the wire protocol. (`crates/runtime/core/` itself is now only the thin author-facing re-export root; a change that lands there is almost always really a change in the vocabulary.) Framework stability is non-negotiable — a change without test coverage is incomplete.
 
 If existing tests don't cover the area you're touching, add coverage as part of the same change. Don't merge "the tests still pass" when the tests don't actually exercise what you changed.
 
@@ -30,11 +30,20 @@ When you change behavior, find the documentation that describes it and update it
 - New features need documentation alongside the implementation, not as a follow-up.
 - `idea-ui` is an adjacent project with its own docs — do not update idea-ui docs from this repo, and don't assume changes here propagate there.
 
-## 3. Core stays minimal — peripheral features go through External
+## 3. Core stays minimal — peripheral features go through the scene registry
 
-`crates/runtime/core/` is for the lowest primitives only. If you're tempted to add a feature that feels like a "widget," "helper," "convenience," or anything composable from existing primitives, build it as a third-party extension using `Element::External` plus the per-backend registry (see [[project_third_party_extension]]). Do not bloat core with peripheral features.
+The runtime's builtin primitive set is for the lowest primitives only. Since the runtime-v2 deletion that set lives in `crates/runtime/vocabulary/` (the builtin handlers and the `glue` author surface); `crates/runtime/core/` is now just the thin author-facing root that re-exports it. Adding a primitive means touching the vocabulary — treat that as the bar it always was.
 
-If `Element::External` isn't wired up yet for the surface you need, that's a signal to wire it up — not a license to add the feature directly to core.
+If you're tempted to add a feature that feels like a "widget," "helper," "convenience," or anything composable from existing primitives, build it as a third-party extension on the **scene `Registry`** (`runtime_scene::Registry`, see [[project_third_party_extension]]):
+
+- The extension crate defines a typed payload struct — that type's `TypeId` is the registry key, so two crates can both ship a "map view" without colliding.
+- It registers a mount handler per backend it supports: `registry.register::<MyPrim, _>(mount_fn)`. The handler receives `&Rc<MyPrim>` and a `MountCx` carrying the real backend — fully typed, never `dyn Any`.
+- Apps install it at the boot seam (`start_in("#app", my_sdk::register, app)`).
+- For a handler that must not be anchored in the main wasm bundle, declare the kind at boot with `registry.defer::<MyPrim>()` and install from inside the chunk via `registry.register_deferred` / `runtime_scene::defer_registration`. `tests/lazy-payload-split` measures that this actually keeps the payload out of `main.wasm`.
+
+Do not bloat the builtin vocabulary with peripheral features. An unregistered payload panics at realize by design — that's the loud failure, not a reason to move the feature into core.
+
+`Element::External` and the old per-backend External table are **gone**; if you find docs or code still describing them as current, they're stale.
 
 ## 4. No timeline-deferral
 
@@ -57,7 +66,7 @@ When diagnosing perf regressions or attributing time across the framework's hot 
 
 ### How it works
 
-- **`runtime_core::debug` module** (gated by the `debug-stats` Cargo feature on `runtime-core`) holds the thread-local counters keyed by `&'static str` phase name. Each entry tracks `call_count`, `total_us`, `max_us`.
+- **`runtime_core::debug` module** holds the thread-local counters keyed by `&'static str` phase name. Each entry tracks `call_count`, `total_us`, `max_us`. The module is **owned by `runtime-shared`** (`crates/runtime/shared/src/debug.rs`) and gated by the `debug-stats` feature *there*; `runtime_core::debug` is a re-export through `runtime_vocabulary::glue`, so author-side code keeps the short path. **There is no `runtime-core/debug-stats` feature** — forwarding to one is the standard mistake. When the feature is off, `runtime-shared` swaps in a no-op `debug` shim so call sites still compile and inline to nothing.
 - **`backend-web/src/phase_timer.rs`** exposes `PhaseTimer::start("phase_name")` — returns a guard that fires `record_apply_phase` on drop. Stub-struct equivalent when `debug-stats` is off, so the macro expands to dead code the optimizer strips.
 - **Reading counters**: call `runtime_core::debug::take_phase_counters()` (returns + clears) or `clear_phase_counters()`.
 
@@ -77,7 +86,7 @@ Use **stable, specific** phase names — they're aggregation keys. Prefer `"text
 
 The `debug-stats` feature is **OFF by default** in the bench variants because the timer reads (`performance.now()` on web) skew the per-leaf numbers when 10 k+ ops hit the timer. To enable temporarily:
 
-1. Define a `debug-stats` feature on the variant's own crate that forwards to deps — `features = ["runtime-core/debug-stats"]` on the dep line is NOT enough; the variant's own `#[cfg(feature = "debug-stats")]` blocks (like `phase_counters_json`) only see THIS crate's features, not deps'. The variant must declare its own `debug-stats = ["runtime-core/debug-stats", "backend-web/debug-stats"]` in `[features]`, then default to it (or pass `--features` at build time).
+1. Define a `debug-stats` feature on the variant's own crate that forwards to deps — putting `features = ["…/debug-stats"]` on a dep line is NOT enough; the variant's own `#[cfg(feature = "debug-stats")]` blocks (like `phase_counters_json`) only see THIS crate's features, not deps'. The variant must declare its own feature in `[features]` and then default to it (or pass `--features` at build time). Forward to the crates that actually own the gate — `debug-stats = ["runtime-vocabulary/debug-stats", "backend-web/debug-stats"]`, both of which forward `runtime-shared/debug-stats`. (`benchmark/idealyst-native/wasm/Cargo.toml` is the working example.) Do **not** write `runtime-core/debug-stats`; that feature does not exist and cargo will reject it.
 2. **Call `backend_web::install_time_source()` at startup.** Without it, `runtime_core::time::now_micros()` returns `0` on wasm32, and every `PhaseTimer` records duration `0` — counts are real but all timings are useless. The variant's `start()` must call both `install_scheduler()` AND `install_time_source()`.
 3. Add a `#[wasm_bindgen]` export that drains and JSON-serializes phase counters — typically extend the variant's existing `bench_stats_json()` (see [benchmark/idealyst-native/wasm/src/lib.rs](benchmark/idealyst-native/wasm/src/lib.rs)).
 4. Run the bench, call the export from devtools (`window.benchStats()`). For iframe-hosted variants, log to console + `parent.postMessage` so the data reaches the parent devtools.
@@ -93,15 +102,15 @@ Do NOT add `PhaseTimer` calls without `#[cfg]` gating — the gate already lives
 
 ## 7. Backend determines how things render — implementations are uniform, not patched per platform
 
-Cross-platform ubiquity is the framework's reason to exist. One author tree, every backend, native output that looks and behaves the same. The Backend trait absorbs the toolkit differences (UIKit vs AppKit vs DOM vs wgpu); the *observable behavior* is identical.
+Cross-platform ubiquity is the framework's reason to exist. One author tree, every backend, native output that looks and behaves the same. The backend seam — the `Host` trait plus the capability (`*Ops`) traits — absorbs the toolkit differences (UIKit vs AppKit vs DOM vs wgpu); the *observable behavior* is identical.
 
 That means **no per-platform hacks in framework/backend code** to make a feature work on platform Y. Animations should not have a 0.95 scale on iOS and a 0.93 scale on Android because "the renders differ." If a primitive looks or animates differently across backends, the backend that's wrong needs to be fixed at its root — not patched at the call site.
 
 Concretely:
 
 - **Backend implementations diverge in mechanism but converge in output.** UIKit uses `UIView.transform`, AppKit uses CALayer + frame offset, web uses CSS `transform`. The visual result is the same.
-- **Don't add framework-side `if platform == X` workarounds** to compensate for a backend bug. Fix the bug. If a primitive cannot work on a backend without hacks, that's a sign the primitive's design is wrong for that backend — redesign or escalate to `Element::External`, don't compromise the others.
-- **`is_simulator()` does not belong in the public API.** "Simulator vs device" is a dev-time concept that has no consistent meaning across backends (iOS Simulator, wgpu sim, web in DevTools, …) and any author code branching on it is necessarily fragile. The `Platform` enum + `Backend::platform()` exist for *legitimate* runtime variance (different keyboard shortcuts on `MacOs`, different copy on `Web`, etc.) — that branching is fine. A sim/device predicate is not.
+- **Don't add framework-side `if platform == X` workarounds** to compensate for a backend bug. Fix the bug. If a primitive cannot work on a backend without hacks, that's a sign the primitive's design is wrong for that backend — redesign it, or move it out to a scene-`Registry` extension (rule 3), don't compromise the others.
+- **`is_simulator()` does not belong in the public API.** "Simulator vs device" is a dev-time concept that has no consistent meaning across backends (iOS Simulator, wgpu sim, web in DevTools, …) and any author code branching on it is necessarily fragile. The `Platform` enum (`runtime_shared::host::Platform`) + `caps::AppOps::platform()` exist for *legitimate* runtime variance (different keyboard shortcuts on `MacOs`, different copy on `Web`, etc.) — that branching is fine. A sim/device predicate is not.
 - **Dev-only markers** ("am I in the dev build?") belong behind `#[cfg(debug_assertions)]`, not behind a runtime predicate. They should not survive into release builds.
 
 When reviewing PRs / audits: a per-platform hack inside a backend (e.g., "subtract 2px on iOS only" to fix alignment) is a smell. The cause is almost always upstream — wrong default in the trait surface, wrong style translation, wrong intrinsic measurement. Fix the upstream cause so every backend benefits.
@@ -177,12 +186,14 @@ A snake_case `fn xyz() -> Element` is fine as a one-off, file-local helper that 
 For `Option<Rc<dyn Fn()>>` props, don't wire an unconditional closure that silently no-ops when `None`. Conditionally attach instead:
 
 ```rust
-if let Some(cb) = on_press {
-    bound = bound.on_press(move || (cb)());
+if let Some(cb) = on_dismiss {
+    // …attach only on this branch…
 }
 ```
 
-This pattern lives in `crates/ui/idea-ui/src/components/button.rs` and `modal.rs` — match it. A silent no-op handler blocks hit-test fall-through on some backends and confuses event-routing assertions.
+`crates/ui/idea-ui/src/components/modal.rs` is the reference — `on_dismiss` / `on_backdrop_press` are `Option<Rc<dyn Fn()>>` and are attached inside an `if let`. A silent no-op handler blocks hit-test fall-through on some backends and confuses event-routing assertions.
+
+Note that `button.rs` is **not** an example of this rule: its `on_click` is a required `Rc<dyn Fn()>` with a no-op `Default`, because a Button is always pressable. The rule is about `Option`-typed callback props, not about giving every handler an `Option`.
 
 ### 9.6a Signal props: narrowest capability wins
 

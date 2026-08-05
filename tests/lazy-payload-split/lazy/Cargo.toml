@@ -1,0 +1,29 @@
+[package]
+name = "lazy-payload-split-lazy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Late-registration variant of the handler-split measurement: the heavy SDK's mount handler installs itself from inside the #[component(lazy)] chunk via Registry::register_deferred, keeping its 512 KiB payload out of main.wasm. Paired with lazy-payload-split-eager."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# The author surface, aliased to `runtime_core` at the crate root.
+# `runtime-vocabulary` because the `ui!` emission spells absolute
+# `::runtime_vocabulary::glue::…` paths; `runtime-scene` for the
+# `Registry`/`Host` in the `register_scene_extensions` seam.
+runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+idea-ui = { workspace = true }
+lazy-payload-split-heavy = { path = "../heavy" }
+
+[package.metadata.idealyst.app]
+name      = "Lazy Payload Split (lazy)"
+bundle_id = "ai.truday.idealyst.lazy_payload_split_lazy"
+version   = "0.0.1"
+targets   = ["web"]
+
+[package.metadata.idealyst.app.splash]
+duration_ms = 0

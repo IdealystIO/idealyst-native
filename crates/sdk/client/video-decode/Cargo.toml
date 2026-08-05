@@ -37,7 +37,10 @@ thiserror = { workspace = true }
 # consumers). We push decoded frames through `FrameWriter` and decoded PCM
 # through `AudioWriter`.
 media-stream = { workspace = true }
-runtime-core = { workspace = true }
+# Substrate only: the host animation-frame registry (`scheduling::raf_loop`)
+# pumps decoded frames on web/Apple. No author surface here, so this depends
+# on `runtime-shared` directly rather than through the `runtime_core` facade.
+runtime-shared = { workspace = true }
 
 # iOS / macOS: AVFoundation (AVPlayer/AVPlayerItemVideoOutput) + an
 # MTAudioProcessingTap, driven through the Obj-C runtime (objc2 msg_send), the

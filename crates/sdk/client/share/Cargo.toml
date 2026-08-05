@@ -21,7 +21,12 @@ license.workspace = true
 
 [dependencies]
 # The catalog feature pulls in `recipe!` for the compile-checked usage examples.
+# The author surface, aliased to `runtime_core` at the crate root (see
+# src/lib.rs). `runtime-vocabulary` is a direct dep because the `ui!`
+# emission inside the recipes spells absolute `::runtime_vocabulary::glue::…`
+# paths.
 runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
 
 [features]
 # Build the compile-checked usage recipes into the MCP/docs catalog. Off in

@@ -1,7 +1,7 @@
 //! Raw touch delivery for the web backend.
 //!
-//! Implements [`runtime_core::Backend::install_touch_handler`] and
-//! [`runtime_core::Backend::claim_touch`] using the Pointer Events
+//! Implements [`runtime_shared::Backend::install_touch_handler`] and
+//! [`runtime_shared::Backend::claim_touch`] using the Pointer Events
 //! API. One DOM element receives four listeners — `pointerdown`,
 //! `pointermove`, `pointerup`, `pointercancel` — and translates each
 //! into a [`TouchEvent`] for the framework's handler.
@@ -18,12 +18,12 @@
 //! the web-side implementation of the claim protocol.
 
 use crate::WebBackend;
-use runtime_core::{
+use runtime_shared::{
     set_pointer_modifiers, PointerModifiers, TouchEvent, TouchHandler, TouchId, TouchPhase,
     TouchPoint,
 };
 use std::cell::RefCell;
-use runtime_core::collections::{SmallIdMap, SmallIdSet};
+use runtime_shared::collections::{SmallIdMap, SmallIdSet};
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -111,7 +111,7 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
                 force: pressure_to_force(ev.pressure()),
             };
             // Batching is automatic: the `on_touch` handler is wrapped in a
-            // reactive cycle at attach time (see `runtime_core::cycle`), so every
+            // reactive cycle at attach time (see `runtime_shared::cycle`), so every
             // signal write it makes (a camera pan writes pan_x, pan_y, + a repaint
             // tick) fans out ONCE after the handler returns. Without it each write
             // triggers the reactive repaint effect separately; web coalesces those
@@ -144,7 +144,15 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
             .push(closure.into_js_value().unchecked_into());
     }
 
-    // pointermove — Moved (only when this pointer is in `active`).
+    // pointermove — Moved for pointers in `active`; `Hovered` for unpressed
+    // mouse/pen motion (touch never hovers — an inactive touch move is stray).
+    //
+    // Hover has no pointerdown to sample the element origin at, and reading
+    // `getBoundingClientRect` per move is the layout-flush cost the origin
+    // cache above exists to avoid — so hover keeps its own origin cache,
+    // refreshed at most every 200ms (a presence cursor doesn't need per-pixel
+    // rect freshness across scrolls).
+    let hover_origin: Rc<RefCell<Option<(f64, (f64, f64))>>> = Rc::new(RefCell::new(None));
     {
         let handler = handler.clone();
         let active = active.clone();
@@ -154,6 +162,32 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
         let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
             let pid = ev.pointer_id();
             if !active.borrow().contains(&pid) {
+                let ptype = ev.pointer_type();
+                if ptype != "mouse" && ptype != "pen" {
+                    return;
+                }
+                let now = ev.time_stamp();
+                let origin = {
+                    let mut cache = hover_origin.borrow_mut();
+                    match *cache {
+                        Some((ts, o)) if now - ts < 200.0 => o,
+                        _ => {
+                            let o = element_origin(&ev);
+                            *cache = Some((now, o));
+                            o
+                        }
+                    }
+                };
+                let local = local_from(&ev, origin);
+                let te = TouchEvent {
+                    id: TouchId(pid as u64),
+                    phase: TouchPhase::Hovered,
+                    position: TouchPoint::new(local.0, local.1),
+                    window_position: TouchPoint::new(ev.client_x() as f32, ev.client_y() as f32),
+                    timestamp_ns: timestamp_ns(&ev),
+                    force: None,
+                };
+                let _ = (handler)(&te);
                 return;
             }
             set_pointer_modifiers(PointerModifiers {
@@ -179,7 +213,7 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
                 force: pressure_to_force(ev.pressure()),
             };
             // Batching is automatic: the `on_touch` handler is wrapped in a
-            // reactive cycle at attach time (see `runtime_core::cycle`), so every
+            // reactive cycle at attach time (see `runtime_shared::cycle`), so every
             // signal write it makes (a camera pan writes pan_x, pan_y, + a repaint
             // tick) fans out ONCE after the handler returns. Without it each write
             // triggers the reactive repaint effect separately; web coalesces those
@@ -334,7 +368,7 @@ pub(crate) fn swallow_ancestor_touch(b: &mut WebBackend, el: &web_sys::Element) 
         .push(closure.into_js_value().unchecked_into());
 }
 
-/// Implementation of [`runtime_core::Backend::claim_touch`] —
+/// Implementation of [`runtime_shared::Backend::claim_touch`] —
 /// external claim invoked when a handler returned `claim: true` via
 /// any route other than the local `pointerdown` / `pointermove`
 /// callback we wired above (today there's no such route on web, but

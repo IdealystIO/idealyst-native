@@ -1,6 +1,6 @@
 //! Portal page — built via the `docs!` macro.
 //!
-//! Covers `Element::Portal` as the one render-elsewhere primitive,
+//! Covers `portal` as the one render-elsewhere primitive,
 //! and how `overlay()` / `anchored_overlay()` lower to it.
 
 use docs_macro::docs;
@@ -18,7 +18,7 @@ docs! {
     concepts = [Portal, Overlay, AnchoredOverlay],
 
     section(heading = "What it is") {
-        p(code("Element::Portal"),
+        p(code("portal"),
           " renders a subtree at a different location in the host tree, \
            escaping the parent's layout and clipping. It's the only \
            render-elsewhere primitive the framework ships — modals, \
@@ -96,7 +96,7 @@ docs! {
     section(heading = "Overlay and AnchoredOverlay — composed on top") {
         p(code("overlay()"), " and ", code("anchored_overlay()"),
           " are compositions, not primitives. They lower to ",
-          code("Element::Portal"), " at conversion time, adding the \
+          code("portal"), " at conversion time, adding the \
            backdrop layer + content wrapper around your children:"),
         code(rust, r##"
             use runtime_core::{overlay, BackdropMode, ViewportPlacement, view, text};
@@ -199,9 +199,9 @@ docs! {
         p("For totally platform-specific overlays (native MapKit \
            callouts, system share sheets, system pickers), see ",
           link("Third-party primitives", to = "third-party-primitives"),
-          " — ", code("Element::External"),
-          " is the right hatch for primitives whose implementation \
-           is per-backend FFI rather than framework primitives."),
+          " — registering your own payload handler is the right shape for \
+           primitives whose implementation is per-backend FFI rather than \
+           framework primitives."),
     },
 
     section(heading = "Where to read more") {

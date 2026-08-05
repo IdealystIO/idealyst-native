@@ -50,7 +50,10 @@ pub mod variant;
 
 pub use sheets::{
     install_alert_sheet, install_badge_sheet, install_button_sheet, install_checkbox_sheets,
-    install_default_alert_sheet, install_default_badge_sheet, install_default_button_sheet,
+    install_alert_text_sheets, install_button_label_sheet, install_default_alert_sheet,
+    install_default_badge_sheet, installed_button_label_sheet,
+    install_default_button_sheet, install_tag_text_sheets, installed_alert_text_sheets,
+    installed_tag_text_sheets, AlertTextSheets, TagTextSheets,
     install_default_checkbox_sheet, install_default_icon_button_sheet, install_default_radio_sheet,
     install_default_switch_sheet, install_default_tag_sheet, install_default_typography_sheet,
     install_default_progress_sheet, install_default_slider_sheet, install_icon_button_sheet,
@@ -63,8 +66,9 @@ pub use sheets::{
     CheckboxSheetBuilder, CheckboxSheets, IconButtonSheetBuilder, ProgressSheetBuilder,
     ProgressSheets, RadioSheetBuilder, RadioSheets, SliderSheetBuilder, SliderSheets,
     SwitchSheetBuilder, TagSheetBuilder,
-    TypographySheetBuilder, CHECKBOX_DIMS, PROGRESS_DIMS, RADIO_DIMS, SLIDER_DIMS,
-    SWITCH_TRACK_DIMS,
+    TypographySheetBuilder, font_weight_key, premint_identity, tone_keys, variant_keys,
+    CHECKBOX_DIMS, FONT_WEIGHT_KEYS, PROGRESS_DIMS, PROGRESS_FILL_WIDTH_MS,
+    PROGRESS_SWEEP_FRACTION, RADIO_DIMS, SLIDER_DIMS, SWITCH_TRACK_DIMS,
 };
 
 use std::rc::Rc;
@@ -400,13 +404,47 @@ impl Default for TypographyKindRef {
     }
 }
 
+/// Identity equality for the `*Ref` handles: two refs are equal iff
+/// they wrap the SAME `Rc` allocation.
+///
+/// Why `Rc::ptr_eq` and not key comparison: the world kernel's
+/// guarded `Signal::set` dedupes on `PartialEq`, and two *distinct*
+/// custom modifiers are allowed to share a `key()` — key equality
+/// would silently swallow a real change. Pointer identity can only
+/// produce false NEGATIVES (a redundant notify when a fresh
+/// `builtins()` Rc carries the same modifier), which is exactly
+/// `set_always` behavior — safe. This impl exists so `Signal<*Ref>`
+/// satisfies the kernel's `T: PartialEq` signal bound (doc-controls
+/// state signals); it is not a semantic "same modifier" test.
+macro_rules! ref_ptr_eq {
+    ($ty:ident) => {
+        impl PartialEq for $ty {
+            fn eq(&self, other: &Self) -> bool {
+                Rc::ptr_eq(&self.0, &other.0)
+            }
+        }
+    };
+}
+ref_ptr_eq!(ToneRef);
+ref_ptr_eq!(VariantRef);
+ref_ptr_eq!(ButtonSizeRef);
+ref_ptr_eq!(ShapeRef);
+ref_ptr_eq!(TypographyKindRef);
+
 /// Uniform handle over the five `*Ref` newtypes for docs-tooling.
 /// Lets a single generic picker render any modifier axis without one
 /// hardcoded function per type.
 ///
 /// Apps with custom modifier types can implement this trait to plug
 /// into the same docs-controls surface.
-pub trait RefBuiltins: Clone + 'static {
+///
+/// `PartialEq` is a supertrait because doc-controls holds the picked
+/// value in a `Signal<T>`, and the world kernel's signal surface
+/// requires `T: PartialEq` (guarded-set contract). For an `Rc`-wrapping
+/// handle, implement it as pointer identity (see the `*Ref` impls
+/// above) — key-based equality would dedupe distinct modifiers that
+/// share a key.
+pub trait RefBuiltins: Clone + PartialEq + 'static {
     /// Built-in (key, instance) pairs the picker enumerates.
     fn builtins_list() -> Vec<(&'static str, Self)>;
     /// The stable key of the current selection — used to drive the

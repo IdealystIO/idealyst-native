@@ -1,0 +1,24 @@
+# scene-parity FULL-OP NEW-CORE override — scenario `full_presence_bare`, mode `spliced`
+#
+# Sanctioned divergences only (README + the FULL_NEWCORE_OVERRIDES
+# docs): teardown release interleaving (#5, old LIFO vs new
+# creation-order effect free — same release SET, only the order
+# within teardown windows); where noted, cross-effect firing order
+# across sibling effects (#3); and, for the presence pairs, the
+# Dyn-driver + retire-hook re-expression (#6 — hole structural
+# path, retire-owned detach; identical apply_presence sequence).
+# Regenerate: UPDATE_NEWCORE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 text "before"
+insert n0 <- n1
+create n2 presence_placeholder
+create n3 text "card"
+insert_at n2 <- n3 @ 0
+insert n0 <- n2
+create n4 text "after"
+insert n0 <- n4
+
+== hide (no exit: immediate teardown) ==
+remove_child n2 -x n3

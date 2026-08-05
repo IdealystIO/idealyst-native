@@ -1,4 +1,4 @@
-//! CPU-rasterizer backend for `runtime_core::Backend`.
+//! CPU-rasterizer backend for `runtime_shared::Backend`.
 //!
 //! Renders the framework's primitive tree into a pixel framebuffer
 //! using a pure-Rust software rasterizer. Output is decoupled from
@@ -20,11 +20,22 @@
 //!
 //! ```ignore
 //! let mut backend = CpuBackend::new(320, 240);
-//! // ... mount framework tree into backend via `runtime_core::mount` ...
+//! // ... mount framework tree into backend via `runtime_shared::mount` ...
 //! let mut surface = MemSurface::new(320, 240);
 //! backend.render(&mut surface);
 //! // `surface.pixels()` now contains the rendered frame.
 //! ```
+//!
+//! ## New core (`new-core` feature)
+//!
+//! With the `new-core` feature, [`newcore::start`] mounts a
+//! scene-element tree on a `runtime_world::World` through the
+//! vocabulary's builtin handlers — `CpuBackend` implements
+//! `runtime_scene::Host` plus all 30 capability traits by UFCS
+//! delegation to this same `Backend` impl, so the rasterizer renders
+//! identical pixels on both cores (pinned byte-for-byte by
+//! `tests/newcore_parity.rs`). Additive: the old-core mount path is
+//! untouched with or without the feature.
 //!
 //! ## Scope of this MVP
 //!
@@ -48,17 +59,25 @@ mod node;
 mod raster;
 mod surface;
 
+// Post-dispatch hook slot — UNCONDITIONAL (the fire sites live in
+// host crates, which can't see this crate's features); a no-op single
+// Cell read unless `newcore::start` installed the flush driver. See
+// the module docs for the embedder contract (the CPU backend owns no
+// scheduler — the host decides cadence).
+pub mod dispatch_hook;
+
+/// `runtime_scene::Host` + the 30 capability traits on [`CpuBackend`],
+/// plus the boot entry and flush driver.
+pub mod newcore;
+
 pub use node::{CpuNode, NodeKind};
 pub use surface::{MemSurface, Surface};
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::animation::AnimProp;
-use runtime_core::color::{parse_or, Rgba};
-use runtime_core::primitives::icon::IconData;
-use runtime_core::{Action, Backend, ColorScheme, GradientKind, Length, Platform, RadialExtent, StyleRules};
+use runtime_shared::color::Rgba;
+use runtime_shared::{GradientKind, Length, RadialExtent};
 use runtime_layout::LayoutTree;
 
 use node::{NodeData, ResolvedGradient};
@@ -141,7 +160,16 @@ impl CpuBackend {
         // no native resize event to drive this — the host is in
         // charge of calling `set_viewport` and so the host is in
         // charge of when the signal updates.
-        runtime_core::set_viewport_size(runtime_core::ViewportSize {
+        runtime_shared::set_viewport_size(runtime_shared::ViewportSize {
+            width: width as f32,
+            height: height as f32,
+        });
+        // Forward the same pixel counts into the mounted world's viewport
+        // ctx (captured signal + deduped flush — the backend-web
+        // resize-listener discipline). Kept right beside the TLS write
+        // above so the two sinks can never diverge. No-op unless an app
+        // is booted.
+        newcore::forward_viewport(runtime_shared::ViewportSize {
             width: width as f32,
             height: height as f32,
         });
@@ -716,498 +744,6 @@ fn draw_text<S: Surface>(
 // Backend impl
 // ---------------------------------------------------------------------------
 
-impl Backend for CpuBackend {
-    type Node = CpuNode;
-
-    fn color_scheme(&self) -> ColorScheme {
-        // The CPU backend has no host preference of its own; the
-        // application's theme is the source of truth. Authors that
-        // care can override via the framework's theme APIs.
-        ColorScheme::Auto
-    }
-
-    fn platform(&self) -> Platform {
-        // `Custom("cpu")` documents the renderer kind without
-        // collapsing it into one of the named native platforms.
-        // Author code that branches on `Platform::Custom("cpu")`
-        // can opt into pixel-art / lower-density chrome.
-        Platform::Custom("cpu")
-    }
-
-    fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
-        self.alloc_node(NodeKind::View, String::new())
-    }
-
-    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
-        self.alloc_node(NodeKind::Text, content.to_string())
-    }
-
-    fn create_button(
-        &mut self,
-        label: &str,
-        on_click: &Action,
-        _leading_icon: Option<&IconData>,
-        _trailing_icon: Option<&IconData>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        let node = self.alloc_node(NodeKind::Button, label.to_string());
-        let handler = on_click.fire.clone();
-        if let Some(data) = self.nodes.get_mut(&node.id) {
-            data.on_click = Some(handler);
-        }
-        node
-    }
-
-    fn create_pressable(
-        &mut self,
-        on_click: Rc<dyn Fn()>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        let node = self.alloc_node(NodeKind::Pressable, String::new());
-        if let Some(data) = self.nodes.get_mut(&node.id) {
-            data.on_click = Some(on_click);
-        }
-        node
-    }
-
-    fn create_scroll_view(
-        &mut self,
-        horizontal: bool,
-        _on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        let node = self.alloc_node(NodeKind::ScrollView, String::new());
-        if let Some(data) = self.nodes.get_mut(&node.id) {
-            // `horizontal` flag lives on the existing
-            // `scroll_x` / `scroll_y` pair: we just remember which
-            // axis to honor in dispatch. For the MVP we honor both
-            // simultaneously regardless of the flag; surface a real
-            // axis lock once we add wheel/touch scroll.
-            let _ = horizontal;
-            // Pin children inside our box.
-            data.scroll_x = 0.0;
-            data.scroll_y = 0.0;
-        }
-        node
-    }
-
-    // ---------------------------------------------------------------------
-    // Unsupported-primitive placeholders.
-    //
-    // The CPU backend deliberately doesn't ship full input controls,
-    // virtualization, GPU canvas, external SDK overlays, modals, or
-    // navigators — those primitives don't fit the MCU constraint
-    // (no input infra on most boards, no GPU, no heap-heavy state,
-    // no async I/O). Author code that mounts them gets a visible
-    // text placeholder rendered through the existing 8×8 bitmap font
-    // path rather than the framework's default `unimplemented!()`
-    // panic. See `feedback_cpu_unsupported_placeholders` memory and
-    // the README's "What's supported" table.
-    //
-    // If you need any of these on a device with the capability,
-    // extend the backend deliberately — don't paper over with a
-    // hidden fallback. The placeholder is meant to be SEEN.
-    // ---------------------------------------------------------------------
-
-    fn create_image(
-        &mut self,
-        _src: &str,
-        _alt: Option<&str>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.alloc_node(
-            NodeKind::Text,
-            "Image not supported on CPU backend".to_string(),
-        )
-    }
-
-    fn create_icon(
-        &mut self,
-        _data: &IconData,
-        _color: Option<&runtime_core::Color>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.alloc_node(
-            NodeKind::Text,
-            "Icon not supported on CPU backend".to_string(),
-        )
-    }
-
-    fn create_text_input(
-        &mut self,
-        _initial_value: &str,
-        _placeholder: Option<&str>,
-        _on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        _on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
-        _secure: bool,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.alloc_node(
-            NodeKind::Text,
-            "TextInput not supported on CPU backend".to_string(),
-        )
-    }
-
-    fn create_text_area(
-        &mut self,
-        _initial_value: &str,
-        _placeholder: Option<&str>,
-        _wrap: bool,
-        _min_rows: Option<u32>,
-        _max_rows: Option<u32>,
-        _on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.alloc_node(
-            NodeKind::Text,
-            "TextArea not supported on CPU backend".to_string(),
-        )
-    }
-
-    fn create_toggle(
-        &mut self,
-        _initial_value: bool,
-        _on_change: Rc<dyn Fn(bool)>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.alloc_node(
-            NodeKind::Text,
-            "Toggle not supported on CPU backend".to_string(),
-        )
-    }
-
-    fn create_slider(
-        &mut self,
-        _initial_value: f32,
-        _min: f32,
-        _max: f32,
-        _step: Option<f32>,
-        _on_change: Rc<dyn Fn(f32)>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.alloc_node(
-            NodeKind::Text,
-            "Slider not supported on CPU backend".to_string(),
-        )
-    }
-
-    fn create_activity_indicator(
-        &mut self,
-        _size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
-        _color: Option<&runtime_core::Color>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.alloc_node(
-            NodeKind::Text,
-            "ActivityIndicator not supported on CPU backend".to_string(),
-        )
-    }
-
-    fn create_virtualizer(
-        &mut self,
-        _callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
-        _overscan: f32,
-        _layout: runtime_core::VirtualLayout,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.alloc_node(
-            NodeKind::Text,
-            "Virtualizer not supported on CPU backend".to_string(),
-        )
-    }
-
-    fn create_graphics(
-        &mut self,
-        _on_ready: runtime_core::primitives::graphics::OnReady,
-        _on_resize: runtime_core::primitives::graphics::OnResize,
-        _on_lost: runtime_core::primitives::graphics::OnLost,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.alloc_node(
-            NodeKind::Text,
-            "Graphics not supported on CPU backend".to_string(),
-        )
-    }
-
-    fn create_external(
-        &mut self,
-        _type_id: std::any::TypeId,
-        type_name: &'static str,
-        _payload: &Rc<dyn std::any::Any>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.alloc_node(
-            NodeKind::Text,
-            format!("External \"{type_name}\" not supported on CPU backend"),
-        )
-    }
-
-    fn create_portal(
-        &mut self,
-        _target: runtime_core::primitives::portal::PortalTarget,
-        _on_dismiss: Option<Rc<dyn Fn()>>,
-        _trap_focus: bool,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.alloc_node(
-            NodeKind::Text,
-            "Portal not supported on CPU backend".to_string(),
-        )
-    }
-
-    fn create_navigator(
-        &mut self,
-        _type_id: std::any::TypeId,
-        type_name: &'static str,
-        _presentation: Rc<dyn std::any::Any>,
-        _host: runtime_core::primitives::navigator::NavigatorHost<Self::Node>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        self.alloc_node(
-            NodeKind::Text,
-            format!("Navigator \"{type_name}\" not supported on CPU backend"),
-        )
-    }
-
-    fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
-        let Some(parent_layout) = self.nodes.get(&parent.id).map(|d| d.layout) else { return };
-        let Some(child_layout) = self.nodes.get(&child.id).map(|d| d.layout) else { return };
-        self.layout.add_child(parent_layout, child_layout);
-        if let Some(parent_data) = self.nodes.get_mut(&parent.id) {
-            parent_data.children.push(child.id);
-        }
-    }
-
-    fn update_text(&mut self, node: &Self::Node, content: &str) {
-        if let Some(data) = self.nodes.get_mut(&node.id) {
-            if data.content != content {
-                data.content = content.to_string();
-            }
-        }
-    }
-
-    fn clear_children(&mut self, node: &Self::Node) {
-        let Some(child_ids) = self.nodes.get(&node.id).map(|d| d.children.clone()) else { return };
-        for child_id in &child_ids {
-            self.remove_subtree(*child_id);
-        }
-        if let Some(data) = self.nodes.get_mut(&node.id) {
-            data.children.clear();
-        }
-    }
-
-    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
-        let Some(layout_node) = self.nodes.get(&node.id).map(|d| d.layout) else { return };
-
-        // Eagerly resolve `background` and `color` BEFORE handing the
-        // rules to `runtime-layout`'s `set_style`. Same ordering
-        // constraint the terminal backend documents — the cohort
-        // driver Effect re-fires on token-signal changes, and the
-        // resolve must happen before other style processing so the
-        // per-token edges land in this Effect's dependency set on
-        // the first re-fire. Without it, theme toggles update on
-        // the second toggle, not the first.
-        let _ = style.background.as_ref().map(|t| t.resolve());
-        let _ = style.color.as_ref().map(|t| t.resolve());
-        self.layout.set_style(layout_node, style);
-
-        let fg = style
-            .color
-            .as_ref()
-            .map(|t| parse_or(&t.resolve().0, Rgba::default()));
-        let bg = style
-            .background
-            .as_ref()
-            .map(|t| parse_or(&t.resolve().0, Rgba::TRANSPARENT));
-        let opacity = style
-            .opacity
-            .as_ref()
-            .map(|t| t.resolve().clamp(0.0, 1.0));
-
-        // Borders.
-        let bw = [
-            style.border_top_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
-            style.border_right_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
-            style.border_bottom_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
-            style.border_left_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
-        ];
-        let bc = [
-            style
-                .border_top_color
-                .as_ref()
-                .map(|t| parse_or(&t.resolve().0, Rgba::BLACK)),
-            style
-                .border_right_color
-                .as_ref()
-                .map(|t| parse_or(&t.resolve().0, Rgba::BLACK)),
-            style
-                .border_bottom_color
-                .as_ref()
-                .map(|t| parse_or(&t.resolve().0, Rgba::BLACK)),
-            style
-                .border_left_color
-                .as_ref()
-                .map(|t| parse_or(&t.resolve().0, Rgba::BLACK)),
-        ];
-
-        // Corner radii. We only honor Px units — Percent radii would
-        // need the node's own frame size, which we don't have until
-        // layout has run. ESP32-class targets shouldn't use percent
-        // radii anyway (they're a CSS convenience, not load-bearing).
-        let radius_px = |t: &runtime_core::Tokenized<Length>| -> f32 {
-            match t.resolve() {
-                Length::Px(v) => v,
-                _ => 0.0,
-            }
-        };
-        let radii = [
-            style.border_top_left_radius.as_ref().map(radius_px).unwrap_or(0.0),
-            style.border_top_right_radius.as_ref().map(radius_px).unwrap_or(0.0),
-            style.border_bottom_right_radius.as_ref().map(radius_px).unwrap_or(0.0),
-            style.border_bottom_left_radius.as_ref().map(radius_px).unwrap_or(0.0),
-        ];
-
-        // Font size (Px-only; same rationale as radii).
-        let font_size_px = style.font_size.as_ref().and_then(|t| match t.resolve() {
-            Length::Px(v) => Some(v),
-            _ => None,
-        });
-
-        // Gradient resolution. Stops are pre-parsed to Rgba so the
-        // per-pixel sampler in `paint_node` doesn't reparse strings
-        // on every paint.
-        let gradient = style.background_gradient.as_ref().map(|g| {
-            let stops: Vec<(f32, Rgba)> = g
-                .stops
-                .iter()
-                .map(|s| (s.offset, parse_or(&s.color.0, Rgba::TRANSPARENT)))
-                .collect();
-            let animated_stops = vec![None; stops.len()];
-            ResolvedGradient { kind: g.kind.clone(), stops, animated_stops }
-        });
-
-        // Static transform — TranslateX/Y only on the CPU backend.
-        // Scale / Rotate would force a per-pixel inverse transform
-        // (expensive without SIMD); skip for now and log a warning
-        // via the debug build assertion below.
-        let mut static_tx: Option<Length> = None;
-        let mut static_ty: Option<Length> = None;
-        if let Some(transforms) = style.transform.as_ref() {
-            for t in transforms {
-                match t {
-                    runtime_core::Transform::TranslateX(l) => static_tx = Some(*l),
-                    runtime_core::Transform::TranslateY(l) => static_ty = Some(*l),
-                    _ => {
-                        // Silently drop. Surface a real diagnostic
-                        // once we have a logger wired into the
-                        // backend; `println!` is the wrong shape
-                        // here (won't reach the ESP32 host).
-                    }
-                }
-            }
-        }
-
-        if let Some(data) = self.nodes.get_mut(&node.id) {
-            data.style = Some(style.clone());
-            data.fg = fg;
-            data.bg = bg;
-            if let Some(o) = opacity {
-                data.opacity = o;
-            }
-            data.border_widths = bw;
-            data.border_colors = bc;
-            data.corner_radii = radii;
-            data.font_size_px = font_size_px;
-            data.static_translate_x = static_tx;
-            data.static_translate_y = static_ty;
-            // Preserve animated stops across stylesheet re-apply when
-            // the gradient's shape (stop count) matches — re-applying
-            // a stylesheet (state overlay, theme refresh, hot patch)
-            // shouldn't reset in-flight per-stop animations. The
-            // terminal backend documents the same rule.
-            let preserved = data
-                .gradient
-                .as_ref()
-                .and_then(|old| {
-                    gradient.as_ref().map(|new| {
-                        if new.stops.len() == old.stops.len() {
-                            old.animated_stops.clone()
-                        } else {
-                            vec![None; new.stops.len()]
-                        }
-                    })
-                });
-            data.gradient = gradient.map(|mut g| {
-                if let Some(p) = preserved {
-                    g.animated_stops = p;
-                }
-                g
-            });
-        }
-    }
-
-    /// Per-frame scalar-property write — opacity, translate, z-index.
-    /// Scale / Rotate fall through to a no-op for now; implementing
-    /// them correctly on a software rasterizer needs an inverse
-    /// transform on every pixel of the affected subtree, which is
-    /// the wrong cost to pay on an ESP32-class target. We log via
-    /// debug-assertion so authors notice when they hit the gap.
-    fn set_animated_f32(&mut self, node: &Self::Node, prop: AnimProp, value: f32) {
-        let Some(data) = self.nodes.get_mut(&node.id) else { return };
-        match prop {
-            AnimProp::Opacity => {
-                data.animated_opacity = Some(value.clamp(0.0, 1.0));
-            }
-            AnimProp::TranslateX => {
-                data.animated_translate_x = value;
-            }
-            AnimProp::TranslateY => {
-                data.animated_translate_y = value;
-            }
-            AnimProp::ZIndex => {
-                data.z_index = value;
-            }
-            // Scale / ScaleX / ScaleY / RotateZ — not supported by
-            // the axis-aligned rasterizer. Silently drop; documented
-            // in `README.md`. (debug_assert! would crash tests that
-            // exercise composite trees containing both supported and
-            // unsupported animations.)
-            _ => {}
-        }
-    }
-
-    /// Per-frame color-property write — animated background,
-    /// foreground, or gradient stop.
-    fn set_animated_color(&mut self, node: &Self::Node, prop: AnimProp, value: [f32; 4]) {
-        let Some(data) = self.nodes.get_mut(&node.id) else { return };
-        let rgba = Rgba::from_srgb_f32(value);
-        match prop {
-            AnimProp::BackgroundColor => {
-                data.animated_bg = Some(rgba);
-            }
-            AnimProp::ForegroundColor => {
-                data.animated_fg = Some(rgba);
-            }
-            AnimProp::GradientStopColor(idx) => {
-                if let Some(g) = data.gradient.as_mut() {
-                    let i = idx as usize;
-                    if i < g.animated_stops.len() {
-                        g.animated_stops[i] = Some(rgba);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn finish(&mut self, _root: Self::Node) {
-        // Nothing to do — the host calls `render` when it wants a
-        // frame. Unlike a windowed backend, we don't drive paints
-        // on a vsync; the host decides cadence.
-    }
-}
 
 impl CpuBackend {
     /// Recursively free a node and all its descendants. Removes the

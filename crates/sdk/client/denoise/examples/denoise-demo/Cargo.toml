@@ -16,22 +16,41 @@ crate-type = ["rlib"]
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The author surface. `runtime-core` is aliased to `runtime_core` at the
+# crate root (see src/lib.rs) — one core, no feature switch;
+# `async-driver` because the model preload + record/stop handlers use
+# `driver::spawn_async`. `runtime-vocabulary` is needed because the `ui!`
+# emission spells absolute `::runtime_vocabulary::glue::…` paths (and for
+# the caps bounds the renderer/player `register`s ask for), and
+# `runtime-scene` for the scene `Registry` in the registration seam.
 runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 microphone = { workspace = true }
 denoise = { workspace = true }
-# Record each stream (raw + denoised) to an .m4a, and play them back in-app.
-# `video` self-registers its `Element::External` handler via inventory at
-# backend construction (we just depend on it + use `video::Video`).
+# Record each stream (raw + denoised) to an .m4a, and play them back
+# in-app. `video::register` is composed into `register_scene_extensions`
+# (the scene registry has no self-registration — an unregistered payload
+# panics at realize).
 media-writer = { workspace = true }
 files = { workspace = true }
 video = { workspace = true }
-# GPU waveform scrubber. `canvas` is the SDK; `canvas-native` is the CPU base
-# renderer (all targets); `canvas-vello` (target-gated below) is the GPU renderer
-# that wins last on macOS/iOS/web/Android. All self-register via inventory.
+# GPU waveform scrubber. `canvas` is the SDK; `canvas-native` is the CPU
+# base renderer (registered first, on every target); `canvas-vello`
+# (target-gated below) is the GPU renderer registered SECOND, so it wins
+# on the payload key where it can run and self-gates off where it can't
+# (no WebGPU in the browser, Vulkan without f16 on the Android emulator).
 canvas = { workspace = true }
 canvas-native = { workspace = true }
 dev-server = { workspace = true, optional = true }
+
+[target.'cfg(any(target_arch = "wasm32", all(not(target_arch = "wasm32"), any(target_os = "macos", target_os = "ios", target_os = "android"))))'.dependencies]
+# GPU canvas: vello over WebGPU (web) / Metal (macOS, iOS) / Vulkan
+# (Android). Its `register` is caps-generic (`GraphicsOps +
+# StyleServices`) and self-gating, so the seam calls it unconditionally on
+# these targets. Desktop Linux/Windows stay on canvas-native.
+canvas-vello = { workspace = true }
 
 # Web only: the DeepFilterNet model isn't bundled into the wasm binary (that's
 # the `denoise` SDK's small-bundle design). Instead it rides in a lazily-loaded
@@ -41,20 +60,10 @@ dev-server = { workspace = true, optional = true }
 # bundle stays small. Native uses the embedded `Denoiser::new()` (no chunk).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-split = { workspace = true }
-# GPU canvas on web (vello over WebGPU); falls back to Canvas2D per-canvas.
-canvas-vello = { workspace = true }
-
-[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
-# GPU canvas on macOS (vello/Metal) — overrides canvas-native (last-wins).
-canvas-vello = { workspace = true }
-
-[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
-# GPU canvas on iOS (vello/Metal); steps aside to canvas-native on the simulator.
-canvas-vello = { workspace = true }
-
-[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
-# GPU canvas on Android (vello/Vulkan); steps aside to canvas-native on emulators.
-canvas-vello = { workspace = true }
+# The concrete `WebBackend` — `video::register` is
+# `Registry<WebBackend>`-concrete on wasm32 (the real `<video>` element),
+# so the registration seam specializes there.
+backend-web = { workspace = true }
 
 # The mic capability + its OS prompt reason. `denoise` declares no capability
 # of its own (it consumes an existing stream), so the only permission injected

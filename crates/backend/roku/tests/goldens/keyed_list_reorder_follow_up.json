@@ -1,0 +1,36 @@
+[
+  {
+    "op": "ClearChildren",
+    "parent": 3
+  },
+  {
+    "content": "row-3",
+    "id": 8,
+    "op": "CreateText"
+  },
+  {
+    "child": 8,
+    "op": "Insert",
+    "parent": 3
+  },
+  {
+    "content": "row-1",
+    "id": 9,
+    "op": "CreateText"
+  },
+  {
+    "child": 9,
+    "op": "Insert",
+    "parent": 3
+  },
+  {
+    "content": "row-2",
+    "id": 10,
+    "op": "CreateText"
+  },
+  {
+    "child": 10,
+    "op": "Insert",
+    "parent": 3
+  }
+]

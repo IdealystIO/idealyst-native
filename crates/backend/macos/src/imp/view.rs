@@ -41,8 +41,8 @@ use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, MainThreadMarker, NSStr
 use std::cell::Cell as StdCell;
 use std::cell::RefCell as StdRefCell;
 
-use runtime_core::primitives::text_input::{BlurHandler, BlurOutcome};
-use runtime_core::{
+use runtime_shared::primitives::text_input::{BlurHandler, BlurOutcome};
+use runtime_shared::{
     set_pointer_modifiers, DroppedFile, FileDropEvent, FileDropHandler, FileDropPhase, HoverHandler,
     PointerModifiers, StateBits, TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint,
     WheelEvent, WheelHandler, WheelKind,
@@ -128,7 +128,15 @@ pub struct FlippedViewIvars {
     /// `backend_apple_core::pointer_events_policy`). AppKit has no native
     /// equivalent (`NSView` has no `userInteractionEnabled`), so the
     /// `hitTest:` override consults this directly.
-    pointer_events: Cell<Option<runtime_core::PointerEvents>>,
+    pointer_events: Cell<Option<runtime_shared::PointerEvents>>,
+    /// `Backend::mark_preserves_focus` flag. When set on this view (or any
+    /// ancestor — `mouse_down` walks the superview chain via
+    /// [`subtree_preserves_focus`]), a press inside the subtree skips the
+    /// blur-on-outside-click first-responder resign, so e.g. clicking an
+    /// option row in a combobox's anchored menu doesn't blur the input the
+    /// menu belongs to. The macOS half of web's canceled-`pointerdown`
+    /// focus preservation.
+    preserves_focus: Cell<bool>,
 }
 
 declare_class!(
@@ -192,7 +200,7 @@ declare_class!(
             // closure.
             if matches!(
                 self.ivars().pointer_events.get(),
-                Some(runtime_core::PointerEvents::None)
+                Some(runtime_shared::PointerEvents::None)
             ) {
                 result.and_then(|result| {
                     let self_view: &NSView = self;
@@ -202,7 +210,7 @@ declare_class!(
                     // Walk hit → … → (excluding) self, collecting each
                     // framework host's explicit pointer_events for the
                     // shared nearest-explicit-wins verdict.
-                    let mut chain: Vec<Option<runtime_core::PointerEvents>> = Vec::new();
+                    let mut chain: Vec<Option<runtime_shared::PointerEvents>> = Vec::new();
                     let mut cur: Option<Retained<NSView>> = Some(result.clone());
                     while let Some(v) = cur {
                         if std::ptr::eq(&*v as *const NSView, self_view as *const NSView) {
@@ -262,6 +270,14 @@ declare_class!(
                     let fr: *mut AnyObject = msg_send![window, firstResponder];
                     if !fr.is_null()
                         && msg_send![fr, isKindOfClass: objc2::class!(NSText)]
+                        // A press inside a focus-preserving subtree (a
+                        // combobox's anchored option menu, an input's
+                        // chevron/clear adornment) must leave the field
+                        // editor alone — resigning here would close-on-blur
+                        // the surface before its own click lands. The macOS
+                        // half of web's canceled-`pointerdown` focus
+                        // preservation (`Backend::mark_preserves_focus`).
+                        && !subtree_preserves_focus(self)
                     {
                         // `fr` is the shared field editor; its delegate is the
                         // NSTextField being edited. Consult that field's
@@ -291,6 +307,16 @@ declare_class!(
         fn mouse_dragged(&self, event: &NSEvent) {
             if !self.dispatch_mouse(event, TouchPhase::Moved) {
                 let _: () = unsafe { msg_send![super(self), mouseDragged: event] };
+            }
+        }
+
+        // Unpressed motion inside the tracking area (opted in per-view via
+        // `NSTrackingMouseMoved` above) → `TouchPhase::Hovered`, the presence
+        // channel (live cursor broadcast). Never part of a gesture.
+        #[method(mouseMoved:)]
+        fn mouse_moved(&self, event: &NSEvent) {
+            if !self.dispatch_mouse(event, TouchPhase::Hovered) {
+                let _: () = unsafe { msg_send![super(self), mouseMoved: event] };
             }
         }
 
@@ -429,11 +455,15 @@ declare_class!(
             if crate::imp::dev_no_hover_tracking() {
                 return;
             }
-            // Track hover when the view needs it for EITHER styling
-            // (`state_setter`) or an `on_hover` handler. Skip the area
-            // entirely for the many views that need neither.
+            // Track hover when the view needs it for styling
+            // (`state_setter`), an `on_hover` handler, or an `on_touch`
+            // handler (which receives unpressed motion as
+            // `TouchPhase::Hovered`). Skip the area entirely for the many
+            // views that need none of them.
+            let wants_hover_moves = self.ivars().handler.borrow().is_some();
             if self.ivars().state_setter.borrow().is_none()
                 && self.ivars().hover_handler.borrow().is_none()
+                && !wants_hover_moves
             {
                 return;
             }
@@ -442,9 +472,14 @@ declare_class!(
             // across resizes/scrolls); `ActiveInActiveApp` tracks while our
             // app is frontmost; `MouseEnteredAndExited` delivers the two
             // methods above. Owner is `self`, so they route here.
-            let opts = NSTrackingAreaOptions::NSTrackingMouseEnteredAndExited
+            // `MouseMoved` (only for views with a touch handler — it's the
+            // chatty one) delivers `mouseMoved:` → `TouchPhase::Hovered`.
+            let mut opts = NSTrackingAreaOptions::NSTrackingMouseEnteredAndExited
                 | NSTrackingAreaOptions::NSTrackingActiveInActiveApp
                 | NSTrackingAreaOptions::NSTrackingInVisibleRect;
+            if wants_hover_moves {
+                opts |= NSTrackingAreaOptions::NSTrackingMouseMoved;
+            }
             let mtm = MainThreadMarker::from(self);
             let area: Retained<NSTrackingArea> = unsafe {
                 msg_send_id![
@@ -589,15 +624,24 @@ impl FlippedView {
             file_drop_handler: RefCell::new(None),
             activate: RefCell::new(None),
             pointer_events: Cell::new(None),
+            preserves_focus: Cell::new(false),
         });
         unsafe { msg_send_id![super(this), init] }
+    }
+
+    /// Flag this view as a focus-preserving press region. Called by
+    /// `Backend::mark_preserves_focus`; consulted (self + ancestors) by
+    /// `mouse_down`'s blur-on-outside-click resign via
+    /// [`subtree_preserves_focus`].
+    pub(crate) fn set_preserves_focus(&self) {
+        self.ivars().preserves_focus.set(true);
     }
 
     /// Map `StyleRules::pointer_events` onto this host. Called by
     /// `apply_style`; `Some` overwrites, unset leaves the prior apply
     /// (the same convention `cursor` uses). Consulted by the `hitTest:`
     /// override above.
-    pub(crate) fn set_pointer_events(&self, v: Option<runtime_core::PointerEvents>) {
+    pub(crate) fn set_pointer_events(&self, v: Option<runtime_shared::PointerEvents>) {
         self.ivars().pointer_events.set(v);
     }
 
@@ -729,8 +773,8 @@ impl FlippedView {
     fn fire_focus_state(&self, on: bool) {
         let setter = self.ivars().state_setter.borrow().clone();
         let Some(setter) = setter else { return };
-        runtime_core::after_ms_detached(0, move || {
-            runtime_core::cycle(|| setter(StateBits::FOCUSED, on));
+        runtime_shared::after_ms_detached(0, move || {
+            runtime_shared::cycle(|| setter(StateBits::FOCUSED, on));
         });
     }
 
@@ -817,7 +861,7 @@ impl FlippedView {
             force: None,
         };
         // Surface the keyboard modifiers for this event so a handler can read them
-        // via `runtime_core::pointer_modifiers()` (e.g. Cmd/Shift-click to extend a
+        // via `runtime_shared::pointer_modifiers()` (e.g. Cmd/Shift-click to extend a
         // selection). Same `NSEventModifierFlags` bits the keyboard path uses.
         {
             const FLAG_SHIFT: usize = 1 << 17;
@@ -842,7 +886,7 @@ impl FlippedView {
         // web renderer's rAF coalescing, and it lets app code drop manual
         // `batch(..)` around camera mutations.
         // Batching is automatic: the `on_touch` handler is wrapped in a
-        // reactive cycle at attach time (see `runtime_core::cycle`), so a
+        // reactive cycle at attach time (see `runtime_shared::cycle`), so a
         // burst of camera signal writes coalesces into one consistent render
         // per input event — no backend-side `batch()` needed. (Previously a
         // local `batch(..)` here; centralized so every backend gets it.)
@@ -934,7 +978,7 @@ impl FlippedView {
             timestamp_ns: (ts * 1_000_000_000.0) as u64,
         };
         // Batching is automatic via the core `on_wheel` cycle wrapper (see
-        // `dispatch_mouse` and `runtime_core::cycle`) — wheel pan/zoom writes to
+        // `dispatch_mouse` and `runtime_shared::cycle`) — wheel pan/zoom writes to
         // several camera signals coalesce into one render per event.
         (handler)(&we).consumed
     }
@@ -1018,15 +1062,15 @@ fn mime_for_path(path: &std::path::Path) -> &'static str {
     }
 }
 
-/// Map a framework [`runtime_core::Cursor`] to the matching [`NSCursor`].
+/// Map a framework [`runtime_shared::Cursor`] to the matching [`NSCursor`].
 /// Returns `None` for `Auto` (and `None` means "install no cursor rect", so
 /// the view shows the OS default). Values with no AppKit equivalent fall back
 /// to the arrow — the honest default rather than a per-platform hack; web
 /// still gets the precise keyword. Built via `msg_send` against the
 /// `NSCursor` class methods so it doesn't depend on a specific binding's
 /// method coverage.
-pub(crate) fn cursor_for(c: runtime_core::Cursor) -> Option<Retained<NSCursor>> {
-    use runtime_core::Cursor;
+pub(crate) fn cursor_for(c: runtime_shared::Cursor) -> Option<Retained<NSCursor>> {
+    use runtime_shared::Cursor;
     // SAFETY: each is a documented `NSCursor` class method returning a
     // shared, autoreleased cursor; `msg_send_id` retains it.
     unsafe {
@@ -1365,7 +1409,7 @@ pub(crate) struct CellIvars {
     /// `IdealystLabelCell` (a non-editable label never edits).
     focus_setter: RefCell<Option<Rc<dyn Fn(bool)>>>,
     /// Cancelable-blur handler (see
-    /// [`runtime_core::primitives::text_input::BlurOutcome`]). The `FlippedView`
+    /// [`runtime_shared::primitives::text_input::BlurOutcome`]). The `FlippedView`
     /// outside-click handler consults it before resigning this field — `Keep`
     /// keeps focus. Also unused by `IdealystLabelCell`.
     blur_handler: RefCell<Option<BlurHandler>>,
@@ -1436,8 +1480,8 @@ fn cell_fire_focus(ivars: &CellIvars, on: bool) {
     if cb.is_none() && author.is_none() {
         return;
     }
-    runtime_core::after_ms_detached(0, move || {
-        runtime_core::cycle(|| {
+    runtime_shared::after_ms_detached(0, move || {
+        runtime_shared::cycle(|| {
             if let Some(cb) = cb {
                 cb(on);
             }
@@ -1804,6 +1848,31 @@ pub(crate) fn text_field_blur_allows(field: &NSView) -> bool {
         Some(iv) => cell_blur_allows(iv),
         None => true,
     }
+}
+
+/// True when `view` or any superview is a [`FlippedView`] flagged by
+/// `Backend::mark_preserves_focus` — i.e. a press that landed here belongs
+/// to a focus-preserving region (a combobox's anchored menu, an input
+/// adornment) and must not resign the active field editor. Walked from the
+/// pressed view because AppKit delivers `mouseDown:` to the deepest
+/// hit-test view; the flag usually sits on a wrapping container.
+pub(crate) fn subtree_preserves_focus(view: &FlippedView) -> bool {
+    let cls = objc2::class!(IdealystFlippedView);
+    let mut cur: *const AnyObject = view as *const FlippedView as *const AnyObject;
+    unsafe {
+        while !cur.is_null() {
+            let is_flipped: bool = msg_send![&*cur, isKindOfClass: cls];
+            if is_flipped {
+                // SAFETY: dynamic class confirmed `IdealystFlippedView`.
+                let fv: &FlippedView = &*(cur as *const FlippedView);
+                if fv.ivars().preserves_focus.get() {
+                    return true;
+                }
+            }
+            cur = msg_send![&*cur, superview];
+        }
+    }
+    false
 }
 
 /// Borrow the shared [`CellIvars`] of `field`'s cell if it's one of the

@@ -1,13 +1,13 @@
 //! `Element::Image` — an `<img>` with reactive `src`.
 
 use crate::WebBackend;
-use runtime_core::{AssetId, ImageErrorHandler, ImageLoadEvent, ImageLoadHandler};
+use runtime_shared::{AssetId, ImageErrorHandler, ImageLoadEvent, ImageLoadHandler};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{Event, HtmlImageElement, Node};
 
 /// Sentinel URL the framework emits for asset-backed images.
-/// The shape is `asset://<u64-id>` — see `runtime_core::image_asset`.
+/// The shape is `asset://<u64-id>` — see `runtime_shared::image_asset`.
 const ASSET_URL_PREFIX: &str = "asset://";
 
 /// If `src` is an `asset://{id}` sentinel, resolve it through the
@@ -87,7 +87,7 @@ pub(crate) fn install_load(b: &mut WebBackend, node: &Node, handler: ImageLoadHa
             height: img.natural_height() as f32,
         };
         let handler = handler.clone();
-        runtime_core::schedule_microtask(move || handler(&event));
+        runtime_shared::schedule_microtask(move || handler(&event));
         // Still attach the listener: a reactive `src` swap loads a new
         // bitmap and re-fires `load`, which should re-notify.
     }
@@ -116,7 +116,7 @@ pub(crate) fn install_error(b: &mut WebBackend, node: &Node, handler: ImageError
     // Already errored before we could attach (complete but no bitmap).
     if img.complete() && img.natural_width() == 0 && !img.src().is_empty() {
         let handler = handler.clone();
-        runtime_core::schedule_microtask(move || handler());
+        runtime_shared::schedule_microtask(move || handler());
     }
     let closure = Closure::<dyn FnMut(Event)>::new(move |_ev: Event| {
         handler();

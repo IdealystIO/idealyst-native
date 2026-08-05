@@ -30,7 +30,9 @@
 
 use crate::{GraphqlClient, GraphqlError, GraphqlRequest};
 use graphql_client::GraphQLQuery;
-use runtime_core::{mutation, resource, Mutation, Resource, Signal};
+// `signal(...)` — the free fn (the crate root aliases `runtime_core`,
+// so these resolve against `runtime_vocabulary::glue`).
+use runtime_core::{mutation, resource, signal, Mutation, Resource, Signal};
 
 /// Run a GraphQL query bound to the current component scope. Fetches on
 /// mount; call [`Resource::refetch`] to re-run with the same variables.
@@ -65,7 +67,7 @@ where
     // A stable, never-changing trigger: the resource fetches on mount and
     // re-runs only via `refetch()`. (`resource` needs a `Trackable` dep;
     // a fresh `Signal` is the minimal one.)
-    let trigger: Signal<u32> = Signal::new(0);
+    let trigger: Signal<u32> = signal(0);
 
     resource(trigger, move |_, _cancel| {
         let client = client.clone();

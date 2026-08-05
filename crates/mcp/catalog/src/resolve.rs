@@ -859,6 +859,7 @@ fn sdk_category_from_str(s: &str) -> SdkCategory {
         "media" => SdkCategory::Media,
         "ui" => SdkCategory::Ui,
         "device" => SdkCategory::Device,
+        "server" => SdkCategory::Server,
         _ => SdkCategory::Data,
     }
 }

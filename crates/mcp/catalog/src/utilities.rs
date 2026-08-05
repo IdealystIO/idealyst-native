@@ -12,7 +12,7 @@ inventory::submit! {
     UtilityEntry {
         name: "signal",
         module_path: "runtime_core",
-        docs: "Create a reactive `Signal<T>` from an initial value — the unit of mutable state in a component. A plain function (the historical `signal!` macro was removed; drop the `!`). `T` is inferred. Read with `.get()` (subscribes the surrounding reactive scope), write with `.set(v)` / `.update(|v| …)`. Equivalent to `Signal::new(value)`; the fn form is canonical. Capability halves: `.split()` → `(ReadSignal, WriteSignal)`, `.read_only()`, `.write_only()` — same slot, but the type only permits reading / writing. Type a prop `ReadSignal<T>` when the component observes without mutating. See [[reactivity]].",
+        docs: "Create a reactive `Signal<T>` from an initial value — the unit of mutable state in a component. A plain function (the historical `signal!` macro was removed; drop the `!`). `T` is inferred. Read with `.get()` (subscribes the surrounding reactive scope). Write surface: `.set(v)` is equality-guarded (`T: PartialEq` — a same-value write wakes no subscribers); `.set_always(v)` writes and always notifies (for deliberate same-value retriggers — NOT an escape from the `PartialEq` bound, which is on the whole handle: a type with no `PartialEq` cannot be stored in a signal at all; give it a pointer-identity impl, or wrap it in `runtime_core::ByIdentity<T>` / `ByIdentityArc<T>` when it is not yours to change); `.touch()` notifies without writing; `.set_untracked(v)` writes without notifying; `.update(|v| …)` mutates in place and always notifies. Equivalent to `Signal::new(value)`; the fn form is canonical. Capability halves: `.split()` → `(ReadSignal, WriteSignal)`, `.read_only()`, `.write_only()` — same slot, but the type only permits reading / writing. Type a prop `ReadSignal<T>` when the component observes without mutating. See [[reactivity]].",
         params: &[
             ParamSpec {
                 name: "value",
@@ -31,7 +31,7 @@ inventory::submit! {
     UtilityEntry {
         name: "memo",
         module_path: "runtime_core",
-        docs: "Cached derived signal: `memo(move || expr)` recomputes when a signal the closure reads changes, and notifies subscribers only when the value actually differs (`T: PartialEq`). A plain function (the historical `memo!` macro was removed — write the `move ||` yourself). Returns the READ half only (`ReadSignal<T>`): a memo is a pure derivation, so its output is not writable. Use for derived state read in several places or expensive to compute — the work runs once per dependency change, not once per read. For a cheap derivation, a plain closure or `rx!` is lighter; for a type without `PartialEq`, call `memo_with(eq, f)`. Body must be pure — a `.set()` inside the compute panics. See [[reactivity]].",
+        docs: "Cached derived signal: `memo(move || expr)` recomputes when a signal the closure reads changes, and notifies subscribers only when the value actually differs (`T: PartialEq`). A plain function (the historical `memo!` macro was removed — write the `move ||` yourself). Returns the READ half only (`ReadSignal<T>`): a memo is a pure derivation, so its output is not writable. Use for derived state read in several places or expensive to compute — the work runs once per dependency change, not once per read. For a cheap derivation, a plain closure or `rx!` is lighter; for a near-equality comparison (float tolerance) call `memo_with(eq, f)` — it narrows the comparison but does not lift the bound, so a type with no equality at all still needs a `PartialEq` impl or a `runtime_core::ByIdentity<T>` wrapper. Body must be pure — a `.set()` inside the compute panics. See [[reactivity]].",
         params: &[
             ParamSpec {
                 name: "f",
@@ -69,25 +69,6 @@ inventory::submit! {
                 name: "url",
                 type_str: "& str",
                 type_short_name: "str",
-            },
-        ],
-        return_type: "()",
-        return_type_short: "()",
-        category: UtilityCategory::Platform,
-        _seal: (),
-    }
-}
-
-inventory::submit! {
-    UtilityEntry {
-        name: "defer_external_registration",
-        module_path: "runtime_core",
-        docs: "Register a third-party `External` handler LAZILY, from inside a `lazy!` chunk body, to keep a heavy SDK out of the web main bundle. Problem it solves: an `External` handler installed eagerly (at boot via `register_extensions`, or an `inventory::submit!` drained at backend construction) is statically reachable from `main.wasm`, so wasm-split keeps the whole SDK in the main bundle — wrapping the *usage* in `lazy!` doesn't help, because REGISTRATION is the anchor, not rendering. Fix: have the SDK expose a `register_lazy()` that calls this from within the `lazy!` body — `defer_external_registration::<WebBackend, _>(|b| b.register_external::<Props,_>(handler))`. The closure (and the handler + heavy code it captures) is then reachable only from the chunk, so wasm-split keeps the SDK's code out of main (its data leaves main only under the experimental opt-in `idealyst build --web --release --data-prune`); the backend's `create_external` applies the queued registration (via `drain_external_registrations`, guarded by `has_pending_external_registrations`) before dispatching the chunk's own `External`. `B` is the concrete backend type (`WebBackend` on web); native registers eagerly (no chunk, no bundle cost) so `register_lazy` is a no-op there. See [[External]] and the `lazy!` macro.",
-        params: &[
-            ParamSpec {
-                name: "apply",
-                type_str: "impl FnOnce(&mut B)",
-                type_short_name: "FnOnce",
             },
         ],
         return_type: "()",

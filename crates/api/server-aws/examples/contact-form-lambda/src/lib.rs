@@ -16,8 +16,8 @@
 use idea_ui::{install_idea_theme, light_theme, Stack, StackGap, StackPadding, Typography};
 
 use runtime_core::{
-    async_reducer, signal, text, ui, AsyncReducer, AsyncStatus, Element, FlexDirection,
-    IntoElement, Length, Signal, StyleRules, StyleSheet,
+    mutation, signal, ui, Element, FlexDirection, IntoElement, Length, Mutation, Signal,
+    StyleRules, StyleSheet,
 };
 use serde::{Deserialize, Serialize};
 use server::{server, ServerError};
@@ -212,9 +212,21 @@ fn configure_server() {
     }
 }
 
-/// SDK-handler registration hook the CLI-generated wrappers invoke before
-/// mount. No third-party SDKs here, so it's an empty generic over `Backend`.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam, invoked by the CLI-generated wrappers after
+/// `runtime_vocabulary::register_builtins`. Registry-generic over the scene
+/// `Host` so ONE seam serves every backend. This app registers no third-party
+/// scene handlers — but the seam is mandatory: an unregistered payload panics
+/// at realize.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
+}
 
 // ============================================================================
 // `app()` — the idealyst UI: three fields + submit, with a live status line.
@@ -229,15 +241,16 @@ pub fn app() -> Element {
     let message: Signal<String> = signal(String::new());
 
     // Submit folds the server's confirmation id into a status signal; the
-    // reducer's own lifecycle (loading/error) is projected separately below.
+    // mutation's own lifecycle (loading/error) is projected separately below.
+    // The handler writes `status` on success, so the response lands in local
+    // state with no second round-trip. `Signal` is `Copy` and routes to its own
+    // world, so the future captures it directly.
     let status: Signal<String> = signal("Fill in the form and submit.".to_string());
-    let submit: AsyncReducer<ContactSubmission, ServerError> = async_reducer(
-        status,
-        |input| async move { submit_contact(input).await },
-        |st: &mut String, confirmation: String| {
-            *st = format!("Thanks — your message was sent (ref {confirmation}).");
-        },
-    );
+    let submit: Mutation<ContactSubmission, (), ServerError> = mutation(move |input| async move {
+        let confirmation = submit_contact(input).await?;
+        status.set(format!("Thanks — your message was sent (ref {confirmation})."));
+        Ok(())
+    });
 
     let on_submit = {
         let submit = submit.clone();
@@ -251,41 +264,44 @@ pub fn app() -> Element {
     };
 
     // Two status lines, each reading a single reactive source — kept apart
-    // because folding both the reducer's lifecycle and the `status` signal into
-    // one `Fn() -> String` text closure trips inference. The transient line
-    // tracks the reducer (sending/error); the persistent line shows the stored
-    // instruction or success message.
+    // because folding both the mutation's lifecycle and the `status` signal
+    // into one `Fn() -> String` text closure trips inference. The transient
+    // line tracks the mutation (sending/error); the persistent line shows the
+    // stored instruction or success message.
     let submit_for_status = submit.clone();
-    let transient_line = text(move || match submit_for_status.status_now() {
-        AsyncStatus::Loading => "Sending…".to_string(),
-        AsyncStatus::Error(e) => format!("Error: {e}"),
-        AsyncStatus::Idle => String::new(),
-    })
-    .into_element();
-    let status_line = text(move || status.get()).into_element();
-
-    let body: Vec<Element> = vec![
-        ui! { Typography(content = "Contact us".to_string(), kind = idea_ui::typography_kind::H1) },
-        ui! {
-            Typography(
-                content = "Submitting calls a #[server] fn that, on AWS, writes the \
-                    message to DynamoDB and emails a notification via SES — the same \
-                    function runs locally for development."
-                    .to_string(),
-                muted = true,
-            )
-        },
-        ui! { text_input(value = name, on_change = move |s| name.set(s), placeholder = "Your name") },
-        ui! { text_input(value = email, on_change = move |s| email.set(s), placeholder = "you@example.com") },
-        ui! { text_input(value = message, on_change = move |s| message.set(s), placeholder = "Your message") },
-        ui! { button(label = "Send".to_string(), on_click = on_submit) },
-        transient_line,
-        status_line,
-    ];
 
     ui! {
         view(style = root_fill()) {
-            Stack(gap = StackGap::Md, padding = StackPadding::Lg) { body }
+            Stack(gap = StackGap::Md, padding = StackPadding::Lg) {
+                Typography(
+                    content = "Contact us".to_string(),
+                    kind = idea_ui::typography_kind::H1,
+                )
+                Typography(
+                    content = "Submitting calls a #[server] fn that, on AWS, writes the \
+                        message to DynamoDB and emails a notification via SES — the same \
+                        function runs locally for development."
+                        .to_string(),
+                    muted = true,
+                )
+                text_input(value = name, on_change = move |s| name.set(s), placeholder = "Your name")
+                text_input(value = email, on_change = move |s| email.set(s), placeholder = "you@example.com")
+                text_input(value = message, on_change = move |s| message.set(s), placeholder = "Your message")
+                button(label = "Send".to_string(), on_click = on_submit)
+                text {
+                    move || {
+                        let state = submit_for_status.state();
+                        if state.loading {
+                            "Sending…".to_string()
+                        } else if let Some(e) = &state.error {
+                            format!("Error: {e}")
+                        } else {
+                            String::new()
+                        }
+                    }
+                }
+                text { move || status.get() }
+            }
         }
     }
 }

@@ -18,14 +18,47 @@ use idea_ui::{install_idea_theme, light_theme, typography_kind, Stack, StackGap,
 use media_stream::MediaStream;
 use runtime_core::{signal, text, ui, Element, IntoElement, Signal};
 
-/// No per-platform registration needed: the `video` external self-registers
-/// via `inventory::submit!` at backend construction (see
-/// [[project_inventory_self_registration]]). The crate stays linked through
-/// the `video::Video` references in `app()`.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam, invoked by the CLI-generated wrappers
+/// after `runtime_vocabulary::register_builtins`. There is no inventory
+/// self-registration on the scene registry — an UNREGISTERED payload
+/// panics at realize — so the `video` handler MUST be composed in here.
+///
+/// wasm32 takes the `WebBackend`-concrete arm because the real `<video>`
+/// renderer is `web_sys`-bound and cannot be expressed over the caps
+/// traits.
+#[cfg(target_arch = "wasm32")]
+pub fn register_scene_extensions(
+    registry: &mut runtime_scene::Registry<backend_web::WebBackend>,
+) {
+    video::register(registry);
+}
 
+/// Native arm: `video::register` dispatches on the registry TYPE at
+/// registration time (macOS / iOS / Android get their native player,
+/// every other host the External placeholder), so one generic seam
+/// covers them all.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
+where
+    H: runtime_vocabulary::caps::ExternalOps
+        + runtime_vocabulary::style_attach::StyleServices
+        + 'static,
+{
+    video::register(registry);
+}
+
+/// Recorder-side seam for the runtime-server sidecar
+/// (`dev_server::sidecar::run_newcore`).
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {}
+pub fn register_scene_extensions_recorder(registry: &mut dev_server::newcore::SceneRegistry) {
+    video::register(registry);
+}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
+}
 
 pub fn app() -> Element {
     install_idea_theme(light_theme());
@@ -33,6 +66,11 @@ pub fn app() -> Element {
     // One stream signal per source. Each `Video` reads its own via a reactive
     // `stream(..)` source, so flipping the signal populates that video in
     // place — no remount.
+    //
+    // `MediaStream` compares by pointer identity (see its `PartialEq`), so
+    // `Option<MediaStream>` is directly a legal signal payload: every fresh
+    // capture is a distinct instance and notifies, while re-storing the same
+    // stream is correctly swallowed by the guard.
     let cam_sig: Signal<Option<MediaStream>> = signal(None);
     let screen_sig: Signal<Option<MediaStream>> = signal(None);
     let cam_status: Signal<String> = signal("idle".to_string());

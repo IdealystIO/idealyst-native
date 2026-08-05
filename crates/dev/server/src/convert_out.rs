@@ -7,9 +7,9 @@
 //! resolved literal when sent on the wire. Tokens are resolved
 //! against the dev-side active theme before serialization.
 
-use runtime_core::accessibility::{AccessibilityProps, LiveRegionPriority, Role};
-use runtime_core::primitives;
-use runtime_core::{
+use runtime_shared::accessibility::{AccessibilityProps, LiveRegionPriority, Role};
+use runtime_shared::primitives;
+use runtime_shared::{
     AlignItems, AssetId, AssetSource, AssetTag, Color, Easing, FlexDirection, FontFamily,
     FontStyle, FontWeight, Gradient, GradientKind, GradientStop, JustifyContent, Length, ObjectFit,
     Overflow, Position, RadialExtent, StateBits, StyleRules, SystemFallback, TextAlign, Tokenized,
@@ -51,11 +51,11 @@ pub fn easing_to_wire(e: Easing) -> WireEasing {
     }
 }
 
-/// Bridge `runtime_core::animation::AnimProp` to its wire mirror.
+/// Bridge `runtime_shared::animation::AnimProp` to its wire mirror.
 /// One-to-one map; `GradientStopColor(idx)` carries the same `u8`
 /// stop index inline.
-pub fn anim_prop_to_wire(p: runtime_core::animation::AnimProp) -> wire::WireAnimProp {
-    use runtime_core::animation::AnimProp;
+pub fn anim_prop_to_wire(p: runtime_shared::animation::AnimProp) -> wire::WireAnimProp {
+    use runtime_shared::animation::AnimProp;
     match p {
         AnimProp::Opacity => wire::WireAnimProp::Opacity,
         AnimProp::TranslateX => wire::WireAnimProp::TranslateX,
@@ -386,7 +386,7 @@ pub fn typeface_face_to_wire(f: &TypefaceFace) -> WireTypefaceFace {
 
 /// Convert an `&AccessibilityProps` into its wire mirror. Carries
 /// label / hint / identifier / hidden / role / traits / live-region
-/// across faithfully. For each [`runtime_core::accessibility::AccessibilityAction`]
+/// across faithfully. For each [`runtime_shared::accessibility::AccessibilityAction`]
 /// the recorder allocates a fresh [`wire::HandlerId`] in `handlers`
 /// (registering the action's `Rc<dyn Fn()>` so the reverse-channel
 /// `AppToDev::Event { handler, args: Unit }` dispatches it). The shape
@@ -470,5 +470,31 @@ pub fn live_region_to_wire(p: LiveRegionPriority) -> WireLiveRegionPriority {
     match p {
         LiveRegionPriority::Polite => WireLiveRegionPriority::Polite,
         LiveRegionPriority::Assertive => WireLiveRegionPriority::Assertive,
+    }
+}
+
+/// Wire form of a virtualizer layout. The ONE in-memory definition is
+/// `runtime_shared::primitives::virtualizer::VirtualLayout` (re-exported
+/// as `runtime_shared::VirtualLayout`; both cores share it) —
+/// `wire::WireVirtualLayout` is its serde mirror, kept separate only so
+/// the `wire` crate stays runtime-free. The matches are exhaustive on
+/// purpose: a new `Axis`/`Lanes` variant fails compile HERE (and in
+/// `dev-client::convert::wire_virtual_layout`, the inverse) instead of
+/// silently dropping on the wire. Round-trip pinned by
+/// `mock-backend/tests/wire_virtual_layout_roundtrip.rs`.
+pub fn virtual_layout_to_wire(l: runtime_shared::VirtualLayout) -> wire::WireVirtualLayout {
+    use primitives::virtualizer::{Axis, Lanes, VirtualLayout};
+    let VirtualLayout { axis, lanes, main_spacing, cross_spacing } = l;
+    wire::WireVirtualLayout {
+        horizontal: match axis {
+            Axis::Vertical => false,
+            Axis::Horizontal => true,
+        },
+        lanes: match lanes {
+            Lanes::Fixed(n) => wire::WireLanes::Fixed(n),
+            Lanes::AutoFit { min_cross } => wire::WireLanes::AutoFit { min_cross },
+        },
+        main_spacing,
+        cross_spacing,
     }
 }

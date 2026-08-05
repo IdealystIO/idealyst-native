@@ -1,11 +1,35 @@
 //! Third-party `Form` SDK for the idealyst framework.
 //!
-//! Provides a `Form` container backed by the framework's
-//! `Element::External` extension mechanism (with children). `Form` is a
-//! library component in the idea-ui mould: a `#[component(children)]`
-//! `Form` tag (generating the `pub type Form = FormProps` alias +
-//! `BuildElement` impl) that delegates to a snake-case `form(props)`
-//! constructor, so it reads as a first-class element inside `ui!`/`jsx!`.
+//! Provides a `Form` container: a real `<form>` on web (submit-on-enter,
+//! autofill grouping, `preventDefault()`-guarded `on_submit`), a plain
+//! passthrough container on native (submission is the author's submit
+//! button calling `on_submit`).
+//!
+//! # Implementation
+//!
+//! The scene [`Registry`] is the runtime's unified primitive==external
+//! contract, so the SDK registers a payload handler there:
+//!
+//! - **Web (wasm32)** — [`register`] installs a `WebBackend`-concrete
+//!   handler: one real `<form>` element, the native `submit` event wired
+//!   to `preventDefault()` + the author `on_submit` (plus the mandatory
+//!   post-callback `schedule_flush` — see the handler), the
+//!   `__form_state` reflect-slot keeping the listener closure alive,
+//!   children realized as real DOM descendants of the `<form>` (that's
+//!   what makes browser autofill + submit-on-enter work), author style,
+//!   ref fill with the web ops (`requestSubmit`, in [`web_util`]).
+//! - **Everywhere else** — [`register`] installs the
+//!   External-placeholder path ([`ExternalOps::create_external`]) with
+//!   the children realized INTO the returned node (create → children →
+//!   style → ref fill → cleanup). Behaviorally this is the
+//!   passthrough-container posture: children lay out inside a plain
+//!   container and submission is the author's button calling
+//!   `on_submit`. There is no dedicated iOS `UIView` / Android
+//!   `FrameLayout` renderer; a native port would also have to route
+//!   author callbacks through the platform's post-dispatch flush seam
+//!   (the `schedule_flush` residual noted in
+//!   `backend-web/src/newcore.rs`'s module docs applies to every
+//!   external glue that runs author code from a raw platform event).
 //!
 //! # Usage
 //!
@@ -13,9 +37,9 @@
 //! use form::prelude::*;       // brings in `Form`, `form`, `FormProps`
 //! use idea_ui::prelude::*;    // Button, TextInput, …
 //!
-//! // App bootstrap (one line per third-party SDK):
-//! let mut backend = WebBackend::new("#app");
-//! form::register(&mut backend);
+//! // App bootstrap: the boot entry's `register` argument IS the
+//! // registration seam (one line per third-party SDK).
+//! backend_web::newcore::start_in("#app", form::register, app);
 //!
 //! // The submit action is a plain closure that reads your field
 //! // signals — it is NOT fed by the DOM's FormData. Build it once and
@@ -35,18 +59,22 @@
 //! }
 //! ```
 //!
+//! An UNREGISTERED payload panics at realize (the scene contract), so a
+//! missed `register` fails loud.
+//!
 //! # Why this is an SDK and not a core primitive
 //!
 //! A form has no convergent cross-platform behavior to put behind the
-//! Backend trait: on web `<form>` is a real element (submit-on-enter,
-//! autofill grouping, FormData), while iOS/Android have NO form
-//! construct — their form affordances (autofill, return-key submit)
-//! live per-field on the inputs, not on a container. So `Form` is an
-//! opinionated SDK on `Element::External` (with children):
-//!   * web    → a real `<form>` wrapping the inputs as DOM descendants,
+//! host capability set: on web `<form>` is a real element
+//! (submit-on-enter, autofill grouping, FormData), while iOS/Android
+//! have NO form construct — their form affordances (autofill,
+//! return-key submit) live per-field on the inputs, not on a container.
+//! So `Form` is an opinionated SDK on the external-element contract
+//! (with children):
+//!   * web    -> a real `<form>` wrapping the inputs as DOM descendants,
 //!              with the native `submit` event wired to `on_submit`
 //!              after `preventDefault()`.
-//!   * native → a plain passthrough container; submission is triggered
+//!   * native -> a plain passthrough container; submission is triggered
 //!              by the author's submit button calling `on_submit`.
 //!
 //! # Why `on_submit` translates across platforms
@@ -66,34 +94,47 @@
 //!   input.)
 #![deny(missing_docs)]
 
-use runtime_core::{component, Bound, Element, IdealystSchema, Ref, RefFill};
-use std::any::{Any, TypeId};
+// Shared wasm32 helpers (pure DOM ops on the mounted `<form>`, no core
+// types).
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod web_util;
+
+use std::any::Any;
+use std::cell::RefCell;
 use std::rc::Rc;
+
+use runtime_shared::Ref;
+use runtime_scene::{item, Element, Host, MountCx, Registry};
+use runtime_vocabulary::caps::ExternalOps;
+use runtime_vocabulary::glue::{BuildElement, IntoElement};
+use runtime_vocabulary::style_attach::{
+    attach_style, on_teardown, IntoStyleProp, StyleProp, StyleServices,
+};
 
 // ============================================================================
 // Public API surface
 // ============================================================================
 
-/// Author-supplied props for a `Form`. Owned by the SDK — the framework
-/// type-erases this behind `Element::External` and hands it back to the
-/// registered backend handler on mount.
-#[derive(Default, IdealystSchema)]
+/// Author-supplied props for a `Form`. `on_submit` rides the scene item
+/// payload and is read back by the registered handler.
+#[derive(Default)]
 pub struct FormProps {
     /// The submit action. On web it fires on the native `<form>` submit
     /// event (Enter in a field or a `type="submit"` descendant) AFTER
     /// `preventDefault()`. On native it is invoked by the author's
     /// submit button. Read your field signals inside this closure.
     ///
-    /// `Rc` (not `Box`) because the framework hands the handler a
-    /// `Rc<FormProps>` and the handler can only borrow — it clones the
-    /// `Rc` into the event listener. Share the same `Rc` with your
-    /// submit button so one closure covers every backend.
+    /// `Rc` (not `Box`) because the handler owns the payload via
+    /// `Rc<FormPrim>` and clones the callback into the event listener.
+    /// Share the same `Rc` with your submit button so one closure
+    /// covers every backend.
     pub on_submit: Option<Rc<dyn Fn()>>,
-    /// Form contents. The framework parents these INTO the backend node
-    /// the handler returns: on web they become real DOM descendants of
-    /// the `<form>` (required for autofill + submit-on-enter); on native
-    /// they're laid out inside the passthrough container. Populated for
-    /// you by the `ui!`/`jsx!` children block.
+    /// Form contents. They ride the scene item's children slot and the
+    /// handler realizes them INTO the node it returns: on web they
+    /// become real DOM descendants of the `<form>` (required for
+    /// autofill + submit-on-enter); elsewhere they're laid out inside
+    /// the passthrough container. Populated for you by the `ui!`/`jsx!`
+    /// children block.
     pub children: Vec<Element>,
 }
 
@@ -101,19 +142,42 @@ pub struct FormProps {
 // Handle + ops trait
 // ============================================================================
 
-/// Typed handle to a mounted `Form`. Filled by `Ref::fill` after the
-/// form mounts; hold a `Ref<FormHandle>` at the call site and reach
-/// imperative ops via `r.with(|h| h.submit())`.
+/// Typed handle to a mounted `Form`. Filled at mount time when the
+/// author chained [`FormBuilder::bind`]; user code receives the handle
+/// through `Ref::with`.
 #[derive(Clone)]
 pub struct FormHandle {
     node: Rc<dyn Any>,
     ops: &'static dyn FormOps,
 }
 
+/// Pointer identity on the NODE — a `FormHandle` names one mounted
+/// `<form>`, so clones of it are equal and handles onto two different
+/// forms never are.
+///
+/// `node` is a type-erased native element behind `Rc<dyn Any>`: there is
+/// nothing to compare but the address, and the address is the right thing
+/// to compare — "same form?" is precisely the question. `ops` is
+/// deliberately NOT part of the comparison; it is the backend's single
+/// `&'static` vtable, identical for every handle on a given target, so it
+/// carries no information about which form this is.
+///
+/// Needed because `Signal<T>` is bounded on `T: PartialEq` at creation and
+/// `get`, not just on the guarded `set` — an author who stashes the bound
+/// handle in state to submit the form from elsewhere cannot add the impl
+/// themselves (orphan rule). Mirrors `MediaStream`.
+impl PartialEq for FormHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.node, &other.node)
+    }
+}
+
+impl Eq for FormHandle {}
+
 impl FormHandle {
     /// Wrap a type-erased native form node + its backend ops vtable.
-    /// Called by the backend's `RefFill` after the form mounts; you
-    /// don't construct this directly.
+    /// Called by the mount-time ref fill; you don't construct this
+    /// directly.
     pub fn new(node: Rc<dyn Any>, ops: &'static dyn FormOps) -> Self {
         Self { node, ops }
     }
@@ -128,264 +192,338 @@ impl FormHandle {
     }
 }
 
-/// Imperative-ops dispatch. The web impl downcasts `node` to the
-/// concrete `<form>` element; native impls keep the default no-op
-/// because there's no form-submit machinery to drive.
-///
-/// `Sync` bound: the trait object lives in a `static OPS` slot per
-/// backend module, which Rust requires to be `Sync`. The ZST impls are
-/// trivially `Sync`.
+/// Imperative-ops dispatch. The active target's `OPS` static supplies
+/// the impl.
 pub trait FormOps: Sync {
     /// Submit the form represented by `node`. The web impl downcasts to
-    /// the concrete `<form>` element and triggers submission; native
-    /// impls leave the default no-op since there's no form machinery.
+    /// the concrete `<form>` element and triggers submission; other
+    /// targets keep the default no-op since there's no form machinery.
     fn submit(&self, _node: &dyn Any) {}
 }
 
-/// Fallback ops for targets with no `Form` impl. The framework's
-/// `External` placeholder is what renders at runtime.
+/// Fallback ops used on targets with no `Form` impl (every non-web
+/// target — the placeholder posture).
 pub struct UnsupportedOps;
 impl FormOps for UnsupportedOps {}
 
+#[cfg(target_arch = "wasm32")]
+static OPS: &dyn FormOps = web_glue::OPS;
+#[cfg(not(target_arch = "wasm32"))]
+static OPS: &dyn FormOps = &UnsupportedOps;
+
 // ============================================================================
-// Constructor + invocation macro
+// Payload + builder — the `.with_style(…)` / `.bind(…)` chain then
+// element coercion.
 // ============================================================================
 
-/// Build a `Form` container programmatically. Snake-case: this is the
-/// imperative constructor the PascalCase `Form` tag delegates to. Returns
-/// a typed `Bound<FormHandle>` so a trailing `.bind(..)` chain type-checks
-/// against `Ref<FormHandle>` — use this fn-call form (`form(props).bind(r)`)
-/// when you need the handle; the `ui! { Form(..) { .. } }` tag form drops it.
-pub fn form(mut props: FormProps) -> Bound<FormHandle> {
-    // Children parent into the backend node (the External slot); the
-    // payload only needs to carry `on_submit`, so move children out
-    // rather than ship a second copy inside the payload.
+/// Scene payload for the `Form` item. Single-take slots (the vocabulary
+/// `PrimCell` discipline, inlined): the scene hands the handler a
+/// shared `&Rc<Self>`, but the style/ref-fill must move at mount.
+/// Children do NOT ride the payload — they ride the scene item's
+/// children slot and the handler parents them.
+struct FormPrim {
+    on_submit: Option<Rc<dyn Fn()>>,
+    style: RefCell<Option<StyleProp>>,
+    ref_fill: RefCell<Option<Box<dyn FnOnce(Rc<dyn Any>)>>>,
+}
+
+/// Author-side builder returned by [`form`].
+pub struct FormBound {
+    on_submit: Option<Rc<dyn Fn()>>,
+    children: Vec<Element>,
+    style: Option<StyleProp>,
+    ref_fill: Option<Box<dyn FnOnce(Rc<dyn Any>)>>,
+}
+
+/// Build a `Form` container programmatically. The PascalCase [`Form`]
+/// tag delegates here; use this fn-call form (`form(props).bind(r)`)
+/// when you need the handle.
+pub fn form(mut props: FormProps) -> FormBound {
+    // Children ride the scene item's children slot (the handler parents
+    // them); the payload only needs to carry `on_submit`.
     let children = std::mem::take(&mut props.children);
-    Bound::new(Element::External {
-        type_id: TypeId::of::<FormProps>(),
-        type_name: std::any::type_name::<FormProps>(),
-        payload: Rc::new(props) as Rc<dyn Any>,
+    FormBound {
+        on_submit: props.on_submit,
         children,
         style: None,
         ref_fill: None,
-        on_touch: None,
-        on_hover: None,
-        accessibility: runtime_core::accessibility::AccessibilityProps::default(),
-    })
+    }
 }
 
-/// `Form` container tag for `ui!`/`jsx!`. The `#[component(children)]`
-/// attribute generates the `pub type Form = FormProps` alias, the
-/// `impl BuildElement for FormProps`, and the `Default` glue that the
-/// macros' PascalCase struct-literal dispatch requires — so
-/// `ui! { Form(on_submit = Some(cb)) { .. } }` resolves by ordinary path
-/// rules (no `#[macro_export]`), giving consumer crates IDE completion on
-/// every prop. It delegates to [`form`] so the tag and the fn-call form
-/// build the identical `Element::External` keyed by `FormProps`; the
-/// registered backend handler still dispatches on that TypeId.
-///
-/// The tag form yields an `Element` (the handle is dropped) — to bind a
-/// `Ref<FormHandle>` for imperative `.submit()`, use the fn-call form and
-/// its `.bind(..)` chain: `form(props).bind(r)`.
-#[component(children)]
-pub fn Form(props: FormProps) -> Bound<FormHandle> {
-    form(props)
-}
-
-/// Builder methods on `Bound<FormHandle>`. An extension trait because
-/// the orphan rule blocks an inherent `impl Bound<FormHandle>` here
-/// (`Bound` is foreign). Usable as a trailing `ui!` chain:
-/// `Form(..) { .. }.bind(r)`.
-pub trait FormBuilder {
-    /// Bind a `Ref<FormHandle>` for imperative access (e.g.
-    /// `r.with(|h| h.submit())`).
-    fn bind(self, r: Ref<FormHandle>) -> Self;
-}
-
-impl FormBuilder for Bound<FormHandle> {
-    fn bind(mut self, r: Ref<FormHandle>) -> Self {
-        if let Element::External { ref_fill, .. } = self.primitive_mut() {
-            *ref_fill = Some(RefFill::External(Box::new(move |node_any| {
-                r.fill(FormHandle::new(node_any, OPS));
-            })));
-        }
+impl FormBound {
+    /// Attach the author style — lands on the `<form>` node on web, on
+    /// the placeholder container elsewhere.
+    pub fn with_style(mut self, style: impl IntoStyleProp) -> Self {
+        self.style = Some(style.into_style_prop());
         self
     }
 }
 
-/// One-stop import: `use form::prelude::*;` brings in the `Form` tag (the
-/// `#[component]`-generated alias + `BuildElement` impl), the `form`
-/// constructor, the props struct, the handle type, and the `.bind(..)`
-/// builder trait.
+/// Adds `.bind(r)` so `use form::prelude::*` brings the imperative
+/// binding into scope.
+pub trait FormBuilder {
+    /// Bind a `Ref<FormHandle>` for imperative access (e.g.
+    /// `r.with(|h| h.submit())`). At mount time the handler wraps the
+    /// native node in a `FormHandle` using the active target's ops and
+    /// fills the ref.
+    fn bind(self, r: Ref<FormHandle>) -> Self;
+}
+
+impl FormBuilder for FormBound {
+    fn bind(mut self, r: Ref<FormHandle>) -> Self {
+        self.ref_fill = Some(Box::new(move |node_any| {
+            r.fill(FormHandle::new(node_any, OPS));
+        }));
+        self
+    }
+}
+
+impl IntoElement for FormBound {
+    fn into_element(self) -> Element {
+        item(
+            FormPrim {
+                on_submit: self.on_submit,
+                style: RefCell::new(self.style),
+                ref_fill: RefCell::new(self.ref_fill),
+            },
+            self.children,
+        )
+    }
+}
+
+/// Element coercion for the fn-call form.
+impl From<FormBound> for Element {
+    fn from(b: FormBound) -> Element {
+        b.into_element()
+    }
+}
+
+// ============================================================================
+// `ui!` dispatch — type alias + manual BuildElement impl (a container
+// whose children move out of the props needs the hand-rolled impl).
+// ============================================================================
+
+/// `ui!` tag alias for the form container — `ui! { Form(..) { … } }`
+/// resolves to this type and dispatches through [`BuildElement`]. The
+/// tag form yields an `Element` (the handle is dropped) — to bind a
+/// `Ref<FormHandle>`, use the fn-call form: `form(props).bind(r)`.
+pub type Form = FormProps;
+
+impl BuildElement for FormProps {
+    fn build(self) -> Element {
+        form(self).into_element()
+    }
+}
+
+/// One-stop import for the author-facing names.
 pub mod prelude {
     pub use super::{form, Form, FormBuilder, FormHandle, FormProps};
 }
 
 // ============================================================================
-// Backend selector
+// Handlers + registration seam
 // ============================================================================
 
-// Each platform module exposes `pub fn register(&mut <Backend>)` and a
-// `pub static OPS: &dyn FormOps`. Only one compiles per target via cfg.
-
-#[cfg(target_arch = "wasm32")]
-mod web;
-#[cfg(target_arch = "wasm32")]
-pub use web::register;
-#[cfg(target_arch = "wasm32")]
-static OPS: &dyn FormOps = web::OPS;
-
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-mod android;
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-pub use android::register;
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-static OPS: &dyn FormOps = android::OPS;
-
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-mod ios;
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub use ios::register;
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-static OPS: &dyn FormOps = ios::OPS;
-
-#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
-mod linux;
-#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
-pub use linux::register;
-#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
-static OPS: &dyn FormOps = linux::OPS;
-
-// Self-register at backend construction (mirrors the web/android/ios submits) —
-// without this, `Form` fell to the External placeholder on GTK unless an app called
-// `form::register` explicitly. See [[project_inventory_self_registration]].
-#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
-inventory::submit! {
-    backend_linux::LinuxExternalRegistrar(register)
+/// Shared mount tail, run AFTER children have been realized into the
+/// node: author style → ref fill (type-erased node clone) → scope-tied
+/// `release_external`.
+fn finish_mount<H>(backend: &Rc<RefCell<H>>, node: &H::Node, prim: &FormPrim)
+where
+    H: ExternalOps + StyleServices,
+{
+    if let Some(style) = prim.style.borrow_mut().take() {
+        attach_style(backend, node, style);
+    }
+    if let Some(fill) = prim.ref_fill.borrow_mut().take() {
+        let any_node: Rc<dyn Any> = Rc::new(node.clone());
+        fill(any_node);
+    }
+    let backend = backend.clone();
+    let node = node.clone();
+    on_teardown(move || {
+        backend.borrow_mut().release_external(&node);
+    });
 }
 
-#[cfg(all(test, target_os = "linux", not(target_arch = "wasm32")))]
-mod linux_registration_tests {
-    /// Regression: `form` self-registered on web/android/ios but NOT Linux, so a
-    /// `Form` fell to the External placeholder on GTK unless an app called
-    /// `form::register` explicitly. Asserts the Linux submit is collected.
-    #[test]
-    fn form_handler_auto_registers_on_linux() {
-        let count = inventory::iter::<backend_linux::LinuxExternalRegistrar>().count();
-        assert!(count >= 1, "form must submit a LinuxExternalRegistrar so Form self-registers");
+/// Placeholder handler for hosts with no real form element — the
+/// External degradation path, EXTENDED with children (create →
+/// children → style → ref fill → cleanup): the passthrough-container
+/// posture.
+#[cfg(not(target_arch = "wasm32"))]
+fn mount_placeholder<H>(
+    cx: &mut MountCx<'_, H>,
+    prim: &Rc<FormPrim>,
+    children: Vec<Element>,
+) -> H::Node
+where
+    H: ExternalOps + StyleServices,
+{
+    let backend = cx.backend().clone();
+    // The payload handed to the host is a `Rc<FormProps>` carrying
+    // `on_submit` with the children already moved out.
+    let payload: Rc<dyn Any> = Rc::new(FormProps {
+        on_submit: prim.on_submit.clone(),
+        children: Vec::new(),
+    });
+    let mut node = backend.borrow_mut().create_external(
+        std::any::TypeId::of::<FormProps>(),
+        std::any::type_name::<FormProps>(),
+        &payload,
+        &runtime_shared::accessibility::AccessibilityProps::default(),
+    );
+    cx.realize_children_into(&mut node, children);
+    finish_mount(&backend, &node, prim);
+    node
+}
+
+/// Register the form payload handler on a scene registry. Pass this as
+/// the boot registration seam (the `register` argument of
+/// `backend_web::newcore::start_in` / `backend_ssr::newcore::
+/// render_path_with`).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register<H>(registry: &mut Registry<H>)
+where
+    H: ExternalOps + StyleServices + 'static,
+{
+    registry.register::<FormPrim, _>(mount_placeholder::<H>);
+}
+
+/// Register the form payload handler on the web backend's scene
+/// registry — the real `<form>` renderer.
+#[cfg(target_arch = "wasm32")]
+pub fn register(registry: &mut Registry<backend_web::WebBackend>) {
+    registry.register::<FormPrim, _>(web_glue::mount_form_web);
+}
+
+/// Declare this SDK's payload kind **late-bound** instead of installing
+/// its handler — the boot half of lazy registration. Pair with
+/// [`register_from_chunk`] from inside a `#[component(lazy)]` body.
+///
+/// Only web code-splits, so on every other target this installs the
+/// handler eagerly exactly as [`register`] does. That is deliberate:
+/// deferring a kind nothing later registers leaves the payload parked
+/// behind a placeholder forever, with no panic and no log, and native
+/// has no chunk to arrive. Calling `defer` is therefore always safe —
+/// it splits where splitting exists and is a plain `register` elsewhere.
+pub fn defer<H>(registry: &mut Registry<H>)
+where
+    H: Host + ExternalOps + StyleServices + 'static,
+{
+    #[cfg(target_arch = "wasm32")]
+    {
+        registry.defer::<FormPrim>();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        register(registry);
     }
 }
 
-#[cfg(not(any(
-    target_arch = "wasm32",
-    target_os = "android",
-    target_os = "ios",
-    target_os = "linux"
-)))]
-mod fallback {
-    use runtime_core::Backend;
-
-    /// No-op register for unsupported targets. The framework's External
-    /// placeholder shows up at runtime to make the missing binding
-    /// obvious.
-    pub fn register<B: Backend>(_backend: &mut B) {}
+/// Install the web payload handler from inside a lazy chunk — the chunk
+/// half of lazy registration. Requires [`defer`] at boot.
+///
+/// Web-only by construction: the web handler is `WebBackend`-concrete,
+/// and web is the only target that code-splits. The non-web build is an
+/// empty stub so a `#[component(lazy)]` body calling this compiles on
+/// every target — there, [`defer`] already registered eagerly.
+#[cfg(target_arch = "wasm32")]
+pub fn register_from_chunk() {
+    runtime_scene::defer_registration::<backend_web::WebBackend, _>(|registry| {
+        registry.register_deferred::<FormPrim, _>(web_glue::mount_form_web);
+    });
 }
 
-#[cfg(not(any(
-    target_arch = "wasm32",
-    target_os = "android",
-    target_os = "ios",
-    target_os = "linux"
-)))]
-pub use fallback::register;
+/// Non-web stub — see the wasm32 [`register_from_chunk`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_from_chunk() {}
 
-#[cfg(not(any(
-    target_arch = "wasm32",
-    target_os = "android",
-    target_os = "ios",
-    target_os = "linux"
-)))]
-static OPS: &dyn FormOps = &UnsupportedOps;
+// ============================================================================
+// Web glue (wasm32): the real `<form>` renderer over the scene
+// contract.
+// ============================================================================
 
-#[cfg(test)]
-mod tests {
+#[cfg(target_arch = "wasm32")]
+mod web_glue {
     use super::*;
-    use runtime_core::text;
+    use backend_web::WebBackend;
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::{JsCast, JsValue};
+    use web_sys::Event;
 
-    /// `form(..)` lowers to `Element::External` keyed by `FormProps`'s
-    /// TypeId (so backend handlers dispatch to it) and starts childless.
-    #[test]
-    fn form_builds_external_keyed_by_form_props() {
-        let el: Element = form(FormProps::default()).into();
-        match el {
-            Element::External { type_id, type_name, children, .. } => {
-                assert_eq!(type_id, TypeId::of::<FormProps>());
-                assert!(type_name.contains("FormProps"));
-                assert!(children.is_empty(), "no children by default");
-            }
-            _ => panic!("form must lower to Element::External"),
+    pub(super) static OPS: &dyn FormOps = &WebFormOps;
+
+    struct WebFormOps;
+    impl FormOps for WebFormOps {
+        fn submit(&self, node: &dyn Any) {
+            crate::web_util::request_submit(node);
         }
     }
 
-    /// The `children` prop moves into the External's children slot —
-    /// these are what the framework parents into the `<form>` on web.
-    #[test]
-    fn children_prop_moves_into_external_slot() {
-        let el: Element = form(FormProps {
-            children: vec![text("a").into(), text("b").into()],
-            ..Default::default()
-        })
-        .into();
-        match el {
-            Element::External { children, .. } => assert_eq!(children.len(), 2),
-            _ => panic!("expected Element::External"),
-        }
+    /// Per-form owned state — the submit listener closure stays alive
+    /// here so the browser's event-target table keeps a valid callback
+    /// to fire. Detaching the form drops the `Rc` (held via a JS
+    /// reflect property), which drops the closure.
+    struct FormState {
+        submit_listener: Option<Closure<dyn FnMut(Event)>>,
     }
 
-    /// End-to-end regression: the real `ui!` macro routes the PascalCase
-    /// `Form` tag through `#[component]`'s `BuildElement` dispatch —
-    /// `BuildElement::build(Form { on_submit, children, ..defaults() })` —
-    /// which delegates to `form(..)` and yields the `<form>` External. The
-    /// author's `on_submit` closure and children block both reach it.
-    ///
-    /// This test could NOT compile before the `#[component(children)]`
-    /// conversion: `ui! { Form(..) { .. } }` requires a `pub type Form`
-    /// alias + `impl BuildElement for FormProps`, and the crate previously
-    /// shipped only a (no-longer-invoked) `macro_rules! Form`.
-    #[test]
-    fn form_via_ui_macro() {
-        use runtime_core::ui;
+    pub(super) fn mount_form_web(
+        cx: &mut MountCx<'_, WebBackend>,
+        prim: &Rc<FormPrim>,
+        children: Vec<Element>,
+    ) -> web_sys::Node {
+        let backend = cx.backend().clone();
+        let document = web_sys::window()
+            .expect("no window")
+            .document()
+            .expect("no document");
+        let form = document
+            .create_element("form")
+            .expect("create_element(form) failed");
+        let _ = form.set_attribute("data-external-kind", "form::FormProps");
 
-        // A submit action the tag wires onto the External's payload.
-        let fired = std::rc::Rc::new(std::cell::Cell::new(false));
-        let on_submit: Rc<dyn Fn()> = {
-            let fired = fired.clone();
-            Rc::new(move || fired.set(true))
-        };
+        let state = Rc::new(RefCell::new(FormState {
+            submit_listener: None,
+        }));
 
-        let el: Element = ui! {
-            Form(on_submit = Some(on_submit.clone())) {
-                text("email")
-                text("submit")
-            }
-        };
-
-        match el {
-            Element::External { type_id, type_name, children, payload, .. } => {
-                assert_eq!(type_id, TypeId::of::<FormProps>());
-                assert!(type_name.contains("FormProps"));
-                assert_eq!(children.len(), 2, "ui! children reach the External slot");
-
-                // `on_submit` rides the type-erased payload the backend
-                // handler receives; invoking it runs the author's closure.
-                let props =
-                    payload.downcast_ref::<FormProps>().expect("payload is FormProps");
-                let cb = props.on_submit.clone().expect("on_submit wired onto the payload");
-                assert!(!fired.get());
+        if let Some(cb) = prim.on_submit.clone() {
+            // `preventDefault()` is mandatory: without it the browser
+            // performs the default GET/POST navigation and reloads the
+            // SPA, tearing down the framework runtime. idealyst forms
+            // carry their data in signals, not FormData, so the default
+            // action is never wanted.
+            let closure: Closure<dyn FnMut(Event)> = Closure::new(move |ev: Event| {
+                ev.prevent_default();
                 cb();
-                assert!(fired.get(), "invoking the wired on_submit runs the closure");
-            }
-            _ => panic!("ui! Form must build Element::External"),
+                // External web glue must call `schedule_flush` after the
+                // author callback returns — this raw DOM listener is one
+                // of the "residual surfaces" named in
+                // `backend-web/src/newcore.rs`'s module docs: it is not
+                // wrapped by the backend's capability impls, so a signal
+                // write inside `on_submit` would stay staged in the
+                // world until some unrelated event flushed it.
+                backend_web::newcore::schedule_flush();
+            });
+            let _ = form
+                .add_event_listener_with_callback("submit", closure.as_ref().unchecked_ref());
+            state.borrow_mut().submit_listener = Some(closure);
         }
+
+        // Stash the state Rc on the form so its lifetime matches the
+        // form's.
+        let raw = Rc::into_raw(state);
+        let _ = js_sys::Reflect::set(
+            form.as_ref(),
+            &JsValue::from_str("__form_state"),
+            &JsValue::from_f64(raw as usize as f64),
+        );
+
+        // Children BEFORE style. They become real DOM descendants of
+        // the `<form>`, which is what makes browser autofill +
+        // submit-on-enter work.
+        let mut node: web_sys::Node = form.into();
+        cx.realize_children_into(&mut node, children);
+        finish_mount(&backend, &node, prim);
+        node
     }
 }

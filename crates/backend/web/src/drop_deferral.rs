@@ -2,7 +2,7 @@
 //!
 //! `runtime-core::Scope::drop` hands its drained effect closures + scope
 //! guards to whatever policy has been installed via
-//! `runtime_core::install_drop_deferral`. The web backend installs the
+//! `runtime_shared::install_drop_deferral`. The web backend installs the
 //! `defer` function below, which:
 //!
 //! 1. Parks the dropped boxes on a thread-local queue (`PENDING_DROPS`).
@@ -45,7 +45,7 @@ thread_local! {
 /// Register this backend's deferred-drop policy with `runtime-core`.
 /// Idempotent — last call wins.
 pub fn install_drop_deferral() {
-    runtime_core::install_drop_deferral(defer);
+    runtime_shared::install_drop_deferral(defer);
 }
 
 /// The policy `runtime-core` calls from `Scope::drop` when it has
@@ -78,7 +78,7 @@ fn request_drain_frame() {
     // budget at our measured ~10 µs per box drop — worst case ~20 ms,
     // one stutter that doesn't compound.
     const PER_FRAME_BUDGET: usize = 2000;
-    let task = runtime_core::scheduling::after_animation_frame(|| {
+    let task = runtime_shared::scheduling::after_animation_frame(|| {
         // Take up to `PER_FRAME_BUDGET` boxes off the queue and drop
         // them. `split_off` instead of `drain` so the remaining boxes
         // stay in their original allocation and ordering.

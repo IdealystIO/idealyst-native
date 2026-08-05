@@ -18,8 +18,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, ChildList, Cursor, Element, IdealystSchema, IntoElement, Reactive,
-    StyleApplication, StyleRules,
+    component, ui, ChildList, Element, IdealystSchema, IntoElement, Reactive, StyleApplication,
 };
 
 use crate::stylesheets::{Divider, ListContainer, ListItemRow};
@@ -131,19 +130,24 @@ pub fn ListItem(props: ListItemProps) -> Element {
     // subscribes when it's a signal; a static stays the build-time fast path.
     let style_is_reactive = !active.is_static();
 
+    // Clickable rows show a pointer (the "anything pressable shows a pointer"
+    // rule); static rows don't. Both ride the sheet's `interactive` variant —
+    // `on_press` is known at build time, so the arm is fixed per row. A
+    // variant rather than a computed layer so the rule premints: the closure
+    // was constant, and a constant closure blocks premint for the whole sheet
+    // without expressing anything a variant can't.
+    let row_style = move |interactive: &'static str| {
+        let active = active.clone();
+        move || {
+            StyleApplication::new(ListItemRow::sheet())
+                .with("active", if active.get() { "on" } else { "off" }.to_string())
+                .with("interactive", interactive.to_string())
+        }
+    };
+
     match props.on_press {
-        // Clickable row: pressable + a pointer cursor so it reads as
-        // interactive (the "anything pressable shows a pointer" rule). The
-        // cursor rides the single computed slot alongside the active variant.
         Some(cb) => {
-            let make_style = move || {
-                StyleApplication::new(ListItemRow::sheet())
-                    .with("active", if active.get() { "on" } else { "off" }.to_string())
-                    .with_computed("li-cursor", || StyleRules {
-                        cursor: Some(Cursor::Pointer),
-                        ..Default::default()
-                    })
-            };
+            let make_style = row_style("on");
             let bound = runtime_core::pressable(kids, move || (cb)());
             if style_is_reactive {
                 bound.with_style(make_style).into_element()
@@ -151,12 +155,8 @@ pub fn ListItem(props: ListItemProps) -> Element {
                 bound.with_style(make_style()).into_element()
             }
         }
-        // Static row: no pointer (it isn't interactive).
         None => {
-            let make_style = move || {
-                StyleApplication::new(ListItemRow::sheet())
-                    .with("active", if active.get() { "on" } else { "off" }.to_string())
-            };
+            let make_style = row_style("off");
             let bound = runtime_core::view(kids);
             if style_is_reactive {
                 bound.with_style(make_style).into_element()
@@ -164,5 +164,56 @@ pub fn ListItem(props: ListItemProps) -> Element {
                 bound.with_style(make_style()).into_element()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{classify, P};
+    use idea_theme::testing::with_test_world;
+    use runtime_core::Cursor;
+
+    fn install() {
+        use idea_theme::theme::{install_idea_theme, light_theme};
+        install_idea_theme(light_theme());
+    }
+
+    /// The pointer cursor on a pressable row used to ride a constant
+    /// `with_computed("li-cursor", …)` layer. It now rides the sheet's
+    /// `interactive` variant so the rule premints — this pins the observable
+    /// behavior across that move: pressable rows get a pointer, plain rows
+    /// keep the default.
+    #[test]
+    fn regression_pressable_list_item_keeps_pointer_cursor() {
+        with_test_world(|| {
+            install();
+            let el = ListItem(ListItemProps {
+                label: Reactive::Static("Row".to_string()),
+                on_press: Some(std::rc::Rc::new(|| {})),
+                ..Default::default()
+            });
+            let style = match classify(el) {
+                P::Pressable { style, .. } => style.expect("pressable row carries a style"),
+                _ => panic!("a row with on_press builds a pressable"),
+            };
+            assert_eq!(style.resolve().cursor, Some(Cursor::Pointer));
+        });
+    }
+
+    #[test]
+    fn regression_inert_list_item_has_no_pointer_cursor() {
+        with_test_world(|| {
+            install();
+            let el = ListItem(ListItemProps {
+                label: Reactive::Static("Row".to_string()),
+                ..Default::default()
+            });
+            let style = match classify(el) {
+                P::View { style, .. } => style.expect("row carries a style"),
+                _ => panic!("a row without on_press builds a view"),
+            };
+            assert_ne!(style.resolve().cursor, Some(Cursor::Pointer));
+        });
     }
 }

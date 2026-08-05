@@ -25,7 +25,7 @@
 
 use std::collections::HashMap;
 
-use runtime_core::primitives::graphics::{OnLost, OnReady, OnResize};
+use runtime_shared::primitives::graphics::{OnLost, OnReady, OnResize};
 
 /// Factory that builds a fresh `OnReady` closure on each binding.
 /// Wrapped in a factory so multiple Graphics mounts of the same

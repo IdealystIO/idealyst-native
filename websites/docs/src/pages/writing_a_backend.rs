@@ -13,65 +13,70 @@ docs! {
     slug = "writing-a-backend",
     title = "Writing your own backend",
     category = Reference,
-    description = "Translate the framework's Element tree into something a platform can put on screen.",
+    description = "Translate the framework's scene tree into something a platform can put on screen.",
     related = ["backends", "cli", "primitives", "styles"],
     concepts = [Backend, RuntimeBackend, GeneratorBackend, LazySlotCapture, WireProtocol],
 
     section(heading = "Overview") {
-        p("A backend is the piece of code that translates the framework's ",
-          code("Element"), " tree into something a particular platform can \
-           put on screen — DOM elements, UIViews, Android Views, BrightScript \
-           SceneGraph nodes, or anything else you can drive from Rust."),
+        p("A backend is the piece of code that turns the framework's scene \
+           tree into something a particular platform can put on screen — DOM \
+           elements, UIViews, Android Views, BrightScript SceneGraph nodes, \
+           terminal cells, GPU draw calls, or anything else you can drive \
+           from Rust."),
         p("You'd write one when the shipped backends don't cover your target: \
-           a terminal renderer, an embedded display, a custom GPU canvas, a \
-           server-side HTML renderer, a platform we haven't shipped yet. Most \
-           of the framework — primitives, reactivity, styles, components, hot \
-           reload, navigation — works the same against your backend as it \
-           does against the built-in ones. The seam is small."),
-        p("This page walks the trait, explains the two execution models \
-           (runtime vs generator), and shows the shape of a minimum viable \
-           implementation."),
+           an embedded display, a custom canvas, a server-side renderer, a \
+           platform nobody has shipped yet. Most of the framework — \
+           primitives, reactivity, styles, components, hot reload, navigation \
+           — works the same against your backend as against the built-in \
+           ones. The seam is small, and it is deliberately layered so you can \
+           ship something working long before you support everything."),
+        p("This page walks the two layers of that seam, explains the two \
+           execution models (runtime vs generator), and shows the shape of a \
+           minimum viable implementation."),
     },
 
-    section(heading = "The Backend trait") {
-        p("A backend implements one trait — ", code("runtime_core::Backend"),
-          ". The declaration is short:"),
+    section(heading = "Two layers: Host, then capabilities") {
+        p("The seam is split in two, and the split is the thing to \
+           internalize."),
+        p("The FIRST layer is ", code("runtime_scene::Host"),
+          ": the structural contract. It owns the ", code("Node"),
+          " associated type and the handful of operations the mount drivers \
+           themselves perform — attaching children, splicing, clearing, and \
+           minting a reactive anchor. Nothing about it mentions a primitive:"),
 
         code(rust, r##"
-            use runtime_core::{Backend, /* primitives, styles, etc. */};
+            use runtime_scene::Host;
 
-            pub struct MyBackend {
-                // your platform-specific state
-            }
+            pub struct MyBackend { /* your platform-specific state */ }
 
-            impl Backend for MyBackend {
-                type Node = MyNodeHandle;     // the platform's "thing on screen"
+            impl Host for MyBackend {
+                type Node = MyNodeHandle;      // the platform's "thing on screen"
 
-                fn create_view(&mut self) -> Self::Node { /* ... */ }
-                fn create_text(&mut self, content: &str) -> Self::Node { /* ... */ }
-                fn create_button(&mut self, label: &str, on_click: &Action,
-                                 leading: Option<&IconData>, trailing: Option<&IconData>)
-                                 -> Self::Node { /* ... */ }
-                fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) { /* ... */ }
-                fn update_text(&mut self, node: &Self::Node, content: &str) { /* ... */ }
-                fn clear_children(&mut self, node: &Self::Node) { /* ... */ }
-                fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) { /* ... */ }
-                fn finish(&mut self, root: Self::Node) { /* ... */ }
+                fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) { /* … */ }
+                fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, i: usize) { /* … */ }
+                fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) { /* … */ }
+                fn clear_children(&mut self, node: &Self::Node) { /* … */ }
+                fn create_anchor(&mut self) -> Self::Node { /* … */ }
+                fn supports_splice(&self) -> bool { /* … */ }
 
-                // ... plus 30-ish more methods, almost all with sensible defaults
+                // `insert_many` defaults to per-child `insert`; override it if
+                // your platform has a batched insertion path (a
+                // `DocumentFragment` on web).
             }
         "##),
 
-        p("The methods above are the required ones — no default \
-           implementation. They cover the smallest set the framework needs to \
-           put a tree on screen: create views, create text, create buttons, \
-           attach children, update text content, clear a container's \
-           children, apply styles, finalize the root mount."),
-        p("Everything else has a default. Most are either no-ops (for things \
-           that don't apply to your platform) or ", code("unimplemented!()"),
-          " (for primitives you don't support yet, which causes a clear panic \
-           if the app uses one). You can ship a backend that supports only \
-           the above and progressively fill in the rest."),
+        p("The SECOND layer is ", code("runtime_vocabulary::caps"),
+          ": a family of narrow capability traits, each a subtrait of ",
+          code("Host"),
+          ", each covering one primitive family. A primitive's mount handler \
+           is generic over exactly the capabilities it uses, so a backend \
+           supports a primitive precisely when it implements that \
+           primitive's trait."),
+        p("That is what makes the surface progressive. There is no mega-trait \
+           with thirty ", code("unimplemented!()"),
+          " methods to stare at: you implement ", code("Host"),
+          ", then add capability traits one at a time, and each one \
+           immediately unlocks its primitives."),
     },
 
     section(heading = "type Node") {
@@ -87,11 +92,83 @@ docs! {
             ["Roku uses a ", code("NodeId"), " — a u64 the device-side \
              runtime maps back to a SceneGraph node."],
         ),
-        p("The framework treats ", code("Node"), " opaquely. It calls ",
-          code("create_*"), " to mint one, holds onto it, hands it back to ",
-          code("insert"), " / ", code("update_text"), " / ",
-          code("clear_children"), " / ", code("apply_style"),
+        p("The framework treats ", code("Node"),
+          " opaquely: handlers mint one, the drivers hold onto it and hand \
+           it back to ", code("insert"), " / ", code("insert_at"), " / ",
+          code("remove_child"), " / ", code("clear_children"),
           ". The backend is free to put whatever it likes inside."),
+        p(code("Clone"),
+          " is required because structural regions retain node handles \
+           across effect fires — a spliced region has to remove the exact \
+           nodes it inserted."),
+    },
+
+    section(heading = "supports_splice — the one behavioral switch") {
+        p("Most of ", code("Host"),
+          " is mechanical. One method is a real decision: ",
+          code("supports_splice"),
+          " answers \"can this host insert and remove children at an index \
+           inside a real parent?\""),
+        list(
+            [code("true"),
+             " — style-less reactive regions go ANCHORLESS. A reactive ",
+             code("if"), " or ", code("for"),
+             " splices its nodes directly into the surrounding parent, so \
+              there is no wrapper in the tree. This is what web client-side \
+              rendering and splice-capable native backends do."],
+            [code("false"),
+             " — every reactive region nests under a ",
+             code("create_anchor()"),
+             " node the drivers swap subtrees under. Server-side rendering \
+              and hydration take this path deliberately: the client's adopt \
+              walk needs a stable node to claim."],
+        ),
+        p("Get this right before anything else — it decides the SHAPE of the \
+           tree your other methods will see."),
+    },
+
+    section(heading = "The capability traits") {
+        p("Every trait below is a subtrait of ", code("Host"),
+          " and groups the operations one primitive family needs. The \
+           authoritative per-method contract is each trait's own rustdoc in ",
+          code("crates/runtime/vocabulary/src/caps/"), "; ",
+          code("COVERAGE.md"),
+          " next to it maps every method to the handler that calls it."),
+        list(
+            ["Structure + input — ", code("ViewOps"), ", ", code("InputOps"),
+             ", ", code("PressableOps"), "."],
+            ["Text — ", code("TextOps"), ", ", code("ButtonOps"), "."],
+            ["Media — ", code("ImageOps"), ", ", code("IconOps"), ", ",
+             code("LinkOps"), "."],
+            ["Widgets — ", code("TextInputOps"), ", ", code("ToggleOps"),
+             ", ", code("SliderOps"), ", ", code("ActivityIndicatorOps"), "."],
+            ["Scrolling + lists — ", code("ScrollOps"), ", ",
+             code("SafeAreaOps"), ", ", code("VirtualizerOps"), "."],
+            ["Layers + navigation — ", code("PortalOps"), ", ",
+             code("PresenceOps"), ", ", code("NavigatorOps"), ", ",
+             code("GraphicsOps"), "."],
+            ["Styling + assets — ", code("StyleOps"), ", ",
+             code("AssetOps"), "."],
+            ["Payload escape hatch — ", code("ExternalOps"), ", ",
+             code("DocumentOps"), " (the \"render something opaque\" and \
+              document-level surfaces)."],
+            ["App shell — ", code("AppEnvOps"), ", ", code("LifecycleOps"),
+             ", ", code("BatchOps"), "."],
+            ["Tooling — ", code("A11yOps"), ", ", code("AnimationOps"), ", ",
+             code("IntrospectionOps"), ", ", code("WireBindingOps"), "."],
+        ),
+        p("There is one umbrella: ", code("AllCaps"),
+          ", a blanket-implemented supertrait of every trait above. ",
+          code("runtime_vocabulary::register_builtins::<B: AllCaps>()"),
+          " bounds on it, so a backend that implements the whole family \
+           gets the full built-in primitive vocabulary registered in one \
+           call."),
+        p("Until then, register the subset you support. A handler generic \
+           over ", code("H: StyleServices + TextOps"),
+          " compiles against any backend that has those two — which is also \
+           why third-party SDKs written that way work on your backend the \
+           day you implement the traits they name. See ",
+          link("third-party primitives", to = "third-party-primitives"), "."),
     },
 
     section(heading = "The two execution models") {
@@ -101,447 +178,235 @@ docs! {
 
     section(heading = "Runtime backends") {
         p("The default model. The backend manipulates native widgets \
-           directly, in process, as the framework hands it operations."),
+           directly, in process, as the drivers hand it operations."),
         list(
-            [code("create_view()"), " immediately allocates a ", code("<div>"),
+            ["A view handler immediately allocates a ", code("<div>"),
              " / ", code("UIView"), " / Android ", code("View"), "."],
             [code("insert(parent, child)"), " immediately calls ",
              code("appendChild"), " / ", code("addSubview"), " / ",
              code("addView"), "."],
-            [code("update_text(node, content)"),
-             " immediately mutates the widget's text property."],
-            [code("apply_style(node, rules)"),
+            ["A text update immediately mutates the widget's text property."],
+            [code("StyleOps::apply_style(node, rules)"),
              " immediately writes CSS / view properties / drawable attributes."],
         ),
-        p("The shipped web, iOS, and Android backends are all runtime \
-           backends. They run in the same process as your ", code("app()"),
-          " function; when a signal changes, the framework re-fires the \
-           effect, the effect calls ", code("update_text(...)"),
-          ", and the backend mutates the widget on the spot."),
-        p("If you're writing a backend for any traditional GUI platform — \
-           desktop, mobile, embedded — runtime is the model you want."),
+        p("The shipped web, iOS, Android, macOS, terminal, CPU and GPU \
+           backends are all runtime backends. They run in the same process \
+           as your ", code("app()"),
+          " function; when a signal changes, the world's flush re-runs the \
+           effect, the effect calls into the backend, and the backend \
+           mutates the widget on the spot."),
     },
 
     section(heading = "Generator backends") {
-        p("The unusual model. The backend doesn't have direct access to a \
-           native widget tree. It exists because the real renderer lives \
-           somewhere else — on a different device, in a different process, \
-           behind a serialization boundary."),
+        p("The unusual model. The backend has no direct access to a native \
+           widget tree, because the real renderer lives somewhere else — on \
+           a different device, in a different process, behind a \
+           serialization boundary."),
         p("Instead of manipulating widgets, a generator backend emits a wire \
-           stream of commands that a remote runtime replays. The framework \
-           calls ", code("create_view()"),
-          "; the backend mints a ", code("NodeId"), " and emits a ",
-          code("Create(NodeId, View)"), " command. The framework calls ",
-          code("insert(parent, child)"), "; the backend emits an ",
-          code("Insert(parent_id, child_id)"), ". And so on."),
+           stream of commands that a remote runtime replays. A view handler \
+           mints a ", code("NodeId"), " and emits a ",
+          code("Create(NodeId, View)"), "; ", code("insert(parent, child)"),
+          " emits an ", code("Insert(parent_id, child_id)"), ". And so on."),
         p(code("backend-roku"),
-          " is the only shipped generator backend. Roku devices don't run \
-           Rust — the only language the runtime understands is BrightScript. \
-           The backend runs on the developer's host machine; commands stream \
-           to a thin client on the device, which replays them against \
+          " is the shipped generator backend. Roku devices don't run Rust — \
+           the only language the runtime understands is BrightScript. The \
+           backend runs on the developer's host machine; commands stream to \
+           a thin client on the device, which replays them against \
            SceneGraph nodes."),
-        p("The shape implies two extra constraints generator backends have \
-           to handle."),
+        p("A generator backend has one extra obligation, and it is the \
+           interesting part of this model."),
     },
 
     section(heading = "Closures don't ship") {
-        p("A runtime backend can capture a ", code("Box<dyn Fn()>"),
-          " from the framework and call it directly. A generator backend \
-           can't — the closure exists in the host's memory, and the device \
-           side has no way to invoke it."),
-        p("For event handlers, this means the device sends an event-fired \
-           message back to the host, which dispatches the closure in-process. \
-           The wire protocol carries that round-trip."),
-        p("For reactive expressions (a ", code("Text"),
-          " whose content reads a signal, a ", code("When"),
-          "'s condition), the closure can't be re-evaluated on the device — \
-           so the framework provides a structured view of those expressions \
-           through ", code("Derived<T>"), " and ", code("Action"),
-          ". Each carries a ", code("method: &'static str"),
-          " (a stable name the device runtime maps to a transpiled \
-           BrightScript function) plus an ", code("inputs: Vec<u64>"),
-          " (the signal ids the method reads). Generator backends consume \
-           the structured form via the ", code("note_*_binding"), " hooks:"),
+        p("A runtime backend can capture a Rust closure from the framework \
+           and call it directly. A generator backend can't — the closure \
+           lives in the host's memory, and the device side has no way to \
+           invoke it."),
+        p("For event handlers that's a round-trip: the device sends an \
+           event-fired message back to the host, the host dispatches the \
+           closure in-process, the resulting writes stage, and the ",
+          code("settle()"),
+          " step (drain microtasks + flush) commits them before the outbound \
+           command queue is drained. That boundary — \"event → staged writes \
+           → flush → emitted commands\" — is the embedder contract."),
+        p("For reactive expressions (a text node whose content reads a \
+           signal, a conditional's predicate) the closure can't be \
+           re-evaluated on the device at all. The framework therefore also \
+           publishes a STRUCTURED view of those expressions: a stable method \
+           name the device runtime maps to a transpiled function, plus the \
+           signal ids that method reads. ", code("WireBindingOps"),
+          " is the capability trait that receives them:"),
 
         code(rust, r##"
-            fn note_text_binding(&mut self, node: &Self::Node,
-                                 signal_ids: &[u64], method: &'static str) {
-                // Emit a "this node's text is computed by `method` from these signals" command
-            }
-
-            fn note_when_binding(&mut self, anchor: &Self::Node,
-                                 signal_ids: &[u64], cond_method: &'static str,
-                                 then_node: &Self::Node, otherwise_node: &Self::Node) {
-                // Emit a "this anchor toggles between these two subtrees based on `cond_method`"
+            impl WireBindingOps for MyBackend {
+                fn note_text_binding(&mut self, node: &Self::Node,
+                                     signal_ids: &[u64], method: &'static str) {
+                    // Emit "this node's text is computed by `method` from these signals".
+                }
+                // …plus the conditional / switch / repeat siblings.
             }
         "##),
 
-        p("Runtime backends leave these defaults at no-op — they re-run the \
-           closures locally on every signal change, no metadata needed."),
-    },
-
-    section(heading = "Inactive subtrees shouldn't materialize") {
-        p("A runtime backend can afford to build both branches of a ",
-          code("when()"),
-          " up front and just hide the inactive one — it's a cheap local \
-           operation. A generator backend can't — building means emitting \
-           commands over a network, and shipping a subtree that's not on \
-           screen wastes bandwidth and device memory."),
-        p("Generator backends opt into lazy slot capture to handle this. The \
-           pattern:"),
-
-        code(rust, r##"
-            fn supports_lazy_slot_capture(&self) -> bool { true }
-
-            fn begin_slot_capture(&mut self) {
-                // Redirect subsequent backend mutations from the main wire stream
-                // into a capture buffer. The framework calls this around each
-                // `when` / `switch` / `for` arm's subtree build.
-            }
-
-            fn end_slot_capture(&mut self, slot_root: &Self::Node) {
-                // Close the capture region. The framework will then call one of
-                // the `note_*_binding` methods so you can package the captured
-                // commands as a stored, replayable subtree.
-            }
-        "##),
-
-        p("With lazy slot capture on, the framework builds each conditional \
-           arm's subtree and the backend stores it as a template rather than \
-           sending it. When the condition flips on the device, the \
-           device-side runtime replays the relevant template's commands."),
-        p("Runtime backends leave ", code("supports_lazy_slot_capture"),
-          " at ", code("false"),
-          " and the framework builds every branch into the live tree \
-           directly — cheap on-platform, no capture needed."),
-    },
-
-    section(heading = "The full method tour") {
-        p("Here's what's in the trait, grouped by purpose. Methods without \
-           notes are \"create + update\" pairs for a specific primitive."),
-    },
-
-    section(heading = "Required (no default)") {
-        list(
-            [code("type Node: Clone")],
-            [code("create_view"), ", ", code("create_text"), ", ",
-             code("create_button"), ", ", code("insert")],
-            [code("update_text")],
-            [code("clear_children")],
-            [code("apply_style")],
-            [code("finish"),
-             " — called once after the initial render walk to let the \
-              backend do any final mount work (web's ", code("finish"),
-             " triggers a layout flush, iOS's attaches the root view to the ",
-             code("UIWindow"), ")."],
-        ),
-    },
-
-    section(heading = "Container primitives (defaults: create_view)") {
-        list(
-            [code("create_pressable(on_click)"),
-             " — a tappable container. The default falls back to ",
-             code("create_view"),
-             ", which means clicks won't fire but the subtree renders."],
-            [code("create_reactive_anchor"), " — placeholder node for ",
-             code("when"), " / ", code("switch"),
-             " branches. Web overrides this to return a ",
-             code("display: contents"),
-             " element so the branch's children inherit flex context."],
-        ),
-    },
-
-    section(heading = "Content primitives (defaults: unimplemented!())") {
-        list(
-            [code("create_image"), ", ", code("update_image_src")],
-            [code("create_icon"), ", ", code("update_icon_color"), ", ",
-             code("update_icon_stroke"), ", ", code("animate_icon_stroke")],
-            [code("create_activity_indicator")],
-        ),
-        p("The walker only calls these if your app uses the corresponding \
-           primitive. Leave them ", code("unimplemented!()"),
-          " until you support the primitive."),
-    },
-
-    section(heading = "Inputs (defaults: unimplemented!())") {
-        list(
-            [code("create_text_input"), ", ", code("update_text_input_value")],
-            [code("create_toggle"), ", ", code("update_toggle_value")],
-            [code("create_slider"), ", ", code("update_slider_value")],
-            [code("update_button_label")],
-        ),
-    },
-
-    section(heading = "Navigation (defaults: unimplemented!())") {
-        list(
-            [code("create_navigator"),
-             " — the single, unified entry point for every navigator kind. \
-              Receives the SDK's presentation payload (keyed by ",
-             code("TypeId"), "), a ", code("NavigatorHost"),
-             " callbacks bundle, and accessibility props. Backends that \
-              hold a ", code("NavigatorRegistry"),
-             " consult it for a handler factory; on a miss they should \
-              render a \"navigator not registered\" placeholder node so \
-              the missing wiring is visible instead of crashing."],
-            [code("release_navigator"), " — paired teardown; drop the \
-              handler state keyed by the node. Defaults to no-op."],
-            [code("make_navigator_handle"), " — returns the ",
-             code("NavigatorHandle"), " the SDK's ", code(".bind(...)"),
-             " fills."],
-            [code("apply_navigator_slot_style"),
-             " — optional slot-style routing to the handler. Defaults to \
-              no-op."],
-        ),
-        p("The ", code("NavigatorHost"),
-          " bundle carries every framework-owned affordance a handler \
-           needs — build the author layout with an outlet, mount/release \
-           per-screen subtrees on demand, match URL paths, and the \
-           reactive nav-state signals. Because the swap and stack SDK \
-           handlers are backend-neutral (they drive everything through \
-           the host), a new backend usually only needs the registry \
-           plumbing — the SDKs' handlers then work unchanged."),
-        p(code("create_link"), " is also navigation, but its default \
-           falls through to ", code("create_view"),
-          " — see the container section below."),
-    },
-
-    section(heading = "Portals (defaults: unimplemented!() / no-op)") {
-        list(
-            [code("create_portal"), " — single entry point. Receives a ",
-             code("PortalTarget"), " (either ",
-             code("Viewport(ViewportPlacement)"), " or ",
-             code("Anchor { target, side, align }"),
-             "), an ", code("on_dismiss"), " callback, and a ",
-             code("trap_focus"), " flag. Default: ", code("unimplemented!()"), "."],
-            [code("release_portal"), " — paired teardown. Defaults to no-op."],
-            [code("make_portal_handle"), " — returns a ", code("PortalHandle"),
-             " for imperative ops. Defaults to a no-op handle."],
-        ),
-        p("Backends decide how to route by branching on ",
-          code("PortalTarget"), ". iOS could route ",
-          code("PortalTarget::Viewport(_)"), " to a window-level ",
-          code("UIView"), " and ", code("PortalTarget::Anchor { .. }"),
-          " to ", code("UIContextMenuInteraction"), ", all inside one ",
-          code("create_portal"), ". Web uses the ", code("popover"),
-          " attribute with CSS anchor positioning."),
-    },
-
-    section(heading = "Styling") {
-        list(
-            [code("apply_style(node, &Rc<StyleRules>)"),
-             " — required. The framework hands you concrete, token-resolved values."],
-            [code("apply_styled_states(node, base, overlays)"),
-             " — optional. If your backend supports declarative state \
-              styling (web's CSS pseudo-classes), implement this and return ",
-             code("true"), " from ", code("handles_states_natively()"),
-             ". The framework then hands you the base + per-state overlay \
-              rules in one call. If you leave the default, the framework \
-              drives states via signal flips and re-fires ",
-             code("apply_style"), " per change."],
-            [code("register_stylesheet(&[Rc<StyleRules>])"),
-             " — optional. Backends that benefit from up-front rule emission \
-              (web mints CSS classes here) override this. Defaults to a no-op."],
-            [code("unregister_stylesheet(&[Rc<StyleRules>])"),
-             " — paired teardown."],
-            [code("install_theme_variables(&[TokenEntry])"),
-             " — optional. Backends with a runtime variable system (web's \
-              CSS custom properties) install tokens here. iOS and Android \
-              leave the default no-op and read ", code("Tokenized::value()"),
-             " at ", code("apply_style"), " time. See ",
-             link("Styles", to = "styles"), " for the full story."],
-        ),
-    },
-
-    section(heading = "Lazy-slot capture (generator backends only)") {
-        list(
-            [code("supports_lazy_slot_capture(&self) -> bool"), " — default ",
-             code("false"), "."],
-            [code("begin_slot_capture"), " / ", code("end_slot_capture"),
-             " — pair the framework calls around each conditional arm's \
-              subtree build."],
-            [code("note_text_binding"), ", ", code("note_signal_initial"),
-             ", ", code("note_when_binding"), ", ",
-             code("note_switch_binding"), ", ", code("note_repeat_binding"),
-             " — declarative metadata hooks. Generator backends record these \
-              so the device runtime can re-evaluate reactive expressions \
-              without closures."],
-        ),
-    },
-
-    section(heading = "Refs and handles") {
-        list(
-            [code("ref_ops()"), " — returns a ", code("RefOps"),
-             " bundle with the per-primitive trait objects the framework \
-              uses to construct handles (", code("ButtonHandle"), ", ",
-             code("ViewHandle"),
-             ", etc.). The defaults are no-op ops, so refs work but the \
-              handle methods don't do anything. Implement the relevant \
-              traits and return them here when you want geometry queries, \
-              programmatic clicks, etc., to work."],
-            [code("make_*_handle"),
-             " for each primitive — defaults construct no-op handles. \
-              Override per-primitive to return real backend-aware handles."],
-        ),
-    },
-
-    section(heading = "Virtualization") {
-        list(
-            [code("create_virtualizer(callbacks: VirtualizerCallbacks<Self::Node>)"),
-             " — defaults to ", code("unimplemented!()"),
-             ". The framework hands you a bundle of closures (",
-             code("item_count"), ", ", code("mount_item"), ", ",
-             code("release_item"),
-             ", etc.) and you wire them into your platform's recycling \
-              widget (", code("UICollectionView"), ", ",
-             code("RecyclerView"), ", an ", code("IntersectionObserver"),
-             "). See ", link("Lists", to = "lists"),
-             " for what each callback carries."],
-        ),
+        p("Runtime backends leave every ", code("WireBindingOps"),
+          " method at its default no-op — they re-run the closures locally \
+           on each flush, so no metadata is needed."),
     },
 
     section(heading = "A skeleton backend") {
-        p("The smallest plausible backend looks like this:"),
+        p("The smallest plausible backend is ", code("Host"),
+          " plus the two or three capability traits your app's primitives \
+           actually use:"),
 
         code(rust, r##"
             use std::rc::Rc;
-            use runtime_core::{Backend, Action, StyleRules, IconData};
+            use runtime_scene::Host;
+            use runtime_vocabulary::caps::{StyleOps, TextOps, ViewOps};
+            use runtime_shared::StyleRules;
 
             #[derive(Clone)]
-            struct Node {
-                // Whatever your platform uses
-            }
+            struct Node { /* whatever your platform uses */ }
 
-            pub struct MyBackend {
-                // Backend-level state (the root container, a cache, etc.)
-            }
+            pub struct MyBackend { /* root container, caches, … */ }
 
-            impl Backend for MyBackend {
+            impl Host for MyBackend {
                 type Node = Node;
 
-                fn create_view(&mut self) -> Node { /* allocate a container */ }
+                fn insert(&mut self, parent: &mut Node, child: Node) { /* attach */ }
+                fn insert_at(&mut self, parent: &mut Node, child: Node, i: usize) { /* … */ }
+                fn remove_child(&mut self, parent: &Node, child: &Node) { /* detach */ }
+                fn clear_children(&mut self, node: &Node) { /* detach all */ }
+                fn create_anchor(&mut self) -> Node { /* layout-transparent container */ }
+                fn supports_splice(&self) -> bool { true }
+            }
 
-                fn create_text(&mut self, content: &str) -> Node {
-                    /* allocate a text node, set initial content */
-                }
-
-                fn create_button(&mut self, label: &str, on_click: &Action,
-                                 _leading: Option<&IconData>, _trailing: Option<&IconData>)
-                                 -> Node {
-                    /* allocate a button, wire on_click into your platform's event system */
-                }
-
-                fn insert(&mut self, parent: &mut Node, child: Node) {
-                    /* attach child to parent in your scene */
-                }
-
-                fn update_text(&mut self, node: &Node, content: &str) {
-                    /* set node's text content */
-                }
-
-                fn clear_children(&mut self, node: &Node) {
-                    /* remove all children from node */
-                }
-
+            impl ViewOps for MyBackend { /* create_view, … */ }
+            impl TextOps for MyBackend { /* create_text, update_text, … */ }
+            impl StyleOps for MyBackend {
                 fn apply_style(&mut self, node: &Node, style: &Rc<StyleRules>) {
-                    /* translate StyleRules into your platform's styling */
-                }
-
-                fn finish(&mut self, root: Node) {
-                    /* attach root to your platform's surface (window, etc.) */
+                    // Translate StyleRules into your platform's styling.
                 }
             }
         "##),
 
-        p("This compiles and produces a working app — as long as your app \
-           uses only ", code("View"), ", ", code("Text"), ", and ",
-          code("Button"), ". Trying to use anything else (an ", code("Image"),
-          ", a ", code("ScrollView"),
-          ", navigation) will panic with ", code("unimplemented!()"),
-          " at the relevant call site, telling you exactly what to \
-           implement next."),
+        p("That compiles and produces a working app for any tree built from \
+           views, text, and styles. Adding an image means adding ",
+          code("ImageOps"), "; adding a scroll region means ",
+          code("ScrollOps"),
+          ". You never have to write a method you don't intend to \
+           implement, and a primitive whose capability you haven't \
+           implemented is a COMPILE error at the registration site rather \
+           than a runtime panic in the field."),
         p("That progressive shape is deliberate. You can ship a backend for \
            an unusual target with the minimum surface working in a day, and \
            grow it as you need more primitives."),
     },
 
     section(heading = "Driving the render") {
-        p("Once your backend is built, hand it to the framework:"),
+        p("A boot entry does five things in order: create the ",
+          code("World"), ", build a ", code("Registry"),
+          " and register the primitive handlers on it, run the app's root \
+           component inside ", code("World::enter"),
+          ", realize the returned scene tree against your backend, and \
+           install the flush driver:"),
 
         code(rust, r##"
-            use runtime_core::{mount, Owner};
+            use std::cell::RefCell;
+            use std::rc::Rc;
 
-            fn main() {
-                let backend = MyBackend::new(/* platform args */);
-                let _owner = mount(backend, my_app::app);
-                // ...platform-specific event loop here...
+            use runtime_scene::{realize, Registry};
+            use runtime_world::World;
+
+            fn boot() {
+                let backend = Rc::new(RefCell::new(MyBackend::new(/* platform args */)));
+
+                let mut registry = Registry::new();
+                runtime_vocabulary::register_builtins(&mut registry);
+                // …plus any third-party SDK registers the app hands you.
+                let registry = Rc::new(registry);
+
+                let world = World::new();
+                let realized = world.enter(|| {
+                    let element = my_app::app();
+                    realize(&backend, &registry, element)
+                });
+
+                // Hold `world` + `realized` for the app's lifetime; dropping
+                // them tears the tree down. Then install the flush driver so
+                // staged writes commit after each dispatch, and run the
+                // platform's event loop.
             }
         "##),
 
-        p(code("mount(backend, app)"),
-          " opens the root reactive scope, runs your ", code("app"),
-          " constructor inside it, and walks the resulting primitive tree, \
-           calling your backend's methods in the right order. The returned ",
-          code("Owner"),
-          " holds that root scope; drop it to tear everything down. See ",
+        p("In practice you don't hand-roll this: each shipped backend \
+           exposes a ", code("newcore"),
+          " boot module that does it for you (", code("backend_web::"),
+          code("newcore::start_in"), ", ", code("host_appkit::newcore::run"),
+          ", ", code("host_winit::newcore::run_with"),
+          ", …), and a new backend should ship the same shape. Every one of \
+           them takes a ", code("register"),
+          " argument that runs after ", code("register_builtins"),
+          ", which is the app's SDK-registration seam."),
+        p("The flush driver is the piece that is easy to forget. Wrap every \
+           author-code entry point your backend owns — event callbacks, \
+           timers, animation frames — so the world flushes after the \
+           callback returns. Without it, an author's ", code("set"),
+          " stages and never commits, and the UI simply doesn't update. See ",
           link("Reactivity", to = "reactivity"),
-          " for the long version of why the closure form matters — short \
-           version: top-level ", code("effect!"), " / ", code("signal!"),
-          " in ", code("app()"),
-          " adopt the root scope, so their cleanups run on ",
-          code("Owner"), " drop instead of being silently cancelled."),
-
-        p("If you have a pre-built ", code("Element"),
-          " (e.g. in a test fixture or a wire-protocol replay) and there's \
-           no constructor to run inside the scope, ",
-          code("runtime_core::render(backend, tree)"),
-          " is the value-taking variant. It's literally ",
-          code("mount(backend, move || tree)"),
-          " — same shape, no closure overhead."),
+          " for what the flush does."),
+        p("Also wire a viewport source where the platform has one: push the \
+           platform's resize / rotation / configuration-change report into \
+           the world's viewport context, so breakpoint-reactive author code \
+           re-fires. Backends with no resize surface at all (a command \
+           stream, a fixed-size display) simply seed once and document that."),
         p("What \"the event loop\" means is platform-specific:"),
         list(
             ["Native event loops (iOS's ", code("UIApplicationMain"),
              ", Android's ", code("ActivityThread"),
              ", a winit loop) — the platform runs the loop, your event \
               callbacks call ", code("signal.set(...)"),
-             ", the framework cascades effects through the backend."],
+             ", your flush driver commits, the effects run through the \
+              backend."],
             ["Reactive runtimes (web, where there's no explicit loop) — \
-              events come in via JS callbacks the backend registered, those \
-              call signals, those cascade."],
-            ["Generator runtimes — your backend's loop is a network loop: \
-              read inbound event messages from the device, dispatch the \
-              matching closures, write outbound command updates."],
+              events arrive via JS callbacks the backend registered, those \
+              write signals, the microtask flush driver commits."],
+            ["Generator runtimes — your loop is a network loop: read inbound \
+              event messages from the device, dispatch the matching \
+              closures, ", code("settle()"),
+             ", then drain the outbound command queue."],
         ),
-        p("The framework doesn't run a loop itself. It runs during the \
-           walker pass and during signal cascades — both synchronous, both \
-           driven by whatever event source you wired in."),
+        p("The framework doesn't run a loop itself. It runs during realize \
+           and during flushes — both synchronous, both driven by whatever \
+           event source you wired in."),
     },
 
     section(heading = "Where to read more") {
         list(
             [link("The shipped backends", to = "backends"),
-             " — high-level overview of web, iOS, Android, Roku, and the runtime-server \
-              dev backend. Useful for seeing how each model maps to a real \
-              platform."],
+             " — high-level overview of web, iOS, Android, macOS, terminal, \
+              GPU, Roku, and the runtime-server dev backend. Useful for \
+              seeing how each model maps to a real platform."],
             [link("Reactivity", to = "reactivity"),
-             " — what's happening on the framework side when your ",
-             code("update_text"), " or ", code("apply_style"),
-             " gets called."],
+             " — what's happening on the framework side between a signal \
+              write and your ", code("apply_style"), " call."],
             [link("Styles", to = "styles"), " — the ", code("StyleRules"),
              " you receive in ", code("apply_style"),
              " and the token-resolution machinery you may want to implement."],
-            [link("Lists", to = "lists"), " — the ",
-             code("VirtualizerCallbacks"), " bundle in detail."],
+            [link("Lists", to = "lists"), " — what ",
+             code("VirtualizerOps"), " is expected to do."],
             [link("Navigation", to = "navigation"),
-             " — what ", code("create_navigator"),
-             " is expected to do (and the per-screen mount/release \
-              callbacks the ", code("NavigatorHost"), " bundle carries)."],
+             " — what ", code("NavigatorOps"),
+             " is expected to do, and the per-screen mount/release \
+              callbacks the navigator host bundle carries."],
+            [link("Third-party primitives", to = "third-party-primitives"),
+             " — how a handler declares the capabilities it needs, which is \
+              why SDKs work on a new backend for free."],
             [link("Robot", to = "robot"),
-             " — what test-id propagation looks like (your backend's \
-              primitive creation can opt in by capturing the ",
-             code("test_id"), " field)."],
+             " — what test-id propagation looks like, and the \
+              introspection surface ", code("IntrospectionOps"),
+             " exposes."],
             [link("Dev tools", to = "cli"),
-             " — what runtime-server expects from the wire side if you're writing a \
-              generator-style backend."],
+             " — what runtime-server expects from the wire side if you're \
+              writing a generator-style backend."],
         ),
     },
 }

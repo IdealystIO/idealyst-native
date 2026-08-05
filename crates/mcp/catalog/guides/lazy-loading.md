@@ -43,17 +43,25 @@ ui! {
 
 - **Props are the args.** `document_id` is captured and passed across the chunk
   boundary. Any runtime input the component needs is just a prop.
-- **The chunk is named after the component** — `Editor` produces a readable
-  `…_lazy_Editor.wasm`, not a content hash, so you can spot it in the network
-  tab.
+- **The component's name identifies its chunk** — the chunk files themselves
+  are emitted as `module_<n>___lazy_body.wasm`, and `Editor`'s readable name
+  lands in the loader symbol inside `__wasm_split.js`
+  (`__wasm_split_load___idealyst_lazy_Editor_…`), so searching that file maps
+  any chunk in the network tab back to its component.
 - **On native** there's no bundle to split, so the body is compiled inline and
   mounts synchronously — the placeholder never shows.
+- **Premint composes.** The `--premint` build-time CSS dump resolves lazy
+  boundaries while crawling routes (it pumps its executor per route until the
+  bodies have mounted), so styles constructed inside a lazy body mint into the
+  shipped CSS like any other mount-time sheet — `--premint-only` works with
+  lazily-split screens. Interaction-gated styles inside a lazy body follow the
+  usual crawl contract (see the [[styling]] guide).
 
 > `#[component(lazy)]` currently requires **inline props** (declare the props as
-> `fn` parameters, as above). A no-arg component should take a parameter; a
-> component you need both eager *and* lazy is best expressed by extracting the
-> body into a shared `fn` that a plain `#[component]` and a `#[lazy_component]`
-> both call.
+> `fn` parameters, as above; zero parameters is fine — the generated props
+> struct then carries just the `loading`/`error` config fields). A component you
+> need both eager *and* lazy is best expressed by extracting the body into a
+> shared `fn` that a plain `#[component]` and a `#[lazy_component]` both call.
 
 ## Handle the three states
 
@@ -119,82 +127,92 @@ re-materializes it (from any active data segment — `.rodata`, `.data`, `.bss`)
 when it instantiates, and symbols no chunk could restore are never pruned.
 `--data-prune` is still off by default because its chunk-only classification
 under-approximates what `main` reaches (it can't trace data reached via
-data→data pointers, `call_indirect`, or the deferred `Element::External`
-registration queue), so it can silently zero a main-reachable static that
+data→data pointers or `call_indirect`), so it can silently zero a
+main-reachable static that
 `main` reads *before* the owning chunk loads — corrupting `main.wasm` with no
 error (fonts stop registering, a lazy route renders nothing). Only enable it
 after confirming the built app renders correctly, and re-check when your
 static data changes.
 
-## Lazy-loading a heavy SDK (External extensions)
+## Lazy-loading a heavy SDK (extension primitives)
 
-The same win applies to a heavy **SDK** that renders via `Element::External`
-(canvas, PDF, maps, video). But wrapping the *usage* in a lazy component isn't
-enough on its own: an SDK's external handler is installed by **registration**,
-and if that registration is anchored in the main module, wasm-split keeps the
-whole SDK in `main.wasm` regardless of where it renders.
+Wrapping a heavy SDK's *usage* in a lazy component splits that corner's
+**rendering** code into a chunk. What it does not automatically split is the
+SDK's **handler**: a third-party primitive is a payload handler on the scene
+`Registry`, and the ordinary place to install one is at boot, from your crate's
+`register_scene_extensions`. A handler named there — and everything it
+statically reaches — is reachable from `main.wasm` no matter where the
+primitive renders.
 
-Registration is the anchor, so registration is what must move into the chunk.
-Three parts, all required:
+Registration is the anchor, so moving the anchor is what moves the weight. The
+registry has a **late-registration seam** for exactly that, the runtime-v2
+successor to the pre-v2 core's `defer_external_registration`:
 
-1. **Register from inside the chunk**, via `defer_external_registration`. The
-   closure — and the SDK it closes over — is constructed only in chunk code, so
-   `main.wasm` never reaches it:
+- **At boot, declare the kind instead of the handler.**
+  `registry.defer::<HeavyProps>()` costs `main.wasm` a compile-time `TypeId`
+  and nothing else. It is what licenses `realize` to **park** an item of that
+  kind behind a layout-transparent placeholder rather than panicking on it. A
+  payload kind that was never declared still panics — that distinction is
+  deliberate, so a genuinely forgotten registration stays loud.
+- **From inside the chunk, install the handler.**
+  `runtime_scene::defer_registration::<MyBackend, _>(|registry| {
+  registry.register_deferred::<HeavyProps, _>(handler); })` queues it on the
+  scene's late mailbox, keyed by host type. The next `realize` drains the
+  queue and completes every parked item **in place** — same node, same
+  position, no remount.
 
-   ```rust
-   // In the SDK's web module:
-   #[cfg(target_arch = "wasm32")]
-   pub fn register_lazy() {
-       runtime_core::defer_external_registration::<backend_web::WebBackend, _>(|b| {
-           b.register_external::<EditorProps, _>(|props, backend| build_editor(props, backend));
-       });
-   }
-   ```
+`main` only ever names the type-erased closure in the drain path, so the
+handler and whatever it reaches are constructed only inside the chunk:
+wasm-split confines them there and `--data-prune` can then evict their statics
+from main. `tests/lazy-payload-split` measures precisely this — the same app
+built two ways, differing only in that one line, with the gate requiring the
+deferred variant's `main.wasm` to be at least 400 KiB smaller.
 
-2. **Do not `inventory::submit!` the web handler.** An inventory submission is
-   itself a main-module anchor — it drags the SDK back in even if part 1 is
-   correct. Keep inventory self-registration for **native** targets (where
-   bundle size is a non-issue) and opt web into the lazy path.
+The registry also replaced `inventory::submit!` self-registration — every
+handler is installed explicitly now, which means the main bundle contains
+exactly the handlers you named and nothing else.
 
-3. **Call `register_lazy()` at the top of the lazy component's body**, so the
-   handler is queued when the chunk loads. The web backend drains the queue
-   right before it dispatches the chunk's own `Element::External`, so the
-   freshly-registered handler is found:
+The practical recipe:
 
-   ```rust
-   #[lazy_component]
-   fn Editor(document_id: u32) -> Element {
-       editor_sdk::register_lazy();   // web: defers; native: no-op
-       editor_sdk::EditorView(document_id)
-   }
-   ```
+1. **Split the body.** `#[component(lazy)]` on the component that renders the
+   heavy primitive keeps its construction code, its data plumbing, and its
+   private helpers out of `main.wasm`.
 
-Get any part wrong and the SDK silently stays in `main.wasm` (parts 1–2) or the
-external renders a "not supported" placeholder (part 3).
+2. **Defer the handler when it's the heavy part.** `registry.defer::<T>()` at
+   boot plus `register_deferred` from the chunk, as above.
 
-Part 2 applies **transitively**: a dependency's ctor anchors just as hard as
-your own. `canvas-vello` depends on `canvas-native` purely as its Canvas2D
-fallback delegate, and canvas-native's default-on `self-register` feature
-inventory-submits at ctor time — which pinned the whole rasterizer + font
-stack (~670 KB) in `main.wasm` even with a perfectly lazy vello canvas.
-canvas-vello therefore takes that dep with `default-features = false`. If your
-SDK both self-registers (for zero-config eager use) and gets consumed as a
-delegate, put the `inventory::submit!` behind a default-on cargo feature so
-delegate consumers can opt out; apps that depend on your crate directly keep
-zero-config registration. This keeps the SDK's
-**code** out of `main.wasm`; its **data** (an embedded payload, large static
-tables) only leaves `main.wasm` under the opt-in `--data-prune` (above) — verify
-the app still renders when you enable it.
+3. **Otherwise keep the handler thin.** If you register at boot, structure the
+   SDK so the expensive machinery (a rasterizer, a font stack, an embedded
+   table) sits behind a function the *chunk's* code path calls, not behind one
+   the handler reaches at registration time. Reachability is computed from the
+   handler; what the handler can't reach can live in the chunk.
 
-### Lazy needs `prim-lazy` under minimal feature sets
+4. **Register only what you render.** Every `register` line in
+   `register_scene_extensions` pulls that handler's whole reachable graph into
+   main. Since registration is explicit on every target now, that list is
+   entirely under your control — an unused line is pure main-bundle cost.
 
-The `Element::Lazy` walker driver and the `lazy_split` builder ride
-runtime-core's `prim-lazy` cargo feature (ON by default). This only matters
-if you minimize the bundle with `--primitives`: include `lazy` in the list
-(`idealyst build --web --release --primitives graphics,lazy`) or
-`#[lazy_component]` becomes a compile error and a wire-received lazy element
-renders the "not supported" placeholder. See [[migration-0-4-0-to-0-5-0]]
-for the full gating contract.
+5. **Data needs `--data-prune`.** Even a chunk-only static stays in
+   `main.wasm` unless you opt into the experimental pass above.
+
+```rust
+// Boot: declare the payload kind late-bound. `main.wasm` never names the
+// handler. (Swap this line for `heavy_sdk::register(registry)` if you'd
+// rather pay for the handler up front.)
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    registry: &mut runtime_scene::Registry<H>,
+) {
+    registry.defer::<heavy_sdk::HeavyProps>();
+}
+
+// The USAGE is what splits — and the chunk installs the handler on its
+// way in, via `defer_registration` → `Registry::register_deferred`.
+#[component(lazy)]
+fn HeavyCorner(document_id: u32) -> Element {
+    heavy_sdk::register_from_chunk();
+    heavy_sdk::EditorView(document_id)
+}
+```
 
 ### Eager state in a lazy chunk is safe
 
@@ -209,7 +227,10 @@ walk-time; build them where they read best.
 
 - [[external-export]] — the outbound counterpart (shipping components *out* to
   other frameworks) versus splitting them *within* an app.
-- [[sdks]] — the SDK crates (canvas, pdf, maps, video) that render via
-  `Element::External` and are the usual lazy-loading candidates.
+- [[sdks]] — the SDK crates (canvas, pdf, maps, video) that render through a
+  scene-registry payload handler and are the usual lazy-loading candidates.
+- [[sdk-components]] — the authoring side: how to build an SDK component so
+  consumers can defer it, including the `register` / `defer` /
+  `register_from_chunk` seam convention.
 - [[backends]] — why the split is a web concern (native compiles the body
   inline).

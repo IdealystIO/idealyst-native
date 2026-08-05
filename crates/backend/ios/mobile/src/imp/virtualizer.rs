@@ -74,7 +74,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_core::{VirtualizerCallbacks, VirtualLayout};
+use runtime_shared::{VirtualizerCallbacks, VirtualLayout};
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol};
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
@@ -668,7 +668,7 @@ mod tests {
     //! `examples/welcome` flat-list page until we wire up a UI test
     //! target.
     use super::*;
-    use runtime_core::{Axis, Lanes, VirtualizerCallbacks, VirtualLayout};
+    use runtime_shared::{Axis, Lanes, VirtualizerCallbacks, VirtualLayout};
 
     fn vlist(horizontal: bool) -> VirtualLayout {
         VirtualLayout {

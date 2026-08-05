@@ -7,8 +7,8 @@
 
 use runtime_core::stylesheet;
 use runtime_core::{
-    AlignItems, Color, FlexDirection, FontWeight, JustifyContent, Length, Overflow, TextAlign,
-    TextTransform, Tokenized,
+    AlignItems, Color, Cursor, FlexDirection, FontWeight, JustifyContent, Length, Overflow,
+    Position, TextAlign, TextTransform, Tokenized,
 };
 
 // ---- Page-level scroll surface --------------------------------------------
@@ -29,6 +29,65 @@ stylesheet! {
         transitions {
             background: 250ms EaseInOut,
             color: 250ms EaseInOut,
+        }
+    }
+}
+
+// Scroll-viewport wrapper around each screen's `scroll_view` — its
+// bound handle reports the visible scroll box for the TOC scroll-spy.
+// Same fill rules as `ScreenScroll`, which it tightly wraps.
+stylesheet! {
+    pub ScreenFill<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            width: Length::pct(100.0),
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            flex_basis: 0.0,
+        }
+    }
+}
+
+// Content-height column wrapping the whole scrolled tree — its bound
+// handle reports the total scrollable content height for the spy.
+stylesheet! {
+    pub ScrollContent<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            width: Length::pct(100.0),
+        }
+    }
+}
+
+// Full-screen fallback while a page's wasm chunk fetches (or fails):
+// the whole page frame lives inside the chunk, so this is the only
+// thing on screen and must fill the scroller's viewport to center the
+// loader / error UI.
+stylesheet! {
+    pub ChunkLoaderBar<()> {
+        base(_t) {
+            // Full-bleed route loader: the Progress track is 100% of its
+            // parent, and the fallback column centers its children, so
+            // the wrapper must claim the full outlet width itself.
+            width: Length::pct(100.0),
+        }
+    }
+}
+
+stylesheet! {
+    pub ChunkFallback<()> {
+        base(_t) {
+            width: Length::pct(100.0),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            // Fill the scroller's viewport. `flex_shrink: 0` is
+            // load-bearing: inside a flex-column scroller,
+            // `min_height: 100%` replaces the default content-size
+            // shrink floor, and without it the box clamps back to
+            // content height and the spinner hugs the top edge.
+            min_height: Length::pct(100.0),
+            flex_shrink: 0.0,
         }
     }
 }
@@ -78,6 +137,110 @@ stylesheet! {
     }
 }
 
+// ---- "On this page" (TOC) column ------------------------------------------
+// Ported from websites/website's `layout_with_toc` panel (same look,
+// same tokens) — the docs' page frame renders it to the right of the
+// reading column at Lg+ and drives it with the shared scroll-spy in
+// `shell.rs`.
+
+// Row wrapping the reading column + the TOC: the main column GROWS to
+// take all leftover width (pushing the fixed-width TOC to the right
+// edge), and `PagePad` centers itself inside it via `align_self`.
+// `FlexStart` keeps the TOC content-height so its sticky positioning
+// can track the scroll.
+stylesheet! {
+    pub PageRow<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::FlexStart,
+            width: Length::pct(100.0),
+        }
+    }
+}
+
+// The growing main slot of `PageRow`. `min_width: 0` overrides the
+// flex min-content floor so wide demo content (tables, code panels)
+// shrinks/scrolls inside the reading column instead of shoving the
+// TOC off the right edge.
+stylesheet! {
+    pub PageRowMain<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            min_width: 0.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub TocPanel<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            width: 200.0,
+            min_width: 200.0,
+            flex_shrink: 0.0,
+            // Sit near the top of the page (the reading column's group
+            // overline), not sunk below it; keep clear of the right
+            // edge.
+            padding_top: 16.0,
+            padding_right: 24.0,
+            // Sticky so the panel stays in view as the page scrolls —
+            // web emits CSS `sticky`; native backends pin via their
+            // sticky registries. The stuck offset matches the resting
+            // padding so pinning doesn't jump the panel.
+            position: Position::Sticky,
+            top: Length::Px(16.0),
+        }
+    }
+}
+
+stylesheet! {
+    pub TocHeader<()> {
+        base(_t) {
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: 11.0,
+            font_weight: FontWeight::SemiBold,
+            letter_spacing: 0.8,
+            text_transform: TextTransform::Uppercase,
+            padding_bottom: 8.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub TocLink<()> {
+        base(_t) {
+            padding_vertical: 6.0,
+            padding_left: 12.0,
+            border_left_width: 2.0,
+            border_left_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: 13.0,
+            line_height: 18.0,
+            text_align: TextAlign::Left,
+            cursor: Cursor::Pointer,
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(_t) {
+                border_left_color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+                color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+                font_weight: FontWeight::SemiBold,
+            }
+        }
+        state hovered(_t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+        }
+        transitions {
+            color: 180ms EaseOut,
+            border_left_color: 180ms EaseOut,
+        }
+    }
+}
+
 // ---- Mobile top bar + hamburger -------------------------------------------
 
 // Persistent top strip that hosts the hamburger on narrow viewports.
@@ -108,6 +271,7 @@ stylesheet! {
 stylesheet! {
     pub MenuButton<()> {
         base(_t) {
+            cursor: Cursor::Pointer,
             width: Length::Px(34.0),
             height: Length::Px(34.0),
             border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
@@ -582,6 +746,7 @@ stylesheet! {
             padding_vertical: 5.0,
             border_radius: 999.0,
             background: Color("transparent".into()),
+            cursor: Cursor::Pointer,
         }
         variant active {
             #[default]
@@ -645,6 +810,7 @@ stylesheet! {
 stylesheet! {
     pub SearchTrigger<()> {
         base(_t) {
+            cursor: Cursor::Pointer,
             width: Length::pct(100.0),
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
@@ -939,10 +1105,10 @@ const MONO: &str = "ui-monospace, SFMono-Regular, Menlo, monospace";
 // (vs. the component pages' 880px) so the hero + two-up grids breathe.
 stylesheet! {
     pub LandingPad<()> {
+        // Full-bleed: the landing spans the whole outlet (no reading-
+        // column max-width) — its grids/cards do their own wrapping.
         base(_t) {
             flex_direction: FlexDirection::Column,
-            max_width: 1000.0,
-            align_self: runtime_core::AlignSelf::Center,
             width: Length::pct(100.0),
             padding: 16.0,
             gap: 16.0,
@@ -1382,5 +1548,49 @@ stylesheet! {
             padding_horizontal: 8.0,
             padding_vertical: 3.0,
         }
+    }
+}
+
+// A bare icon-sized pressable (the password-visibility eye toggles on the
+// forms pages). Exists so those pressables carry the pointer cursor —
+// a pressable with NO style renders the default arrow on web.
+stylesheet! {
+    pub IconToggleBtn<()> {
+        base(_t) {
+            cursor: Cursor::Pointer,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtime_core::{resolve_style, StyleApplication};
+
+    /// User-reported: the header's Light/Dark toggle rendered the default
+    /// arrow cursor. Root cause: none of this app's hand-rolled pressable
+    /// sheets set `cursor` (idea-ui components carry their own; bare
+    /// `pressable` + app sheet does not). Pin all four so the next custom
+    /// pressable surface copies a correct example.
+    #[test]
+    fn regression_custom_pressable_sheets_carry_pointer_cursor() {
+        let world = runtime_world::World::new();
+        world.enter(|| {
+            for (name, sheet) in [
+                ("SegBtn", SegBtn::sheet()),
+                ("MenuButton", MenuButton::sheet()),
+                ("SearchTrigger", SearchTrigger::sheet()),
+                ("IconToggleBtn", IconToggleBtn::sheet()),
+            ] {
+                let rules = resolve_style(&StyleApplication::new(sheet));
+                assert_eq!(
+                    rules.cursor,
+                    Some(Cursor::Pointer),
+                    "{name} styles a pressable and must show the pointer cursor"
+                );
+            }
+        });
     }
 }

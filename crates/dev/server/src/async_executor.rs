@@ -2,8 +2,8 @@
 //!
 //! ## Why this exists
 //!
-//! `runtime_core::driver::spawn_async` has a native fallback: when no
-//! backend has installed an [`AsyncExecutor`](runtime_core::driver::AsyncExecutor),
+//! `runtime_shared::driver::spawn_async` has a native fallback: when no
+//! backend has installed an [`AsyncExecutor`](runtime_shared::driver::AsyncExecutor),
 //! it drives the future to completion with `pollster::block_on` on the
 //! calling thread. That fallback is correct for real native backends
 //! whose HTTP transport is the platform stack (`NSURLSession` on Apple,
@@ -61,7 +61,7 @@ use std::cell::Cell;
 use std::future::Future;
 use std::pin::Pin;
 
-use runtime_core::driver::AsyncExecutor;
+use runtime_shared::driver::AsyncExecutor;
 use tokio::runtime::Runtime;
 
 thread_local! {
@@ -82,7 +82,7 @@ thread_local! {
 }
 
 /// Install the Tokio-backed executor with `runtime-core`. Idempotent
-/// (first install wins — `runtime_core::driver::install_async_executor`
+/// (first install wins — `runtime_shared::driver::install_async_executor`
 /// is a `OnceLock`). Call once, on each session thread, before `mount`.
 ///
 /// Installing per-thread is harmless: the global handle is the same
@@ -91,7 +91,7 @@ thread_local! {
 /// time, so every session thread drives its own futures on its own
 /// runtime.
 pub fn install() {
-    runtime_core::driver::install_async_executor(Box::new(SidecarAsyncExecutor));
+    runtime_shared::driver::install_async_executor(Box::new(SidecarAsyncExecutor));
 }
 
 struct SidecarAsyncExecutor;

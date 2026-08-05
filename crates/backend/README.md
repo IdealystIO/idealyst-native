@@ -1,10 +1,11 @@
 # `backend/` — native-SDK Backend implementations
 
-Each crate here is a concrete implementation of the [`Backend`](../runtime/core/src/backend.rs)
-trait that drives a particular platform's existing UI toolkit. The
-Runtime calls `Backend` methods (`create_view`, `apply_style`,
-`update_text`, …); a Backend translates each call into operations on
-its substrate.
+Each crate here is a concrete implementation of the
+[`Host`](../runtime/scene/src/host.rs) seam plus the ~30 capability
+(`*Ops`) traits in [`runtime-vocabulary`](../runtime/vocabulary/src/caps),
+driving a particular platform's existing UI toolkit. The Runtime calls
+capability methods (`create_view`, `apply_style`, `update_text`, …); a
+Backend translates each call into operations on its substrate.
 
 These Backends inherit the platform substrate for free — the OS
 already owns the event loop, the accessibility tree, scroll physics,
@@ -20,7 +21,6 @@ reimplementation.
 | [`web/`](./web) | Web | DOM nodes, compiled to WebAssembly. |
 | [`roku/`](./roku) | Roku | SceneGraph component tree. Demonstrates that the trait isn't tied to traditional GUI toolkits. |
 | [`terminal/`](./terminal) | Terminal | TTY cell grid (ANSI). |
-| [`ios-stack/`](./ios-stack) | iOS | Specialized stack-navigator backend variant. |
 | [`posix-log-capture/`](./posix-log-capture) | (utility) | Captures POSIX stdio so log output reaches the host. |
 
 The [GPU Backend](../gpu-backend/) is structurally different — it
@@ -30,8 +30,9 @@ single crate. See its own README.
 
 ## Adding a Backend
 
-Write a new crate that implements `runtime_core::Backend` for a
-target substrate. Wire it into the workspace and add a `tools/run/`
-companion if you want a one-shot launcher. The contract is
+Write a new crate that implements `runtime_scene::Host` plus the
+`runtime_vocabulary::caps` traits for a target substrate. Wire it into
+the workspace and add a `tools/run/` companion if you want a one-shot
+launcher. The contract is
 documented in [`docs/backend.md`](../../docs/backend.md) and in the
 `writing-a-backend` page of the docs site.

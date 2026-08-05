@@ -17,10 +17,10 @@
 
 use crate::phase_timer::PhaseTimer;
 use crate::{DynamicPtrEntry, DynamicRule, DynamicSlot, PregenEntry, WebBackend};
-use runtime_core::{Easing, StyleRules};
+use runtime_shared::{Easing, StyleRules};
 // CSS conversion lives in the shared, platform-neutral `css` crate so
 // the web backend and the SSR backend emit byte-identical declarations.
-use css::{hash_class_name, rules_to_css, rules_to_css_text};
+use css::{hash_class_name, rules_to_css};
 use wasm_bindgen::JsCast;
 
 /// Is this the text primitive's node? Detected by tag: the text
@@ -318,7 +318,7 @@ impl WebBackend {
         // `slots.len() == take <= rules.len()` — one rule group's worth of
         // indices, small and bounded. Insertion sort keeps ~4.5 KB of std
         // u32-sort machinery out of the wasm (`num::insertion_sort_by`).
-        runtime_core::num::insertion_sort_by(&mut slots, |a, b| a.cmp(b));
+        runtime_shared::num::insertion_sort_by(&mut slots, |a, b| a.cmp(b));
         let sheet = self.sheet();
         rules
             .iter()
@@ -405,7 +405,7 @@ impl WebBackend {
     /// felt by the DOM.
     pub(crate) fn impl_install_theme_variables(
         &mut self,
-        tokens: &[runtime_core::TokenEntry],
+        tokens: &[runtime_shared::TokenEntry],
     ) {
         // Token value → CSS string via the shared `css` crate, so web's
         // `:root` setProperty values and the SSR backend's `:root { … }`
@@ -468,7 +468,7 @@ impl WebBackend {
     /// index rather than `setProperty`, because the value we're
     /// changing IS the `var()` reference (not the resolved color),
     /// and only the reference changes when the SDK re-targets.
-    pub(crate) fn impl_set_app_background(&mut self, color: &runtime_core::Tokenized<runtime_core::Color>) {
+    pub(crate) fn impl_set_app_background(&mut self, color: &runtime_shared::Tokenized<runtime_shared::Color>) {
         let value = match color.name() {
             Some(name) => format!("var(--{name})"),
             None => color.value().0.clone(),
@@ -513,8 +513,8 @@ impl WebBackend {
     /// follows the theme indirectly.
     pub(crate) fn impl_set_scrollbar_theme(
         &mut self,
-        thumb: &runtime_core::Tokenized<runtime_core::Color>,
-        track: &runtime_core::Tokenized<runtime_core::Color>,
+        thumb: &runtime_shared::Tokenized<runtime_shared::Color>,
+        track: &runtime_shared::Tokenized<runtime_shared::Color>,
     ) {
         let thumb_v = match thumb.name() {
             Some(n) => format!("var(--{n})"),
@@ -596,7 +596,7 @@ impl WebBackend {
     pub(crate) fn snapshot_gradient_for_animation(
         &mut self,
         id: u32,
-        gradient: Option<&runtime_core::Gradient>,
+        gradient: Option<&runtime_shared::Gradient>,
     ) {
         let Some(g) = gradient else {
             return;
@@ -605,17 +605,17 @@ impl WebBackend {
         // Stable insertion sort: equal-offset stops are CSS hard stops whose
         // relative order is meaningful, and std's stable sort costs ~3 KB of
         // wasm for this one element type (`num::insertion_sort_by`).
-        runtime_core::num::insertion_sort_by(&mut stops, |a, b| {
+        runtime_shared::num::insertion_sort_by(&mut stops, |a, b| {
             a.offset.partial_cmp(&b.offset).unwrap_or(std::cmp::Ordering::Equal)
         });
         let offsets: Vec<f32> = stops.iter().map(|s| s.offset).collect();
         let colors: Vec<[f32; 4]> = stops.iter().map(|s| color_to_srgb(&s.color)).collect();
         let shape = crate::animated::GradientShape {
             kind: match g.kind {
-                runtime_core::GradientKind::Linear { angle_deg } => {
+                runtime_shared::GradientKind::Linear { angle_deg } => {
                     crate::animated::GradientShapeKind::Linear { angle_deg }
                 }
-                runtime_core::GradientKind::Radial { center, radius, extent } => {
+                runtime_shared::GradientKind::Radial { center, radius, extent } => {
                     crate::animated::GradientShapeKind::Radial { center, radius, extent }
                 }
             },
@@ -632,6 +632,76 @@ impl WebBackend {
     ///   `className` to it and clear any dynamic slot the node had.
     /// - Else, mint a fresh per-node dynamic class, replacing this
     ///   node's previous dynamic class atomically.
+    /// Apply per-instance rules as an inline `style` attribute, layered on
+    /// top of whatever classes the node already carries — the web half of
+    /// `StyleApplication::with_inline`.
+    ///
+    /// Deliberately NOT `impl_apply_style`: that one mints (or looks up) a
+    /// CLASS for the whole rule set and swaps the node's class slot, which
+    /// would both defeat the purpose — a continuously-varying value would
+    /// mint a class per value — and clobber the preminted classes stamped
+    /// alongside it.
+    ///
+    /// Inline declarations beat any class rule in the CSS cascade
+    /// regardless of specificity or source order, which is exactly the
+    /// merge position the inline layer has in `resolve` (last, after
+    /// overrides). So the two halves agree without any ordering work.
+    ///
+    /// Properties are set individually rather than by assigning
+    /// `style.cssText`: the animation paths already write inline
+    /// properties on these nodes (`background-image` for animated
+    /// gradients, transforms), and replacing `cssText` would wipe them.
+    pub(crate) fn apply_inline_style_impl(
+        &mut self,
+        node: &web_sys::Node,
+        style: &std::rc::Rc<StyleRules>,
+    ) {
+        use wasm_bindgen::JsCast;
+        // Both casts, not just HtmlElement: an ICON node is an `<svg>`,
+        // which is an SVGElement — the HtmlElement-only cast silently
+        // no-op'd every inline layer on icons (the Checkbox checkmark's
+        // `flex_shrink: 0` never landed).
+        let decl = if let Some(element) = node.dyn_ref::<web_sys::HtmlElement>() {
+            element.style()
+        } else if let Some(element) = node.dyn_ref::<web_sys::SvgElement>() {
+            element.style()
+        } else {
+            return;
+        };
+        // `rules_to_css_delta` lowers ONLY the properties this layer sets —
+        // the delta form, not the full `rules_to_css` (which would also
+        // apply framework defaults like the flex-direction pin and stomp
+        // the classes underneath).
+        let css = css::rules_to_css_delta(style);
+        let mut set: Vec<String> = Vec::new();
+        for declaration in css.split(';') {
+            let declaration = declaration.trim();
+            if declaration.is_empty() {
+                continue;
+            }
+            let Some((prop, value)) = declaration.split_once(':') else {
+                continue;
+            };
+            let prop = prop.trim();
+            let _ = decl.set_property(prop, value.trim());
+            set.push(prop.to_string());
+        }
+        // The layer REPLACES the previous inline layer: remove properties
+        // the last application set that this one no longer names (a
+        // cleared/shrunk `with_inline`). Per-property rather than
+        // `set_css_text` so animation-driven inline writes (gradient
+        // rebuilds, transforms) on the same attribute survive.
+        let id = self.node_id(node);
+        if let Some(previous) = self.inline_props.insert(id, set) {
+            let current = self.inline_props.get(&id).expect("just inserted");
+            for old in &previous {
+                if !current.iter().any(|p| p == old) {
+                    let _ = decl.remove_property(old);
+                }
+            }
+        }
+    }
+
     pub(crate) fn impl_apply_style(
         &mut self,
         node: &web_sys::Node,
@@ -650,15 +720,6 @@ impl WebBackend {
         // writes layer inline `style.backgroundImage` on top, which
         // CSS precedence resolves in favor of inline.
         self.snapshot_gradient_for_animation(id, style.background_gradient.as_ref());
-
-        // A text node's `shadow` lowers to `text-shadow` (hugging the
-        // glyphs), not `box-shadow`. Gated on `shadow.is_some()` so the
-        // overwhelmingly common no-shadow path pays nothing — no tag
-        // check, no divergence. See `apply_text_shadow`.
-        if style.shadow.is_some() && is_text_span(node) {
-            self.apply_text_shadow(node, id, style, &[], &[], &[]);
-            return;
-        }
 
         // Path 1: pre-generated cache hit.
         if let Some(entry) = self.pregen.get(&key) {
@@ -712,7 +773,7 @@ impl WebBackend {
         &mut self,
         node: &web_sys::Node,
         base: &std::rc::Rc<StyleRules>,
-        overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
+        overlays: &[(runtime_shared::StateBits, std::rc::Rc<StyleRules>)],
     ) {
         // States-only entry: no breakpoint or container overlays.
         // Delegates to the superset so the two paths can never drift (the
@@ -744,8 +805,8 @@ impl WebBackend {
         &mut self,
         node: &web_sys::Node,
         base: &std::rc::Rc<StyleRules>,
-        overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
-        breakpoint_overlays: &[(runtime_core::Breakpoint, std::rc::Rc<StyleRules>)],
+        overlays: &[(runtime_shared::StateBits, std::rc::Rc<StyleRules>)],
+        breakpoint_overlays: &[(runtime_shared::Breakpoint, std::rc::Rc<StyleRules>)],
         container_overlays: &[(f32, std::rc::Rc<StyleRules>)],
     ) {
         // Outer phase covers the whole call — comparing this against
@@ -774,18 +835,6 @@ impl WebBackend {
         self.snapshot_gradient_for_animation(id, base.background_gradient.as_ref());
 
         // Text node with a shadow on any layer → route to the
-        // `text-shadow` mint (distinct class, glyph-hugging shadow) and
-        // skip all the box-shadow fast paths below. Gated on a shadow
-        // being present so the common case is untouched.
-        if is_text_span(node)
-            && (base.shadow.is_some()
-                || overlays.iter().any(|(_, o)| o.shadow.is_some())
-                || breakpoint_overlays.iter().any(|(_, o)| o.shadow.is_some())
-                || container_overlays.iter().any(|(_, o)| o.shadow.is_some()))
-        {
-            self.apply_text_shadow(node, id, base, overlays, breakpoint_overlays, container_overlays);
-            return;
-        }
 
         // Fast-fast path: pointer-keyed pregen hit. When the
         // framework's resolution cache returns the same
@@ -950,88 +999,26 @@ impl WebBackend {
                 let _t = PhaseTimer::start("hash_class_name");
                 hash_class_name(&key)
             };
-            let base_body = {
-                let _t = PhaseTimer::start("rules_to_css");
-                rules_to_css(base)
+            // The whole cohort's rule strings — base first, then state /
+            // breakpoint / container overlays — assembled by the shared
+            // `css::class_rule_group` (single source with SSR and the
+            // premint style-dump) and inserted as ONE ordered group. The
+            // group insert (`insert_rule_group`) guarantees the base's
+            // physical index is below every overlay's, which the
+            // equal-specificity mobile-first cascade depends on; per-rule
+            // inserts through the LIFO slot recycler used to invert that
+            // order on re-mint. All indices go in one vec so
+            // `release_dynamic_rule` deletes them on teardown.
+            let group_rules = {
+                let _t = PhaseTimer::start("class_rule_group");
+                css::class_rule_group(
+                    &class_name,
+                    base,
+                    overlays,
+                    breakpoint_overlays,
+                    container_overlays,
+                )
             };
-
-            // Collect the whole cohort's rule strings — base first,
-            // then each state overlay as a pseudo-class scoped rule,
-            // each breakpoint overlay as a `@media (min-width: …)`
-            // rule, each container overlay as an `@container` rule —
-            // and insert them as ONE ordered group at the end. The
-            // group insert (`insert_rule_group`) guarantees the
-            // base's physical index is below every overlay's, which
-            // the equal-specificity mobile-first cascade depends on;
-            // per-rule inserts through the LIFO slot recycler used to
-            // invert that order on re-mint. All indices go in one vec
-            // so `release_dynamic_rule` deletes them on teardown.
-            let mut group_rules: Vec<String> = Vec::with_capacity(
-                1 + overlays.len() + breakpoint_overlays.len() + container_overlays.len(),
-            );
-            group_rules.push(class_rule(&class_name, &base_body));
-            for (bit, overlay) in overlays {
-                let pseudo = match *bit {
-                    runtime_core::StateBits::HOVERED => ":hover",
-                    runtime_core::StateBits::PRESSED => ":active",
-                    runtime_core::StateBits::FOCUSED => ":focus",
-                    // Attribute selector, NOT the `:disabled` pseudo-class.
-                    // `set_disabled` marks the disabled node with the HTML
-                    // `disabled` *attribute*, and a pressable renders as a
-                    // `<div>`. The `:disabled` pseudo only matches real form
-                    // controls (button/input/select/...), so `.cls:disabled`
-                    // is inert on a `<div disabled>` and the disabled overlay
-                    // silently never applies. `[disabled]` matches any element
-                    // carrying the attribute — div pressables AND form
-                    // controls alike — so it's strictly more general.
-                    runtime_core::StateBits::DISABLED => "[disabled]",
-                    _ => continue,
-                };
-                let selector = format!("{}{}", class_name, pseudo);
-                let body = {
-                    let _t = PhaseTimer::start("rules_to_css");
-                    rules_to_css(overlay)
-                };
-                // A component that declares its own `__state_focused` overlay
-                // owns the focus indicator, so suppress the browser's default
-                // `outline` on that `:focus` rule — otherwise the native ring
-                // double-draws with the themed one. Only emitted where a focus
-                // overlay exists; elements without one keep the default ring.
-                let body = if *bit == runtime_core::StateBits::FOCUSED {
-                    format!("outline:none;{body}")
-                } else {
-                    body
-                };
-                group_rules.push(class_rule(&selector, &body));
-            }
-            // Breakpoint overlays: emitted ascending by rank (the walker
-            // pre-sorts `breakpoint_overlays`), so stacked `@media`
-            // rules cascade mobile-first — higher breakpoints come later
-            // in the sheet and win on conflicting properties.
-            for (bp, overlay) in breakpoint_overlays {
-                let body = {
-                    let _t = PhaseTimer::start("rules_to_css");
-                    rules_to_css(overlay)
-                };
-                // `None` only for `Breakpoint::Xs` (the base, no media
-                // query) — which the walker never emits as an overlay.
-                if let Some(rule) = css::breakpoint_media_rule(&class_name, *bp, &body) {
-                    group_rules.push(rule);
-                }
-            }
-            // Container overlays: emitted ascending by threshold (the
-            // walker pre-sorts `container_overlays`), so stacked
-            // `@container (min-width: …)` rules cascade with higher
-            // thresholds winning — the mobile-first cascade keyed on the
-            // nearest `container-type` ancestor's width rather than the
-            // viewport's.
-            for (threshold, overlay) in container_overlays {
-                let body = {
-                    let _t = PhaseTimer::start("rules_to_css");
-                    rules_to_css(overlay)
-                };
-                group_rules.push(css::container_query_rule(&class_name, *threshold, &body));
-            }
 
             let indices = {
                 let _t = PhaseTimer::start("insert_rule");
@@ -1061,107 +1048,6 @@ impl WebBackend {
                 self.dynamic_by_ptr
                     .insert(std::rc::Rc::as_ptr(base), shared.clone());
             }
-            shared
-        };
-
-        let class_for_queue = shared.class_name.clone();
-        let prev = self.dynamic.insert(id, DynamicSlot { shared });
-        if let Some(old) = prev {
-            self.release_dynamic_rule(&old.shared);
-        }
-        self.queue_class_apply(node, &class_for_queue);
-    }
-
-    /// Mint + apply a `text-shadow` class for a text node whose `shadow`
-    /// style must hug the glyphs rather than box the inline span. The
-    /// class is keyed via `css::text_shadow_class_key` so it never
-    /// collides with the `box-shadow` class a box element with the
-    /// identical `StyleRules` would mint, and every layer (base + state /
-    /// breakpoint / container overlays) is lowered with `rules_to_css_text`
-    /// so `shadow` becomes `text-shadow` throughout. Deduped by content
-    /// key across text nodes (same as the box slow path); NOT mirrored
-    /// into `dynamic_by_ptr` because the base Rc may be shared with a box
-    /// element that needs the box-shadow class for the same pointer.
-    ///
-    /// This is the rare path (only shadowed text reaches it), so it favors
-    /// clarity over the box path's pointer-cache fast lanes.
-    fn apply_text_shadow(
-        &mut self,
-        node: &web_sys::Node,
-        id: u32,
-        base: &std::rc::Rc<StyleRules>,
-        overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
-        breakpoint_overlays: &[(runtime_core::Breakpoint, std::rc::Rc<StyleRules>)],
-        container_overlays: &[(f32, std::rc::Rc<StyleRules>)],
-    ) {
-        let combined = css::variant_class_key(
-            &base.content_key(),
-            overlays,
-            breakpoint_overlays,
-            container_overlays,
-        );
-        let key = css::text_shadow_class_key(&combined);
-
-        let shared = if let Some(entry) = self.dynamic_by_content.get(&key) {
-            entry.shared.refcount.set(entry.shared.refcount.get() + 1);
-            entry.shared.clone()
-        } else {
-            let class_name = hash_class_name(&key);
-            // Ordered group insert, mirroring the box path: the base
-            // rule must physically precede its equal-specificity
-            // `@media` / `@container` overlays, and per-rule inserts
-            // through the LIFO slot recycler can invert that on
-            // re-mint (see `insert_rule_group`).
-            let mut group_rules: Vec<String> = Vec::with_capacity(
-                1 + overlays.len() + breakpoint_overlays.len() + container_overlays.len(),
-            );
-            group_rules.push(class_rule(&class_name, &rules_to_css_text(base)));
-            for (bit, overlay) in overlays {
-                let pseudo = match *bit {
-                    runtime_core::StateBits::HOVERED => ":hover",
-                    runtime_core::StateBits::PRESSED => ":active",
-                    runtime_core::StateBits::FOCUSED => ":focus",
-                    runtime_core::StateBits::DISABLED => "[disabled]",
-                    _ => continue,
-                };
-                let selector = format!("{}{}", class_name, pseudo);
-                let body = rules_to_css_text(overlay);
-                // Component-owned focus overlay suppresses the UA ring,
-                // mirroring the box path.
-                let body = if *bit == runtime_core::StateBits::FOCUSED {
-                    format!("outline:none;{body}")
-                } else {
-                    body
-                };
-                group_rules.push(class_rule(&selector, &body));
-            }
-            for (bp, overlay) in breakpoint_overlays {
-                let body = rules_to_css_text(overlay);
-                if let Some(rule) = css::breakpoint_media_rule(&class_name, *bp, &body) {
-                    group_rules.push(rule);
-                }
-            }
-            for (threshold, overlay) in container_overlays {
-                let body = rules_to_css_text(overlay);
-                group_rules.push(css::container_query_rule(&class_name, *threshold, &body));
-            }
-            let indices = self.insert_rule_group(&group_rules);
-            let base_idx = indices[0];
-            let overlay_indices: Vec<u32> = indices[1..].to_vec();
-
-            let shared = std::rc::Rc::new(DynamicPtrEntry {
-                class_name,
-                content_key: key.clone(),
-                refcount: std::cell::Cell::new(1),
-            });
-            self.dynamic_by_content.insert(
-                key,
-                DynamicRule {
-                    shared: shared.clone(),
-                    rule_index: base_idx,
-                    state_rule_indices: overlay_indices,
-                },
-            );
             shared
         };
 
@@ -1225,9 +1111,9 @@ impl WebBackend {
     /// teardown.
     pub(crate) fn impl_mint_class_for_app(
         &mut self,
-        app: &runtime_core::StyleApplication,
+        app: &runtime_shared::StyleApplication,
     ) -> String {
-        let resolved = runtime_core::resolve_style(app);
+        let resolved = runtime_shared::resolve_style(app);
         let key = resolved.content_key();
 
         // 1. Existing dynamic-by-content hit: bump refcount + reuse.
@@ -1299,14 +1185,14 @@ impl WebBackend {
 // CSS value converters — free functions, no backend state.
 // ---------------------------------------------------------------------------
 
-/// Resolve a `runtime_core::Color` (a CSS-string wrapper) to a
+/// Resolve a `runtime_shared::Color` (a CSS-string wrapper) to a
 /// concrete sRGB `[r, g, b, a]` in `0..=1`, used to seed the per-node
 /// `gradient_stops` snapshot the animation path mutates. Parsing
-/// lives in `runtime_core::color`; unknown shapes (named colors,
+/// lives in `runtime_shared::color`; unknown shapes (named colors,
 /// `hsl(...)`) fall back to opaque black — the CSS class still
 /// renders them correctly; this is only the seed for the animation
 /// state machine.
-pub(crate) fn color_to_srgb(c: &runtime_core::Color) -> [f32; 4] {
-    runtime_core::color::parse_or(&c.0, runtime_core::color::Rgba::BLACK).to_srgb_f32()
+pub(crate) fn color_to_srgb(c: &runtime_shared::Color) -> [f32; 4] {
+    runtime_shared::color::parse_or(&c.0, runtime_shared::color::Rgba::BLACK).to_srgb_f32()
 }
 

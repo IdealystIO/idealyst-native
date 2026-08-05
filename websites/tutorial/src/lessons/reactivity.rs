@@ -1,11 +1,21 @@
-//! Track 1 — Reactivity. Signals, effects, derived state, batching.
-//! Everything taught here is `runtime_core` only; no component kit.
+//! Track 1 — Reactivity. Signals, the flush boundary, effects, derived
+//! state. Everything taught here is the framework's own reactive surface;
+//! no component kit is involved in the concepts.
+//!
+//! Order matters in this track. The flush comes second, immediately after
+//! signals, because every later mechanism — when an effect runs, when a
+//! memo settles, why there is no `batch` — is a consequence of it.
+//!
+//! Each Rust snippet is `include_str!`-ed from `crate::samples`, so the
+//! compiler checks the teaching material; each lesson also embeds a live
+//! panel from `crate::demo` so the reader can watch the mechanism run.
 
-use runtime_core::{ui, Element};
 use idea_ui::{typography_kind, Typography};
+use runtime_core::{ui, Element};
 
 use crate::common::{Callout, CodePanel, DocsLink, LessonPage};
-use crate::routes::{RX_BATCHING_ROUTE, RX_DERIVED_ROUTE, RX_EFFECTS_ROUTE, RX_SIGNALS_ROUTE};
+use crate::demo::{DependencyDemo, DiamondDemo, FlushDemo, StagedWriteDemo};
+use crate::routes::{RX_DERIVED_ROUTE, RX_EFFECTS_ROUTE, RX_FLUSH_ROUTE, RX_SIGNALS_ROUTE};
 use crate::shell;
 
 pub fn signals() -> Element {
@@ -17,48 +27,154 @@ pub fn signals() -> Element {
         ) {
             Typography(
                 content = "A Signal<T> is the framework's reactive primitive: a Copy handle to a \
-                    value stored in a thread-local arena. Reads subscribe whatever effect is \
-                    running; writes notify subscribers. There is no virtual DOM and no re-render \
-                    pass \u{2014} the unit of update is the closure that read the \
-                    signal.".to_string()
+                    slot in the arena its world owns. Reads report the committed value and \
+                    subscribe whatever effect is running. Writes stage a pending value, and the \
+                    world's driver commits every staged write together at the next flush. The \
+                    unit of update is the closure that read the signal \u{2014} there is no \
+                    virtual DOM and no re-render pass.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::{signal, Signal};
+            CodePanel(src = include_str!("../samples/rx_signals.rs").to_string())
 
-let count = signal(0);        // Signal<i32> — a Copy handle
-let n = count.get();           // read (subscribes the running effect)
-count.set(5);                  // write — notifies subscribers
-count.update(|v| *v += 1);     // in-place mutate, then notify"##.to_string())
-
-            Typography(content = "Why Copy matters".to_string(), kind = typography_kind::H2)
+            Typography(content = "A read never sees a staged write".to_string(), kind = typography_kind::H2)
             Typography(
-                content = "Because the handle is Copy, you move it into as many closures as you \
-                    like with no .clone() ceremony \u{2014} the classic Rust reactive-system \
-                    boilerplate disappears. The value T still needs Clone, because get() clones \
-                    the stored value out; use with(..) for a borrowed read when cloning is \
-                    expensive.".to_string()
+                content = "This is the one rule to internalize, and it holds everywhere: in a \
+                    handler, in an effect body, in a component body, in plain code. get() and \
+                    peek() report the value that was committed; the value you just set arrives at \
+                    the flush. So a handler runs start to finish against one consistent \
+                    snapshot.".to_string()
+            )
+            CodePanel(src = include_str!("../samples/rx_staged.rs").to_string())
+            Typography(
+                content = "update(|current| new) is the read-modify-write primitive, and it is \
+                    the one place a staged value is visible: its closure argument is the pending \
+                    value, so two increments in one turn compose to +2. A single set(get() + 1) \
+                    per turn is the idiomatic counter and needs nothing else.".to_string()
             )
 
-            Callout(label = "set() is unconditional".to_string()) {
+            Typography(content = "Watch it happen".to_string(), kind = typography_kind::H2)
+            Typography(
+                content = "The panel below runs the two snippets above. The trace line reports \
+                    what the handler saw while it was running; the count line reports what the \
+                    flush committed. Press the first button and the count moves by one even \
+                    though the handler wrote twice.".to_string()
+            )
+            StagedWriteDemo()
+
+            Callout(label = "set() is equality-guarded".to_string()) {
                 Typography(
-                    content = "Every set() fires subscribers, even if the new value equals the \
-                        old. Equality-gated updates are the job of memo (next-but-one step), not \
-                        the signal itself.".to_string(),
+                    content = "T: PartialEq, and the comparison happens at commit: if the staged \
+                        value equals the committed one \u{2014} including an A\u{2192}B\u{2192}A \
+                        round trip within a turn \u{2014} subscribers are left asleep. \
+                        set_always(v) stages and forces the notification, touch() notifies with \
+                        no value write, and set_untracked(v) writes the committed value directly \
+                        and notifies nobody.".to_string(),
                     muted = true,
                 )
             }
-            Callout(label = "Lifetime is scope-bound".to_string()) {
+            CodePanel(src = include_str!("../samples/rx_guarded.rs").to_string())
+
+            Typography(content = "Lifetime is the scope that owns it".to_string(), kind = typography_kind::H2)
+            Typography(
+                content = "Signals belong to the world their creating scope lives in, and the \
+                    scope frees them when it drops. Dropping is the whole teardown story: a \
+                    component's signals, effects, and memos are collected as it builds and \
+                    released as it unmounts, with no dispose call. A handle that outlives its \
+                    world stays safe to write through (the write is a no-op) and panics on read, \
+                    which surfaces the leak.".to_string()
+            )
+            CodePanel(src = include_str!("../samples/rx_teardown.rs").to_string())
+
+            Callout(label = "Why Copy matters".to_string()) {
                 Typography(
-                    content = "A signal lives as long as the reactive scope that created it. \
-                        Reading one after its scope drops is a hard panic, not a silent bug \
-                        \u{2014} so signals don't dangle.".to_string(),
+                    content = "The handle is Copy \u{2014} (world, slot, generation) \u{2014} so \
+                        it moves into as many closures as you like with no .clone() ceremony. The \
+                        value T needs Clone because get() clones the stored value out; use \
+                        with(..) for a borrowed read when cloning is expensive.".to_string(),
                     muted = true,
                 )
             }
+
             DocsLink(
-                summary = "The full model \u{2014} the arena, scopes, drop order, and the \
-                    notification flow.".to_string(),
+                summary = "The kernel model \u{2014} per-world arenas, generational handles, \
+                    staging, and the flush algorithm.".to_string(),
                 link_label = "Reactivity reference".to_string(),
                 doc_file = "reactivity.md".to_string(),
+            )
+        }
+    })
+}
+
+pub fn flush() -> Element {
+    shell::layout(ui! {
+        LessonPage(
+            current = RX_FLUSH_ROUTE.name(),
+            title = "The flush boundary".to_string(),
+            lead = "Where staged writes become one logical update.".to_string(),
+        ) {
+            Typography(
+                content = "A flush is the moment the world commits. It drains every staged write, \
+                    settles the derived values that depend on them, and then runs each affected \
+                    effect once. One turn of your code therefore produces exactly one logical \
+                    update, however many signals it wrote and however many of an effect's \
+                    dependencies changed.".to_string()
+            )
+
+            Typography(content = "Who calls it".to_string(), kind = typography_kind::H2)
+            Typography(
+                content = "You don't. Each backend installs a flush driver that commits after \
+                    every author-code entry point returns: event handlers, timers, animation \
+                    frames, and async-task polls are wrapped at the dispatch site. Your handler \
+                    runs to completion against a consistent snapshot, then the flush lands \u{2014} \
+                    still in the same tick, before paint. Server rendering is the degenerate \
+                    case: one flush per request, after the tree realizes.".to_string()
+            )
+            CodePanel(src = include_str!("../samples/rx_flush.rs").to_string())
+
+            Typography(content = "Watch it happen".to_string(), kind = typography_kind::H2)
+            Typography(
+                content = "The reader below is a reactive text node, which is an effect, so its \
+                    run count is an effect-run count. \"write both\" writes two signals it depends \
+                    on and the count moves by one. The other two buttons write the value the \
+                    signal already holds: the guarded set leaves the count alone, and set_always \
+                    moves it.".to_string()
+            )
+            FlushDemo()
+
+            Typography(content = "There is no batch()".to_string(), kind = typography_kind::H2)
+            Typography(
+                content = "Older versions of the framework had a batch(f) wrapper whose job was \
+                    to coalesce the fan-out of several writes into one round of effect runs. \
+                    Staging does that for every turn, so the wrapper has no work left and the \
+                    function is gone from the surface. Migrating a batch(|| { .. }) call means \
+                    deleting the wrapper and keeping the writes.".to_string()
+            )
+            Callout(label = "What to reach for instead".to_string()) {
+                Typography(
+                    content = "Coalescing several writes: nothing \u{2014} they already commit \
+                        together. Read-modify-write across writes in one turn: update, whose \
+                        closure sees the staged value. Forcing a notification the equality guard \
+                        would swallow: set_always or touch. Writing without waking anyone: \
+                        set_untracked.".to_string(),
+                    muted = true,
+                )
+            }
+
+            Typography(content = "Handlers run outside the world".to_string(), kind = typography_kind::H2)
+            Typography(
+                content = "The world is entered while the tree builds and while it flushes, which \
+                    means a handler executes outside it. Handles are Copy and route to their own \
+                    world, so the everyday surface works: get, peek, set, set_always, touch, and \
+                    update on anything you captured at build time. What needs the ambient world \
+                    does not work \u{2014} creating a signal, effect, or memo inside a handler \
+                    panics. Create state at build time and capture the handles.".to_string()
+            )
+            CodePanel(src = include_str!("../samples/rx_handler.rs").to_string())
+
+            DocsLink(
+                summary = "The staged-commit contract, the flush algorithm, and the per-backend \
+                    flush drivers.".to_string(),
+                link_label = "Runtime v2 migration guide".to_string(),
+                doc_file = "migrating-to-runtime-v2.md".to_string(),
             )
         }
     })
@@ -69,54 +185,57 @@ pub fn effects() -> Element {
         LessonPage(
             current = RX_EFFECTS_ROUTE.name(),
             title = "Effects".to_string(),
-            lead = "Closures that re-run when the signals they read change.".to_string(),
+            lead = "Closures the flush re-runs when the signals they read change.".to_string(),
         ) {
             Typography(
-                content = "An Effect is a closure that re-runs whenever a signal it read on its \
-                    last run changes. It runs once immediately to establish its subscriptions, \
-                    then again on every relevant change. Dependencies are tracked by \
-                    construction: whatever the closure reads is what it depends on.".to_string()
+                content = "An effect is a closure that re-runs when a signal it read on its last \
+                    run commits a change. It runs once at creation to establish its \
+                    subscriptions, and after that the flush runs it \u{2014} once per flush, no \
+                    matter how many of its dependencies changed in that turn. Dependencies come \
+                    from what the body actually read: a branch it didn't take this run does not \
+                    subscribe it.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::{signal, effect};
+            CodePanel(src = include_str!("../samples/rx_effects.rs").to_string())
 
-let count = signal(0);
-
-effect!({
-    // reads inside the body subscribe automatically:
-    log::info!("count is {}", count.get());
-});
-
-count.set(1); // re-runs the effect"##.to_string())
+            Typography(content = "Watch it happen".to_string(), kind = typography_kind::H2)
+            Typography(
+                content = "The reader below takes one of two branches. In the quiet branch it \
+                    never reads count, so pressing \"count + 1\" changes nothing it depends on and \
+                    its run counter holds. Turn verbose on and the next bump wakes it.".to_string()
+            )
+            DependencyDemo()
 
             Typography(
-                content = "The effect! macro and cleanup".to_string(),
+                content = "Cleanup belongs to the effect".to_string(),
                 kind = typography_kind::H2,
             )
             Typography(
-                content = "effect! { ... } is shorthand that binds the handle to the \
-                    surrounding block. Pair it with on_cleanup to release resources \u{2014} the \
-                    callback fires before the next re-run and again on disposal.".to_string()
+                content = "effect! { .. } is the block form and discards the body's value. When \
+                    an effect owns a resource, use the effect(..) function form and return the \
+                    cleanup from the body: it runs before each re-run and again when the owning \
+                    scope drops. on_cleanup(f) does the same from inside a running effect, and \
+                    panics anywhere else \u{2014} the placement is what guarantees a timer can't \
+                    outlive the component that started it. For a resource acquired while the \
+                    component is BUILT, where no effect is running, on_scope_drop(f) is the \
+                    hook: it fires when the component's scope drops.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::{effect, after_ms, on_cleanup};
-
-effect!({
-    let task = after_ms(500, || tick());
-    on_cleanup(move || drop(task)); // cancel before re-run / on teardown
-    deps.get();                      // re-run when deps changes
-});"##.to_string())
+            CodePanel(src = include_str!("../samples/rx_effects_cleanup.rs").to_string())
 
             Callout(label = "Reading without subscribing".to_string()) {
                 Typography(
-                    content = "Subscriptions are rebuilt on every run, so a branch that stops \
-                        reading a signal stops being notified. Wrap a read in untrack(|| \
-                        sig.get()) to read without subscribing \u{2014} common when an effect \
-                        both reads and writes state.".to_string(),
+                    content = "Subscriptions are rebuilt from each run, so untrack(|| sig.get()) \
+                        reads a value and leaves the dependency set alone \u{2014} the usual need \
+                        when an effect both reads and writes state. An effect created inside \
+                        untrack still tracks its own reads: the body opens a fresh tracking \
+                        window.".to_string(),
                     muted = true,
                 )
             }
+            CodePanel(src = include_str!("../samples/rx_untrack.rs").to_string())
 
             DocsLink(
-                summary = "Notification flow, subscription rebuilding, and deferred teardown.".to_string(),
+                summary = "Subscription reconciliation, effect classes, and cleanup ordering at \
+                    teardown.".to_string(),
                 link_label = "Reactivity reference".to_string(),
                 doc_file = "reactivity.md".to_string(),
             )
@@ -129,104 +248,41 @@ pub fn derived() -> Element {
         LessonPage(
             current = RX_DERIVED_ROUTE.name(),
             title = "Derived state".to_string(),
-            lead = "memo, memo_with, and reducer \u{2014} computed values that stay in sync.".to_string(),
+            lead = "memo \u{2014} a cached, equality-guarded value that stays in sync.".to_string(),
         ) {
             Typography(
-                content = "Computed state is a memo: a cached, equality-gated derived signal. It \
-                    recomputes when its dependencies change, compares the result with PartialEq, \
-                    and only notifies subscribers when the value actually changed.".to_string()
+                content = "Computed state is a memo: a cached derived value that recomputes when \
+                    its dependencies change, compares the result with PartialEq, and wakes its \
+                    consumers only when the value actually moved. An equal recompute stops the \
+                    cascade there.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::{signal, memo};
+            CodePanel(src = include_str!("../samples/rx_derived.rs").to_string())
 
-let count = signal(0);
-
-let doubled = memo(move || count.get() * 2);  // Signal<i32>, recomputed on change
-let is_big  = memo(move || count.get() > 10); // only fires when the bool flips"##.to_string())
-
-            Typography(content = "memo_with and reducer".to_string(), kind = typography_kind::H2)
+            Typography(content = "Memos settle first".to_string(), kind = typography_kind::H2)
             Typography(
-                content = "memo_with takes a custom equality function for types that don't \
-                    implement PartialEq, or when 'changed' means something domain-specific. \
-                    reducer gives you a (Signal<S>, dispatch) pair \u{2014} the typed-action \
-                    shape of React's useReducer.".to_string()
+                content = "The flush separates derived values from reactions. It recomputes and \
+                    commits every memo reachable from this turn's writes until none is stale, and \
+                    only then runs the effects. So the diamond \u{2014} an effect reading both a \
+                    signal and a memo over that signal \u{2014} always observes one settled \
+                    generation of the graph, and runs once per flush.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::reducer;
+            DiamondDemo()
 
-let (count, dispatch) = reducer(0_i32, |state, delta: i32| state + delta);
-dispatch(1);   // count is now 1
-dispatch(-1);  // count is now 0"##.to_string())
-
-            Callout(label = "Memos must be pure".to_string()) {
+            Callout(label = "Memos are read-only and pure".to_string()) {
                 Typography(
-                    content = "A memo's closure may only read signals, never write them. \
-                        Writing inside one panics \u{2014} that restriction is what keeps the \
-                        reactive graph acyclic.".to_string(),
+                    content = "A memo's closure reads signals; it never writes them. That \
+                        restriction is what keeps the derived layer acyclic and lets the flush \
+                        settle it in one pass. A memo hands out the read half of the surface, so \
+                        a component taking a ReadSignal<T> proves in its signature that it only \
+                        observes \u{2014} split() and read_only() produce the same narrowing for \
+                        a plain signal.".to_string(),
                     muted = true,
                 )
             }
 
             DocsLink(
-                summary = "How memo seeds its output and gates notifications.".to_string(),
-                link_label = "Reactivity reference".to_string(),
-                doc_file = "reactivity.md".to_string(),
-            )
-        }
-    })
-}
-
-pub fn batching() -> Element {
-    shell::layout(ui! {
-        LessonPage(
-            current = RX_BATCHING_ROUTE.name(),
-            title = "Controlling when effects fire".to_string(),
-            lead = "batch coalesces fan-out; untrack and on control what an effect subscribes \
-                to.".to_string(),
-        ) {
-            Typography(
-                content = "When several signals change together, batch coalesces the \
-                    notifications: each subscriber re-runs once at the end of the batch instead \
-                    of once per write. Writes are still immediately visible to reads inside the \
-                    batch \u{2014} only the effect fan-out is deferred.".to_string()
-            )
-            CodePanel(src = r##"use runtime_core::{signal, batch};
-
-let first = signal(0);
-let second = signal(0);
-
-batch(|| {
-    first.set(1);
-    second.set(2);
-}); // an effect reading both re-runs ONCE, not twice"##.to_string())
-
-            Typography(content = "on \u{2014} explicit dependencies".to_string(), kind = typography_kind::H2)
-            Typography(
-                content = "Where an Effect subscribes to everything it reads, on(deps, ..) \
-                    subscribes only to the listed deps and hands the body the current and \
-                    previous values. on_defer behaves the same but skips the first run, so the \
-                    body fires only on later changes.".to_string()
-            )
-            CodePanel(src = r##"use runtime_core::{signal, on};
-
-let query = signal(String::new());
-
-let _e = on(query, move |current, previous| {
-    // body reads are untracked; only `query` retriggers it
-    refetch(current);
-    let _ = previous;
-});"##.to_string())
-
-            Callout(label = "Reach for batch on bulk updates".to_string()) {
-                Typography(
-                    content = "Theme swaps, list resets, and form hydration all write many \
-                        signals at once. Batching turns N\u{00d7}M effect runs into N \u{2014} \
-                        the difference between a snappy update and a janky one on a large \
-                        tree.".to_string(),
-                    muted = true,
-                )
-            }
-
-            DocsLink(
-                summary = "Batching internals and the reactive seams across the framework.".to_string(),
+                summary = "Derivation classes, the equality cut, and how the flush orders memos \
+                    against effects.".to_string(),
                 link_label = "Reactivity reference".to_string(),
                 doc_file = "reactivity.md".to_string(),
             )

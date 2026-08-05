@@ -2,74 +2,292 @@
 //!
 //! Demonstrates the third-party extension pattern: a shared types
 //! crate (`maps-core`), this umbrella facade, and per-backend leaf
-//! crates (`maps-web`, future `maps-ios`/`maps-android`) wired together
-//! via target-specific Cargo dependencies. User code stays target-
-//! agnostic; the umbrella selects the right leaf at compile time.
+//! crates (`maps-web`, `maps-ios`, future `maps-android`) wired
+//! together via target-specific Cargo dependencies. User code stays
+//! target-agnostic; the umbrella selects the right leaf at compile
+//! time.
+//!
+//! # Implementation
+//!
+//! The scene [`Registry`] is the runtime's unified primitive==external
+//! contract, so the SDK registers a payload handler there:
+//!
+//! - **Web (wasm32)** — [`register`] installs a `WebBackend`-concrete
+//!   handler that delegates to the `maps-web` leaf: the OpenStreetMap
+//!   embed iframe built by `maps_web::build_map_iframe`, followed by
+//!   author style via `attach_style` and the scope-tied
+//!   `release_external` teardown.
+//! - **iOS** — [`register`] installs an `IosBackend`-concrete handler
+//!   that delegates to the `maps-ios` leaf: a native `MKMapView`
+//!   (`maps_ios::build_map_view`) centered + zoomed from the props and
+//!   registered with the backend's layout tree, then the same mount
+//!   tail.
+//! - **Everywhere else** — [`register`] installs the
+//!   External-placeholder degradation path
+//!   ([`ExternalOps::create_external`]): the host's "not supported" box
+//!   (a bare `<div>` on SSR), with author style + `release_external`
+//!   teardown still flowing.
+//!
+//! No handler installs DOM/platform event listeners or invokes author
+//! callbacks (the props are plain `Copy` data), so the "external glue
+//! must call `schedule_flush` after author callbacks" rule has no call
+//! site in this SDK. A future leaf that DOES run author code from a raw
+//! platform event must wrap it with the backend's `schedule_flush`.
 //!
 //! # Usage
 //!
 //! ```ignore
-//! // In the app's bootstrap (one line per third-party SDK):
-//! let mut backend = WebBackend::new("#app");
-//! maps::register(&mut backend);
+//! // In the app's bootstrap — the boot entry's `register` argument IS
+//! // the registration seam (one line per third-party SDK):
+//! backend_web::newcore::start_in("#app", maps::register, app);
 //!
 //! // Inside a `ui!` block. Third-party primitives don't get block
 //! // syntax (the macro only recognizes the first-party set), so the
 //! // constructor is interpolated as an expression — but the
-//! // PascalCase name reads identically to a first-party `Overlay { }`
-//! // or `View { }`.
+//! // PascalCase name reads identically to a first-party `overlay { }`
+//! // or `view { }`.
 //! ui! {
-//!     View {
+//!     view {
 //!         { MapView(MapViewProps { lat: 37.7749, lon: -122.4194, zoom: 12.0 }) }
 //!     }
 //! }
 //! ```
 //!
-//! On platforms with no matching leaf crate, `register` is a no-op and
-//! the framework renders a "not supported" placeholder when the
-//! primitive mounts.
+//! An UNREGISTERED payload panics at realize (the scene contract), so a
+//! missed `register` fails loud.
 #![deny(missing_docs)]
 
-use runtime_core::{external, Bound, ExternalHandle};
+// `Any` is only named by the placeholder arm (the payload type-erasure
+// `create_external` takes).
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+use std::any::Any;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use runtime_scene::{item, Element, Host, MountCx, Registry};
+use runtime_vocabulary::caps::ExternalOps;
+use runtime_vocabulary::glue::IntoElement;
+use runtime_vocabulary::style_attach::{
+    attach_style, on_teardown, IntoStyleProp, StyleProp, StyleServices,
+};
 
 pub use maps_core::MapViewProps;
 
-/// Construct a map view primitive. Returns a typed `Bound` so
-/// `.bind(...)` is type-checked against `Ref<ExternalHandle<MapViewProps>>`.
-///
-/// PascalCase intentionally — matches the visual cadence of first-
-/// party primitives (`View`, `Overlay`, `Button`) inside a `ui!`
-/// block. Interpolate with `{ MapView(MapViewProps { .. }) }`.
-#[allow(non_snake_case)]
-pub fn MapView(props: MapViewProps) -> Bound<ExternalHandle<MapViewProps>> {
-    external(props)
+// ============================================================================
+// Payload + builder — `MapView(props)` + `.with_style(…)` then element
+// coercion. No ref plumbing: the props are plain data and the leaves
+// expose no imperative ops, so no consumer binds a ref on a map.
+// ============================================================================
+
+/// Scene payload for the `MapView` item. Single-take style slot (the
+/// vocabulary `PrimCell` discipline, inlined): the scene hands the
+/// handler a shared `&Rc<Self>`, but the `StyleProp` must move at
+/// mount.
+struct MapsPrim {
+    props: Rc<MapViewProps>,
+    style: RefCell<Option<StyleProp>>,
 }
 
-// =============================================================================
-// Platform-routed `register` re-export.
-//
-// Exactly one of the cfg-gated re-exports is active per build, selected
-// by `target_arch` / `target_os`. Each leaf crate's `register` function
-// takes the platform-specific backend type by mutable reference and
-// calls `backend.register_external::<MapViewProps>(...)`.
-//
-// The fallback `pub fn register<B>(_: &mut B) {}` covers targets we
-// haven't shipped a leaf for; user code compiles uniformly across all
-// targets and the framework's placeholder shows up at runtime.
-// =============================================================================
+/// Author-side builder returned by [`MapView`].
+pub struct MapViewBound {
+    props: Rc<MapViewProps>,
+    style: Option<StyleProp>,
+}
 
-#[cfg(target_arch = "wasm32")]
-pub use maps_web::register;
+/// Construct a map view primitive.
+///
+/// PascalCase intentionally — matches the visual cadence of first-
+/// party primitives inside a `ui!` block. Interpolate with
+/// `{ MapView(MapViewProps { .. }) }`.
+#[allow(non_snake_case)]
+pub fn MapView(props: MapViewProps) -> MapViewBound {
+    MapViewBound {
+        props: Rc::new(props),
+        style: None,
+    }
+}
 
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub use maps_ios::register;
+impl MapViewBound {
+    /// Attach the author style — lands on the outer node (the iframe on
+    /// web, the `MKMapView` on iOS).
+    pub fn with_style(mut self, style: impl IntoStyleProp) -> Self {
+        self.style = Some(style.into_style_prop());
+        self
+    }
+}
 
-/// No-op `register` for targets without a `maps` leaf crate. User code
-/// calls this unconditionally; the framework's "External MapViewProps
-/// not supported" placeholder shows up at runtime to make the missing
-/// binding obvious.
+impl IntoElement for MapViewBound {
+    fn into_element(self) -> Element {
+        item(
+            MapsPrim {
+                props: self.props,
+                style: RefCell::new(self.style),
+            },
+            Vec::new(),
+        )
+    }
+}
+
+/// Element coercion for the constructor form.
+impl From<MapViewBound> for Element {
+    fn from(b: MapViewBound) -> Element {
+        b.into_element()
+    }
+}
+
+// ============================================================================
+// Handlers + registration seam
+// ============================================================================
+
+/// Shared mount tail, run after node creation: (children are none for
+/// maps) → author style → scope-tied `release_external`.
+fn finish_mount<H>(backend: &Rc<RefCell<H>>, node: &H::Node, prim: &MapsPrim)
+where
+    H: ExternalOps + StyleServices,
+{
+    if let Some(style) = prim.style.borrow_mut().take() {
+        attach_style(backend, node, style);
+    }
+    let backend = backend.clone();
+    let node = node.clone();
+    on_teardown(move || {
+        backend.borrow_mut().release_external(&node);
+    });
+}
+
+/// Placeholder handler for hosts with no map leaf — the External
+/// degradation path (`create_external` renders each host's "not
+/// supported" box; SSR renders a bare `<div>`).
 #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
-pub fn register<B>(_backend: &mut B) {
-    // No leaf available for this target — the framework will render
-    // its "External MapViewProps not supported" placeholder at mount.
+fn mount_placeholder<H>(
+    cx: &mut MountCx<'_, H>,
+    prim: &Rc<MapsPrim>,
+    _children: Vec<Element>,
+) -> H::Node
+where
+    H: ExternalOps + StyleServices,
+{
+    let backend = cx.backend().clone();
+    let payload: Rc<dyn Any> = prim.props.clone();
+    let node = backend.borrow_mut().create_external(
+        std::any::TypeId::of::<MapViewProps>(),
+        std::any::type_name::<MapViewProps>(),
+        &payload,
+        &runtime_shared::accessibility::AccessibilityProps::default(),
+    );
+    finish_mount(&backend, &node, prim);
+    node
+}
+
+/// Register the maps payload handler on a scene registry. Pass this as
+/// the boot registration seam (the `register` argument of
+/// `backend_web::newcore::start_in` / `backend_ssr::newcore::
+/// render_path_with`).
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+pub fn register<H>(registry: &mut Registry<H>)
+where
+    H: ExternalOps + StyleServices + 'static,
+{
+    registry.register::<MapsPrim, _>(mount_placeholder::<H>);
+}
+
+/// Register the maps payload handler on the web backend's scene
+/// registry — the real OpenStreetMap iframe renderer (the `maps-web`
+/// leaf's DOM).
+#[cfg(target_arch = "wasm32")]
+pub fn register(registry: &mut Registry<backend_web::WebBackend>) {
+    registry.register::<MapsPrim, _>(mount_map_web);
+}
+
+/// Web mount handler: build the embed iframe (the leaf's builder), then
+/// the standard mount tail (author style + teardown).
+#[cfg(target_arch = "wasm32")]
+fn mount_map_web(
+    cx: &mut MountCx<'_, backend_web::WebBackend>,
+    prim: &Rc<MapsPrim>,
+    _children: Vec<Element>,
+) -> web_sys::Node {
+    let backend = cx.backend().clone();
+    let node: web_sys::Node = maps_web::build_map_iframe(&prim.props).into();
+    finish_mount(&backend, &node, prim);
+    node
+}
+
+/// Register the maps payload handler on the iOS backend's scene
+/// registry — the real `MKMapView` renderer (the `maps-ios` leaf).
+#[cfg(target_os = "ios")]
+pub fn register(registry: &mut Registry<backend_ios::IosBackend>) {
+    registry.register::<MapsPrim, _>(mount_map_ios);
+}
+
+// ============================================================================
+// Lazy registration seams. `defer` mirrors `register`'s cfg structure —
+// generic where `register` is generic, backend-concrete on iOS where it
+// is concrete — so the two are always callable in the same position.
+// ============================================================================
+
+/// Declare the maps payload kind **late-bound** instead of installing its
+/// handler — the boot half of lazy registration. Pair with
+/// [`register_from_chunk`] from inside a `#[component(lazy)]` body.
+///
+/// Web-only behavior: web is the sole target that code-splits, so every
+/// other arm installs the handler eagerly exactly as [`register`] does.
+/// Deferring a kind nothing later registers would leave the payload
+/// parked behind a placeholder forever — no panic, no log — and native
+/// has no chunk to arrive, so `defer` is always safe to call.
+#[cfg(target_arch = "wasm32")]
+pub fn defer<H: Host>(registry: &mut Registry<H>) {
+    registry.defer::<MapsPrim>();
+}
+
+/// Non-web `defer` — see the wasm32 arm. Registers eagerly.
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+pub fn defer<H>(registry: &mut Registry<H>)
+where
+    H: Host + ExternalOps + StyleServices + 'static,
+{
+    register(registry);
+}
+
+/// iOS `defer` — see the wasm32 arm. Registers eagerly, and is
+/// backend-concrete because [`register`] is on this target.
+#[cfg(target_os = "ios")]
+pub fn defer(registry: &mut Registry<backend_ios::IosBackend>) {
+    register(registry);
+}
+
+/// Install the web payload handler from inside a lazy chunk — the chunk
+/// half of lazy registration. Requires [`defer`] at boot.
+///
+/// Web-only by construction: the web handler is `WebBackend`-concrete,
+/// and web is the only target that code-splits. The non-web build is an
+/// empty stub so a `#[component(lazy)]` body calling this compiles on
+/// every target — there, [`defer`] already registered eagerly.
+#[cfg(target_arch = "wasm32")]
+pub fn register_from_chunk() {
+    runtime_scene::defer_registration::<backend_web::WebBackend, _>(|registry| {
+        registry.register_deferred::<MapsPrim, _>(mount_map_web);
+    });
+}
+
+/// Non-web stub — see the wasm32 [`register_from_chunk`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_from_chunk() {}
+
+/// iOS mount handler: build the `MKMapView` (the leaf's builder, which
+/// also registers the view with the backend's layout tree), then the
+/// standard mount tail (author style + teardown).
+#[cfg(target_os = "ios")]
+fn mount_map_ios(
+    cx: &mut MountCx<'_, backend_ios::IosBackend>,
+    prim: &Rc<MapsPrim>,
+    _children: Vec<Element>,
+) -> backend_ios::IosNode {
+    let backend = cx.backend().clone();
+    let node = {
+        let mut b = backend.borrow_mut();
+        maps_ios::build_map_view(&prim.props, &mut b)
+    };
+    finish_mount(&backend, &node, prim);
+    node
 }

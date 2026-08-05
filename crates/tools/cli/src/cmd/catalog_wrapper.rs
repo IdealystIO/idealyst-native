@@ -28,9 +28,11 @@
 //! on a component library doesn't guarantee that.
 //!
 //! So the wrapper walks the project's `cargo metadata`, finds every
-//! direct dependency that itself depends on `runtime-core` (the signal
-//! for "this crate may declare `#[component]`s"), declares each as a
-//! direct wrapper dependency, and emits a `use <dep> as _;` for it. That
+//! direct dependency that itself depends on `runtime-core`
+//! (the signal for "this crate may declare
+//! `#[component]`s" — runtime v2 crates reach the author surface through
+//! the facade alias, so the facade is the marker there), declares each as
+//! a direct wrapper dependency, and emits a `use <dep> as _;` for it. That
 //! forces their object code — and thus their `inventory::submit!`
 //! registrations — into the catalog binary, so a freshly-added
 //! component-library dependency surfaces in the catalog even before the
@@ -91,6 +93,12 @@ pub fn generate_with(
     // `runtime-core` with `catalog` on is the lever: enabling it anywhere
     // in the graph flips the `#[component]` emission gate for every crate,
     // including the project lib.
+    // `runtime-core/catalog` turns on BOTH halves the emission needs:
+    // the vocabulary's `glue::__mcp` anchor (where the retargeted
+    // `#[component]` registrations land) and the
+    // `runtime-macros/catalog` emission gate. One `mcp-catalog`
+    // instance, so the wrapper's `runtime_core::__mcp` dump sees every
+    // registration.
     let fcore_dep = source.dep("crates/runtime/core", &["catalog"]);
     // Redirect any git-pinned framework crates the project uses to the
     // same physical paths the wrapper uses, so the two halves share ONE
@@ -324,13 +332,18 @@ fn collect_forced_deps(
             continue;
         };
         let name = pkg.get("name").and_then(|n| n.as_str()).unwrap_or_default();
-        // Never re-declare runtime-core (already a wrapper dep) or the
-        // project itself (already linked via `use {lib} as _;`).
-        if name.is_empty() || name == "runtime-core" || name == project_pkg_name {
+        // Never re-declare the core crates (both are already wrapper
+        // deps) or the project itself (already linked via
+        // `use {lib} as _;`).
+        if name.is_empty()
+            || name == "runtime-core"
+            || name == "runtime-core"
+            || name == project_pkg_name
+        {
             continue;
         }
-        // Only crates that depend on runtime-core can host components.
-        if !pkg_depends_on_runtime_core(pkg) {
+        // Only crates that depend on the framework core can host components.
+        if !pkg_depends_on_core(pkg) {
             continue;
         }
         let Some(lib_ident) = pkg_lib_target_name(pkg) else {
@@ -392,12 +405,22 @@ fn dep_has_normal_kind(dep: &Value) -> bool {
 
 /// True if a package's manifest declares a dependency named
 /// `runtime-core` (any kind) — the marker that it may host components.
-fn pkg_depends_on_runtime_core(pkg: &Value) -> bool {
+///
+/// This matched TWO spellings during the runtime-v2 migration, when the
+/// author surface briefly lived in a `runtime-facade` package: matching
+/// only `runtime-core` silently stopped force-linking every migrated
+/// component library (idea-ui, idea-theme, icons-lucide, …), so
+/// `idealyst mcp` / `catalog-json` / `export` saw an empty dependency
+/// slice — the components compiled but their `inventory::submit!` ctors
+/// were never linked in. One spelling again; the regression test below
+/// still pins the behavior.
+fn pkg_depends_on_core(pkg: &Value) -> bool {
     pkg.get("dependencies")
         .and_then(|d| d.as_array())
         .map(|deps| {
-            deps.iter()
-                .any(|d| d.get("name").and_then(|n| n.as_str()) == Some("runtime-core"))
+            deps.iter().any(|d| {
+                d.get("name").and_then(|n| n.as_str()) == Some("runtime-core")
+            })
         })
         .unwrap_or(false)
 }
@@ -669,6 +692,45 @@ mod tests {
         // Workspace mode → path dep to the resolved manifest dir, which
         // is exactly what the project's own dep resolves to (unifies).
         assert_eq!(d.dep_line, "{ path = \"/ws/crates/ui/idea-ui\" }");
+    }
+
+    /// Regression: a component library is force-linked because it
+    /// declares a `runtime-core` dependency. When the author surface
+    /// briefly lived in a separate `runtime-facade` package, this marker
+    /// matched only the old spelling, so `idealyst mcp` / `catalog-json`
+    /// / `export` stopped force-linking idea-ui, idea-theme,
+    /// icons-lucide — their `inventory::submit!` ctors never reached the
+    /// extractor binary and the catalog lost every dependency component.
+    ///
+    /// `runtime-core` itself must still be excluded by name: the
+    /// wrapper already declares it, and re-declaring would duplicate the
+    /// dep table key.
+    #[test]
+    fn collect_force_links_runtime_core_deps() {
+        let mut meta = sample_metadata();
+        meta["packages"][1]["dependencies"] = json!([{"name": "runtime-core", "kind": null}]);
+        meta["packages"].as_array_mut().unwrap().push(json!({
+            "id": "fc",
+            "name": "runtime-core",
+            "manifest_path": "/ws/crates/runtime/core/Cargo.toml",
+            "source": null,
+            "dependencies": [],
+            "targets": [{"name": "runtime_core", "kind": ["lib"]}]
+        }));
+        meta["resolve"]["nodes"][0]["deps"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"pkg": "fc", "dep_kinds": [{"kind": null}]}));
+
+        let src = FrameworkSource::Workspace { root: PathBuf::from("/ws") };
+        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app");
+
+        assert_eq!(deps.len(), 1, "got: {deps:?}");
+        assert_eq!(deps[0].pkg_name, "idea-ui");
+        assert!(
+            !deps.iter().any(|d| d.pkg_name == "runtime-core"),
+            "runtime-core is already a wrapper dep — must not be re-declared: {deps:?}"
+        );
     }
 
     #[test]

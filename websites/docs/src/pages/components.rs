@@ -39,7 +39,7 @@ docs! {
                         text { format!("Count: {}", count.get()) }
                         button(
                             label = "Increment",
-                            on_click = move || count.update(|n| *n += 1),
+                            on_click = move || count.update(|n| n + 1),
                         )
                     }
                 }
@@ -56,7 +56,7 @@ docs! {
               the function. Field names become prop names in the invocation macro."],
             ["Return ", code("Element"), ". The framework wraps the returned value \
               through ", code("IntoElement::into_element(...)"), ", so you can return \
-              a bare ", code("Element"), ", a ", code("Bound<H>"), " from a primitive \
+              a bare ", code("Element"), ", a builder from a primitive \
               constructor, or anything else that implements ", code("IntoElement"), "."],
         ),
     },
@@ -172,7 +172,7 @@ docs! {
                         value.set(0);
                     }
                     fn bump_by(&self, n: i32) {
-                        value.update(|v| *v += n);
+                        value.update(|v| v + n);
                     }
                 }
 
@@ -309,7 +309,7 @@ docs! {
                         text { format!("Count: {}", count.get()) }
                         button(
                             label = "Increment",
-                            on_click = move || count.update(|n| *n += 1),
+                            on_click = move || count.update(|n| n + 1),
                         )
                     }
                 }
@@ -328,7 +328,7 @@ docs! {
                         <Text>{format!("Count: {}", count.get())}</Text>
                         <Button
                             label="Increment"
-                            on_click={move || count.update(|n| *n += 1)}
+                            on_click={move || count.update(|n| n + 1)}
                         />
                     </View>
                 }
@@ -346,7 +346,7 @@ docs! {
 
                 view(vec![
                     text(move || format!("Count: {}", count.get())).into_element(),
-                    button("Increment", move || count.update(|n| *n += 1)).into_element(),
+                    button("Increment", move || count.update(|n| n + 1)).into_element(),
                 ])
                 .into_element()
             }
@@ -366,8 +366,8 @@ docs! {
             [code("view { ... }"), " → ", code("view(vec![...])"), ". The ",
              code("view"), " constructor takes a ", code("Vec<Element>"),
              ". The primitive constructors (", code("text"), ", ", code("button"),
-             ", etc.) return ", code("Bound<H>"),
-             " handles, so each child is coerced to a ", code("Element"), " via ",
+             ", etc.) return their own builder types, so each child is coerced to a ",
+             code("Element"), " via ",
              code(".into_element()"), " before joining the vec."],
             [code("text { format!(\"...\", count.get()) }"),
              " → because the expression contains ", code(".get()"),
@@ -467,13 +467,13 @@ docs! {
 
                 methods! {
                     fn reset(&self) { value.set(0); }
-                    fn bump_by(&self, n: i32) { value.update(|v| *v += n); }
+                    fn bump_by(&self, n: i32) { value.update(|v| v + n); }
                 }
 
                 ui! {
                     view {
                         text { format!("Count: {}", value.get()) }
-                        button(label = "++", on_click = move || value.update(|n| *n += 1))
+                        button(label = "++", on_click = move || value.update(|n| n + 1))
                     }
                 }
             }

@@ -25,7 +25,6 @@
 mod fetch;
 mod highlight;
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
@@ -53,10 +52,6 @@ use crate::highlight::highlight_rust;
 #[global_allocator]
 static ALLOCATOR: lol_alloc::AssumeSingleThreaded<lol_alloc::FreeListAllocator> =
     unsafe { lol_alloc::AssumeSingleThreaded::new(lol_alloc::FreeListAllocator::new()) };
-
-thread_local! {
-    static OWNER: RefCell<Option<runtime_core::Owner>> = const { RefCell::new(None) };
-}
 
 // =============================================================================
 // Stylesheets — one block, one `*_style()` per row. The framework
@@ -320,14 +315,17 @@ pub fn start() {
     backend_web::install_render_loop();
     install_idea_theme(light_theme());
 
-    let backend = Rc::new(RefCell::new(backend_web::WebBackend::new("#app")));
-    // No per-platform registration needed: the `codeblock` and `webview`
-    // externals self-register via `inventory::submit!` at backend
-    // construction (see [[project_inventory_self_registration]]). Both crates
-    // stay linked through their `code_block`/`web_view` references elsewhere
-    // in this module (`editor_panel()` / `preview_panel()`).
-    let owner = runtime_core::render(backend, app());
-    OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
+    // Registration is explicit and MANDATORY on the scene registry: an
+    // unregistered payload panics at realize. `codeblock` renders the syntax
+    // overlay behind the editor, `webview` hosts the preview iframe.
+    backend_web::newcore::start_in(
+        "#app",
+        |registry| {
+            codeblock::register(registry);
+            webview::register(registry);
+        },
+        app,
+    );
 }
 
 fn app() -> Element {

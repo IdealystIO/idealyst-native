@@ -72,7 +72,7 @@ thread_local! {
 fn tab_label_base_sheet() -> Rc<StyleSheet> {
     TAB_LABEL_BASE_SHEET.with(|s| {
         if s.borrow().is_none() {
-            *s.borrow_mut() = Some(Rc::new(StyleSheet::r#static(StyleRules::default())));
+            *s.borrow_mut() = Some(StyleSheet::r#static(StyleRules::default()).premint_as("idea-ui.v1.tabs.empty"));
         }
         s.borrow().as_ref().cloned().unwrap()
     })
@@ -99,6 +99,24 @@ pub struct Tab {
 impl Tab {
     pub fn new(id: impl Into<String>, label: impl Into<Reactive<String>>) -> Self {
         Self { id: id.into(), label: label.into() }
+    }
+}
+
+/// Equality for `Signal<Vec<Tab>>` (the guarded `set` needs
+/// `T: PartialEq`). Static labels compare by value so an in-place label
+/// edit still notifies; Dynamic labels compare by closure identity (the
+/// closure re-reads its signals on every render, so identity is the
+/// honest value here).
+impl PartialEq for Tab {
+    fn eq(&self, other: &Self) -> bool {
+        if self.id != other.id {
+            return false;
+        }
+        match (&self.label, &other.label) {
+            (Reactive::Static(a), Reactive::Static(b)) => a == b,
+            (Reactive::Dynamic(a), Reactive::Dynamic(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        }
     }
 }
 
@@ -134,7 +152,7 @@ impl Default for TabsProps {
     // `Default`. Mirrors the same pattern as `SwitchProps`.
     fn default() -> Self {
         Self {
-            tabs: Signal::new(Vec::new()),
+            tabs: runtime_core::signal(Vec::new()),
             active: Reactive::Static(String::new()),
             on_change: Rc::new(|_| {}),
             indicator: Reactive::Static(TabIndicator::default()),
@@ -223,9 +241,22 @@ fn tab_button(
             let on = active.get() == id;
             let variant = if on { "on" } else { "off" };
             let app = StyleApplication::new(button_sheet()).with("active", variant.to_string());
+            let base = StyleApplication::new(tab_label_base_sheet());
+            if app.attaches_preminted() {
+                // Premint web build: the pressable's preminted class carries
+                // the on/off foreground and the label inherits it via the CSS
+                // cascade — the resolve-read below exists ONLY because native
+                // text doesn't inherit, and under `--premint-only` it would
+                // panic (sheets carry no rule closures).
+                return base;
+            }
             let color = resolve_style(&app).color.clone();
             let key = if on { "tab_label_on" } else { "tab_label_off" };
-            StyleApplication::new(tab_label_base_sheet()).with_computed(key, move || StyleRules {
+            // ENGINE-PATH ONLY: the `attaches_preminted()` early return
+            // above guarantees this layer never runs on a premint build,
+            // so the computed-layer disqualifier can't fire.
+            // idealyst-lint-disable-next-line premint-computed-layer
+            base.with_computed(key, move || StyleRules {
                 color: color.clone(),
                 ..Default::default()
             })
@@ -275,27 +306,27 @@ fn tab_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, StyleSource};
+    use runtime_core::resolve_style;
 
     fn theme() {
         install_idea_theme(light_theme());
     }
 
     /// Resolves the color on the label text node of one tab pressable.
-    /// The Tabs label style is reactive (re-runs on `active`), so we
-    /// invoke its closure to get the current `StyleApplication`.
-    fn tab_label_color(tab: &Element) -> Option<runtime_core::Color> {
-        let label = match tab {
-            Element::Pressable { children, .. } => &children[0],
+    /// The Tabs label style is reactive (re-runs on `active`);
+    /// `TStyle::resolve` evaluates the reactive-or-static style either way.
+    fn tab_label_color(tab: Element) -> Option<runtime_core::Color> {
+        let label = match classify(tab) {
+            P::Pressable { mut children, .. } => children.remove(0),
             _ => panic!("a tab is a Pressable"),
         };
-        match label {
-            Element::Text { style, .. } => match style.as_ref()? {
-                StyleSource::Reactive(f) => resolve_style(&f()).color.clone().map(|c| c.resolve()),
-                StyleSource::Static(a) => resolve_style(a).color.clone().map(|c| c.resolve()),
-                _ => None,
-            },
+        match classify(label) {
+            P::Text { style, .. } => {
+                style.and_then(|s| s.resolve().color.clone().map(|c| c.resolve()))
+            }
             _ => panic!("a tab label is a Text node"),
         }
     }
@@ -312,6 +343,52 @@ mod tests {
             .resolve()
     }
 
+    // The `--premint-only` read-back: the label style resolved the TabButton
+    // sheet's color in Rust and carried it via a `with_computed` layer — which
+    // both disqualifies preminting and panics under `--premint-only` (sheets
+    // carry no rule closures). On a premint build the label application must
+    // premint BARE — the pressable's preminted class carries the on/off
+    // foreground and the web label inherits it via the CSS cascade. On live/
+    // native builds the computed stamp must remain (native doesn't inherit).
+    #[test]
+    fn regression_premint_tab_label_application_premints() {
+        with_test_world(|| {
+            theme();
+            let on_change: Rc<dyn Fn(String)> = Rc::new(|_| {});
+            let tab = tab_button(
+                Tab::new("a", "A"),
+                Reactive::Static("a".to_string()),
+                on_change,
+                Reactive::Static(TabIndicator::Underline),
+            );
+            let label = match classify(tab) {
+                P::Pressable { mut children, .. } => children.remove(0),
+                _ => panic!("a tab is a Pressable"),
+            };
+            let style = match classify(label) {
+                P::Text { style, .. } => style.expect("tab label carries a style"),
+                _ => panic!("a tab label is a Text node"),
+            };
+            let app = style.application();
+            #[cfg(idealyst_premint)]
+            assert!(
+                app.preminted_class_list().is_some(),
+                "premint build: the label application premints bare — no computed layer"
+            );
+            #[cfg(not(idealyst_premint))]
+            {
+                assert!(
+                    app.preminted_class_list().is_none(),
+                    "live/native build: the computed color layer rides the application"
+                );
+                assert!(
+                    resolve_style(&app).color.is_some(),
+                    "and it resolves the TabButton foreground for the label node"
+                );
+            }
+        });
+    }
+
     // Field report 3.1b (audit): the tab label was a bare text node whose
     // color lived only on the wrapping pressable, so on native it rendered
     // in the widget default — the selected tab wouldn't darken, the rest
@@ -320,35 +397,37 @@ mod tests {
     // pressable's) is what makes this a valid regression test.
     #[test]
     fn regression_tab_labels_carry_their_own_active_color() {
-        theme();
-        // The reactive `tabs` list wraps the pressables in a keyed `each`, so
-        // exercise the per-tab builder directly. `active = "a"` ⇒ the "a" tab
-        // is selected, the "b" tab is not.
-        let on_change: Rc<dyn Fn(String)> = Rc::new(|_| {});
-        let active = Reactive::Static("a".to_string());
-        let indicator = Reactive::Static(TabIndicator::Underline);
-        let active_tab =
-            tab_button(Tab::new("a", "A"), active.clone(), on_change.clone(), indicator.clone());
-        let inactive_tab = tab_button(Tab::new("b", "B"), active, on_change, indicator);
+        with_test_world(|| {
+            theme();
+            // The reactive `tabs` list wraps the pressables in a keyed `each`, so
+            // exercise the per-tab builder directly. `active = "a"` ⇒ the "a" tab
+            // is selected, the "b" tab is not.
+            let on_change: Rc<dyn Fn(String)> = Rc::new(|_| {});
+            let active = Reactive::Static("a".to_string());
+            let indicator = Reactive::Static(TabIndicator::Underline);
+            let active_tab =
+                tab_button(Tab::new("a", "A"), active.clone(), on_change.clone(), indicator.clone());
+            let inactive_tab = tab_button(Tab::new("b", "B"), active, on_change, indicator);
 
-        let active_color =
-            tab_label_color(&active_tab).expect("active tab label carries a color");
-        assert_eq!(
-            active_color,
-            tabbutton_color("on"),
-            "selected (id-matched) tab label is the TabButton `on` color"
-        );
+            let active_color =
+                tab_label_color(active_tab).expect("active tab label carries a color");
+            assert_eq!(
+                active_color,
+                tabbutton_color("on"),
+                "selected (id-matched) tab label is the TabButton `on` color"
+            );
 
-        let inactive_color =
-            tab_label_color(&inactive_tab).expect("inactive tab label carries a color");
-        assert_eq!(
-            inactive_color,
-            tabbutton_color("off"),
-            "unselected tab label is the TabButton `off` (muted) color"
-        );
+            let inactive_color =
+                tab_label_color(inactive_tab).expect("inactive tab label carries a color");
+            assert_eq!(
+                inactive_color,
+                tabbutton_color("off"),
+                "unselected tab label is the TabButton `off` (muted) color"
+            );
 
-        // The two states must differ — proves the label color tracks selection
-        // (by id) rather than being a single inherited value.
-        assert_ne!(active_color, inactive_color);
+            // The two states must differ — proves the label color tracks selection
+            // (by id) rather than being a single inherited value.
+            assert_ne!(active_color, inactive_color);
+    });
     }
 }

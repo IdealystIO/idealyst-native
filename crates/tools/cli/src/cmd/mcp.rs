@@ -74,7 +74,7 @@ pub struct Args {
     /// Path to a project directory whose catalog should populate the
     /// server at startup. The CLI generates an ephemeral catalog wrapper
     /// crate for the project (under `target/idealyst/<name>/catalog/`) and
-    /// runs it — the wrapper turns on `runtime-core/catalog` and each
+    /// runs it — the wrapper turns on the framework's `catalog` feature and each
     /// component-library dependency's own `catalog` feature, then
     /// force-links those deps, so the catalog is complete (every
     /// `#[component]` plus dependency-provided entries like icon sets). Use
@@ -310,7 +310,7 @@ enum CatalogSource {
 ///    wrapper (see [`super::catalog_wrapper`]).
 ///
 /// The managed wrapper is the single source of truth: it turns on
-/// `runtime-core/catalog` (and each component-library dep's own `catalog`
+/// the framework's `catalog` feature (and each component-library dep's own `catalog`
 /// feature) across the whole graph, so the catalog is always complete —
 /// every `#[component]` plus dependency-provided entries (icon sets, …).
 /// There is no auto-discovered "prebuilt project `catalog` bin" fast path:

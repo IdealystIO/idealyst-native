@@ -13,9 +13,10 @@
 //!   * the **navigator** wiring + central **page frame** in `lib.rs`
 //!     (group overline, title, status badge, lead, body, Usage panel).
 
-use runtime_core::{Element, Route};
+use runtime_core::Element;
+use runtime_core::Route;
 
-use crate::pages;
+use crate::lazy_pages;
 
 /// How finished a component's reference page is. Drives the page's
 /// status badge and the sidebar dot.
@@ -42,8 +43,11 @@ pub struct Entry {
     pub token: &'static str,
     /// One-line description — the page lead under the title.
     pub desc: &'static str,
-    /// Builds the page body (demo sections only; the frame adds the
-    /// title block + Usage panel).
+    /// Builds everything visible on the screen. Points at the page's
+    /// `lazy_pages` shim, so on web each body loads as its own wasm
+    /// chunk; the chunk wraps the demo sections in
+    /// `shell::page_frame_content` (title block + Usage panel), so the
+    /// chunk's loading fallback covers the whole screen.
     pub body: fn() -> Element,
     /// Optional `Usage` snippet. Empty string = no panel.
     pub code: &'static str,
@@ -61,8 +65,6 @@ pub struct Group {
 
 // Get started
 pub const OVERVIEW_ROUTE: Route<()> = Route::<()>::new("overview", "/overview");
-/// Every component on one page — the cross-platform render-parity fixture.
-pub const ALL_ROUTE: Route<()> = Route::<()>::new("all", "/all");
 // Foundations
 pub const COLORS_ROUTE: Route<()> = Route::<()>::new("colors", "/foundations/color");
 pub const INTENTS_ROUTE: Route<()> = Route::<()>::new("intents", "/foundations/intents");
@@ -98,8 +100,13 @@ pub const SLIDER_ROUTE: Route<()> = Route::<()>::new("slider", "/forms/slider");
 pub const FIELD_ROUTE: Route<()> = Route::<()>::new("field", "/forms/field");
 pub const TEXTAREA_ROUTE: Route<()> = Route::<()>::new("textarea", "/forms/textarea");
 pub const SELECT_ROUTE: Route<()> = Route::<()>::new("select", "/forms/select");
+pub const AUTOCOMPLETE_ROUTE: Route<()> = Route::<()>::new("autocomplete", "/forms/autocomplete");
 pub const SEGMENTED_ROUTE: Route<()> =
     Route::<()>::new("segmentedcontrol", "/forms/segmented-control");
+pub const CALENDAR_ROUTE: Route<()> = Route::<()>::new("calendar", "/forms/calendar");
+pub const DATE_PICKER_ROUTE: Route<()> = Route::<()>::new("date-picker", "/forms/date-picker");
+pub const DATE_INPUT_ROUTE: Route<()> = Route::<()>::new("date-input", "/forms/date-input");
+pub const TIME_INPUT_ROUTE: Route<()> = Route::<()>::new("time-input", "/forms/time-input");
 // Overlays
 pub const TOOLTIP_ROUTE: Route<()> = Route::<()>::new("tooltip", "/overlays/tooltip");
 pub const POPOVER_ROUTE: Route<()> = Route::<()>::new("popover", "/overlays/popover");
@@ -139,18 +146,7 @@ pub const CATALOG: &[Group] = &[
                 // lead is never shown — kept for catalog completeness.
                 desc: "The idea-ui component library — a token-driven UI kit where every \
                     component composes from a shared, swappable design vocabulary.",
-                body: pages::overview::overview,
-                code: "",
-            },
-            Entry {
-                route: &ALL_ROUTE,
-                name: "All Components",
-                status: Detailed,
-                token: "render-parity fixture",
-                desc: "Every component rendered on one page, each section anchored with a \
-                    stable test_id. The cross-platform render-parity fixture — capture it on \
-                    web and macОS and diff (see `tests/parity.rs`).",
-                body: pages::all::all,
+                body: lazy_pages::overview,
                 code: "",
             },
         ],
@@ -165,7 +161,7 @@ pub const CATALOG: &[Group] = &[
                 token: "color-*",
                 desc: "Neutral, non-intent tokens — the canvas every component is painted on: \
                     background, surface, text, border and focus ring.",
-                body: pages::foundations::colors,
+                body: lazy_pages::colors,
                 code: "install_idea_theme(light_theme());\n// → registers color-surface, color-text, …\nset_idea_theme(dark_theme()); // rebinds values",
             },
             Entry {
@@ -175,7 +171,7 @@ pub const CATALOG: &[Group] = &[
                 token: "intent-*",
                 desc: "Seven semantic palettes, each exposing six slots: solid-bg, solid-text, \
                     soft-bg, soft-text, fg, border.",
-                body: pages::foundations::intents,
+                body: lazy_pages::intents,
                 code: "tone::Primary  // intent-primary-*\nvariant::Filled // → solid-bg / solid-text\nvariant::Soft   // → soft-bg / soft-text",
             },
             Entry {
@@ -185,7 +181,7 @@ pub const CATALOG: &[Group] = &[
                 token: "spacing-* · radius-*",
                 desc: "The spatial system: a six-step spacing scale and four corner radii, \
                     shared by every component.",
-                body: pages::foundations::scale,
+                body: lazy_pages::scale,
                 code: "padding: spacing-md;   // 12px\nborder-radius: radius-lg; // 12px",
             },
         ],
@@ -200,7 +196,7 @@ pub const CATALOG: &[Group] = &[
                 token: "typography-*",
                 desc: "The type roles, from display down to overline, mapped to the typography \
                     size tokens.",
-                body: pages::primitives::typography,
+                body: lazy_pages::typography,
                 code: "Typography(content = \"Heading\".into(), kind = typography_kind::H1)",
             },
             Entry {
@@ -209,7 +205,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "color-text",
                 desc: "Line icons on a 24px grid. Inherit currentColor and size from their context.",
-                body: pages::primitives::icon,
+                body: lazy_pages::icon,
                 code: "Icon(data = icons_lucide::HEART, size = 24.0)",
             },
             Entry {
@@ -218,7 +214,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "radius-*",
                 desc: "Responsive media with aspect-ratio, object-fit and radius control.",
-                body: pages::primitives::image,
+                body: lazy_pages::image,
                 code: "",
             },
             Entry {
@@ -227,7 +223,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "color-border",
                 desc: "A hairline rule for separating content, horizontal or vertical.",
-                body: pages::primitives::divider,
+                body: lazy_pages::divider,
                 code: "",
             },
             Entry {
@@ -236,7 +232,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "spacing-*",
                 desc: "An invisible box that injects a spacing-token-sized gap between siblings.",
-                body: pages::primitives::spacer,
+                body: lazy_pages::spacer,
                 code: "",
             },
             Entry {
@@ -245,7 +241,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "color-surface",
                 desc: "The base container — background, border and elevation drawn from neutral tokens.",
-                body: pages::primitives::surface,
+                body: lazy_pages::surface,
                 code: "",
             },
         ],
@@ -259,7 +255,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "spacing-*",
                 desc: "Flex layout primitive. Lays children along an axis with a token-sized gap.",
-                body: pages::layout::stack,
+                body: lazy_pages::stack,
                 code: "",
             },
             Entry {
@@ -268,7 +264,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "spacing-*",
                 desc: "Responsive grid with column count and gap driven by spacing tokens.",
-                body: pages::layout::grid,
+                body: lazy_pages::grid,
                 code: "",
             },
             Entry {
@@ -277,7 +273,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "—",
                 desc: "Centers its child on both axes, with an optional max-width.",
-                body: pages::layout::center,
+                body: lazy_pages::center,
                 code: "",
             },
         ],
@@ -291,7 +287,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "intent-*-fg",
                 desc: "An indeterminate loading indicator, tinted by tone and sized by token.",
-                body: pages::status::spinner,
+                body: lazy_pages::spinner,
                 code: "",
             },
             Entry {
@@ -300,7 +296,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "color-surface-alt",
                 desc: "Shimmering placeholders that hold layout while content loads.",
-                body: pages::status::skeleton,
+                body: lazy_pages::skeleton,
                 code: "",
             },
             Entry {
@@ -308,9 +304,10 @@ pub const CATALOG: &[Group] = &[
                 name: "Progress",
                 status: Preview,
                 token: "intent-*-solid-bg",
-                desc: "Determinate and indeterminate progress.",
-                body: pages::status::progress,
-                code: "",
+                desc: "A linear progress bar: value-driven with animated changes, an \
+                    endless indeterminate sweep, or a simulated loading creep.",
+                body: lazy_pages::progress,
+                code: "Progress(mode = ProgressMode::Indeterminate, tone = tone::Info)",
             },
             Entry {
                 route: &BADGE_ROUTE,
@@ -318,8 +315,8 @@ pub const CATALOG: &[Group] = &[
                 status: Detailed,
                 token: "intent-*-soft-*",
                 desc: "A compact status label. Solid or soft, across all seven intents, plus dot form.",
-                body: pages::status::badge,
-                code: "Badge(text = \"Active\".into(), tone = tone::Success)",
+                body: lazy_pages::badge,
+                code: "Badge(label = \"Active\".into(), tone = tone::Success)",
             },
             Entry {
                 route: &TAG_ROUTE,
@@ -327,7 +324,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "intent-*-soft-*",
                 desc: "A removable label for categorising or filtering, with optional leading icon.",
-                body: pages::status::tag,
+                body: lazy_pages::tag,
                 code: "",
             },
             Entry {
@@ -336,7 +333,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "intent-primary-*",
                 desc: "An interactive, selectable token — filters, choices and input chips.",
-                body: pages::status::chip,
+                body: lazy_pages::chip,
                 code: "",
             },
         ],
@@ -350,7 +347,7 @@ pub const CATALOG: &[Group] = &[
                 status: Detailed,
                 token: "tone × variant × size × shape",
                 desc: "The workhorse. A composition of tone, variant, size and shape.",
-                body: pages::actions::button,
+                body: lazy_pages::button,
                 code: "Button(\n    label = \"Create idea\".into(),\n    tone = tone::Primary,\n    variant = variant::Filled,\n)",
             },
             Entry {
@@ -359,7 +356,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "tone × variant",
                 desc: "A square button carrying a single icon. Shares Button's tone and variant axes.",
-                body: pages::actions::icon_button,
+                body: lazy_pages::icon_button,
                 code: "",
             },
             Entry {
@@ -368,7 +365,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "intent-primary-fg",
                 desc: "Inline and standalone navigation, with external and muted treatments.",
-                body: pages::actions::link,
+                body: lazy_pages::link,
                 code: "",
             },
             Entry {
@@ -377,7 +374,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "intent-*-soft-*",
                 desc: "Represents a user or entity — image, initials or icon, with status and grouping.",
-                body: pages::actions::avatar,
+                body: lazy_pages::avatar,
                 code: "",
             },
         ],
@@ -391,7 +388,7 @@ pub const CATALOG: &[Group] = &[
                 status: Detailed,
                 token: "intent-primary-solid-*",
                 desc: "A binary (and indeterminate) selection control with a full state matrix.",
-                body: pages::forms::checkbox,
+                body: lazy_pages::checkbox,
                 code: "Checkbox(value = accepted, on_change = set_accepted, label = \"I accept\".into())",
             },
             Entry {
@@ -400,7 +397,7 @@ pub const CATALOG: &[Group] = &[
                 status: Detailed,
                 token: "intent-primary-solid-bg",
                 desc: "Single-choice selection within a group, as plain controls or selectable cards.",
-                body: pages::forms::radio,
+                body: lazy_pages::radio,
                 code: "",
             },
             Entry {
@@ -409,7 +406,7 @@ pub const CATALOG: &[Group] = &[
                 status: Detailed,
                 token: "intent-*-solid-bg",
                 desc: "An instant on/off toggle, sized and toned by token.",
-                body: pages::forms::switch,
+                body: lazy_pages::switch,
                 code: "Switch(value = dark, on_change = toggle, label = \"Dark mode\".into())",
             },
             Entry {
@@ -418,7 +415,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "intent-primary-solid-bg",
                 desc: "Select a value from a continuous range; tinted with the primary token.",
-                body: pages::forms::slider,
+                body: lazy_pages::slider,
                 code: "",
             },
             Entry {
@@ -427,7 +424,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "color-border · focus-ring",
                 desc: "A text input wrapper: label, control, helper text and error state.",
-                body: pages::forms::field,
+                body: lazy_pages::field,
                 code: "",
             },
             Entry {
@@ -436,7 +433,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "color-border · focus-ring",
                 desc: "Multi-line input with helper text and character count.",
-                body: pages::forms::textarea,
+                body: lazy_pages::textarea,
                 code: "",
             },
             Entry {
@@ -445,7 +442,16 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "color-surface · border",
                 desc: "A single-choice dropdown built on the menu surface.",
-                body: pages::forms::select,
+                body: lazy_pages::select,
+                code: "",
+            },
+            Entry {
+                route: &AUTOCOMPLETE_ROUTE,
+                name: "Autocomplete",
+                status: Preview,
+                token: "color-surface · border",
+                desc: "A searchable combobox — a text input that filters the option menu as you type.",
+                body: lazy_pages::autocomplete,
                 code: "",
             },
             Entry {
@@ -454,7 +460,47 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "color-surface-alt",
                 desc: "A compact, mutually-exclusive switch between a small set of options.",
-                body: pages::forms::segmented_control,
+                body: lazy_pages::segmented_control,
+                code: "",
+            },
+            Entry {
+                route: &CALENDAR_ROUTE,
+                name: "Calendar",
+                status: Preview,
+                token: "intent-primary-solid-*",
+                desc: "An inline month calendar — single date or range — with a zoomable \
+                    month/year header, bounds and per-day disabling.",
+                body: lazy_pages::calendar,
+                code: "",
+            },
+            Entry {
+                route: &DATE_PICKER_ROUTE,
+                name: "DatePicker",
+                status: Detailed,
+                token: "color-surface · border",
+                desc: "A popup calendar behind a Select-style trigger — single date, date \
+                    range, or date + time.",
+                body: lazy_pages::date_picker,
+                code: "let due = signal(None);\nlet on_due: Rc<dyn Fn(Option<CivilDate>)> = Rc::new(move |d| due.set(d));\n\nDatePicker(\n    value = due,\n    on_change = on_due,\n    min = CivilDate::today(),\n    clearable = true,\n)",
+            },
+            Entry {
+                route: &DATE_INPUT_ROUTE,
+                name: "DateInput",
+                status: Preview,
+                token: "color-border · focus-ring",
+                desc: "A typed date field with lenient token parsing and an optional \
+                    calendar popup.",
+                body: lazy_pages::date_input,
+                code: "",
+            },
+            Entry {
+                route: &TIME_INPUT_ROUTE,
+                name: "TimeInput",
+                status: Preview,
+                token: "color-border · focus-ring",
+                desc: "A typed time-of-day field — token formats cover 24-hour and 12-hour \
+                    clocks.",
+                body: lazy_pages::time_input,
                 code: "",
             },
         ],
@@ -468,7 +514,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "color-text · inverse",
                 desc: "A small contextual label revealed on hover or focus.",
-                body: pages::overlays::tooltip,
+                body: lazy_pages::tooltip,
                 code: "",
             },
             Entry {
@@ -477,7 +523,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "color-surface · overlay",
                 desc: "A floating surface anchored to a trigger, for rich transient content.",
-                body: pages::overlays::popover,
+                body: lazy_pages::popover,
                 code: "",
             },
             Entry {
@@ -486,7 +532,7 @@ pub const CATALOG: &[Group] = &[
                 status: Detailed,
                 token: "color-overlay · surface",
                 desc: "A focused dialog over a scrim. Demonstrates the overlay and surface tokens together.",
-                body: pages::overlays::modal,
+                body: lazy_pages::modal,
                 code: "Modal(open = open, on_dismiss = Some(close), content = move || ui! { … })",
             },
             Entry {
@@ -495,7 +541,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "color-border",
                 desc: "A header that expands and collapses a region of content.",
-                body: pages::overlays::collapsible,
+                body: lazy_pages::collapsible,
                 code: "",
             },
             Entry {
@@ -504,7 +550,7 @@ pub const CATALOG: &[Group] = &[
                 status: Detailed,
                 token: "intent-*-soft-*",
                 desc: "An inline message conveying status. All seven intents, soft and solid, dismissible.",
-                body: pages::overlays::alert,
+                body: lazy_pages::alert,
                 code: "Alert(tone = tone::Warning, title = \"Unsaved changes\".into())",
             },
             Entry {
@@ -513,7 +559,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "intent-*",
                 desc: "A transient, auto-dismissing notification stacked in a corner.",
-                body: pages::overlays::toast,
+                body: lazy_pages::toast,
                 code: "",
             },
         ],
@@ -527,7 +573,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "color-text-muted",
                 desc: "A hierarchical trail of links with separators and overflow collapsing.",
-                body: pages::navigation::breadcrumbs,
+                body: lazy_pages::breadcrumbs,
                 code: "",
             },
             Entry {
@@ -536,7 +582,7 @@ pub const CATALOG: &[Group] = &[
                 status: Detailed,
                 token: "intent-primary-*",
                 desc: "Switch between sibling panels. Underline and pill variants, fully interactive.",
-                body: pages::navigation::tabs,
+                body: lazy_pages::tabs,
                 code: "Tabs(value = tab, on_change = set_tab, indicator = TabIndicator::Underline) { … }",
             },
             Entry {
@@ -545,7 +591,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "intent-primary-soft-*",
                 desc: "Navigate paged collections with ellipsis truncation.",
-                body: pages::navigation::pagination,
+                body: lazy_pages::pagination,
                 code: "",
             },
             Entry {
@@ -554,7 +600,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "color-surface · surface-alt",
                 desc: "A list of actions on a floating surface — sections, icons, shortcuts, destructive items.",
-                body: pages::navigation::menu,
+                body: lazy_pages::menu,
                 code: "",
             },
             Entry {
@@ -563,7 +609,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "color-border",
                 desc: "Vertical rows with leading/trailing content and dividers.",
-                body: pages::navigation::list,
+                body: lazy_pages::list,
                 code: "",
             },
         ],
@@ -577,7 +623,7 @@ pub const CATALOG: &[Group] = &[
                 status: Detailed,
                 token: "color-surface · radius-lg",
                 desc: "A composable container: header, media, body and footer regions.",
-                body: pages::data::card,
+                body: lazy_pages::card,
                 code: "Card(variant = CardVariant::Elevated) { … }",
             },
             Entry {
@@ -586,7 +632,7 @@ pub const CATALOG: &[Group] = &[
                 status: Preview,
                 token: "color-border · surface-alt",
                 desc: "Tabular data with sortable headers, selection, zebra rows and density.",
-                body: pages::data::table,
+                body: lazy_pages::table,
                 code: "",
             },
         ],

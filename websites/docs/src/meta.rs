@@ -251,12 +251,13 @@ pub enum DocConcept {
     Signal,
     Effect,
     Scope,
-    /// `runtime_core::mount(backend, app_fn)` — the framework's
-    /// entry point. Opens the root reactive scope, runs the user's
-    /// tree constructor inside it, hands the result to the build
-    /// walker. The lifetime boundary that turns `effect!` /
-    /// `signal!` declared at the top of `app()` from leaks into
-    /// owned arena slots cleaned up on `Owner` drop.
+    /// Each backend's boot entry (`backend_web::newcore::start`,
+    /// `host_appkit::newcore::run`, …) — the framework's entry point.
+    /// Creates the `World`, registers the primitive handlers, runs the
+    /// user's tree constructor inside `World::enter`, realizes the
+    /// result, and installs the flush driver. The lifetime boundary that
+    /// turns `effect!` / `signal(…)` declared at the top of `app()`
+    /// from leaks into world-root-owned slots freed on world drop.
     Mount,
     TrackedContext,
     Derived,
@@ -268,12 +269,19 @@ pub enum DocConcept {
     /// reactivity vocabulary.
     Memo,
     /// `on_cleanup(callback)` — registers a callback that fires when
-    /// the surrounding Effect / scope drops. The cleanup hook for
+    /// the surrounding Effect re-runs or drops. The cleanup hook for
     /// resources (timers, sockets, native handles) created during a
-    /// reactive run.
+    /// reactive run. Requires a RUNNING effect — calling it from a
+    /// component body panics; use `OnScopeDrop` there instead.
     OnCleanup,
-    /// `reducer(initial, |state, action| ...)` — action-driven state.
-    /// Returns a read-only signal + a dispatch function. Pairs with
+    /// `on_scope_drop(callback)` — registers a callback that fires when
+    /// the surrounding OWNERSHIP SCOPE drops (a component body, a
+    /// registry mount handler, a `collect_owned` region). The cleanup
+    /// hook for resources acquired while BUILDING the tree, where no
+    /// effect is running. Defers to `on_cleanup` inside an effect run.
+    OnScopeDrop,
+    /// Action-driven state: a signal plus an `update`-based dispatch
+    /// closure holding every transition. Pairs with
     /// `Action` for round-tripping through generator backends.
     Reducer,
     /// `resource(deps, async closure)` — async data as a reactive
@@ -414,13 +422,13 @@ pub enum DocConcept {
     StrokeAnimation,
 
     // ---- Floating UI / animation ----
-    /// `Element::Portal` — the framework's one render-elsewhere
+    /// `portal` — the framework's one render-elsewhere
     /// primitive. Authoritative explainer: `portal` page.
     Portal,
-    /// `overlay()` composition. Lowers to `Element::Portal` with a
+    /// `overlay()` composition. Lowers to `portal` with a
     /// viewport target + backdrop child. Not a primitive itself.
     Overlay,
-    /// `anchored_overlay()` composition. Lowers to `Element::Portal`
+    /// `anchored_overlay()` composition. Lowers to `portal`
     /// with an anchor target. Not a primitive itself.
     AnchoredOverlay,
     Presence,
@@ -464,9 +472,9 @@ pub enum DocConcept {
     Stagger,
 
     // ---- Third-party extension ----
-    /// `Element::External` — the framework's one extension hatch for
-    /// third-party primitives. Authoritative explainer:
-    /// `third-party-primitives` page.
+    /// The scene `Registry` — the seam third-party primitives register
+    /// their payload handler on, exactly like the built-ins do.
+    /// Authoritative explainer: `third-party-primitives` page.
     External,
 
     // ---- Backends ----
@@ -590,6 +598,7 @@ impl DocConcept {
             DocConcept::Untrack => "untrack",
             DocConcept::Memo => "memo",
             DocConcept::OnCleanup => "on_cleanup",
+            DocConcept::OnScopeDrop => "on_scope_drop",
             DocConcept::Reducer => "reducer",
             DocConcept::Resource => "resource",
             DocConcept::Context => "Context",
@@ -720,6 +729,7 @@ impl DocConcept {
             DocConcept::Untrack => "untrack",
             DocConcept::Memo => "memo",
             DocConcept::OnCleanup => "on-cleanup",
+            DocConcept::OnScopeDrop => "on-scope-drop",
             DocConcept::Reducer => "reducer",
             DocConcept::Resource => "resource",
             DocConcept::Context => "context",

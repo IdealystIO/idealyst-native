@@ -1,52 +1,49 @@
-//! `markdown` — a CommonMark/GFM document primitive rendered as a
-//! **single native styled-text node** per backend.
+//! `markdown` — a CommonMark/GFM document primitive rendered as
+//! semantic DOM through one caps-generic scene handler.
 //!
-//! ## Why a single node (performance)
+//! ## Why a resolved document, not a primitive tree
 //!
 //! A markdown document is a deep tree: blocks (headings, paragraphs,
 //! lists, quotes, code) containing inline runs (bold, italic, code,
 //! links). Lowering that tree to framework primitives would emit one
 //! styled `text`/`view` node *per inline run* — the exact per-token
-//! explosion the `codeblock` SDK was carved out of `runtime-core` to
-//! avoid (a measured 100–300× more backend ops per render). Native
-//! rich-text engines express the whole tree as inline attribute ranges
-//! on ONE widget, so a 50-block document is ONE native node, not
-//! thousands.
+//! explosion the `codeblock` SDK was carved out to avoid (a measured
+//! 100–300× more backend ops per render). Instead the SDK parses and
+//! resolves the document author-side and hands ONE payload to the scene
+//! registry, whose handler builds the host DOM directly.
 //!
-//! - **iOS** — one `UILabel` whose `attributedText` is an
-//!   `NSAttributedString` with per-range font/size/color/background/
-//!   underline/strikethrough attributes. Wraps to the column width via a
-//!   width-aware Taffy measure (`install_external_wrapping_measure`).
-//! - **Android** — one `android.widget.TextView` fed a
-//!   `SpannableStringBuilder` carrying `RelativeSizeSpan` / `StyleSpan`
-//!   / `TypefaceSpan` / `ForegroundColorSpan` / `BackgroundColorSpan` /
-//!   `UnderlineSpan` / `StrikethroughSpan` ranges. A plain TextView gets
-//!   width-aware wrapping measurement automatically.
-//! - **Web** — semantic DOM (`<h1>`, `<p>`, `<pre>`, `<ul>`,
-//!   `<blockquote>`, `<hr>`) built through the `Backend` trait, with
-//!   per-run inline styling. DOM layout is cheap and the semantic tree
-//!   is accessible, so web keeps real elements rather than one node.
-//! - **Other targets** (macOS / terminal / gpu) — the framework's
-//!   external-not-registered placeholder until a handler lands.
+//! ## What each host renders
+//!
+//! [`register`] installs ONE caps-generic handler (`StyleServices +
+//! TextOps`), so **every caps-complete host mounts the identical
+//! semantic DOM** (`<h1>`, `<p>`, `<pre>`, `<blockquote>`, `<hr>`, list
+//! rows) with per-run inline styling — web and SSR alike.
+//!
+//! There is no dedicated native single-node renderer (an iOS `UILabel` +
+//! `NSAttributedString`, an Android `TextView` +
+//! `SpannableStringBuilder`). Native hosts realize the same semantic
+//! element tree through their own caps impls; a single-node native
+//! handler would be a separate `Registry<IosBackend>` /
+//! `Registry<AndroidBackend>` registration, and is not implemented.
 //!
 //! ## Styling + theming
 //!
 //! Parsing and theme *resolution* happen author-side, inside the
-//! [`Markdown`] component's reactive scope, producing a fully-resolved,
+//! [`Markdown`] tag's reactive region, producing a fully-resolved,
 //! serializable [`MarkdownDoc`] (blocks + a concrete [`MdTheme`]). The
 //! [`MdTheme`] is the SDK's complete styling surface — a color/size per
-//! element type. Because the component reads its `source`/`theme` props
-//! reactively, a theme toggle re-resolves the doc → new `Element::
-//! External` props → the one native node is rebuilt with the new colors.
-//! See the `markdown-demo` example for a light/dark toggle.
+//! element type. Because the props are [`Reactive`], a theme toggle
+//! re-resolves the doc → the node is rebuilt with the new colors. See
+//! the `markdown-demo` example for a light/dark toggle.
 //!
 //! ## Usage
 //!
 //! ```ignore
 //! use markdown::{Markdown, MdTheme};
 //!
-//! // At app bootstrap, once per backend:
-//! markdown::register(&mut backend);
+//! // At app bootstrap: the boot entry's `register` argument IS the
+//! // registration seam.
+//! backend_web::newcore::start_in("#app", markdown::register, app);
 //!
 //! // In a component tree:
 //! ui! { Markdown(source = "# Hello\n\nWorld **bold**".to_string()) }
@@ -54,51 +51,77 @@
 //! // Or the low-level builder (matches `code_block`):
 //! markdown::markdown("# Hi", MdTheme::dark()).with_style(my_panel_style())
 //! ```
+//!
+//! An UNREGISTERED payload panics at realize (the scene contract), so a
+//! missed `register` fails loud.
 #![deny(missing_docs)]
 
 mod ir;
 mod parse;
 
-// Native single-node handlers share the block-tree → linear-segment
-// lowering.
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    any(target_os = "ios", target_os = "android", target_os = "linux")
-))]
-mod segments;
-
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-mod android;
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-mod ios;
-#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
-pub mod linux;
-#[cfg(target_arch = "wasm32")]
-mod web;
-
-use std::any::Any;
-use std::rc::Rc;
-
-use runtime_core::{component, Bound, Element, ExternalHandle, IdealystSchema, Reactive};
-
+// The resolved IR + parser are pure data (serde, no core types).
 pub use ir::{MarkdownDoc, MdBlock, MdListItem, MdRun, MdTheme};
 
-/// Convenience handle alias — the typed `Ref` target for a markdown
-/// external node. Saves callers writing `ExternalHandle<MarkdownDoc>`.
-pub type MarkdownHandle = ExternalHandle<MarkdownDoc>;
+use std::any::Any;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::{
+    Color, FlexDirection, FontFamily, FontStyle, FontWeight, Length, Ref, StyleRules, Tokenized,
+};
+use runtime_scene::{item, Element, Host, MountCx, Registry};
+use runtime_vocabulary::caps::TextOps;
+use runtime_vocabulary::glue::{switch, BuildElement, IntoElement, Reactive};
+use runtime_vocabulary::style_attach::{attach_style, IntoStyleProp, StyleProp, StyleServices};
+
+
+// ============================================================================
+// Public API surface
+// ============================================================================
+
+/// Typed handle to a mounted markdown node. Minimal by design: no
+/// consumer needs more than the type-erased native node (kept reachable
+/// for bespoke imperative plumbing).
+#[derive(Clone)]
+pub struct MarkdownHandle {
+    node: Rc<dyn Any>,
+}
+
+/// Pointer identity on the NODE — a `MarkdownHandle` names one mounted
+/// markdown node, so clones of it are equal and handles onto two different
+/// nodes never are. Same shape and reasoning as `form::FormHandle`: the
+/// node is `Rc<dyn Any>`, so the address is both the only comparable thing
+/// and the right question ("same node?"). Required for the handle to be
+/// held in a `Signal`, whose `T: PartialEq` bound applies at creation and
+/// `get`, not just on the guarded `set`.
+impl PartialEq for MarkdownHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.node, &other.node)
+    }
+}
+
+impl Eq for MarkdownHandle {}
+
+impl MarkdownHandle {
+    /// The type-erased native node the handler mounted (the outer
+    /// semantic-DOM `<div>` on caps-generic hosts). Downcast to the
+    /// host's concrete node type for bespoke plumbing.
+    pub fn node(&self) -> Rc<dyn Any> {
+        self.node.clone()
+    }
+}
 
 /// Props for the [`Markdown`] component.
 ///
 /// Both props are [`Reactive`], so passing a live `Signal`/`rx!` (for
 /// either the source text or the theme) makes the rendered document
-/// update — the single native node is rebuilt on change.
-#[derive(IdealystSchema)]
+/// update — the node is rebuilt on change.
 pub struct MarkdownProps {
     /// The CommonMark/GFM source to render. Static or reactive.
     pub source: Reactive<String>,
     /// Per-element-type resolved styling. Default is [`MdTheme::light`];
-    /// pass a reactive theme (e.g. `rx!(if dark.get() { MdTheme::dark() }
-    /// else { MdTheme::light() })`) to follow an app theme toggle.
+    /// pass a reactive theme to follow an app theme toggle.
     pub theme: Reactive<MdTheme>,
 }
 
@@ -111,164 +134,390 @@ impl Default for MarkdownProps {
     }
 }
 
-/// Render a markdown document.
+/// The `ui!` tag for the markdown component — struct-literal dispatch
+/// (`Markdown(source = …)`) resolves through this alias to
+/// [`MarkdownProps`]'s [`BuildElement`] impl, the same contract
+/// `#[component]` generates.
+pub type Markdown = MarkdownProps;
+
+impl BuildElement for MarkdownProps {
+    /// A reactive region keyed on the `(source, theme)` tuple. `switch`
+    /// re-runs the branch only when the tuple's `PartialEq` value
+    /// actually differs (dedupe-on-equal-scrutinee), so static props
+    /// build exactly once.
+    fn build(self) -> Element {
+        let source = self.source;
+        let theme = self.theme;
+        switch(
+            move || (source.get(), theme.get()),
+            move |key| {
+                let (src, th) = key;
+                markdown(src.clone(), th.clone()).into_element()
+            },
+        )
+    }
+}
+
+// ============================================================================
+// Payload + builder — the `.with_style(…)` / `.bind(…)` chain then
+// element coercion.
+// ============================================================================
+
+/// Scene payload for the markdown item. Single-take slots (the
+/// vocabulary `PrimCell` discipline, inlined): the scene hands the
+/// handler a shared `&Rc<Self>`, but the style/ref-fill must move at
+/// mount.
+struct MarkdownPrim {
+    doc: MarkdownDoc,
+    style: RefCell<Option<StyleProp>>,
+    ref_fill: RefCell<Option<Box<dyn FnOnce(Rc<dyn Any>)>>>,
+}
+
+/// Author-side builder returned by [`markdown`].
+pub struct MarkdownBound {
+    doc: MarkdownDoc,
+    style: Option<StyleProp>,
+    ref_fill: Option<Box<dyn FnOnce(Rc<dyn Any>)>>,
+}
+
+/// Low-level builder: construct a markdown scene item from a source
+/// string + resolved theme. Mirrors `codeblock::code_block` —
+/// `.with_style(...)` lands on the outer node (the semantic-DOM
+/// container `<div>`).
 ///
-/// Parses `source` and paints it with `theme`, rebuilding the single
-/// native node whenever either prop changes. On a backend without a
-/// registered handler the framework shows its external placeholder.
-#[component]
-pub fn Markdown(props: &MarkdownProps) -> Element {
-    let source = props.source.clone();
-    let theme = props.theme.clone();
-    // Reactive region: rebuild the one external node whenever the source
-    // text or the resolved theme changes. `ui!` has no ergonomic form
-    // for a reactive region keyed on a `(String, MdTheme)` tuple, so we
-    // call `switch` directly — the documented direct-call form (see
-    // `runtime_core::switch`). `switch` re-runs the branch only when the
-    // tuple's `PartialEq` value actually differs, so static props build
-    // exactly once.
-    runtime_core::switch(
-        move || (source.get(), theme.get()),
-        move |key| {
-            let (src, th) = key;
-            markdown(src.clone(), th.clone()).into()
-        },
+/// Prefer the [`Markdown`] tag for reactive source/theme; this is the
+/// escape hatch for one-shot rendering or custom plumbing.
+pub fn markdown(source: impl Into<String>, theme: MdTheme) -> MarkdownBound {
+    let doc = crate::parse::parse(&source.into(), theme);
+    MarkdownBound {
+        doc,
+        style: None,
+        ref_fill: None,
+    }
+}
+
+impl MarkdownBound {
+    /// Attach the author style — lands on the outer node.
+    pub fn with_style(mut self, style: impl IntoStyleProp) -> Self {
+        self.style = Some(style.into_style_prop());
+        self
+    }
+
+    /// Bind a `Ref<MarkdownHandle>` for imperative access. At mount
+    /// time the handler wraps the native node in a [`MarkdownHandle`]
+    /// and fills the ref.
+    pub fn bind(mut self, r: Ref<MarkdownHandle>) -> Self {
+        self.ref_fill = Some(Box::new(move |node_any| {
+            r.fill(MarkdownHandle { node: node_any });
+        }));
+        self
+    }
+}
+
+impl IntoElement for MarkdownBound {
+    fn into_element(self) -> Element {
+        item(
+            MarkdownPrim {
+                doc: self.doc,
+                style: RefCell::new(self.style),
+                ref_fill: RefCell::new(self.ref_fill),
+            },
+            Vec::new(),
+        )
+    }
+}
+
+/// Element coercion for the fn-call form.
+impl From<MarkdownBound> for Element {
+    fn from(b: MarkdownBound) -> Element {
+        b.into_element()
+    }
+}
+
+// ============================================================================
+// Handler + registration seam — the semantic-DOM builder, over the caps
+// traits.
+// ============================================================================
+
+/// Vertical gap between blocks (px).
+const BLOCK_GAP: f32 = 12.0;
+/// Indent per list nesting level (px).
+const LIST_INDENT: f32 = 20.0;
+
+/// Register the markdown payload handler on a scene registry. Pass this
+/// as the boot registration seam (the `register` argument of
+/// `backend_web::newcore::start_in` / `backend_ssr::newcore::
+/// render_path_with`) — ONE generic registration for every
+/// caps-complete host, because the ported handler needs nothing beyond
+/// the caps traits (semantic DOM, no `web_sys`).
+pub fn register<H>(registry: &mut Registry<H>)
+where
+    H: StyleServices + TextOps + 'static,
+{
+    registry.register::<MarkdownPrim, _>(mount_markdown::<H>);
+}
+
+/// Declare this SDK's payload kind **late-bound** instead of installing
+/// its handler — the boot half of lazy registration. Pair with
+/// [`register_from_chunk`] from inside a `#[component(lazy)]` body.
+///
+/// Only web code-splits, so on every other target this installs the
+/// handler eagerly exactly as [`register`] does. That is deliberate:
+/// deferring a kind nothing later registers leaves the payload parked
+/// behind a placeholder forever, with no panic and no log, and native
+/// has no chunk to arrive. Calling `defer` is therefore always safe —
+/// it splits where splitting exists and is a plain `register` elsewhere.
+pub fn defer<H>(registry: &mut Registry<H>)
+where
+    H: Host + StyleServices + TextOps + 'static,
+{
+    #[cfg(target_arch = "wasm32")]
+    {
+        registry.defer::<MarkdownPrim>();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        register(registry);
+    }
+}
+
+/// Install this SDK's payload handler from inside a lazy chunk — the
+/// chunk half of lazy registration. Requires [`defer`] at boot.
+///
+/// Generic over the host because this crate takes no backend dependency;
+/// the caller pins `H` to its concrete backend, e.g.
+/// `register_from_chunk::<backend_web::WebBackend>()`. A no-op on
+/// non-web targets, where [`defer`] already registered eagerly.
+pub fn register_from_chunk<H>()
+where
+    H: Host + StyleServices + TextOps + 'static,
+{
+    #[cfg(target_arch = "wasm32")]
+    {
+        runtime_scene::defer_registration::<H, _>(|registry| {
+            registry.register_deferred::<MarkdownPrim, _>(mount_markdown::<H>);
+        });
+    }
+}
+
+/// Mount handler: outer `<div>` column with the theme's base
+/// color/size, one semantic element per block, per-run styled text
+/// children, then the author style attached to the outer node (style
+/// AFTER the DOM builds) and the ref filled. No `release_external`
+/// teardown — the root comes from `create_element`, not
+/// `create_external`, so teardown is the ordinary node removal (the
+/// codeblock posture for the caps-generic class).
+fn mount_markdown<H>(
+    cx: &mut MountCx<'_, H>,
+    prim: &Rc<MarkdownPrim>,
+    _children: Vec<Element>,
+) -> H::Node
+where
+    H: StyleServices + TextOps,
+{
+    let backend = cx.backend().clone();
+    let a11y = AccessibilityProps::default();
+    let doc = &prim.doc;
+    let theme = &doc.theme;
+
+    let root = backend.borrow_mut().create_element("div");
+    let mut rs = StyleRules::default();
+    rs.flex_direction = Some(FlexDirection::Column);
+    rs.gap = Some(Tokenized::Literal(Length::Px(BLOCK_GAP)));
+    rs.color = Some(Tokenized::Literal(Color(theme.text.clone())));
+    rs.font_size = Some(Tokenized::Literal(Length::Px(theme.base_size)));
+    // NB: `line_height` here is absolute px in this framework, not a
+    // unitless multiplier — leave it unset so each element gets the
+    // browser's proportional `normal` line height (a fixed px value
+    // would collapse multi-size text: too tight for headings).
+    backend.borrow_mut().apply_style(&root, &Rc::new(rs));
+
+    let mut root = root;
+    for block in &doc.blocks {
+        let node = build_block(&backend, block, theme, &a11y);
+        backend.borrow_mut().insert(&mut root, node);
+    }
+
+    if let Some(style) = prim.style.borrow_mut().take() {
+        attach_style(&backend, &root, style);
+    }
+    if let Some(fill) = prim.ref_fill.borrow_mut().take() {
+        let any_node: Rc<dyn Any> = Rc::new(root.clone());
+        fill(any_node);
+    }
+    root
+}
+
+fn build_block<H>(
+    backend: &Rc<RefCell<H>>,
+    block: &MdBlock,
+    theme: &MdTheme,
+    a11y: &AccessibilityProps,
+) -> H::Node
+where
+    H: StyleServices + TextOps,
+{
+    match block {
+        MdBlock::Heading { level, runs } => {
+            let tag = format!("h{}", level.clamp(&1, &6));
+            let node = backend.borrow_mut().create_element(&tag);
+            let mut rs = StyleRules::default();
+            rs.color = Some(Tokenized::Literal(Color(theme.heading.clone())));
+            rs.font_size = Some(Tokenized::Literal(Length::Px(theme.heading_size(*level))));
+            rs.font_weight = Some(FontWeight::Bold);
+            // Zero the UA heading margins; the column `gap` owns spacing.
+            zero_margins(&mut rs);
+            backend.borrow_mut().apply_style(&node, &Rc::new(rs));
+            append_runs(backend, &node, runs, theme, &theme.heading, a11y);
+            node
+        }
+        MdBlock::Paragraph { runs } => {
+            let node = backend.borrow_mut().create_element("p");
+            let mut rs = StyleRules::default();
+            zero_margins(&mut rs);
+            backend.borrow_mut().apply_style(&node, &Rc::new(rs));
+            append_runs(backend, &node, runs, theme, &theme.text, a11y);
+            node
+        }
+        MdBlock::CodeBlock { text } => {
+            let node = backend.borrow_mut().create_element("pre");
+            let mut rs = StyleRules::default();
+            rs.background = Some(Tokenized::Literal(Color(theme.code_bg.clone())));
+            rs.color = Some(Tokenized::Literal(Color(theme.code_fg.clone())));
+            rs.font_family = Some(mono_family(theme));
+            rs.font_size = Some(Tokenized::Literal(Length::Px(theme.base_size * 0.9)));
+            pad_all(&mut rs, 12.0);
+            rs.border_top_left_radius = Some(Tokenized::Literal(Length::Px(6.0)));
+            rs.border_top_right_radius = Some(Tokenized::Literal(Length::Px(6.0)));
+            rs.border_bottom_left_radius = Some(Tokenized::Literal(Length::Px(6.0)));
+            rs.border_bottom_right_radius = Some(Tokenized::Literal(Length::Px(6.0)));
+            zero_margins(&mut rs);
+            backend.borrow_mut().apply_style(&node, &Rc::new(rs));
+            let mut node = node;
+            let txt = backend.borrow_mut().create_text(text, a11y);
+            backend.borrow_mut().insert(&mut node, txt);
+            node
+        }
+        MdBlock::Quote { runs } => {
+            let node = backend.borrow_mut().create_element("blockquote");
+            let mut rs = StyleRules::default();
+            rs.color = Some(Tokenized::Literal(Color(theme.quote_fg.clone())));
+            rs.font_style = Some(FontStyle::Italic);
+            rs.border_left_width = Some(Tokenized::Literal(3.0));
+            rs.border_left_color = Some(Tokenized::Literal(Color(theme.muted.clone())));
+            rs.padding_left = Some(Tokenized::Literal(Length::Px(12.0)));
+            zero_margins(&mut rs);
+            backend.borrow_mut().apply_style(&node, &Rc::new(rs));
+            append_runs(backend, &node, runs, theme, &theme.quote_fg, a11y);
+            node
+        }
+        MdBlock::List { ordered: _, items } => {
+            let root = backend.borrow_mut().create_element("div");
+            let mut rs = StyleRules::default();
+            rs.flex_direction = Some(FlexDirection::Column);
+            rs.gap = Some(Tokenized::Literal(Length::Px(2.0)));
+            backend.borrow_mut().apply_style(&root, &Rc::new(rs));
+            let mut root = root;
+            for item in items {
+                let row = backend.borrow_mut().create_element("div");
+                let mut row_rs = StyleRules::default();
+                row_rs.flex_direction = Some(FlexDirection::Row);
+                row_rs.margin_left =
+                    Some(Tokenized::Literal(Length::Px(item.depth as f32 * LIST_INDENT)));
+                backend.borrow_mut().apply_style(&row, &Rc::new(row_rs));
+                let mut row = row;
+
+                let marker = backend
+                    .borrow_mut()
+                    .create_text(&format!("{}  ", item.marker), a11y);
+                let mut m_rs = StyleRules::default();
+                m_rs.color = Some(Tokenized::Literal(Color(theme.muted.clone())));
+                backend.borrow_mut().apply_style(&marker, &Rc::new(m_rs));
+                backend.borrow_mut().insert(&mut row, marker);
+
+                let content = backend.borrow_mut().create_element("div");
+                append_runs(backend, &content, &item.runs, theme, &theme.text, a11y);
+                backend.borrow_mut().insert(&mut row, content);
+
+                backend.borrow_mut().insert(&mut root, row);
+            }
+            root
+        }
+        MdBlock::Rule => {
+            let node = backend.borrow_mut().create_element("hr");
+            let mut rs = StyleRules::default();
+            rs.border_top_width = Some(Tokenized::Literal(1.0));
+            rs.border_top_color = Some(Tokenized::Literal(Color(theme.muted.clone())));
+            zero_margins(&mut rs);
+            backend.borrow_mut().apply_style(&node, &Rc::new(rs));
+            node
+        }
+    }
+}
+
+/// Append the inline runs of a block as styled text children.
+fn append_runs<H>(
+    backend: &Rc<RefCell<H>>,
+    parent: &H::Node,
+    runs: &[MdRun],
+    theme: &MdTheme,
+    base_color: &str,
+    a11y: &AccessibilityProps,
+) where
+    H: StyleServices + TextOps,
+{
+    let mut parent = parent.clone();
+    for run in runs {
+        let node = backend.borrow_mut().create_text(&run.text, a11y);
+        let mut rs = StyleRules::default();
+        let color = if run.link.is_some() {
+            &theme.link
+        } else if run.code {
+            &theme.code_fg
+        } else {
+            base_color
+        };
+        rs.color = Some(Tokenized::Literal(Color(color.to_string())));
+        if run.bold {
+            rs.font_weight = Some(FontWeight::Bold);
+        }
+        if run.italic {
+            rs.font_style = Some(FontStyle::Italic);
+        }
+        if run.strike {
+            rs.strikethrough = Some(true);
+        }
+        if run.link.is_some() {
+            rs.underline = Some(true);
+        }
+        if run.code {
+            rs.font_family = Some(mono_family(theme));
+            rs.background = Some(Tokenized::Literal(Color(theme.code_bg.clone())));
+            rs.padding_left = Some(Tokenized::Literal(Length::Px(4.0)));
+            rs.padding_right = Some(Tokenized::Literal(Length::Px(4.0)));
+        }
+        backend.borrow_mut().apply_style(&node, &Rc::new(rs));
+        backend.borrow_mut().insert(&mut parent, node);
+    }
+}
+
+fn mono_family(theme: &MdTheme) -> FontFamily {
+    FontFamily::System(
+        theme
+            .mono_family
+            .clone()
+            .unwrap_or_else(|| "ui-monospace, SFMono-Regular, Menlo, monospace".to_string()),
     )
 }
 
-/// Low-level builder: construct a markdown `Element::External` from a
-/// source string + resolved theme. Mirrors `codeblock::code_block` —
-/// returns a `Bound<MarkdownHandle>` so `.with_style(...)` lands on the
-/// outer native node (the container `<div>` / `UILabel` / `TextView`).
-///
-/// Prefer the [`Markdown`] component for reactive source/theme; this is
-/// the escape hatch for one-shot rendering or custom plumbing.
-pub fn markdown(source: impl Into<String>, theme: MdTheme) -> Bound<MarkdownHandle> {
-    // Register the wire serde here too: `markdown` runs while the app
-    // builds its tree, including on the runtime-server RECORDER (headless
-    // app code). So the serializer is in place before the recorder's
-    // `create_external` emits the wire command — no app-level recorder
-    // wiring needed (codeblock pattern).
-    ensure_wire_serde();
-    let doc = parse::parse(&source.into(), theme);
-    runtime_core::external::<MarkdownDoc>(doc)
+fn zero_margins(rs: &mut StyleRules) {
+    rs.margin_top = Some(Tokenized::Literal(Length::Px(0.0)));
+    rs.margin_bottom = Some(Tokenized::Literal(Length::Px(0.0)));
 }
 
-/// Register the wire (serialize, deserialize) pair for [`MarkdownDoc`] so
-/// a `markdown(...)` external renders over the runtime-server wire: the
-/// recorder serializes the resolved doc into `CreateExternal`, the device
-/// deserializes it and dispatches to its real per-backend handler.
-///
-/// Idempotent + cheap (thread-local guard). Called from [`markdown`]
-/// (recorder side) and every [`register`] (device side).
-fn ensure_wire_serde() {
-    thread_local! {
-        static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    }
-    if DONE.with(|d| d.replace(true)) {
-        return;
-    }
-    runtime_core::register_external_serde(
-        std::any::type_name::<MarkdownDoc>(),
-        |any| {
-            let doc = any.downcast_ref::<MarkdownDoc>()?;
-            serde_json::to_vec(doc).ok()
-        },
-        |bytes| {
-            let doc: MarkdownDoc = serde_json::from_slice(bytes).ok()?;
-            Some(Rc::new(doc) as Rc<dyn Any>)
-        },
-    );
-}
-
-// =============================================================================
-// Per-target `register` — the compiler picks the variant by target triple,
-// so app bootstrap writes `markdown::register(&mut backend)` once.
-// =============================================================================
-
-/// Web (+ SSR) — registers the semantic-DOM handler.
-#[cfg(target_arch = "wasm32")]
-pub fn register<B: runtime_core::RegisterExternal>(backend: &mut B) {
-    ensure_wire_serde();
-    backend.register_external::<MarkdownDoc, _>(web::build::<B>);
-}
-
-// Self-register at backend construction. See [[project_inventory_self_registration]].
-#[cfg(target_arch = "wasm32")]
-inventory::submit! {
-    backend_web::WebExternalRegistrar(register::<backend_web::WebBackend>)
-}
-
-/// Android — registers the `android` handler (one `TextView` +
-/// `SpannableStringBuilder`).
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-pub fn register(backend: &mut backend_android::AndroidBackend) {
-    ensure_wire_serde();
-    backend.register_external::<MarkdownDoc, _>(android::build);
-}
-
-// Self-register at backend construction. See [[project_inventory_self_registration]].
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-inventory::submit! {
-    backend_android::AndroidExternalRegistrar(register)
-}
-
-/// iOS — registers the `ios` handler (one `UILabel` +
-/// `NSAttributedString`).
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub fn register(backend: &mut backend_ios::IosBackend) {
-    ensure_wire_serde();
-    backend.register_external::<MarkdownDoc, _>(ios::build);
-}
-
-// Self-register at backend construction. See [[project_inventory_self_registration]].
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-inventory::submit! {
-    backend_ios::IosExternalRegistrar(register)
-}
-
-/// Linux (GTK4) — registers the [`linux::build`] handler (one
-/// `gtk::Label` + a `pango::AttrList` carrying per-run font/size/color/
-/// background/underline/strike attributes, the GTK analogue of the iOS
-/// `NSAttributedString` path).
-///
-/// Linux — registers the `linux` handler (a GTK `Label` with Pango markup).
-/// Explicit `markdown::register(backend)` still works, but the submit below
-/// self-registers at backend construction like the other platforms.
-#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
-pub fn register(backend: &mut backend_linux::LinuxBackend) {
-    ensure_wire_serde();
-    linux::register(backend);
-}
-
-// Self-register at backend construction. See [[project_inventory_self_registration]].
-#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
-inventory::submit! {
-    backend_linux::LinuxExternalRegistrar(register)
-}
-
-#[cfg(all(test, target_os = "linux", not(target_arch = "wasm32")))]
-mod linux_registration_tests {
-    /// Regression: `markdown` had a real GTK backend but no `inventory::submit!`,
-    /// so it never self-registered and fell to the External placeholder unless an
-    /// app called `markdown::register` explicitly. Asserts the submit is collected
-    /// (drained by `LinuxBackend::new`).
-    #[test]
-    fn markdown_handler_auto_registers_on_linux() {
-        let count = inventory::iter::<backend_linux::LinuxExternalRegistrar>().count();
-        assert!(count >= 1, "markdown must submit a LinuxExternalRegistrar so Markdown self-registers");
-    }
-}
-
-/// Fallback for other targets (macOS / terminal / gpu). No native
-/// handler yet — still registers the wire serde so the recorder (which
-/// compiles into this generic variant) serializes the payload.
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    not(target_os = "android"),
-    not(target_os = "ios"),
-    not(target_os = "linux"),
-))]
-pub fn register<B: runtime_core::Backend>(_backend: &mut B) {
-    ensure_wire_serde();
+fn pad_all(rs: &mut StyleRules, px: f32) {
+    rs.padding_top = Some(Tokenized::Literal(Length::Px(px)));
+    rs.padding_right = Some(Tokenized::Literal(Length::Px(px)));
+    rs.padding_bottom = Some(Tokenized::Literal(Length::Px(px)));
+    rs.padding_left = Some(Tokenized::Literal(Length::Px(px)));
 }

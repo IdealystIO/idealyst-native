@@ -1,0 +1,45 @@
+# scene-parity FULL-OP golden — scenario `full_overlay_toggle`, mode `spliced`
+#
+# P3-set: a modal overlay (Dismiss backdrop with a style, plain
+# content) behind a `when` toggle. The close step pins the
+# composed teardown window: portal release_portal + backdrop
+# on_node_unstyled, both after the structural remove. The
+# interleaving WITHIN the window differs across cores (README
+# divergence #5: old LIFO scope cleanups vs new creation-order
+# effect free) — override-pinned on the new side.
+#
+# Complete backend-call stream (create_*/update_*/apply_style/release_*
+# + the structural ops). Node names are creation-order (n0, n1, ...).
+# Owned by the OLD core; regenerate after an INTENDED walker change
+# with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 portal target=viewport(Center) on_dismiss=<fn> trap_focus=true
+create n2 pressable on_click=<fn>
+apply_style n2 {background: Some(Literal(Color("#00000080"))), width: Some(Literal(Px(40.0)))}
+insert n1 <- n2
+create n3 view
+create n4 text "modal body"
+insert n3 <- n4
+insert n1 <- n3
+insert_at n0 <- n1 @ 0
+
+== close (backdrop unstyle + release_portal in one window) ==
+remove_child n0 -x n1
+release_portal n1
+on_node_unstyled n2
+create n5 text "closed"
+insert_at n0 <- n5 @ 0
+
+== reopen ==
+remove_child n0 -x n5
+create n6 portal target=viewport(Center) on_dismiss=<fn> trap_focus=true
+create n7 pressable on_click=<fn>
+apply_style n7 {background: Some(Literal(Color("#00000080"))), width: Some(Literal(Px(40.0)))}
+insert n6 <- n7
+create n8 view
+create n9 text "modal body"
+insert n8 <- n9
+insert n6 <- n8
+insert_at n0 <- n6 @ 0

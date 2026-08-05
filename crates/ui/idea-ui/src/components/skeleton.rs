@@ -18,7 +18,9 @@
 //! }
 //! ```
 
-use runtime_core::{component, ui, IdealystSchema, Length, Element, Reactive, StyleApplication};
+use runtime_core::{
+    component, ui, Element, IdealystSchema, Length, Reactive, StyleApplication, StyleRules,
+};
 
 use crate::stylesheets::Skeleton as SkeletonStyle;
 use crate::theme::IdeaThemeRef;
@@ -94,13 +96,22 @@ pub fn Skeleton(props: &SkeletonProps) -> Element {
             let _ = crate::theme_runtime::active_theme_untracked()
                 .downcast_ref::<IdeaThemeRef>()
                 .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-            let mut app = StyleApplication::new(SkeletonStyle::sheet())
-                .override_border_radius(Length::Px(radius.get()));
-            // No `override_width` / `override_height` builders yet —
-            // poke `overrides` directly. (Framework follow-up.)
-            app.overrides.width = Some(runtime_core::Tokenized::Literal(length));
-            app.overrides.height = Some(runtime_core::Tokenized::Literal(Length::Px(height.get())));
-            app
+            // Per-instance dimensions + radius ride the INLINE layer, not
+            // overrides: they're continuous values drawn from props, so as
+            // overrides they minted a class per (w, h, r) combination AND
+            // kept every Skeleton on the live engine (`--premint-report`
+            // showed one entry per distinct block on the docs corpus).
+            // Inline stays out of the cache identity and premints.
+            let r = runtime_core::Tokenized::Literal(Length::Px(radius.get()));
+            StyleApplication::new(SkeletonStyle::sheet()).with_inline(StyleRules {
+                width: Some(runtime_core::Tokenized::Literal(length)),
+                height: Some(runtime_core::Tokenized::Literal(Length::Px(height.get()))),
+                border_top_left_radius: Some(r.clone()),
+                border_top_right_radius: Some(r.clone()),
+                border_bottom_left_radius: Some(r.clone()),
+                border_bottom_right_radius: Some(r),
+                ..Default::default()
+            })
         }
     };
 

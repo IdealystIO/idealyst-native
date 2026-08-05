@@ -49,7 +49,7 @@ pub fn Vignette(props: &VignetteProps) -> Element {
 }
 
 fn wrapper_sheet() -> Rc<StyleSheet> {
-    static_sheet(StyleRules {
+    static_sheet("vignette.wrapper", StyleRules {
         position: Some(Position::Absolute),
         top: Some(px(0.0)),
         left: Some(px(0.0)),
@@ -89,7 +89,15 @@ fn band_sheet(edge: Edge) -> Rc<StyleSheet> {
             Some(pct(VIGNETTE_BAND_PCT)), None, 90.0,
         ),
     };
-    static_sheet(StyleRules {
+    // Parameterized: the edge is baked into the id so each band's
+    // content gets its own preminted class (see the helper's contract).
+    let id = match edge {
+        Edge::Top => "vignette.band.top",
+        Edge::Bottom => "vignette.band.bottom",
+        Edge::Left => "vignette.band.left",
+        Edge::Right => "vignette.band.right",
+    };
+    static_sheet(id, StyleRules {
         position: Some(Position::Absolute),
         top, bottom, left, right, width, height,
         background_gradient: Some(Gradient {

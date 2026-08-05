@@ -1,5 +1,5 @@
 //! `presence` enter/exit animation for macOS — opacity + 2D translate +
-//! uniform scale, the narrow vocabulary [`runtime_core::PresenceState`]
+//! uniform scale, the narrow vocabulary [`runtime_shared::PresenceState`]
 //! exposes (fade / slide / zoom mount-unmount).
 //!
 //! iOS leans on `UIView.animateWithDuration:`, which implicitly animates the
@@ -30,8 +30,8 @@ use std::collections::HashMap;
 use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2_app_kit::NSView;
-use runtime_core::scheduling::RafLoop;
-use runtime_core::{Easing, PresenceState};
+use runtime_shared::scheduling::RafLoop;
+use runtime_shared::{Easing, PresenceState};
 
 use crate::imp::animated;
 
@@ -90,7 +90,7 @@ thread_local! {
 }
 
 fn now_ms() -> u64 {
-    runtime_core::time::now_micros() / 1000
+    runtime_shared::time::now_micros() / 1000
 }
 
 /// Apply `state` to `node`'s view, animating over `transition` if one is set and
@@ -197,7 +197,7 @@ fn set_state(view: &NSView, v: Vals) {
 fn ensure_raf() {
     RAF.with(|r| {
         if r.borrow().is_none() {
-            let handle = runtime_core::scheduling::raf_loop(tick);
+            let handle = runtime_shared::scheduling::raf_loop(tick);
             *r.borrow_mut() = Some(handle);
         }
     });
@@ -232,7 +232,7 @@ fn tick() {
         // Drop the raf OUTSIDE this tick — dropping the `RafLoop` (which owns
         // this closure) from within would free the running closure. Re-check
         // emptiness in the microtask in case a new tween started.
-        runtime_core::schedule_microtask(|| {
+        runtime_shared::schedule_microtask(|| {
             if ACTIVE.with(|a| a.borrow().is_empty()) {
                 RAF.with(|r| *r.borrow_mut() = None);
             }

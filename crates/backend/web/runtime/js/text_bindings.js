@@ -172,9 +172,19 @@
         set.delete(bindingId);
         if (set.size === 0) {
           subs.delete(sid);
-          // Don't clear the signalValues entry — another binding
-          // may register on the same signal later and the cached
-          // value is still valid.
+          // Clear the signalValues entry once NOTHING subscribes to
+          // this sid anymore (text here + class bindings' registry).
+          // Registrations always seed fresh initials, so a later
+          // binding never needs the stale entry — and keeping it
+          // poisons a recycled/aliased signal id's first paint (a new
+          // binding's compose prefers the cached value; regression:
+          // stale value from a released binding leaked into a fresh
+          // one on an id-aliasing signal).
+          var classSubs = window.__idealystClassSignalSubscribers;
+          var classSet = classSubs && classSubs.get(sid);
+          if (!classSet || classSet.size === 0) {
+            window.__idealystSignalValues.delete(sid);
+          }
         }
       }
     }

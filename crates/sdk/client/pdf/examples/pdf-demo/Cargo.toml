@@ -17,6 +17,11 @@ sidecar = ["dep:dev-server"]
 # `async-driver`: file picking is async (`spawn_async`); without it the macOS
 # run loop would block on the await.
 runtime-core = { workspace = true, features = ["async-driver"] }
+# The `ui!`/`#[component]` expansions spell absolute
+# `::runtime_vocabulary::glue::…` paths, so this is a direct dep.
+runtime-vocabulary = { workspace = true }
+# The registration seam is generic over `runtime_scene::Registry<H>`.
+runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 canvas = { workspace = true }
 canvas-native = { workspace = true }
@@ -24,7 +29,7 @@ pdf = { workspace = true }
 file-picker = { workspace = true }
 dev-server = { workspace = true, optional = true }
 
-# The concrete backend each platform hands to `register_extensions`, plus the
+# The concrete backend each platform's wrapper builds a `Registry` over, plus the
 # GPU canvas renderer (vello). `canvas-vello::register` overrides canvas-native
 # (last-wins) where the GPU can run vello; self-gates off otherwise.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

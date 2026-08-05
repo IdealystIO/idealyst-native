@@ -10,7 +10,7 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::{class, msg_send};
 use objc2_foundation::{NSObject, NSString};
-use runtime_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
+use runtime_shared::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
 
 use super::MacosBackend;
 

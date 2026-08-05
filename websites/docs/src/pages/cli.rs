@@ -47,6 +47,26 @@ pub fn page() -> Element {
             )
 
             SectionWithCode(
+                title = "Build-time CSS (web)".to_string(),
+                body = "`--premint` extracts static styles into a content-addressed CSS \
+                        asset at build time; anything it can't enumerate falls back to \
+                        the runtime style engine, so it is always safe. \
+                        `--premint-report` builds the same bundle and logs one console \
+                        warning per style that still reaches the engine, with its \
+                        source line — drive that list to zero, then ship \
+                        `--premint-only`, which compiles the style engine out of the \
+                        wasm entirely. Web-only; native targets always keep the full \
+                        engine and render identically. The same three flags work on \
+                        `idealyst dev --web --local`: the dev loop rebuilds the CSS \
+                        asset on every save and serves the real premint bundle, so \
+                        the guard warnings (and `--premint-only` panics) surface \
+                        while you iterate instead of after a deploy.".to_string(),
+                code = "idealyst build --release --web --premint-report\n\
+                        idealyst build --release --web --premint-only\n\
+                        idealyst dev --web --local --premint".to_string(),
+            )
+
+            SectionWithCode(
                 title = "Run".to_string(),
                 body = "Build and launch on a connected device or simulator. The target \
                         platform is a positional argument.".to_string(),

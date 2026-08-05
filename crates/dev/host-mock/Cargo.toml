@@ -1,0 +1,22 @@
+# host-mock — the permanent test substrate: a first-class
+# `runtime_scene::Host` + all-30-`runtime_vocabulary::caps::*Ops`
+# recording mock. It replaced the per-suite `impl Backend for Mini`
+# combos when the old walker was deleted, and is now the canonical way
+# to unit-test vocabulary handlers, SDK components, and anything that
+# mounts through `runtime_scene::realize`. See src/lib.rs for the op-log
+# format and the harness idioms.
+
+[package]
+name = "host-mock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# `async-driver` so the pump module can install the manually-pumped
+# AsyncExecutor the lazy-chunk tests need (runtime_shared::driver is
+# gated on it). Dev-only crate: the feature leaks nowhere shippable.
+runtime-shared = { workspace = true, features = ["async-driver"] }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-world = { workspace = true }

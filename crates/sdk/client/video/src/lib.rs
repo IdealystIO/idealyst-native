@@ -1,24 +1,49 @@
 //! Third-party `Video` SDK for the idealyst framework.
 //!
-//! Provides a `Video` primitive backed by the framework's
-//! `Element::External` extension mechanism. Mirrors the framework's
-//! other reactive primitives — typed props, `.bind(...)`-able handle,
-//! `.with_style(...)`.
+//! Provides a `Video` primitive — typed props, `.bind(...)`-able
+//! handle, `.with_style(...)` — rendered by each platform's native
+//! player. [`register`] is the boot registration seam and picks the
+//! handler; on non-wasm targets it type-dispatches ONCE at registration
+//! (the toolbar SDK's pattern), because a cfg split alone cannot tell a
+//! macOS *app* build from an SSG build running on the same host OS.
+//!
+//! - **Web (wasm32)** — one `<video>` element with the static
+//!   attributes (autoplay/muted/controls/loop + aspect-preserving
+//!   `object-fit`) and the reactive source resolved through a world
+//!   effect that sets `src` (URL) / `srcObject` (live stream) / clears.
+//! - **macOS / iOS** — a layer-backed host view: an `AVPlayerLayer`
+//!   sublayer for the URL path, and per-frame `CGImage` / `IOSurface`
+//!   `contents` for the live `MediaStream` path.
+//! - **Android** — a `FrameLayout` host that the Kotlin shim fills with
+//!   a `VideoView` (URL) or an `ImageView` fed RGBA frames (stream).
+//! - **Every other host (SSR, terminal, gpu, host-mock)** — the frozen
+//!   External-placeholder degradation path
+//!   ([`ExternalOps::create_external`]): author style + ref fill +
+//!   `release_external` teardown still flow, but nothing plays.
+//!
+//! # Author callbacks and the flush discipline
+//!
+//! The web handler installs NO DOM event listeners and invokes NO
+//! author callbacks, so the "External glue must call `schedule_flush`
+//! after author callbacks" rule (named in each backend's `newcore.rs`
+//! module docs) has no call site here. If a future port adds media
+//! event listeners that reach author code (`on_ended` etc.), those
+//! invocations MUST be followed by the backend's
+//! `newcore::schedule_flush()`.
 //!
 //! # Usage
 //!
 //! ```ignore
-//! // App bootstrap (one line per third-party SDK):
-//! let mut backend = WebBackend::new("#app");
-//! video::register(&mut backend);
+//! // App bootstrap — `register` IS the seam:
+//! backend_web::newcore::start_in("#app", video::register, app);
 //!
 //! // Inside a `ui!` block:
 //! let src = signal("https://example.com/clip.mp4".to_string());
 //! let v: Ref<VideoHandle> = Ref::new();
 //! ui! {
-//!     View {
+//!     view {
 //!         { video::Video(VideoProps {
-//!             src: video::src(move || src.get()),
+//!             source: video::url(move || src.get()),
 //!             autoplay: true,
 //!             controls: true,
 //!             ..Default::default()
@@ -29,70 +54,70 @@
 //! v.with(|h| h.play());
 //! v.with(|h| h.seek(10.0));
 //! ```
-//!
-//! # Architecture
-//!
-//! - The `Element::External` payload type is [`VideoProps`] — all
-//!   props (src + autoplay/controls/loop) are owned by the SDK, not the
-//!   framework.
-//! - Per-backend `register(&mut backend)` impls live in cfg-gated
-//!   `web` / `android` / `ios` modules below. Each one calls
-//!   `backend.register_external::<VideoProps, _>(handler)` to install a
-//!   builder closure keyed by `TypeId::of::<VideoProps>()`.
-//! - `VideoHandle` is the typed ref-target. It carries a type-erased
-//!   `Rc<dyn Any>` to the native node + a `&'static dyn VideoOps`
-//!   pointer that the active backend module exposes as a static.
-//! - Reactive `src` flows through an `effect!` *inside* the
-//!   backend handler closure — the per-backend impl subscribes itself
-//!   when it builds the native view. No framework-level
-//!   `update_video_src` plumbing involved.
 #![deny(missing_docs)]
 
-use runtime_core::{Bound, Element, IdealystSchema, Ref, RefFill};
-use std::any::{Any, TypeId};
+// Shared wasm32 helpers (pure DOM media plumbing, no framework types).
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod web_util;
+
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+mod android;
+
+// Shared CoreGraphics RGBA→CGImage bridge for the Apple backends. The
+// stream-display path is byte-identical on iOS and macOS (pure
+// CoreGraphics), so both modules pull it from here.
+#[cfg(all(
+    any(target_os = "ios", target_os = "macos"),
+    not(target_arch = "wasm32")
+))]
+mod cg_image;
+
+#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+mod ios;
+
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+mod macos;
+
+use std::any::Any;
+use std::cell::RefCell;
 use std::rc::Rc;
+
+use runtime_shared::Ref;
+use runtime_scene::{item, Element, Host, MountCx, Registry};
+use runtime_vocabulary::caps::ExternalOps;
+use runtime_vocabulary::glue::IntoElement;
+use runtime_vocabulary::style_attach::{
+    attach_style, on_teardown, IntoStyleProp, StyleProp, StyleServices,
+};
 
 // ============================================================================
 // Public API surface
 // ============================================================================
 
-/// Author-supplied props for a `Video` instance. Owned by the SDK, not
-/// the framework — the framework just type-erases this struct behind
-/// `Element::External { payload: Rc<dyn Any>, .. }` and hands it back
-/// to the registered backend handler on mount.
+/// Author-supplied props for a `Video` instance. Carried inside the
+/// scene item payload and read back by the registered handler.
 ///
-/// `src` is reactive: pass a closure that reads from a `Signal`/`Source`
-/// to swap the playing clip from app state. `autoplay`, `controls`, and
-/// `loop_playback` are static at construction time — re-rendering with
-/// different values would tear down and re-mount the view, which is
-/// what the author wants in those cases anyway.
-#[derive(IdealystSchema)]
+/// `source` is reactive: the handler resolves it inside a world effect
+/// and re-populates the player whenever signals read by the source
+/// change.
 pub struct VideoProps {
     /// What to display — one extensible prop for any media source. Build it
     /// with [`url`] (a fetched URL: file / HLS / DASH / live / `data:`),
     /// [`stream`] (a live [`MediaStream`](media_stream::MediaStream) from
     /// `camera` / `screen-recorder`), or your own [`VideoSource`]. The
-    /// backend resolves it inside a reactive `Effect`, so a source that
+    /// backend resolves it inside a reactive effect, so a source that
     /// reads signals re-populates the view on change.
-    #[schema(constraint = "a VideoSource — url(...) / stream(...) / custom")]
     pub source: Box<dyn VideoSource>,
     /// Begin playback immediately on mount. On the **web** this implies a
     /// muted start regardless of [`muted`](Self::muted) — browsers block
     /// unmuted autoplay without a user gesture (the viewer un-mutes via the
-    /// controls). On macOS/iOS, autoplay respects [`muted`](Self::muted), so an
-    /// autoplaying recording preview is audible by default.
+    /// controls).
     pub autoplay: bool,
-    /// Start with the audio track muted. Defaults to `false` — a clip or
-    /// recording plays with sound. Honored on macOS, iOS, and the web (where
-    /// [`autoplay`](Self::autoplay) additionally forces a muted start); set it
-    /// `true` for a silent background loop. Android's `VideoView` always plays
-    /// its audio track — muting there isn't wired yet.
+    /// Start with the audio track muted. Defaults to `false`. On the web,
+    /// [`autoplay`](Self::autoplay) additionally forces a muted start.
     pub muted: bool,
     /// Show native playback controls (play/pause scrubber, volume,
-    /// fullscreen). Rendered with each platform's native transport UI:
-    /// browser `<video controls>` and macOS `AVPlayerView`. (iOS/Android still
-    /// render the bare player surface — wiring their native controllers
-    /// `AVPlayerViewController` / `MediaController` is pending.)
+    /// fullscreen) — browser `<video controls>` on the web leg.
     pub controls: bool,
     /// Restart from the beginning when playback reaches the end. Field
     /// name avoids the `loop` keyword. Ignored for a live stream source.
@@ -118,11 +143,8 @@ impl Default for VideoProps {
 }
 
 /// How a [`Video`] frame fills its box when their aspect ratios differ —
-/// the cross-platform analogue of CSS `object-fit`. Each backend maps it to
-/// the native gravity/scale: web `object-fit`, Apple `contentsGravity` /
-/// `videoGravity` (`resizeAspect` vs `resizeAspectFill`), Android `ImageView`
-/// `scaleType` (`FIT_CENTER` vs `CENTER_CROP`).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema)]
+/// the cross-platform analogue of CSS `object-fit`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum ObjectFit {
     /// Fit the entire frame inside the box, preserving aspect (letterboxed).
     #[default]
@@ -137,9 +159,8 @@ pub enum ObjectFit {
 
 /// What a [`VideoSource`] resolves to: the small, platform-agnostic set of
 /// ways a video view can be populated. Backends match on this closed set;
-/// source authors produce it. `#[non_exhaustive]` so a new mechanism (e.g. a
-/// GPU-texture handoff for the compositing layer) can be added without
-/// breaking implementors.
+/// source authors produce it. `#[non_exhaustive]` so a new mechanism can be
+/// added without breaking implementors.
 #[non_exhaustive]
 pub enum MediaContent {
     /// Nothing to display.
@@ -157,7 +178,7 @@ pub enum MediaContent {
 ///
 /// Build the common cases with [`url`] / [`stream`]. Implement this directly
 /// for a custom source — the backend calls [`resolve`](VideoSource::resolve)
-/// inside a reactive `Effect`, so any signal read there makes the view
+/// inside a reactive effect, so any signal read there makes the view
 /// re-populate on change.
 pub trait VideoSource: 'static {
     /// Resolve the current content. Runs inside the backend's reactive
@@ -174,8 +195,7 @@ impl VideoSource for NoSource {
 }
 
 /// A URL source. Accepts `&str`, `String`, or `Fn() -> String` (reactive —
-/// reads of captured signals re-load the player). Replaces the old `src(...)`
-/// helper.
+/// reads of captured signals re-load the player).
 ///
 /// ```ignore
 /// Video(VideoProps { source: url("https://…/clip.mp4"), ..Default::default() })
@@ -219,8 +239,8 @@ impl<F: Fn() -> String + 'static> IntoUrl for F {
 /// clear the view with `None`).
 ///
 /// ```ignore
-/// Video(VideoProps { source: stream(camera_stream),         ..Default::default() })
-/// Video(VideoProps { source: stream(move || sig.get()),     ..Default::default() })
+/// Video(VideoProps { source: stream(camera_stream),     ..Default::default() })
+/// Video(VideoProps { source: stream(move || sig.get()), ..Default::default() })
 /// ```
 pub fn stream<S: IntoStream>(s: S) -> Box<dyn VideoSource> {
     s.into_stream()
@@ -237,7 +257,7 @@ impl IntoStream for media_stream::MediaStream {
     }
 }
 // One `Fn` blanket per `Into*` trait — no two `Fn`-output blankets share a
-// trait, so this dodges the closure-coherence conflict (see the crate docs).
+// trait, so this dodges the closure-coherence conflict.
 impl<F: Fn() -> Option<media_stream::MediaStream> + 'static> IntoStream for F {
     fn into_stream(self) -> Box<dyn VideoSource> {
         Box::new(ReactiveStream(Box::new(self)))
@@ -264,25 +284,38 @@ impl VideoSource for ReactiveStream {
 // Handle + ops trait
 // ============================================================================
 
-/// Typed handle to a mounted `Video`. Filled by `Ref::fill` after the
-/// primitive mounts; users hold a `Ref<VideoHandle>` at the call site
-/// and reach imperative ops via `r.with(|h| h.play())`.
-///
-/// The `ops` pointer is set by the active backend's module via the
-/// `OPS` static (see the cfg-gated re-export at the bottom of this
-/// file). The `node` is type-erased — each backend's ops downcasts it
-/// internally to the concrete native type (`HtmlMediaElement` /
-/// `Retained<NSObject>` (AVPlayer) / `GlobalRef`).
+/// Typed handle to a mounted `Video`. Filled at mount time when the
+/// author chained [`VideoBind::bind`]; user code receives the handle
+/// through `Ref::with`.
 #[derive(Clone)]
 pub struct VideoHandle {
     node: Rc<dyn Any>,
     ops: &'static dyn VideoOps,
 }
 
+/// Pointer identity on the NODE — a `VideoHandle` names one mounted `Video`, so
+/// clones of it are equal and handles onto two different `Video`s never are.
+/// Exactly the shape (and reasoning) of `form::FormHandle`'s impl.
+///
+/// `node` is a type-erased native element behind `Rc<dyn Any>`: the address
+/// is all there is to compare, and it is the right thing to compare. `ops`
+/// is excluded deliberately — it is the backend's single `&'static` vtable,
+/// identical for every handle on a target, so it says nothing about WHICH
+/// `Video` this is.
+///
+/// Needed because `Signal<T>` is bounded on `T: PartialEq` at creation and
+/// `get`, not just on the guarded `set`; an author stashing the bound handle
+/// in state cannot add the impl themselves (orphan rule).
+impl PartialEq for VideoHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.node, &other.node)
+    }
+}
+
+impl Eq for VideoHandle {}
+
 impl VideoHandle {
     /// Wrap a type-erased native node + backend ops into a handle.
-    /// Called by the `RefFill::External` closure that [`VideoBind::bind`]
-    /// installs; user code receives the handle through `Ref::with`.
     pub fn new(node: Rc<dyn Any>, ops: &'static dyn VideoOps) -> Self {
         Self { node, ops }
     }
@@ -302,15 +335,9 @@ impl VideoHandle {
         self.ops.seek(&*self.node, seconds);
     }
 
-    /// Mute or unmute the audio track without touching playback position.
-    ///
-    /// Unlike the [`muted`](VideoProps::muted) prop (fixed at construction),
-    /// this flips muting on a *live* player. The motivating case is a real-time
-    /// A/B: mount two players of the same length, start them together, and flip
-    /// which one is audible by muting the other — the listener hears the cut at
-    /// the same playhead. Honored on macOS/iOS (`AVPlayer.muted`) and the web
-    /// (`HTMLMediaElement.muted`); a no-op on Android (its `VideoView` always
-    /// plays its audio track — see [`muted`](VideoProps::muted)).
+    /// Mute or unmute the audio track without touching playback
+    /// position — flips muting on a *live* player, unlike the
+    /// [`muted`](VideoProps::muted) prop (fixed at construction).
     pub fn set_muted(&self, muted: bool) {
         self.ops.set_muted(&*self.node, muted);
     }
@@ -328,14 +355,8 @@ impl VideoHandle {
     }
 }
 
-/// Imperative-ops dispatch. Implementations live in each cfg-gated
-/// backend module and downcast `node` to their concrete native type.
-/// Defaults all no-op so a backend that hasn't wired a particular op
-/// degrades silently rather than panicking.
-///
-/// `Sync` bound: the trait object lives in a `static OPS: &dyn
-/// VideoOps` slot per backend module, which Rust requires to be `Sync`.
-/// The ZST impls each backend ships are trivially `Sync`.
+/// Imperative-ops dispatch. The active target's `OPS` static supplies
+/// the impl, which downcasts `node` to its concrete native type.
 pub trait VideoOps: Sync {
     /// Start (or resume) playback. Default no-op.
     fn play(&self, _node: &dyn Any) {}
@@ -343,8 +364,7 @@ pub trait VideoOps: Sync {
     fn pause(&self, _node: &dyn Any) {}
     /// Seek to the given offset in seconds. Default no-op.
     fn seek(&self, _node: &dyn Any, _seconds: f32) {}
-    /// Mute/unmute the audio track. Default no-op (the fallback for backends
-    /// that can't toggle muting on a live player, e.g. Android's `VideoView`).
+    /// Mute/unmute the audio track. Default no-op.
     fn set_muted(&self, _node: &dyn Any, _muted: bool) {}
     /// Current playback position in seconds. Default `0.0`.
     fn position(&self, _node: &dyn Any) -> f32 {
@@ -356,72 +376,112 @@ pub trait VideoOps: Sync {
     }
 }
 
-/// Fallback ops used on targets with no `Video` impl. Every method is
-/// a no-op; user code keeps compiling but the framework's `External`
-/// placeholder is what actually renders.
+/// Fallback ops used on targets with no `Video` player (the
+/// placeholder posture).
 pub struct UnsupportedOps;
 impl VideoOps for UnsupportedOps {}
 
+#[cfg(target_arch = "wasm32")]
+static OPS: &dyn VideoOps = web_glue::OPS;
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+static OPS: &dyn VideoOps = crate::macos::OPS;
+#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+static OPS: &dyn VideoOps = crate::ios::OPS;
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+static OPS: &dyn VideoOps = crate::android::OPS;
+#[cfg(not(any(
+    target_arch = "wasm32",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android"
+)))]
+static OPS: &dyn VideoOps = &UnsupportedOps;
+
 // ============================================================================
-// Constructor + bind
+// Payload + builder — `.with_style(…)` / `.bind(…)` then element
+// coercion.
 // ============================================================================
 
-/// Build a `Video` primitive. Returns a typed `Bound<VideoHandle>` so
-/// `.bind(...)` is type-checked against `Ref<VideoHandle>`.
+/// Scene payload for the `Video` item. Single-take slots (the
+/// vocabulary `PrimCell` discipline, inlined): the scene hands the
+/// handler a shared `&Rc<Self>`, but the style/ref-fill must move at
+/// mount.
+struct VideoPrim {
+    props: Rc<VideoProps>,
+    style: RefCell<Option<StyleProp>>,
+    ref_fill: RefCell<Option<Box<dyn FnOnce(Rc<dyn Any>)>>>,
+}
+
+/// Author-side builder returned by [`Video`].
+pub struct VideoBound {
+    props: Rc<VideoProps>,
+    style: Option<StyleProp>,
+    ref_fill: Option<Box<dyn FnOnce(Rc<dyn Any>)>>,
+}
+
+/// Build a `Video` primitive.
 ///
-/// PascalCase intentionally — matches the visual cadence of first-party
-/// primitives (`View`, `Button`, `Image`) inside a `ui!` block.
-/// Interpolate as `{ video::Video(VideoProps { .. }) }`.
-///
-/// Under the hood this is `Element::External` with a `VideoProps`
-/// payload — same machinery as any other third-party SDK. The marker
-/// type on `Bound<H>` is `VideoHandle` so the `.bind(...)` from
-/// [`VideoBind`] resolves with type-checked refs.
+/// PascalCase intentionally — it matches the visual cadence of the
+/// first-party primitives inside a `ui!` block. Interpolate as
+/// `{ video::Video(VideoProps { .. }) }`.
 #[allow(non_snake_case)]
-pub fn Video(props: VideoProps) -> Bound<VideoHandle> {
-    Bound::new(Element::External {
-        type_id: TypeId::of::<VideoProps>(),
-        type_name: std::any::type_name::<VideoProps>(),
-        payload: Rc::new(props) as Rc<dyn Any>,
-        children: Vec::new(),
+pub fn Video(props: VideoProps) -> VideoBound {
+    VideoBound {
+        props: Rc::new(props),
         style: None,
         ref_fill: None,
-        on_touch: None,
-        on_hover: None,
-        accessibility: runtime_core::accessibility::AccessibilityProps::default(),
-    })
+    }
 }
 
-/// Adds `.bind(r)` to `Bound<VideoHandle>` via an extension trait (the
-/// orphan rule blocks an inherent `impl Bound<VideoHandle>` here —
-/// `Bound` is foreign). Bring this trait into scope to use the builder-
-/// style `.bind(...)` on the value returned by [`Video`].
-///
-/// Most users don't import this directly — the `prelude` re-export
-/// gives them the trait + the constructor + the props struct in one
-/// line.
-pub trait VideoBind {
-    /// Bind a `Ref<VideoHandle>` for imperative access. At mount time
-    /// the framework calls the `RefFill::External` closure with the
-    /// type-erased native node; we wrap it in a `VideoHandle` using
-    /// the cfg-selected backend's `OPS` static and fill the ref.
-    fn bind(self, r: Ref<VideoHandle>) -> Self;
-}
-
-impl VideoBind for Bound<VideoHandle> {
-    fn bind(mut self, r: Ref<VideoHandle>) -> Self {
-        if let Element::External { ref_fill, .. } = self.primitive_mut() {
-            *ref_fill = Some(RefFill::External(Box::new(move |node_any| {
-                r.fill(VideoHandle::new(node_any, OPS));
-            })));
-        }
+impl VideoBound {
+    /// Attach the author style — lands on the outer node (the `<video>`
+    /// element on web, the native host view elsewhere).
+    pub fn with_style(mut self, style: impl IntoStyleProp) -> Self {
+        self.style = Some(style.into_style_prop());
         self
     }
 }
 
-/// One-stop import for typical use: `use video::prelude::*;` brings in
-/// the constructor, props struct, handle type, the `.bind(...)`
-/// extension trait, and the `src(...)` coercion helper.
+/// Adds `.bind(r)`. Bring it into scope (`use video::prelude::*`) to
+/// chain the bind on the value [`Video`] returns.
+pub trait VideoBind {
+    /// Bind a `Ref<VideoHandle>` for imperative access. At mount time
+    /// the handler wraps the native node in a `VideoHandle` using the
+    /// active target's ops and fills the ref.
+    fn bind(self, r: Ref<VideoHandle>) -> Self;
+}
+
+impl VideoBind for VideoBound {
+    fn bind(mut self, r: Ref<VideoHandle>) -> Self {
+        self.ref_fill = Some(Box::new(move |node_any| {
+            r.fill(VideoHandle::new(node_any, OPS));
+        }));
+        self
+    }
+}
+
+impl IntoElement for VideoBound {
+    fn into_element(self) -> Element {
+        item(
+            VideoPrim {
+                props: self.props,
+                style: RefCell::new(self.style),
+                ref_fill: RefCell::new(self.ref_fill),
+            },
+            Vec::new(),
+        )
+    }
+}
+
+/// Element coercion for bare `{ … }` interpolation sites.
+impl From<VideoBound> for Element {
+    fn from(b: VideoBound) -> Element {
+        b.into_element()
+    }
+}
+
+/// One-stop import: the constructor, props struct, handle type, the
+/// `.bind(...)` extension trait, and the source builders.
 pub mod prelude {
     pub use super::{
         stream, url, MediaContent, Video, VideoBind, VideoHandle, VideoProps, VideoSource,
@@ -429,91 +489,261 @@ pub mod prelude {
 }
 
 // ============================================================================
-// Backend selector
+// Handlers + registration seam
 // ============================================================================
 
-// Each platform module exposes:
-//   - `pub fn register(backend: &mut <ConcreteBackend>)`
-//   - `pub static OPS: &dyn VideoOps`
-// Only one is compiled per target via cfg; the umbrella re-exports both
-// from whichever module matches. On targets with no backend support,
-// fallbacks here keep user code compiling — the framework's External
-// placeholder is what renders at runtime.
-
-#[cfg(target_arch = "wasm32")]
-mod web;
-#[cfg(target_arch = "wasm32")]
-pub use web::register;
-#[cfg(target_arch = "wasm32")]
-static OPS: &dyn VideoOps = web::OPS;
-
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-mod android;
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-pub use android::register;
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-static OPS: &dyn VideoOps = android::OPS;
-
-// Shared CoreGraphics RGBA→CGImage bridge for the Apple backends. The
-// stream-display path is byte-identical on iOS and macOS (pure
-// CoreGraphics), so both modules pull it from here.
-#[cfg(all(
-    any(target_os = "ios", target_os = "macos"),
-    not(target_arch = "wasm32")
-))]
-mod cg_image;
-
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-mod ios;
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub use ios::register;
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-static OPS: &dyn VideoOps = ios::OPS;
-
-#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-mod macos;
-#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-pub use macos::register;
-#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-static OPS: &dyn VideoOps = macos::OPS;
-
-#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
-pub mod linux;
-#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
-pub use linux::register;
-#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
-static OPS: &dyn VideoOps = linux::OPS;
-
-#[cfg(not(any(
-    target_arch = "wasm32",
-    target_os = "android",
-    target_os = "ios",
-    target_os = "macos",
-    target_os = "linux",
-)))]
-mod fallback {
-    use runtime_core::Backend;
-
-    /// No-op register for unsupported targets. User code calls this
-    /// unconditionally; the framework's External placeholder shows up
-    /// at runtime to make the missing binding obvious.
-    pub fn register<B: Backend>(_backend: &mut B) {}
+/// Shared mount tail after node creation: (video has no children) →
+/// author style → ref fill (type-erased node clone) → scope-tied
+/// `release_external` teardown.
+fn finish_mount<H>(backend: &Rc<RefCell<H>>, node: &H::Node, prim: &VideoPrim)
+where
+    H: ExternalOps + StyleServices,
+{
+    if let Some(style) = prim.style.borrow_mut().take() {
+        attach_style(backend, node, style);
+    }
+    if let Some(fill) = prim.ref_fill.borrow_mut().take() {
+        let any_node: Rc<dyn Any> = Rc::new(node.clone());
+        fill(any_node);
+    }
+    let backend = backend.clone();
+    let node = node.clone();
+    on_teardown(move || {
+        backend.borrow_mut().release_external(&node);
+    });
 }
 
-#[cfg(not(any(
-    target_arch = "wasm32",
-    target_os = "android",
-    target_os = "ios",
-    target_os = "macos",
-    target_os = "linux",
-)))]
-pub use fallback::register;
+/// Placeholder handler for hosts with no real video player — the frozen
+/// External degradation path (each backend's "not supported" box; SSR
+/// renders a bare `<div>`).
+#[cfg(not(target_arch = "wasm32"))]
+fn mount_placeholder<H>(
+    cx: &mut MountCx<'_, H>,
+    prim: &Rc<VideoPrim>,
+    _children: Vec<Element>,
+) -> H::Node
+where
+    H: ExternalOps + StyleServices,
+{
+    let backend = cx.backend().clone();
+    let payload: Rc<dyn Any> = prim.props.clone();
+    let node = backend.borrow_mut().create_external(
+        std::any::TypeId::of::<VideoProps>(),
+        std::any::type_name::<VideoProps>(),
+        &payload,
+        &runtime_shared::accessibility::AccessibilityProps::default(),
+    );
+    finish_mount(&backend, &node, prim);
+    node
+}
 
-#[cfg(not(any(
-    target_arch = "wasm32",
-    target_os = "android",
-    target_os = "ios",
-    target_os = "macos",
-    target_os = "linux",
-)))]
-static OPS: &dyn VideoOps = &UnsupportedOps;
+/// macOS mount handler — `Registry<MacosBackend>`-concrete (AVPlayer +
+/// CALayer have no caps-trait expression). Wraps the native builder in
+/// `macos.rs` and runs the standard mount tail.
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+fn mount_video_macos(
+    cx: &mut MountCx<'_, backend_macos::MacosBackend>,
+    prim: &Rc<VideoPrim>,
+    _children: Vec<Element>,
+) -> backend_macos::MacosNode {
+    let backend = cx.backend().clone();
+    let node = crate::macos::build_video(&prim.props, &mut backend.borrow_mut());
+    finish_mount(&backend, &node, prim);
+    node
+}
+
+/// iOS mount handler — `Registry<IosBackend>`-concrete.
+#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+fn mount_video_ios(
+    cx: &mut MountCx<'_, backend_ios::IosBackend>,
+    prim: &Rc<VideoPrim>,
+    _children: Vec<Element>,
+) -> backend_ios::IosNode {
+    let backend = cx.backend().clone();
+    let node = crate::ios::build_video(&prim.props, &mut backend.borrow_mut());
+    finish_mount(&backend, &node, prim);
+    node
+}
+
+/// Android mount handler — `Registry<AndroidBackend>`-concrete.
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+fn mount_video_android(
+    cx: &mut MountCx<'_, backend_android::AndroidBackend>,
+    prim: &Rc<VideoPrim>,
+    _children: Vec<Element>,
+) -> jni::objects::GlobalRef {
+    let backend = cx.backend().clone();
+    let node = crate::android::build_video(&prim.props, &mut backend.borrow_mut());
+    finish_mount(&backend, &node, prim);
+    node
+}
+
+/// Register the video payload handler on a scene registry. Pass this as
+/// the boot registration seam (the `register` argument of
+/// `backend_web::newcore::start_in` / `backend_ssr::newcore::
+/// render_path_with` / a native host's `run_with`).
+///
+/// The platform dispatch happens ONCE here, by registry type: macOS /
+/// iOS / Android get their native player, and every other host gets the
+/// External placeholder. A cfg split alone could not express that —
+/// `target_os = "macos"` is also true for a macOS SSG build.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register<H>(registry: &mut Registry<H>)
+where
+    H: ExternalOps + StyleServices + 'static,
+{
+    #[cfg(target_os = "macos")]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_macos::MacosBackend>>() {
+            reg.register::<VideoPrim, _>(mount_video_macos);
+            return;
+        }
+    }
+    #[cfg(target_os = "ios")]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_ios::IosBackend>>() {
+            reg.register::<VideoPrim, _>(mount_video_ios);
+            return;
+        }
+    }
+    #[cfg(target_os = "android")]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_android::AndroidBackend>>() {
+            reg.register::<VideoPrim, _>(mount_video_android);
+            return;
+        }
+    }
+    registry.register::<VideoPrim, _>(mount_placeholder::<H>);
+}
+
+/// Register the video payload handler on the web backend's scene
+/// registry — the real `<video>` renderer.
+#[cfg(target_arch = "wasm32")]
+pub fn register(registry: &mut Registry<backend_web::WebBackend>) {
+    registry.register::<VideoPrim, _>(web_glue::mount_video_web);
+}
+
+/// Declare this SDK's payload kind **late-bound** instead of installing
+/// its handler — the boot half of lazy registration. Pair with
+/// [`register_from_chunk`] from inside a `#[component(lazy)]` body.
+///
+/// Only web code-splits, so on every other target this installs the
+/// handler eagerly exactly as [`register`] does. That is deliberate:
+/// deferring a kind nothing later registers leaves the payload parked
+/// behind a placeholder forever, with no panic and no log, and native
+/// has no chunk to arrive. Calling `defer` is therefore always safe —
+/// it splits where splitting exists and is a plain `register` elsewhere.
+pub fn defer<H>(registry: &mut Registry<H>)
+where
+    H: Host + ExternalOps + StyleServices + 'static,
+{
+    #[cfg(target_arch = "wasm32")]
+    {
+        registry.defer::<VideoPrim>();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        register(registry);
+    }
+}
+
+/// Install the web payload handler from inside a lazy chunk — the chunk
+/// half of lazy registration. Requires [`defer`] at boot.
+///
+/// Web-only by construction: the web handler is `WebBackend`-concrete,
+/// and web is the only target that code-splits. The non-web build is an
+/// empty stub so a `#[component(lazy)]` body calling this compiles on
+/// every target — there, [`defer`] already registered eagerly.
+#[cfg(target_arch = "wasm32")]
+pub fn register_from_chunk() {
+    runtime_scene::defer_registration::<backend_web::WebBackend, _>(|registry| {
+        registry.register_deferred::<VideoPrim, _>(web_glue::mount_video_web);
+    });
+}
+
+/// Non-web stub — see the wasm32 [`register_from_chunk`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_from_chunk() {}
+
+// ============================================================================
+// Web glue (wasm32).
+// ============================================================================
+
+#[cfg(target_arch = "wasm32")]
+mod web_glue {
+    use super::*;
+    use crate::web_util;
+    use backend_web::WebBackend;
+
+    pub(super) static OPS: &dyn VideoOps = &WebVideoOps;
+
+    struct WebVideoOps;
+    impl VideoOps for WebVideoOps {
+        fn play(&self, node: &dyn Any) {
+            web_util::play(node);
+        }
+        fn pause(&self, node: &dyn Any) {
+            web_util::pause(node);
+        }
+        fn seek(&self, node: &dyn Any, seconds: f32) {
+            web_util::seek(node, seconds);
+        }
+        fn set_muted(&self, node: &dyn Any, muted: bool) {
+            web_util::set_muted(node, muted);
+        }
+        fn position(&self, node: &dyn Any) -> f32 {
+            web_util::position(node)
+        }
+        fn duration(&self, node: &dyn Any) -> f32 {
+            web_util::duration(node)
+        }
+    }
+
+    pub(super) fn mount_video_web(
+        cx: &mut MountCx<'_, WebBackend>,
+        prim: &Rc<VideoPrim>,
+        _children: Vec<Element>,
+    ) -> web_sys::Node {
+        let backend = cx.backend().clone();
+        let fit = match prim.props.object_fit {
+            ObjectFit::Contain => "contain",
+            ObjectFit::Cover => "cover",
+        };
+        // Static attribute setup (autoplay/muted/controls/loop +
+        // object-fit) — see `web_util`.
+        let video = web_util::create_video_element(
+            prim.props.autoplay,
+            prim.props.muted,
+            prim.props.controls,
+            prim.props.loop_playback,
+            fit,
+        );
+
+        // One reactive populate effect: resolve the source each run, then
+        // set `src` (URL) or `srcObject` (stream) / clear. World effect:
+        // created during realize (world entered), so it is collected into
+        // the enclosing subtree and dies at unmount; runs once immediately
+        // and re-fires on signal reads inside `resolve()`. The body
+        // only pokes the browser (no author
+        // callbacks, no signal writes), so no `schedule_flush` is needed
+        // here — see the module docs.
+        let video_for_effect = video.clone();
+        let props_for_effect = prim.props.clone();
+        runtime_world::effect(move || {
+            match props_for_effect.source.resolve() {
+                MediaContent::Url(u) => web_util::apply_url(&video_for_effect, &u),
+                MediaContent::Stream(s) => {
+                    web_util::apply_stream(&video_for_effect, &s, props_for_effect.autoplay)
+                }
+                MediaContent::None => web_util::apply_none(&video_for_effect),
+            }
+        });
+
+        let node: web_sys::Node = video.into();
+        finish_mount(&backend, &node, prim);
+        node
+    }
+}

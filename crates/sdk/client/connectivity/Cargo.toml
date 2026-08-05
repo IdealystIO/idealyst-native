@@ -34,7 +34,12 @@ catalog = ["runtime-core/catalog"]
 [dependencies]
 # Used by the recipe `ui!` examples (and the recipe! macro). With `catalog`
 # off the recipes expand to nothing, but the dep stays present for the macro.
+# The author surface, aliased to `runtime_core` at the crate root (see
+# src/lib.rs). `runtime-vocabulary` is a direct dep because the `ui!`
+# emission inside the recipes spells absolute `::runtime_vocabulary::glue::…`
+# paths.
 runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
 
 # Web (wasm): navigator.onLine + online/offline events + NetworkInformation.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

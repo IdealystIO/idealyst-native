@@ -495,18 +495,131 @@ fn parse_rules_block(input: ParseStream) -> syn::Result<RulesBlock> {
 // Emitter
 // =============================================================================
 
-pub fn emit(decl: StyleSheetDecl) -> TokenStream2 {
+/// FNV-1a 64 over the macro's raw input text. Feeds the preminted
+/// class base (`iy-<12 hex chars>`): stable across builds of the same
+/// source, shared by identical sheets, moved by any edit. The dump
+/// build and the shipped build hash the same source, which is what
+/// lets the `.css` and the runtime agree on names with no manifest.
+pub fn content_hash(input: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in input.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+pub fn emit(decl: StyleSheetDecl, content_hash: u64) -> TokenStream2 {
     if let Err(err) = check_no_theme_refs(&decl) {
         return err.to_compile_error();
     }
-    let stylesheet_fn = emit_stylesheet_fn(&decl);
     let enums = decl.variants.iter().map(|v| emit_variant_enum(&decl, v)).collect::<Vec<_>>();
-    let builder = emit_builder(&decl);
+
+    // Premint eligibility — one disqualifier, keeping the sheet on the
+    // live-minting path everywhere (correct, just not preminted):
+    //
+    // - a `font_family` whose value is not a string literal: a non-literal
+    //   value (`&INTER`, `active_font_family()`) can be a `Typeface`,
+    //   whose `@font-face` + face-asset registration rides sheet
+    //   registration (`ensure_typefaces_registered_with`) — exactly the
+    //   step a preminted class skips. A string literal is always
+    //   `FontFamily::System` (plain family names, no registration), so it
+    //   stays eligible.
+    //
+    // (`shadow` used to disqualify too — the old single field lowered
+    // per node kind, `text-shadow` on text vs `box-shadow` on boxes, and
+    // a class name carries no kind. Since the `shadow`/`text_shadow`
+    // split each field lowers to exactly one property, so shadowed
+    // sheets premint like any other.)
+    let premintable = !sheet_has_dynamic_font(&decl);
+    let base_class = format!("iy-{:012x}", content_hash & 0xffff_ffff_ffff);
+    let stylesheet_fn =
+        emit_stylesheet_fn(&decl, premintable.then_some(base_class.as_str()));
+    let builder = emit_builder(&decl, &base_class, premintable);
+    let registration = if premintable {
+        emit_premint_registration(&decl, &base_class)
+    } else {
+        TokenStream2::new()
+    };
 
     quote! {
         #stylesheet_fn
         #(#enums)*
         #builder
+        #registration
+    }
+}
+
+/// `true` if any rules block sets `font_family` to a value the premint
+/// pipeline can't prove constant — see the premint-eligibility note in
+/// [`emit`].
+///
+/// Premintable font values:
+/// - a string literal (`"ui-monospace, …"` → `FontFamily::System`,
+///   needs no registration), and
+/// - a path or `&`-reference expression (`&INTER`, `theme::MONO`) — a
+///   reference to a `static`/`const` `Typeface`, constant by
+///   construction. The dump build emits the family's `@font-face`
+///   rules (with served-file URLs) into the preminted `.css`, standing
+///   in for the runtime `register_typeface` that sheet registration
+///   would have performed.
+///
+/// Everything else (a call like `active_font_family()`, a method
+/// chain, a conditional) can vary at runtime, so the sheet stays on
+/// the live-minting path.
+fn sheet_has_dynamic_font(decl: &StyleSheetDecl) -> bool {
+    fn constant_font_expr(expr: &Expr) -> bool {
+        match expr {
+            Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(_), .. }) => true,
+            Expr::Path(_) => true,
+            Expr::Reference(r) => constant_font_expr(&r.expr),
+            _ => false,
+        }
+    }
+    any_rules_block(decl, |b| {
+        b.fields
+            .iter()
+            .any(|(name, expr)| name == "font_family" && !constant_font_expr(expr))
+    })
+}
+
+/// Apply `pred` across every rules block on every layer of the sheet.
+fn any_rules_block(decl: &StyleSheetDecl, pred: impl Fn(&RulesBlock) -> bool) -> bool {
+    pred(&decl.base.rules)
+        || decl.variants.iter().any(|axis| axis.arms.iter().any(|arm| pred(&arm.rules)))
+        || decl.states.iter().any(|s| pred(&s.rules))
+        || decl.breakpoints.iter().any(|b| pred(&b.rules))
+        || decl.containers.iter().any(|c| pred(&c.rules))
+}
+
+/// The `cfg(idealyst_premint_dump)` linkme registration for one sheet —
+/// the collection side the CLI's dump build links in. Never present in
+/// shipped builds (the cfg is only set for the ephemeral dump binary,
+/// paired with runtime-core's `style-dump` feature which provides
+/// `runtime_core::premint`).
+fn emit_premint_registration(decl: &StyleSheetDecl, base_class: &str) -> TokenStream2 {
+    let stylesheet_fn = format_ident!("{}_style", snake_case(&decl.name));
+    quote! {
+        // The `#[cfg]` sits on the INNER static, not on this const:
+        // when a cfg strips an item, the lint level for
+        // `unexpected_cfgs` comes from the item's ANCESTORS — the
+        // stripped item's own `#[allow]` is discarded with it. With the
+        // allow here on the enclosing const, app crates (which don't
+        // declare this build-pipeline cfg in check-cfg) compile
+        // warning-free.
+        #[allow(unexpected_cfgs)]
+        const _: () = {
+            #[cfg(idealyst_premint_dump)]
+            #[::runtime_core::premint::linkme::distributed_slice(
+                ::runtime_core::premint::PREMINT_SHEETS
+            )]
+            #[linkme(crate = ::runtime_core::premint::linkme)]
+            static __PREMINT_SHEET: ::runtime_core::premint::PremintSheet =
+                ::runtime_core::premint::PremintSheet {
+                    base_class: #base_class,
+                    sheet: #stylesheet_fn,
+                };
+        };
     }
 }
 
@@ -628,7 +741,7 @@ fn snake_case(ident: &Ident) -> Ident {
 /// emission: stylesheet closures now take `&VariantSet`, not a theme
 /// reference. Authors who relied on `theme.*` field reads will see a
 /// compile error from `check_no_theme_refs`.
-fn emit_stylesheet_fn(decl: &StyleSheetDecl) -> TokenStream2 {
+fn emit_stylesheet_fn(decl: &StyleSheetDecl, premint_class: Option<&str>) -> TokenStream2 {
     let fn_name = format_ident!("{}_style", snake_case(&decl.name));
     let vis = &decl.vis;
     // The base rules carry the transition declarations too. Transitions
@@ -705,6 +818,28 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl) -> TokenStream2 {
         }
     });
 
+    // A premintable sheet carries its class on the sheet OBJECT, not just
+    // in the generated builder's fast path. That is what lets the
+    // `StyleApplication::new(Foo::sheet())` idiom — which skips the
+    // builder entirely, and is how most of idea-ui and the websites style
+    // things — resolve to the build-time class instead of falling through
+    // to the live engine. The CSS was already being emitted for these
+    // sheets (they register in `PREMINT_SHEETS` whenever `premintable`);
+    // only the runtime half was missing.
+    let sheet_expr = quote! {
+        ::runtime_core::StyleSheet::new(
+            |_vs: &::runtime_core::VariantSet| #base_rules
+        )
+            #(#variant_chain)*
+            #(#state_chain)*
+            #(#breakpoint_chain)*
+            #(#container_chain)*
+    };
+    let finish_sheet = match premint_class {
+        Some(class) => quote! { #sheet_expr.premint_with_class(#class) },
+        None => quote! { ::std::rc::Rc::new(#sheet_expr) },
+    };
+
     quote! {
         #vis fn #fn_name() -> ::std::rc::Rc<::runtime_core::StyleSheet> {
             // Process-unique key for this stylesheet: the address of a
@@ -719,15 +854,7 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl) -> TokenStream2 {
             static __SHEET_KEY: u8 = 0;
             ::runtime_core::cached_stylesheet(
                 &__SHEET_KEY as *const u8 as usize,
-                || ::std::rc::Rc::new(
-                    ::runtime_core::StyleSheet::new(
-                        |_vs: &::runtime_core::VariantSet| #base_rules
-                    )
-                        #(#variant_chain)*
-                        #(#state_chain)*
-                        #(#breakpoint_chain)*
-                        #(#container_chain)*
-                ),
+                || #finish_sheet,
             )
         }
     }
@@ -1010,11 +1137,51 @@ fn pascal(ident: &Ident) -> Ident {
 /// then emits `StyleSource::Reactive` (signal changes re-apply the
 /// style) when the flag is set, and the cheaper `StyleSource::Static`
 /// (no per-node Effect) when every input was constant.
-fn emit_builder(decl: &StyleSheetDecl) -> TokenStream2 {
+fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> TokenStream2 {
     let name = &decl.name;
     let vis = &decl.vis;
     let entry_fn = name; // `Card()` returns `Card` — see free function below.
     let stylesheet_fn = format_ident!("{}_style", snake_case(name));
+    // Per-axis class-segment assembly for the premint branch. One class
+    // per SELECTED axis (`<base>-<axis>-<value>`, space-separated after
+    // the base class): the dump emits each arm as a standalone DELTA
+    // rule in the resolver's merge order, and the CSS source-order
+    // cascade reproduces `StyleSheet::resolve`'s later-wins merge — so
+    // CSS size is the sum of arms, not their cartesian product. An
+    // unset axis contributes its `#[default]` arm's class (same rules
+    // resolution as an explicit default selection), or nothing when the
+    // axis declares no default (no arm active ⇒ no delta to apply).
+    let premint_axis_pushes: Vec<TokenStream2> = decl
+        .variants
+        .iter()
+        .map(|axis| {
+            let f = format_ident!("__v_{}", axis.axis);
+            let seg_prefix = format!(" {}-{}-", base_class, axis.axis);
+            match axis.arms.iter().find(|a| a.is_default) {
+                Some(d) => {
+                    let dname = d.name.to_string();
+                    quote! {
+                        __class.push_str(#seg_prefix);
+                        __class.push_str(match self.#f.as_ref() {
+                            ::std::option::Option::Some(g) => g(),
+                            ::std::option::Option::None => #dname,
+                        });
+                    }
+                }
+                None => quote! {
+                    if let ::std::option::Option::Some(g) = self.#f.as_ref() {
+                        __class.push_str(#seg_prefix);
+                        __class.push_str(g());
+                    }
+                },
+            }
+        })
+        .collect();
+    let premint_override_fields: Vec<_> = decl
+        .overrides
+        .iter()
+        .map(|o| format_ident!("__o_{}", o.name))
+        .collect();
 
     // Per-axis fields and setters.
     let axis_fields = decl.variants.iter().map(|axis| {
@@ -1071,7 +1238,7 @@ fn emit_builder(decl: &StyleSheetDecl) -> TokenStream2 {
     // Resolution closure body for IntoStyleSource. Reads each closure
     // (which may subscribe to a Signal) and applies to the
     // StyleApplication.
-    let axis_applies = decl.variants.iter().map(|axis| {
+    let axis_applies: Vec<TokenStream2> = decl.variants.iter().map(|axis| {
         let axis_str = axis.axis.to_string();
         let f = format_ident!("__v_{}", axis.axis);
         quote! {
@@ -1079,8 +1246,8 @@ fn emit_builder(decl: &StyleSheetDecl) -> TokenStream2 {
                 __app = __app.with(#axis_str, g());
             }
         }
-    });
-    let override_applies = decl.overrides.iter().map(|o| {
+    }).collect();
+    let override_applies: Vec<TokenStream2> = decl.overrides.iter().map(|o| {
         let f = format_ident!("__o_{}", o.name);
         let method = format_ident!("override_{}", o.name);
         quote! {
@@ -1088,7 +1255,118 @@ fn emit_builder(decl: &StyleSheetDecl) -> TokenStream2 {
                 __app = __app.#method(g());
             }
         }
-    });
+    }).collect();
+
+    // Emitted only for premint-eligible sheets (see `sheet_has_shadow`);
+    // ineligible sheets compile to the live path with no cfg block at all.
+    //
+    // Two variants of the preminted return: the old core's
+    // `StyleSource::Preminted` vs the new core's `StyleProp::Preminted`
+    // (same class-string assembly either way). Selected by this CRATE's
+    // `new-core` feature — the same switch that retargets the whole
+    // expansion (`finish`), so the `::runtime_core::…` path below lands
+    // on `::runtime_vocabulary::glue::StyleProp` post-retarget.
+    let premint_return = quote! {
+        return ::runtime_core::StyleProp::Preminted {
+            // The generated builder has no inline-layer surface yet; an
+            // author reaching for one uses `StyleApplication::with_inline`
+            // directly. (This fast path already bails on any override.)
+            inline: ::core::option::Option::None,
+            class: ::std::borrow::Cow::Owned(__class),
+            overrides: ::std::option::Option::None,
+        };
+    };
+    // The REACTIVE preminted path. Every arm of every axis already has a
+    // rule in the shipped `.css` (the dump emits `-active-on` AND
+    // `-active-off`), so an axis driven by a signal is a CLASS SWAP, not a
+    // rule mint — the closure below re-reads the axis sources, and the
+    // per-node effect behind `PremintedDynamic` re-stamps. This is what
+    // makes selection UI premintable: 46 of 68 fall-throughs measured on
+    // the component catalog were one nav-item sheet whose only reactivity
+    // was `active`, and each of them dragged in the whole style engine.
+    //
+    // Note the axis reads happen INSIDE the closure, so the effect
+    // subscribes to exactly the signals the author's sources touch —
+    // including a `derived(...)` reading several at once, which
+    // `SignalClass` (one signal id) cannot express.
+    let premint_dynamic_return = quote! {
+        return ::runtime_core::StyleProp::PremintedDynamic {
+            class_of: ::std::boxed::Box::new(move || {
+                let mut __class = ::std::string::String::from(#base_class);
+                #(#premint_axis_pushes)*
+                __class
+            }),
+            overrides: ::std::option::Option::None,
+        };
+    };
+    let premint_branch = if premintable {
+        quote! {
+            // Preminted fast path (web builds with build-time CSS):
+            // a builder with no runtime slot overrides resolves to class
+            // names the CLI's style-dump pass already wrote into the
+            // shipped `.css` — no StyleRules work at runtime, constant or
+            // reactive. Only an override falls through to the live engine.
+            //
+            // With no `override` slots declared — the overwhelming case —
+            // `__any_override` folds to a literal `false`, both branches
+            // return, and the live path below becomes provably dead. That
+            // is what lets LLVM drop this sheet's entire arm tree, not
+            // just skip it at runtime.
+            #[cfg(idealyst_premint)]
+            {
+                let __any_override = false #(|| self.#premint_override_fields.is_some())*;
+                if !__any_override {
+                    if self.__reactive {
+                        #premint_dynamic_return
+                    }
+                    let mut __class = ::std::string::String::from(#base_class);
+                    #(#premint_axis_pushes)*
+                    #premint_return
+                }
+            }
+        }
+    } else {
+        TokenStream2::new()
+    };
+
+    // The builder → style-value conversion impl. Old core:
+    // `IntoStyleSource` → `StyleSource::{Static,Reactive}`. New core:
+    // `IntoStyleProp` → `StyleProp::{Sheet,SheetDynamic}` — the same
+    // static-vs-reactive split (`__reactive` gates it), lowered onto the
+    // vocabulary's sheet paths (static → cohort enrollment, reactive →
+    // per-node binding effect). Paths are spelled `::runtime_core::…`
+    // in BOTH arms on purpose: the shared `finish()` retarget rewrites
+    // them to `::runtime_vocabulary::glue::…` under `new-core`, where
+    // the glue re-exports resolve them (`IntoStyleProp`/`StyleProp` are
+    // glue-only names — they do not exist in runtime-core, which is
+    // fine: this arm is only emitted when the retarget runs).
+    let conversion_impl = quote! {
+        #[allow(unexpected_cfgs)]
+        impl ::runtime_core::IntoStyleProp for #name {
+            fn into_style_prop(self) -> ::runtime_core::StyleProp {
+                #premint_branch
+                // Same static-vs-reactive routing as the old core's
+                // `IntoStyleSource` (see the sibling emission): constant
+                // builders take the cohort path (`Sheet`), any reactive
+                // input (`Signal<E>` isn't available under new-core —
+                // use `derived(move || sig.get())`, whose closure reads
+                // subscribe the binding effect) takes the per-node
+                // effect path (`SheetDynamic`).
+                let __reactive = self.__reactive;
+                let __build = move || {
+                    let mut __app = ::runtime_core::StyleApplication::new(#stylesheet_fn());
+                    #(#axis_applies)*
+                    #(#override_applies)*
+                    __app
+                };
+                if __reactive {
+                    ::runtime_core::StyleProp::SheetDynamic(::std::boxed::Box::new(__build))
+                } else {
+                    ::runtime_core::StyleProp::Sheet(::std::boxed::Box::new(__build()))
+                }
+            }
+        }
+    };
 
     quote! {
         #vis struct #name {
@@ -1118,45 +1396,30 @@ fn emit_builder(decl: &StyleSheetDecl) -> TokenStream2 {
 
             #(#axis_setters)*
             #(#override_setters)*
+
+            /// The live-engine `StyleApplication` this builder describes —
+            /// for components that COMPOSE or INTROSPECT resolved styles
+            /// (merge an inherited color onto a label sheet, layer a
+            /// reactive hover onto a cell) rather than hand the style
+            /// straight to a node. Deliberately bypasses the premint fast
+            /// path: composition requires the resolution engine, so
+            /// anything derived from this stays live-minted even in
+            /// `--premint` builds. Reactive setter inputs are read ONCE
+            /// here (no subscription) — reactive callers stay on
+            /// `into_style_source`.
+            pub fn into_style_application(self) -> ::runtime_core::StyleApplication {
+                let mut __app = ::runtime_core::StyleApplication::new(#stylesheet_fn());
+                #(#axis_applies)*
+                #(#override_applies)*
+                __app
+            }
         }
 
         impl ::std::default::Default for #name {
             fn default() -> Self { Self::new() }
         }
 
-        impl ::runtime_core::IntoStyleSource for #name {
-            fn into_style_source(self) -> ::runtime_core::StyleSource {
-                // The builder routes to one of two style sources:
-                //
-                // - All-constant inputs (variant values are plain enums,
-                //   overrides are plain values) → `StyleSource::Static`:
-                //   resolved once here, no per-node `Effect`, cohort theme
-                //   reactivity only. For the common case this is a strict
-                //   win — 10k static rows allocate zero per-node effects.
-                //
-                // - Any setter received a reactive source (`Signal` /
-                //   `derived(...)`) → `StyleSource::Reactive`: the build
-                //   closure is handed to the framework's apply-style
-                //   `Effect`, which re-runs it on every signal change so
-                //   the variant / override re-resolves and the style
-                //   re-applies. `__reactive` (set by the setters) selects
-                //   the path. The boxed closure re-invokes each stored
-                //   per-axis closure on every run, so signals read inside
-                //   a `derived` become live dependencies.
-                let __reactive = self.__reactive;
-                let __build = move || {
-                    let mut __app = ::runtime_core::StyleApplication::new(#stylesheet_fn());
-                    #(#axis_applies)*
-                    #(#override_applies)*
-                    __app
-                };
-                if __reactive {
-                    ::runtime_core::StyleSource::Reactive(::std::boxed::Box::new(__build))
-                } else {
-                    ::runtime_core::StyleSource::Static(__build())
-                }
-            }
-        }
+        #conversion_impl
 
         /// Entry point: `Card()` returns a fresh builder. The free
         /// function shadows the struct name for call sites like

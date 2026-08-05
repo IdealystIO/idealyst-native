@@ -10,11 +10,11 @@ Idealyst is built on three orthogonal layers. Understanding the split is the sin
 
 ## 1. Primitives — the structural skeleton
 
-[[View]], [[Text]], [[Button]], [[ScrollView]], [[Image]], [[Icon]], [[TextInput]], [[Toggle]], [[Slider]], [[ActivityIndicator]], [[Video]], [[Link]], [[Portal]], [[Presence]], [[When]], [[Switch]], [[Repeat]], [[External]], [[Graphics]], [[Virtualizer]].
+[[View]], [[Text]], [[Button]], [[ScrollView]], [[Image]], [[Icon]], [[TextInput]], [[Toggle]], [[Slider]], [[ActivityIndicator]], [[Video]], [[Link]], [[Portal]], [[Presence]], [[When]], [[Switch]], [[Repeat]], [[Graphics]], [[Virtualizer]].
 
 These are leaf nodes. Each backend implements them natively — `View` is a `UIView` on iOS, a `FrameLayout` on Android, a `<div>` on web. **Authors never re-implement primitives** ([[backend_owns_rendering]]).
 
-To extend the framework with new "primitive-like" things, register an [[External]] kind via the per-backend `ExternalRegistry` (see [[third_party_extension]]). The maps and webview SDKs are reference implementations.
+To extend the framework with new "primitive-like" things, register a payload handler on the scene `Registry` — the same mechanism the first-party primitives use (`runtime_vocabulary::register_builtins`). Registration happens at the boot seam (`register_scene_extensions`), and an unregistered payload panics at realize. The maps and webview SDKs are reference implementations; see the [[sdks]] guide.
 
 ## 2. Components — your reusable units
 

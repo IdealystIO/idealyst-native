@@ -6,17 +6,12 @@ cross-compile + workspace-wide `cargo check` works from any platform.
 
 ## Status
 
-The backend is a **structural skeleton**: `create_view`, `create_text`,
-`create_button`, scheduler integration, animated property writes, theme
-plumbing. Most of the primitive surface (`Image`, `TextInput`, `ScrollView`,
-`Slider`, `Toggle`, `Icon`, `ActivityIndicator`, `Video`, `Virtualizer`,
-`Graphics`) is **not yet implemented**. The trait defaults will
-`unimplemented!()` if your app reaches for them.
-
-If you want a polished cross-platform desktop story today, the
-[`render-wgpu`](../../render/wgpu) renderer hosted on `appkit` / `winit` is
-a more complete path. The macOS-native AppKit path is being built up
-incrementally as the framework's primitive vocabulary stabilises.
+`src/newcore.rs` implements `runtime_scene::Host` plus all 30
+`runtime_vocabulary::caps` traits on `MacosBackend`, delegating to the
+AppKit mechanism code in `src/imp/`. The
+[GPU backend](../../gpu-backend) hosted on `appkit` / `winit` remains an
+alternative desktop path — it paints its own pixels instead of driving
+AppKit views.
 
 Design notes live in [`docs/macos-backend-plan.md`](../../../docs/macos-backend-plan.md).
 
@@ -57,7 +52,8 @@ APIs match.
 
 A macOS app is more than a tree of views: it's a window, a menu bar, a
 delegate. The framework intentionally keeps those concerns *out* of the
-core `Backend` trait (see `feedback_mobile_first_philosophy` in memory).
-Window / menu / multi-window plumbing lives in [`../../host/appkit`](../../host/appkit),
+`Host` seam and the capability traits (see
+`feedback_mobile_first_philosophy` in memory).
+Window / menu / multi-window plumbing lives in [`host-appkit`](../../gpu-backend/host/appkit),
 which composes the backend with the AppKit shell. Author code does not
 participate.

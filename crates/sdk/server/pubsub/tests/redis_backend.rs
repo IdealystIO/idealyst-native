@@ -66,3 +66,32 @@ async fn redis_topics_are_isolated() {
         .unwrap();
     assert_eq!(got, b"yes".to_vec(), "should only see its own topic");
 }
+
+/// The shared-connection seam: `from_client` builds over an existing
+/// `redis::Client` (the one the app also hands to `cache::RedisCache` /
+/// server-kit), and `from_installed` reads the same client back out of
+/// `server::install_state`. Both must carry a full publish→subscribe
+/// roundtrip.
+#[tokio::test]
+#[ignore = "requires a live Redis (PUBSUB_TEST_REDIS_URL)"]
+async fn redis_from_client_and_from_installed_roundtrip() {
+    let client = redis::Client::open(url().as_str()).unwrap();
+
+    let b = RedisBackend::from_client(client.clone()).await.unwrap();
+    let t = topic();
+    let mut sub = b.subscribe(&t).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    b.publish(&t, b"via-client").await.unwrap();
+    let got = tokio::time::timeout(Duration::from_secs(2), sub.next()).await.unwrap();
+    assert_eq!(got.unwrap(), b"via-client".to_vec());
+
+    // Same client, but discovered through the app-provided-context seam.
+    server::install_state(client);
+    let b2 = RedisBackend::from_installed().await.unwrap();
+    let t2 = topic();
+    let mut sub2 = b2.subscribe(&t2).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    b2.publish(&t2, b"via-installed").await.unwrap();
+    let got2 = tokio::time::timeout(Duration::from_secs(2), sub2.next()).await.unwrap();
+    assert_eq!(got2.unwrap(), b"via-installed".to_vec());
+}

@@ -1,6 +1,7 @@
 # dev-client
 
-The app-side replay engine. Wraps a real platform `Backend` and applies an
+The app-side replay engine. Wraps a real platform backend (its
+`runtime_scene::Host` + `runtime_vocabulary::caps` surface) and applies an
 incoming stream of [`wire::Command`]s against it. This is the crate every
 platform target imports to participate in hot-reload or runtime-server (server-driven
 UI).
@@ -13,11 +14,11 @@ The dev-side counterpart is [`dev-server`](../../dev/server).
   inserts, every `Command::Destroy` removes.
 - Owns the `StyleId → Rc<StyleRules>` table; `Command::RegisterStyle`
   inserts, `Command::ApplyStyle` looks up + forwards to
-  `Backend::apply_style`.
+  `caps::StyleOps::apply_style`.
 - Owns the `HandlerId → Closure` table; when a `Command::Create*` carries
   callbacks, the replayer installs a thin closure that pushes
   `AppToDev::Event` onto the outbound channel.
-- Dispatches every wire `Command` to one `Backend` trait call (or a small
+- Dispatches every wire `Command` to one capability call (or a small
   cluster). See `imp/mod.rs` for the full mapping.
 
 Re-exported as `AasClient` for consumers of the runtime-server (Application-as-a-Service) path:
@@ -57,5 +58,5 @@ app registers concrete renderers locally and the wire carries an opaque
 apply time.
 
 This is also why runtime-server mode currently emits a *placeholder* for
-`Element::Graphics` rather than a real surface. See
+the `graphics` primitive (`GraphicsPrim`) rather than a real surface. See
 `project_aas_graphics_unsupported` in memory.

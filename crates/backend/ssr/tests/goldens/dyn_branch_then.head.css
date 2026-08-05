@@ -1,0 +1,1 @@
+*, *::before, *::after { box-sizing: border-box; }:where(button) { all: unset; box-sizing: border-box; font: inherit; color: inherit; display: inline-flex; align-items: center; justify-content: center; }:where(input, textarea) { font-family: inherit; outline: none; }:where(img) { object-fit: contain; }.ui-35bdbc8ae6f391ed{background: #606060; width: 60px}

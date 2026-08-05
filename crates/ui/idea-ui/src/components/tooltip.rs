@@ -87,6 +87,9 @@ impl Default for TooltipProps {
 /// stretching across a flex parent's cross axis (see
 /// [`crate::components::hug_self`]).
 fn hug_sheet() -> Rc<StyleSheet> {
+    // `r#static` auto-premints by content, and the wrapper builds with the
+    // TRIGGER (crawl-visible), not with the lazily-opened bubble — so the
+    // dump does see this construction and its CSS ships.
     Rc::new(StyleSheet::r#static(crate::components::hug_self()))
 }
 
@@ -104,12 +107,6 @@ fn hidden_sheet() -> Rc<StyleSheet> {
 /// Renders the trigger wrapped in a hover/long-press anchor; shows a hint
 /// bubble (anchored to the trigger) while hovered (desktop) or briefly on
 /// long-press (touch). See the module docs.
-///
-/// **Cargo features:** requires `prim-portal` (in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without it compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component(children)]
 pub fn Tooltip(props: TooltipProps) -> Element {
     let open = signal(false);
@@ -176,6 +173,8 @@ pub fn Tooltip(props: TooltipProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P};
+    use idea_theme::testing::with_test_world;
 
     /// The Tooltip wraps its trigger in an anchor view that carries BOTH the
     /// hover handler (desktop show/hide) and a touch handler (mobile
@@ -185,26 +184,30 @@ mod tests {
     /// (no desktop hover) or the `when` bubble, this fails.
     #[test]
     fn tooltip_wraps_trigger_with_hover_touch_and_reactive_bubble() {
-        let el = Tooltip(TooltipProps {
-            text: Reactive::Static("hi".into()),
-            children: vec![runtime_core::text("trigger").into_element()],
-            ..Default::default()
-        });
-        let kids = match el {
-            Element::Fragment { children } => children,
-            _ => panic!("Tooltip must build a Fragment [anchor, bubble]"),
-        };
-        assert_eq!(kids.len(), 2, "fragment = anchor view + reactive bubble");
-        match &kids[0] {
-            Element::View { on_hover, on_touch, .. } => {
-                assert!(on_hover.is_some(), "anchor must carry on_hover (desktop show/hide)");
-                assert!(on_touch.is_some(), "anchor must carry on_touch (mobile long-press)");
+        with_test_world(|| {
+            let el = Tooltip(TooltipProps {
+                text: Reactive::Static("hi".into()),
+                children: vec![runtime_core::text("trigger").into_element()],
+                ..Default::default()
+            });
+            let mut kids = match classify(el) {
+                P::Fragment { children } => children,
+                _ => panic!("Tooltip must build a Fragment [anchor, bubble]"),
+            };
+            assert_eq!(kids.len(), 2, "fragment = anchor view + reactive bubble");
+            match classify(kids.remove(0)) {
+                P::View { on_hover, on_touch, .. } => {
+                    assert!(on_hover, "anchor must carry on_hover (desktop show/hide)");
+                    assert!(on_touch, "anchor must carry on_touch (mobile long-press)");
+                }
+                _ => panic!("first fragment child must be the anchor View"),
             }
-            _ => panic!("first fragment child must be the anchor View"),
-        }
-        assert!(
-            matches!(kids[1], Element::When { .. }),
-            "second child must be the reactive bubble (a `when` gated on hover/press)",
-        );
+            // The bubble is a reactive hole (an opaque `Dyn`) — the mirror
+            // reports it as `P::Other`.
+            assert!(
+                matches!(classify(kids.remove(0)), P::Other(_)),
+                "second child must be the reactive bubble (a `when` gated on hover/press)",
+            );
+        });
     }
 }

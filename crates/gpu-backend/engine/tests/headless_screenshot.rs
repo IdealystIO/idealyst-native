@@ -5,6 +5,14 @@
 //! pixels back, and assert the content actually rasterized. Runs the
 //! SAME `Renderer` + shaders the windowed host uses.
 //!
+//! Runtime v2: the tree is a `runtime_scene::Element` built with the
+//! vocabulary builders and mounted with
+//! `render_wgpu::newcore::start(shot.backend(), register, build)` — the
+//! same offscreen idiom `newcore-gpu-smoke`'s `NEWCORE_SMOKE_HEADLESS`
+//! mode and `idea-ui-docs-gpu`'s render test use — replacing the old
+//! `Element::View` literal + `Screenshotter::mount`. Same renderer, same
+//! shaders, same assertions.
+//!
 //! Requires a usable wgpu adapter. On macOS Metal is always available;
 //! on a GPU-less Linux box it needs a software adapter (Mesa lavapipe).
 //! If no adapter exists at all, the tests **skip** (print + return)
@@ -15,36 +23,21 @@
 
 #![cfg(feature = "headless")]
 
-use std::rc::Rc;
-
 use render_wgpu::headless::Screenshotter;
-use runtime_core::{
-    Color, Element, IntoStyleSource, Length, SafeAreaSides, StyleApplication, StyleRules,
-    StyleSheet, Tokenized,
-};
+use runtime_scene::Element;
+use runtime_shared::{Color, Length, StyleRules, Tokenized};
 
 /// A root View that fills the whole viewport with a solid background
 /// color. `hex` like `"#2255cc"`.
 fn colored_fill(hex: &'static str) -> Element {
-    let sheet = Rc::new(StyleSheet::r#static({
-        let mut r = StyleRules::default();
-        r.width = Some(Tokenized::Literal(Length::Percent(100.0)));
-        r.height = Some(Tokenized::Literal(Length::Percent(100.0)));
-        r
-    }));
-    let style = StyleApplication::new(sheet).override_background(Color(hex.to_string()));
-    Element::View {
-        children: vec![],
-        style: Some(style.into_style_source()),
-        ref_fill: None,
-        safe_area_sides: SafeAreaSides::NONE,
-        on_touch: None,
-        on_wheel: None,
-        on_file_drop: None,
-        on_hover: None,
-        is_container: false,
-        accessibility: Default::default(),
-    }
+    runtime_vocabulary::view()
+        .style(StyleRules {
+            width: Some(Tokenized::Literal(Length::Percent(100.0))),
+            height: Some(Tokenized::Literal(Length::Percent(100.0))),
+            background: Some(Tokenized::Literal(Color(hex.to_string()))),
+            ..Default::default()
+        })
+        .build()
 }
 
 /// `Some(shot)` if a wgpu adapter is available, else `None` (test skips).
@@ -70,7 +63,7 @@ fn headless_renders_full_bleed_color_to_pixels() {
     let Some(mut shot) = try_screenshotter(w, h) else {
         return;
     };
-    shot.mount(|| colored_fill("#2255cc")); // blue-dominant
+    let _app = render_wgpu::newcore::start(shot.backend(), |_| {}, || colored_fill("#2255cc")); // blue-dominant
 
     let rgba = shot.capture_rgba();
     assert_eq!(
@@ -97,13 +90,13 @@ fn headless_distinguishes_distinct_colors() {
     let Some(mut blue) = try_screenshotter(w, h) else {
         return;
     };
-    blue.mount(|| colored_fill("#2233dd"));
+    let _blue_app = render_wgpu::newcore::start(blue.backend(), |_| {}, || colored_fill("#2233dd"));
     let blue_px = center_pixel(&blue.capture_rgba(), w, h);
 
     let Some(mut red) = try_screenshotter(w, h) else {
         return;
     };
-    red.mount(|| colored_fill("#dd3322"));
+    let _red_app = render_wgpu::newcore::start(red.backend(), |_| {}, || colored_fill("#dd3322"));
     let red_px = center_pixel(&red.capture_rgba(), w, h);
 
     // Proves the renderer paints the actual content, not a constant
@@ -124,12 +117,15 @@ fn headless_encodes_png() {
     let Some(mut shot) = try_screenshotter(w, h) else {
         return;
     };
-    shot.mount(|| colored_fill("#33aa55"));
+    let _app = render_wgpu::newcore::start(shot.backend(), |_| {}, || colored_fill("#33aa55"));
     let png = shot.capture_png().expect("PNG encode");
     // PNG magic number.
     assert!(
         png.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]),
         "output must be a PNG (magic header)"
     );
-    assert!(png.len() > 67, "PNG must carry more than just the header/IHDR");
+    assert!(
+        png.len() > 67,
+        "PNG must carry more than just the header/IHDR"
+    );
 }

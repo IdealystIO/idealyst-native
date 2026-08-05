@@ -25,10 +25,14 @@
 
 use std::sync::{Arc, Mutex};
 
-use runtime_core::{raf_loop, text, view, Element, Signal};
+use runtime_core::{raf_loop, signal, text, view, Element, Signal};
 
 /// One line of log output, scoped to the target that produced it.
-#[derive(Clone, Debug)]
+///
+/// `PartialEq` because the panel keeps the ring buffer in a `Signal`, and
+/// the world kernel's signals are equality-guarded (`T: PartialEq`) —
+/// a drain that produced no change must not re-render the log view.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LogLine {
     /// Target tag — `"dev"`, `"dev web"`, `"host"`, etc. Mirrors the
     /// existing `[dev …]` prefix the CLI prints today so the user sees
@@ -126,9 +130,10 @@ pub fn run(bus: DevBus, opts: RunOptions) -> Result<(), host_terminal::RunError>
     host_terminal::run(
         move || build_panel(bus_for_app.clone(), opts_for_app.clone()),
         host_opts,
-        // dev-tui's panel is built from plain primitives — no navigator
-        // SDKs to install. Pass a no-op closure for the new
-        // register_extensions hook.
+        // dev-tui's panel is built from plain primitives — no SDK scene
+        // handlers to install, so the boot seam's `register` argument is
+        // a no-op. (An unregistered payload panics at realize, so this is
+        // only safe because the tree is builtins-only.)
         |_| {},
     )
 }
@@ -142,7 +147,9 @@ fn build_panel(bus: DevBus, opts: RunOptions) -> Element {
     // raf_loop below drains and writes here. Capped to a ring of the
     // most-recent N lines so we don't grow unbounded over a long dev
     // session.
-    let log_lines: Signal<Vec<LogLine>> = Signal::new(Vec::new());
+    // Created in the build closure, which the terminal boot runs inside
+    // `World::enter` — signal creation outside the world panics.
+    let log_lines: Signal<Vec<LogLine>> = signal(Vec::new());
     const LOG_RING_CAP: usize = 2_000;
 
     // Per-frame drain. Returns immediately when the queue is empty so
@@ -156,12 +163,17 @@ fn build_panel(bus: DevBus, opts: RunOptions) -> Element {
             if pending.is_empty() {
                 return;
             }
-            log_lines.update(|cur| {
-                cur.extend(pending);
-                if cur.len() > LOG_RING_CAP {
-                    let drop_n = cur.len() - LOG_RING_CAP;
-                    cur.drain(0..drop_n);
+            // `update` takes `&T` and RETURNS the next value (it composes
+            // on the staged value, so two drains in one turn never lose
+            // lines).
+            log_lines.update(move |cur| {
+                let mut next = cur.clone();
+                next.extend(pending);
+                if next.len() > LOG_RING_CAP {
+                    let drop_n = next.len() - LOG_RING_CAP;
+                    next.drain(0..drop_n);
                 }
+                next
             });
         });
         // RafLoop's Drop cancels the subscription; the panel needs it

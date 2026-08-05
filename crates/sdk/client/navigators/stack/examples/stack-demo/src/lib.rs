@@ -19,9 +19,26 @@ use stack_navigator::{
     header_state, StackBuilder, StackContext, StackHandle, StackNavigator, StackScreenExt,
 };
 
-/// The stack SDK self-registers via `inventory::submit!` (it force-links its web
-/// module so this works in dev + release). Hook kept for the CLI bootstrap.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam the CLI-generated wrappers invoke after
+/// `runtime_vocabulary::register_builtins`. The stack navigator's runtime IS a
+/// vocabulary built-in (one backend-neutral handler on every host), so this
+/// demo has nothing extra to register — the seam is kept because every wrapper
+/// calls it, and an unregistered payload panics at realize.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
+
+/// Runtime-server (sidecar) recorder seam — the recorder's scene registry also
+/// gets the navigator from `register_builtins`.
+#[cfg(feature = "sidecar")]
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
+}
 
 const HOME: Route<()> = Route::<()>::new("home", "/");
 const DETAIL: Route<()> = Route::<()>::new("detail", "/detail");
@@ -52,24 +69,16 @@ pub fn app() -> Element {
             let screen_chrome = nav.screen_chrome;
             let state = rx!(header_state(&screen_chrome));
 
-            let header: Element = ui! {
-                StackHeader(
-                    state = state,
-                    show_back = nav.can_go_back,
-                    on_back = Some(nav.pop.clone()),
-                )
-            };
-            let body: Element = ui! {
-                view(style = grow_style) {
-                    { nav.outlet }
-                }
-            };
-            let mut children: Vec<Element> = Vec::with_capacity(2);
-            children.push(header);
-            children.push(body);
             ui! {
                 view(style = column_style) {
-                    children
+                    StackHeader(
+                        state = state,
+                        show_back = nav.can_go_back,
+                        on_back = Some(nav.pop.clone()),
+                    )
+                    view(style = grow_style) {
+                        nav.outlet
+                    }
                 }
             }
         });
@@ -85,32 +94,25 @@ fn home_page(nav: Ref<StackHandle>) -> Element {
         nav.get().map(|h| h.push(&SETTINGS, ())).unwrap_or_default();
     };
 
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = "Home".to_string(), kind = idea_ui::typography_kind::H1) },
-        ui! {
-            Typography(
-                content = "Push a detail screen. The header grows a back arrow past the root.".to_string(),
-                muted = true,
-            )
-        },
-        ui! { button(label = "Open Detail".to_string(), on_click = go_detail) },
-        ui! { button(label = "Open Settings".to_string(), on_click = go_settings) },
-    ];
     ui! {
         view(style = page_style) {
-            children
+            Typography(content = "Home".to_string(), kind = idea_ui::typography_kind::H1)
+            Typography(
+                content = "Push a detail screen. The header grows a back arrow past the root."
+                    .to_string(),
+                muted = true,
+            )
+            button(label = "Open Detail".to_string(), on_click = go_detail)
+            button(label = "Open Settings".to_string(), on_click = go_settings)
         }
     }
 }
 
 fn page(title: &str, body: &str) -> Element {
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = title.to_string(), kind = idea_ui::typography_kind::H1) },
-        ui! { Typography(content = body.to_string(), muted = true) },
-    ];
     ui! {
         view(style = page_style) {
-            children
+            Typography(content = title.to_string(), kind = idea_ui::typography_kind::H1)
+            Typography(content = body.to_string(), muted = true)
         }
     }
 }

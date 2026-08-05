@@ -1,0 +1,45 @@
+[
+  {
+    "id": 1,
+    "op": "CreateView"
+  },
+  {
+    "content": "under",
+    "id": 2,
+    "op": "CreateText"
+  },
+  {
+    "child": 2,
+    "op": "Insert",
+    "parent": 1
+  },
+  {
+    "id": 3,
+    "on_dismiss": 1,
+    "op": "CreatePortal",
+    "target": {
+      "kind": "Viewport",
+      "placement": "Center"
+    },
+    "trap_focus": true
+  },
+  {
+    "content": "modal body",
+    "id": 4,
+    "op": "CreateText"
+  },
+  {
+    "child": 4,
+    "op": "Insert",
+    "parent": 3
+  },
+  {
+    "child": 3,
+    "op": "Insert",
+    "parent": 1
+  },
+  {
+    "op": "Finish",
+    "root": 1
+  }
+]

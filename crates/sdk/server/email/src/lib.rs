@@ -42,8 +42,12 @@ pub use model::{Email, EmailId, Mailbox};
 pub use provider::EmailProvider;
 
 // Re-export the rendering surface so `email::render(...)` works without a
-// separate `backend-email` dependency in app code.
-pub use backend_email::{render_email, render_email_with, EmailBackend, RenderedEmail};
+// separate `backend-email` dependency in app code. The render entries live
+// in `backend_email::newcore` (the runtime-v2 render path); the names and
+// signatures are unchanged, so this re-export keeps `email::render_email`
+// as the stable author path regardless of where the backend hosts them.
+pub use backend_email::newcore::{render_email, render_email_with};
+pub use backend_email::{EmailBackend, RenderedEmail};
 
 #[cfg(feature = "memory")]
 mod memory;

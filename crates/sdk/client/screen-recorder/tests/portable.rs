@@ -10,8 +10,9 @@
 //! — the Linux portal `start`, in particular, blocks on a user-approved dialog.
 //! Those live paths are covered by each backend's own `#[ignore]`d test.
 
-use screen_recorder::{PrivateLayer, PrivateLayerProps, RecordingConfig, Source, DEFAULT_FPS};
-use runtime_core::{view, Element, IntoElement};
+use screen_recorder::{
+    PrivateLayer, RecorderError, RecordingConfig, ScreenRecorder, Source, DEFAULT_FPS,
+};
 
 // Only referenced by the unsupported-target fallback tests below.
 #[cfg(all(
@@ -45,8 +46,9 @@ fn config_builders_apply() {
 
 #[test]
 fn private_layer_constructs_without_panicking() {
-    // It builds an Element::External; constructing it must not panic and
-    // must accept a children vec.
+    // It builds a scene item; constructing it must not panic and must
+    // accept a children vec. The mount-shape contract (children realize
+    // INTO the external node) is pinned in tests/private_layer.rs.
     let _layer = PrivateLayer(Vec::new());
 }
 

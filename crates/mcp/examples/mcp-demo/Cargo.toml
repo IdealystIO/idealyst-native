@@ -10,13 +10,23 @@ name = "mcp-demo"
 path = "src/main.rs"
 
 [dependencies]
-# Enabling the `mcp` feature on `runtime-core` flips on the
-# emission gate in `runtime-macros` AND pulls `mcp-catalog` in
-# as a transitive dep — so every `#[component]` expansion across
-# the dep graph (including idea-ui's, when it's used) emits a
-# catalog entry. Consumers don't need to depend on `mcp-catalog`
-# or `runtime-macros` directly.
+# The author surface. `runtime-core` is the crate this demo aliases
+# to `runtime_core` at its root (see src/main.rs) — runtime v2 has one
+# core and no feature switch.
+#
+# Enabling the `mcp` feature on it flips on the emission gate in
+# `runtime-macros` AND the vocabulary's catalog anchor
+# (`glue::__mcp`, which the retargeted `#[component]` /
+# `#[derive(IdealystSchema)]` / `#[idealyst_tool]` expansions spell) —
+# so every `#[component]` expansion across the dep graph (including
+# idea-ui's, when it's used) emits a catalog entry. Consumers don't
+# need to depend on `mcp-catalog` or `runtime-macros` directly.
 runtime-core = { workspace = true, features = ["mcp"] }
+# The `#[component]` / `ui!` expansions spell ABSOLUTE
+# `::runtime_vocabulary::glue::…` paths, so the crate that hosts them
+# needs the vocabulary as a direct dependency — the `runtime_core`
+# alias only covers paths the author writes.
+runtime-vocabulary = { workspace = true }
 # This demo's `main.rs` reads the catalog programmatically, so it
 # does need `mcp-catalog` directly. A pure-consumer crate that
 # just registers components would only need `runtime-core/mcp`.
@@ -31,7 +41,7 @@ serde_json = { workspace = true }
 # NOTE on third-party catalog flow (e.g. pulling in idea-ui):
 # Adding `idea-ui = { workspace = true }` to this crate compiles
 # fine — the feature-forward chain (runtime-core/mcp →
-# runtime-macros/mcp + dep:mcp-catalog) does its job — but
+# runtime-macros/catalog + runtime-vocabulary/catalog) does its job — but
 # `inventory`'s linker-section magic only fires for rlib symbols
 # that the linker actually pulls in. Adding the dep alone doesn't
 # guarantee idea-ui's `inventory::submit!` ctors get linked; the

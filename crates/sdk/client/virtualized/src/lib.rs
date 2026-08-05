@@ -34,12 +34,21 @@
 //! lane mode, not a separate engine — without changing the list/grid
 //! constructors below.
 
-use runtime_core::primitives::flat_list::{flat_list, FlatListItemSize};
-use runtime_core::primitives::virtualizer::{ItemKey, VirtualizerHandle};
-use runtime_core::{Bound, Element, Lanes, Signal};
+use runtime_core::primitives::flat_list::{
+    flat_list, FlatListItemSize, GlueFlatList, ItemKey, Lanes,
+};
+use runtime_core::{Element, Signal};
 
-pub use runtime_core::primitives::flat_list::{fixed_size, FlatListItemSize as ItemSize};
-pub use runtime_core::{Axis, Lanes as LaneCount, VirtualLayout, VirtualizerHandle as Handle};
+pub use runtime_core::primitives::flat_list::{
+    fixed_size, Axis, FlatListItemSize as ItemSize, Lanes as LaneCount,
+    VirtualizerHandle as Handle,
+};
+// `VirtualLayout` is a shared data type (`runtime_shared::primitives::
+// virtualizer`) that `runtime_vocabulary::glue`'s `flat_list` module does
+// not re-export yet, so it comes from the substrate directly rather than
+// through the `runtime_core` facade. Re-point at the facade when glue
+// grows the re-export (a one-line gap, reported).
+pub use runtime_shared::primitives::virtualizer::VirtualLayout;
 
 /// A plain virtualized list: one item per cross-axis line, vertical
 /// scroll by default. Identical to the framework's `flat_list` — exposed
@@ -52,9 +61,9 @@ pub fn list<T, K, R>(
     key: K,
     item_size: FlatListItemSize<T>,
     render: R,
-) -> Bound<VirtualizerHandle>
+) -> GlueFlatList
 where
-    T: Clone + 'static,
+    T: Clone + PartialEq + 'static,
     K: Fn(usize, &T) -> ItemKey + 'static,
     R: Fn(usize, &T) -> Element + 'static,
 {
@@ -75,9 +84,9 @@ pub fn grid<T, K, R>(
     item_size: FlatListItemSize<T>,
     render: R,
     columns: usize,
-) -> Bound<VirtualizerHandle>
+) -> GlueFlatList
 where
-    T: Clone + 'static,
+    T: Clone + PartialEq + 'static,
     K: Fn(usize, &T) -> ItemKey + 'static,
     R: Fn(usize, &T) -> Element + 'static,
 {
@@ -96,9 +105,9 @@ pub fn responsive_grid<T, K, R>(
     item_size: FlatListItemSize<T>,
     render: R,
     min_item_cross: f32,
-) -> Bound<VirtualizerHandle>
+) -> GlueFlatList
 where
-    T: Clone + 'static,
+    T: Clone + PartialEq + 'static,
     K: Fn(usize, &T) -> ItemKey + 'static,
     R: Fn(usize, &T) -> Element + 'static,
 {
@@ -111,11 +120,11 @@ where
 mod tests {
     //! Construction smoke tests. The lane-layout *behavior*
     //! (`grid` ⇒ `Lanes::Fixed(N)`, `responsive_grid` ⇒ `AutoFit`, the
-    //! clamp, and the visible-range math) is asserted in `runtime-core`,
-    //! where the `Bound`'s primitive is reachable — see
-    //! `primitives::virtualizer` and the walker grid tests. Here we only
-    //! prove each generic constructor type-checks and builds against a
-    //! real `Signal<Vec<T>>` with non-`Copy` data.
+    //! clamp, and the visible-range math) is asserted where the builder's
+    //! payload is reachable — `runtime_vocabulary`'s virtualizer handler
+    //! suite and the lane-resolution tests in `runtime-layout`. Here we
+    //! only prove each generic constructor type-checks and builds against
+    //! a real `Signal<Vec<T>>` with non-`Copy` data.
     use super::*;
     use runtime_core::signal;
 
@@ -123,8 +132,15 @@ mod tests {
         runtime_core::view(Vec::new()).into()
     }
 
+    /// Construction runs inside a world: `signal()` and the builder's
+    /// per-expansion state need a reactive context (`World::enter`), the
+    /// same one a component body runs in.
     #[test]
     fn constructors_build_for_non_copy_data() {
+        runtime_core::__with_fresh_world(|| constructors_build_body());
+    }
+
+    fn constructors_build_body() {
         let data: Signal<Vec<String>> = signal(vec!["a".to_string(), "b".to_string()]);
         let _l = list(data, |i, _| i as u64, fixed_size(40.0), render);
 

@@ -1,18 +1,20 @@
 //! Overview — the landing screen (the design's `D.home`).
 //!
-//! Unlike the component pages, the Overview is rendered **full-bleed** by
-//! `shell::landing_frame` (no group overline / title / status / Usage
-//! panel), so this module owns its whole layout: the hero, the stat row,
+//! Unlike the component pages, the Overview renders **full-bleed** (its
+//! lazy chunk skips `shell::page_frame_content` — no group overline /
+//! title / status / Usage panel, and `LandingPad` spans the full outlet
+//! width), so this module owns its whole layout: the hero, the stat row,
 //! the Principles feature grid, the token-resolution strip, and the
 //! Catalog grid. The hero CTAs and catalog cards are in-app navigation
 //! `link`s (the idiomatic route-jump primitive) wrapping styled views —
 //! never nested interactive `Button`s.
 
-use runtime_core::{ui, Color, Element, IconData};
+use runtime_core::{rx, ui, Breakpoint, Color, Element, IconData};
 use idea_ui::{tone, typography_kind, Grid, Icon, StackGap, ToneRef, Typography};
 use icons_lucide::{ARROW_RIGHT, CHECK, FOLDER, SETTINGS, STAR};
 
 use crate::routes::{CATALOG, BUTTON_ROUTE, INTENTS_ROUTE};
+use crate::shell::route_link;
 use crate::styles::{
     CatCard, CatChip, CatChips, CatCount, CatGroupLabel, CatHead, CtaOutline, CtaOutlineText,
     CtaPrimary, CtaPrimaryText, FeatureBody, FeatureCard, FeatureIconBox, FeatureIconBoxTone,
@@ -27,8 +29,12 @@ const LANDING_GROUP: &str = "Get started";
 
 pub fn overview() -> Element {
     let hero = hero();
+    // 2-up below the sidebar's pin breakpoint: four cards of padded,
+    // wrap-resistant labels don't fit a phone width even with
+    // shrinkable tracks.
+    let stat_cols = rx!(if idea_ui_nav::sidebar_pinned(Breakpoint::Lg) { 4u32 } else { 2u32 });
     let stats = ui! {
-        Grid(columns = 4u32, gap = StackGap::Md) {
+        Grid(columns = stat_cols, gap = StackGap::Md) {
             stat("40", "Components", StatNumberTone::Primary)
             stat("7", "Intent palettes", StatNumberTone::Success)
             stat("2", "Built-in themes", StatNumberTone::Info)
@@ -83,6 +89,20 @@ pub fn overview() -> Element {
 // ---- Hero --------------------------------------------------------------
 
 fn hero() -> Element {
+    // Route-jump CTAs via `shell::route_link` — the framework `link`
+    // primitive (see shell.rs).
+    let browse_cta = route_link(&BUTTON_ROUTE, ui! {
+        view(style = CtaPrimary()) {
+            text(style = CtaPrimaryText()) { "Browse components".to_string() }
+            Icon(data = ARROW_RIGHT, size = 18.0, color = Some(Color("#ffffff".into())))
+        }
+    });
+    let tokens_cta = route_link(&INTENTS_ROUTE, ui! {
+        view(style = CtaOutline()) {
+            Icon(data = STAR, size = 18.0, tone = Some(tone::Neutral.into()))
+            text(style = CtaOutlineText()) { "View the tokens".to_string() }
+        }
+    });
     ui! {
         view(style = HeroCard()) {
             view(style = HeroBadge()) {
@@ -101,18 +121,8 @@ fn hero() -> Element {
                 muted = true,
             )
             view(style = HeroCtaRow()) {
-                link(route = &BUTTON_ROUTE, params = ()) {
-                    view(style = CtaPrimary()) {
-                        text(style = CtaPrimaryText()) { "Browse components".to_string() }
-                        Icon(data = ARROW_RIGHT, size = 18.0, color = Some(Color("#ffffff".into())))
-                    }
-                }
-                link(route = &INTENTS_ROUTE, params = ()) {
-                    view(style = CtaOutline()) {
-                        Icon(data = STAR, size = 18.0, tone = Some(tone::Neutral.into()))
-                        text(style = CtaOutlineText()) { "View the tokens".to_string() }
-                    }
-                }
+                browse_cta
+                tokens_cta
             }
         }
     }
@@ -158,6 +168,13 @@ fn feature(
 // ---- Token-resolution strip --------------------------------------------
 
 fn token_strip() -> Element {
+    // Route-jump via `shell::route_link` (per-core link seam — see shell.rs).
+    let intents_cta = route_link(&INTENTS_ROUTE, ui! {
+        view(style = CtaPrimary()) {
+            text(style = CtaPrimaryText()) { "Explore intents".to_string() }
+            Icon(data = ARROW_RIGHT, size = 18.0, color = Some(Color("#ffffff".into())))
+        }
+    });
     ui! {
         view(style = TokenStrip()) {
             view(style = TokenStripCol()) {
@@ -166,12 +183,7 @@ fn token_strip() -> Element {
                 text(style = TokenStripCode()) { "stylesheet → token(\"intent-primary-solid-bg\")".to_string() }
                 text(style = TokenStripCodeAccent()) { "set_idea_theme(dark) // rebinds, no reclass".to_string() }
             }
-            link(route = &INTENTS_ROUTE, params = ()) {
-                view(style = CtaPrimary()) {
-                    text(style = CtaPrimaryText()) { "Explore intents".to_string() }
-                    Icon(data = ARROW_RIGHT, size = 18.0, color = Some(Color("#ffffff".into())))
-                }
-            }
+            intents_cta
         }
     }
 }
@@ -203,15 +215,14 @@ fn catalog_card(group: &'static crate::routes::Group) -> Element {
             ui! { text(style = CatChip()) { name } }
         })
         .collect();
-    ui! {
-        link(route = first, params = ()) {
-            view(style = CatCard()) {
-                view(style = CatHead()) {
-                    text(style = CatGroupLabel()) { label }
-                    text(style = CatCount()) { count }
-                }
-                view(style = CatChips()) { chips }
+    // Route-jump via `shell::route_link` (per-core link seam — see shell.rs).
+    route_link(first, ui! {
+        view(style = CatCard()) {
+            view(style = CatHead()) {
+                text(style = CatGroupLabel()) { label }
+                text(style = CatCount()) { count }
             }
+            view(style = CatChips()) { chips }
         }
-    }
+    })
 }

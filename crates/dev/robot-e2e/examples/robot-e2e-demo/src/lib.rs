@@ -52,10 +52,18 @@ mod e2e;
 // runtime-server wrapper).
 // ---------------------------------------------------------------------------
 
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {}
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`.
+pub fn scene_app() -> Element {
+    app()
+}
 
 // ---------------------------------------------------------------------------
 // App
@@ -74,7 +82,7 @@ pub fn app() -> Element {
     // because `watch_signal` only exists when that feature is on (the same
     // feature `idealyst dev` always enables).
     #[cfg(feature = "robot")]
-    runtime_core::robot::watch_signal("count", count);
+    runtime_vocabulary::robot::watch_signal("count", count);
 
     // Kick off the E2E suite shortly after mount, once the first render
     // has populated the Robot registry. `after_ms_detached` self-manages
@@ -98,9 +106,9 @@ const INITIAL_RUN_DELAY_MS: i32 = 1000;
 fn screen(count: Signal<i32>, show_secret: Signal<bool>, name: Signal<String>) -> Element {
     // Button handlers. `Signal` is `Copy`, so each closure captures its
     // own copy.
-    let inc = move || count.update(|n| *n += 1);
-    let dec = move || count.update(|n| *n -= 1);
-    let toggle = move || show_secret.update(|v| *v = !*v);
+    let inc = move || count.set(count.get() + 1);
+    let dec = move || count.set(count.get() - 1);
+    let toggle = move || show_secret.set(!show_secret.get());
 
     // The secret panel: a `when` branch that mounts (and registers) the
     // `secret` text only while `show_secret` is true — so the E2E suite
@@ -213,7 +221,7 @@ fn run_suite() {
                 Ok(())
             }),
             test("the screen exposes four primitive buttons", |page: &Page| {
-                use runtime_core::robot::ElementKind;
+                use runtime_vocabulary::robot::ElementKind;
                 expect(&page.get_by_role(ElementKind::Button)).to_have_count(4)?;
                 Ok(())
             }),

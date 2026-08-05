@@ -19,7 +19,12 @@ license.workspace = true
 # permissions are declared by `notifications` and `location`.
 
 [dependencies]
+# The author surface, aliased to `runtime_core` at the crate root (see
+# src/lib.rs). `runtime-vocabulary` is a direct dep because the `ui!`
+# emission inside the recipes spells absolute `::runtime_vocabulary::glue::…`
+# paths.
 runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
 
 # Web (wasm): Notification / Permissions / Geolocation via web-sys.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

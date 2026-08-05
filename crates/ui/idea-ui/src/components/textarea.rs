@@ -103,7 +103,7 @@ impl Default for TextareaProps {
     fn default() -> Self {
         Self {
             label: Reactive::Static(None),
-            value: Signal::new(String::new()),
+            value: runtime_core::signal(String::new()),
             on_change: Rc::new(|_| {}),
             placeholder: Reactive::Static(None),
             help: Reactive::Static(None),
@@ -140,12 +140,6 @@ fn row_bounds(rows: u32, max_rows: u32, has_min_height_override: bool) -> (Optio
 /// Renders a controlled multi-line text input with optional label,
 /// helper/error text, and tone, auto-growing between the `rows` floor
 /// and the `max_rows` cap.
-///
-/// **Cargo features:** requires `prim-text-input` (in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without it compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Textarea(props: &TextareaProps) -> Element {
     let value = props.value;
@@ -207,7 +201,8 @@ pub fn Textarea(props: &TextareaProps) -> Element {
                 .with("size", size_key)
                 .with("appearance", appearance)
                 .with("tone", tone_key)
-                .with_computed(dim_key, move || StyleRules {
+                // Author-supplied pixel dims — continuous, so inline.
+                .with_inline(StyleRules {
                     min_height: min_height.map(|h| Tokenized::Literal(Length::Px(h))),
                     width: width.map(|w| Tokenized::Literal(Length::Px(w))),
                     ..Default::default()
@@ -279,47 +274,59 @@ mod tests {
 
     #[test]
     fn row_bounds_uncapped_passes_floor_only() {
-        // rows=3, max_rows=0 (uncapped), no px override → min_rows=3, no cap.
-        assert_eq!(row_bounds(3, 0, false), (Some(3), None));
+        with_test_world(|| {
+            // rows=3, max_rows=0 (uncapped), no px override → min_rows=3, no cap.
+            assert_eq!(row_bounds(3, 0, false), (Some(3), None));
+    });
     }
 
     #[test]
     fn row_bounds_caps_at_max_rows() {
-        assert_eq!(row_bounds(2, 8, false), (Some(2), Some(8)), "max_rows is the cap");
+        with_test_world(|| {
+            assert_eq!(row_bounds(2, 8, false), (Some(2), Some(8)), "max_rows is the cap");
+    });
     }
 
     #[test]
     fn row_bounds_floors_rows_at_one() {
-        // A zero-row textarea floors at one line.
-        assert_eq!(row_bounds(0, 0, false), (Some(1), None));
+        with_test_world(|| {
+            // A zero-row textarea floors at one line.
+            assert_eq!(row_bounds(0, 0, false), (Some(1), None));
+    });
     }
 
     #[test]
     fn row_bounds_clamps_cap_below_floor_up_to_floor() {
-        // max_rows(2) below rows(4): the cap clamps up to the floor so the box
-        // can't grow past its resting height, never an inverted min > max.
-        assert_eq!(row_bounds(4, 2, false), (Some(4), Some(4)));
+        with_test_world(|| {
+            // max_rows(2) below rows(4): the cap clamps up to the floor so the box
+            // can't grow past its resting height, never an inverted min > max.
+            assert_eq!(row_bounds(4, 2, false), (Some(4), Some(4)));
+    });
     }
 
     #[test]
     fn row_bounds_min_height_override_drops_min_rows() {
-        // An explicit px `min_height` owns the floor → no `min_rows` (the px
-        // floor applies via style instead); the cap still rides on rows.
-        assert_eq!(row_bounds(3, 8, true), (None, Some(8)));
+        with_test_world(|| {
+            // An explicit px `min_height` owns the floor → no `min_rows` (the px
+            // floor applies via style instead); the cap still rides on rows.
+            assert_eq!(row_bounds(3, 8, true), (None, Some(8)));
+    });
     }
 
+    use crate::test_support::{classify, P, TStyle};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, StyleSource};
+    use runtime_core::resolve_style;
 
-    /// Pull the `StyleSource` off the `text_area` node inside a built
+    /// Pull the normalized style off the `text_area` node inside a built
     /// `Textarea` element tree.
-    fn input_style_source(ta: Element) -> StyleSource {
-        let children = match ta {
-            Element::View { children, .. } => children,
+    fn input_style_source(ta: Element) -> TStyle {
+        let children = match classify(ta) {
+            P::View { children, .. } => children,
             _ => panic!("Textarea renders a view wrapper"),
         };
         for c in children {
-            if let Element::TextArea { style, .. } = c {
+            if let P::TextArea { style, .. } = classify(c) {
                 return style.expect("Textarea's text_area always has a style");
             }
         }
@@ -328,12 +335,12 @@ mod tests {
 
     /// Pull the primitive `min_rows`/`max_rows` off the built `text_area` node.
     fn input_row_bounds(ta: Element) -> (Option<u32>, Option<u32>) {
-        let children = match ta {
-            Element::View { children, .. } => children,
+        let children = match classify(ta) {
+            P::View { children, .. } => children,
             _ => panic!("Textarea renders a view wrapper"),
         };
         for c in children {
-            if let Element::TextArea { min_rows, max_rows, .. } = c {
+            if let P::TextArea { min_rows, max_rows, .. } = classify(c) {
                 return (min_rows, max_rows);
             }
         }
@@ -344,102 +351,136 @@ mod tests {
     // (not a synthesized style) so the backend converts them with real metrics.
     #[test]
     fn rows_props_flow_to_the_primitive() {
-        install_idea_theme(light_theme());
-        let props = TextareaProps {
-            rows: Reactive::Static(4),
-            max_rows: Reactive::Static(10),
-            ..Default::default()
-        };
-        assert_eq!(input_row_bounds(Textarea(&props)), (Some(4), Some(10)));
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let props = TextareaProps {
+                rows: Reactive::Static(4),
+                max_rows: Reactive::Static(10),
+                ..Default::default()
+            };
+            assert_eq!(input_row_bounds(Textarea(&props)), (Some(4), Some(10)));
+    });
     }
 
     // The min_height px override drops `min_rows` from the primitive (the px
     // floor takes over via style) while the cap still rides on `max_rows`.
     #[test]
     fn min_height_override_drops_primitive_min_rows() {
-        install_idea_theme(light_theme());
-        let props = TextareaProps {
-            rows: Reactive::Static(3),
-            max_rows: Reactive::Static(8),
-            min_height: Reactive::Static(Some(92.0)),
-            ..Default::default()
-        };
-        assert_eq!(input_row_bounds(Textarea(&props)), (None, Some(8)));
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let props = TextareaProps {
+                rows: Reactive::Static(3),
+                max_rows: Reactive::Static(8),
+                min_height: Reactive::Static(Some(92.0)),
+                ..Default::default()
+            };
+            assert_eq!(input_row_bounds(Textarea(&props)), (None, Some(8)));
+    });
     }
 
     // D9 regression (mirror of Field): a live `error` signal must drive
     // the border color reactively, not snapshot it at build.
+    // Same regression as Field's: a live error channel must not mount an
+    // empty help line while `None` (the empty text held a caption line
+    // box + gap slot, inflating the box for no visual payoff).
+    #[test]
+    fn regression_live_error_none_mounts_no_empty_help_line() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let err: Signal<Option<String>> = runtime_core::signal(None);
+            let props = TextareaProps {
+                error: err.into(),
+                ..Default::default()
+            };
+            for c in classify(Textarea(&props)).children() {
+                assert!(
+                    !matches!(classify(c), P::Text { .. }),
+                    "no help text node may be mounted while the live error is None"
+                );
+            }
+        });
+    }
+
     #[test]
     fn reactive_error_drives_border_color_live() {
-        install_idea_theme(light_theme());
-        let err: Signal<Option<String>> = Signal::new(None);
-        let props = TextareaProps {
-            error: err.into(),
-            ..Default::default()
-        };
-        let closure = match input_style_source(Textarea(&props)) {
-            StyleSource::Reactive(f) => f,
-            _ => panic!(
-                "a Textarea with a reactive `error` must attach a reactive style \
-                 source (D9 regression)"
-            ),
-        };
-        let border_none = resolve_style(&closure()).border_top_color.clone();
-        err.set(Some("Required".into()));
-        let border_err = resolve_style(&closure()).border_top_color.clone();
-        assert!(border_none.is_some() && border_err.is_some());
-        assert_ne!(
-            border_none, border_err,
-            "flipping the error signal must change the border color"
-        );
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let err: Signal<Option<String>> = runtime_core::signal(None);
+            let props = TextareaProps {
+                error: err.into(),
+                ..Default::default()
+            };
+            let closure = match input_style_source(Textarea(&props)) {
+                TStyle::AppFn(f) => f,
+                _ => panic!(
+                    "a Textarea with a reactive `error` must attach a reactive style \
+                     source (D9 regression)"
+                ),
+            };
+            let border_none = resolve_style(&closure()).border_top_color.clone();
+            err.set(Some("Required".into()));
+            idea_theme::testing::commit();
+            let border_err = resolve_style(&closure()).border_top_color.clone();
+            assert!(border_none.is_some() && border_err.is_some());
+            assert_ne!(
+                border_none, border_err,
+                "flipping the error signal must change the border color"
+            );
+    });
     }
 
     #[test]
     fn fixed_tone_uses_static_style_source() {
-        install_idea_theme(light_theme());
-        let props = TextareaProps {
-            error: Reactive::Static(Some("bad".into())),
-            ..Default::default()
-        };
-        assert!(matches!(
-            input_style_source(Textarea(&props)),
-            StyleSource::Static(_)
-        ));
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let props = TextareaProps {
+                error: Reactive::Static(Some("bad".into())),
+                ..Default::default()
+            };
+            assert!(matches!(
+                input_style_source(Textarea(&props)),
+                TStyle::App(_)
+            ));
+    });
     }
 
     // D6: an explicit `min_height` prop overrides the rows-derived floor.
     #[test]
     fn min_height_prop_overrides_rows_floor() {
-        install_idea_theme(light_theme());
-        let props = TextareaProps {
-            // rows would derive a different floor; the prop wins.
-            rows: Reactive::Static(3),
-            min_height: Reactive::Static(Some(92.0)),
-            ..Default::default()
-        };
-        let rules = match input_style_source(Textarea(&props)) {
-            StyleSource::Static(app) => resolve_style(&app),
-            _ => panic!("no reactive error → static"),
-        };
-        assert_eq!(
-            rules.min_height,
-            Some(Tokenized::Literal(Length::Px(92.0))),
-            "min_height prop pins the exact px floor, overriding rows"
-        );
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let props = TextareaProps {
+                // rows would derive a different floor; the prop wins.
+                rows: Reactive::Static(3),
+                min_height: Reactive::Static(Some(92.0)),
+                ..Default::default()
+            };
+            let rules = match input_style_source(Textarea(&props)) {
+                TStyle::App(app) => resolve_style(&app),
+                _ => panic!("no reactive error → static"),
+            };
+            assert_eq!(
+                rules.min_height,
+                Some(Tokenized::Literal(Length::Px(92.0))),
+                "min_height prop pins the exact px floor, overriding rows"
+            );
+    });
     }
 
     // D6: width prop pins an exact px width.
     #[test]
     fn width_prop_sets_width_style() {
-        install_idea_theme(light_theme());
-        let props = TextareaProps {
-            width: Reactive::Static(Some(320.0)),
-            ..Default::default()
-        };
-        let rules = match input_style_source(Textarea(&props)) {
-            StyleSource::Static(app) => resolve_style(&app),
-            _ => unreachable!(),
-        };
-        assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(320.0))));
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let props = TextareaProps {
+                width: Reactive::Static(Some(320.0)),
+                ..Default::default()
+            };
+            let rules = match input_style_source(Textarea(&props)) {
+                TStyle::App(app) => resolve_style(&app),
+                _ => unreachable!(),
+            };
+            assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(320.0))));
+    });
     }
 }

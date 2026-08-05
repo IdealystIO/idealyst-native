@@ -1,0 +1,49 @@
+# newcore-macos-smoke — smoke app for the macOS backend's boot path
+# (`host_appkit::newcore::run` → `backend_macos::newcore::start`).
+# Builds the same small vocabulary-builder tree as `newcore-web-smoke`
+# (text + button + toggle + a dyn hole + a keyed list + one literal
+# StyleRules) with DIRECT builder calls — no `ui!`/`jsx!` — so it
+# exercises the registry-dispatch render path against real AppKit with
+# the macro-lowering layer out of the picture.
+#
+# Run (macOS only):
+#   cargo run -p newcore-macos-smoke
+# Headless live verification (5 phases — see src/main.rs):
+#   NEWCORE_SMOKE_SELFTEST=1 cargo run -p newcore-macos-smoke
+[package]
+name = "newcore-macos-smoke"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Smoke app for backend-macos's Host + caps boot path."
+
+[[bin]]
+name = "newcore-macos-smoke"
+path = "src/main.rs"
+
+[dependencies]
+# The shared substrate: the style data model, the scheduler the self-test
+# drives, `Breakpoint`/`ColorScheme`/`Platform`, and the primitive handle
+# types (`ScrollViewHandle`, graphics `OnReadyEvent`).
+runtime-shared = { workspace = true }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+host-appkit = { workspace = true }
+# Embedded-simulator phase (self-test phase 5): mount a wgpu preview
+# INSIDE this app via `host_macos_desktop::mount_newcore` (realizes into
+# this app's world through `backend_macos::newcore::mounted_world`).
+# `render-wgpu` supplies the `NativeSkin` painter; `runtime-shared/
+# async-driver` names the `driver::spawn_async` entry the async wgpu init
+# rides (host-appkit already installs the libdispatch executor via
+# `install_scheduler`).
+host-macos-desktop = { workspace = true }
+render-wgpu = { workspace = true }
+runtime-shared = { workspace = true, features = ["async-driver"] }
+objc2 = "0.5"
+# Self-test only (`NEWCORE_SMOKE_SELFTEST=1`): count the live NSView
+# tree under the key window to prove realize/finish attached real views.
+objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSResponder", "NSWindow", "NSView"] }
+objc2-foundation = { version = "0.2", features = ["NSThread", "NSArray", "NSGeometry", "NSString"] }

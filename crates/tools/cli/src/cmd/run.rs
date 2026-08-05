@@ -78,6 +78,18 @@ pub struct Args {
     #[arg(long)]
     pub clean: bool,
 
+    /// Accepted no-op alias: runtime v2 is the only runtime, so every
+    /// run already uses it. Kept so existing invocations don't break
+    /// (see `crate::core_mode`).
+    #[arg(long)]
+    pub new_core: bool,
+
+    /// REMOVED: the pre-runtime-v2 walker no longer exists. Passing this
+    /// fails with the migration pointer (`crate::core_mode`,
+    /// `docs/migrating-to-runtime-v2.md`).
+    #[arg(long)]
+    pub old_core: bool,
+
     /// Build the runtime-server-client variant and connect to an
     /// already-running dev-host. Requires `--runtime-server-port`
     /// (the dev-host's bound port). Default is local-render (the app
@@ -149,6 +161,8 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
     // to inspect, so in-workspace projects silently fall through to
     // git mode. Mirrors what `cmd::dev::run` already does.
     args.dir = crate::framework_source::abs_project_dir(&args.dir)?;
+    // One core: `--new-core` is a no-op, `--old-core` is a hard error.
+    crate::core_mode::validate_flags(args.new_core, args.old_core)?;
     match args.platform {
         Platform::Ios if args.device => {
             // Physical-device path: build a signed .app via xcodebuild and
@@ -542,16 +556,22 @@ fn run_server(args: &Args) -> anyhow::Result<()> {
         build_web::build(
             &args.dir,
             build_web::BuildOptions {
+            // Dev/docs/run builds keep the full vocabulary: `--primitives`
+            // is a release-bundle lever, and dropping one mid-session would
+            // panic at mount rather than degrade.
+            primitives: None,
+            premint_only: false,
+            premint_report: false,
                 release: args.release,
                 source,
                 user_features: Vec::new(),
                 bundle_out_dir: Some(args.dir.join("dist").join("web")),
                 gzip: false,
                 brotli: false,
-                primitives: None,
                 strip_panics: false,
                 hydrate: false,
                 prune_dead_data_min: None,
+                premint: false,
             },
         )
         .context("web bundle build for `run server` failed")?;

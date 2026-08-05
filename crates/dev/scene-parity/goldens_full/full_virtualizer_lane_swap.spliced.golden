@@ -1,0 +1,34 @@
+# scene-parity FULL-OP golden — scenario `full_virtualizer_lane_swap`, mode `spliced`
+#
+# P3-set: a `when` hole swapping between two virtualizer
+# configurations (vertical list <-> 3-lane horizontal grid with
+# gaps), pinning the VirtualLayout digest through create_* and the
+# release_virtualizer ordering inside both dispose orderings
+# (anchored: release then clear_children; spliced: remove_child
+# then release). No rows are mounted — the node lifecycle itself
+# is the contract.
+#
+# Complete backend-call stream (create_*/update_*/apply_style/release_*
+# + the structural ops). Node names are creation-order (n0, n1, ...).
+# Owned by the OLD core; regenerate after an INTENDED walker change
+# with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 virtualizer overscan=1 layout=VirtualLayout { axis: Vertical, lanes: Fixed(1), main_spacing: 0.0, cross_spacing: 0.0 }
+virtualizer_data_changed n1
+insert_at n0 <- n1 @ 0
+
+== swap to 3-lane horizontal grid (release then create) ==
+remove_child n0 -x n1
+release_virtualizer n1
+create n2 virtualizer overscan=1 layout=VirtualLayout { axis: Horizontal, lanes: Fixed(3), main_spacing: 8.0, cross_spacing: 4.0 }
+virtualizer_data_changed n2
+insert_at n0 <- n2 @ 0
+
+== swap back to vertical list ==
+remove_child n0 -x n2
+release_virtualizer n2
+create n3 virtualizer overscan=1 layout=VirtualLayout { axis: Vertical, lanes: Fixed(1), main_spacing: 0.0, cross_spacing: 0.0 }
+virtualizer_data_changed n3
+insert_at n0 <- n3 @ 0

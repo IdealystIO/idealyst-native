@@ -146,7 +146,7 @@ impl Drop for ScopeGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::{resource, Signal};
+    use runtime_core::resource;
     use std::cell::RefCell;
     use std::future::poll_fn;
     use std::rc::Rc;
@@ -158,6 +158,13 @@ mod tests {
         assert!(current_cancel().is_none());
     }
 
+    thread_local! {
+        /// Worlds minted by [`fresh_resource_cancel`], kept alive for the
+        /// rest of the test binary's run. See that fn for why.
+        static KEPT_WORLDS: RefCell<Vec<runtime_core::__World>> =
+            const { RefCell::new(Vec::new()) };
+    }
+
     /// Drive a `resource()` to surface a real `ResourceCancel` —
     /// the only public way to obtain one, since
     /// `ResourceCancel::cancel` is crate-private and the type
@@ -166,14 +173,24 @@ mod tests {
         let captured: Rc<RefCell<Option<ResourceCancel>>> =
             Rc::new(RefCell::new(None));
         let captured_for_fetcher = captured.clone();
-        let dep = Signal::new(0i32);
-        let _r: runtime_core::Resource<(), &'static str> =
-            resource(dep, move |_, cancel| {
-                *captured_for_fetcher.borrow_mut() = Some(cancel);
-                async move { Ok(()) }
-            });
-        let result = captured.borrow_mut().take().unwrap();
-        result
+        // `signal`/`resource` require an entered world (they allocate in
+        // the ambient world's arena). The world must OUTLIVE the token:
+        // dropping it tears the resource down, which cancels the very
+        // token these tests assert is live — hence the keepalive below
+        // rather than the `__with_fresh_world` helper.
+        let world = runtime_core::__World::new();
+        world.enter(|| {
+            let dep = runtime_core::signal(0i32);
+            let _r: runtime_core::Resource<(), &'static str> =
+                resource(dep, move |_, cancel| {
+                    *captured_for_fetcher.borrow_mut() = Some(cancel);
+                    async move { Ok(()) }
+                });
+        });
+        world.flush();
+        KEPT_WORLDS.with(|w| w.borrow_mut().push(world));
+        let token = captured.borrow_mut().take();
+        token.expect("resource fetcher ran and handed back its cancel token")
     }
 
     /// Inside a `with_cancel` scope, `current_cancel()` resolves to

@@ -28,16 +28,14 @@ use runtime_layout::LayoutNode;
 use crate::animation::{AnimProperty, TweenKey};
 use crate::backend_impl::WgpuBackend;
 use crate::host::{scrollview_content_extent, Host};
+use crate::image_pipeline::{ImageDraw, ImageInstance, ImagePipeline};
 use crate::keyboard;
 use crate::node::{
     AnimatedOverrides, NodeKind, WgpuNode, ACTIVITY_INDICATOR_SPIN_PERIOD_SEC,
     CARET_BLINK_PERIOD_SEC, SCROLLBAR_INSET, SCROLLBAR_MIN_THUMB, SCROLLBAR_WIDTH,
 };
 use crate::pipeline::{Instance as RectInstance, RectPipeline};
-use crate::style_convert::{
-    srgb_rgba_to_linear, ResolvedGradient, ResolvedGradientKind,
-};
-use crate::image_pipeline::{ImageDraw, ImageInstance, ImagePipeline};
+use crate::style_convert::{srgb_rgba_to_linear, ResolvedGradient, ResolvedGradientKind};
 use crate::text::{render_text, StagedText, TextCtx, TextStore};
 
 /// Zeroed `RectInstance` for the spread-syntax base in struct
@@ -85,9 +83,7 @@ fn stage_gradient(
         ResolvedGradientKind::Radial { .. } => 2.0,
     };
     let params = match g.kind {
-        ResolvedGradientKind::Linear { direction } => {
-            [direction[0], direction[1], 0.0, 0.0]
-        }
+        ResolvedGradientKind::Linear { direction } => [direction[0], direction[1], 0.0, 0.0],
         ResolvedGradientKind::Radial { center, radii } => {
             [center[0], center[1], radii[0], radii[1]]
         }
@@ -161,10 +157,7 @@ pub struct Renderer {
     /// evicted — Graphics nodes are rare and long-lived; a future
     /// eviction pass keyed on `Backend::drop_subtree` would close
     /// the leak when the framework supports release_graphics.
-    graphics_cache: std::collections::HashMap<
-        runtime_layout::LayoutNode,
-        GraphicsTextureEntry,
-    >,
+    graphics_cache: std::collections::HashMap<runtime_layout::LayoutNode, GraphicsTextureEntry>,
 }
 
 /// GPU resources backing one `NodeKind::Graphics` node:
@@ -213,7 +206,7 @@ pub struct ImageRequest {
     /// How the bitmap fits `rect` — applied in `resolve_draws` against the
     /// loaded texture's natural size (adjusts the quad rect for Contain, the
     /// UVs for Cover; Fill stretches).
-    pub fit: runtime_core::ObjectFit,
+    pub fit: runtime_shared::ObjectFit,
 }
 
 /// One Graphics node recorded during the tree walk. Resolved
@@ -241,18 +234,12 @@ impl Renderer {
     /// Create the renderer's GPU resources. `format` must match
     /// the surface's color format; the rect + image pipelines
     /// are created against it.
-    pub fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        format: wgpu::TextureFormat,
-    ) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         Self {
             rect: RectPipeline::new(device, format),
             text: TextCtx::new(device, queue, format),
             image: ImagePipeline::new(device, format),
-            device_frame: crate::device_frame_pipeline::DeviceFramePipeline::new(
-                device, format,
-            ),
+            device_frame: crate::device_frame_pipeline::DeviceFramePipeline::new(device, format),
             image_cache: std::collections::HashMap::new(),
             graphics_cache: std::collections::HashMap::new(),
         }
@@ -296,7 +283,11 @@ impl Renderer {
         if needs_alloc {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("graphics-target"),
-                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -327,7 +318,12 @@ impl Renderer {
             });
             self.graphics_cache.insert(
                 layout,
-                GraphicsTextureEntry { texture, view, bind_group, size: (w, h) },
+                GraphicsTextureEntry {
+                    texture,
+                    view,
+                    bind_group,
+                    size: (w, h),
+                },
             );
         }
         self.graphics_cache.get(&layout)
@@ -401,7 +397,9 @@ impl Renderer {
         if let Some(root) = root.as_ref() {
             let mut backend = host.backend().borrow_mut();
             let root_layout = root.borrow().layout;
-            backend.layout.compute(root_layout, viewport[0], viewport[1]);
+            backend
+                .layout
+                .compute(root_layout, viewport[0], viewport[1]);
             let overlays = collect_overlays(root);
             for overlay in &overlays {
                 let id = overlay.borrow().layout;
@@ -706,10 +704,8 @@ impl Renderer {
             .chain(nav_top_image_requests.iter())
             .chain(overlay_image_requests.iter())
         {
-            let asset_bytes_owned: Option<Vec<u8>> =
-                resolve_asset_url(&req.src).and_then(|id| {
-                    backend.image_asset_bytes(id).map(|b| b.to_vec())
-                });
+            let asset_bytes_owned: Option<Vec<u8>> = resolve_asset_url(&req.src)
+                .and_then(|id| backend.image_asset_bytes(id).map(|b| b.to_vec()));
             let asset_bytes: Option<&[u8]> = asset_bytes_owned.as_deref();
             let _ = self.get_or_load_image(device, queue, &req.src, asset_bytes);
         }
@@ -719,45 +715,43 @@ impl Renderer {
         // unsupported format, etc.). Failed requests reuse
         // the original missing-image stripe so the slot is
         // visible in-place.
-        let resolve_draws =
-            |reqs: &[ImageRequest], rects: &mut Vec<RectInstance>,
-             cache: &std::collections::HashMap<String, ImageCacheState>|
-             -> Vec<(ImageInstance, String)> {
-                let mut out = Vec::new();
-                for req in reqs {
-                    match cache.get(&req.src) {
-                        Some(ImageCacheState::Loaded(entry)) => {
-                            let (rect, uv_rect) =
-                                fit_image(req.fit, req.rect, entry.size);
-                            out.push((
-                                ImageInstance {
-                                    rect,
-                                    uv_rect,
-                                    tint: [1.0, 1.0, 1.0, 1.0],
-                                    rotation: 0.0,
-                                    opacity: req.opacity,
-                                    _pad: [0.0; 2],
-                                },
-                                req.src.clone(),
-                            ));
-                        }
-                        _ => {
-                            paint_image_placeholder(
-                                req.rect.0,
-                                req.rect.1,
-                                req.rect.2,
-                                req.rect.3,
-                                &req.src,
-                                req.alt.as_deref(),
-                                rects,
-                            );
-                        }
+        let resolve_draws = |reqs: &[ImageRequest],
+                             rects: &mut Vec<RectInstance>,
+                             cache: &std::collections::HashMap<String, ImageCacheState>|
+         -> Vec<(ImageInstance, String)> {
+            let mut out = Vec::new();
+            for req in reqs {
+                match cache.get(&req.src) {
+                    Some(ImageCacheState::Loaded(entry)) => {
+                        let (rect, uv_rect) = fit_image(req.fit, req.rect, entry.size);
+                        out.push((
+                            ImageInstance {
+                                rect,
+                                uv_rect,
+                                tint: [1.0, 1.0, 1.0, 1.0],
+                                rotation: 0.0,
+                                opacity: req.opacity,
+                                _pad: [0.0; 2],
+                            },
+                            req.src.clone(),
+                        ));
+                    }
+                    _ => {
+                        paint_image_placeholder(
+                            req.rect.0,
+                            req.rect.1,
+                            req.rect.2,
+                            req.rect.3,
+                            &req.src,
+                            req.alt.as_deref(),
+                            rects,
+                        );
                     }
                 }
-                out
-            };
-        let main_image_specs =
-            resolve_draws(&image_requests, &mut rects, &self.image_cache);
+            }
+            out
+        };
+        let main_image_specs = resolve_draws(&image_requests, &mut rects, &self.image_cache);
         let nav_top_image_specs = resolve_draws(
             &nav_top_image_requests,
             &mut nav_top_rects,
@@ -784,9 +778,9 @@ impl Renderer {
             || !nav_top_graphics_requests.is_empty()
             || !overlay_graphics_requests.is_empty()
         {
-            let mut encoder0 = device.create_command_encoder(
-                &wgpu::CommandEncoderDescriptor { label: Some("idealyst-graphics-pre") },
-            );
+            let mut encoder0 = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("idealyst-graphics-pre"),
+            });
             let all = graphics_requests
                 .iter()
                 .chain(nav_top_graphics_requests.iter())
@@ -845,15 +839,11 @@ impl Renderer {
                 // duration of the drawer call so we can pass
                 // `&entry.view` without cloning the un-cloneable
                 // `wgpu::TextureView`.
-                let entry = match self.ensure_graphics_texture(
-                    device,
-                    p.layout_id,
-                    p.size.0,
-                    p.size.1,
-                ) {
-                    Some(e) => e,
-                    None => continue,
-                };
+                let entry =
+                    match self.ensure_graphics_texture(device, p.layout_id, p.size.0, p.size.1) {
+                        Some(e) => e,
+                        None => continue,
+                    };
                 let mut frame = crate::node::GraphicsFrame {
                     device,
                     queue,
@@ -875,12 +865,17 @@ impl Renderer {
         // main / nav-top / overlay batches composite them via
         // the image pipeline alongside regular images.
         let mut main_graphics_specs: Vec<(ImageInstance, runtime_layout::LayoutNode)> = Vec::new();
-        let mut nav_top_graphics_specs: Vec<(ImageInstance, runtime_layout::LayoutNode)> = Vec::new();
-        let mut overlay_graphics_specs: Vec<(ImageInstance, runtime_layout::LayoutNode)> = Vec::new();
+        let mut nav_top_graphics_specs: Vec<(ImageInstance, runtime_layout::LayoutNode)> =
+            Vec::new();
+        let mut overlay_graphics_specs: Vec<(ImageInstance, runtime_layout::LayoutNode)> =
+            Vec::new();
         let resolve_graphics_draws =
             |reqs: &[GraphicsRequest],
              out: &mut Vec<(ImageInstance, runtime_layout::LayoutNode)>,
-             cache: &std::collections::HashMap<runtime_layout::LayoutNode, GraphicsTextureEntry>| {
+             cache: &std::collections::HashMap<
+                runtime_layout::LayoutNode,
+                GraphicsTextureEntry,
+            >| {
                 for req in reqs {
                     let layout_id = req.node.borrow().layout;
                     if !cache.contains_key(&layout_id) {
@@ -899,7 +894,11 @@ impl Renderer {
                     ));
                 }
             };
-        resolve_graphics_draws(&graphics_requests, &mut main_graphics_specs, &self.graphics_cache);
+        resolve_graphics_draws(
+            &graphics_requests,
+            &mut main_graphics_specs,
+            &self.graphics_cache,
+        );
         resolve_graphics_draws(
             &nav_top_graphics_requests,
             &mut nav_top_graphics_specs,
@@ -930,9 +929,7 @@ impl Renderer {
                     instance: *inst,
                     bind_group: match self.image_cache.get(src) {
                         Some(ImageCacheState::Loaded(e)) => &e.bind_group,
-                        _ => unreachable!(
-                            "resolved-but-missing image src in cache"
-                        ),
+                        _ => unreachable!("resolved-but-missing image src in cache"),
                     },
                 })
                 .collect();
@@ -966,9 +963,7 @@ impl Renderer {
                 while i < text_barriers.len() {
                     let barrier = text_barriers[i];
                     let mut group_end = i + 1;
-                    while group_end < text_barriers.len()
-                        && text_barriers[group_end] == barrier
-                    {
+                    while group_end < text_barriers.len() && text_barriers[group_end] == barrier {
                         group_end += 1;
                     }
                     phases.push((last_rect, barrier, i, group_end));
@@ -989,10 +984,9 @@ impl Renderer {
             let mut first_phase = true;
             for (phase_idx, &(rect_lo, rect_hi, text_lo, text_hi)) in phases.iter().enumerate() {
                 let last_phase = phase_idx == phases.len() - 1;
-                let mut encoder =
-                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("idealyst-main-phase"),
-                    });
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("idealyst-main-phase"),
+                });
                 {
                     let load = if first_phase {
                         // Clear to white. The display region shows
@@ -1020,7 +1014,10 @@ impl Renderer {
                             view: target_view,
                             resolve_target: None,
                             depth_slice: None,
-                            ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+                            ops: wgpu::Operations {
+                                load,
+                                store: wgpu::StoreOp::Store,
+                            },
                         })],
                         depth_stencil_attachment: None,
                         timestamp_writes: None,
@@ -1044,13 +1041,8 @@ impl Renderer {
                     // can revisit this if they need finer
                     // image/text interleaving.
                     if last_phase && !main_image_draws.is_empty() {
-                        self.image.render(
-                            device,
-                            queue,
-                            &mut pass,
-                            viewport,
-                            &main_image_draws,
-                        );
+                        self.image
+                            .render(device, queue, &mut pass, viewport, &main_image_draws);
                     }
                     if text_hi > text_lo {
                         let mut fs = host.font_system().borrow_mut();
@@ -1068,7 +1060,6 @@ impl Renderer {
                 queue.submit(std::iter::once(encoder.finish()));
                 first_phase = false;
             }
-
         }
 
         // ----- Submit 1.5: nav-slide top screen (loads pass 1) -----
@@ -1095,44 +1086,38 @@ impl Renderer {
                     },
                 })
                 .collect();
-            nav_top_image_draws.extend(nav_top_graphics_specs.iter().map(
-                |(inst, layout_id)| ImageDraw {
+            nav_top_image_draws.extend(nav_top_graphics_specs.iter().map(|(inst, layout_id)| {
+                ImageDraw {
                     instance: *inst,
                     bind_group: &self.graphics_cache[layout_id].bind_group,
-                },
-            ));
-            let mut encoder_mid =
-                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("idealyst-nav-slide"),
-                });
+                }
+            }));
+            let mut encoder_mid = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("idealyst-nav-slide"),
+            });
             {
-                let mut pass =
-                    encoder_mid.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("idealyst-nav-slide-pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: target_view,
-                            resolve_target: None,
-                            depth_slice: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
+                let mut pass = encoder_mid.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("idealyst-nav-slide-pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target_view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
                 pass.set_viewport(vx, vy, vw.max(1.0), vh.max(1.0), 0.0, 1.0);
-                self.rect.render(device, queue, &mut pass, viewport, &nav_top_rects);
+                self.rect
+                    .render(device, queue, &mut pass, viewport, &nav_top_rects);
                 if !nav_top_image_draws.is_empty() {
-                    self.image.render(
-                        device,
-                        queue,
-                        &mut pass,
-                        viewport,
-                        &nav_top_image_draws,
-                    );
+                    self.image
+                        .render(device, queue, &mut pass, viewport, &nav_top_image_draws);
                 }
                 let mut fs = host.font_system().borrow_mut();
                 let _ = render_text(
@@ -1165,22 +1150,19 @@ impl Renderer {
                     instance: *inst,
                     bind_group: match self.image_cache.get(src) {
                         Some(ImageCacheState::Loaded(e)) => &e.bind_group,
-                        _ => unreachable!(
-                            "resolved-but-missing image src in cache"
-                        ),
+                        _ => unreachable!("resolved-but-missing image src in cache"),
                     },
                 })
                 .collect();
-            overlay_image_draws.extend(overlay_graphics_specs.iter().map(
-                |(inst, layout_id)| ImageDraw {
+            overlay_image_draws.extend(overlay_graphics_specs.iter().map(|(inst, layout_id)| {
+                ImageDraw {
                     instance: *inst,
                     bind_group: &self.graphics_cache[layout_id].bind_group,
-                },
-            ));
-            let mut encoder2 =
-                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("idealyst-overlays"),
-                });
+                }
+            }));
+            let mut encoder2 = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("idealyst-overlays"),
+            });
             {
                 let mut pass = encoder2.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("idealyst-overlay-pass"),
@@ -1203,16 +1185,12 @@ impl Renderer {
                 });
                 pass.set_viewport(vx, vy, vw.max(1.0), vh.max(1.0), 0.0, 1.0);
                 if !overlay_rects.is_empty() {
-                    self.rect.render(device, queue, &mut pass, viewport, &overlay_rects);
+                    self.rect
+                        .render(device, queue, &mut pass, viewport, &overlay_rects);
                 }
                 if !overlay_image_draws.is_empty() {
-                    self.image.render(
-                        device,
-                        queue,
-                        &mut pass,
-                        viewport,
-                        &overlay_image_draws,
-                    );
+                    self.image
+                        .render(device, queue, &mut pass, viewport, &overlay_image_draws);
                 }
                 if !overlay_texts.is_empty() {
                     let mut fs = host.font_system().borrow_mut();
@@ -1235,12 +1213,8 @@ impl Renderer {
                 // edge strips — the inverse-SDF shader gives a
                 // clean rounded device silhouette.
                 if device_corner_radius > 0.0 {
-                    self.device_frame.render(
-                        queue,
-                        &mut pass,
-                        viewport,
-                        device_corner_radius,
-                    );
+                    self.device_frame
+                        .render(queue, &mut pass, viewport, device_corner_radius);
                 }
             }
             queue.submit(std::iter::once(encoder2.finish()));
@@ -1373,11 +1347,13 @@ fn walk<'a>(
             .get(&key)
             .and_then(|child| {
                 if child.scroll_layout == Some(scroll.scroll_layout) {
-                    Some(crate::sticky::compute_translate(
-                        child.natural_y,
-                        child.threshold_top,
-                        scroll.scroll_offset_y,
-                    ) * acc_scale_y)
+                    Some(
+                        crate::sticky::compute_translate(
+                            child.natural_y,
+                            child.threshold_top,
+                            scroll.scroll_offset_y,
+                        ) * acc_scale_y,
+                    )
                 } else {
                     None
                 }
@@ -1396,11 +1372,19 @@ fn walk<'a>(
     // iOS's CGAffineTransform baking order.
     let static_tx = {
         let t = data.render.static_translate[0];
-        if t.is_percent { t.value * frame.width } else { t.value }
+        if t.is_percent {
+            t.value * frame.width
+        } else {
+            t.value
+        }
     };
     let static_ty = {
         let t = data.render.static_translate[1];
-        if t.is_percent { t.value * frame.height } else { t.value }
+        if t.is_percent {
+            t.value * frame.height
+        } else {
+            t.value
+        }
     };
     let static_sx = data.render.static_scale[0];
     let static_sy = data.render.static_scale[1];
@@ -1460,10 +1444,7 @@ fn walk<'a>(
     // Cull entirely-out-of-clip rects. Doesn't handle partial
     // overlap (a half-visible row will still draw past the
     // scrollview's edge). Real per-fragment clipping is shader work.
-    let in_clip = !(x + w < clip.0
-        || x > clip.0 + clip.2
-        || y + h < clip.1
-        || y > clip.1 + clip.3);
+    let in_clip = !(x + w < clip.0 || x > clip.0 + clip.2 || y + h < clip.1 || y > clip.1 + clip.3);
     if !is_native_widget && in_clip {
         let has_bg = r.background.is_some() || local_bg.is_some();
         let has_gradient = r.gradient.is_some();
@@ -1497,8 +1478,12 @@ fn walk<'a>(
             // `shadow_blur > 0` path.
             if let Some(sh) = r.shadow.as_ref() {
                 let bw = sh.blur.max(0.0);
-                let shadow_color =
-                    srgb_rgba_to_linear([sh.color[0], sh.color[1], sh.color[2], sh.color[3] * node_opacity]);
+                let shadow_color = srgb_rgba_to_linear([
+                    sh.color[0],
+                    sh.color[1],
+                    sh.color[2],
+                    sh.color[3] * node_opacity,
+                ]);
                 rects.push(RectInstance {
                     rect: [
                         x + sh.offset[0] - bw,
@@ -1650,7 +1635,7 @@ fn walk<'a>(
                         // measured text width. `Justify` falls back
                         // to `Left` — glyphon doesn't expose a
                         // straightforward justify axis.
-                        use runtime_core::TextAlign;
+                        use runtime_shared::TextAlign;
                         match r.text_align {
                             TextAlign::Left | TextAlign::Justify => (x, y),
                             TextAlign::Center => {
@@ -1686,9 +1671,7 @@ fn walk<'a>(
                                         end_gx = glyphs[j].x + glyphs[j].w;
                                         j += 1;
                                     }
-                                    if let Some(bg) =
-                                        rich.get(meta).and_then(|sp| sp.background)
-                                    {
+                                    if let Some(bg) = rich.get(meta).and_then(|sp| sp.background) {
                                         rects.push(RectInstance {
                                             rect: [
                                                 text_x + start_gx,
@@ -1753,7 +1736,9 @@ fn walk<'a>(
                 });
                 skin.paint_toggle(x, y, w, h, t, tint, rects);
             }
-            NodeKind::Slider { value, min, max, .. } => {
+            NodeKind::Slider {
+                value, min, max, ..
+            } => {
                 let tint = r.background.map(|bg_rest| {
                     backend.animator.sample_color(
                         TweenKey::new(data.layout, AnimProperty::BackgroundColor),
@@ -1764,15 +1749,7 @@ fn walk<'a>(
                 skin.paint_slider(x, y, w, h, *value, *min, *max, tint, rects);
             }
             NodeKind::ActivityIndicator { color, .. } => {
-                skin.paint_activity_indicator(
-                    x,
-                    y,
-                    w,
-                    h,
-                    spinner_phase,
-                    *color,
-                    rects,
-                );
+                skin.paint_activity_indicator(x, y, w, h, spinner_phase, *color, rects);
             }
             NodeKind::TextInput { value, .. } | NodeKind::TextArea { value, .. } => {
                 let is_focused = focused_input_layout == Some(data.layout);
@@ -1840,7 +1817,13 @@ fn walk<'a>(
                     opacity: r.opacity,
                 });
             }
-            NodeKind::Icon { paths, view_box, color, stroke_progress, filled } => {
+            NodeKind::Icon {
+                paths,
+                view_box,
+                color,
+                stroke_progress,
+                filled,
+            } => {
                 let tint = color.unwrap_or(r.color);
                 // Sample the animator first — `animate_icon_stroke`
                 // drives the IconStroke property; falls back to the
@@ -1863,7 +1846,12 @@ fn walk<'a>(
             // return above so the in-flow clip-cull doesn't
             // drop them when their flow position scrolls
             // off-screen.
-            NodeKind::TabNavigator { active_tab, tab_count, bar_style, .. } => {
+            NodeKind::TabNavigator {
+                active_tab,
+                tab_count,
+                bar_style,
+                ..
+            } => {
                 // Paint the tab bar strip; the screens stack
                 // through the child walk below. `bar_style` —
                 // if the app set one via `.tab_bar_style(...)` —
@@ -1873,13 +1861,7 @@ fn walk<'a>(
                     .as_ref()
                     .and_then(|s| s.background.as_ref())
                     .map(|t| crate::style_convert::parse_color(&t.resolve()));
-                paint_tab_bar(
-                    x, y, w, h,
-                    active_tab.get(),
-                    tab_count.get(),
-                    bar_bg,
-                    rects,
-                );
+                paint_tab_bar(x, y, w, h, active_tab.get(), tab_count.get(), bar_bg, rects);
             }
             NodeKind::DrawerNavigator { is_open, .. } => {
                 // Body screens paint through the child walk
@@ -1916,7 +1898,9 @@ fn walk<'a>(
     // by `-offset` and narrows the clip to its frame (intersected
     // with the inherited clip).
     let (child_origin_x, child_origin_y, child_clip) = match &data.kind {
-        NodeKind::ScrollView { offset_x, offset_y, .. } => (
+        NodeKind::ScrollView {
+            offset_x, offset_y, ..
+        } => (
             x - *offset_x,
             y - *offset_y,
             intersect_rect((x, y, w, h), clip),
@@ -1932,21 +1916,22 @@ fn walk<'a>(
     // subtree carry `None` here, which is what makes
     // sticky-in-non-scrolling-parent fall back to relative.
     let child_enclosing_scroll = match &data.kind {
-        NodeKind::ScrollView { offset_y, .. } => {
-            Some(crate::sticky::EnclosingScroll {
-                scroll_layout: data.layout,
-                scroll_offset_y: *offset_y,
-            })
-        }
+        NodeKind::ScrollView { offset_y, .. } => Some(crate::sticky::EnclosingScroll {
+            scroll_layout: data.layout,
+            scroll_offset_y: *offset_y,
+        }),
         _ => enclosing_scroll,
     };
 
     // Capture scrollview offsets for the post-children scrollbar
     // overlay, computed before the borrow is released.
     let scrollbar_state: Option<(bool, f32, f32)> = match &data.kind {
-        NodeKind::ScrollView { horizontal, offset_x, offset_y, .. } => {
-            Some((*horizontal, *offset_x, *offset_y))
-        }
+        NodeKind::ScrollView {
+            horizontal,
+            offset_x,
+            offset_y,
+            ..
+        } => Some((*horizontal, *offset_x, *offset_y)),
         _ => None,
     };
 
@@ -1972,7 +1957,11 @@ fn walk<'a>(
     // an origin offset before recursing.
     let (mut visible_children, nav_in_transition): (Vec<(WgpuNode, ScreenXform)>, bool) =
         match kind_ref {
-            NodeKind::Navigator { transition, transition_anim, .. } => {
+            NodeKind::Navigator {
+                transition,
+                transition_anim,
+                ..
+            } => {
                 let frame = nav_transition_frame(transition, transition_anim, w, h, now);
                 if let Some(frame) = frame {
                     // Painting both screens in one submit would let
@@ -2007,54 +1996,58 @@ fn walk<'a>(
                     )
                 }
             }
-        NodeKind::TabNavigator { active_tab, .. } => {
-            let idx = active_tab.get().min(children.len().saturating_sub(1));
-            (
+            NodeKind::TabNavigator { active_tab, .. } => {
+                let idx = active_tab.get().min(children.len().saturating_sub(1));
+                (
+                    children
+                        .get(idx)
+                        .cloned()
+                        .map(|c| vec![(c, ScreenXform::default())])
+                        .unwrap_or_default(),
+                    false,
+                )
+            }
+            // DrawerNavigator: paint only the active body screen
+            // in the normal walk. The sidebar (kept out of
+            // `children` by `drawer_navigator_attach_sidebar`'s
+            // separate slot, but appended into the children Vec
+            // too for Taffy parenting) gets hoisted to the
+            // deferred drawer-overlay pass so it composites above
+            // the body with the slide transform.
+            NodeKind::DrawerNavigator {
+                sidebar,
+                active_screen,
+                ..
+            } => {
+                let sidebar_node = sidebar.borrow().clone();
+                let body: Vec<WgpuNode> = children
+                    .iter()
+                    .filter(|c| !sidebar_node.as_ref().is_some_and(|s| Rc::ptr_eq(s, c)))
+                    .cloned()
+                    .collect();
+                let idx = active_screen.get().min(body.len().saturating_sub(1));
+                (
+                    body.get(idx)
+                        .cloned()
+                        .map(|c| vec![(c, ScreenXform::default())])
+                        .unwrap_or_default(),
+                    false,
+                )
+            }
+            // Portal never reaches this match — the early-return at
+            // the top of `walk` deferred it before any clip /
+            // children logic ran. Listed for exhaustiveness so a
+            // future variant can't fall into the default arm and
+            // accidentally walk portal children inline.
+            NodeKind::Portal { .. } => (Vec::new(), false),
+            _ => (
                 children
-                    .get(idx)
-                    .cloned()
-                    .map(|c| vec![(c, ScreenXform::default())])
-                    .unwrap_or_default(),
+                    .iter()
+                    .map(|c| (c.clone(), ScreenXform::default()))
+                    .collect(),
                 false,
-            )
-        }
-        // DrawerNavigator: paint only the active body screen
-        // in the normal walk. The sidebar (kept out of
-        // `children` by `drawer_navigator_attach_sidebar`'s
-        // separate slot, but appended into the children Vec
-        // too for Taffy parenting) gets hoisted to the
-        // deferred drawer-overlay pass so it composites above
-        // the body with the slide transform.
-        NodeKind::DrawerNavigator { sidebar, active_screen, .. } => {
-            let sidebar_node = sidebar.borrow().clone();
-            let body: Vec<WgpuNode> = children
-                .iter()
-                .filter(|c| !sidebar_node.as_ref().is_some_and(|s| Rc::ptr_eq(s, c)))
-                .cloned()
-                .collect();
-            let idx = active_screen.get().min(body.len().saturating_sub(1));
-            (
-                body.get(idx)
-                    .cloned()
-                    .map(|c| vec![(c, ScreenXform::default())])
-                    .unwrap_or_default(),
-                false,
-            )
-        }
-        // Portal never reaches this match — the early-return at
-        // the top of `walk` deferred it before any clip /
-        // children logic ran. Listed for exhaustiveness so a
-        // future variant can't fall into the default arm and
-        // accidentally walk portal children inline.
-        NodeKind::Portal { .. } => (Vec::new(), false),
-        _ => (
-            children
-                .iter()
-                .map(|c| (c.clone(), ScreenXform::default()))
-                .collect(),
-            false,
-        ),
-    };
+            ),
+        };
     // Z-index ordering. Sibling paint order = document order by
     // default; an animated `AnimProp::ZIndex` (welcome's planets
     // use this to swap above/below the content layer) overrides
@@ -2065,14 +2058,18 @@ fn walk<'a>(
     // distinct nodes (no aliasing with `data`, still borrowed).
     if visible_children.len() > 1 {
         visible_children.sort_by(|a, b| {
-            let za = a.0.borrow()
-                .animated.as_ref()
-                .and_then(|av| av.z_index)
-                .unwrap_or(0.0);
-            let zb = b.0.borrow()
-                .animated.as_ref()
-                .and_then(|av| av.z_index)
-                .unwrap_or(0.0);
+            let za =
+                a.0.borrow()
+                    .animated
+                    .as_ref()
+                    .and_then(|av| av.z_index)
+                    .unwrap_or(0.0);
+            let zb =
+                b.0.borrow()
+                    .animated
+                    .as_ref()
+                    .and_then(|av| av.z_index)
+                    .unwrap_or(0.0);
             za.partial_cmp(&zb).unwrap_or(std::cmp::Ordering::Equal)
         });
     }
@@ -2101,8 +2098,7 @@ fn walk<'a>(
     {
         if let Some(s) = sidebar.borrow().as_ref().cloned() {
             let target = if is_open.get() { 1.0 } else { 0.0 };
-            let (progress, anim_alive) =
-                sample_drawer_progress(anim_started_at.get(), target, now);
+            let (progress, anim_alive) = sample_drawer_progress(anim_started_at.get(), target, now);
             // Clear the anim cell once the slide settles so the
             // host's tick doesn't keep redrawing forever.
             if !anim_alive && anim_started_at.get().is_some() {
@@ -2166,9 +2162,7 @@ fn walk<'a>(
     // screen's top edge.
     if paint_header_after_children {
         let data = node.borrow();
-        paint_screen_header(
-            skin, &data, x, y, w, rects, texts, text_store, header_hits,
-        );
+        paint_screen_header(skin, &data, x, y, w, rects, texts, text_store, header_hits);
     }
 }
 
@@ -2282,6 +2276,7 @@ pub(crate) struct DeferredDrawer {
     /// tick uses this to keep redrawing. Once a transition
     /// finishes, the renderer clears the `anim_started_at` cell
     /// on the source node.
+    #[allow(dead_code)] // see HeaderHitAction: nav chrome is seam-parked
     pub anim_alive: bool,
     /// Strong handle so the host's pointer dispatch can find
     /// the navigator a scrim tap belongs to.
@@ -2377,8 +2372,12 @@ fn paint_drawer_overlay<'a>(
     // Color comes from the navigator's `scrim_style.background`
     // when the app set one via `.scrim_style(...)`; otherwise
     // the default 32%-black Material guideline value.
-    let scrim_rgba = scrim_color_from_navigator(&drawer.navigator)
-        .unwrap_or([0.0, 0.0, 0.0, crate::node::DRAWER_SCRIM_MAX_ALPHA]);
+    let scrim_rgba = scrim_color_from_navigator(&drawer.navigator).unwrap_or([
+        0.0,
+        0.0,
+        0.0,
+        crate::node::DRAWER_SCRIM_MAX_ALPHA,
+    ]);
     let scrim_alpha = drawer.progress * scrim_rgba[3];
     if scrim_alpha > 0.001 {
         rects.push(crate::widgets::rect_inst(
@@ -2457,10 +2456,7 @@ fn paint_drawer_overlay<'a>(
     // Sub-overlays/sub-nav-tops/sub-drawers from inside the
     // sidebar are uncommon; surface a warning if dropped so
     // future authors notice.
-    if !sub_overlays.is_empty()
-        || !sub_nav_tops.is_empty()
-        || !sub_drawers.is_empty()
-    {
+    if !sub_overlays.is_empty() || !sub_nav_tops.is_empty() || !sub_drawers.is_empty() {
         // Quiet drop — a sidebar with a modal inside is rare;
         // if needed we can lift them into the outer queues.
     }
@@ -2482,7 +2478,9 @@ fn sample_drawer_progress(
     target: f32,
     now: Instant,
 ) -> (f32, bool) {
-    let Some(start) = started else { return (target, false) };
+    let Some(start) = started else {
+        return (target, false);
+    };
     let elapsed = now.saturating_duration_since(start).as_millis() as f32;
     let total = crate::node::DRAWER_ANIM_MS as f32;
     if elapsed >= total {
@@ -2512,12 +2510,8 @@ fn nav_transition_frame(
     let elapsed = now.saturating_duration_since(nav.start).as_millis() as f32;
     let progress = (elapsed / duration).clamp(0.0, 1.0);
     let direction = match &nav.kind {
-        crate::node::NavTransitionKind::Push => {
-            crate::nav_anim::TransitionDirection::Push
-        }
-        crate::node::NavTransitionKind::Pop { .. } => {
-            crate::nav_anim::TransitionDirection::Pop
-        }
+        crate::node::NavTransitionKind::Push => crate::nav_anim::TransitionDirection::Push,
+        crate::node::NavTransitionKind::Pop { .. } => crate::nav_anim::TransitionDirection::Pop,
     };
     Some(anim.sample(direction, progress, width, height))
 }
@@ -2629,16 +2623,14 @@ fn walk_overlay<'a>(
     // shouldn't reach here — `create_portal` panics on construction.
     let (content_x, content_y) = match &data.kind {
         NodeKind::Portal { target, .. } => match target {
-            runtime_core::primitives::portal::PortalTarget::Viewport(
-                placement,
-            ) => place_overlay(
+            runtime_shared::primitives::portal::PortalTarget::Viewport(placement) => place_overlay(
                 *placement,
                 frame.width,
                 frame.height,
                 viewport.0,
                 viewport.1,
             ),
-            runtime_core::primitives::portal::PortalTarget::Anchor {
+            runtime_shared::primitives::portal::PortalTarget::Anchor {
                 target,
                 side,
                 align,
@@ -2654,9 +2646,7 @@ fn walk_overlay<'a>(
                 ),
                 None => (0.0, 0.0),
             },
-            runtime_core::primitives::portal::PortalTarget::Named(_) => {
-                (0.0, 0.0)
-            }
+            runtime_shared::primitives::portal::PortalTarget::Named(_) => (0.0, 0.0),
         },
         _ => (0.0, 0.0),
     };
@@ -2736,13 +2726,13 @@ fn walk_overlay<'a>(
 /// pin to one edge with the cross axis full-width; `Center`
 /// centers in both axes; `FullScreen` paints at the origin.
 fn place_overlay(
-    placement: runtime_core::primitives::portal::ViewportPlacement,
+    placement: runtime_shared::primitives::portal::ViewportPlacement,
     content_w: f32,
     content_h: f32,
     viewport_w: f32,
     viewport_h: f32,
 ) -> (f32, f32) {
-    use runtime_core::primitives::portal::ViewportPlacement;
+    use runtime_shared::primitives::portal::ViewportPlacement;
     match placement {
         ViewportPlacement::Center => (
             ((viewport_w - content_w) * 0.5).max(0.0),
@@ -2769,11 +2759,11 @@ fn position_anchored(
     trigger: (f32, f32, f32, f32),
     content_w: f32,
     content_h: f32,
-    side: runtime_core::primitives::portal::ElementSide,
-    align: runtime_core::primitives::portal::ElementAlign,
+    side: runtime_shared::primitives::portal::ElementSide,
+    align: runtime_shared::primitives::portal::ElementAlign,
     offset: f32,
 ) -> (f32, f32) {
-    use runtime_core::primitives::portal::{ElementAlign, ElementSide};
+    use runtime_shared::primitives::portal::{ElementAlign, ElementSide};
     let (tx, ty, tw, th) = trigger;
     // `Above` / `Below` flow vertically (cross-axis = horizontal).
     // `Start` / `End` flow horizontally (cross-axis = vertical).
@@ -2782,16 +2772,12 @@ fn position_anchored(
         (ElementSide::Above | ElementSide::Below, ElementAlign::Center) => {
             (tx + (tw - content_w) * 0.5, 0.0)
         }
-        (ElementSide::Above | ElementSide::Below, ElementAlign::End) => {
-            (tx + tw - content_w, 0.0)
-        }
+        (ElementSide::Above | ElementSide::Below, ElementAlign::End) => (tx + tw - content_w, 0.0),
         (ElementSide::Start | ElementSide::End, ElementAlign::Start) => (0.0, ty),
         (ElementSide::Start | ElementSide::End, ElementAlign::Center) => {
             (0.0, ty + (th - content_h) * 0.5)
         }
-        (ElementSide::Start | ElementSide::End, ElementAlign::End) => {
-            (0.0, ty + th - content_h)
-        }
+        (ElementSide::Start | ElementSide::End, ElementAlign::End) => (0.0, ty + th - content_h),
     };
     match side {
         ElementSide::Above => (cross_x, ty - content_h - offset),
@@ -2825,11 +2811,11 @@ const PLACEHOLDER_ACCENT: [f32; 4] = [0.55, 0.55, 0.58, 1.0];
 /// `natural` is the texture's `(w, h)` in pixels. Degenerate sizes (a 0-px
 /// dimension) fall back to `Fill` to avoid a divide-by-zero.
 fn fit_image(
-    fit: runtime_core::ObjectFit,
+    fit: runtime_shared::ObjectFit,
     box_rect: (f32, f32, f32, f32),
     natural: (u32, u32),
 ) -> ([f32; 4], [f32; 4]) {
-    use runtime_core::ObjectFit;
+    use runtime_shared::ObjectFit;
     let (bx, by, bw, bh) = box_rect;
     let full_rect = [bx, by, bw, bh];
     let full_uv = [0.0, 0.0, 1.0, 1.0];
@@ -3365,16 +3351,7 @@ fn path_segments(d: &str) -> Vec<((f32, f32), (f32, f32))> {
                         } else {
                             (cursor.0 + ex, cursor.1 + ey)
                         };
-                        sample_arc(
-                            cursor,
-                            rx,
-                            ry,
-                            phi,
-                            large,
-                            sweep,
-                            end,
-                            &mut segments,
-                        );
+                        sample_arc(cursor, rx, ry, phi, large, sweep, end, &mut segments);
                         cursor = end;
                         Some(())
                     }
@@ -3411,14 +3388,8 @@ fn sample_cubic(
         let t = i as f32 / ICON_BEZIER_STEPS as f32;
         let u = 1.0 - t;
         let b = (
-            u * u * u * p0.0
-                + 3.0 * u * u * t * p1.0
-                + 3.0 * u * t * t * p2.0
-                + t * t * t * p3.0,
-            u * u * u * p0.1
-                + 3.0 * u * u * t * p1.1
-                + 3.0 * u * t * t * p2.1
-                + t * t * t * p3.1,
+            u * u * u * p0.0 + 3.0 * u * u * t * p1.0 + 3.0 * u * t * t * p2.0 + t * t * t * p3.0,
+            u * u * u * p0.1 + 3.0 * u * u * t * p1.1 + 3.0 * u * t * t * p2.1 + t * t * t * p3.1,
         );
         out.push((prev, b));
         prev = b;
@@ -3494,7 +3465,12 @@ impl<'a> Scanner<'a> {
                 self.pos += 1;
             }
         }
-        if self.pos == start || (!had_int && self.bytes[start..self.pos].iter().all(|&c| !c.is_ascii_digit())) {
+        if self.pos == start
+            || (!had_int
+                && self.bytes[start..self.pos]
+                    .iter()
+                    .all(|&c| !c.is_ascii_digit()))
+        {
             self.pos = start;
             return None;
         }
@@ -3580,7 +3556,9 @@ fn sample_arc(
     // Step 5: angles.
     fn vec_angle(ux: f32, uy: f32, vx: f32, vy: f32) -> f32 {
         let dot = ux * vx + uy * vy;
-        let len = ((ux * ux + uy * uy) * (vx * vx + vy * vy)).sqrt().max(f32::EPSILON);
+        let len = ((ux * ux + uy * uy) * (vx * vx + vy * vy))
+            .sqrt()
+            .max(f32::EPSILON);
         let mut a = (dot / len).clamp(-1.0, 1.0).acos();
         if ux * vy - uy * vx < 0.0 {
             a = -a;
@@ -3614,7 +3592,6 @@ fn sample_arc(
         prev = pt;
     }
 }
-
 
 /// Tab-bar strip at the bottom of a TabNavigator. Renders
 /// `tab_count` evenly-spaced "tab buttons" with the active one
@@ -3691,7 +3668,12 @@ fn paint_unsupported(
     // Horizontal accent stripe.
     let stripe_h = 3.0_f32;
     rects.push(RectInstance {
-        rect: [x + 12.0, y + (h - stripe_h) * 0.5, (w - 24.0).max(0.0), stripe_h],
+        rect: [
+            x + 12.0,
+            y + (h - stripe_h) * 0.5,
+            (w - 24.0).max(0.0),
+            stripe_h,
+        ],
         bg: srgb_rgba_to_linear([0.78, 0.62, 0.20, 0.55]),
         corner_radius: [stripe_h * 0.5; 4],
         border_color: [0.0; 4],
@@ -3771,9 +3753,7 @@ fn decode_and_upload(
         asset_bytes.to_vec()
     } else {
         let resolved = resolve_asset_path(src).or_else(|| {
-            log::warn!(
-                "image::resolve({src:?}) — not found in cwd, exe dir, or workspace root"
-            );
+            log::warn!("image::resolve({src:?}) — not found in cwd, exe dir, or workspace root");
             None
         })?;
         std::fs::read(&resolved)
@@ -3793,7 +3773,11 @@ fn decode_and_upload(
     // sRGB→linear conversion at sample time for free.
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("image-texture"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -3814,7 +3798,11 @@ fn decode_and_upload(
             bytes_per_row: Some(4 * w),
             rows_per_image: Some(h),
         },
-        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
     );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -3831,7 +3819,12 @@ fn decode_and_upload(
             },
         ],
     });
-    Some(ImageEntry { texture, view, bind_group, size: (w, h) })
+    Some(ImageEntry {
+        texture,
+        view,
+        bind_group,
+        size: (w, h),
+    })
 }
 
 /// Parse an `asset://{id}` URL into its numeric `AssetId`.
@@ -3840,10 +3833,10 @@ fn decode_and_upload(
 /// `image_asset!()` macro emits `asset://{id}` srcs; the wgpu
 /// renderer routes those through the backend's image-asset byte
 /// cache instead of the filesystem resolver.
-fn resolve_asset_url(src: &str) -> Option<runtime_core::AssetId> {
+fn resolve_asset_url(src: &str) -> Option<runtime_shared::AssetId> {
     src.strip_prefix("asset://")
         .and_then(|rest| rest.parse::<u64>().ok())
-        .map(runtime_core::AssetId)
+        .map(runtime_shared::AssetId)
 }
 
 /// Resolve a user-supplied image path to an absolute path on
@@ -3859,7 +3852,11 @@ fn resolve_asset_path(src: &str) -> Option<std::path::PathBuf> {
     use std::path::{Path, PathBuf};
     let raw = Path::new(src);
     if raw.is_absolute() {
-        return if raw.exists() { Some(raw.to_path_buf()) } else { None };
+        return if raw.exists() {
+            Some(raw.to_path_buf())
+        } else {
+            None
+        };
     }
     // Candidate roots, in priority order.
     let mut roots: Vec<PathBuf> = Vec::new();
@@ -3903,7 +3900,7 @@ fn resolve_asset_path(src: &str) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod fit_image_tests {
     use super::fit_image;
-    use runtime_core::ObjectFit;
+    use runtime_shared::ObjectFit;
 
     // Fill stretches: quad = box, UVs full — regardless of aspect mismatch.
     #[test]

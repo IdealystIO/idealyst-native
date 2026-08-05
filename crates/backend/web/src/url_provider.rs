@@ -1,6 +1,6 @@
 //! Browser History-API provider for the navigator substrate's URL sync.
 //!
-//! Installs `runtime_core::primitives::navigator::url_sync`'s platform
+//! Installs `runtime_shared::primitives::navigator::url_sync`'s platform
 //! provider (pushState / replaceState / back / current path) and wires
 //! the window `popstate` event to the substrate reconciler. Outlet-model
 //! navigators (`swap-navigator`, `stack-navigator`) opt in via
@@ -8,7 +8,7 @@
 //! navigators keep their own helpers-crate URL machinery and ignore
 //! this entirely.
 //!
-//! Also seeds `runtime_core`'s initial-path slot from
+//! Also seeds `runtime_shared`'s initial-path slot from
 //! `window.location.pathname` so the walker's cold-start deep-link
 //! resolution (the same path SSR and native deep links use) mounts the
 //! URL's screen instead of the configured initial. The walker clears
@@ -16,7 +16,7 @@
 //! web navigators discard the walker's initial build regardless, so the
 //! seed is invisible to them.
 
-use runtime_core::primitives::navigator::{self as nav, UrlProvider};
+use runtime_shared::primitives::navigator::{self as nav, UrlProvider};
 use std::cell::Cell;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -35,9 +35,17 @@ fn pathname() -> String {
 }
 
 /// Install the browser URL provider + popstate wiring + initial-path
-/// seed. Idempotent; called from [`crate::install_scheduler`] so every
-/// web host gets it without extra wiring. Safe headless (no `window` ⇒
-/// no-op).
+/// seed. Idempotent, safe headless (no `window` ⇒ no-op).
+///
+/// Called from the boot seam's `BuiltinSet::nav_services` closure
+/// ([`crate::newcore::start_in_with`] /
+/// [`crate::newcore_hydrate::hydrate_in_with`]), NOT from
+/// `install_scheduler` — it used to ride the scheduler so every web host
+/// got it for free, but the popstate listener below calls
+/// `nav::handle_popstate`, which kept `NavigatorControl` reachable from
+/// boot in bundles that had dropped the navigator primitives (10,827
+/// bytes on a `--primitives view,text` hello-world). Behind the set, an
+/// app without `nav` never names this fn at all.
 pub fn install_url_provider() {
     if INSTALLED.with(|c| c.get()) {
         return;

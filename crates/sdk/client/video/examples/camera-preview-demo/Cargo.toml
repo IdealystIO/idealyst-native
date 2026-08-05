@@ -12,25 +12,26 @@ crate-type = ["rlib"]
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# `runtime-core` is aliased to `runtime_core` at the crate root (see
+# src/lib.rs); `async-driver` for the `driver::spawn_async` camera open.
+# `runtime-vocabulary` for the `ui!` emission's absolute
+# `::runtime_vocabulary::glue::…` paths AND the `caps::ExternalOps` /
+# `style_attach::StyleServices` bounds the native registration seam names;
+# `runtime-scene` for the `Registry` the seam takes.
 runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 camera = { workspace = true }
 video = { workspace = true }
 dev-server = { workspace = true, optional = true }
 
-# The concrete backend each platform's wrapper hands to `register_extensions`
-# so we can register the `video` external handler there.
+# Web's `video::register` is registry-CONCRETE (`Registry<WebBackend>`), so
+# the wasm32 leg of `register_scene_extensions` needs the backend's `Host`
+# impl. The native leg is registry-generic and type-dispatches inside the
+# SDK, so no per-platform backend dep is needed there.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
-
-[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
-backend-ios-mobile = { workspace = true }
-
-[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
-backend-android-mobile = { workspace = true }
-
-[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
-backend-macos = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Camera Preview"

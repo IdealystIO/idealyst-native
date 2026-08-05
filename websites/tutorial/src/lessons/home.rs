@@ -4,8 +4,8 @@
 //! door, and a reader who lands here shouldn't have to bounce back out
 //! to start building.
 
-use runtime_core::{ui, Element};
 use idea_ui::{typography_kind, Typography};
+use runtime_core::{ui, Element};
 
 use crate::common::{Callout, CodePanel, DocsLink, LessonPage};
 use crate::routes::HOME_ROUTE;
@@ -53,8 +53,9 @@ idealyst dev --terminal   # TTY app
 idealyst dev --all        # every buildable target at once"##.to_string())
             Typography(
                 content = "Edit your app() and the change shows up without a manual rebuild. The \
-                    default runtime-server mode hot-patches the running tree and preserves state; \
-                    add --local for a lighter cold start that full-reloads on save instead.".to_string()
+                    default runtime-server mode keeps the session on the server, rebuilds it on \
+                    save, and respawns it so the device receives the new tree; add --local for a \
+                    lighter cold start that reloads in place instead.".to_string()
             )
 
             Callout(label = "First build is slow, the rest are fast".to_string()) {
@@ -71,9 +72,10 @@ idealyst dev --all        # every buildable target at once"##.to_string())
             Typography(
                 content = "With the app running, work through the sidebar top to bottom. \
                     Foundations is the map \u{2014} how signals, the UI, and the theme are one \
-                    engine. Then the tracks drill in: Reactivity, Stylesheets, and Media queries, \
-                    each taught against runtime-core directly. Every step ends with a prev/next \
-                    bar and links out to the deep-dive docs.".to_string()
+                    engine, and where they all commit. Then the tracks drill in: Reactivity, \
+                    Stylesheets, and Media queries, each taught against the framework's own \
+                    surface. The Reactivity steps carry live panels you can press. Every step \
+                    ends with a prev/next bar and links out to the deep-dive docs.".to_string()
             )
 
             DocsLink(

@@ -9,9 +9,9 @@
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use runtime_core::accessibility::{AccessibilityProps, Role};
-use runtime_core::{StateBits, StyleRules, TouchHandler};
 use runtime_layout::LayoutNode;
+use runtime_shared::accessibility::{AccessibilityProps, Role};
+use runtime_shared::{StateBits, StyleRules, TouchHandler};
 
 use crate::style_convert::RenderStyle;
 
@@ -173,6 +173,13 @@ pub const TAB_BAR_HEIGHT: f32 = 49.0;
 pub const NAV_HEADER_HEIGHT: f32 = 44.0;
 /// Width of the drawer sidebar when fully open, as a fraction of
 /// the viewport width. iOS UIKit drawers use ~80%.
+// Unreachable under runtime v2 until the native-nav seam re-lands: the
+// old core drove this chrome from `Backend::create_navigator`, a cap that
+// was deleted with the old core
+// (docs/runtime-v2-deletion-baseline.md §2.3). Kept — the geometry and
+// animation work is the substrate a scene-registry navigator handler will
+// drive — but nothing calls it today.
+#[allow(dead_code)]
 pub const DRAWER_WIDTH_RATIO: f32 = 0.78;
 /// Drawer slide-in / slide-out duration in milliseconds.
 pub const DRAWER_ANIM_MS: u32 = 250;
@@ -190,8 +197,8 @@ pub const KEY_PRESS_FLASH_MS: u32 = 120;
 pub type WgpuNode = Rc<RefCell<NodeData>>;
 
 /// Per-frame overrides written by the framework's animation system
-/// via [`runtime_core::Backend::set_animated_f32`] /
-/// [`runtime_core::Backend::set_animated_color`]. The renderer
+/// via [`runtime_shared::Backend::set_animated_f32`] /
+/// [`runtime_shared::Backend::set_animated_color`]. The renderer
 /// composes these with the static `RenderStyle` each frame so an
 /// in-flight `AnimatedValue` always wins over the stylesheet's
 /// resting value without invalidating the underlying style.
@@ -367,7 +374,7 @@ pub enum NodeKind {
     /// `color` is the author's tint override — `None` means use
     /// the platform default (iOS systemGray, M3 primary).
     ActivityIndicator {
-        size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
+        size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
         color: Option<[f32; 4]>,
     },
     /// Navigable link — text + on-activate callback. Same
@@ -420,16 +427,22 @@ pub enum NodeKind {
     /// the anchor's rect each frame (cheap because we re-render
     /// every frame anyway); [`PortalTarget::Named`] is unsupported
     /// in this backend. Backdrop is no longer a backend concern —
-    /// the composition layer (`runtime_core::primitives::overlay`)
+    /// the composition layer (`runtime_shared::primitives::overlay`)
     /// emits a backdrop primitive as a child of the portal, so it
     /// just flows through the regular walk.
     Portal {
-        target: runtime_core::primitives::portal::PortalTarget,
+        target: runtime_shared::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
     },
     /// Virtualizer container. The simulator mounts every item
-    /// eagerly (no actual windowing) — fine for the moderate
-    /// list sizes a smoke preview uses.
+    /// (no actual windowing) — fine for the moderate list sizes a
+    /// smoke preview uses. The fill is DEFERRED to a scheduled
+    /// microtask (`schedule_virtualizer_fill`), never run inside
+    /// `create_virtualizer` / `virtualizer_data_changed`: the
+    /// vocabulary contract requires `mount_item`/`release_item` to be
+    /// invoked with the backend UNBORROWED (they realize/release rows
+    /// through the shared `Rc<RefCell<WgpuBackend>>`), and both entry
+    /// points are called under `backend.borrow_mut()` on the new core.
     Virtualizer {
         horizontal: bool,
         /// `mount_item(idx) -> (node, scope_id)`. Kept so
@@ -445,6 +458,10 @@ pub enum NodeKind {
         /// Scope ids for currently-mounted items, in insertion
         /// order. Parallel to `NodeData.children`.
         scope_ids: std::cell::RefCell<Vec<u64>>,
+        /// Dedup flag for the deferred fill: one queued refill at a
+        /// time (create + the handler's first data-effect fire both
+        /// request one — a single refill serves both).
+        fill_queued: std::cell::Cell<bool>,
     },
     /// Stack-based navigator. The renderer paints only the
     /// last child (top of stack); older screens stay mounted
@@ -459,7 +476,7 @@ pub enum NodeKind {
     /// like `handle.push(...)` reach a no-op stub).
     Navigator {
         scope_ids: std::cell::RefCell<Vec<u64>>,
-        control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
+        control: Rc<runtime_shared::primitives::navigator::NavigatorControl>,
         /// Current in-flight push/pop animation, or `None` when
         /// the navigator is at rest. Sampled by the renderer's
         /// Navigator branch; advanced + cleared by the host's
@@ -479,16 +496,16 @@ pub enum NodeKind {
         /// color, header background, …) merges on top. The
         /// renderer reads these every frame so theme swaps
         /// repaint the header in lockstep with content.
-        header_style: std::cell::RefCell<Option<Rc<runtime_core::StyleRules>>>,
-        title_style: std::cell::RefCell<Option<Rc<runtime_core::StyleRules>>>,
-        button_style: std::cell::RefCell<Option<Rc<runtime_core::StyleRules>>>,
+        header_style: std::cell::RefCell<Option<Rc<runtime_shared::StyleRules>>>,
+        title_style: std::cell::RefCell<Option<Rc<runtime_shared::StyleRules>>>,
+        button_style: std::cell::RefCell<Option<Rc<runtime_shared::StyleRules>>>,
         /// Style for the body area below the header — shows
         /// through any transparent regions in the active
         /// screen's content. Currently stored but unread by the
         /// renderer (screens paint full-bleed by default); kept
         /// so the framework's `.body_style(...)` builder call
         /// doesn't silently drop the value.
-        body_style: std::cell::RefCell<Option<Rc<runtime_core::StyleRules>>>,
+        body_style: std::cell::RefCell<Option<Rc<runtime_shared::StyleRules>>>,
     },
     /// Tab navigator. The active tab index decides which child
     /// is painted; non-active tabs stay mounted (or get released
@@ -507,15 +524,15 @@ pub enum NodeKind {
         /// installed dispatcher subscribes to — otherwise
         /// `handle.select(...)` would dispatch into a no-op
         /// default handle.
-        control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
+        control: Rc<runtime_shared::primitives::navigator::NavigatorControl>,
         /// Tab-bar chrome styles. `bar_style` is read at paint
         /// time by the renderer's `paint_tab_bar`; the icon /
         /// label styles are stored for future use (the wgpu
         /// sim's tab bar paints abstract dots, not icons +
         /// labels, so those don't yet have visible effect).
-        bar_style: std::cell::RefCell<Option<Rc<runtime_core::StyleRules>>>,
-        icon_style: std::cell::RefCell<Option<Rc<runtime_core::StyleRules>>>,
-        label_style: std::cell::RefCell<Option<Rc<runtime_core::StyleRules>>>,
+        bar_style: std::cell::RefCell<Option<Rc<runtime_shared::StyleRules>>>,
+        icon_style: std::cell::RefCell<Option<Rc<runtime_shared::StyleRules>>>,
+        label_style: std::cell::RefCell<Option<Rc<runtime_shared::StyleRules>>>,
     },
     /// Drawer navigator. `is_open` controls the slide-in
     /// state; the renderer animates `sidebar_offset` via the
@@ -534,7 +551,7 @@ pub enum NodeKind {
         /// produce a `DrawerHandle` whose `open_drawer()` /
         /// `toggle_drawer()` calls reach the installed
         /// dispatcher.
-        control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
+        control: Rc<runtime_shared::primitives::navigator::NavigatorControl>,
         /// Wall-clock at which the most recent open/close edge
         /// fired. Sampled by the renderer to interpolate the
         /// sidebar's slide-in / slide-out — the drawer's
@@ -549,8 +566,8 @@ pub enum NodeKind {
         /// is stored for future use (the sidebar is a user-built
         /// subtree that styles itself; this hook would supply
         /// an outer wrap around it).
-        scrim_style: std::cell::RefCell<Option<Rc<runtime_core::StyleRules>>>,
-        sidebar_style: std::cell::RefCell<Option<Rc<runtime_core::StyleRules>>>,
+        scrim_style: std::cell::RefCell<Option<Rc<runtime_shared::StyleRules>>>,
+        sidebar_style: std::cell::RefCell<Option<Rc<runtime_shared::StyleRules>>>,
     },
     /// An author-driven render-to-texture region. The wgpu
     /// backend allocates a per-node offscreen texture (created
@@ -638,10 +655,17 @@ impl std::fmt::Debug for NodeKind {
             NodeKind::TextInput { value, .. } => write!(f, "TextInput({value:?})"),
             NodeKind::TextArea { value, .. } => write!(f, "TextArea({value:?})"),
             NodeKind::Toggle { value, .. } => write!(f, "Toggle({value})"),
-            NodeKind::Slider { value, min, max, .. } => {
+            NodeKind::Slider {
+                value, min, max, ..
+            } => {
                 write!(f, "Slider({value} in {min}..={max})")
             }
-            NodeKind::ScrollView { horizontal, offset_x, offset_y, .. } => {
+            NodeKind::ScrollView {
+                horizontal,
+                offset_x,
+                offset_y,
+                ..
+            } => {
                 write!(
                     f,
                     "ScrollView(horizontal={horizontal}, offset={offset_x},{offset_y})"
@@ -661,7 +685,11 @@ impl std::fmt::Debug for NodeKind {
             NodeKind::Navigator { scope_ids, .. } => {
                 write!(f, "Navigator(depth={})", scope_ids.borrow().len())
             }
-            NodeKind::TabNavigator { active_tab, tab_count, .. } => write!(
+            NodeKind::TabNavigator {
+                active_tab,
+                tab_count,
+                ..
+            } => write!(
                 f,
                 "TabNavigator(active={}, count={})",
                 active_tab.get(),
@@ -673,7 +701,11 @@ impl std::fmt::Debug for NodeKind {
             NodeKind::Graphics { drawer, .. } => write!(
                 f,
                 "Graphics(drawer={})",
-                if drawer.borrow().is_some() { "set" } else { "unset" },
+                if drawer.borrow().is_some() {
+                    "set"
+                } else {
+                    "unset"
+                },
             ),
             NodeKind::Unsupported { label } => write!(f, "Unsupported({label})"),
         }
@@ -716,7 +748,7 @@ pub struct NodeData {
     /// through `apply_style`. Unused state bits are no-ops.
     pub state_setter: Option<Rc<dyn Fn(StateBits, bool)>>,
     /// Raw touch handler installed by
-    /// [`runtime_core::Backend::install_touch_handler`]. Present
+    /// [`runtime_shared::Backend::install_touch_handler`]. Present
     /// only on nodes whose primitive carries an `on_touch` slot. The
     /// host's pointer dispatch resolves the responder chain by
     /// collecting, during hit-test, every ancestor whose
@@ -755,7 +787,7 @@ pub struct NodeData {
     /// reshaping.
     pub screen_title_layout: Option<LayoutNode>,
     /// Animated overrides for the framework's
-    /// [`AnimatedValue`](runtime_core::animation::AnimatedValue)
+    /// [`AnimatedValue`](runtime_shared::animation::AnimatedValue)
     /// system. Allocated lazily on first write — `None` for the
     /// 99% of nodes that aren't animated. See [`AnimatedOverrides`]
     /// for the per-property semantics.
@@ -763,7 +795,7 @@ pub struct NodeData {
     /// The framework's accessibility prop bag for this node. wgpu
     /// has no real platform widget to attach a11y to, so the prop
     /// bag is stashed here verbatim and surfaced via
-    /// [`runtime_core::Backend::dump_accessibility_tree`] for the
+    /// [`runtime_shared::Backend::dump_accessibility_tree`] for the
     /// host shell to project into the platform AX layer.
     ///
     /// See `docs/accessibility-design.md` §5 for the full design.
@@ -774,7 +806,7 @@ pub struct NodeData {
     /// props still produce a valid (empty-prop) node.
     pub accessibility: AccessibilityProps,
     /// Default role inferred from the originating primitive's
-    /// [`PrimitiveKind`](runtime_core::accessibility::PrimitiveKind).
+    /// [`PrimitiveKind`](runtime_shared::accessibility::PrimitiveKind).
     /// `None` means "no default role" (View, ScrollView, Portal, …
     /// — primitives whose `default_role` returns `None`).
     ///

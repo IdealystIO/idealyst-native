@@ -146,7 +146,7 @@ pub unsafe fn ios_main_with_register(
 
         // Install the libdispatch-backed scheduler on the main thread
         // BEFORE anything that can defer work. Without it,
-        // `runtime_core::schedule_microtask` / `after_ms` fall back to
+        // `runtime_shared::schedule_microtask` / `after_ms` fall back to
         // running their closure SYNCHRONOUSLY (scheduling.rs: no
         // installed scheduler → `f()` inline). The SDK drawer handler
         // defers its sidebar build via `schedule_microtask` precisely

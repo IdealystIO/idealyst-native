@@ -518,12 +518,26 @@ pub fn app() -> Element {
 // CLI-generated wrapper hooks.
 // ============================================================================
 
-/// SDK-registration hook the platform wrappers call before mount.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam the CLI-generated wrappers invoke after
+/// `runtime_vocabulary::register_builtins` — the `register` argument of the
+/// boot entry. This app mounts no third-party payloads, so it installs
+/// nothing; the seam is mandatory because an unregistered payload panics at
+/// realize.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
-/// Recorder-side registration for the native dev-server sidecar.
+/// Recorder-side registration for the native dev-server sidecar — the
+/// recorder's scene registry (`Registry<WireRecordingBackend>`).
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {}
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
+}
 
 #[cfg(test)]
 mod tests {

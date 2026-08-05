@@ -7,7 +7,7 @@ license.workspace = true
 # Cross-platform gesture arbitration SDK.
 #
 # `GestureGroup` owns a view's single `on_touch` slot and drives several
-# `runtime_core` `Recognizer`s against it at once, resolving the conflicts
+# `runtime_shared` `Recognizer`s against it at once, resolving the conflicts
 # a single slot can't: priority order, require-to-fail dependencies, and
 # simultaneous recognition. This is the `UIGestureRecognizer` +
 # `UIGestureRecognizerDelegate` coordination layer, in pure Rust on top of
@@ -15,7 +15,7 @@ license.workspace = true
 # touch, and pen.
 #
 # The recognizers themselves (tap / long-press / pan / pinch and any
-# third-party FSM) live in `runtime_core::touch`; this crate only
+# third-party FSM) live in `runtime_shared::touch`; this crate only
 # arbitrates between them. No backend code, no per-platform branching — it
 # installs one `TouchHandler` and fans events out in Rust, reusing the
 # existing claim protocol to preempt native scrollers.
@@ -25,4 +25,8 @@ license.workspace = true
 # No permissions required.
 
 [dependencies]
-runtime-core = { workspace = true }
+# The touch substrate only: `Recognizer` / `RecognizerCtx` / `TouchEvent` /
+# `TouchHandler` are permanent-substrate types, and this crate never touches
+# the author surface (no `ui!`, no `Element`, no signals) — so it depends on
+# `runtime-shared` directly rather than through the `runtime_core` facade.
+runtime-shared = { workspace = true }

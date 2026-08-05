@@ -152,4 +152,11 @@ pub fn app() -> Element {
     }
 }
 
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+// SDK-handler registration seam, invoked by the CLI-generated wrapper
+// after `runtime_vocabulary::register_builtins`. Registry-generic over
+// the scene `Host` so one seam serves every backend. This fixture
+// registers no third-party scene handlers.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}

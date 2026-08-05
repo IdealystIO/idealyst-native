@@ -1,14 +1,14 @@
-//! iOS leaf for the `maps` SDK. Registers a `MapViewProps` handler
-//! against `IosBackend` that mounts a native `MKMapView` centered on
+//! iOS leaf for the `maps` SDK: the native `MKMapView` node builder the
+//! umbrella's `IosBackend`-concrete scene handler mounts, centered on
 //! the requested coordinate.
 //!
 //! This is one per-backend leaf of the multi-crate `maps` split: it
 //! depends on `maps-core` for the shared [`MapViewProps`](maps_core::MapViewProps)
-//! type and on `backend-ios` for the concrete backend it registers
-//! against. The author never names this crate — the umbrella `maps`
-//! crate re-exports this leaf's [`register`] under
-//! `[target.'cfg(target_os = "ios")'.dependencies]`, so app code calls
-//! `maps::register(&mut backend)` and Cargo routes it here on iOS.
+//! type and on `backend-ios` for the concrete node type it returns. The
+//! author never names this crate — the umbrella `maps` crate pulls it in
+//! under `[target.'cfg(target_os = "ios")'.dependencies]` and calls
+//! [`build_map_view`] from its registered handler, so app code only ever
+//! passes `maps::register` at the boot seam.
 //!
 //! Reaches MKMapView at the Obj-C runtime layer via `AnyClass::get` +
 //! raw `msg_send` rather than going through `objc2-map-kit` — same
@@ -51,32 +51,19 @@ unsafe impl RefEncode for CLLocationCoordinate2D {
     const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
 }
 
-/// Install the MapView handler on the iOS backend. Called once at app
-/// bootstrap:
-///
-/// ```ignore
-/// let mut backend = IosBackend::new(...);
-/// maps::register(&mut backend);   // routes to this function on iOS
-/// ```
-pub fn register(backend: &mut IosBackend) {
-    backend.register_external::<MapViewProps, _>(|props, b| build_map_view(props, b));
-}
-
-// Self-register at backend construction. See [[project_inventory_self_registration]].
-inventory::submit! {
-    backend_ios::IosExternalRegistrar(register)
-}
-
 /// Construct an `MKMapView` at zero rect (Taffy resizes it from the
 /// layout pass), set its `centerCoordinate` + `camera.altitude` from
 /// the props, register it with the backend's layout tree, and wrap it
 /// as an `IosNode::View`.
 ///
+/// `pub` because this is the whole handler node and the umbrella's
+/// scene handler calls it directly.
+///
 /// Zoom is converted to camera altitude using the standard MapKit
 /// formula: altitude in meters ≈ 591657550.5 / 2^zoom. The constant
 /// is the equatorial circumference of Earth's tile-pyramid at zoom 0
 /// (the value MKMapView itself uses internally).
-fn build_map_view(props: &Rc<MapViewProps>, b: &mut IosBackend) -> IosNode {
+pub fn build_map_view(props: &Rc<MapViewProps>, b: &mut IosBackend) -> IosNode {
     let mk_class: &AnyClass = AnyClass::get("MKMapView")
         .expect("MKMapView class not found — is MapKit linked into the app?");
 

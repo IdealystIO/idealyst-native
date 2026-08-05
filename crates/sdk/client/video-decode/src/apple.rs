@@ -433,7 +433,7 @@ impl TransportControl for MacosTransport {
 struct StreamHandle {
     player: Retained<AnyObject>,
     _video_output: Retained<AnyObject>,
-    _raf: runtime_core::scheduling::RafLoop,
+    _raf: runtime_shared::scheduling::RafLoop,
     /// The created tap (CFType); released on drop. `None` when the clip has no
     /// audio track. The tap retains its own clientInfo box, freed in finalize.
     tap: Option<*mut c_void>,
@@ -522,7 +522,7 @@ pub(crate) async fn open(
             let player_for_pump = player.clone();
             let output_for_pump = video_output.clone();
             let mut scratch: Vec<u8> = Vec::new();
-            runtime_core::scheduling::raf_loop(move || {
+            runtime_shared::scheduling::raf_loop(move || {
                 pump_frame(&player_for_pump, &output_for_pump, &frames, &mut scratch);
             })
         };

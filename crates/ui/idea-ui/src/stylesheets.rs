@@ -817,18 +817,42 @@ stylesheet! {
             // no-op. Mirrors Button/IconButton.
             cursor: Cursor::Pointer,
         }
-        // Keyboard/pointer focus rings the whole control row with the themed
-        // indigo focus ring — the cross-platform indicator that replaces the
-        // native ring (suppressed on the pressable host; browser outline killed
-        // by the web `:focus` rule). Mirrors Button: the row reserves no base
-        // border, so `border_width: 1` on focus draws it inside the bounds
-        // (border-box keeps the outer size fixed; no content nudge).
-        state focused(t) {
-            border_width: 1.0,
-            border_color: Tokenized::token("color-focus-ring", Color("#5b6cff".into())),
+        // NO `state focused` here. The row is a plain layout view whose
+        // focusable host is the CONTROL inside it (the Switch track, the
+        // Checkbox box, the Radio ring — each a `pressable` carrying its
+        // sheet's `__state_focused` ring). Ringing the row instead drew a
+        // border around control *and* label, which reads as a stray box
+        // around the text rather than a focus indicator on the control.
+    }
+}
+
+// Surface — the themed background container. Two closed axes (which
+// neutral token fills it, which spacing step pads it); the continuous
+// `grow` weight rides the INLINE layer at the call site
+// (`StyleApplication::with_inline`), so the sheet premints. This
+// replaces a per-instance `StyleSheet::new` in `surface.rs` that was
+// invisible to the premint dump.
+stylesheet! {
+    pub SurfaceSheet<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Column,
+            // Children fill the cross axis so inner content spans the surface.
+            align_items: AlignItems::Stretch,
         }
-        transitions {
-            border_color: 150ms EaseOut,
+        variant bg {
+            background(_t) { background: Tokenized::token("color-background", Color("#f3f4f6".into())) }
+            #[default]
+            surface(_t) { background: Tokenized::token("color-surface", Color("#ffffff".into())) }
+            surface_alt(_t) { background: Tokenized::token("color-surface-alt", Color("#e5e7eb".into())) }
+        }
+        variant pad {
+            #[default]
+            none(_t) {}
+            xs(_t) { padding: Tokenized::token("spacing-xs", Length::Px(4.0)) }
+            sm(_t) { padding: Tokenized::token("spacing-sm", Length::Px(8.0)) }
+            md(_t) { padding: Tokenized::token("spacing-md", Length::Px(12.0)) }
+            lg(_t) { padding: Tokenized::token("spacing-lg", Length::Px(16.0)) }
+            xl(_t) { padding: Tokenized::token("spacing-xl", Length::Px(24.0)) }
         }
     }
 }
@@ -930,13 +954,17 @@ stylesheet! {
 stylesheet! {
     pub SelectMenu<IdeaThemeRef> {
         base(t) {
-            // The menu renders inside a portal, which on web mounts under
-            // `<body>` — OUTSIDE the app tree's inherited `font-family`. Pin
-            // the theme font on the panel so every row label inherits it
-            // here, instead of falling back to the browser's serif default
-            // (the "dropdown options render in Times" bug). Free-fn call, not
-            // the `t` binding — the stylesheet macro rejects theme-ref reads.
-            font_family: idea_theme::active_font_family(),
+            // NO font_family pin, deliberately. The menu portals under
+            // `<body>` (outside the app tree's inherited font), which used
+            // to need an `active_font_family()` pin here against the
+            // browser-serif fallback — but a dynamic font is the one thing
+            // that disqualifies a sheet from preminting, and the pin is
+            // redundant now: the theme's default text font is DECLARED ON
+            // THE DOCUMENT ROOT on every build (live publication +
+            // premint's `--iy-default-font` hook), so a portal inherits it
+            // through `<body>`, and the live static path additionally
+            // folds it into fontless rules at apply. Pinned by
+            // `select_menu_sheet_premints_and_rides_the_default_font`.
             background: Tokenized::token("color-surface", Color("#ffffff".into())),
             border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
             border_width: 1.0,
@@ -971,9 +999,19 @@ stylesheet! {
             text_align: TextAlign::Left,
             cursor: Cursor::Pointer,
         }
+        // `on` = the COMMITTED selection (solid primary). `cursor` = the
+        // keyboard cursor resting on a row that is NOT the selection
+        // (Autocomplete's ArrowUp/ArrowDown position) — styled like the
+        // hover state, since pointer hover and keyboard cursor mean the
+        // same thing: "Enter/click commits this row". Two distinct looks so
+        // an open menu never shows two solid rows (the old shape rendered
+        // cursor and selection identically). Select uses only `on`/`off`.
         variant active {
             #[default]
             off(_t) {}
+            cursor(t) {
+                background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+            }
             on(t) {
                 background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
                 color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
@@ -1353,6 +1391,11 @@ stylesheet! {
             border_radius: Tokenized::token("radius-pill", Length::Px(999.0)),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
+            // Hug: a row of mixed-size avatars centers rather than
+            // top-aligning under the parent's default `align-items: stretch`.
+            // Base rule, not a computed layer — it's constant, and a constant
+            // closure blocks premint for the whole sheet.
+            align_self: runtime_core::AlignSelf::Center,
             overflow: runtime_core::Overflow::Hidden,
             // Default to neutral wash so a no-prop Avatar reads as a
             // generic placeholder rather than a colored chip.
@@ -1736,24 +1779,10 @@ stylesheet! {
     }
 }
 
-stylesheet! {
-    pub AlertTitle<IdeaThemeRef> {
-        base(t) {
-            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
-            font_weight: FontWeight::SemiBold,
-            line_height: 20.0,
-        }
-    }
-}
-
-stylesheet! {
-    pub AlertBody<IdeaThemeRef> {
-        base(t) {
-            font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)),
-            line_height: 18.0,
-        }
-    }
-}
+// (AlertTitle/AlertBody moved into idea-theme's `AlertSheetBuilder::build_text`
+// — the title/body sheets need an enumerated per-tone `appearance` color
+// axis, which a compile-time `stylesheet!` cannot declare over the
+// runtime-extensible tone list.)
 
 // The title/body text column. `flex_grow: 1` + `min_width: 0` lets it
 // take the available width and shrink (wrapping text) so the trailing
@@ -2048,6 +2077,17 @@ stylesheet! {
             // text node's alignment already applies). See `TableBodyCell`.
             text_align: TextAlign::Left,
         }
+        // Clickable-row axes — see `TableBodyCell` for the rationale.
+        variant interactive {
+            #[default]
+            off(_t) {}
+            on(_t) { cursor: Cursor::Pointer }
+        }
+        variant row_hovered {
+            #[default]
+            off(_t) {}
+            on(_t) { background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())) }
+        }
         transitions {
             background: 250ms EaseInOut,
             border_bottom_color: 250ms EaseInOut,
@@ -2066,11 +2106,29 @@ stylesheet! {
             // share one alignment source of truth — see `TableHeadCell`.
             text_align: TextAlign::Left,
         }
+        // Clickable-row axes (`TableRow` with `on_row_click`). Enumerated
+        // variants rather than runtime `with_overrides` so every arm has
+        // build-time CSS and the flip is a preminted CLASS SWAP — the
+        // override form kept every table cell on the live engine, which
+        // was one of the last two `--premint-only` blockers on the docs
+        // corpus. `row_hovered` is a shared-signal axis, NOT a
+        // `state hovered` pseudo: hovering ANY cell highlights the WHOLE
+        // row via the row's one signal, which per-cell `:hover` cannot
+        // express — see `components::table::make_row_cell_interactive`.
+        variant interactive {
+            #[default]
+            off(_t) {}
+            on(_t) { cursor: Cursor::Pointer }
+        }
+        variant row_hovered {
+            #[default]
+            off(_t) {}
+            on(_t) { background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())) }
+        }
         transitions {
             border_bottom_color: 250ms EaseInOut,
-            // Fade the whole-row hover highlight that a clickable `TableRow`
-            // (`on_row_click`) layers onto the cell background — see
-            // `components::table::make_row_cell_interactive`.
+            // Fade the whole-row hover highlight the `row_hovered` axis
+            // flips on/off.
             background: 150ms EaseInOut,
         }
     }
@@ -2456,6 +2514,13 @@ stylesheet! {
                 font_weight: FontWeight::SemiBold,
             }
         }
+        // A linked (non-current) crumb shows a pointer. Variant rather than a
+        // computed layer so the rule premints — see `ListItemRow::interactive`.
+        variant interactive {
+            #[default]
+            off(_t) {}
+            on(_t) { cursor: Cursor::Pointer }
+        }
         state hovered(t) { color: Tokenized::token("color-text", Color("#1a1a1f".into())) }
         // Focus mirrors hover (text brighten) — replaces the native macOS ring.
         state focused(t) { color: Tokenized::token("color-text", Color("#1a1a1f".into())) }
@@ -2570,6 +2635,15 @@ stylesheet! {
             off(_t) {}
             on(t) { background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())) }
         }
+        // A row with an `on_press` shows a pointer (the "anything pressable
+        // shows a pointer" rule). A variant arm rather than a computed layer
+        // so the rule premints — a constant closure defeats premint for the
+        // whole sheet without expressing anything a variant can't.
+        variant interactive {
+            #[default]
+            off(_t) {}
+            on(_t) { cursor: Cursor::Pointer }
+        }
         state hovered(t) { background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())) }
         // Focus mirrors hover (row wash) — replaces the native macOS ring.
         state focused(t) { background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())) }
@@ -2632,5 +2706,194 @@ stylesheet! {
         base(_t) {
             overflow: runtime_core::Overflow::Hidden,
         }
+    }
+}
+
+// =============================================================================
+// Calendar family — month grid shared by Calendar / RangeCalendar and the
+// DatePicker/DateInput popups
+// =============================================================================
+//
+// `CalendarPanel` is the framed container (border off when embedded in a
+// popup panel that already draws chrome). `CalendarDay` styles one grid
+// cell across three composable axes: `sel` (selection/range role), `today`,
+// and `muted` (outside the visible month). Cells are fixed 36×36 so the
+// grid is stable across months and the range band reads as a continuous
+// row (the `mid` arm squares its corners; `edge`/`on` keep the radius).
+
+stylesheet! {
+    pub CalendarPanel<IdeaThemeRef> {
+        base(t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            flex_direction: FlexDirection::Column,
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            padding: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            align_self: runtime_core::AlignSelf::FlexStart,
+        }
+        // `framed` — standalone (inline) calendars draw their own border;
+        // popup embeddings turn it off (the menu panel already has one).
+        variant framed {
+            #[default]
+            on(t) {
+                border_width: 1.0,
+                border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            }
+            off(_t) {}
+        }
+    }
+}
+
+stylesheet! {
+    pub CalendarHeader<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+        }
+    }
+}
+
+// The pressable month/year title in the header — opens the month/year
+// picker view. Styled like a quiet button.
+stylesheet! {
+    pub CalendarTitleButton<IdeaThemeRef> {
+        base(t) {
+            background: Color("transparent".into()),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
+            font_weight: FontWeight::SemiBold,
+            padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            padding_horizontal: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            border_radius: Tokenized::token("radius-sm", Length::Px(4.0)),
+            cursor: Cursor::Pointer,
+        }
+        state hovered(t) {
+            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+        }
+        transitions { background: 150ms EaseOut }
+    }
+}
+
+stylesheet! {
+    pub CalendarWeekdayCell<IdeaThemeRef> {
+        base(t) {
+            width: 36.0,
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: Tokenized::token("typography-body-sm-size", Length::Px(12.0)),
+            font_weight: FontWeight::Medium,
+            text_align: TextAlign::Center,
+        }
+    }
+}
+
+stylesheet! {
+    pub CalendarWeekRow<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+        }
+    }
+}
+
+stylesheet! {
+    pub CalendarDay<IdeaThemeRef> {
+        base(t) {
+            width: 36.0,
+            height: 36.0,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            border_radius: Tokenized::token("radius-sm", Length::Px(4.0)),
+            background: Color("transparent".into()),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
+            cursor: Cursor::Pointer,
+        }
+        // Selection / range role of the cell.
+        variant sel {
+            #[default]
+            off(_t) {}
+            // The single selection, or a range endpoint.
+            on(t) {
+                background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
+                color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
+            }
+            // Interior of a selected range: soft wash, squared corners so
+            // consecutive cells read as one band.
+            mid(t) {
+                background: Tokenized::token("intent-primary-soft-bg", Color("#e8ebff".into())),
+                color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+                border_radius: Length::Px(0.0),
+            }
+        }
+        variant today {
+            #[default]
+            off(_t) {}
+            // Quiet marker that composes under every `sel` arm: a ring, not
+            // a fill, so "today + selected" still reads as selected.
+            on(t) {
+                border_width: 1.0,
+                border_color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+            }
+        }
+        // Leading/trailing days of the adjacent months.
+        variant muted {
+            #[default]
+            off(_t) {}
+            on(t) {
+                color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            }
+        }
+        // Un-pickable (min/max/disabled-fn). Rendered as a plain view (no
+        // press handler), so this is a variant, not a pressed-state overlay.
+        variant blocked {
+            #[default]
+            off(_t) {}
+            on(_t) {
+                opacity: 0.35,
+                cursor: Cursor::Default,
+            }
+        }
+        state hovered(t) {
+            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+        }
+        state focused(t) {
+            border_width: 1.0,
+            border_color: Tokenized::token("color-focus-ring", Color("#5b6cff".into())),
+        }
+        transitions {
+            background: 120ms EaseOut,
+            color: 120ms EaseOut,
+        }
+    }
+}
+
+// Month/year cells of the title-press zoomed-out view (3×4 month grid /
+// 4×4 year grid).
+stylesheet! {
+    pub CalendarZoomCell<IdeaThemeRef> {
+        base(t) {
+            width: 63.0,
+            height: 40.0,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            border_radius: Tokenized::token("radius-sm", Length::Px(4.0)),
+            background: Color("transparent".into()),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
+            cursor: Cursor::Pointer,
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(t) {
+                background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
+                color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
+            }
+        }
+        state hovered(t) {
+            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+        }
+        transitions { background: 120ms EaseOut, color: 120ms EaseOut }
     }
 }

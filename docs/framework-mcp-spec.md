@@ -2,6 +2,21 @@
 
 > Status: draft / pre-implementation. Author: Nicho. Date: 2026-05-22.
 
+> **Status note (2026-07-29, runtime-v2).** The header above is stale in two
+> directions. The feature **shipped**: `idealyst mcp` serves the catalog
+> (`crates/mcp/{catalog,server}`), `#[component]` / `#[props]` /
+> `doc_scope!` / `recipe!` emit into an `inventory` anchor at compile time,
+> and the `catalog` cargo feature keeps it out of shipped app binaries —
+> read this document as the design record behind that, not as unbuilt work.
+> The **`Element::External` / `ExternalRegistry` analogy** it reaches for
+> (§2, §5) no longer describes anything: distributed registration is now
+> one `runtime_scene::Registry` keyed by payload `TypeId`, serving
+> first-party and third-party primitives alike. The catalog's own
+> compile-time-inventory mechanism is unaffected by that change. Current
+> anchors: `runtime_vocabulary::glue::__mcp` for retargeted macro emissions
+> and `runtime_core::__mcp` (the root's re-export of the same item) for the
+> un-retargeted spelling — both the same `mcp-catalog` instance.
+
 ## 1. Motivation
 
 An Idealyst app is a tree of components written in Rust. As the surface grows, the set of available components becomes the de-facto API the team — and AI assistants working in the repo — need to understand. Today that knowledge lives only in source: an LLM has to read every component file to learn what's available, what props each takes, and what composes what.

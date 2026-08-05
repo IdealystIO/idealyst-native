@@ -1,27 +1,32 @@
 //! Server-side rendering backend.
 //!
-//! `SsrBackend` is a headless [`Backend`](runtime_core::Backend)
-//! implementation: instead of mutating a live DOM (web) or a native
-//! view tree (iOS/Android), it accumulates an in-memory HTML node tree
-//! and serializes it to a string. It runs on the host (native) target —
-//! the same author tree that renders on every other backend is walked
-//! once, synchronously, and emitted as HTML + inline CSS for first
-//! paint, crawlers, and link unfurlers.
+//! `SsrBackend` is a headless renderer: instead of mutating a live DOM
+//! (web) or a native view tree (iOS/Android), it accumulates an in-memory
+//! HTML node tree and serializes it to a string. It runs on the host
+//! (native) target — the same author tree that renders on every other
+//! backend is realized once, synchronously, and emitted as HTML + a
+//! `<head>` stylesheet for first paint, crawlers, and link unfurlers.
 //!
-//! The emitted markup is throwaway: the served page still loads the
-//! normal WebBackend wasm bundle, which boots and replaces the DOM.
-//! Because styling reuses the same [`css::rules_to_css`] the web
-//! backend uses, the first-paint output matches what the live app
-//! renders — no flash when the bundle takes over.
+//! The emitted markup is adoptable, not throwaway: the served page loads
+//! the normal WebBackend wasm bundle, which HYDRATES this DOM. Because
+//! styling reuses the same [`css::rules_to_css`] the web backend uses,
+//! the first paint matches what the live app renders — no flash when the
+//! bundle takes over.
 //!
-//! This is the modeled-on-`MockBackend` minimal core (the 8 required
-//! `Backend` methods) plus `img`/`icon` coverage. Broader primitive
-//! coverage (inputs, links, navigator-at-path, `<head>` metadata) lands
-//! in follow-up slices tracked alongside this work.
+//! # Rendering surface
+//!
+//! [`newcore::render_to_string`] / [`newcore::render_path`] /
+//! [`newcore::render_path_with`] are the per-request entry points,
+//! [`newcore::render_all`] the SSG crawl, and [`newcore::serve`] the
+//! preview server; the backend's capability implementation (the
+//! `runtime_scene::Host` seam plus the 30 `runtime_vocabulary::caps`
+//! traits) lives in [`newcore`]. This crate carried a second,
+//! `Element`-walking `impl runtime_core::Backend` until the old core was
+//! removed; every method body moved into the capability impls verbatim,
+//! so the emitted bytes are unchanged — pinned against the old core's
+//! frozen output by `tests/newcore_byte_identity.rs` + `tests/goldens/`
+//! and by `websites/website/tests/ssg_parity.rs`.
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::navigator::{NavigatorHandler, NavigatorHost, RegisterNavigator};
-use runtime_core::{Backend, NavigatorRegistry, StyleRules};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -29,10 +34,130 @@ use std::rc::Rc;
 #[cfg(feature = "serve")]
 mod serve;
 #[cfg(feature = "serve")]
-pub use serve::{resolve_bundle_module, serve, ServeConfig};
+pub use serve::{resolve_bundle_module, ServeConfig};
 
-/// A stashed navigator handler, keyed by its container node's pointer id.
-type NavHandler = Rc<RefCell<Box<dyn NavigatorHandler<SsrBackend>>>>;
+// ===========================================================================
+// Premint (build-time CSS) support. A premint build stamps deterministic
+// `iy-*` classes that resolve against the content-addressed
+// `premint.css` the web build emits — the server must (a) link that
+// asset from every rendered document and (b) arm the same minted-class
+// guard the hydrating client arms, so both sides make identical
+// premint-vs-engine-fallback decisions per sheet. All of this is
+// cfg-free: the generated SSR wrapper (which knows it was a premint
+// build) installs the classes and passes the link; a non-premint server
+// never calls either and nothing changes.
+// ===========================================================================
+
+/// The premint stylesheet a rendered document links, plus the guard
+/// classes scanned out of it. Produced by [`resolve_premint_css`];
+/// consumed by [`render_document`] (href + font families) and
+/// [`install_premint_classes`] (classes).
+#[derive(Clone, Debug)]
+pub struct PremintCss {
+    /// Root-absolute href, e.g. `/pkg/premint.<16 hex>.css`.
+    pub href: String,
+    /// Comma-joined `@font-face` family names in the asset — emitted as
+    /// the `data-iy-font-families` attribute the hydrating client's
+    /// typeface dedup reads (see backend-web's `register_typeface`).
+    pub font_families: String,
+    /// Every `iy-*` class the asset's selectors mention — the server's
+    /// minted-class guard set.
+    pub classes: Vec<String>,
+}
+
+/// Resolve the premint stylesheet staged by `idealyst build --web
+/// --premint*` under `static_dir/pkg/` — the premint twin of
+/// [`resolve_bundle_module`]: matches the content-addressed
+/// `premint.<16 hex>.css` first (fingerprint naming per `build-web`'s
+/// `fingerprint_pkg`; keep the matching rules in sync), falling back to
+/// a plain `premint.css` (dev-shaped pkg). Reads the file once to scan
+/// guard classes (`runtime_shared::scan_minted_classes`) and `@font-face`
+/// family names (same `@font-face{font-family:"…"` prefix
+/// `build_web::premint_font_families` scans — the dump emits that format
+/// by construction; keep in sync).
+pub fn resolve_premint_css(static_dir: &std::path::Path) -> Option<PremintCss> {
+    let pkg = static_dir.join("pkg");
+    let mut found: Option<(String, std::path::PathBuf)> = None;
+    if let Ok(read) = std::fs::read_dir(&pkg) {
+        for entry in read.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(mid) = name
+                .strip_prefix("premint.")
+                .and_then(|rest| rest.strip_suffix(".css"))
+            else {
+                continue;
+            };
+            if mid.len() == 16 && mid.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+                found = Some((format!("/pkg/{name}"), entry.path()));
+                break;
+            }
+        }
+    }
+    let (href, path) = match found {
+        Some(hit) => hit,
+        None => {
+            let plain = pkg.join("premint.css");
+            if !plain.is_file() {
+                return None;
+            }
+            ("/pkg/premint.css".to_string(), plain)
+        }
+    };
+    let text = std::fs::read_to_string(&path).ok()?;
+    let mut font_families: Vec<&str> = Vec::new();
+    for chunk in text.split("@font-face{font-family:\"").skip(1) {
+        if let Some(end) = chunk.find('"') {
+            let fam = &chunk[..end];
+            if !font_families.contains(&fam) {
+                font_families.push(fam);
+            }
+        }
+    }
+    Some(PremintCss {
+        href,
+        font_families: font_families.join(","),
+        classes: runtime_shared::scan_minted_classes(&text),
+    })
+}
+
+/// The premint guard classes for this server process — set once by the
+/// generated wrapper at startup (from [`resolve_premint_css`]'s
+/// `classes`); consumed by every render via
+/// [`arm_minted_class_guard_if_installed`]. Process-global because the
+/// guard itself (`runtime_shared`'s `MINTED_CLASSES`) is THREAD-local
+/// and serve mode renders each request on a fresh thread.
+static PREMINT_CLASSES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// Install the premint guard classes for every subsequent render in this
+/// process. First install wins (matches the framework's other one-shot
+/// installs); a non-premint server never calls this and the guard stays
+/// disarmed exactly as today.
+pub fn install_premint_classes(classes: Vec<String>) {
+    let _ = PREMINT_CLASSES.set(classes);
+}
+
+/// Arm the thread-local minted-class guard from the process-global slot,
+/// if one was installed. Called at the top of every render: serve mode's
+/// fresh-thread-per-request means per-render install is the only correct
+/// point, and export mode's single thread just re-installs idempotently.
+///
+/// Scanning ONLY premint.css matches the hydrating client's
+/// scan-everything JS (it walks all `document.styleSheets`): the SSR
+/// inline `<style>` contains no `iy-*` selectors, because preminted
+/// attach bypasses `apply_style` and so never enters `head_css`.
+pub(crate) fn arm_minted_class_guard_if_installed() {
+    if let Some(classes) = PREMINT_CLASSES.get() {
+        runtime_shared::install_minted_classes(classes.iter().cloned());
+    }
+}
+
+// New-core (idea-lite) render path: `SsrBackend` as a direct
+// `runtime_scene::Host` + 30-caps implementor, with per-request
+// `runtime_world::World` lifecycles (`newcore::render_path`). Additive —
+// nothing in the old-core path below changes under the feature.
+/// `runtime_scene::Host` + the 30 capability traits on [`SsrBackend`],
+/// plus the per-request-world render entries.
+pub mod newcore;
 
 /// A self-contained node handle — like a DOM node or a `UIView`, not an
 /// arena index. Children splice in via interior mutability without
@@ -61,6 +186,17 @@ pub struct HtmlNode {
     /// node lowers to `text-shadow` (hugging the glyphs) instead of
     /// `box-shadow`, matching the web backend; see `apply_style`.
     is_text: bool,
+    /// The minted style class currently applied through
+    /// `apply_style`/`apply_styled_variants` (ONE mutable styled-class
+    /// slot per node — the web backend's per-node dynamic-slot model).
+    /// A re-apply REPLACES this class instead of accumulating: a
+    /// reactive style whose value changes between the mount-time apply
+    /// and the request's flush (e.g. a scroll-spy TOC link resolving
+    /// its `active` variant) must serialize wearing only the FINAL
+    /// class, exactly like the live DOM after the same flush. Classes
+    /// stamped via `attach_html_class` (structural markers,
+    /// `ui-cq-container`) live outside this slot and are never removed.
+    styled_class: Option<String>,
     children: Vec<NodeRef>,
 }
 
@@ -73,6 +209,7 @@ impl HtmlNode {
             attrs: Vec::new(),
             scroll: false,
             is_text: false,
+            styled_class: None,
             children: Vec::new(),
         }
     }
@@ -81,12 +218,6 @@ impl HtmlNode {
 /// Wrap a freshly-built node in a shareable handle.
 fn nref(n: HtmlNode) -> NodeRef {
     Rc::new(RefCell::new(n))
-}
-
-/// Stable map key for a navigator container node (pointer identity; the
-/// node stays alive in the tree so the address is stable).
-fn nav_key(n: &NodeRef) -> usize {
-    Rc::as_ptr(n) as usize
 }
 
 /// Set (or replace) an attribute on a node.
@@ -117,6 +248,47 @@ fn add_class(node: &NodeRef, class: &str) {
     } else {
         n.attrs.push(("class", class.to_string()));
     }
+}
+
+/// Remove a single class token from a node's `class` attribute (keeps
+/// the attribute, possibly empty-cleaned, and every other token).
+fn remove_class(node: &NodeRef, class: &str) {
+    let mut n = node.borrow_mut();
+    if let Some(slot) = n.attrs.iter_mut().find(|(k, _)| *k == "class") {
+        let remaining: Vec<&str> = slot.1.split(' ').filter(|c| *c != class && !c.is_empty()).collect();
+        slot.1 = remaining.join(" ");
+    }
+    n.attrs.retain(|(k, v)| *k != "class" || !v.is_empty());
+}
+
+/// Outcome of [`set_styled_class`] — what happened to the node's
+/// minted-class slot, so the backend can keep rule refcounts exact.
+enum StyledClassChange {
+    /// Same class as before — no ref changes.
+    Unchanged,
+    /// First minted class on this node.
+    Fresh,
+    /// Replaced a different minted class (the removed one).
+    Swapped(String),
+}
+
+/// Swap the node's minted styled class (the ONE mutable slot
+/// `apply_style`/`apply_styled_variants` own — see
+/// [`HtmlNode::styled_class`]): removes the previously-minted class if
+/// it differs, records + stamps the new one.
+fn set_styled_class(node: &NodeRef, class: &str) -> StyledClassChange {
+    let prev = node.borrow().styled_class.clone();
+    let change = match prev {
+        Some(prev) if prev == class => StyledClassChange::Unchanged,
+        Some(prev) => {
+            remove_class(node, &prev);
+            StyledClassChange::Swapped(prev)
+        }
+        None => StyledClassChange::Fresh,
+    };
+    node.borrow_mut().styled_class = Some(class.to_string());
+    add_class(node, class);
+    change
 }
 
 /// Append an inline CSS declaration (`prop:value`) to a node's inline
@@ -188,10 +360,7 @@ fn is_void(tag: &str) -> bool {
 #[derive(Default)]
 pub struct SsrBackend {
     root: Option<NodeRef>,
-    metadata: runtime_core::PageMetadata,
-    navigator_handlers: NavigatorRegistry<SsrBackend>,
-    /// Keyed by container-node pointer id (see [`nav_key`]).
-    nav_handler_instances: HashMap<usize, NavHandler>,
+    metadata: runtime_shared::PageMetadata,
     /// Stylesheets registered via [`Backend::register_raw_css`] (e.g. the
     /// navigator layout sheet). Deduped, emitted in the document `<head>`.
     raw_css: Vec<String>,
@@ -200,11 +369,17 @@ pub struct SsrBackend {
     /// a `:root { … }` block so the SSR first paint resolves
     /// `var(--token, fallback)` to the real theme value (matching the
     /// live web build, which installs the same variables at runtime).
-    tokens: Vec<runtime_core::TokenEntry>,
+    tokens: Vec<runtime_shared::TokenEntry>,
+    /// The theme's default text font, captured from
+    /// [`Backend::apply_default_text_font`] (premint host driver).
+    /// Emitted as `--iy-default-font` on `:root` so preminted rule
+    /// bodies (`font-family: var(--iy-default-font, inherit)`) resolve
+    /// on the SSR first paint exactly like the live web build.
+    default_text_font: Option<runtime_shared::FontFamily>,
     /// Served URL per registered asset id (fonts/images), from
     /// [`Backend::register_asset`]. Fonts feed the `@font-face` rules
     /// below; image URLs are read at `create_image` time.
-    asset_urls: HashMap<runtime_core::assets::AssetId, String>,
+    asset_urls: HashMap<runtime_shared::assets::AssetId, String>,
     /// `@font-face` rules from [`Backend::register_typeface`], emitted in
     /// `<head>` so the SSR first paint uses the real fonts (matching the
     /// live web build, which links the same served font files).
@@ -228,31 +403,72 @@ pub struct SsrBackend {
     /// plain class rules in `head_css` so a matching `@media` overrides the
     /// base declaration.
     media_rules: std::collections::BTreeMap<String, String>,
-    /// Third-party `Element::External` handlers (e.g. `codeblock`),
-    /// so externals SERVER-RENDER their real DOM (a code block's
-    /// `<pre>`+spans) instead of an empty host — matching web so
-    /// hydration adopts them.
-    external_handlers: runtime_core::ExternalRegistry<SsrBackend>,
+    /// Wearer counts per minted class (how many nodes currently carry
+    /// it in their [`HtmlNode::styled_class`] slot). When a re-apply
+    /// swaps a node's class and the count hits zero, the superseded
+    /// rule (plus its pseudo/media derivatives) is dropped from the
+    /// head stylesheet — the web backend's dynamic-slot refcount model.
+    /// Without this, a reactive style resolving to its final value at
+    /// flush left the mount-time rule behind as a dead head entry that
+    /// old-core SSR (single final apply) never emits.
+    style_rule_refs: HashMap<String, u32>,
     /// Host-surface background captured from [`Backend::set_app_background`].
     /// Emitted in `<head>` as `html, body { background: …; }` so the SSR
     /// first paint matches what the web backend installs at runtime. For a
     /// `Tokenized::Token` we emit `var(--<name>)` (live-reactive after
     /// hydration via the `:root` setProperty path); for `Tokenized::Literal`
     /// we emit the resolved color value.
-    app_bg: Option<runtime_core::Tokenized<runtime_core::Color>>,
+    app_bg: Option<runtime_shared::Tokenized<runtime_shared::Color>>,
     /// Scrollbar (thumb, track) captured from [`Backend::set_scrollbar_theme`].
     /// Emitted in `<head>` as `scrollbar-color` + `::-webkit-scrollbar-*`
     /// rules — same shape the web backend installs at runtime so the SSR
     /// first paint matches.
     scrollbar: Option<(
-        runtime_core::Tokenized<runtime_core::Color>,
-        runtime_core::Tokenized<runtime_core::Color>,
+        runtime_shared::Tokenized<runtime_shared::Color>,
+        runtime_shared::Tokenized<runtime_shared::Color>,
     )>,
 }
 
 impl SsrBackend {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Book a node's minted-class change into the rule refcounts,
+    /// dropping a superseded class's rules once nothing wears it (see
+    /// [`Self::style_rule_refs`]). Node teardown does NOT decrement —
+    /// the old core keeps rules of dropped nodes in the head too, and
+    /// the cross-core byte gate compares against that behavior.
+    fn book_styled_class(&mut self, class: &str, change: StyledClassChange) {
+        match change {
+            StyledClassChange::Unchanged => {}
+            StyledClassChange::Fresh => {
+                *self.style_rule_refs.entry(class.to_string()).or_insert(0) += 1;
+            }
+            StyledClassChange::Swapped(prev) => {
+                *self.style_rule_refs.entry(class.to_string()).or_insert(0) += 1;
+                let dead = match self.style_rule_refs.get_mut(&prev) {
+                    Some(n) => {
+                        *n = n.saturating_sub(1);
+                        *n == 0
+                    }
+                    None => false,
+                };
+                if dead {
+                    self.style_rule_refs.remove(&prev);
+                    // The base rule, its pseudo-class derivatives
+                    // (`{class}:hover`, `{class}[disabled]`), and its
+                    // media/container derivatives (`{class}@…`).
+                    let pseudo_colon = format!("{prev}:");
+                    let pseudo_attr = format!("{prev}[");
+                    self.style_rules.retain(|k, _| {
+                        k != &prev && !k.starts_with(&pseudo_colon) && !k.starts_with(&pseudo_attr)
+                    });
+                    let media_prefix = format!("{prev}@");
+                    self.media_rules.retain(|k, _| !k.starts_with(&media_prefix));
+                }
+            }
+        }
     }
 
     /// Serialize the tree to an HTML string, rooted at the node passed to
@@ -281,6 +497,33 @@ impl SsrBackend {
         let mut out = css::base_reset_css();
         out.push_str(&self.font_faces.concat());
         out.push_str(&css::tokens_to_root_css(&self.tokens));
+        if let Some(ff) = &self.default_text_font {
+            // BOTH the variable and a real, INHERITABLE `font-family`.
+            //
+            // The variable alone is what preminted rule bodies read
+            // (`font-family: var(--iy-default-font, inherit)`), but only
+            // STATIC style applications get the theme font folded into
+            // their own rules (`fill_default_text_font`). A reactively
+            // styled node deliberately skips that fold, so with the
+            // variable alone it received no `font-family` from anywhere
+            // and inherited — falling back to the browser's serif when no
+            // ancestor set one, while an identically-styled static
+            // sibling rendered in the theme font.
+            //
+            // Declaring `font-family` on `:root` is what makes the
+            // "reactive nodes ride the document channel" contract in
+            // `style_attach`'s dynamic branch actually true. It is
+            // deliberately NOT a fold into the node's rules: folding
+            // would change the minted class hash for every reactive node
+            // and break SSR/live class-name parity, which is exactly why
+            // the dynamic path doesn't fold. Inheritance costs no hash.
+            let value = css::font_family_css_value(ff);
+            out.push_str(&format!(
+                ":root {{ {}: {value}; font-family: var({}); }}",
+                css::DEFAULT_TEXT_FONT_VAR,
+                css::DEFAULT_TEXT_FONT_VAR,
+            ));
+        }
         if let Some(color) = &self.app_bg {
             out.push_str(&format!(
                 "html, body {{ background: {}; }}",
@@ -317,32 +560,14 @@ impl SsrBackend {
 /// setProperty), the raw color string for a literal. Shared by SSR's
 /// host-surface rules so the emitted CSS matches what the web backend
 /// installs at runtime.
-fn color_css_value(color: &runtime_core::Tokenized<runtime_core::Color>) -> String {
+fn color_css_value(color: &runtime_shared::Tokenized<runtime_shared::Color>) -> String {
     match color.name() {
         Some(name) => format!("var(--{name})"),
         None => color.value().0.clone(),
     }
 }
 
-impl RegisterNavigator for SsrBackend {
-    fn register_navigator<P, F>(&mut self, factory: F)
-    where
-        P: 'static,
-        F: Fn() -> Box<dyn NavigatorHandler<SsrBackend>> + 'static,
-    {
-        self.navigator_handlers.register::<P, _>(factory);
-    }
-}
 
-impl runtime_core::RegisterExternal for SsrBackend {
-    fn register_external<T, F>(&mut self, handler: F)
-    where
-        T: 'static,
-        F: Fn(&Rc<T>, &mut SsrBackend) -> Self::Node + 'static,
-    {
-        self.external_handlers.register::<T, _>(handler);
-    }
-}
 
 /// Escape text content: `&`, `<`, `>` (sufficient for element bodies).
 fn escape_text(s: &str, out: &mut String) {
@@ -382,7 +607,7 @@ fn escape_attr(s: &str, out: &mut String) {
 // ---------------------------------------------------------------------------
 
 mod scheduler {
-    use runtime_core::scheduling::{ScheduleHandle, Scheduler};
+    use runtime_shared::scheduling::{ScheduleHandle, Scheduler};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -422,8 +647,8 @@ mod scheduler {
     }
 
     pub(crate) fn ensure_installed() {
-        if !runtime_core::scheduling::is_scheduler_installed() {
-            runtime_core::scheduling::install_scheduler(Box::new(SsrScheduler));
+        if !runtime_shared::scheduling::is_scheduler_installed() {
+            runtime_shared::scheduling::install_scheduler(Box::new(SsrScheduler));
         }
     }
 
@@ -440,701 +665,14 @@ mod scheduler {
     }
 }
 
-impl Backend for SsrBackend {
-    type Node = NodeRef;
-
-    fn platform(&self) -> runtime_core::Platform {
-        runtime_core::Platform::Web
-    }
-
-    /// Headless render: keep `Element::Lazy` at its placeholder rather
-    /// than resolving the chunk. The server can't paint lazy content (GPU
-    /// canvas, etc.), and resolving it (the native loader resolves on
-    /// first poll) would ship a body the client renders as a placeholder —
-    /// a hydration mismatch. The live client loads the real chunk after
-    /// adopting the matching placeholder.
-    fn renders_lazy_chunks(&self) -> bool {
-        false
-    }
-
-    fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
-        nref(HtmlNode::new("div"))
-    }
-
-    fn create_element(&mut self, tag: &str) -> Self::Node {
-        // `HtmlNode.tag` is `&'static str`; intern the structural tags an
-        // External handler might emit to a static (no allocation/leak).
-        // Unknown tags fall back to `div`.
-        let tag: &'static str = match tag {
-            "pre" => "pre",
-            "code" => "code",
-            "p" => "p",
-            "ul" => "ul",
-            "ol" => "ol",
-            "li" => "li",
-            "blockquote" => "blockquote",
-            "table" => "table",
-            "thead" => "thead",
-            "tbody" => "tbody",
-            "tr" => "tr",
-            "td" => "td",
-            "th" => "th",
-            "section" => "section",
-            "article" => "article",
-            "header" => "header",
-            "footer" => "footer",
-            "h1" => "h1",
-            "h2" => "h2",
-            "h3" => "h3",
-            "h4" => "h4",
-            "h5" => "h5",
-            "h6" => "h6",
-            // A GPU external (canvas) SSR-renders only its HOST element — the
-            // content paints client-side after hydration. Interning `canvas`
-            // lets an SSR external handler emit the real `<canvas>` the web
-            // graphics primitive adopts, instead of the `div` fallback.
-            "canvas" => "canvas",
-            _ => "div",
-        };
-        nref(HtmlNode::new(tag))
-    }
-
-    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
-        let mut node = HtmlNode::new("span");
-        node.text = Some(content.to_string());
-        node.is_text = true;
-        nref(node)
-    }
-
-    fn create_styled_text(
-        &mut self,
-        runs: &[runtime_core::TextRun],
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Same structure the web backend builds live (outer <span>,
-        // one child <span> per run, inline style from the shared css
-        // emitter) so hydration adopts it as-is. Run colors emit as
-        // `var(--token, fallback)` and resolve against the `:root`
-        // token block this backend emits — the SSR first paint is
-        // theme-correct without any JS.
-        let mut outer = HtmlNode::new("span");
-        outer.is_text = true;
-        for run in runs {
-            let mut child = HtmlNode::new("span");
-            child.text = Some(run.text.clone());
-            child.is_text = true;
-            if let Some(style) = &run.style {
-                if !style.is_empty() {
-                    let decl = css::text_run_style_css(style);
-                    if !decl.is_empty() {
-                        child.style = Some(decl);
-                    }
-                }
-            }
-            outer.children.push(nref(child));
-        }
-        nref(outer)
-    }
-
-    fn create_button(
-        &mut self,
-        label: &str,
-        _on_click: &runtime_core::Action,
-        _leading_icon: Option<&runtime_core::primitives::icon::IconData>,
-        _trailing_icon: Option<&runtime_core::primitives::icon::IconData>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        let mut node = HtmlNode::new("button");
-        node.text = Some(label.to_string());
-        nref(node)
-    }
-
-    fn create_image(
-        &mut self,
-        src: &str,
-        alt: Option<&str>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        let mut node = HtmlNode::new("img");
-        node.attrs.push(("src", src.to_string()));
-        node.attrs.push(("alt", alt.unwrap_or("").to_string()));
-        nref(node)
-    }
-
-    fn create_reactive_anchor(&mut self) -> Self::Node {
-        // `display: contents` (matching web) keeps the `when`/`switch`/
-        // `each` placeholder layout-transparent: the branch's children
-        // inherit the surrounding flex/sizing context and a
-        // `position: sticky` child gets the real parent as its containing
-        // block (without this, the opaque anchor is a short containing
-        // block and sticky stops sticking — e.g. the docs "On this page"
-        // rail).
-        let mut node = HtmlNode::new("div");
-        node.style = Some(css::REACTIVE_ANCHOR_STYLE.to_string());
-        nref(node)
-    }
-
-    fn create_pressable(
-        &mut self,
-        _on_click: Rc<dyn Fn()>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // A bare clickable `<div>`, matching the web pressable: button
-        // a11y only. No inline cursor — `cursor` is now an
-        // author/component style property (`StyleRules::cursor`), so the
-        // static first paint matches the live web pressable (neither sets
-        // an inline cursor) and hydration adoption stays consistent. The
-        // click handler is the live bundle's job on hydration.
-        let mut node = HtmlNode::new("div");
-        node.attrs.push(("role", "button".to_string()));
-        node.attrs.push(("tabindex", "0".to_string()));
-        nref(node)
-    }
-
-    fn create_icon(
-        &mut self,
-        data: &runtime_core::primitives::icon::IconData,
-        color: Option<&runtime_core::Color>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Emit the same `<svg>` structure the web backend produces so
-        // `WebBackend::hydrate` can adopt the SSR node by tag-matching
-        // (`svg` == `svg`). The earlier placeholder `<span>` triggered
-        // a tag mismatch on every icon and `primitives::icon::create`
-        // on web doesn't honor the hydration cursor — the fresh `<svg>`
-        // appended next to the stale `<span>`, leaving both in the DOM.
-        let (vw, vh) = data.view_box;
-        let mut svg = HtmlNode::new("svg");
-        svg.attrs
-            .push(("viewBox", format!("0 0 {} {}", vw, vh)));
-        svg.attrs.push(("xmlns", "http://www.w3.org/2000/svg".to_string()));
-        svg.attrs.push(("width", "1em".to_string()));
-        svg.attrs.push(("height", "1em".to_string()));
-        // Mirror the web backend: filled icons paint the interior with the
-        // icon color and disable the stroke; outlined icons stroke the
-        // outline and leave the interior empty. Must match
-        // `backend_web::primitives::icon::create` for hydration parity.
-        let icon_color = color.map(|c| c.0.clone()).unwrap_or_else(|| "currentColor".to_string());
-        if data.filled {
-            svg.attrs.push(("fill", icon_color));
-            svg.attrs.push(("stroke", "none".to_string()));
-        } else {
-            svg.attrs.push(("fill", "none".to_string()));
-            svg.attrs.push(("stroke", icon_color));
-            svg.attrs.push(("stroke-width", "2".to_string()));
-            svg.attrs.push(("stroke-linecap", "round".to_string()));
-            svg.attrs.push(("stroke-linejoin", "round".to_string()));
-        }
-        svg.style = Some(css::ICON_INLINE_STYLE.to_string());
-        let fill_rule = match data.fill_rule {
-            runtime_core::primitives::icon::FillRule::NonZero => "nonzero",
-            runtime_core::primitives::icon::FillRule::EvenOdd => "evenodd",
-        };
-        for path_d in data.paths {
-            let mut path = HtmlNode::new("path");
-            path.attrs.push(("d", (*path_d).to_string()));
-            path.attrs.push(("fill-rule", fill_rule.to_string()));
-            path.attrs.push(("pathLength", "1".to_string()));
-            path.attrs.push(("stroke-dasharray", "1".to_string()));
-            path.attrs.push(("stroke-dashoffset", "0".to_string()));
-            svg.children.push(nref(path));
-        }
-        nref(svg)
-    }
-
-    fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
-        parent.borrow_mut().children.push(child);
-    }
-
-    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
-        let mut p = parent.borrow_mut();
-        let index = index.min(p.children.len());
-        p.children.insert(index, child);
-    }
-
-    fn update_text(&mut self, node: &Self::Node, content: &str) {
-        node.borrow_mut().text = Some(content.to_string());
-    }
-
-    fn clear_children(&mut self, node: &Self::Node) {
-        node.borrow_mut().children.clear();
-    }
-
-    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
-        // Match the web backend's structure: each resolved style becomes a
-        // content-keyed class (`ui-<hash>`) plus one shared rule in the
-        // document stylesheet — NOT an inline `style="…"`. Same
-        // `hash_class_name` + `rules_to_css` as web, so a given style gets
-        // the same class name and declarations on both. Dedupe by class so
-        // N nodes sharing a style emit one rule (as web's `pregen` does).
-        // A text node carrying a `shadow` lowers it to `text-shadow` and
-        // mints a distinct class (keyed via `text_shadow_class_key`) so it
-        // never reuses a box element's `box-shadow` class. Web mirrors this
-        // exactly, so the class name matches on hydration.
-        let is_text_shadow = node.borrow().is_text && css::text_needs_shadow_variant(style);
-        let (class, body): (String, fn(&StyleRules) -> String) = if is_text_shadow {
-            (
-                css::hash_class_name(&css::text_shadow_class_key(&style.content_key())),
-                css::rules_to_css_text,
-            )
-        } else {
-            (css::hash_class_name(&style.content_key()), css::rules_to_css)
-        };
-        if !self.style_rules.contains_key(&class) {
-            self.style_rules.insert(class.clone(), body(style));
-        }
-        add_class(node, &class);
-    }
-
-    // SSR opts into the web's declarative state model: interaction-state
-    // overlays (`state hovered`, etc.) become CSS pseudo-class rules, so
-    // hover/press/focus styling works on the static first paint with no
-    // JS — same as the live web build (which the bundle takes over on
-    // hydration). The event-driven `attach_states` path needs a runtime.
-    fn handles_states_natively(&self) -> bool {
-        true
-    }
-
-    fn apply_styled_states(
-        &mut self,
-        node: &Self::Node,
-        base: &Rc<StyleRules>,
-        overlays: &[(runtime_core::StateBits, Rc<StyleRules>)],
-    ) {
-        // States-only entry; delegate to the superset with no breakpoint
-        // or container overlays so the combined-key + emission logic lives
-        // in one place.
-        self.apply_styled_variants(node, base, overlays, &[], &[]);
-    }
-
-    fn apply_styled_variants(
-        &mut self,
-        node: &Self::Node,
-        base: &Rc<StyleRules>,
-        overlays: &[(runtime_core::StateBits, Rc<StyleRules>)],
-        breakpoint_overlays: &[(runtime_core::Breakpoint, Rc<StyleRules>)],
-        container_overlays: &[(f32, Rc<StyleRules>)],
-    ) {
-        // Key the class by base + every state overlay + every breakpoint
-        // overlay + every container overlay through `css::variant_class_key`
-        // — the SINGLE SOURCE shared with the web backend. Building the key
-        // here independently (as this used to) drifted from web's scheme
-        // (`|<bits>:` vs `;<tag>:`), so the SAME stateful style minted
-        // DIFFERENT classes on server vs client and hydration couldn't
-        // reuse the server's styling. Sharing the builder guarantees
-        // byte-identical classes.
-        let mut combined = css::variant_class_key(
-            &base.content_key(),
-            overlays,
-            breakpoint_overlays,
-            container_overlays,
-        );
-        // If this is a text node and any layer (base or overlay) carries a
-        // shadow, the whole class renders shadows as `text-shadow` and mints
-        // a distinct key (matching the web backend). `emit` picks the lowering.
-        let text_shadow = node.borrow().is_text
-            && (css::text_needs_shadow_variant(base)
-                || overlays.iter().any(|(_, o)| css::text_needs_shadow_variant(o))
-                || breakpoint_overlays.iter().any(|(_, o)| css::text_needs_shadow_variant(o))
-                || container_overlays.iter().any(|(_, o)| css::text_needs_shadow_variant(o)));
-        if text_shadow {
-            combined = css::text_shadow_class_key(&combined);
-        }
-        let emit: fn(&StyleRules) -> String =
-            if text_shadow { css::rules_to_css_text } else { css::rules_to_css };
-        let class = css::hash_class_name(&combined);
-        self.style_rules
-            .entry(class.clone())
-            .or_insert_with(|| emit(base));
-        for (state, overlay) in overlays {
-            if let Some(pseudo) = css::state_pseudo(*state) {
-                // Key carries the pseudo so head_css emits
-                // `.ui-<hash>:hover{ … }` (the node still wears `ui-<hash>`).
-                self.style_rules
-                    .entry(format!("{class}{pseudo}"))
-                    .or_insert_with(|| emit(overlay));
-            }
-        }
-        // Breakpoint overlays → `@media (min-width: …) { .ui-<hash> { … } }`.
-        // Keyed by `{class}@{rank}` so `head_css`'s BTreeMap iteration emits
-        // them ascending by rank (mobile-first cascade). `None` only for Xs,
-        // which the walker never sends as an overlay.
-        for (bp, overlay) in breakpoint_overlays {
-            let body = emit(overlay);
-            if let Some(rule) = css::breakpoint_media_rule(&class, *bp, &body) {
-                self.media_rules
-                    .entry(format!("{class}@{}", bp.rank()))
-                    .or_insert(rule);
-            }
-        }
-        // Container overlays → `@container (min-width: …) { .ui-<hash> { … } }`.
-        // Keyed by `{class}@cq<threshold-bits>` so each distinct threshold
-        // gets its own rule; the browser resolves it against the nearest
-        // `container-type` ancestor (set by `mark_container`). Stacking by
-        // source order reproduces the mobile-first cascade.
-        for (threshold, overlay) in container_overlays {
-            let body = emit(overlay);
-            let rule = css::container_query_rule(&class, *threshold, &body);
-            self.media_rules
-                .entry(format!("{class}@cq{:08x}", threshold.to_bits()))
-                .or_insert(rule);
-        }
-        add_class(node, &class);
-    }
-
-    fn mark_container(&mut self, node: &Self::Node) {
-        // SSR mirrors web: tag the node as a containment context so
-        // descendant `@container` rules resolve against it. Emitted as a
-        // shared one-line class kept in `style_rules` (deduped by key).
-        self.style_rules
-            .entry(css::CONTAINER_TYPE_CLASS.to_string())
-            .or_insert_with(|| css::CONTAINER_TYPE_BODY.to_string());
-        add_class(node, css::CONTAINER_TYPE_CLASS);
-    }
-
-    fn create_link(
-        &mut self,
-        config: runtime_core::primitives::link::LinkConfig,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        let mut node = HtmlNode::new("a");
-        // Same de-defaulting reset as the web link primitive (strip the
-        // browser's blue/underlined anchor styling).
-        node.style = Some(css::LINK_RESET_STYLE.to_string());
-        node.attrs.push(("href", config.url.clone()));
-        if config.external {
-            node.attrs.push(("target", "_blank".to_string()));
-            node.attrs.push(("rel", "noopener noreferrer".to_string()));
-        }
-        nref(node)
-    }
-
-    fn create_text_input(
-        &mut self,
-        initial_value: &str,
-        placeholder: Option<&str>,
-        _on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        _on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
-        secure: bool,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        let mut node = HtmlNode::new("input");
-        node.attrs
-            .push(("type", if secure { "password" } else { "text" }.to_string()));
-        node.attrs.push(("value", initial_value.to_string()));
-        if let Some(p) = placeholder {
-            node.attrs.push(("placeholder", p.to_string()));
-        }
-        nref(node)
-    }
-
-    fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
-        set_attr(node,"value", value.to_string());
-    }
-
-    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
-        // Mirror the create-time `type` so a reactive `secure` resolved during
-        // the server render emits the right input type for hydration.
-        set_attr(node, "type", if secure { "password" } else { "text" }.to_string());
-    }
-
-    fn create_text_area(
-        &mut self,
-        initial_value: &str,
-        placeholder: Option<&str>,
-        // Soft-wrap (default) vs. the code-editor no-wrap shape. SSR
-        // emits the `wrap="off"` attribute for the latter so the
-        // server-rendered first paint matches what the web backend
-        // adopts on hydration. (Content-height growth needs no SSR
-        // attribute — it's intrinsic sizing the client reproduces.)
-        wrap: bool,
-        // Row bounds need no SSR attribute: the client backend's autosize
-        // reproduces the floor/cap from the same primitive props on hydration
-        // (rows→px is a client-side metric). Accepted to match the trait.
-        _min_rows: Option<u32>,
-        _max_rows: Option<u32>,
-        _on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        let mut node = HtmlNode::new("textarea");
-        node.text = Some(initial_value.to_string());
-        if let Some(p) = placeholder {
-            node.attrs.push(("placeholder", p.to_string()));
-        }
-        if !wrap {
-            node.attrs.push(("wrap", "off".to_string()));
-        }
-        nref(node)
-    }
-
-    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
-        node.borrow_mut().text = Some(value.to_string());
-    }
-
-    fn create_toggle(
-        &mut self,
-        initial_value: bool,
-        _on_change: Rc<dyn Fn(bool)>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        let mut node = HtmlNode::new("input");
-        node.attrs.push(("type", "checkbox".to_string()));
-        if initial_value {
-            node.attrs.push(("checked", String::new()));
-        }
-        nref(node)
-    }
-
-    fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
-        if value {
-            set_attr(node,"checked", String::new());
-        } else {
-            remove_attr(node, "checked");
-        }
-    }
-
-    fn create_scroll_view(
-        &mut self,
-        _horizontal: bool,
-        _on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        let mut node = HtmlNode::new("div");
-        node.scroll = true;
-        nref(node)
-    }
-
-    fn create_slider(
-        &mut self,
-        initial_value: f32,
-        min: f32,
-        max: f32,
-        step: Option<f32>,
-        _on_change: Rc<dyn Fn(f32)>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        let mut node = HtmlNode::new("input");
-        node.attrs.push(("type", "range".to_string()));
-        node.attrs.push(("min", min.to_string()));
-        node.attrs.push(("max", max.to_string()));
-        if let Some(s) = step {
-            node.attrs.push(("step", s.to_string()));
-        }
-        node.attrs.push(("value", initial_value.to_string()));
-        nref(node)
-    }
-
-    fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
-        set_attr(node,"value", value.to_string());
-    }
-
-    fn create_activity_indicator(
-        &mut self,
-        _size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
-        _color: Option<&runtime_core::Color>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Spinner animation is the live bundle's job; reserve a slot.
-        nref(HtmlNode::new("div"))
-    }
-
-    fn create_virtualizer(
-        &mut self,
-        _callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
-        _overscan: f32,
-        _layout: runtime_core::VirtualLayout,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // First paint emits the scroll container only; the live bundle
-        // mounts visible rows on boot. (Row pre-rendering for SEO of
-        // virtualized content is a later enhancement.)
-        nref(HtmlNode::new("div"))
-    }
-
-    fn create_graphics(
-        &mut self,
-        _on_ready: runtime_core::primitives::graphics::OnReady,
-        _on_resize: runtime_core::primitives::graphics::OnResize,
-        _on_lost: runtime_core::primitives::graphics::OnLost,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        nref(HtmlNode::new("canvas"))
-    }
-
-    fn create_external(
-        &mut self,
-        type_id: std::any::TypeId,
-        _type_name: &'static str,
-        payload: &Rc<dyn std::any::Any>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Server-render the external via its registered handler (e.g.
-        // `codeblock` → a real `<pre>` + spans), so SSR output
-        // matches the web build and hydration adopts it. Falls back to an
-        // empty host `<div>` only when no handler is registered (the
-        // client bundle then fills it).
-        if let Some(handler) = self.external_handlers.get(type_id) {
-            handler(payload, self)
-        } else {
-            nref(HtmlNode::new("div"))
-        }
-    }
-
-    fn create_portal(
-        &mut self,
-        _target: runtime_core::primitives::portal::PortalTarget,
-        _on_dismiss: Option<Rc<dyn Fn()>>,
-        _trap_focus: bool,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        nref(HtmlNode::new("div"))
-    }
-
-    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
-        set_attr(node,"src", src.to_string());
-    }
-
-    fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-        node.borrow_mut().text = Some(label.to_string());
-    }
-
-    fn create_navigator(
-        &mut self,
-        type_id: std::any::TypeId,
-        _type_name: &'static str,
-        presentation: Rc<dyn std::any::Any>,
-        host: NavigatorHost<Self::Node>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Dispatch to a registered SSR handler (which builds the kind's
-        // chrome as primitives). With no handler registered, fall back to
-        // a bare container; the walker still mounts the path-matched
-        // screen into it via `navigator_attach_initial`.
-        if let Some(factory) = self.navigator_handlers.get(type_id) {
-            let mut handler = factory();
-            let node = handler.init(self, host, presentation);
-            self.nav_handler_instances
-                .insert(nav_key(&node), Rc::new(RefCell::new(handler)));
-            node
-        } else {
-            nref(HtmlNode::new("div"))
-        }
-    }
-
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn std::any::Any>,
-    ) {
-        if let Some(handler) = self.nav_handler_instances.get(&nav_key(navigator)).cloned() {
-            handler.borrow_mut().attach_initial(self, screen, scope_id, options);
-        } else {
-            navigator.borrow_mut().children.push(screen);
-        }
-    }
-
-    fn release_navigator(&mut self, node: &Self::Node) {
-        if let Some(handler) = self.nav_handler_instances.remove(&nav_key(node)) {
-            handler.borrow_mut().release(self);
-        }
-    }
-
-    fn set_page_metadata(&mut self, meta: &runtime_core::PageMetadata) {
-        self.metadata = meta.clone();
-    }
-
-    fn attach_html_class(&self, node: &Self::Node, class: &str) {
-        add_class(node, class);
-    }
-
-    fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
-        add_inline_style(node, prop, value);
-    }
-
-    fn register_raw_css(&mut self, css: &str) {
-        // Dedupe: navigator chrome registers the same layout sheet on
-        // every navigator instance.
-        if !self.raw_css.iter().any(|c| c == css) {
-            self.raw_css.push(css.to_string());
-        }
-    }
-
-    fn set_app_background(&mut self, color: &runtime_core::Tokenized<runtime_core::Color>) {
-        self.app_bg = Some(color.clone());
-    }
-
-    fn set_scrollbar_theme(
-        &mut self,
-        thumb: &runtime_core::Tokenized<runtime_core::Color>,
-        track: &runtime_core::Tokenized<runtime_core::Color>,
-    ) {
-        self.scrollbar = Some((thumb.clone(), track.clone()));
-    }
-
-    fn register_asset(
-        &mut self,
-        id: runtime_core::assets::AssetId,
-        kind: runtime_core::assets::AssetTag,
-        source: &runtime_core::assets::AssetSource,
-    ) {
-        if self.asset_urls.contains_key(&id) {
-            return;
-        }
-        // `Embedded` sources have no served URL on a headless server
-        // (they'd need a runtime blob, which is web-only) — skip them.
-        if let Some(url) = css::asset_url(kind, source) {
-            self.asset_urls.insert(id, url);
-        }
-    }
-
-    fn register_typeface(
-        &mut self,
-        _id: runtime_core::assets::TypefaceId,
-        family_name: &str,
-        faces: &[runtime_core::assets::TypefaceFace],
-        _fallback: runtime_core::assets::SystemFallback,
-    ) {
-        for face in faces {
-            if let Some(url) = self.asset_urls.get(&face.asset) {
-                let rule = css::font_face_css(family_name, face, url);
-                if !self.font_faces.contains(&rule) {
-                    self.font_faces.push(rule);
-                }
-            }
-        }
-    }
-
-    fn install_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
-        self.tokens = tokens.to_vec();
-    }
-
-    fn update_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
-        // Merge: `update_tokens` may carry only the changed tokens.
-        for incoming in tokens {
-            if let Some(slot) = self.tokens.iter_mut().find(|t| t.name == incoming.name) {
-                slot.value = incoming.value.clone();
-            } else {
-                self.tokens.push(incoming.clone());
-            }
-        }
-    }
-
-    fn finish(&mut self, root: Self::Node) {
-        self.root = Some(root);
-    }
-}
 
 /// A rendered page: the body HTML (styles inline) plus the `<head>`
 /// metadata an author screen declared via
-/// [`runtime_core::set_page_metadata`]. Slice that wires the page shell
+/// [`runtime_shared::set_page_metadata`]. Slice that wires the page shell
 /// turns `metadata` into `<title>` / `<meta>` / Open Graph tags.
 pub struct RenderedPage {
     pub html: String,
-    pub metadata: runtime_core::PageMetadata,
+    pub metadata: runtime_shared::PageMetadata,
     /// Stylesheets the render registered via
     /// [`Backend::register_raw_css`] (navigator layout sheet, etc.).
     /// [`render_document`] emits these in `<head>` so the server's first
@@ -1212,10 +750,16 @@ fn push_meta_prop(out: &mut String, property: &str, content: &str) {
 ///   *append* a second copy instead of replacing.
 ///
 /// `bundle_module` is developer-provided config, not user input.
+///
+/// `premint_css` links the build-time stylesheet (premint builds only).
+/// Emitted independent of `bundle_module` — a `--ssg-static` page has no
+/// wasm to repair anything, so the link is its ONLY source of CSS for
+/// the `iy-*` classes the server stamped.
 pub fn render_document(
     page: &RenderedPage,
     bundle_module: Option<&str>,
     extra_head: Option<&str>,
+    premint_css: Option<&PremintCss>,
 ) -> String {
     let m = &page.metadata;
     let mut doc = String::from("<!DOCTYPE html>\n<html lang=\"en\">\n<head>");
@@ -1243,6 +787,25 @@ pub fn render_document(
         doc.push_str(" href=\"");
         escape_attr(url, &mut doc);
         doc.push_str("\">");
+    }
+    // Premint stylesheet link — BEFORE both inline <style>s below. The
+    // ordering is load-bearing, not stylistic: engine fall-through and
+    // override rules (`ui-*`, in `head_css`) must cascade AFTER premint
+    // rules at their shared (0,1,0) specificity, mirroring the live web
+    // document order (premint <link>, then the runtime <style>). Tag
+    // shape kept in sync with `build_web::premint_css_link_tag`
+    // (root-absolute href here; the `data-iy-font-families` attribute is
+    // the hydrating client's typeface dedup input).
+    if let Some(css) = premint_css {
+        doc.push_str("<link rel=\"stylesheet\" href=\"");
+        escape_attr(&css.href, &mut doc);
+        doc.push('"');
+        if !css.font_families.is_empty() {
+            doc.push_str(" data-iy-font-families=\"");
+            escape_attr(&css.font_families, &mut doc);
+            doc.push('"');
+        }
+        doc.push('>');
     }
     // Baseline so a navigator app-shell works: no body margin, and the
     // mount is a fixed-viewport-height flex column. The navigator's body
@@ -1309,27 +872,10 @@ pub fn render_document(
     doc
 }
 
-/// Render an app headlessly at a given URL path. Seeds the navigator's
-/// initial-path override so the root navigator opens to the screen
-/// matching `path`, walks the tree once against a fresh `SsrBackend`,
-/// and returns the body HTML (styles inline) plus the screen's `<head>`
-/// metadata.
-///
-/// `app` is the same entry closure the web bundle mounts — SSR runs it on
-/// the host (native) target. The returned markup is throwaway first-paint
-/// HTML; the served page still loads the real WebBackend bundle, which
-/// boots and replaces the DOM.
-pub fn render_path<F>(path: &str, app: F) -> RenderedPage
-where
-    F: FnOnce() -> runtime_core::Element,
-{
-    render_path_with(path, |_| {}, app)
-}
-
 /// Default viewport SSR assumes (desktop-ish). Responsive author code
 /// reads `viewport_size()`; a server has no real window, so we pick a
 /// sensible wide default for first paint.
-const SSR_VIEWPORT: runtime_core::ViewportSize = runtime_core::ViewportSize::new(1280.0, 800.0);
+const SSR_VIEWPORT: runtime_shared::ViewportSize = runtime_shared::ViewportSize::new(1280.0, 800.0);
 
 /// Result of crawling an app's navigator hierarchy via [`render_all`].
 /// `pages` maps each rendered literal path (e.g. `/`, `/about`) to its
@@ -1341,119 +887,31 @@ pub struct CrawlResult {
     pub skipped_parameterized: Vec<&'static str>,
 }
 
-/// Crawl every route reachable from the app's navigator hierarchy and
-/// render each as an SSG'd page. Drives the SSG export for
-/// `idealyst build --ssg`.
-///
-/// The crawl is hierarchy-driven, not link-driven: it relies on the
-/// route-collector hook in `runtime-core`'s `dispatch_navigator` to
-/// publish every navigator's `RouteEntry.path` set as it mounts. Start
-/// with `/`, render it, drain the collector, queue new literal paths,
-/// repeat. Nested navigators (a drawer with a stack inside) surface
-/// their routes when their parent screen mounts — they fall out of the
-/// same loop.
-///
-/// `setup` and `app` are called per path (once per page rendered), so
-/// they must be `Fn`, not `FnOnce`. Routes whose pattern contains a
-/// `:placeholder` segment can't be SSG'd without param values; they're
-/// returned in `skipped_parameterized` and the caller can warn.
-pub fn render_all<S, F>(setup: S, app: F) -> CrawlResult
-where
-    S: Fn(&mut SsrBackend),
-    F: Fn() -> runtime_core::Element,
-{
-    use runtime_core::primitives::navigator::{enable_route_collector, take_route_collector};
-    use std::collections::{HashSet, VecDeque};
-
-    let mut pages: HashMap<String, RenderedPage> = HashMap::new();
-    let mut skipped: Vec<&'static str> = Vec::new();
-    let mut queue: VecDeque<String> = VecDeque::from(["/".to_string()]);
-    let mut seen: HashSet<String> = HashSet::new();
-    seen.insert("/".to_string());
-
-    while let Some(path) = queue.pop_front() {
-        // Reset session-wide registration dedup before each fresh
-        // backend mount. Without this, the second render onward
-        // short-circuits `register_stylesheet` + `register_typeface`
-        // and the new backend's `head_css` is missing `@font-face` and
-        // any framework-pregenerated stylesheets (= broken first
-        // paint + fallback fonts on every page after `/`).
-        runtime_core::reset_for_ssg_render();
-        enable_route_collector();
-        let page = render_path_with(&path, |b| setup(b), || app());
-        let discovered = take_route_collector().unwrap_or_default();
-        pages.insert(path, page);
-
-        for p in discovered {
-            if p.contains(':') {
-                if !skipped.contains(&p) {
-                    skipped.push(p);
-                }
-                continue;
-            }
-            let ps = p.to_string();
-            if seen.insert(ps.clone()) {
-                queue.push_back(ps);
-            }
-        }
-    }
-
-    CrawlResult { pages, skipped_parameterized: skipped }
-}
-
-/// Like [`render_path`] but runs `setup` against the backend before the
-/// build — the hook where navigator SDKs register their chrome handlers
-/// (`stack_navigator::chrome::register(backend)`, etc.) so chrome renders.
-pub fn render_path_with<S, F>(path: &str, setup: S, app: F) -> RenderedPage
-where
-    S: FnOnce(&mut SsrBackend),
-    F: FnOnce() -> runtime_core::Element,
-{
-    scheduler::ensure_installed();
-    runtime_core::primitives::navigator::set_initial_path(Some(path.to_string()));
-    let backend = Rc::new(RefCell::new(SsrBackend::new()));
-    setup(&mut backend.borrow_mut());
-    let owner = runtime_core::mount(backend.clone(), move || {
-        // Seed the viewport FIRST, inside the root scope, so the
-        // framework's lazy `viewport_size` signal (and any responsive
-        // author code reading it) is created in this stable scope —
-        // not a transient deferred-build scope, where the cached signal
-        // id would dangle and later type-mismatch on recycle.
-        runtime_core::set_viewport_size(SSR_VIEWPORT);
-        app()
-    });
-    // Clear in case the tree had no navigator to consume it.
-    runtime_core::primitives::navigator::set_initial_path(None);
-    // Run deferred chrome builds (e.g. a drawer sidebar built via
-    // `build_node`) now that the mount borrow is released.
-    scheduler::drain();
-    let page = {
-        let b = backend.borrow();
-        RenderedPage {
-            html: b.into_html(),
-            metadata: b.metadata.clone(),
-            head_css: b.head_css(),
-        }
-    };
-    drop(owner);
-    page
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::accessibility::AccessibilityProps;
-    use runtime_core::{render, text, view, Color, Tokenized};
-    use std::cell::RefCell;
+    use runtime_shared::accessibility::AccessibilityProps;
+    use runtime_shared::{Color, Tokenized};
+    // The rendering mechanism now lives on the capability traits (the
+    // `Backend` mega-trait is gone), so the unit tests reach it through
+    // them; `Host` supplies the structural ops.
+    use runtime_scene::Host;
+    use runtime_vocabulary::caps::{
+        AppEnvOps, AssetOps, DocumentOps, ExternalOps, LifecycleOps, LinkOps, PressableOps,
+        StyleOps, TextOps, ViewOps,
+    };
+    use runtime_shared::StyleRules;
 
-    /// A `view([text])` mounted through the real walker serializes to
-    /// nested `<div><span>` markup — proving headless server execution
-    /// of the author tree produces HTML end to end.
+    /// A `view { text }` realized through the real vocabulary handlers
+    /// serializes to nested `<div><span>` markup — proving headless
+    /// server execution of the author tree produces HTML end to end.
     #[test]
     fn view_with_text_renders_nested_html() {
-        let backend = Rc::new(RefCell::new(SsrBackend::new()));
-        let _owner = render(backend.clone(), view(vec![text("hi").into()]).into());
-        assert_eq!(backend.borrow().into_html(), "<div><span>hi</span></div>");
+        let html = newcore::render_to_string(|| {
+            use runtime_vocabulary::builders::{text, view};
+            view().child(text().content("hi")).build()
+        });
+        assert_eq!(html, "<div><span>hi</span></div>");
     }
 
     /// A styled-text node serializes to the nested-span structure the
@@ -1464,14 +922,13 @@ mod tests {
     /// as-is.
     #[test]
     fn styled_text_renders_run_spans_with_inline_var_styles() {
-        use runtime_core::{styled_text, IntoElement, TextRun, TextRunStyle};
-        let backend = Rc::new(RefCell::new(SsrBackend::new()));
+        use runtime_shared::styled_text::{TextRun, TextRunStyle};
         let runs = vec![
             TextRun::plain("the "),
             TextRun::styled(
                 "ui!",
                 TextRunStyle {
-                    font_family: Some(runtime_core::FontFamily::System(
+                    font_family: Some(runtime_shared::FontFamily::System(
                         "ui-monospace, monospace".into(),
                     )),
                     background: Some(Tokenized::token("color-surface-alt", Color("#eee".into()))),
@@ -1480,8 +937,9 @@ mod tests {
             ),
             TextRun::plain(" macro"),
         ];
-        let _owner = render(backend.clone(), styled_text(runs).into_element());
-        let html = backend.borrow().into_html();
+        let html = newcore::render_to_string(move || {
+            runtime_vocabulary::builders::text().runs(runs).build()
+        });
         assert_eq!(
             html,
             "<span><span>the </span>\
@@ -1495,9 +953,10 @@ mod tests {
     /// markup into the server-rendered page.
     #[test]
     fn text_content_is_escaped() {
-        let backend = Rc::new(RefCell::new(SsrBackend::new()));
-        let _owner = render(backend.clone(), text("a<b>&c").into());
-        assert_eq!(backend.borrow().into_html(), "<span>a&lt;b&gt;&amp;c</span>");
+        let html = newcore::render_to_string(|| {
+            runtime_vocabulary::builders::text().content("a<b>&c").build()
+        });
+        assert_eq!(html, "<span>a&lt;b&gt;&amp;c</span>");
     }
 
     /// `apply_style` stamps a content-keyed class (`ui-<hash>`) on the
@@ -1531,17 +990,20 @@ mod tests {
         assert!(head.contains("box-sizing: border-box"), "base reset present, got: {head}");
     }
 
-    /// Regression: a `shadow` on the text primitive lowers to
-    /// `text-shadow` (hugging the glyphs), while the SAME shadow on a box
-    /// element stays `box-shadow`. The two mint DISTINCT classes so they
-    /// can't collide in the content-keyed dedup cache even when their
-    /// `StyleRules` are otherwise identical.
+    /// `shadow` is the BOX shadow on every node kind, and `text_shadow`
+    /// is the glyph shadow — one field per CSS property. A text and a
+    /// box node with identical rules therefore SHARE one class (the old
+    /// single `shadow` field lowered per node kind, which forced
+    /// shadowed text onto distinct `@t`-keyed classes and disqualified
+    /// every shadowed sheet from preminting).
     #[test]
-    fn text_node_shadow_lowers_to_text_shadow_not_box_shadow() {
-        use runtime_core::Shadow;
+    fn shadow_fields_lower_one_property_each_and_classes_are_shared() {
+        use runtime_shared::Shadow;
         let mut b = SsrBackend::new();
         let mut rules = StyleRules::default();
         rules.shadow = Some(Shadow { x: 1.0, y: 2.0, blur: 3.0, color: Color("#000000".into()) });
+        rules.text_shadow =
+            Some(Shadow { x: 4.0, y: 5.0, blur: 6.0, color: Color("#111111".into()) });
         let rules = Rc::new(rules);
 
         let txt = b.create_text("hi", &AccessibilityProps::default());
@@ -1549,32 +1011,31 @@ mod tests {
         b.apply_style(&txt, &rules);
         b.apply_style(&boxed, &rules);
 
-        // The two nodes carry DIFFERENT classes (text variant is keyed apart).
+        // ONE shared content-keyed class for both node kinds.
+        let class = css::hash_class_name(&rules.content_key());
         let txt_html = { let mut s = String::new(); serialize(&txt, &mut s); s };
         let box_html = { let mut s = String::new(); serialize(&boxed, &mut s); s };
-        let txt_class = css::hash_class_name(&css::text_shadow_class_key(&rules.content_key()));
-        let box_class = css::hash_class_name(&rules.content_key());
-        assert_ne!(txt_class, box_class, "text + box must mint distinct classes");
-        assert!(txt_html.contains(&txt_class), "text node wears its variant class: {txt_html}");
-        assert!(box_html.contains(&box_class), "box node wears the box class: {box_html}");
+        assert!(txt_html.contains(&class), "text node shares the class: {txt_html}");
+        assert!(box_html.contains(&class), "box node shares the class: {box_html}");
 
-        // The head stylesheet lowers each to the right property.
+        // The one rule body carries BOTH properties, each from its own field.
         let head = b.head_css();
         assert!(
-            head.contains(&format!(".{txt_class}{{text-shadow: 1px 2px 3px #000000}}")),
-            "text node → text-shadow, got: {head}"
+            head.contains("box-shadow: 1px 2px 3px #000000"),
+            "shadow → box-shadow, got: {head}"
         );
         assert!(
-            head.contains(&format!(".{box_class}{{box-shadow: 1px 2px 3px #000000}}")),
-            "box node → box-shadow, got: {head}"
+            head.contains("text-shadow: 4px 5px 6px #111111"),
+            "text_shadow → text-shadow, got: {head}"
         );
+        assert_eq!(head.matches(&format!(".{class}{{")).count(), 1, "one shared rule");
     }
 
     /// `apply_styled_states` emits the base rule plus a `:hover` pseudo
     /// rule, so hover styling works on the static first paint with no JS.
     #[test]
     fn apply_styled_states_emits_hover_rule() {
-        use runtime_core::StateBits;
+        use runtime_shared::StateBits;
         let mut b = SsrBackend::new();
         let v = b.create_view(&AccessibilityProps::default());
         let mut base = StyleRules::default();
@@ -1598,6 +1059,136 @@ mod tests {
         assert!(head.contains(&format!(".{class}:hover{{background: #eeeeee}}")), "hover rule, got: {head}");
     }
 
+    /// REGRESSION: re-applying a style to a node REPLACES its minted
+    /// class (the web backend's one-mutable-dynamic-slot-per-node
+    /// model) instead of accumulating both. The bug: a reactive style
+    /// whose value changed between the mount-time apply and the
+    /// request's flush (the new core stages writes — e.g. a scroll-spy
+    /// TOC link resolving its `active` variant post-mount) serialized
+    /// wearing BOTH classes, while old-core SSR (and the live DOM
+    /// after the same flush) carries only the final one — breaking SSG
+    /// byte-parity and hydration adoption. Structural classes stamped
+    /// via `attach_html_class` must survive the swap.
+    #[test]
+    fn regression_reapply_replaces_minted_class_keeps_structural() {
+        let mut b = SsrBackend::new();
+        let v = b.create_view(&AccessibilityProps::default());
+        b.attach_html_class(&v, "ui-cq-container");
+
+        let mut first = StyleRules::default();
+        first.background = Some(Tokenized::Literal(Color("#111111".into())));
+        let mut second = StyleRules::default();
+        second.background = Some(Tokenized::Literal(Color("#222222".into())));
+        let first = Rc::new(first);
+        let second = Rc::new(second);
+        let first_class = css::hash_class_name(&first.content_key());
+        let second_class = css::hash_class_name(&second.content_key());
+
+        b.apply_style(&v, &first);
+        b.apply_style(&v, &second);
+
+        let html = { let mut s = String::new(); serialize(&v, &mut s); s };
+        assert!(
+            html.contains(&format!("class=\"ui-cq-container {second_class}\"")),
+            "node wears the structural class + ONLY the final minted class: {html}"
+        );
+        assert!(
+            !html.contains(&first_class),
+            "the superseded minted class must be removed: {html}"
+        );
+
+        // The superseded rule leaves the head stylesheet once nothing
+        // wears it (web's dynamic-slot refcount model): old-core SSR
+        // applies only the final style, so a lingering first-apply rule
+        // breaks head_css byte-parity.
+        let head = b.head_css();
+        assert!(
+            !head.contains(&first_class),
+            "superseded rule must be dropped from head_css: {head}"
+        );
+        assert!(head.contains(&second_class), "final rule stays: {head}");
+
+        // Same contract through the variants entry (the path reactive
+        // sheet styles actually take).
+        let v2 = b.create_view(&AccessibilityProps::default());
+        b.apply_styled_variants(&v2, &first, &[], &[], &[]);
+        b.apply_styled_variants(&v2, &second, &[], &[], &[]);
+        let html2 = { let mut s = String::new(); serialize(&v2, &mut s); s };
+        assert!(
+            html2.contains(&second_class) && !html2.contains(&first_class),
+            "apply_styled_variants re-apply swaps the minted class too: {html2}"
+        );
+
+        // Shared classes survive a swap by ONE of their wearers: v2
+        // still wears `second`; re-applying `first` to a third node and
+        // back must not delete `second`'s rule while v2 wears it.
+        let v3 = b.create_view(&AccessibilityProps::default());
+        b.apply_style(&v3, &second); // second: worn by v, v2, v3
+        b.apply_style(&v3, &first); // v3 swaps away; second still worn
+        let head = b.head_css();
+        assert!(
+            head.contains(&second_class),
+            "rule with remaining wearers must survive another node's swap: {head}"
+        );
+    }
+
+    /// A disabled-state overlay must select on the `[disabled]`
+    /// ATTRIBUTE, not the `:disabled` pseudo-class — pressables render
+    /// as `<div disabled>`, which `:disabled` never matches (it only
+    /// matches real form controls), so the overlay silently never
+    /// applied in SSR output. Web already used `[disabled]`; this
+    /// pins SSR to the shared `css::state_pseudo` fix.
+    #[test]
+    fn regression_ssr_disabled_overlay_uses_attribute_selector() {
+        use runtime_shared::StateBits;
+        let mut b = SsrBackend::new();
+        let v = b.create_view(&AccessibilityProps::default());
+        let mut base = StyleRules::default();
+        base.background = Some(Tokenized::Literal(Color("#ffffff".into())));
+        let mut disabled = StyleRules::default();
+        disabled.background = Some(Tokenized::Literal(Color("#cccccc".into())));
+        b.apply_styled_states(
+            &v,
+            &Rc::new(base),
+            &[(StateBits::DISABLED, Rc::new(disabled))],
+        );
+        let head = b.head_css();
+        assert!(
+            head.contains("[disabled]{background: #cccccc}"),
+            "disabled overlay must use the attribute selector, got: {head}"
+        );
+        assert!(
+            !head.contains(":disabled"),
+            "the :disabled pseudo-class is inert on div pressables, got: {head}"
+        );
+    }
+
+    /// A focused-state overlay owns the focus indicator, so the SSR
+    /// rule must suppress the UA outline exactly like the web backend's
+    /// minted rule — otherwise the server-rendered first paint
+    /// double-draws the native ring under the themed one until
+    /// hydration replaces the sheet.
+    #[test]
+    fn regression_ssr_focus_overlay_suppresses_ua_outline() {
+        use runtime_shared::StateBits;
+        let mut b = SsrBackend::new();
+        let v = b.create_view(&AccessibilityProps::default());
+        let mut base = StyleRules::default();
+        base.background = Some(Tokenized::Literal(Color("#ffffff".into())));
+        let mut focused = StyleRules::default();
+        focused.background = Some(Tokenized::Literal(Color("#ddddff".into())));
+        b.apply_styled_states(
+            &v,
+            &Rc::new(base),
+            &[(StateBits::FOCUSED, Rc::new(focused))],
+        );
+        let head = b.head_css();
+        assert!(
+            head.contains(":focus{outline:none;background: #ddddff}"),
+            "focus overlay must prepend outline:none, got: {head}"
+        );
+    }
+
     /// `apply_styled_variants` emits the base rule plus an
     /// `@media (min-width: …)` rule per breakpoint overlay — so the SSR
     /// first paint already respects size boundaries (the whole point:
@@ -1605,7 +1196,7 @@ mod tests {
     /// the SSR fix for the "sidebar pinned on initial mobile render" bug.
     #[test]
     fn apply_styled_variants_emits_breakpoint_media_rule() {
-        use runtime_core::{Breakpoint, Length};
+        use runtime_shared::{Breakpoint, Length};
         let mut b = SsrBackend::new();
         let v = b.create_view(&AccessibilityProps::default());
 
@@ -1666,7 +1257,7 @@ mod tests {
     /// the SSR first paint already carries the container-responsive layout.
     #[test]
     fn apply_styled_variants_emits_container_query_rule() {
-        use runtime_core::Length;
+        use runtime_shared::Length;
         let mut b = SsrBackend::new();
         let container = b.create_view(&AccessibilityProps::default());
         b.mark_container(&container);
@@ -1749,7 +1340,7 @@ mod tests {
     #[test]
     fn reactive_anchor_is_display_contents() {
         let mut b = SsrBackend::new();
-        let node = b.create_reactive_anchor();
+        let node = b.create_anchor();
         let html = { let mut s = String::new(); serialize(&node, &mut s); s };
         assert_eq!(html, r#"<div style="display: contents"></div>"#);
     }
@@ -1774,44 +1365,56 @@ mod tests {
     }
 
     /// REGRESSION (before/after) — a GPU external (canvas) SSR-renders its HOST
-    /// element only when an SSR handler is registered. This is exactly the
-    /// mechanism `canvas_core::register_ssr` uses (registered for `CanvasProps`;
-    /// a local marker stands in here so `backend-ssr` stays SDK-free):
+    /// element only when its scene handler is registered. This is exactly the
+    /// mechanism `canvas_core::register_ssr` uses (a local marker prim
+    /// stands in here so `backend-ssr` stays SDK-free):
     ///
-    /// * BEFORE (no handler): `create_external` falls back to `<div>` — the tag
-    ///   the `<canvas>`-expecting web `graphics` primitive can't adopt, so
-    ///   hydration diverges at the first node and cascades.
-    /// * AFTER (host handler): SSR emits the real `<canvas>` the client adopts
-    ///   via `hydrate_next("canvas")`; the GPU surface attaches post-hydration.
+    /// * BEFORE (no handler): the caps fallback `create_external` emits
+    ///   `<div>` — the tag the `<canvas>`-expecting web `graphics` primitive
+    ///   can't adopt, so hydration diverges at the first node and cascades.
+    ///   (This is also the whole reason `create_external` stays overridden:
+    ///   the caps DEFAULT would `unimplemented!()`-panic.)
+    /// * AFTER (registered handler): SSR emits the real `<canvas>` the client
+    ///   adopts via `hydrate_next("canvas")`; the GPU surface attaches
+    ///   post-hydration.
     #[test]
     fn external_gpu_host_ssr_renders_canvas_only_with_handler() {
-        use runtime_core::RegisterExternal;
         use std::any::{Any, TypeId};
         use std::rc::Rc;
 
         struct GpuCanvas; // stand-in for canvas_core::CanvasProps
 
+        // BEFORE: nothing registered → the generic `<div>` fallback.
         let mut b = SsrBackend::new();
         let payload: Rc<dyn Any> = Rc::new(GpuCanvas);
-        let a11y = AccessibilityProps::default();
-
-        // BEFORE: no registered handler → generic <div> fallback.
-        let before = b.create_external(TypeId::of::<GpuCanvas>(), "gpu-canvas", &payload, &a11y);
+        let before = b.create_external(
+            TypeId::of::<GpuCanvas>(),
+            "gpu-canvas",
+            &payload,
+            &AccessibilityProps::default(),
+        );
         let before_html = { let mut s = String::new(); serialize(&before, &mut s); s };
         assert_eq!(before_html, "<div></div>", "no SSR handler → the un-adoptable div");
 
-        // AFTER: register the host handler (what canvas_core::register_ssr does).
-        b.register_external::<GpuCanvas, _>(|_p, b| b.create_element("canvas"));
-        let after = b.create_external(TypeId::of::<GpuCanvas>(), "gpu-canvas", &payload, &a11y);
-        let after_html = { let mut s = String::new(); serialize(&after, &mut s); s };
-        assert_eq!(after_html, "<canvas></canvas>", "host handler → adoptable <canvas>");
+        // AFTER: register the host handler on the scene registry (what
+        // `canvas_core::register_ssr` does) and render through it.
+        let html = newcore::render_path_with(
+            "/",
+            |registry| {
+                registry.register::<GpuCanvas, _>(|cx, _payload, _children| {
+                    cx.backend().borrow_mut().create_element("canvas")
+                });
+            },
+            || runtime_scene::item(GpuCanvas, Vec::new()),
+        );
+        assert_eq!(html.html, "<canvas></canvas>", "host handler → adoptable <canvas>");
     }
 
     /// `create_link` resets the browser's anchor defaults (so links don't
     /// render blue/underlined) — same inline reset the web link uses.
     #[test]
     fn create_link_applies_anchor_reset() {
-        use runtime_core::primitives::link::LinkConfig;
+        use runtime_shared::primitives::link::LinkConfig;
         let mut b = SsrBackend::new();
         let config = LinkConfig {
             route: "about",
@@ -1833,7 +1436,7 @@ mod tests {
     fn render_document_emits_head_and_shell() {
         let page = RenderedPage {
             html: "<div>hi</div>".into(),
-            metadata: runtime_core::PageMetadata {
+            metadata: runtime_shared::PageMetadata {
                 title: Some("Home".into()),
                 description: Some("welcome".into()),
                 og_image: Some("/og.png".into()),
@@ -1841,7 +1444,7 @@ mod tests {
             },
             head_css: ".x{color:red}".into(),
         };
-        let doc = render_document(&page, Some("/pkg/app.js"), None);
+        let doc = render_document(&page, Some("/pkg/app.js"), None, None);
 
         assert!(doc.starts_with("<!DOCTYPE html>"));
         assert!(doc.contains("<title>Home</title>"));
@@ -1863,7 +1466,7 @@ mod tests {
             metadata: Default::default(),
             head_css: String::new(),
         };
-        let doc = render_document(&page, None, None);
+        let doc = render_document(&page, None, None, None);
         assert!(doc.contains(r#"<div id="app" data-ssr-viewport="1280x800"><div>hi</div></div>"#));
         assert!(!doc.contains("<script"), "no bundle => no script, got: {doc}");
     }
@@ -1894,7 +1497,7 @@ mod tests {
         };
         let snippet =
             r#"<link rel="icon" type="image/x-icon" href="/favicon.ico" sizes="16x16">"#;
-        let doc = render_document(&page, None, Some(snippet));
+        let doc = render_document(&page, None, Some(snippet), None);
         assert!(
             doc.contains(snippet),
             "extra_head snippet must appear in the document, got: {doc}",
@@ -1918,8 +1521,8 @@ mod tests {
             metadata: Default::default(),
             head_css: String::new(),
         };
-        let with_none = render_document(&page, None, None);
-        let with_empty = render_document(&page, None, Some(""));
+        let with_none = render_document(&page, None, None, None);
+        let with_empty = render_document(&page, None, Some(""), None);
         assert_eq!(with_none, with_empty);
     }
 
@@ -1938,7 +1541,7 @@ mod tests {
                        .x{background-image:url(\"/img/bg.png\")}"
                 .into(),
         };
-        let doc = render_document(&page, Some("/pkg/app.js"), None);
+        let doc = render_document(&page, Some("/pkg/app.js"), None, None);
         assert!(
             doc.contains(
                 r#"<link rel="preload" as="font" crossorigin type="font/ttf" href="/fonts/Inter-Regular.ttf">"#
@@ -1972,12 +1575,93 @@ mod tests {
     }
 
     /// Theme tokens delivered via `install_tokens` are emitted as a
+    /// The premint host driver publishes the theme's default text font
+    /// through `apply_default_text_font`; SSR must emit it as the
+    /// `--iy-default-font` `:root` variable so preminted rule bodies
+    /// (`font-family: var(--iy-default-font, inherit)`) resolve on the
+    /// server-rendered first paint. `None` clears it.
+    #[test]
+    fn regression_ssr_default_text_font_emits_root_variable() {
+        let mut b = SsrBackend::new();
+        b.apply_default_text_font(Some(&runtime_shared::FontFamily::System("Inter".into())));
+        let head = b.head_css();
+        assert!(
+            head.contains("--iy-default-font: Inter;"),
+            "default font var missing from head css: {head}"
+        );
+
+        b.apply_default_text_font(None);
+        let head = b.head_css();
+        assert!(
+            !head.contains("--iy-default-font"),
+            "cleared default font must not emit: {head}"
+        );
+    }
+
+    /// A node whose style is attached REACTIVELY never gets the theme
+    /// font folded into its own rules — `style_attach`'s dynamic branch
+    /// deliberately skips `fill_default_text_font`, because folding
+    /// would change the minted class hash and break SSR/live class-name
+    /// parity. Its only supply is CSS inheritance from the document
+    /// root.
+    ///
+    /// Publishing only the `--iy-default-font` VARIABLE does not supply
+    /// it: the variable is read exclusively by PREMINTED rule bodies
+    /// (`font-family: var(--iy-default-font, inherit)`), and the base
+    /// reset declares `font-family` only on `:where(input, textarea)`.
+    /// So with the variable alone these nodes inherited past the root
+    /// and rendered in the browser's serif fallback, while an
+    /// identically-styled STATIC sibling — whose class carries the
+    /// folded font — rendered in the theme font.
+    ///
+    /// The document root must therefore declare a real, inheritable
+    /// `font-family`, not just the variable. See the dynamic-branch
+    /// comment in `runtime_vocabulary::style_attach`.
+    #[test]
+    fn regression_reactive_styled_node_inherits_theme_font() {
+        let mut b = SsrBackend::new();
+        b.apply_default_text_font(Some(&runtime_shared::FontFamily::System(
+            "Inter, sans-serif".into(),
+        )));
+        let head = b.head_css();
+
+        // The `:root` block must declare an inheritable font-family, not
+        // merely define the custom property.
+        let root_block = head
+            .split(":root {")
+            .find(|s| s.contains("--iy-default-font"))
+            .and_then(|s| s.split('}').next())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            root_block.contains("font-family:"),
+            "the :root block must declare an inheritable font-family so \
+             reactively-styled nodes (which never fold it) inherit the theme \
+             font instead of the browser serif fallback; got: {head}"
+        );
+
+        // And it must resolve to the theme font, not some other stack.
+        assert!(
+            root_block.contains("Inter, sans-serif"),
+            "the inherited font must be the theme's: {head}"
+        );
+
+        // Clearing removes the declaration too — otherwise the root keeps
+        // pointing at an undefined variable.
+        b.apply_default_text_font(None);
+        let head = b.head_css();
+        assert!(
+            !head.contains("--iy-default-font"),
+            "cleared default font must not leave a dangling declaration: {head}"
+        );
+    }
+
     /// `:root { … }` block in `head_css`, so the SSR first paint resolves
     /// `var(--token, fallback)` to the real theme value (matching the
     /// live web build). `update_tokens` merges (changed tokens only).
     #[test]
     fn install_tokens_emits_root_variables() {
-        use runtime_core::{Length, TokenEntry, TokenValue};
+        use runtime_shared::{Length, TokenEntry, TokenValue};
         let mut b = SsrBackend::new();
         b.install_tokens(&[
             TokenEntry { name: "color-text", value: TokenValue::Color(Color("#1a1a1f".into())) },
@@ -2008,7 +1692,7 @@ mod tests {
     /// raw color string verbatim.
     #[test]
     fn set_app_background_and_scrollbar_theme_emit_var_for_tokens() {
-        use runtime_core::Tokenized;
+        use runtime_shared::Tokenized;
         let mut b = SsrBackend::new();
         b.set_app_background(&Tokenized::Token {
             name: "color-background",
@@ -2059,8 +1743,8 @@ mod tests {
     /// must run first to supply the per-face served URL.
     #[test]
     fn register_typeface_emits_font_face_rules() {
-        use runtime_core::assets::{AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId};
-        use runtime_core::{FontStyle, FontWeight};
+        use runtime_shared::assets::{AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId};
+        use runtime_shared::{FontStyle, FontWeight};
         let mut b = SsrBackend::new();
         let reg = AssetId(7);
         let bold = AssetId(8);
@@ -2080,5 +1764,82 @@ mod tests {
         assert!(head.contains("src:url(\"/fonts/Inter-Regular.ttf\")"), "got: {head}");
         assert!(head.contains("src:url(\"/fonts/Inter-Bold.ttf\")"), "got: {head}");
         assert!(head.contains("font-weight:700"), "got: {head}");
+    }
+
+    /// `resolve_premint_css` is the premint twin of
+    /// `resolve_bundle_module`: it must find the fingerprinted asset,
+    /// scan its guard classes and font families, and fall back to the
+    /// dev-shaped plain name.
+    #[test]
+    fn resolve_premint_css_finds_fingerprinted_sheet_and_scans_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = tmp.path().join("pkg");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("premint.b08a8039a578b8e9.css"),
+            "@font-face{font-family:\"Inter\";src:url(\"/fonts/i.ttf\")}\
+             .iy-aaa111{color:#111}.iy-bbb222{color:#222}",
+        )
+        .unwrap();
+        let css = resolve_premint_css(tmp.path()).expect("resolved");
+        assert_eq!(css.href, "/pkg/premint.b08a8039a578b8e9.css");
+        assert_eq!(css.font_families, "Inter");
+        assert_eq!(css.classes, vec!["iy-aaa111".to_string(), "iy-bbb222".to_string()]);
+    }
+
+    #[test]
+    fn resolve_premint_css_dev_fallback_and_decoys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = tmp.path().join("pkg");
+        std::fs::create_dir_all(&pkg).unwrap();
+        // Decoys: wrong hash width / non-hex must not match the
+        // fingerprinted form…
+        std::fs::write(pkg.join("premint.abc.css"), ".iy-x{}").unwrap();
+        std::fs::write(pkg.join("premint.not-a-hash-yo.css"), ".iy-x{}").unwrap();
+        // …but the plain dev-shaped name is the fallback.
+        std::fs::write(pkg.join("premint.css"), ".iy-devclass{}").unwrap();
+        let css = resolve_premint_css(tmp.path()).expect("dev fallback");
+        assert_eq!(css.href, "/pkg/premint.css");
+        assert_eq!(css.classes, vec!["iy-devclass".to_string()]);
+        // Missing pkg entirely: graceful None (e.g. a non-premint build).
+        assert!(resolve_premint_css(&tmp.path().join("nope")).is_none());
+    }
+
+    /// Premint × SSR/SSG head contract: the premint `<link>` must appear
+    /// BEFORE both inline `<style>`s — engine fall-through/override
+    /// `ui-*` rules share (0,1,0) specificity with premint rules, so
+    /// source order decides, and the live web document order (premint
+    /// link, then runtime `<style>`) must be reproduced. Also the
+    /// `--ssg-static` posture (`bundle_module: None`): the link is the
+    /// page's ONLY source of `iy-*` CSS — no wasm exists to repair a
+    /// missing one — so it must be emitted independent of the bundle.
+    #[test]
+    fn regression_ssg_static_premint_pages_link_stylesheet() {
+        let page = RenderedPage {
+            html: "<div class=\"iy-aaa111\">hi</div>".into(),
+            metadata: runtime_shared::PageMetadata::default(),
+            head_css: ".ui-fallthrough{color:red}".into(),
+        };
+        let css = PremintCss {
+            href: "/pkg/premint.b08a8039a578b8e9.css".into(),
+            font_families: "Inter".into(),
+            classes: vec!["iy-aaa111".into()],
+        };
+        // Static posture: no bundle module at all.
+        let doc = render_document(&page, None, None, Some(&css));
+        let link_at = doc
+            .find("<link rel=\"stylesheet\" href=\"/pkg/premint.b08a8039a578b8e9.css\"")
+            .expect("premint link emitted without a bundle");
+        assert!(
+            doc.contains("data-iy-font-families=\"Inter\""),
+            "typeface-dedup attribute rides the link: {doc}"
+        );
+        let first_style_at = doc.find("<style>").expect("inline styles present");
+        assert!(
+            link_at < first_style_at,
+            "premint link must precede the inline styles so ui-* rules \
+             cascade after premint rules at equal specificity: {doc}"
+        );
+        assert!(!doc.contains("<script"), "static posture: no boot script");
     }
 }

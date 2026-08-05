@@ -46,9 +46,9 @@ fn apps_dir() -> Option<PathBuf> {
 /// process. Empty if the directory is missing or unreadable.
 ///
 /// Self-exclusion is essential: the inspector also runs under `idealyst
-/// dev` (which enables `runtime-core/dev` → `robot`), so its own bridge
+/// dev` (which enables the runtime's `dev` feature → `robot`), so its own bridge
 /// registers a file here. Connecting the inspector to *itself* would make
-/// its background poll introspect its own live, rendering reactive arena
+/// its background poll introspect its own live, rendering reactive world
 /// on the same thread — a guaranteed re-entrant `RefCell` borrow panic.
 /// Inspecting a *different* process is safe: all introspection runs over
 /// there; the inspector only does TCP + its own `snapshot.set`.

@@ -26,7 +26,7 @@ use objc2::rc::Retained;
 use objc2::msg_send;
 use objc2_app_kit::NSTextField;
 use objc2_foundation::{NSAttributedString, NSObject};
-use runtime_core::{FontFamily, FontWeight, StyleRules, TextRun, TextRunStyle};
+use runtime_shared::{FontFamily, FontWeight, StyleRules, TextRun, TextRunStyle};
 
 use backend_apple_core::font::FontRegistry;
 use backend_apple_core::styled_text::{
@@ -69,7 +69,7 @@ pub(crate) fn realize(
         .unwrap_or(FontWeight::Normal);
     let base_style = para
         .and_then(|s| s.font_style)
-        .unwrap_or(runtime_core::FontStyle::Normal);
+        .unwrap_or(runtime_shared::FontStyle::Normal);
     let base_font = para
         .and_then(|s| resolve_nsfont(registry, s.font_family.as_ref(), base_weight, base_style, base_size))
         .unwrap_or_else(|| system_font(base_weight, base_size));
@@ -134,7 +134,7 @@ fn run_font(
             registry,
             s.font_family.as_ref(),
             weight,
-            runtime_core::FontStyle::Normal,
+            runtime_shared::FontStyle::Normal,
             size,
         )
         .unwrap_or_else(|| system_font(weight, size)),

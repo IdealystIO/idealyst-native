@@ -28,22 +28,18 @@ use std::rc::Rc;
 // one type across the call boundary.
 use web_time::{Duration, Instant};
 
-// `render` stays in scope because the #[cfg(test)] pointer-routing
-// tests at the bottom of this file build throw-away trees through
-// it. The non-test `Host::mount` routes through `fw_mount` so
-// author-side `effect!`s land inside the framework's reactive scope
-// (see the comment on `Host::mount`).
-#[allow(unused_imports)]
-use runtime_core::{
-    mount as fw_mount, render, ColorScheme, Easing, Owner, Element, StateBits, TouchEvent,
-    TouchHandler, TouchId, TouchPhase, TouchPoint,
-};
+// Runtime v2: the host no longer builds the tree. `newcore::start` /
+// `start_in_world` (crate::newcore) realize the scene into a world and
+// own the resulting `Realized`; this type is purely the interaction +
+// layout + render surface the platform shell drives.
 use glyphon::FontSystem;
 use runtime_layout::LayoutNode;
+#[allow(unused_imports)]
+use runtime_shared::{
+    ColorScheme, Easing, StateBits, TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint,
+};
 
-use render_api::EventSink;
 use crate::backend_impl::WgpuBackend;
-use render_api::{Key, KeyEvent, PointerButton, PointerEvent, ScrollEvent};
 use crate::keyboard;
 use crate::node::{
     NodeKind, WgpuNode, HIT_SLOP, IOS_MIN_HIT_TARGET, KEYBOARD_ANIM_MS, KEYBOARD_HEIGHT,
@@ -54,6 +50,8 @@ use crate::node::{
 };
 use crate::painter::Painter;
 use crate::text::TextStore;
+use render_api::EventSink;
+use render_api::{Key, KeyEvent, PointerButton, PointerEvent, ScrollEvent};
 
 /// Bundled default font (Inter Regular, SIL Open Font License 1.1 —
 /// see `assets/fonts/LICENSE-Inter.txt`). Registered in the
@@ -66,8 +64,7 @@ use crate::text::TextStore;
 /// 398 KB at the regular weight. If we ever ship multiple weights
 /// or want to swap to a variable font, this slot is the only place
 /// to touch.
-pub const DEFAULT_FONT_BYTES: &[u8] =
-    include_bytes!("../assets/fonts/Inter-Regular.ttf");
+pub const DEFAULT_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
 
 pub struct Host {
     backend: Rc<RefCell<WgpuBackend>>,
@@ -111,8 +108,7 @@ pub struct Host {
     /// the clock label once a minute without invalidating the
     /// surrounding immutable borrows the renderer holds during
     /// its read-only walk.
-    pub(crate) chrome_glyphs:
-        std::cell::RefCell<HashMap<&'static str, glyphon::Buffer>>,
+    pub(crate) chrome_glyphs: std::cell::RefCell<HashMap<&'static str, glyphon::Buffer>>,
     /// Last wall-clock minute we re-shaped the chrome clock
     /// glyph for. The host's tick compares `current_clock_minute()`
     /// against this and re-shapes when the minute rolls over.
@@ -136,9 +132,7 @@ pub struct Host {
     /// `tick` to clear the label once the flash duration has
     /// elapsed.
     keyboard_pressed_at: std::cell::Cell<Option<Instant>>,
-    /// Framework reactive scopes. Held so they outlive the host;
-    /// cleared on `unmount` or drop.
-    _owner: Option<Owner>,
+
     /// Live raw-touch interactions tracked by [`TouchId`]. Populated
     /// on `Began` when a `touch_handler` along the hit-test path
     /// returns `consumed: true`; cleared on `Ended` / `Cancelled`.
@@ -176,6 +170,12 @@ pub(crate) struct HeaderHit {
     pub action: HeaderHitAction,
 }
 
+/// Unreachable under runtime v2 until the native-nav seam re-lands: the old
+/// core drove header/drawer chrome from `Backend::create_navigator`, a cap
+/// that was deleted with the old core
+/// (docs/runtime-v2-deletion-baseline.md §2.3). Kept as the substrate a
+/// scene-registry navigator handler will drive.
+#[allow(dead_code)]
 /// What to do when a header hit is resolved on pointer-up.
 #[derive(Clone)]
 pub(crate) enum HeaderHitAction {
@@ -315,26 +315,21 @@ impl Host {
         // (~30 small Buffers); the alternative is mutating the
         // font system from the read-only render walk, which would
         // require a `RefCell` borrow dance on the hot path.
-        let keyboard_glyphs = keyboard::build_glyph_cache(
-            &mut font_system.borrow_mut(),
-            skin.as_ref(),
-        );
+        let keyboard_glyphs =
+            keyboard::build_glyph_cache(&mut font_system.borrow_mut(), skin.as_ref());
         // Pre-build the device-chrome glyph buffers (clock,
         // battery percent, etc.) the same way. The clock label
         // gets refreshed every minute from `refresh_clock_glyph`
         // — same Buffer key, new shape on each minute boundary,
         // so the renderer keeps reading from this cache without
         // reshaping per-frame.
-        let chrome_glyphs = build_chrome_glyph_cache(
-            &mut font_system.borrow_mut(),
-            skin.as_ref(),
-        );
+        let chrome_glyphs = build_chrome_glyph_cache(&mut font_system.borrow_mut(), skin.as_ref());
         // Push the skin's safe-area metrics into the framework's
         // reactive signal so any `.safe_area(TOP | BOTTOM)`
         // container in the app subtree inset itself off the
         // device chrome. Idempotent — `set_safe_area_insets`
         // is signal-compare-and-set.
-        runtime_core::set_safe_area_insets(skin.safe_area_insets());
+        runtime_shared::set_safe_area_insets(skin.safe_area_insets());
         let backend = Rc::new(RefCell::new(WgpuBackend::new(
             text.clone(),
             font_system.clone(),
@@ -375,7 +370,6 @@ impl Host {
             keyboard_anim: None,
             keyboard_pressed_label: std::cell::Cell::new(None),
             keyboard_pressed_at: std::cell::Cell::new(None),
-            _owner: None,
             active_touches: HashMap::new(),
             header_hits: std::cell::RefCell::new(Vec::new()),
         }
@@ -387,6 +381,17 @@ impl Host {
     /// is.
     pub fn set_viewport(&mut self, w: f32, h: f32) {
         self.viewport = (w, h);
+        // New-core mirror: the logical viewport is this backend's
+        // author-visible viewport, and this method is its one source
+        // of truth — forward it into the mounted world's viewport ctx
+        // so breakpoint-dependent reactivity tracks it live (no-op TLS
+        // read on old-core and embedded boots; deliberately NOT an
+        // old-core TLS write — see newcore.rs, "Viewport source", for
+        // the embedded-simulator clobber rationale).
+        crate::newcore::forward_viewport(runtime_shared::ViewportSize {
+            width: w,
+            height: h,
+        });
     }
 
     /// Is the simulator's on-screen keyboard currently visible
@@ -429,7 +434,11 @@ impl Host {
     /// scrollview up so the input sits above the keyboard's
     /// final rest position (iOS auto-scroll).
     fn sync_keyboard(&mut self) {
-        let desired: f32 = if self.focused_input.is_some() { 1.0 } else { 0.0 };
+        let desired: f32 = if self.focused_input.is_some() {
+            1.0
+        } else {
+            0.0
+        };
         if (desired - self.keyboard_value).abs() < f32::EPSILON {
             return;
         }
@@ -460,7 +469,9 @@ impl Host {
     /// (plus a small margin). Re-uses the SpringBack scroll
     /// motion for a smooth eased transition.
     fn auto_scroll_focused_into_view(&mut self, now: Instant) {
-        let Some(input) = self.focused_input.clone() else { return };
+        let Some(input) = self.focused_input.clone() else {
+            return;
+        };
         let target_layout = input.borrow().layout;
         let (vw, vh) = self.viewport;
         if vw <= 0.0 || vh <= 0.0 {
@@ -469,7 +480,9 @@ impl Host {
         let kb_top = vh - KEYBOARD_HEIGHT.min(vh);
 
         let backend = self.backend.borrow();
-        let Some(root) = backend.roots.first() else { return };
+        let Some(root) = backend.roots.first() else {
+            return;
+        };
         let root = root.clone();
 
         // Locate the input's absolute frame *and* its enclosing
@@ -494,7 +507,9 @@ impl Host {
         let extent = scrollview_content_extent(&backend, &sv);
         let max_y = (extent.1 - frame.height).max(0.0);
         let (cur_x, cur_y) = match &sv.borrow().kind {
-            NodeKind::ScrollView { offset_x, offset_y, .. } => (*offset_x, *offset_y),
+            NodeKind::ScrollView {
+                offset_x, offset_y, ..
+            } => (*offset_x, *offset_y),
             _ => return,
         };
         drop(backend);
@@ -513,71 +528,17 @@ impl Host {
         crate::scheduler::request_redraw();
     }
 
-    /// Build and mount the framework tree against the backend. The
-    /// returned `Owner` is held internally so reactive scopes live
-    /// until the host is dropped.
-    ///
-    /// We route through `runtime_core::mount`, not `render(backend,
-    /// tree)`, because the author's `build_ui` closure typically
-    /// declares `effect!` blocks + animation timelines whose
-    /// `on_cleanup` callbacks own scheduled tasks. `mount` runs the
-    /// closure INSIDE the framework's root reactive scope, so those
-    /// effects register with the scope and survive past the closure's
-    /// return. The `render(backend, tree)` shortcut builds the tree
-    /// before opening the scope; effects created inside the closure
-    /// are then owned by the local `_effect` binding, drop at the
-    /// end of `build_ui`, and cancel every scheduled task with them —
-    /// which is exactly what was masking the welcome example's
-    /// animations on the wgpu sim.
-    pub fn mount<F>(&mut self, build_ui: F)
-    where
-        F: FnOnce() -> Element + 'static,
-    {
-        if self._owner.is_some() {
-            return;
-        }
-        self._owner = Some(fw_mount(self.backend.clone(), build_ui));
-    }
-
-    /// Drop the mounted reactive scope. All effects, AnimatedValue
-    /// subscribers, and scheduled tasks created inside `build_ui`
-    /// unregister via their `on_cleanup` callbacks, which is what
-    /// stops the global animation clock from ticking this host's
-    /// animations every frame.
-    ///
-    /// Idempotent (no-op if already unmounted). After unmount, the
-    /// host's wgpu surface / renderer / device stay alive, so a
-    /// subsequent `mount(...)` re-establishes the scene without
-    /// paying the wgpu init cost.
-    ///
-    /// **Does NOT clear `session::REGISTRY`.** Embedded apps that
-    /// use `session::animated(key, …)` keep their AVs in the
-    /// thread-global registry by design — that's the whole point
-    /// (hot-patch state survival). If you want a fresh-restart
-    /// semantics where unmount followed by a future mount resets
-    /// those AVs to their initial values, call
-    /// [`runtime_core::session::clear`] yourself after `unmount`.
-    /// The platform host handles (e.g. `IosHostHandle::pause`)
-    /// document their chosen semantics.
-    pub fn unmount(&mut self) {
-        self._owner = None;
-        // Backend state cleanup (presence_tweens, animator, sticky
-        // registry) is left to the platform host's pause() — earlier
-        // experiments showed that clearing too aggressively makes
-        // the renderer produce no draws after remount even though
-        // Taffy compute shows valid frames. Investigation ongoing.
-    }
-
-    /// True iff a build_ui has been mounted (and not since unmounted).
-    pub fn is_mounted(&self) -> bool {
-        self._owner.is_some()
-    }
-
     // ---------------- Read-only accessors used by the renderer ---
 
-    pub fn backend(&self) -> &Rc<RefCell<WgpuBackend>> { &self.backend }
-    pub fn text_store(&self) -> &Rc<RefCell<TextStore>> { &self.text }
-    pub fn font_system(&self) -> &Rc<RefCell<FontSystem>> { &self.font_system }
+    pub fn backend(&self) -> &Rc<RefCell<WgpuBackend>> {
+        &self.backend
+    }
+    pub fn text_store(&self) -> &Rc<RefCell<TextStore>> {
+        &self.text
+    }
+    pub fn font_system(&self) -> &Rc<RefCell<FontSystem>> {
+        &self.font_system
+    }
 
     // ---------------- Async font loading (web host) -------------
     //
@@ -608,8 +569,7 @@ impl Host {
     /// that fell back to the embedded default re-shapes to its real
     /// face. No-op visually if nothing was shaped yet.
     pub fn invalidate_text_layout(&self) {
-        let nodes: Vec<LayoutNode> =
-            self.text.borrow().buffers.keys().copied().collect();
+        let nodes: Vec<LayoutNode> = self.text.borrow().buffers.keys().copied().collect();
         if nodes.is_empty() {
             return;
         }
@@ -623,7 +583,9 @@ impl Host {
 
     /// The active skin. Renderer borrows this every frame to
     /// paint widget chrome + the on-screen keyboard.
-    pub fn skin(&self) -> &Rc<dyn Painter> { &self.skin }
+    pub fn skin(&self) -> &Rc<dyn Painter> {
+        &self.skin
+    }
     pub fn focused_input_layout(&self) -> Option<LayoutNode> {
         self.focused_input.as_ref().map(|n| n.borrow().layout)
     }
@@ -753,7 +715,9 @@ impl Host {
     ///   offset. Returns false when the gap drops below
     ///   `SCROLL_SPRINGBACK_EPSILON`.
     fn tick_momentum(&mut self, now: Instant) -> bool {
-        let Some(mut m) = self.momentum.take() else { return false };
+        let Some(mut m) = self.momentum.take() else {
+            return false;
+        };
         // Cap `dt` so a paused tab or long blocking call doesn't
         // teleport the offset across the entire content.
         let dt = now.duration_since(m.last_tick).as_secs_f32().min(0.1);
@@ -762,21 +726,16 @@ impl Host {
         match &mut m.kind {
             ScrollMotionKind::Coast { velocity } => {
                 let before = match &m.scrollview.borrow().kind {
-                    NodeKind::ScrollView { offset_x, offset_y, .. } => {
-                        (*offset_x, *offset_y)
-                    }
+                    NodeKind::ScrollView {
+                        offset_x, offset_y, ..
+                    } => (*offset_x, *offset_y),
                     _ => return false,
                 };
-                self.apply_scroll(
-                    &m.scrollview,
-                    -velocity.0 * dt,
-                    -velocity.1 * dt,
-                    false,
-                );
+                self.apply_scroll(&m.scrollview, -velocity.0 * dt, -velocity.1 * dt, false);
                 let after = match &m.scrollview.borrow().kind {
-                    NodeKind::ScrollView { offset_x, offset_y, .. } => {
-                        (*offset_x, *offset_y)
-                    }
+                    NodeKind::ScrollView {
+                        offset_x, offset_y, ..
+                    } => (*offset_x, *offset_y),
                     _ => return false,
                 };
                 // Boundary hit → zero that axis. Without this
@@ -803,9 +762,9 @@ impl Host {
                 // (same wall-clock rate at any tick frequency).
                 let factor = 1.0 - (-SCROLL_SPRINGBACK_RATE_PER_SEC * dt).exp();
                 let (cur_x, cur_y) = match &m.scrollview.borrow().kind {
-                    NodeKind::ScrollView { offset_x, offset_y, .. } => {
-                        (*offset_x, *offset_y)
-                    }
+                    NodeKind::ScrollView {
+                        offset_x, offset_y, ..
+                    } => (*offset_x, *offset_y),
                     _ => return false,
                 };
                 let dx = (target.0 - cur_x) * factor;
@@ -819,9 +778,8 @@ impl Host {
                 }
                 crate::node::fire_on_scroll(&m.scrollview);
                 crate::scheduler::request_redraw();
-                let gap = ((target.0 - cur_x - dx).powi(2)
-                    + (target.1 - cur_y - dy).powi(2))
-                .sqrt();
+                let gap =
+                    ((target.0 - cur_x - dx).powi(2) + (target.1 - cur_y - dy).powi(2)).sqrt();
                 if gap < SCROLL_SPRINGBACK_EPSILON {
                     // Snap to target so the final position is
                     // exactly the bound (no sub-pixel drift).
@@ -866,7 +824,9 @@ impl Host {
         let mut path: Vec<TouchPathEntry> = Vec::new();
         {
             let backend = self.backend.borrow();
-            let Some(root) = backend.root() else { return false };
+            let Some(root) = backend.root() else {
+                return false;
+            };
             collect_touch_path(&backend, &root, 0.0, 0.0, ev.position, &mut path);
         }
         if path.is_empty() {
@@ -875,7 +835,10 @@ impl Host {
         let ts = monotonic_ns();
         // Deepest-first bubble.
         for entry in path.into_iter().rev() {
-            let local = (ev.position.0 - entry.origin.0, ev.position.1 - entry.origin.1);
+            let local = (
+                ev.position.0 - entry.origin.0,
+                ev.position.1 - entry.origin.1,
+            );
             let te = TouchEvent {
                 id: touch_id,
                 phase: TouchPhase::Began,
@@ -905,7 +868,9 @@ impl Host {
     /// `true` when dispatched (caller skips the legacy move path).
     fn dispatch_touch_moved(&mut self, ev: &PointerEvent) -> bool {
         let touch_id = TouchId(ev.id.0);
-        let Some(active) = self.active_touches.get(&touch_id) else { return false };
+        let Some(active) = self.active_touches.get(&touch_id) else {
+            return false;
+        };
         // Recompute origin every event — layout can shift between
         // events (animations, scroll, dynamic content) and stale
         // origins would give the handler wrong-coordinate moves.
@@ -937,11 +902,17 @@ impl Host {
     /// when dispatched.
     fn dispatch_touch_ended(&mut self, ev: &PointerEvent, cancelled: bool) -> bool {
         let touch_id = TouchId(ev.id.0);
-        let Some(active) = self.active_touches.remove(&touch_id) else { return false };
+        let Some(active) = self.active_touches.remove(&touch_id) else {
+            return false;
+        };
         let origin = absolute_origin(&self.backend.borrow(), &active.node);
         let te = TouchEvent {
             id: touch_id,
-            phase: if cancelled { TouchPhase::Cancelled } else { TouchPhase::Ended },
+            phase: if cancelled {
+                TouchPhase::Cancelled
+            } else {
+                TouchPhase::Ended
+            },
             position: TouchPoint::new(ev.position.0 - origin.0, ev.position.1 - origin.1),
             window_position: TouchPoint::new(ev.position.0, ev.position.1),
             timestamp_ns: monotonic_ns(),
@@ -956,7 +927,9 @@ impl Host {
         if self.dispatch_touch_moved(&ev) {
             return;
         }
-        let Some(press) = self.active_press.take() else { return };
+        let Some(press) = self.active_press.take() else {
+            return;
+        };
         match press {
             ActivePress::SliderDrag { node } => {
                 self.update_slider_drag(&node);
@@ -984,10 +957,7 @@ impl Host {
                 // Clamp dt to a tiny floor so two same-frame moves
                 // don't produce explosive raw velocities.
                 let now = Instant::now();
-                let dt = now
-                    .duration_since(last_time)
-                    .as_secs_f32()
-                    .max(0.001);
+                let dt = now.duration_since(last_time).as_secs_f32().max(0.001);
                 let raw = (dx / dt, dy / dt);
                 let a = SCROLL_VELOCITY_SMOOTHING;
                 let new_velocity = (
@@ -1125,9 +1095,7 @@ impl Host {
             let (vw, vh) = self.viewport;
             let in_status_bar = ev.position.1 < insets.top;
             let in_home_strip = ev.position.1 > vh - insets.bottom;
-            if (insets.top > 0.0 && in_status_bar)
-                || (insets.bottom > 0.0 && in_home_strip)
-            {
+            if (insets.top > 0.0 && in_status_bar) || (insets.bottom > 0.0 && in_home_strip) {
                 let _ = vw;
                 return;
             }
@@ -1158,9 +1126,7 @@ impl Host {
                     // collected on a frame that overlapped with
                     // a teardown; the next render writes a fresh
                     // registry that won't include it.
-                    h.navigator
-                        .upgrade()
-                        .map(|nav| (h.action.clone(), nav))
+                    h.navigator.upgrade().map(|nav| (h.action.clone(), nav))
                 } else {
                     None
                 }
@@ -1242,9 +1208,7 @@ impl Host {
                 step,
                 on_change,
             } => {
-                let v = slider_value_from_pointer(
-                    ev.position.0, frame_x, frame_w, min, max, step,
-                );
+                let v = slider_value_from_pointer(ev.position.0, frame_x, frame_w, min, max, step);
                 on_change(v);
                 self.active_press = Some(ActivePress::SliderDrag { node: node.clone() });
             }
@@ -1279,7 +1243,9 @@ impl Host {
         if self.dispatch_touch_ended(&ev, false) {
             return;
         }
-        let Some(press) = self.active_press.take() else { return };
+        let Some(press) = self.active_press.take() else {
+            return;
+        };
         // Decide whether *this* release should dismiss the
         // on-screen keyboard. iOS rule (as restated by the user):
         // pans never dismiss; only confirmed taps outside the
@@ -1317,11 +1283,10 @@ impl Host {
                     // Real pan: maybe hand off to momentum, don't
                     // dismiss the keyboard.
                     let now = Instant::now();
-                    let stale = now.duration_since(last_time).as_millis()
-                        > SCROLL_MOMENTUM_STALE_MS;
+                    let stale =
+                        now.duration_since(last_time).as_millis() > SCROLL_MOMENTUM_STALE_MS;
                     let speed_sq = velocity.0 * velocity.0 + velocity.1 * velocity.1;
-                    let min_sq =
-                        SCROLL_MOMENTUM_MIN_VELOCITY * SCROLL_MOMENTUM_MIN_VELOCITY;
+                    let min_sq = SCROLL_MOMENTUM_MIN_VELOCITY * SCROLL_MOMENTUM_MIN_VELOCITY;
                     if !stale && speed_sq > min_sq {
                         self.momentum = Some(ScrollMotion {
                             scrollview: scrollview.clone(),
@@ -1344,7 +1309,9 @@ impl Host {
                     is_tap_outside = true;
                 }
             }
-            ActivePress::Click { node, action, over, .. } => {
+            ActivePress::Click {
+                node, action, over, ..
+            } => {
                 set_state(&self.backend, &node, StateBits::PRESSED, false);
                 if over {
                     fire_release(&node, action);
@@ -1454,16 +1421,16 @@ impl Host {
             let max_x = (extent.0 - frame.width).max(0.0);
             let max_y = (extent.1 - frame.height).max(0.0);
             let (cx, cy) = match &sv.borrow().kind {
-                NodeKind::ScrollView { offset_x, offset_y, .. } => (*offset_x, *offset_y),
+                NodeKind::ScrollView {
+                    offset_x, offset_y, ..
+                } => (*offset_x, *offset_y),
                 _ => return,
             };
             (max_x, max_y, cx, cy)
         };
         let target_x = cur_x.clamp(0.0, max_x);
         let target_y = cur_y.clamp(0.0, max_y);
-        if (target_x - cur_x).abs() < f32::EPSILON
-            && (target_y - cur_y).abs() < f32::EPSILON
-        {
+        if (target_x - cur_x).abs() < f32::EPSILON && (target_y - cur_y).abs() < f32::EPSILON {
             return;
         }
         self.momentum = Some(ScrollMotion {
@@ -1521,7 +1488,9 @@ impl Host {
     /// press-and-drag.
     fn pointer_over_node(&self, node: &WgpuNode, point: (f32, f32)) -> bool {
         let backend = self.backend.borrow();
-        let Some(root) = backend.root() else { return false };
+        let Some(root) = backend.root() else {
+            return false;
+        };
         let Some((hit, _, _, _, _)) = hit_test_node(&backend, &root, 0.0, 0.0, point) else {
             return false;
         };
@@ -1541,7 +1510,10 @@ impl Host {
         // (`PreventDefault`) stops the focused-input path below.
         if let Some(handler) = self.backend.borrow().app_key_handler.clone() {
             let ev = app_key_event(event);
-            if matches!(handler(&ev), runtime_core::primitives::key::KeyOutcome::PreventDefault) {
+            if matches!(
+                handler(&ev),
+                runtime_shared::primitives::key::KeyOutcome::PreventDefault
+            ) {
                 return true;
             }
         }
@@ -1554,15 +1526,19 @@ impl Host {
                 self.flash_key_press(label);
             }
         }
-        let Some(node) = self.focused_input.clone() else { return false };
+        let Some(node) = self.focused_input.clone() else {
+            return false;
+        };
 
         let (current_value, on_change) = {
             let data = node.borrow();
             match &data.kind {
-                NodeKind::TextInput { value, on_change, .. }
-                | NodeKind::TextArea { value, on_change, .. } => {
-                    (value.clone(), on_change.clone())
+                NodeKind::TextInput {
+                    value, on_change, ..
                 }
+                | NodeKind::TextArea {
+                    value, on_change, ..
+                } => (value.clone(), on_change.clone()),
                 _ => return false,
             }
         };
@@ -1659,19 +1635,12 @@ const BUTTON_PRESS_UP_MS: u32 = 150;
 /// `button_press_visual(t)` paint hook sees a smooth 0→1 (down)
 /// or 1→0 (up) instead of a snap. The animator's `tick` keeps
 /// the host re-rendering until the tween settles.
-fn set_state(
-    backend: &Rc<RefCell<WgpuBackend>>,
-    node: &WgpuNode,
-    bit: StateBits,
-    on: bool,
-) {
+fn set_state(backend: &Rc<RefCell<WgpuBackend>>, node: &WgpuNode, bit: StateBits, on: bool) {
     let setter = node.borrow().state_setter.clone();
     if let Some(setter) = setter {
         setter(bit, on);
     }
-    if bit == StateBits::PRESSED
-        && matches!(node.borrow().kind, NodeKind::Button { .. })
-    {
+    if bit == StateBits::PRESSED && matches!(node.borrow().kind, NodeKind::Button { .. }) {
         let layout = node.borrow().layout;
         let (target, duration) = if on {
             (1.0, BUTTON_PRESS_DOWN_MS)
@@ -1683,7 +1652,7 @@ fn set_state(
             target,
             0.0,
             duration,
-            runtime_core::Easing::EaseOut,
+            runtime_shared::Easing::EaseOut,
             Instant::now(),
         );
         crate::scheduler::request_redraw();
@@ -1770,14 +1739,22 @@ fn pick_action(node: &WgpuNode) -> HitAction {
 /// stacked home screen.
 fn visible_children_for_input(node: &WgpuNode) -> Vec<WgpuNode> {
     match &node.borrow().kind {
-        NodeKind::Navigator { .. } => {
-            node.borrow().children.last().cloned().into_iter().collect()
-        }
+        NodeKind::Navigator { .. } => node.borrow().children.last().cloned().into_iter().collect(),
         NodeKind::TabNavigator { active_tab, .. } => {
             let idx = active_tab.get();
-            node.borrow().children.get(idx).cloned().into_iter().collect()
+            node.borrow()
+                .children
+                .get(idx)
+                .cloned()
+                .into_iter()
+                .collect()
         }
-        NodeKind::DrawerNavigator { active_screen, sidebar, is_open, .. } => {
+        NodeKind::DrawerNavigator {
+            active_screen,
+            sidebar,
+            is_open,
+            ..
+        } => {
             // `active_screen` indexes into the *body* list — the
             // children vec with the sidebar filtered out. The
             // renderer applies the same filter (see
@@ -1822,22 +1799,24 @@ fn find_scroll_view_at(
     let frame = backend.layout.frame_of(node.borrow().layout);
     let x = parent_x + frame.x;
     let y = parent_y + frame.y;
-    let inside = point.0 >= x
-        && point.0 <= x + frame.width
-        && point.1 >= y
-        && point.1 <= y + frame.height;
+    let inside =
+        point.0 >= x && point.0 <= x + frame.width && point.1 >= y && point.1 <= y + frame.height;
     if !inside {
         return None;
     }
     // Descend children first — favor the innermost scrollview
     // when nested.
     let (child_origin, this_is_scroll) = match &node.borrow().kind {
-        NodeKind::ScrollView { offset_x, offset_y, .. } => ((x - *offset_x, y - *offset_y), true),
+        NodeKind::ScrollView {
+            offset_x, offset_y, ..
+        } => ((x - *offset_x, y - *offset_y), true),
         _ => ((x, y), false),
     };
     let children = visible_children_for_input(node);
     for child in children.iter().rev() {
-        if let Some(hit) = find_scroll_view_at(backend, child, child_origin.0, child_origin.1, point) {
+        if let Some(hit) =
+            find_scroll_view_at(backend, child, child_origin.0, child_origin.1, point)
+        {
             return Some(hit);
         }
     }
@@ -1915,7 +1894,9 @@ pub(crate) fn hit_test_node(
     // applied so children's hit rects line up with what the user
     // sees on screen.
     let (child_origin_x, child_origin_y) = match &node.borrow().kind {
-        NodeKind::ScrollView { offset_x, offset_y, .. } => (x - *offset_x, y - *offset_y),
+        NodeKind::ScrollView {
+            offset_x, offset_y, ..
+        } => (x - *offset_x, y - *offset_y),
         _ => (x, y),
     };
 
@@ -1994,7 +1975,11 @@ pub(crate) fn collect_touch_path(
         .borrow()
         .touch_handler
         .as_ref()
-        .map(|h| TouchPathEntry { node: node.clone(), handler: h.clone(), origin: (x, y) });
+        .map(|h| TouchPathEntry {
+            node: node.clone(),
+            handler: h.clone(),
+            origin: (x, y),
+        });
     if let Some(entry) = self_entry {
         out.push(entry);
     }
@@ -2002,7 +1987,9 @@ pub(crate) fn collect_touch_path(
     // Descend with ScrollView offset applied so children's frames
     // line up with what's visible — mirrors `hit_test_node`.
     let (child_origin_x, child_origin_y) = match &node.borrow().kind {
-        NodeKind::ScrollView { offset_x, offset_y, .. } => (x - *offset_x, y - *offset_y),
+        NodeKind::ScrollView {
+            offset_x, offset_y, ..
+        } => (x - *offset_x, y - *offset_y),
         _ => (x, y),
     };
     let children = visible_children_for_input(node);
@@ -2059,12 +2046,20 @@ fn walk_for_origin(
     // Same scroll-offset descent rule as hit-test so coordinates
     // line up with what the user sees on screen.
     let (child_parent_x, child_parent_y) = match &node.borrow().kind {
-        NodeKind::ScrollView { offset_x, offset_y, .. } => (here.0 - *offset_x, here.1 - *offset_y),
+        NodeKind::ScrollView {
+            offset_x, offset_y, ..
+        } => (here.0 - *offset_x, here.1 - *offset_y),
         _ => here,
     };
     let children: Vec<WgpuNode> = node.borrow().children.clone();
     for child in &children {
-        if walk_for_origin(backend, child, target, (child_parent_x, child_parent_y), out) {
+        if walk_for_origin(
+            backend,
+            child,
+            target,
+            (child_parent_x, child_parent_y),
+            out,
+        ) {
             return true;
         }
     }
@@ -2075,7 +2070,9 @@ fn walk_for_origin(
 /// slider drag — Taffy frames are parent-relative.
 fn absolute_x(backend: &WgpuBackend, node: &WgpuNode) -> f32 {
     let target = node.borrow().layout;
-    let Some(root) = backend.roots.first() else { return 0.0 };
+    let Some(root) = backend.roots.first() else {
+        return 0.0;
+    };
     let mut accum = 0.0;
     if walk_for_x(backend, root, target, 0.0, &mut accum) {
         accum
@@ -2110,10 +2107,7 @@ fn walk_for_x(
 /// the scrollview's local content space. Used both for clamping
 /// scroll offsets and for sizing the scrollbar thumb. Computed
 /// from each direct child's Taffy frame.
-pub(crate) fn scrollview_content_extent(
-    backend: &WgpuBackend,
-    sv: &WgpuNode,
-) -> (f32, f32) {
+pub(crate) fn scrollview_content_extent(backend: &WgpuBackend, sv: &WgpuNode) -> (f32, f32) {
     let children = sv.borrow().children.clone();
     let mut max_x: f32 = 0.0;
     let mut max_y: f32 = 0.0;
@@ -2148,21 +2142,16 @@ fn find_input_in_scrollview(
 
     // Descend with scroll offset applied + scrollview tracking.
     let (child_x, child_y, new_enclosing) = match &node.borrow().kind {
-        NodeKind::ScrollView { offset_x, offset_y, .. } => {
-            (x - *offset_x, y - *offset_y, Some(node.clone()))
-        }
+        NodeKind::ScrollView {
+            offset_x, offset_y, ..
+        } => (x - *offset_x, y - *offset_y, Some(node.clone())),
         _ => (x, y, enclosing_sv),
     };
     let children = node.borrow().children.clone();
     for c in &children {
-        if let Some(found) = find_input_in_scrollview(
-            backend,
-            c,
-            target,
-            child_x,
-            child_y,
-            new_enclosing.clone(),
-        ) {
+        if let Some(found) =
+            find_input_in_scrollview(backend, c, target, child_x, child_y, new_enclosing.clone())
+        {
             return Some(found);
         }
     }
@@ -2280,10 +2269,7 @@ fn slider_value_from_pointer(
 /// Find the on-screen-keyboard label matching `action`. Walks
 /// the active skin's row data so iOS / Android keyboards with
 /// different layouts each route their own keys correctly.
-fn label_for_action(
-    skin: &dyn Painter,
-    action: keyboard::KeyAction,
-) -> Option<&'static str> {
+fn label_for_action(skin: &dyn Painter, action: keyboard::KeyAction) -> Option<&'static str> {
     skin.keyboard_rows()
         .into_iter()
         .flatten()
@@ -2297,7 +2283,7 @@ fn label_for_action(
 /// Web names; `Character` uses the event's `text` payload (so `+`/`-`/`=` and
 /// letters are themselves). Selection fields are 0 — an app handler has no
 /// associated text field.
-fn app_key_event(event: &KeyEvent) -> runtime_core::primitives::key::KeyEvent {
+fn app_key_event(event: &KeyEvent) -> runtime_shared::primitives::key::KeyEvent {
     let key = match event.key {
         Key::ArrowLeft => "ArrowLeft".to_string(),
         Key::ArrowRight => "ArrowRight".to_string(),
@@ -2312,7 +2298,7 @@ fn app_key_event(event: &KeyEvent) -> runtime_core::primitives::key::KeyEvent {
         Key::End => "End".to_string(),
         Key::Character | Key::Unknown => event.text.clone().unwrap_or_default(),
     };
-    runtime_core::primitives::key::KeyEvent {
+    runtime_shared::primitives::key::KeyEvent {
         key,
         shift: event.modifiers.shift,
         ctrl: event.modifiers.ctrl,
@@ -2435,12 +2421,7 @@ mod tests {
     //!
     //! Two layers exercised:
     //!
-    //! 1. **Walker → Backend wiring** — building a `view().on_touch(...)`
-    //!    primitive through `runtime_core::render` reaches the
-    //!    backend's `install_touch_handler`, which writes the handler
-    //!    onto `NodeData.touch_handler`.
-    //!
-    //! 2. **Responder-chain hit-test** — [`collect_touch_path`] walks
+    //! **Responder-chain hit-test** — [`collect_touch_path`] walks
     //!    a layout-computed tree and collects every ancestor with a
     //!    `touch_handler`, in root-first order, scoped to the hit.
     //!
@@ -2451,8 +2432,7 @@ mod tests {
     //! bubble) are implicitly covered by `collect_touch_path` + the
     //! recognizer tests in runtime-core.
     use super::*;
-    use runtime_core::{view, Backend, ColorScheme, TouchResponse};
-    use std::cell::Cell;
+    use runtime_shared::{ColorScheme, TouchResponse};
 
     /// Build a bare-bones [`WgpuBackend`] suitable for headless
     /// touch-pipeline tests. `glyphon::FontSystem::new` scans the
@@ -2586,75 +2566,10 @@ mod tests {
     }
 
     // -------------------------------------------------------------
-    // Walker → Backend wiring
-    // -------------------------------------------------------------
-
-    #[test]
-    fn render_view_with_on_touch_installs_handler() {
-        let backend = make_backend();
-        let fires = Rc::new(Cell::new(false));
-        let f = fires.clone();
-        let tree = view(Vec::new())
-            .on_touch(move |_| {
-                f.set(true);
-                TouchResponse::CONSUMED
-            })
-            .into();
-        // Owner kept alive on the stack — dropping it would also
-        // drop any reactive scopes; the backend node tree survives
-        // either way.
-        let _owner = runtime_core::render(backend.clone(), tree);
-        let root = backend.borrow().root().expect("no root after render");
-        assert!(
-            root.borrow().touch_handler.is_some(),
-            "on_touch handler did not reach the backend node",
-        );
-    }
-
-    #[test]
-    fn render_view_without_on_touch_leaves_handler_unset() {
-        let backend = make_backend();
-        let tree = view(Vec::new()).into();
-        let _owner = runtime_core::render(backend.clone(), tree);
-        let root = backend.borrow().root().expect("no root");
-        assert!(root.borrow().touch_handler.is_none());
-    }
-
-    #[test]
-    fn installed_handler_is_callable() {
-        // Smoke-test the round-trip: the handler the user wrote
-        // should be the one stored on the node, callable as-is
-        // (no wrapping that changes semantics).
-        let backend = make_backend();
-        let fires = Rc::new(Cell::new(0u32));
-        let f = fires.clone();
-        let tree = view(Vec::new())
-            .on_touch(move |_| {
-                f.set(f.get() + 1);
-                TouchResponse::CONSUMED
-            })
-            .into();
-        let _owner = runtime_core::render(backend.clone(), tree);
-        let root = backend.borrow().root().expect("no root");
-        let handler = root.borrow().touch_handler.clone().expect("no handler");
-        let synthetic = TouchEvent {
-            id: TouchId(1),
-            phase: TouchPhase::Began,
-            position: TouchPoint::new(5.0, 5.0),
-            window_position: TouchPoint::new(5.0, 5.0),
-            timestamp_ns: 0,
-            force: None,
-        };
-        let response = handler(&synthetic);
-        assert!(response.consumed);
-        assert_eq!(fires.get(), 1);
-    }
-
-    // -------------------------------------------------------------
     // collect_touch_path
     // -------------------------------------------------------------
 
-    fn always_consume() -> runtime_core::TouchHandler {
+    fn always_consume() -> runtime_shared::TouchHandler {
         Rc::new(|_| TouchResponse::CONSUMED)
     }
 
@@ -2664,8 +2579,8 @@ mod tests {
         let root;
         {
             let mut b = backend.borrow_mut();
-            root = b.create_view(&Default::default());
-            b.install_touch_handler(&root, always_consume());
+            root = b.create_view_impl(&Default::default());
+            b.install_touch_handler_impl(&root, always_consume());
         }
         force_layout(&backend, &root, 100.0, 100.0);
         let mut path = Vec::new();
@@ -2680,13 +2595,20 @@ mod tests {
         let root;
         {
             let mut b = backend.borrow_mut();
-            root = b.create_view(&Default::default());
-            b.install_touch_handler(&root, always_consume());
+            root = b.create_view_impl(&Default::default());
+            b.install_touch_handler_impl(&root, always_consume());
         }
         force_layout(&backend, &root, 100.0, 100.0);
         let mut path = Vec::new();
         // 200,200 is outside the 100×100 root.
-        collect_touch_path(&backend.borrow(), &root, 0.0, 0.0, (200.0, 200.0), &mut path);
+        collect_touch_path(
+            &backend.borrow(),
+            &root,
+            0.0,
+            0.0,
+            (200.0, 200.0),
+            &mut path,
+        );
         assert_eq!(path.len(), 0);
     }
 
@@ -2696,7 +2618,7 @@ mod tests {
         let root;
         {
             let mut b = backend.borrow_mut();
-            root = b.create_view(&Default::default());
+            root = b.create_view_impl(&Default::default());
             // No install_touch_handler call.
         }
         force_layout(&backend, &root, 100.0, 100.0);
@@ -2712,18 +2634,25 @@ mod tests {
         let child;
         {
             let mut b = backend.borrow_mut();
-            parent = b.create_view(&Default::default());
-            child = b.create_view(&Default::default());
+            parent = b.create_view_impl(&Default::default());
+            child = b.create_view_impl(&Default::default());
             // Tag child first so it's a leaf, then the insert
             // moves it under parent.
-            b.install_touch_handler(&parent, always_consume());
-            b.install_touch_handler(&child, always_consume());
+            b.install_touch_handler_impl(&parent, always_consume());
+            b.install_touch_handler_impl(&child, always_consume());
             let mut parent_for_insert = parent.clone();
-            b.insert(&mut parent_for_insert, child.clone());
+            b.insert_impl(&mut parent_for_insert, child.clone());
         }
         force_layout(&backend, &parent, 100.0, 100.0);
         let mut path = Vec::new();
-        collect_touch_path(&backend.borrow(), &parent, 0.0, 0.0, (50.0, 50.0), &mut path);
+        collect_touch_path(
+            &backend.borrow(),
+            &parent,
+            0.0,
+            0.0,
+            (50.0, 50.0),
+            &mut path,
+        );
         // Root-first: parent at [0], child at [1]. The dispatcher
         // iterates in reverse for deepest-first delivery.
         assert_eq!(path.len(), 2);
@@ -2738,15 +2667,22 @@ mod tests {
         let child;
         {
             let mut b = backend.borrow_mut();
-            parent = b.create_view(&Default::default());
-            child = b.create_view(&Default::default());
-            b.install_touch_handler(&child, always_consume());
+            parent = b.create_view_impl(&Default::default());
+            child = b.create_view_impl(&Default::default());
+            b.install_touch_handler_impl(&child, always_consume());
             let mut parent_for_insert = parent.clone();
-            b.insert(&mut parent_for_insert, child.clone());
+            b.insert_impl(&mut parent_for_insert, child.clone());
         }
         force_layout(&backend, &parent, 100.0, 100.0);
         let mut path = Vec::new();
-        collect_touch_path(&backend.borrow(), &parent, 0.0, 0.0, (50.0, 50.0), &mut path);
+        collect_touch_path(
+            &backend.borrow(),
+            &parent,
+            0.0,
+            0.0,
+            (50.0, 50.0),
+            &mut path,
+        );
         assert_eq!(path.len(), 1);
         assert!(Rc::ptr_eq(&path[0].node, &child));
     }
@@ -2758,15 +2694,22 @@ mod tests {
         let child;
         {
             let mut b = backend.borrow_mut();
-            parent = b.create_view(&Default::default());
-            child = b.create_view(&Default::default());
-            b.install_touch_handler(&parent, always_consume());
+            parent = b.create_view_impl(&Default::default());
+            child = b.create_view_impl(&Default::default());
+            b.install_touch_handler_impl(&parent, always_consume());
             let mut parent_for_insert = parent.clone();
-            b.insert(&mut parent_for_insert, child.clone());
+            b.insert_impl(&mut parent_for_insert, child.clone());
         }
         force_layout(&backend, &parent, 100.0, 100.0);
         let mut path = Vec::new();
-        collect_touch_path(&backend.borrow(), &parent, 0.0, 0.0, (50.0, 50.0), &mut path);
+        collect_touch_path(
+            &backend.borrow(),
+            &parent,
+            0.0,
+            0.0,
+            (50.0, 50.0),
+            &mut path,
+        );
         assert_eq!(path.len(), 1);
         assert!(Rc::ptr_eq(&path[0].node, &parent));
     }
@@ -2781,8 +2724,8 @@ mod tests {
         let root;
         {
             let mut b = backend.borrow_mut();
-            root = b.create_view(&Default::default());
-            b.install_touch_handler(&root, always_consume());
+            root = b.create_view_impl(&Default::default());
+            b.install_touch_handler_impl(&root, always_consume());
         }
         force_layout(&backend, &root, 100.0, 100.0);
         let mut path = Vec::new();
@@ -2805,7 +2748,7 @@ mod tests {
         let backend = make_backend();
         let node = {
             let mut b = backend.borrow_mut();
-            let n = b.create_view(&Default::default());
+            let n = b.create_view_impl(&Default::default());
             // Steal it out of `roots` to simulate an orphaned node.
             b.roots.retain(|x| !Rc::ptr_eq(x, &n));
             n

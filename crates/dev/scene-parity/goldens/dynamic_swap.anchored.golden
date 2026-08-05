@@ -1,0 +1,34 @@
+# scene-parity golden — scenario `dynamic_swap`, mode `anchored`
+#
+# `dynamic(closure)` subtree swap driven by a signal. Always
+# anchored (there is no spliced Dynamic path): every dependency
+# change = drop-scope + clear_children(anchor) + rebuild + insert.
+# No dedup guard exists here — the closure IS the dependency
+# source, so each fire rebuilds even if the output would match.
+#
+# Structural ops only. Node names are creation-order (n0, n1, ...);
+# `cleanup <label>` lines are scenario-registered on_cleanup markers
+# pinning dispose ordering. Regenerate after an INTENDED behavior
+# change with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 anchor
+clear_children n1
+create n2 view
+create n3 text "dyn-a"
+insert n2 <- n3
+insert n1 <- n2
+insert n0 <- n1
+
+== set which = 1 (view subtree -> bare text) ==
+clear_children n1
+create n4 text "dyn-b"
+insert n1 <- n4
+
+== set which = 0 (back to view subtree) ==
+clear_children n1
+create n5 view
+create n6 text "dyn-a"
+insert n5 <- n6
+insert n1 <- n5

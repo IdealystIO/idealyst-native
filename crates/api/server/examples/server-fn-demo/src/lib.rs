@@ -28,9 +28,12 @@ use idea_ui::{
 };
 use std::rc::Rc;
 
+// `flat_list` / `fixed_size` live in the glue's primitives mirror, not the
+// facade root (the root carries the reactive + style surface).
+use runtime_core::primitives::flat_list::{fixed_size, flat_list};
 use runtime_core::{
-    async_reducer, component, fixed_size, flat_list, signal, ui, AsyncReducer, AsyncStatus,
-    effect, Element, FlexDirection, IntoElement, Length, Signal, StyleRules, StyleSheet,
+    component, effect, mutation, signal, ui, Element, FlexDirection,
+    IntoElement, Length, Mutation, Signal, StyleRules, StyleSheet,
 };
 use serde::{Deserialize, Serialize};
 use server::{server, ServerError};
@@ -239,13 +242,18 @@ fn configure_server() {
 }
 
 // ============================================================================
-// SDK-handler registration hook the CLI-generated wrappers invoke before
-// mount. No third-party SDKs in this demo, so it's an empty generic over
-// `Backend` — backend-agnostic, no per-target `#[cfg]` and no `backend-*`
-// dep. The wrappers pass the concrete backend per platform.
+// SDK-handler registration seam the CLI-generated wrappers invoke after
+// `runtime_vocabulary::register_builtins`. No third-party payload handlers in
+// this demo, so it's an empty registry-generic seam — backend-agnostic, no
+// per-target `#[cfg]` and no `backend-*` dep. The wrappers pin `H` to their
+// concrete backend. Registration is mandatory for anything the tree renders:
+// an unregistered payload panics at realize.
 // ============================================================================
 
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
 // ============================================================================
 // Recorder-side registration for the runtime-server sidecar. Gated by
@@ -254,8 +262,14 @@ pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 // ============================================================================
 
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {
-    // No SDK navigator/external needs recorder-side registration in this app.
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {
+    // No SDK payload handler needs recorder-side registration in this app.
+}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
 }
 
 // ============================================================================
@@ -288,46 +302,63 @@ pub fn app() -> Element {
     // Single source of truth: the live todo list.
     let todos: Signal<Vec<Todo>> = signal(Vec::new());
 
-    // Four async actions, each folding its response back into
-    // `todos`. The reducer shape is the canonical "mutation
-    // applies to local state" pattern — see runtime_core::async_reducer.
+    // Four async actions. Each is a `mutation` whose handler makes the
+    // server-fn call AND folds the response straight into `todos` — the
+    // canonical "the mutation's response updates local state, no second
+    // refetch" pattern. The mutation itself carries the lifecycle
+    // (`loading()` / `error()`), which the status line below projects.
     //
     //   refresh : ()        → replace whole list
     //   create  : CreateTodo→ push
     //   toggle  : u64       → replace by id
     //   delete  : u64       → remove by id (server echoes the id)
+    //
+    // `Signal` is `Copy` and routes to its own world, so the handler
+    // futures capture `todos` directly; a completion landing after the
+    // world is gone is a silent no-op (writes to a dead world are dropped).
+    // `update` composes on the STAGED value, which is what makes two
+    // adds in one turn both land.
 
-    let refresh: AsyncReducer<(), ServerError> = async_reducer(
-        todos,
-        |_| async { list_todos().await },
-        |list: &mut Vec<Todo>, new_list: Vec<Todo>| *list = new_list,
-    );
+    let refresh: Mutation<(), (), ServerError> = mutation(move |_| async move {
+        let list = list_todos().await?;
+        todos.set(list);
+        Ok(())
+    });
 
-    let create: AsyncReducer<CreateTodo, ServerError> = async_reducer(
-        todos,
-        |input| async { create_todo(input).await },
-        |list: &mut Vec<Todo>, new_todo: Todo| list.push(new_todo),
-    );
+    let create: Mutation<CreateTodo, (), ServerError> = mutation(move |input| async move {
+        let new_todo = create_todo(input).await?;
+        todos.update(move |list| {
+            let mut next = list.clone();
+            next.push(new_todo.clone());
+            next
+        });
+        Ok(())
+    });
 
-    let toggle: AsyncReducer<u64, ServerError> = async_reducer(
-        todos,
-        |id| async move { toggle_todo(id).await },
-        |list: &mut Vec<Todo>, updated: Todo| {
-            if let Some(slot) = list.iter_mut().find(|t| t.id == updated.id) {
-                *slot = updated;
+    let toggle: Mutation<u64, (), ServerError> = mutation(move |id| async move {
+        let updated = toggle_todo(id).await?;
+        todos.update(move |list| {
+            let mut next = list.clone();
+            if let Some(slot) = next.iter_mut().find(|t| t.id == updated.id) {
+                *slot = updated.clone();
             }
-        },
-    );
+            next
+        });
+        Ok(())
+    });
 
-    let delete: AsyncReducer<u64, ServerError> = async_reducer(
-        todos,
-        |id| async move { delete_todo(id).await },
-        |list: &mut Vec<Todo>, deleted_id: u64| {
-            list.retain(|t| t.id != deleted_id);
-        },
-    );
+    let delete: Mutation<u64, (), ServerError> = mutation(move |id| async move {
+        let deleted_id = delete_todo(id).await?;
+        todos.update(move |list| {
+            let mut next = list.clone();
+            next.retain(|t| t.id != deleted_id);
+            next
+        });
+        Ok(())
+    });
 
-    // Fire the initial list fetch on mount.
+    // Fire the initial list fetch on mount. `trigger` inside an effect is
+    // world-entered, which is where a mutation's state write belongs.
     {
         let refresh = refresh.clone();
         effect!(refresh.trigger(()));
@@ -335,10 +366,15 @@ pub fn app() -> Element {
 
     // Reactive status line — projects refresh's lifecycle into text.
     let refresh_for_status = refresh.clone();
-    let status_line = runtime_core::text(move || match refresh_for_status.status_now() {
-        AsyncStatus::Idle => "ready".to_string(),
-        AsyncStatus::Loading => "loading...".to_string(),
-        AsyncStatus::Error(e) => format!("error: {e}"),
+    let status_line = runtime_core::text(move || {
+        let state = refresh_for_status.state();
+        if state.loading {
+            "loading...".to_string()
+        } else if let Some(e) = &state.error {
+            format!("error: {e}")
+        } else {
+            "ready".to_string()
+        }
     })
     .into_element();
 
@@ -370,26 +406,8 @@ pub fn app() -> Element {
     let sse_line: Element =
         ui! { Typography(content = "live SSE (client builds only)".to_string(), muted = true) };
 
-    let header: Vec<Element> = vec![
-        ui! { Typography(content = "Server-fn todos".to_string(), kind = idea_ui::typography_kind::H1) },
-        ui! {
-            Typography(
-                content = "Every interaction is a #[server] call. Open the network tab \
-                — adds/toggles/deletes are single HTTP requests; their response folds \
-                straight into local state via `async_reducer`, no second refetch.".to_string(),
-                muted = true,
-            )
-        },
-        status_line,
-        sse_line,
-        ui! { button(label = "Refresh".to_string(), on_click = on_refresh) },
-        ui! { button(label = "Add: Buy milk".to_string(), on_click = on_add_milk) },
-        ui! { button(label = "Add: Walk the dog".to_string(), on_click = on_add_dog) },
-        ui! { button(label = "Add: Demo idealyst".to_string(), on_click = on_add_demo) },
-    ];
-
     // Reactive list. Each row gets a clone of the toggle + delete
-    // reducers so its buttons trigger the right action.
+    // mutations so its buttons trigger the right action.
     let toggle_for_rows = toggle.clone();
     let delete_for_rows = delete.clone();
     let list = ui! {
@@ -403,11 +421,6 @@ pub fn app() -> Element {
         )
     };
 
-    let body: Vec<Element> = vec![
-        ui! { Stack(gap = StackGap::Md, padding = StackPadding::Lg) { header } },
-        list,
-    ];
-
     // Wrap in a viewport-filling root. The iOS/Android backends size the
     // mounted root to the window only if the root node declares it — a bare
     // flex `Stack` shrinks to content and renders blank on native (web hides
@@ -415,7 +428,28 @@ pub fn app() -> Element {
     // `welcome` example's `page_sheet` and the navigator SDK's default fill.
     ui! {
         view(style = root_fill()) {
-            Stack(gap = StackGap::Sm, padding = StackPadding::None) { body }
+            Stack(gap = StackGap::Sm, padding = StackPadding::None) {
+                Stack(gap = StackGap::Md, padding = StackPadding::Lg) {
+                    Typography(
+                        content = "Server-fn todos".to_string(),
+                        kind = idea_ui::typography_kind::H1,
+                    )
+                    Typography(
+                        content = "Every interaction is a #[server] call. Open the network tab \
+                        — adds/toggles/deletes are single HTTP requests; their response folds \
+                        straight into local state inside the mutation handler, no second \
+                        refetch.".to_string(),
+                        muted = true,
+                    )
+                    status_line
+                    sse_line
+                    button(label = "Refresh".to_string(), on_click = on_refresh)
+                    button(label = "Add: Buy milk".to_string(), on_click = on_add_milk)
+                    button(label = "Add: Walk the dog".to_string(), on_click = on_add_dog)
+                    button(label = "Add: Demo idealyst".to_string(), on_click = on_add_demo)
+                }
+                list
+            }
         }
     }
 }
@@ -446,8 +480,8 @@ fn root_fill() -> Rc<StyleSheet> {
 fn todo_row(
     t: Todo,
     todos: Signal<Vec<Todo>>,
-    toggle: AsyncReducer<u64, ServerError>,
-    delete: AsyncReducer<u64, ServerError>,
+    toggle: Mutation<u64, (), ServerError>,
+    delete: Mutation<u64, (), ServerError>,
 ) -> Element {
     let id = t.id;
     let initial_title = t.title.clone();
@@ -473,16 +507,17 @@ fn todo_row(
     };
     let on_toggle = move || toggle.trigger(id);
     let on_delete = move || delete.trigger(id);
-    let children: Vec<Element> = vec![
-        ui! { button(label = label, on_click = on_toggle) },
-        ui! { button(label = "delete".to_string(), on_click = on_delete) },
-    ];
-    ui! { Stack(gap = StackGap::Sm, padding = StackPadding::Md) { children } }
+    ui! {
+        Stack(gap = StackGap::Sm, padding = StackPadding::Md) {
+            button(label = label, on_click = on_toggle)
+            button(label = "delete".to_string(), on_click = on_delete)
+        }
+    }
 }
 
-/// Click handler that fires the create reducer with a canned title.
+/// Click handler that fires the create mutation with a canned title.
 fn make_adder(
-    create: AsyncReducer<CreateTodo, ServerError>,
+    create: Mutation<CreateTodo, (), ServerError>,
     title: &'static str,
 ) -> impl Fn() + 'static {
     move || {

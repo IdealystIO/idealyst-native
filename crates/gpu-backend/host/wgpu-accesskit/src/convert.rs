@@ -1,5 +1,5 @@
 //! Conversion from the framework's parallel a11y semantics tree
-//! (`runtime_core::accessibility::AccessibilityTree`) into AccessKit's
+//! (`runtime_shared::accessibility::AccessibilityTree`) into AccessKit's
 //! flat `TreeUpdate` representation.
 //!
 //! AccessKit's tree shape:
@@ -23,7 +23,7 @@
 //! the tree to compose the final screen-space rect.
 
 use accesskit::{Live, Node, NodeId, Rect, Tree, TreeUpdate};
-use runtime_core::accessibility::{
+use runtime_shared::accessibility::{
     AccessibilityNode, AccessibilityProps, AccessibilityRect, AccessibilityTraits,
     AccessibilityTree, LiveRegionPriority, Role,
 };
@@ -280,7 +280,7 @@ fn estimate_node_count(node: &AccessibilityNode) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::accessibility::{
+    use runtime_shared::accessibility::{
         AccessibilityNode, AccessibilityProps, AccessibilityRect, AccessibilityTraits,
         AccessibilityTree, LiveRegionPriority, Role,
     };

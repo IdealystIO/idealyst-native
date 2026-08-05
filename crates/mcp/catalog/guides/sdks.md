@@ -1,7 +1,7 @@
 +++
 title = "SDKs & opt-in crates"
 order = 65
-tags = ["sdk", "crates", "net", "storage", "credentials", "discovery"]
+tags = ["sdk", "crates", "net", "storage", "credentials", "discovery", "cache", "pubsub", "jobs", "email", "server-tier"]
 +++
 
 # SDKs & opt-in crates
@@ -32,6 +32,10 @@ storage = { git = "...", rev = "..." }
 Inside the workspace, examples use `net = { workspace = true }`. After adding the
 dep, the SDK's functions are importable (`use net::Client;`).
 
+Writing your own SDK rather than consuming one? See [[sdk-components]] for the
+payload/handler shape, the registration seam names, and how to support lazy
+loading.
+
 ## Networking & data
 
 | Crate | What it gives you |
@@ -44,6 +48,95 @@ dep, the SDK's functions are importable (`use net::Client;`).
 | **`file-export`** | Save a file to a user-chosen location through the platform's native "save" UI (no permission prompt). |
 | **`i18n`** | Localization / translation / multi-language — the internationalization SDK. Declare translations inline with the `i18n!` macro in a `mod t` (`locales: { En = "en" (default), Es = "es" } greeting(name) { En: "Hello, {name}", Es: "Hola, {name}" }`); a missing translation or bad `{placeholder}` is a COMPILE error. Each message is a fn returning `Reactive<String>` you pass to any reactive-text prop (`Typography(content = t::greeting("Ada"))`). Switch language live with `t::set_locale(t::Locale::Es)` / `i18n::set_locale_code("es")` — every visible translated string re-renders in place. Bundled locales compile in; `(lazy)` locales fetch a JSON pack (feature `lazy-fetch`). Full walkthrough in the [[i18n]] guide. |
 
+## Server tier (cache, pubsub, jobs, email, config)
+
+These crates run **only in the server binary** — they use tokio, redis, sqlx.
+Never make them unconditional dependencies of an app crate that also compiles to
+wasm: depend on them as **optional** deps enabled by the same `server` feature
+your `#[server]` bodies compile under:
+
+```toml
+[dependencies]
+cache  = { workspace = true, optional = true }
+pubsub = { workspace = true, optional = true }
+
+[features]
+server = ["dep:cache", "dep:pubsub", "server/server"]
+```
+
+| Crate | What it gives you |
+|---|---|
+| **`cache`** | Centralized KV cache with TTL, shared across server instances. `Cache` trait (`get`/`set`(+TTL)/`delete` over bytes) + `CacheExt::get_json`/`set_json`; `MemoryCache` always, `RedisCache` behind feature `redis`. NOT for atomic read-modify-write — rate limits / counters go through server-kit's `LimitStore`. |
+| **`pubsub`** | Cross-instance broadcast fan-out (at-most-once, ephemeral). `const ROOM: pubsub::Topic<Msg> = Topic::new("room")`; `ROOM.publish(&msg).await`; `ROOM.subscribe() -> impl Stream<Item = Msg>`. Backends: memory / redis (native Pub/Sub) / postgres (LISTEN/NOTIFY). |
+| **`jobs`** | Durable background job queue — each job delivered to ONE worker, with retries/backoff/dead-letter. `#[job]` mirrors `#[server]`; run handlers via `jobs::worker().run()`, `.spawn()`, or `idealyst worker`. Backends: memory / redis / postgres / sqs. |
+| **`email`** | Transactional email — fluent `Email` builder, or render an idealyst component to email-safe HTML via `.template(...)`. Providers: memory (dev/test capture), SES. |
+| **`idealyst-config`** | Unified boot config for all of the above: named `[connections.<name>]` profiles in `idealyst.toml`, one `configure_all().await` call. See below. |
+| **`server-kit`** | Policy layer over `server`: middleware, `Auth<T>`, CSRF, sessions (built on `cache`), rate limiting. See [[server-functions]]. |
+
+### One connection, many consumers
+
+The Redis connection is **app-provided context, like a database**: open one
+`redis::Client` at boot, and every consumer attaches to it — no per-SDK URLs.
+
+```rust
+// boot (server main), before serving:
+let client = redis::Client::open(cfg.redis_url)?;
+server::install_state(client.clone());
+
+cache::configure(cache::RedisCache::from_installed());          // KV cache
+pubsub::configure(pubsub::RedisBackend::from_installed().await?); // fan-out
+// server-kit sessions / RedisLimitStore read the same installed client.
+```
+
+`cache::configured()` hands the cache back anywhere server-side; to receive it
+as injected `#[ctx]` state instead, `server::install_state::<Arc<dyn Cache>>(...)`.
+
+### Configuring — `idealyst.toml` or env
+
+The default authoring surface is `idealyst.toml` + `idealyst_config::configure_all()`:
+
+```toml
+[connections.main]
+kind = "redis"
+url = "redis://127.0.0.1:6379"
+
+[cache]
+backend = "redis"
+connection = "main"     # same endpoint…
+
+[pubsub]
+backend = "redis"
+connection = "main"     # …shared by name
+```
+
+The flat env spelling (`IDEALYST_CACHE_BACKEND`/`_URL`, `IDEALYST_PUBSUB_*`,
+`IDEALYST_JOBS_*`) is the override layer; each SDK also has a
+`configure_from_env()`. `idealyst dev` forwards a project's `[cache]` /
+`[pubsub]` / `[jobs]` config to the spawned server + worker as those vars. For
+the redis backends, env config with **no URL set falls back to the installed
+`redis::Client`** — one URL configured at boot serves every consumer.
+
+### Decentralized WebSocket notifications (pubsub × `#[subscription]`)
+
+The headline pubsub use — no changes to the server crate needed, a
+`#[subscription]` body just returns the topic's stream:
+
+```rust
+const ROOM: pubsub::Topic<Msg> = pubsub::Topic::new("room");
+
+#[subscription]                    // client holds a socket on instance A
+async fn feed() -> impl Stream<Item = Msg> { ROOM.subscribe() }
+
+#[server]                          // any instance publishes
+async fn say(text: String) -> Result<(), ServerError> {
+    ROOM.publish(&Msg { text }).await.map_err(ServerError::failed)?;
+    Ok(())
+}
+```
+
+With a shared backend (redis/postgres), a client connected to one instance
+receives events produced on another.
+
 ## Media & capture
 
 | Crate | What it gives you |
@@ -53,17 +146,18 @@ dep, the SDK's functions are importable (`use net::Client;`).
 | **`microphone`** | Cross-platform microphone capture → an audio stream. |
 | **`screen-recorder`** | Cross-platform screen / window recording → a `MediaStream`. |
 | **`media-writer`** | Record live media streams to a file (mp4). |
-| **`video`** | Third-party `Video` playback primitive (`Element::External`). |
+| **`video`** | Third-party `Video` playback primitive (a scene-registry payload). |
 | **`canvas`** | The author-facing facade for the 2D-drawing SDK (GPU canvas + self-capture compositor). |
 
-## UI primitives & extensions (`Element::External`)
+## UI primitives & extensions (scene-registry payloads)
 
-These are third-party UI primitives wired through `Element::External` + a
-per-backend registry. Adding the crate and calling the primitive in `ui!` is
-**not sufficient on web**: the primitive's handler must also be **registered**
-with the backend, or it renders an `External "…Props" not supported`
-placeholder at runtime (not a compile error). See "Registering External UI
-SDKs (required for web)" just below.
+These are third-party UI primitives. The framework has one dispatch model for
+every primitive: a **payload handler on the scene `Registry`**. First-party
+primitives (`view`, `text`, …) register through
+`runtime_vocabulary::register_builtins`; a third-party SDK registers exactly
+the same way. Adding the crate and calling the primitive in `ui!` is **not
+sufficient**: an unregistered payload **panics at realize**. See "Registering
+extension SDKs" just below.
 
 | Crate | What it gives you |
 |---|---|
@@ -80,129 +174,110 @@ SDKs (required for web)" just below.
 | **`toolbar`** | Third-party `Toolbar` SDK. |
 | **`menu`** | OS-level menu-bar SDK (desktop). |
 
-### Registering External UI SDKs (required for web)
+### Registering extension SDKs
 
-Every `Element::External` UI SDK (`webview`, `maps`, `svg`, `markdown`,
-`codeblock`, `table`, `toolbar`, `video`) exposes a per-target
-`register(&mut backend)` that installs its handler. On **native** the SDK
-also self-registers via `inventory::submit!`, so the call is often a no-op
-belt-and-suspenders. On **web under the CLI `--local` build** that inventory
-submission can be dead-stripped, so the primitive renders the framework's
-`External "…Props" not supported on web` placeholder (a runtime message, not
-a compile error) unless the app calls `register` explicitly.
+Every extension SDK (`webview`, `maps`, `svg`, `markdown`, `codeblock`,
+`table`, `toolbar`, `video`) exposes a `register(&mut registry)` that installs
+its payload handler. Registration is **mandatory on every target**: the scene
+registry has no fallback handler, so a payload with no handler is a panic at
+realize, not a placeholder. (This is deliberate — a missed `register` fails
+loud instead of rendering a silent grey box.)
 
-Call it from your crate's `register_extensions` — the per-target hook the
-CLI-generated wrapper invokes before mount — on the wasm32 arm:
+Call it from your crate's `register_scene_extensions` — the seam the
+CLI-generated wrapper invokes after `runtime_vocabulary::register_builtins`:
 
 ```rust
-#[cfg(target_arch = "wasm32")]
-pub fn register_extensions(backend: &mut backend_web::WebBackend) {
-    table::register(backend);      // real <table> handler
-    markdown::register(backend);   // CommonMark handler
-    // …one line per External UI SDK you render on web.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    registry: &mut runtime_scene::Registry<H>,
+) {
+    table::register(registry);      // real <table> on web, CSS-grid on native
+    markdown::register(registry);   // CommonMark handler
+    // …one line per extension SDK you render.
 }
 ```
 
-`register` is defined for every target (a no-op on backends without a
-binding), so a native/iOS/Android `register_extensions` can call the same
-lines harmlessly — but the web arm is the one that's actually load-bearing.
-SSR needs the same handlers so first paint matches (see the website's
-`examples/serve.rs`, which calls `codeblock::register(b)` alongside the web
-build). This is the **basic** requirement; the next section is the advanced
-variant that defers registration into a code-split chunk.
+Every SDK spells that seam `register` — as of 1.1.0 there are no
+`register_handlers` / `register_scene` / `register_generic` variants left, and
+no no-op `register(&mut backend)` shims (see [[migration-1-0-0-to-1-1-0]]).
+
+To ship an SDK's handler in a lazy chunk rather than the main bundle, swap the
+verb: `table::defer(registry)` at boot, plus
+`table::register_from_chunk::<MyBackend>()` from inside a `#[component(lazy)]`
+body. Both halves are required — see [[lazy-loading]]. Off-web `defer` simply
+registers eagerly, since only web code-splits, so it is always safe to call.
+
+Most SDK `register` fns are **caps-generic** (`register<H>(&mut Registry<H>)`)
+and serve every backend from one handler. An SDK with a real platform leg
+(`svg`'s iOS/Android vector walk, `video`'s AVPlayer, `toolbar`'s `NSToolbar`)
+selects it by **registry type**, not by `cfg`: its `register` downcasts the
+registry to the concrete backend's `Registry<MacosBackend>` / `<IosBackend>` /
+`<AndroidBackend>` and falls through to the portable handler otherwise. A
+`cfg(target_os = "macos")` split alone cannot express that — the cfg is
+equally true for an SSG render running on a macOS host, which needs the
+portable handler. If your `register_scene_extensions` needs to name a concrete
+backend, specialize `H` to that backend's registry type in your app crate and
+add the backend dep.
+
+SSR needs the same handlers so first paint matches the client (see the
+website's `examples/serve.rs`, which registers alongside the web build).
 
 ### Code-splitting a heavy extension (web)
 
-If an `External` SDK is large but used in only one corner of the app, you can
-keep it out of the web **main bundle** so it downloads only when that corner
-mounts. The catch: wrapping the *usage* in `lazy!` is not enough. An `External`
-handler registered eagerly — at boot in `register_extensions`, or via an
-`inventory::submit!` drained at backend construction — is statically reachable
-from `main.wasm`, so wasm-split keeps the whole SDK there. **Registration, not
-rendering, is the anchor.**
+If an extension SDK is large but used in only one corner of the app, wrapping
+the *usage* in `#[component(lazy)]` splits that corner's **rendering** code
+into a chunk. What it does **not** split on its own is the SDK's handler: a
+handler named in `register_scene_extensions` at boot — and everything it
+statically reaches — is reachable from `main.wasm`.
 
-Move registration into the chunk. The SDK exposes a `register_lazy()` built on
-`defer_external_registration`; the app calls it as the first line of the `lazy!`
-body, then renders the primitive:
+Registration is the anchor, and the registry has a **late-registration seam**
+for moving it out of main: declare the payload kind at boot with
+`registry.defer::<T>()` (which lets `realize` park an item of that kind instead
+of panicking), then install the real handler from inside the chunk with
+`runtime_scene::defer_registration` → `Registry::register_deferred`. This is the
+runtime-v2 successor to the pre-v2 core's `defer_external_registration`. Full
+recipe and the size measurement in [[lazy-loading]].
 
-```rust
-// In the SDK (web target): queue the handler instead of installing it now.
-#[cfg(target_arch = "wasm32")]
-pub fn register_lazy() {
-    runtime_core::defer_external_registration::<backend_web::WebBackend, _>(|b| {
-        b.register_external::<HeavyProps, _>(build_heavy::<backend_web::WebBackend>);
-    });
-}
-#[cfg(not(target_arch = "wasm32"))]
-pub fn register_lazy() {} // native registers eagerly; no chunk, no bundle cost
+Practical consequences:
 
-// In the app: register-then-render, both inside the chunk.
-lazy! {
-    heavy_sdk::register_lazy();
-    heavy_sdk::widget(props)
-}
-```
+- Split the **body**, and defer the **handler** when the handler is the heavy
+  part. If you do register at boot instead, keep the handler thin: the heavy
+  work (a rasterizer, a font stack, an embedded payload) should live behind a
+  function the *chunk* calls, not behind one the handler calls at
+  registration time.
+- Static **data** never leaves `main.wasm` by default regardless of chunking;
+  dropping it needs the experimental opt-in `idealyst build --web --release
+  --data-prune` (see [[lazy-loading]]).
+- Register only the SDKs you actually render. An unused `register` line costs
+  its handler's whole reachable graph in the main bundle — and now that
+  registration is explicit everywhere, that list is entirely under your
+  control.
 
-Now `build_heavy` (and any static data it reaches) is reachable only from the
-chunk, so wasm-split keeps its code out of `main.wasm` (its data leaves main only
-under the experimental opt-in `idealyst build --web --release --data-prune`);
-the backend applies the queued registration before dispatching the chunk's own
-`External`. This is
-per-SDK opt-in — an SDK that wants it must NOT also `inventory::submit!` its web
-handler (that submission is itself a main-bundle anchor); it keeps inventory
-self-registration for native, where bundle size is a non-issue. Measured on a
-512 KiB test SDK: main bundle 1294 KiB → 781 KiB. See the `lazy!` macro and
-[[defer_external_registration]].
+### There are no `prim-*` features
 
-Beyond lazy chunks, the framework itself is trimmable: runtime-core exposes
-`prim-*` cargo features (all ON by default) that gate whole primitive
-families out of the build — walker dispatch, backend implementation, and any
-embedded JS shims. All twelve families are gated: `prim-virtualizer`
-(flat_list / grids / the structured `for i in count(sig)` form), `prim-icon`,
-`prim-image`, `prim-text-input` (TextInput + TextArea), `prim-toggle`,
-`prim-slider`, `prim-activity`, `prim-portal` (overlay / anchored_overlay),
-`prim-presence`, `prim-graphics`, `prim-navigator` (navigator + outlet +
-URL sync + Link's nav dispatch), and `prim-lazy` (`#[lazy_component]` chunk
-mounting). The supported opt-out is two-sided (cargo unifies features
-across the build graph, so both edits must land together): the app crate
-sets `default-features = false` on its `runtime-core` dependency — and on
-`idea-ui` if it uses the component library, re-enabling the same-named
-`prim-*` features it needs — and the build names the families the app's
-own code uses —
-`idealyst build --web --release --primitives icon,text-input` (or
-`--primitives none` for a text/view-only bundle). The build warns when
-either app-side edit is missing, and an unknown family name is a hard
-error. idea-ui components are themselves gated per family (a component
-compiles only when every family it renders is enabled — e.g. Button needs
-icon+activity, Modal needs portal+presence), so using a gated-out
-component is a compile error naming the feature, never a silent
-placeholder; see [[migration-0-4-0-to-0-5-0]] for the map. A
-view+text-only baseline drops from ~548 KB to ~392 KB raw (~133 KB brotli
-over the wire). An SDK that renders through a gated primitive forwards the
-feature on its runtime-core dep (see `virtualized`, `swap-navigator`,
-`stack-navigator`) so depending on the SDK re-enables exactly what it
-needs. Authoring a gated-out primitive is a compile error naming the
-feature; one arriving at runtime — over the wire, or through a feature
-mismatch between crates — renders the standard "not supported" placeholder
-on every backend (never a panic). Full contracts and the SDK-author
-checklist live in [[migration-0-4-0-to-0-5-0]].
+Earlier releases let you trim whole primitive families out of the build with
+twelve `prim-*` cargo features on `runtime-core` (mirrored by each backend
+crate), six matching ones on `idea-ui` that `#[cfg]`-deleted the components
+rendering each family, and `idealyst build --web --primitives=…` to select the
+set. **All three layers are gone**, along with the SDK-side forwards that fed
+them (`virtualized` → `prim-virtualizer`, the navigators → `prim-navigator`).
+They gated three things in the pre-v2 core — walker dispatch arms, authoring
+builder fns, and `Backend` trait methods — and none of them exist now.
 
-Note for backend/intermediate crates: cargo ignores `default-features =
-false` on `workspace = true` deps, and any dep line with default features
-re-enables the whole `prim-*` set for everyone (feature unification).
-Backend and utility crates that sit between the app and runtime-core
-(`backend-web`, `css`) therefore declare runtime-core as a *path* dep with
-`default-features = false` and forward per-family features explicitly —
-without that, an app's opt-out silently does nothing.
+Nothing in your source changes: no type, function, macro, or component was
+lost, and the component set is unconditional. Manifests and build commands do:
+drop any `features = ["prim-…"]` entry (cargo rejects the manifest otherwise)
+and drop `--primitives` (the CLI rejects it with a pointer to the migration
+guide). If you want a smaller bundle, the lever is now **what you register** —
+see "Register only the SDKs you actually render" above.
 
-The anchor rule is transitive: a *dependency's* `inventory::submit!` pins its
-code just as hard as your own. An SDK that both self-registers (zero-config
-eager use) and gets consumed as a delegate by another SDK should put the
-submit behind a default-on cargo feature so the delegate consumer can take it
-with `default-features = false`. `canvas-native` is the model: its
-`self-register` feature is on for apps that depend on it directly, and off in
-`canvas-vello`'s fallback-delegate dep — that alone moved the rasterizer +
-font stack (~670 KB) from a lazy canvas app's `main.wasm` into the chunk.
+The structural successor for primitives themselves is per-primitive **handler
+registration**: `runtime_vocabulary::handlers::register_builtins` holds the
+only reference to each primitive's module and its caps calls, so a per-family
+gate belongs there (and in each backend's caps impls). Until that lands,
+keeping the old flags would have shipped a lever that deletes components from
+the public API while saving nothing in the bundle. See
+`docs/migrating-to-runtime-v2.md` for the full before/after, and
+[[migration-0-4-0-to-0-5-0]] for the historical contract.
 
 ## Device & platform integration
 
@@ -231,7 +306,7 @@ app supplies the reason string.
 - An SDK that ships `#[component]`s (like `idea-ui`) surfaces those components
   through `list_components` / `describe_component` **once it's a dependency of
   the build the catalog is extracted from**.
-- An SDK that exposes free functions / `Element::External` primitives (like
+- An SDK that exposes free functions / scene-registry primitives (like
   `net`, `storage`, `webview`) is documented here and in its own crate docs —
   read the crate's `lib.rs` module docs for the full API.
 

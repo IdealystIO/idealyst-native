@@ -79,7 +79,7 @@
 
 use crate::imp::callbacks::{leak, OverlayDismissCallback};
 use crate::imp::{with_env, AndroidBackend};
-use runtime_core::primitives::portal::{
+use runtime_shared::primitives::portal::{
     AnchorTarget, ElementAlign, ElementSide, PortalTarget, ViewportPlacement, ViewportRect,
 };
 use jni::objects::{GlobalRef, JObject, JValue};
@@ -457,13 +457,13 @@ fn compute_popup_position(
     offset: f32,
 ) -> (i32, i32) {
     // Unmeasured initial placement: pass content size (0, 0) to the shared
-    // measured-placement helper in runtime_core. With zero size the align
+    // measured-placement helper in runtime_shared. With zero size the align
     // math collapses to "align to the trigger's start/center/end edge" —
     // exactly the prior behavior — but the align/side geometry now lives in
     // one place across web/iOS/Android (CLAUDE.md §7). A future measured
     // re-position pass can graduate to the full `resolve_anchored_placement`
     // (collision flip + viewport clamp) like web.
-    let (top, left) = runtime_core::primitives::portal::anchor_top_left(
+    let (top, left) = runtime_shared::primitives::portal::anchor_top_left(
         *trigger, side, align, offset, (0.0, 0.0),
     );
     (left.round() as i32, top.round() as i32)

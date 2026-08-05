@@ -16,11 +16,11 @@ pub fn page() -> Element {
 
             Section(
                 title = "How backends fit".to_string(),
-                body = "Every backend implements the `Backend` trait — `create_view`, \
-                        `create_text`, navigator/drawer/tabs constructors, and so on. The \
-                        framework's render walker calls those functions to materialize the \
-                        cross-platform tree into native nodes. Your app crate has no idea \
-                        which backend it's running under.".to_string(),
+                body = "Every backend implements the `Host` trait plus the capability \
+                        traits — `create_view`, `create_text`, navigator constructors, and \
+                        so on. The framework's realize pass calls those functions to \
+                        materialize the cross-platform tree into native nodes. Your app \
+                        crate has no idea which backend it's running under.".to_string(),
             )
 
             Card {

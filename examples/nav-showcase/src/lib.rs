@@ -17,27 +17,39 @@
 
 use idea_ui::{install_idea_theme, light_theme, Typography};
 use idea_ui_nav::{Drawer, StackHeader, TabBar, TabItem};
-use runtime_core::primitives::navigator::{HeaderButton, SwapContext};
+// `SwapContext`/`HeaderButton` come from the SDK preludes — the
+// same-source import home on both cores (the new-core SDKs define their
+// own `SwapContext`; glue deliberately doesn't mirror it).
 use runtime_core::{
-    component, pressable, rx, signal, text, ui, AlignItems, Element, FlexDirection, IntoElement,
-    Length, Ref, Route, Screen, Signal, StyleApplication, StyleRules, StyleSheet,
+    component, pressable, rx, signal, text, ui, AlignItems, Element, FlexDirection, Length, Ref,
+    Route, Screen, Signal, StyleApplication, StyleRules, StyleSheet,
 };
-use std::rc::Rc;
+use stack_navigator::prelude::HeaderButton;
 use stack_navigator::{header_state, StackBuilder, StackHandle, StackNavigator, StackScreenExt};
+use std::rc::Rc;
+use swap_navigator::prelude::SwapContext;
 use swap_navigator::{SwapBuilder, SwapHandle, SwapNavigator};
 
-/// Navigators self-register via `inventory` (force-linked, so it works in dev +
-/// release). Hook kept for the CLI bootstrap.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam the CLI-generated wrappers invoke after
+/// `runtime_vocabulary::register_builtins`. The swap + stack navigators
+/// ARE builtins on the scene registry (one backend-neutral handler
+/// each), so this demo has nothing extra to register — the seam is kept
+/// because every wrapper calls it.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
-/// Runtime-server (sidecar) recorder registrations — the CLI-generated
-/// sidecar wrapper calls this so the outlet-model navigators run
-/// host-side in `idealyst dev` non-local mode (their screen swaps ship
-/// as plain node ops; see the SDKs' `recording` modules).
+/// Runtime-server (sidecar) recorder seam — the recorder's scene
+/// registry gets the navigators from `register_builtins` too, so there
+/// is nothing to register host-side either.
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {
-    swap_navigator::recording::register(backend);
-    stack_navigator::recording::register(backend);
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
 }
 
 // ---------------------------------------------------------------------------
@@ -80,15 +92,10 @@ pub fn app() -> Element {
 /// A persistent top bar with a hamburger that opens the drawer.
 fn top_bar(title: &str, drawer_open: Signal<bool>) -> Element {
     let open = move || drawer_open.set(true);
-    let children: Vec<Element> = vec![
-        pressable(vec![text("\u{2630}").into()], open) // ☰
-            .with_style(slot_style)
-            .into(),
-        text(title.to_string()).into(),
-    ];
     ui! {
         view(style = bar_style) {
-            children
+            { pressable(vec![text("\u{2630}").into()], open).with_style(slot_style) } // ☰
+            { text(title.to_string()) }
         }
     }
 }
@@ -181,28 +188,29 @@ fn feed_stack() -> Element {
 }
 
 fn feed_list(nav: Ref<StackHandle>, selected: Signal<usize>) -> Element {
-    let mut children: Vec<Element> = Vec::new();
-    children.push(ui! { Typography(content = "Feed".to_string(), kind = idea_ui::typography_kind::H1) });
-    for i in 1..=4usize {
-        let nav = nav.clone();
-        let open = move || {
-            selected.set(i);
-            nav.get().map(|h| h.push(&F_ITEM, ())).unwrap_or_default();
-        };
-        children.push(
-            ui! { button(label = format!("Open item {}", i), on_click = open) },
-        );
+    ui! {
+        view(style = page) {
+            Typography(content = "Feed".to_string(), kind = idea_ui::typography_kind::H1)
+            for i in 1..=4usize {
+                button(label = format!("Open item {}", i), on_click = {
+                    let nav = nav.clone();
+                    move || {
+                        selected.set(i);
+                        nav.get().map(|h| h.push(&F_ITEM, ())).unwrap_or_default();
+                    }
+                })
+            }
+        }
     }
-    ui! { view(style = page) { children } }
 }
 
 fn feed_item(selected: Signal<usize>) -> Element {
-    let label = text(move || format!("Item {}", selected.get())).into_element();
-    let children: Vec<Element> = vec![
-        label,
-        ui! { Typography(content = "Pushed onto the Feed stack. Back (native/header) pops it.".to_string(), muted = true) },
-    ];
-    ui! { view(style = page) { children } }
+    ui! {
+        view(style = page) {
+            { text(move || format!("Item {}", selected.get())) }
+            Typography(content = "Pushed onto the Feed stack. Back (native/header) pops it.".to_string(), muted = true)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -245,18 +253,16 @@ fn wizard_section() -> Element {
                     }
                 }
             };
-            let progress = text(move || format!("Step {} of {}", idx() + 1, WIZARD_ORDER.len()))
-                .into_element();
-
-            let controls: Vec<Element> = vec![
-                ui! { button(label = "Back".to_string(), on_click = back) },
-                ui! { button(label = "Next".to_string(), on_click = next) },
-            ];
             ui! {
                 view(style = fill_col) {
-                    view(style = bar_style) { { progress } }
+                    view(style = bar_style) {
+                        { text(move || format!("Step {} of {}", idx() + 1, WIZARD_ORDER.len())) }
+                    }
                     view(style = grow) { { nav.outlet } }
-                    view(style = bar_style) { controls }
+                    view(style = bar_style) {
+                        button(label = "Back".to_string(), on_click = back)
+                        button(label = "Next".to_string(), on_click = next)
+                    }
                 }
             }
         });
@@ -280,11 +286,13 @@ fn settings_stack() -> Element {
                 let go = move || {
                     nav.get().map(|h| h.push(&S_ABOUT, ())).unwrap_or_default();
                 };
-                let children: Vec<Element> = vec![
-                    ui! { Typography(content = "Settings".to_string(), kind = idea_ui::typography_kind::H1) },
-                    ui! { button(label = "About".to_string(), on_click = go) },
-                ];
-                Screen::new(ui! { view(style = page) { children } }).title("Settings")
+                let body = ui! {
+                    view(style = page) {
+                        Typography(content = "Settings".to_string(), kind = idea_ui::typography_kind::H1)
+                        button(label = "About".to_string(), on_click = go)
+                    }
+                };
+                Screen::new(body).title("Settings")
             }
         })
         .screen(S_ABOUT, |_| {
@@ -317,11 +325,12 @@ fn stack_layout(nav: stack_navigator::StackContext) -> Element {
 }
 
 fn simple_page(title: &str, body: &str) -> Element {
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = title.to_string(), kind = idea_ui::typography_kind::H1) },
-        ui! { Typography(content = body.to_string(), muted = true) },
-    ];
-    ui! { view(style = page) { children } }
+    ui! {
+        view(style = page) {
+            Typography(content = title.to_string(), kind = idea_ui::typography_kind::H1)
+            Typography(content = body.to_string(), muted = true)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

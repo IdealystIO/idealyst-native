@@ -36,7 +36,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::NSView;
 use objc2_foundation::{CGRect, NSObject, NSString};
-use runtime_core::effect;
+use runtime_world::effect;
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -112,19 +112,9 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
-/// Register the Video handler against a `MacosBackend`. One-line call from
-/// the app's bootstrap.
-pub fn register(backend: &mut MacosBackend) {
-    backend.register_external::<VideoProps, _>(|props, b| build_video(props, b));
-}
-
-// Self-register at backend construction (no app-side `register` call needed).
-// See [[project_inventory_self_registration]].
-inventory::submit! {
-    backend_macos::MacosExternalRegistrar(register)
-}
-
-fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> MacosNode {
+/// Build the native macOS video host view for `props`. Called by the
+/// `Registry<MacosBackend>` mount handler in lib.rs.
+pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> MacosNode {
     // Plain NSView — no subclass needed. Taffy drives the view's frame via the
     // regular apply_frames path; the root CALayer hosts the AVPlayerLayer
     // sublayer (URL) and/or the stream's frames as its `contents`.
@@ -167,7 +157,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> MacosNode {
             let _: () = unsafe { msg_send![&view, addSubview: &*player_view] };
             let player_view_for_size = player_view.clone();
             let view_for_size = view.clone();
-            runtime_core::raf_loop_scoped(move || unsafe {
+            runtime_vocabulary::scoped_scheduling::raf_loop_scoped(move || unsafe {
                 let bounds: CGRect = msg_send![&*view_for_size, bounds];
                 let _: () = msg_send![&*player_view_for_size, setFrame: bounds];
             });
@@ -179,7 +169,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> MacosNode {
             // CATransaction disables the implicit frame-change animation.
             let player_layer_for_size = player_layer.clone();
             let view_for_size = view.clone();
-            runtime_core::raf_loop_scoped(move || unsafe {
+            runtime_vocabulary::scoped_scheduling::raf_loop_scoped(move || unsafe {
                 let bounds: CGRect = msg_send![&*view_for_size, bounds];
                 let txn = objc2::class!(CATransaction);
                 let _: () = msg_send![txn, begin];
@@ -216,13 +206,14 @@ fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> MacosNode {
         // by Discard OR the back button OR any other navigation). Without this
         // the AVPlayer keeps playing in the background — audible after the
         // preview is gone — and the PLAYER_TABLE entry + its loop observer leak.
-        // `on_cleanup` fires on scope drop, same hook `raf_loop_scoped` uses
-        // above. Pausing halts the rate; nil-ing the current item releases the
+        // `on_scope_drop` fires on scope drop, the same anchor
+        // `raf_loop_scoped` picks above (NOT `on_cleanup` — this is a mount
+        // handler, and `on_cleanup` panics outside a running effect). Pausing halts the rate; nil-ing the current item releases the
         // decode/audio pipeline immediately; removing the notification observer
         // is required because the center retains the token (dropping our
         // `Retained` alone wouldn't unregister it, and its block retains the
         // player → a stray loop-seek could even restart playback).
-        runtime_core::on_cleanup(move || {
+        runtime_world::on_scope_drop(move || {
             let Some(entry) = PLAYER_TABLE.with(|t| t.borrow_mut().remove(&key)) else {
                 return;
             };
@@ -251,7 +242,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> MacosNode {
         let player_for_src = player.clone();
         let props_for_src = props.clone();
         let last_url = RefCell::new(initial_src.clone());
-        effect!({
+        effect(move || {
             let url = resolved_url(&props_for_src).unwrap_or_default();
             if url.is_empty() || url == *last_url.borrow() {
                 return;
@@ -284,7 +275,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> MacosNode {
         let mut last_gen: u64 = u64::MAX;
         let mut last_native_gen: u64 = u64::MAX;
         let mut scratch: Vec<u8> = Vec::new();
-        runtime_core::raf_loop_scoped(move || {
+        runtime_vocabulary::scoped_scheduling::raf_loop_scoped(move || {
             let MediaContent::Stream(stream) = props_for_stream.source.resolve() else {
                 return;
             };

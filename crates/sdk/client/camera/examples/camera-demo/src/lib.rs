@@ -41,12 +41,27 @@ static FRAME_COUNT: AtomicU32 = AtomicU32::new(0);
 /// pixels; we touch a few thousand).
 const MAX_SAMPLES: usize = 4096;
 
-/// No third-party `Element::External` SDKs to register — `camera` is a plain
-/// capability crate, not a rendered primitive, so this stays empty.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam, invoked by the CLI-generated wrappers
+/// after `runtime_vocabulary::register_builtins`. Registry-generic over
+/// the scene `Host` so ONE seam serves every backend. `camera` is a plain
+/// capability crate, not a rendered primitive, so there is nothing to
+/// register.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
+/// Recorder-side seam for the runtime-server sidecar
+/// (`dev_server::sidecar::run_newcore`). Gated by `sidecar` so device/web
+/// builds never pull `dev-server`.
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {}
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
+}
 
 /// Average the frame's color over a bounded sample of pixels, returning
 /// packed `0x00RRGGBB`.

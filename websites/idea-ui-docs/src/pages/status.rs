@@ -1,16 +1,17 @@
 //! Status — Spinner, Skeleton, Progress, Badge, Tag, Chip.
 //!
 //! Each `pub fn` returns the page **body only** — a column of demo
-//! `Section`s. The central frame in `lib.rs` renders the group
-//! overline, title, status badge, lead, and the `Usage` panel, so
-//! bodies never add their own title/lead/scroll wrapper.
+//! `Section`s. The central frame (`shell::page_frame_content`, rendered
+//! inside the page's lazy chunk) adds the group overline, title, status
+//! badge, lead, and the `Usage` panel, so bodies never add their own
+//! title/lead/scroll wrapper.
 
 use std::rc::Rc;
 
 use runtime_core::{signal, ui, Element};
 use idea_ui::{
-    Badge, Chip, Progress, Skeleton, SkeletonWidth, Spinner, SpinnerSize, Stack, StackAxis,
-    StackGap, Tag, tone, variant,
+    Badge, Button, Chip, Progress, ProgressMode, Skeleton, SkeletonWidth, Spinner,
+    SpinnerSize, Stack, StackAxis, StackGap, Tag, tone, variant,
 };
 
 use crate::pages::body;
@@ -143,19 +144,34 @@ pub fn skeleton() -> Element {
 // =============================================================================
 
 pub fn progress() -> Element {
+    // Live value for the interactive Value-mode demo — each button snaps
+    // the signal and the fill ANIMATES to the new width (the fill sheet's
+    // width transition), which is the point of the demo.
+    let pct = signal(0.35f32);
+    let set10: Rc<dyn Fn()> = Rc::new(move || pct.set(0.10));
+    let set45: Rc<dyn Fn()> = Rc::new(move || pct.set(0.45));
+    let set80: Rc<dyn Fn()> = Rc::new(move || pct.set(0.80));
+    let set100: Rc<dyn Fn()> = Rc::new(move || pct.set(1.0));
     body(vec![
         ui! {
-            Section(title = "Determinate".to_string()) {
-                P(content = "A muted track with a tone-colored fill. The fill width follows \
-                    `value` (0.0..=1.0) reactively — pass a literal or a live Signal<f32>.".to_string())
+            Section(title = "Value".to_string()) {
+                P(content = "The default mode: the fill follows `value` (0.0..=1.0) \
+                    reactively — pass a literal or a live Signal<f32>. Every change \
+                    animates to the new width instead of snapping.".to_string())
                 DemoSurface {
                     // Definite width so the full-width track resolves — DemoSurface
                     // centers + shrink-wraps, which would collapse the bar to zero.
                     view(style = crate::styles::PercentWidthFrame()) {
                         Stack(gap = StackGap::Md) {
-                            Progress(value = 0.25f32, tone = tone::Primary)
-                            Progress(value = 0.5f32,  tone = tone::Success)
-                            Progress(value = 0.85f32, tone = tone::Warning)
+                            Progress(value = pct, tone = tone::Primary)
+                            Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
+                                Button(label = "10%".to_string(),  variant = variant::Soft, on_click = set10)
+                                Button(label = "45%".to_string(),  variant = variant::Soft, on_click = set45)
+                                Button(label = "80%".to_string(),  variant = variant::Soft, on_click = set80)
+                                Button(label = "100%".to_string(), variant = variant::Soft, on_click = set100)
+                            }
+                            Progress(value = 0.25f32, tone = tone::Success)
+                            Progress(value = 0.85f32, tone = tone::Warning, cap = idea_ui::ProgressCap::Rounded)
                         }
                     }
                 }
@@ -163,14 +179,29 @@ pub fn progress() -> Element {
         },
         ui! {
             Section(title = "Indeterminate".to_string()) {
-                P(content = "For work of unknown duration. The full-width fill pulses its \
-                    opacity via the animator — a measurement-free indicator that behaves \
-                    identically on every backend (no sliding bar to width-probe per \
-                    platform).".to_string())
+                P(content = "For work of unknown duration: a fixed segment sweeps the track \
+                    left to right, forever. The sweep is transform-driven over the uniform \
+                    layout-measurement seam, so it behaves identically on every backend.".to_string())
                 DemoSurface {
                     view(style = crate::styles::PercentWidthFrame()) {
                         Stack(gap = StackGap::Md) {
-                            Progress(indeterminate = true, tone = tone::Info)
+                            Progress(mode = ProgressMode::Indeterminate, tone = tone::Info)
+                        }
+                    }
+                }
+            }
+        },
+        ui! {
+            Section(title = "Simulated".to_string()) {
+                P(content = "A fake loader: starts empty and creeps toward (never reaching) \
+                    full in irregular, shrinking steps — as if data were loading. Use it \
+                    when there's no real progress to report but a sweeping bar feels too \
+                    idle. When the work actually finishes, switch the same bar to \
+                    ProgressMode::Value with value = 1.0 and it animates home.".to_string())
+                DemoSurface {
+                    view(style = crate::styles::PercentWidthFrame()) {
+                        Stack(gap = StackGap::Md) {
+                            Progress(mode = ProgressMode::Simulated, tone = tone::Primary)
                         }
                     }
                 }
@@ -179,18 +210,22 @@ pub fn progress() -> Element {
         ui! {
             Section(title = "Props".to_string()) {
                 PropsTable(rows = vec![
-                    Prop { name: "value",         ty: "Reactive<f32>",  desc: "Completion in 0.0..=1.0. Ignored when indeterminate. Static or a live Signal<f32>." },
-                    Prop { name: "indeterminate", ty: "bool",           desc: "When true, ignore value and show a pulsing indeterminate bar." },
-                    Prop { name: "tone",          ty: "ToneRef",        desc: "Semantic palette for the fill. Default: Primary." },
-                    Prop { name: "variant",       ty: "VariantRef",     desc: "Surface skeleton for the fill. Default: Filled." },
-                    Prop { name: "size",          ty: "ControlSize",    desc: "Sm / Md / Lg bar thickness. Default: Md." },
+                    Prop { name: "value",   ty: "Reactive<f32>",          desc: "Completion in 0.0..=1.0, read in Value mode (ignored by the others). Static or a live Signal<f32>; changes animate." },
+                    Prop { name: "mode",    ty: "Reactive<ProgressMode>", desc: "Value (default, value-driven), Indeterminate (endless sweep), or Simulated (fake loading creep)." },
+                    Prop { name: "tone",    ty: "ToneRef",                desc: "Semantic palette for the fill. Default: Primary." },
+                    Prop { name: "variant", ty: "VariantRef",             desc: "Surface skeleton for the fill. Default: Filled." },
+                    Prop { name: "size",    ty: "ControlSize",            desc: "Sm / Md / Lg bar thickness. Default: Md." },
+                    Prop { name: "cap",     ty: "ProgressCap",            desc: "End caps: None (square, default) or Rounded (pill track + fill)." },
                 ])
-                CodePanel(src = r##"// Live determinate bar driven by a signal
+                CodePanel(src = r##"// Live value-driven bar — changes animate to the new width
 let pct = signal(0.0f32);
 ui! { Progress(value = pct, tone = tone::Primary) }
 
-// Indeterminate (loading, unknown duration)
-ui! { Progress(indeterminate = true, tone = tone::Info) }"##.to_string())
+// Indeterminate (unknown duration): endless sweep
+ui! { Progress(mode = ProgressMode::Indeterminate, tone = tone::Info) }
+
+// Simulated loading: creeps toward full, never arrives
+ui! { Progress(mode = ProgressMode::Simulated) }"##.to_string())
             }
         },
     ])

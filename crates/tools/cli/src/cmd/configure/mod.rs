@@ -24,8 +24,9 @@ pub struct Args {
 
 #[derive(clap::Subcommand, Debug)]
 pub enum Sub {
-    /// Initialize or update a devcontainer, toggling optional sidecar services
-    /// (database / redis / minio) that run alongside the main dev container.
+    /// Initialize or update a devcontainer, toggling optional add-ons:
+    /// sidecar services (database / redis / minio) alongside the main dev
+    /// container, and AI coding agents (claude / codex) installed inside it.
     Devcontainer(devcontainer::Args),
     /// Configure VS Code workspace settings + extension recommendations: wire
     /// the idealyst linter into rust-analyzer and recommend the editor

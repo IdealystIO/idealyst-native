@@ -10,9 +10,13 @@
 //!   + a `_` fallback. Transpiler lowers to chained
 //!   `if/else if/else`.
 //! - **`for` loop inside `#[method]`**: `sum_to`.
-//! - **`for` loop inside `ui! {}`**: the "step pip" row at the
-//!   top — the macro statically expands the loop into three
-//!   sibling `Text` nodes at snapshot time.
+//! - **`for` loop inside `ui! {}`**: the four carousel rows iterate
+//!   a `Signal<Vec<i32>>` with a `key =` clause — the keyed reactive
+//!   list form. (The generator-backend *count* sugar,
+//!   `for i in items_count(sig) { … }`, lowered to the structured
+//!   `Derived<usize>` wire binding + row-template cloning; that
+//!   surface is deferred until generator backends re-land, so the
+//!   rows now ship as an ordinary keyed list.)
 //! - **Button press**: `bind_press!(increment(count) => count)`
 //!   and `bind_press!(decrement(count) => count)`.
 //! - **Focus navigation across multiple buttons**: D-pad
@@ -23,10 +27,19 @@
 
 use backend_roku::method;
 use runtime_core::{
-    signal, stylesheet, ui, AlignItems, Axis, Color, FlexDirection, FontWeight,
-    JustifyContent, Length, Element, Signal, Tokenized,
+    signal, stylesheet, ui, AlignItems, Color, FlexDirection, FontWeight, JustifyContent, Length,
+    Element, Signal, Tokenized,
 };
 use idea_ui::{install_themes, ThemeTokens, TokenEntry, TokenValue};
+
+/// SDK-handler registration seam the snapshot wrapper `idealyst build roku`
+/// generates calls after `runtime_vocabulary::register_builtins` (it passes a
+/// `Registry<RokuBackend>`). This app registers no third-party scene handlers,
+/// but the seam is mandatory: an unregistered payload panics at realize.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
 // ---------------------------------------------------------------------------
 // Theme
@@ -449,22 +462,33 @@ pub fn app() -> Element {
             text(style = title_style()) { "Reactivity Demo" }
 
             // ----- Row 1: Trending -----
+            // Keyed reactive list over the `Signal<Vec<i32>>`: replacing
+            // the whole Vec re-reconciles the row set, and every surviving
+            // key keeps its mounted node. The row container carries the
+            // horizontal direction (`RepeatRowContainer` sets
+            // `FlexDirection::Row`), so no per-loop axis chain is needed.
             text(style = row_label_style()) { "Trending" }
-            for i in items_count(trending) {
-                text(style = repeat_row_style()) { item_at(trending, i) }
-            }.with_style(repeat_row_container_style()).axis(Axis::Horizontal)
+            view(style = repeat_row_container_style()) {
+                for item in trending, key = item {
+                    text(style = repeat_row_style()) { item.to_string() }
+                }
+            }
 
             // ----- Row 2: Recently Added -----
             text(style = row_label_style()) { "Recently Added" }
-            for i in items_count(recent) {
-                text(style = repeat_row_style()) { item_at(recent, i) }
-            }.with_style(repeat_row_container_style()).axis(Axis::Horizontal)
+            view(style = repeat_row_container_style()) {
+                for item in recent, key = item {
+                    text(style = repeat_row_style()) { item.to_string() }
+                }
+            }
 
             // ----- Row 3: Top Picks -----
             text(style = row_label_style()) { "Top Picks for You" }
-            for i in items_count(top_picks) {
-                text(style = repeat_row_style()) { item_at(top_picks, i) }
-            }.with_style(repeat_row_container_style()).axis(Axis::Horizontal)
+            view(style = repeat_row_container_style()) {
+                for item in top_picks, key = item {
+                    text(style = repeat_row_style()) { item.to_string() }
+                }
+            }
 
             // ----- Row 4: Popular -----
             // Fourth row pushes the page taller than the visible
@@ -472,9 +496,11 @@ pub fn app() -> Element {
             // shifts the page vertically when D-pad focus lands
             // on this carousel or the Theme button below.
             text(style = row_label_style()) { "Popular Right Now" }
-            for i in items_count(popular) {
-                text(style = repeat_row_style()) { item_at(popular, i) }
-            }.with_style(repeat_row_container_style()).axis(Axis::Horizontal)
+            view(style = repeat_row_container_style()) {
+                for item in popular, key = item {
+                    text(style = repeat_row_style()) { item.to_string() }
+                }
+            }
 
             view(style = button_row_style()) {
                 button(

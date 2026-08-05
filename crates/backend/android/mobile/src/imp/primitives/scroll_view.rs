@@ -124,13 +124,13 @@ pub(crate) fn create(b: &mut AndroidBackend, horizontal: bool) -> GlobalRef {
     // rest get clipped because the inner doesn't grow tall enough
     // to scroll past the viewport. Horizontal scrollers
     // (`HorizontalScrollView`) get `Row` instead.
-    let mut inner_rules = runtime_core::StyleRules::default();
+    let mut inner_rules = runtime_shared::StyleRules::default();
     inner_rules.flex_direction = Some(if horizontal {
-        runtime_core::FlexDirection::Row
+        runtime_shared::FlexDirection::Row
     } else {
-        runtime_core::FlexDirection::Column
+        runtime_shared::FlexDirection::Column
     });
-    inner_rules.align_items = Some(runtime_core::AlignItems::Stretch);
+    inner_rules.align_items = Some(runtime_shared::AlignItems::Stretch);
     b.layout.set_style(inner_layout, &inner_rules);
 
     outer_ref

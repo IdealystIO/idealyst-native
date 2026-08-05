@@ -1,4 +1,5 @@
-//! winit `ApplicationHandler` shim + the public `run` entry.
+//! winit `ApplicationHandler` shim + the public [`run`] / [`run_with`]
+//! entries.
 //!
 //! - Spins up the winit event loop + window + wgpu surface.
 //! - Installs `render_wgpu::install_redraw_hook` so the
@@ -16,8 +17,8 @@ use render_api::{
     DeviceProfile, Key, KeyEvent, KeyModifiers, PointerButton, PointerEvent, PointerId,
     ScrollEvent,
 };
-use render_wgpu::{install_redraw_hook, Host, Renderer, Painter};
-use runtime_core::Element;
+use render_wgpu::newcore::SceneElement;
+use render_wgpu::{install_redraw_hook, Host, Painter, Renderer};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
 
@@ -302,36 +303,82 @@ pub fn run_runtime_server(
         .map_err(|e| RunError::EventLoop(e.to_string()))
 }
 
+/// A deferred mount step, run inside `resumed` once the window + wgpu
+/// surface + renderer exist — [`run_with`] calls
+/// `render_wgpu::newcore::start` against the backend from inside it.
+/// Boxed because [`App`] stores it until the event loop hands it a
+/// surface.
+type MountFn = Box<dyn FnOnce(&mut Host)>;
+
+/// Boot the winit event loop, open the host window + wgpu surface,
+/// mount `build()`'s tree, and run until the user closes the window.
+/// Returns only on event-loop failure (window close exits the process).
+///
+/// Equivalent to [`run_with`] with a no-op registry seam.
 pub fn run<F>(
     profile: DeviceProfile,
     skin: Rc<dyn Painter>,
-    build_ui: F,
+    build: F,
 ) -> Result<(), RunError>
 where
-    F: FnOnce() -> Element + 'static,
+    F: FnOnce() -> SceneElement + 'static,
 {
-    // No app-supplied extension handlers — the common case (a leaf-only
-    // app, or one whose SDKs self-register via `inventory`).
-    run_with(profile, skin, |_| {}, build_ui)
+    run_with(profile, skin, |_| {}, build)
 }
 
-/// As [`run`], but invokes `register` on the wgpu backend before the app
-/// tree mounts. Use this when the app depends on `Element::Navigator` /
-/// `Element::External` SDKs whose handlers must be registered explicitly
-/// (e.g. `drawer_navigator::chrome::register`, `table::register`) — the
-/// generic-backend registrars that the AppKit/web hosts call from their
-/// `register_extensions` glue. `register` receives a mutable borrow of
-/// the `WgpuBackend` after it is built and before the first mount.
+/// Like [`run`], but invokes `register` with the scene registry after
+/// `register_builtins`, so apps/SDKs can add their own payload handlers
+/// before the tree realizes.
+///
+/// Mount buffering: this host has NO buffering window (the winit
+/// scheduler defers microtasks as 0 ms timers onto the event loop), so
+/// `start`'s pre-`finish` drain is a no-op here; deferred build
+/// microtasks land on the first event-loop turns after `resumed`.
+/// Compare `host_appkit::run`, whose AppKit scheduler does buffer.
 pub fn run_with<R, F>(
     profile: DeviceProfile,
     skin: Rc<dyn Painter>,
     register: R,
-    build_ui: F,
+    build: F,
 ) -> Result<(), RunError>
 where
-    R: FnOnce(&mut render_wgpu::WgpuBackend) + 'static,
-    F: FnOnce() -> Element + 'static,
+    R: FnOnce(&mut render_wgpu::newcore::SceneRegistry<render_wgpu::WgpuBackend>) + 'static,
+    F: FnOnce() -> SceneElement + 'static,
 {
+    // The profile's logical size IS this backend's author-visible
+    // viewport (window resizes letterbox-scale; the logical size never
+    // changes — `DeviceProfile::logical_size`). Captured here for the
+    // pre-mount seed below.
+    let logical = (
+        profile.logical_size.0 as f32,
+        profile.logical_size.1 as f32,
+    );
+    let mount: MountFn = Box::new(move |host: &mut Host| {
+        // Seed the shared viewport TLS value BEFORE the build: the
+        // world's `ViewportCtx` seeds from it at first breakpoint read,
+        // so the first build classifies the real profile size instead
+        // of 0-width `Xs` (the seam every other boot seeds — web reads
+        // the window, macOS/iOS/Android sample their host views). This
+        // windowed host owns the thread, so the TLS write is safe here
+        // — the engine's `Host::set_viewport` deliberately doesn't
+        // write it (embedded-simulator clobber; see
+        // render_wgpu::newcore, "Viewport source"). LIVE pushes then
+        // ride `Host::set_viewport` → `forward_viewport` — `resumed`'s
+        // pre-mount `set_viewport` call lands before the sink is
+        // installed (a no-op), so this seed is what the first build
+        // classifies against.
+        runtime_shared::set_viewport_size(runtime_shared::ViewportSize {
+            width: logical.0,
+            height: logical.1,
+        });
+        // `start` installs the flush driver (dispatch hook +
+        // FLUSH_WORLD) + the viewport sink and returns the retained
+        // app, which lives until the process exits with the event loop
+        // (window close calls `process::exit`).
+        let app = render_wgpu::newcore::start(host.backend().clone(), register, build);
+        std::mem::forget(app);
+    });
+
     let event_loop: EventLoop<AppEvent> = EventLoop::with_user_event()
         .build()
         .map_err(|e| RunError::EventLoop(e.to_string()))?;
@@ -348,14 +395,16 @@ where
     // Install the native scheduler BEFORE we start running the
     // event loop (and therefore before `resumed` mounts the user
     // tree). The welcome page — and most non-trivial apps — fire
-    // `runtime_core::after_ms` / `raf_loop` during their
+    // `runtime_shared::after_ms` / `raf_loop` during their
     // `effect!` block; if the scheduler isn't installed by then,
     // those calls fall into the inert / synchronous fallbacks and
-    // every author-driven animation freezes.
+    // every author-driven animation freezes. (The flush driver
+    // ALSO rides this scheduler — `schedule_microtask` + the
+    // post-dispatch hook — so the install is load-bearing.)
     crate::scheduler::install(proxy);
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let mut app = App::new(profile, skin, Box::new(register), Box::new(build_ui));
+    let mut app = App::new(profile, skin, mount);
     event_loop
         .run_app(&mut app)
         .map_err(|e| RunError::EventLoop(e.to_string()))
@@ -404,11 +453,13 @@ impl ViewportScale {
 
 struct App {
     profile: DeviceProfile,
-    /// Consumed on first `resumed`. None afterward. Mutually
-    /// exclusive with `runtime_server_url`: local-mount mode
-    /// supplies a `build_ui` closure, runtime-server mode supplies
-    /// an app id and the shell is wired up post-resume.
-    build_ui: Option<Box<dyn FnOnce() -> Element>>,
+    /// Deferred mount step (`render_wgpu::newcore::start` — see
+    /// [`MountFn`]). Consumed on first
+    /// `resumed`. None afterward. Mutually exclusive with
+    /// `runtime_server_url`: local-mount mode supplies a mount
+    /// closure, runtime-server mode supplies an app id and the shell
+    /// is wired up post-resume.
+    mount: Option<MountFn>,
     /// Set in runtime-server mode. On `resumed()` we spawn a
     /// `RuntimeServerShell<WgpuBackend>` against `host.backend()`
     /// (the same `Rc<RefCell<>>` the renderer reads from) so the
@@ -457,30 +508,18 @@ struct App {
 }
 
 impl App {
-    fn new(
-        profile: DeviceProfile,
-        skin: Rc<dyn Painter>,
-        register: Box<dyn FnOnce(&mut render_wgpu::WgpuBackend)>,
-        build_ui: Box<dyn FnOnce() -> Element>,
-    ) -> Self {
+    fn new(profile: DeviceProfile, skin: Rc<dyn Painter>, mount: MountFn) -> Self {
+        // `Host::new` constructs the `WgpuBackend` eagerly (no GPU
+        // device needed); the mount closure runs against it inside
+        // `resumed`, once the window + renderer exist.
         let host = Host::new(skin, profile.color_scheme);
-        // Register app-supplied External / Navigator handlers on the
-        // freshly-built backend BEFORE the tree mounts in `resumed`.
-        // `Host::new` constructs the `WgpuBackend` eagerly (no GPU device
-        // needed — registration only touches the handler registries), so
-        // the registry is populated by the time `build_ui` runs and
-        // `Element::Navigator` / `Element::External` leaves resolve their
-        // handler instead of hitting the "not registered" panic. This is
-        // the wgpu equivalent of the per-backend `register_extensions`
-        // call the AppKit/web hosts make before mount.
-        register(&mut host.backend().borrow_mut());
         let logical = (profile.logical_size.0 as f32, profile.logical_size.1 as f32);
         // Seeded with the profile's logical size at 1×; the
         // actual surface size is plugged in inside `resumed`.
         let viewport = ViewportScale::new(profile.logical_size, logical);
         Self {
             profile,
-            build_ui: Some(build_ui),
+            mount: Some(mount),
             gpu: None,
             renderer: None,
             host,
@@ -516,7 +555,7 @@ impl App {
         let viewport = ViewportScale::new(profile.logical_size, logical);
         Self {
             profile,
-            build_ui: None,
+            mount: None,
             gpu: None,
             renderer: None,
             host,
@@ -651,7 +690,7 @@ impl App {
         #[cfg(feature = "a11y")]
         if let Some(bridge) = self.a11y_bridge.as_mut() {
             use host_wgpu_accesskit::AnnouncementSource;
-            use runtime_core::accessibility::LiveRegionPriority;
+            use runtime_shared::accessibility::LiveRegionPriority;
 
             struct PreDrained(Vec<(String, LiveRegionPriority)>);
             impl AnnouncementSource for PreDrained {
@@ -855,9 +894,11 @@ impl ApplicationHandler<AppEvent> for App {
             self.profile.logical_size.0 as f32,
             self.profile.logical_size.1 as f32,
         );
-        // Now that the renderer is up, build the framework tree.
-        if let Some(build_ui) = self.build_ui.take() {
-            self.host.mount(build_ui);
+        // Now that the renderer is up, build the framework tree
+        // (`render_wgpu::newcore::start`, supplied as the mount
+        // closure).
+        if let Some(mount) = self.mount.take() {
+            mount(&mut self.host);
         }
         // Runtime-server mode: spawn the shell against the same
         // backend `Rc<RefCell<>>` the renderer reads from. The

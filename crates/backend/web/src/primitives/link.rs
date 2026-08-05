@@ -19,7 +19,7 @@
 //! a URL — `<a>` is web-only.
 
 use crate::WebBackend;
-use runtime_core::primitives::link::{LinkConfig, LinkHandle, LinkOps};
+use runtime_shared::primitives::link::{LinkConfig, LinkHandle, LinkOps};
 use std::any::Any;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;

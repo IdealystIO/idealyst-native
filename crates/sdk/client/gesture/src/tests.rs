@@ -3,7 +3,7 @@
 //! and the long-press off-stream (timer) path through the arbiter.
 
 use super::*;
-use runtime_core::{
+use runtime_shared::{
     scheduling::{install_scheduler, ScheduleHandle, Scheduler},
     LongPress, LongPressRecognizer, Pan, PanEvent, PanRecognizer, Pinch, PinchEvent,
     PinchRecognizer, Rotate, RotateEvent, RotateRecognizer, Tap, TapRecognizer, TouchId,

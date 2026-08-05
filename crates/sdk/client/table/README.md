@@ -1,17 +1,17 @@
 # `table`
 
 Cross-platform tabular layout — three primitives (`Table`, `TableRow`,
-`TableCell`) built on the framework's `Element::External` extension
-mechanism. On **web** they lower to real HTML `<table>` / `<tr>` /
-`<th>` / `<td>`, so the browser's native table-layout algorithm handles
-cross-row column alignment for free. On **native** they compose plain
-flex views.
+`TableCell`). On **web** they lower to real HTML `<table>` / `<tr>` /
+`<th>` / `<td>` through scene-registry handlers, so the browser's native
+table-layout algorithm handles cross-row column alignment for free. On
+**native** they flatten into ONE shared-track CSS grid, which gives the
+same column alignment.
 
 ```rust
 use table::prelude::*;
 
-// Register once at app boot (only does anything on web).
-table::register(&mut backend);
+// Register the web handlers once at app boot (native needs none):
+// backend_web::newcore::start_in("#app", table::register, app);
 
 ui! {
     Table {
@@ -35,13 +35,14 @@ ui! {
 
 | Target | Mechanism |
 | --- | --- |
-| Web (wasm32) | Real `<table>`/`<tr>`/`<th>`/`<td>` via `Element::External`. `border-collapse: collapse; width: 100%; table-layout: auto;` on the `<table>`; the browser sizes every column to fit its widest cell and applies that width to every row. |
-| iOS / Android / macOS / terminal / gpu | Plain `Element::View` tree with Taffy flex: the table stacks rows in a column, each row lays its cells out in a row, and cells claim **equal** width via `flex_grow: 1` + `flex_basis: 0`. No per-backend handler registration needed. |
+| Web (wasm32) | Real `<table>`/`<tr>`/`<th>`/`<td>` via scene-registry handlers. `border-collapse: collapse; width: 100%; table-layout: auto;` on the `<table>`; the browser sizes every column to fit its widest cell and applies that width to every row. |
+| iOS / Android / macOS / terminal / gpu | Plain views built with the vocabulary glue's `view` builder: rows lower to an `Element::Fragment` (no box) and every cell parents directly under one `display: grid` node with `N` `auto` column tracks. Because the tracks are shared, column `i` is one width across every row. No per-backend handler registration needed. |
 
-Native does **not** reproduce HTML's column-fits-widest behavior —
-cells share width equally. Authors that need per-column widths attach an
-explicit `width` / `flex_grow` style to individual cells via
-`.with_style(...)`.
+`runtime-layout` treats `auto` tracks as the `table-layout: auto`
+signal — it measures each column's content, then short columns hug their
+content while a text-heavy column absorbs the remaining width and wraps,
+matching the browser. Authors that need explicit per-column widths attach
+a `width` style to individual cells via `.with_style(...)`.
 
 ## Why this is an SDK and not a core primitive
 
@@ -50,11 +51,12 @@ Web's `<table>` is a layout primitive with no native equivalent —
 `NSTableView` is row-keyed. Putting a web-only-with-real-behavior
 primitive in the framework would be a web capability wearing a
 primitive's clothes. The SDK keeps that behavior pluggable: web wires up
-a real `<table>` via `Element::External`, native composes plain views.
+a real `<table>` via scene-registry handlers, native composes a grid out
+of the framework's own layout primitives.
 
 ## Structure
 
-Three primitives, each its own `Element::External` payload type:
+Three primitives, each its own scene payload type on web:
 
 - [`Table`] — the outer container (`<table>` on web; an implicit
   `<tbody>` wraps all rows, since we don't yet surface a
@@ -65,8 +67,8 @@ Three primitives, each its own `Element::External` payload type:
 
 ## Styling
 
-`Bound<H>::with_style(...)` is provided by runtime-core on every `Bound`,
-including these. Attach a style to a cell by calling it on the
+`.with_style(...)` is provided on each of these constructors' builder
+return values. Attach a style to a cell by calling it on the
 constructor's return value (use the raw-expression child syntax inside
 `ui!` because the macro doesn't auto-chain methods onto user-component
 tags):
@@ -86,9 +88,14 @@ into one continuous boundary.
 
 ## Registration
 
-`table::register(&mut backend)` is the one-line bootstrap call. On web it
-installs the three external handlers; on every native target it's a no-op
-(the flex fallback needs no handler).
+`table::register(&mut registry)` is the one-line bootstrap call. On web it
+installs the three mount handlers; on every native target it's a no-op
+(the grid lowering needs no handler).
+
+To ship those handlers in a lazy chunk instead, call `table::defer(&mut
+registry)` at boot and `table::register_from_chunk::<MyBackend>()` from
+inside a `#[component(lazy)]` body. Both are required — deferring without
+a chunk that registers leaves every table permanently invisible.
 
 [`Table`]: src/lib.rs
 [`TableRow`]: src/lib.rs
@@ -112,10 +119,10 @@ headers; borders on cells merge cleanly under `border-collapse`.
   browser's `table-layout: auto` sizes each column to its widest cell and applies
   that width across every row; `border-collapse: collapse` merges adjacent cell
   borders.
-- [ ] **iOS** — ⚠️ not yet device-confirmed. Plain `view`/Taffy-flex tree: rows stack
-  in a column, cells lay out in a row with **equal** width (`flex_grow:1` +
-  `flex_basis:0`). Confirm cells share width equally (native does *not* fit columns
-  to content); `header` has no visual effect unless styled.
-- [ ] **Android** — ⚠️ not yet device-confirmed. Same equal-width flex layout as iOS.
-- [ ] **macOS / terminal / gpu** — same flex fallback (no per-backend handler);
+- [ ] **iOS** — ⚠️ not yet device-confirmed. Plain `view`/Taffy tree: cells flatten
+  into one `display: grid` with `N` `auto` tracks. Confirm column `i` is the same
+  width in every row and that short columns hug their content while the text column
+  absorbs the slack; `header` has no visual effect unless styled.
+- [ ] **Android** — ⚠️ not yet device-confirmed. Same shared-track grid as iOS.
+- [ ] **macOS / terminal / gpu** — same grid lowering (no per-backend handler);
   verify rows/cells lay out (⚠️ not yet device-confirmed where applicable).

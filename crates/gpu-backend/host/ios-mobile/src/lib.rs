@@ -8,7 +8,7 @@
 //! `on_ready` callback. We take that `GraphicsSurface`, build a wgpu
 //! Metal surface against it, spin up the `render_wgpu::Host` +
 //! `Renderer`, mount the caller's UI, and drive per-frame paint via
-//! `runtime_core::driver::render_loop` (installed by `backend-ios-core`
+//! `runtime_shared::driver::render_loop` (installed by `backend-ios-core`
 //! as an NSTimer).
 //!
 //! The returned [`IosHostHandle`] owns the wgpu objects and the
@@ -26,7 +26,16 @@
 mod ios;
 
 #[cfg(target_os = "ios")]
-pub use ios::{mount, IosHostHandle, MountError};
+pub use ios::{IosHostHandle, MountError};
+
+#[cfg(target_os = "ios")]
+pub use ios::mount;
+
+/// Compatibility alias. This entry was `mount_newcore` while the
+/// framework carried two cores; there is one mount now and it is
+/// [`mount`]. Kept so existing call sites keep resolving.
+#[cfg(target_os = "ios")]
+pub use ios::mount as mount_newcore;
 
 #[cfg(target_os = "ios")]
 pub use render_api::DeviceProfile;

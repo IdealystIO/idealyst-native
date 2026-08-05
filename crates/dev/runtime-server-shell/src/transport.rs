@@ -14,7 +14,7 @@ use std::io::ErrorKind;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use runtime_core::Backend;
+use runtime_vocabulary::caps::AllCaps;
 use wire::{AppToDev, DevToApp};
 use tungstenite::{Message, WebSocket};
 
@@ -26,7 +26,7 @@ use dev_client::WireBackend;
 ///
 /// Blocks until the connection closes. Caller controls reconnection
 /// strategy.
-pub fn connect_and_run<B: Backend + 'static>(
+pub fn connect_and_run<B: AllCaps + 'static>(
     url: &str,
     wire: &mut WireBackend<B>,
     outbound_rx: mpsc::Receiver<AppToDev>,
@@ -100,7 +100,7 @@ where
     }
 }
 
-fn apply_dev_msg<B: Backend + 'static>(
+fn apply_dev_msg<B: AllCaps + 'static>(
     wire: &mut WireBackend<B>,
     msg: DevToApp,
 ) -> Result<(), ClientError>

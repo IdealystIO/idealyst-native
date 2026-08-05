@@ -1,0 +1,48 @@
+# scene-parity FULL-OP golden — scenario `nav_swap_dispose_evict`, mode `spliced`
+#
+# Navigator (swap, LazyDisposing): switching away RELEASES the
+# evicted screen's scope inside the step — its cleanup marker +
+# on_node_unstyled land BEFORE the incoming screen's mount ops —
+# and returning re-mounts it fresh (creates re-appear).
+#
+# Complete backend-call stream (create_*/update_*/apply_style/release_*
+# + the structural ops). Node names are creation-order (n0, n1, ...).
+# Owned by the OLD core; regenerate after an INTENDED walker change
+# with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+apply_style n0 {flex_direction: Some(Column), flex_grow: Some(Literal(1.0)), width: Some(Literal(Percent(100.0))), height: Some(Literal(Percent(100.0))), min_height: Some(Literal(Px(0.0)))}
+create n1 view
+create n2 text "home"
+insert n1 <- n2
+apply_style n1 {background: Some(Literal(Color("#111111"))), width: Some(Literal(Px(10.0)))}
+create n3 view
+create n4 text "chrome"
+insert n3 <- n4
+create n5 view
+mark_container n5
+apply_style n5 {flex_direction: Some(Column), flex_grow: Some(Literal(1.0)), flex_shrink: Some(Literal(1.0)), flex_basis: Some(Literal(Px(0.0))), min_width: Some(Literal(Px(0.0))), min_height: Some(Literal(Px(0.0)))}
+insert n3 <- n5
+insert n0 <- n3
+clear_children n5
+insert n5 <- n1
+
+== select about (evicted home releases: cleanup + unstyle) ==
+cleanup home-screen
+on_node_unstyled n1
+create n6 view
+create n7 text "about"
+insert n6 <- n7
+apply_style n6 {background: Some(Literal(Color("#222222"))), width: Some(Literal(Px(20.0)))}
+clear_children n5
+insert n5 <- n6
+
+== select home (re-mounts fresh) ==
+on_node_unstyled n6
+create n8 view
+create n9 text "home"
+insert n8 <- n9
+apply_style n8 {background: Some(Literal(Color("#111111"))), width: Some(Literal(Px(10.0)))}
+clear_children n5
+insert n5 <- n8

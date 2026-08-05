@@ -21,4 +21,11 @@ runtime-server = ["host-winit/runtime-server"]
 [dependencies]
 host-winit = { workspace = true }
 render-wgpu = { workspace = true }
-runtime-core = { workspace = true }
+# Style/host vocabulary (`ColorScheme`). `runtime-core` is NOT a
+# dependency: this variant has no `Element`/`Backend` surface left.
+runtime-shared = { workspace = true }
+
+[dev-dependencies]
+# The crate-doc example names the scene-element type `run`'s build
+# closure returns.
+runtime-scene = { workspace = true }

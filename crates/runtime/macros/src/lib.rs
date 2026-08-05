@@ -47,6 +47,7 @@ mod recipe_emit;
 #[cfg(feature = "catalog")]
 mod scope_emit;
 mod methods_block;
+mod new_core;
 mod path_analysis;
 mod primitives;
 mod props_attr;
@@ -58,6 +59,14 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::parse_macro_input;
 use syn::ItemFn;
+
+/// Final post-processing for every entry point that emits core paths:
+/// under the `new-core` feature the assembled expansion is retargeted at
+/// `::runtime_vocabulary::glue` (see [`new_core`]); otherwise it passes
+/// through byte-identical.
+fn finish(out: proc_macro2::TokenStream) -> TokenStream {
+    new_core::retarget(out).into()
+}
 
 /// `#[derive(IdealystSchema)]` — registers a props struct's per-field
 /// information into the MCP catalog. Used alongside `#[component]`
@@ -187,8 +196,8 @@ pub fn ui(input: TokenStream) -> TokenStream {
     // in a dead-but-typed position so the IDE stays useful while typing.
     let input: proc_macro2::TokenStream = input.into();
     match syn::parse2::<ui::Ui>(input.clone()) {
-        Ok(parsed) => ui::emit(parsed, &input).into(),
-        Err(err) => ui::emit_recovery(input, &err).into(),
+        Ok(parsed) => finish(ui::emit(parsed, &input)),
+        Err(err) => finish(ui::emit_recovery(input, &err)),
     }
 }
 
@@ -199,9 +208,19 @@ pub fn ui(input: TokenStream) -> TokenStream {
 /// (wasm-split's macro is transparent off-wasm).
 ///
 /// See the [`lazy`] module for details, constraints, and naming.
+#[deprecated(
+    since = "0.5.0",
+    note = "use a lazy component instead: `#[component(lazy)] fn Chunk() -> Element { … }` \
+            (or the `#[lazy]` shorthand). Same chunking mechanism, but with typed props \
+            across the boundary, named chunk files, and the standard `loading`/`error` \
+            props instead of builder methods."
+)]
 #[proc_macro]
 pub fn lazy(input: TokenStream) -> TokenStream {
-    lazy::emit(input)
+    // Through `finish`: under `new-core` the emission's absolute
+    // `::runtime_core::…` paths retarget to the `glue` mirrors
+    // (`glue::primitives::lazy`, `glue::__wasm_split`).
+    finish(lazy::emit(input))
 }
 
 /// `jsx! { ... }` — JSX-flavored variant of `ui!`. Same emission backend,
@@ -214,8 +233,8 @@ pub fn jsx(input: TokenStream) -> TokenStream {
     // (it walks raw tokens), so `jsx!` reuses `ui::emit_recovery`.
     let input: proc_macro2::TokenStream = input.into();
     match syn::parse2::<jsx::Jsx>(input.clone()) {
-        Ok(parsed) => jsx::emit(parsed, &input).into(),
-        Err(err) => ui::emit_recovery(input, &err).into(),
+        Ok(parsed) => finish(jsx::emit(parsed, &input)),
+        Err(err) => finish(ui::emit_recovery(input, &err)),
     }
 }
 
@@ -224,8 +243,29 @@ pub fn jsx(input: TokenStream) -> TokenStream {
 /// grammar.
 #[proc_macro]
 pub fn stylesheet(input: TokenStream) -> TokenStream {
+    // Hash the raw input BEFORE parsing consumes it — preminted class
+    // names derive from this, so identical sheet source ⇒ identical
+    // classes (harmless dedup) and any source edit moves every class
+    // the sheet mints (a stale cached `.css` can never mis-style a
+    // fresh binary). See `stylesheet::content_hash`.
+    let content_hash = stylesheet::content_hash(&input.to_string());
     let parsed = parse_macro_input!(input as stylesheet::StyleSheetDecl);
-    stylesheet::emit(parsed).into()
+    // Through `finish`: the emission's absolute `::runtime_core::…` paths
+    // retarget to `::runtime_vocabulary::glue::…` (which re-exports the
+    // whole sheet vocabulary — StyleSheet, cached_stylesheet, VariantSet,
+    // IntoVariantSource, … — plus `IntoStyleProp`/`StyleProp`, which the
+    // builder's conversion impl targets).
+    //
+    // That includes the premint-dump linkme registration
+    // (`cfg(idealyst_premint_dump)`), whose `::runtime_core::premint::…`
+    // becomes `::runtime_vocabulary::glue::premint::…`. This comment used
+    // to say the combination "cannot occur" because dump builds were
+    // CLI-driven OLD-core builds — true only while two cores existed.
+    // With one core it always occurs, so `glue::premint` is a real
+    // re-export behind the vocabulary's `style-dump` feature (which the
+    // facade forwards); without it `idealyst build --web --premint` does
+    // not compile.
+    finish(stylesheet::emit(parsed, content_hash))
 }
 
 /// `#[component]` — annotates a component function. Rewrites its body for
@@ -282,7 +322,7 @@ pub fn stylesheet(input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn props(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    props_attr::emit(item.into()).into()
+    finish(props_attr::emit(item.into()))
 }
 
 #[proc_macro_attribute]
@@ -312,6 +352,34 @@ pub fn lazy_component(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> TokenStream {
     let mut item_fn = parse_macro_input!(item as ItemFn);
+    // Unmigrated-shape rejection — loud, named, never silent (repo
+    // rule: an unmigrated feature must fail with its migration status).
+    //
+    // `#[method]` lowers for the inline-props component shape: the
+    // retarget maps `::runtime_core::robot::…` /
+    // `::runtime_core::__component_root` /
+    // `::runtime_core::__component_keepalive_effect` onto their
+    // `runtime_vocabulary::glue` mirrors. Only the LEGACY explicit-props
+    // form stays rejected: its handle escaped through a `Bindable<H>`
+    // return over the deleted `Element` — un-portable by type. Generic
+    // components can't take the injected `bind_to` prop either
+    // (monomorphic props glue), so they get the same pointer.
+    if methods_block::has_method_fns(&item_fn)
+        && (inline_props::is_legacy_props_sig(&item_fn.sig)
+            || !item_fn.sig.generics.params.is_empty())
+    {
+        return syn::Error::new_spanned(
+            &item_fn.sig.ident,
+            "#[method] fns require the inline-props component shape (props \
+             as fn parameters; zero parameters is fine) so the handle binds \
+             through the auto-injected `bind_to` prop. The legacy \
+             explicit-props form returns `Bindable<H>` over the deleted \
+             pre-v2 `Element` and cannot lower; generic components can't \
+             take the injected prop either.",
+        )
+        .to_compile_error()
+        .into();
+    }
     // `strict-docs`: require a doc comment on the component fn. Computed
     // from the original attrs before any rewrite; emitted alongside the
     // component so the error points at the fn name. Empty when the
@@ -384,8 +452,9 @@ fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> Tok
         return syn::Error::new_spanned(
             &item_fn.sig.ident,
             "#[component(lazy)] / #[lazy] currently requires inline props \
-             (declare the props as fn parameters: `#[lazy] fn Foo(id: u32) -> Element`). \
-             For a no-arg component add a parameter, and for a component both eager and \
+             (declare the props as fn parameters: `#[lazy] fn Foo(id: u32) -> Element`; \
+             zero parameters is fine). Generic components can't be lazy (the generated \
+             props struct is monomorphic); for a component you need both eager and \
              lazy, wrap the eager one with `lazy_component!(LazyFoo = Foo)`.",
         )
         .to_compile_error()
@@ -406,6 +475,16 @@ fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> Tok
         Err(e) => return e.to_compile_error().into(),
     };
     reactivity::rewrite(&mut item_fn);
+
+    // NEW-core body semantics: a component runs ONCE, untracked, with
+    // every signal/effect it creates collected into an `Owned` scope
+    // attached to the returned element (idea-lite's `component_scope`;
+    // handbook §6/§9). The wrap targets `::runtime_core::component_scope`
+    // and the retarget pass maps it to
+    // `runtime_vocabulary::glue::component_scope`. Only bodies returning
+    // bare `Element` are wrapped — richer return types (`Bindable<H>`,
+    // …) can't flow through the `FnOnce() -> Element` collector.
+    wrap_component_body_new_core(&mut item_fn);
 
     // Bracket the body with a build probe so the runtime knows "a
     // component body is executing" — that's what powers the dev-build
@@ -478,7 +557,7 @@ fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> Tok
     #[cfg(not(feature = "hot-reload"))]
     let item_fn = quote! { #item_fn };
 
-    TokenStream::from(quote! {
+    finish(quote! {
         #strict_doc_err
         #strict_naming_err
         #methods_extra
@@ -487,6 +566,32 @@ fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> Tok
         #mcp_registration
         #external_registration
     })
+}
+
+/// Wrap a component fn's body in `component_scope(move || { … })` — the
+/// run-once/untracked/collected contract. Applies only when the declared
+/// return type is bare `Element` (same token-level check as
+/// `reactivity::returns_primitive`).
+fn wrap_component_body_new_core(item_fn: &mut ItemFn) {
+    let ty = match &item_fn.sig.output {
+        syn::ReturnType::Type(_, ty) => ty,
+        syn::ReturnType::Default => return,
+    };
+    let normalized: String = quote::quote!(#ty)
+        .to_string()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    if !matches!(
+        normalized.as_str(),
+        "Element" | "runtime_core::Element" | "::runtime_core::Element"
+    ) {
+        return;
+    }
+    let block = &item_fn.block;
+    item_fn.block = syn::parse_quote!({
+        ::runtime_core::component_scope(move || #block)
+    });
 }
 
 /// Split a fully-rewritten component fn into an inner impl + outer

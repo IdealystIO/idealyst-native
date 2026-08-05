@@ -1,0 +1,23 @@
+# scene-parity FULL-OP golden — scenario `full_reactive_text`, mode `spliced`
+#
+# A bound text (closure over a signal). Mount takes the
+# batched-id fast path (create_text_with_id + one
+# update_text_by_id); each signal write is exactly one
+# update_text_by_id — no structural ops.
+#
+# Complete backend-call stream (create_*/update_*/apply_style/release_*
+# + the structural ops). Node names are creation-order (n0, n1, ...).
+# Owned by the OLD core; regenerate after an INTENDED walker change
+# with: UPDATE_GOLDENS=1 cargo test -p scene-parity
+
+== mount ==
+create n0 view
+create n1 text+id1 ""
+update_text_by_id id1 "count: 0"
+insert n0 <- n1
+
+== set count = 1 ==
+update_text_by_id id1 "count: 1"
+
+== set count = 2 ==
+update_text_by_id id1 "count: 2"

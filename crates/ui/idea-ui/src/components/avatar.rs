@@ -67,12 +67,6 @@ impl Default for AvatarProps {
 
 /// Circular user-identity element. Renders the `src` image when set,
 /// otherwise the `initials` on a `color`-tinted placeholder background.
-///
-/// **Cargo features:** requires `prim-image` (in idea-ui's
-/// default set). A restricted `--primitives` / `default-features = false`
-/// build without it compiles this component out, so using it is a
-/// compile error naming the missing feature — see the 0.4→0.5
-/// migration guide.
 #[component]
 pub fn Avatar(props: &AvatarProps) -> Element {
     // Style-driving props route into the style sinks below, read `.get()`
@@ -89,10 +83,6 @@ pub fn Avatar(props: &AvatarProps) -> Element {
             StyleApplication::new(AvatarStyle::sheet())
                 .with("size", size.get().as_variant_str().to_string())
                 .with("color", color.get().as_variant_str().to_string())
-                // Hug + center on the cross axis so a row of mixed-size avatars
-                // centers instead of top-aligning under the parent's default
-                // align-items: stretch (see `components::hug_self`).
-                .with_computed("hug", crate::components::hug_self)
         }
     };
 
@@ -160,8 +150,10 @@ pub fn Avatar(props: &AvatarProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, AlignSelf, StyleSource};
+    use runtime_core::{resolve_style, AlignSelf};
 
     // Regression: an Avatar is a fixed-size atom — it must center on its
     // parent's cross axis (`align_self: Center`) so a row of mixed-size
@@ -169,16 +161,19 @@ mod tests {
     // `align-items: stretch` (the Avatar "Sizes" row report).
     #[test]
     fn avatar_centers_on_cross_axis() {
-        install_idea_theme(light_theme());
-        let app = match Avatar(&AvatarProps { initials: "AB".into(), ..Default::default() }) {
-            Element::View { style: Some(StyleSource::Reactive(f)), .. } => f(),
-            Element::View { style: Some(StyleSource::Static(a)), .. } => a,
-            _ => panic!("Avatar renders a styled View"),
-        };
-        assert_eq!(
-            resolve_style(&app).align_self,
-            Some(AlignSelf::Center),
-            "an Avatar centers on the cross axis instead of stretching/top-aligning"
-        );
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            // `application()` evaluates a reactive style closure or returns the
+            // static application — covers both style paths the old match did.
+            let app = match classify(Avatar(&AvatarProps { initials: "AB".into(), ..Default::default() })) {
+                P::View { style, .. } => style.expect("Avatar attaches a style").application(),
+                _ => panic!("Avatar renders a styled View"),
+            };
+            assert_eq!(
+                resolve_style(&app).align_self,
+                Some(AlignSelf::Center),
+                "an Avatar centers on the cross axis instead of stretching/top-aligning"
+            );
+    });
     }
 }

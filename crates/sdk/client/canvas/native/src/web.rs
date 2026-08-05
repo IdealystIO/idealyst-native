@@ -1,25 +1,18 @@
-//! Web (`target_arch = "wasm32"`) renderer for the canvas SDK.
+//! Web (`target_arch = "wasm32"`) Canvas2D rasterizer for the canvas SDK
+//! — the core-free half: `Scene` → `CanvasRenderingContext2d` op replay,
+//! texture-layer compositing, and `captureStream` self-capture.
 //!
-//! Creates a `<canvas>` per mount and replays the author's [`Scene`]
-//! into its `2d` context. Two triggers drive a repaint:
-//!
-//! - A reactive [`Effect`] re-runs the painter whenever a `Signal` it
-//!   reads changes (same reactive-source convention as `video`/`svg`).
-//! - A `ResizeObserver` re-renders (and resizes the backing store to the
-//!   CSS box × `devicePixelRatio`) when layout changes the canvas size.
-//!
-//! Both render from one shared latest-[`Scene`] cell, so a resize never
-//! re-runs author code and a content change never needs the element's
-//! size to have changed.
+//! The mount handler that drives it lives in [`crate::web_scene`]; the
+//! same [`make_2d_rasterizer`] is also `canvas-vello`'s
+//! WebGPU-unavailable fallback, so both paths produce identical output
+//! (CLAUDE.md §7).
 //!
 //! [`Scene`]: canvas_core::Scene
 
-use backend_web::WebBackend;
 use canvas_core::{
-    paint_scene, BlendMode, CanvasProps, Color, DrawOp, FillRule, ImageSource, LineCap, LineJoin,
+    BlendMode, CanvasProps, Color, DrawOp, FillRule, ImageSource, LineCap, LineJoin,
     LinearGradient, Paint, PaintKind, Path, PathSeg, RadialGradient, Scene, TextureLayer, Transform,
 };
-use runtime_core::effect;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -30,81 +23,20 @@ use web_sys::{
     Document, HtmlCanvasElement, HtmlVideoElement, ImageData, MediaStream, ResizeObserver,
 };
 
-/// Register the native canvas renderer against a `WebBackend`. One line
-/// from the app's bootstrap; backs every `canvas::Canvas` with a
-/// `<canvas>` 2D context.
-pub fn register(backend: &mut WebBackend) {
-    canvas_core::ensure_wire_serde();
-    backend.register_external::<CanvasProps, _>(|props, _backend| build_canvas(props));
-}
-
-// Self-register at backend construction (no app-side `register` call needed).
-// See [[project_inventory_self_registration]]. Behind the default-on
-// `self-register` feature: the ctor is a link-time anchor that pins this
-// crate's rasterizer + glyph stack in `main.wasm`, so delegate-only
-// consumers (canvas-vello's Canvas2D fallback) opt out to keep it
-// splittable into their lazy chunk.
-#[cfg(feature = "self-register")]
-inventory::submit! {
-    backend_web::WebExternalRegistrar(register)
-}
-
 /// Disconnects the `ResizeObserver` and frees its `Closure` on scope
 /// teardown, so a callback the browser has already queued can't fire
 /// into freed wasm state after unmount (the classic web-listener UAF).
-struct ObserverGuard {
-    observer: ResizeObserver,
-    _cb: Closure<dyn FnMut()>,
+/// `pub(crate)`: the mount handler in `web_scene` owns the
+/// resize/teardown contract.
+pub(crate) struct ObserverGuard {
+    pub(crate) observer: ResizeObserver,
+    pub(crate) _cb: Closure<dyn FnMut()>,
 }
 
 impl Drop for ObserverGuard {
     fn drop(&mut self) {
         self.observer.disconnect();
     }
-}
-
-fn build_canvas(props: &Rc<CanvasProps>) -> web_sys::Element {
-    let document = web_sys::window()
-        .expect("no window")
-        .document()
-        .expect("no document");
-    let el = document
-        .create_element("canvas")
-        .expect("create_element(canvas) failed");
-    let _ = el.set_attribute("data-external-kind", "canvas_core::CanvasProps");
-
-    let canvas: HtmlCanvasElement = el.clone().dyn_into().expect("canvas element cast");
-
-    // Latest painted scene — written by the content effect, read by both
-    // the effect's own render and the resize observer.
-    let cell: Rc<RefCell<Scene>> = Rc::new(RefCell::new(Scene::new()));
-
-    // Per-frame rasterizer (2d ctx + texture layers + captureStream). Shared
-    // behind `Rc<RefCell>` because both the ResizeObserver and the reactive
-    // effect drive a repaint from the latest `cell`.
-    let rasterize = Rc::new(RefCell::new(make_2d_rasterizer(canvas, props)));
-
-    let cb = Closure::<dyn FnMut()>::new({
-        let rasterize = rasterize.clone();
-        let cell = cell.clone();
-        move || (rasterize.borrow_mut())(&cell.borrow())
-    });
-    let observer = ResizeObserver::new(cb.as_ref().unchecked_ref()).expect("ResizeObserver::new");
-    observer.observe(&el);
-    let guard = ObserverGuard { observer, _cb: cb };
-
-    // Reactive repaint. The walker runs us inside the mount scope, so this
-    // Effect (and the `guard` + `rasterize` it owns) live until unmount.
-    let props = props.clone();
-    effect!({
-        // Capture the observer guard into the scope-owned effect so it is
-        // dropped (→ disconnected) exactly when the canvas unmounts.
-        let _keep = &guard;
-        *cell.borrow_mut() = paint_scene(&props);
-        (rasterize.borrow_mut())(&cell.borrow());
-    });
-
-    el
 }
 
 /// Build a per-frame rasterizer that replays a [`Scene`] into `canvas`'s `2d`
@@ -350,6 +282,15 @@ fn draw_layers(
     }
 }
 
+/// Hard ceiling for one backing-store dimension. A canvas whose CSS box is not
+/// size-constrained tracks its own width/height ATTRIBUTES — then the
+/// `box × dpr` sync below becomes a doubling feedback loop through the
+/// `ResizeObserver` (box→attr→bigger box→…) that grows the canvas to the
+/// browser maximum within milliseconds and kills the page (multi-terabyte
+/// allocation; observed as a silent hang-then-crash). No real display needs
+/// more than this; clamping breaks the loop into a bounded, drawable state.
+const MAX_BACKING_DIM: f64 = 16384.0;
+
 /// Resize the backing store and replay `scene` into `ctx`.
 fn render_scene(canvas: &HtmlCanvasElement, ctx: &CanvasRenderingContext2d, scene: &Scene) {
     let dpr = web_sys::window().map(|w| w.device_pixel_ratio()).unwrap_or(1.0);
@@ -360,8 +301,8 @@ fn render_scene(canvas: &HtmlCanvasElement, ctx: &CanvasRenderingContext2d, scen
     if css_w <= 0.0 || css_h <= 0.0 {
         return;
     }
-    let bw = (css_w * dpr).round().max(1.0) as u32;
-    let bh = (css_h * dpr).round().max(1.0) as u32;
+    let bw = (css_w * dpr).round().clamp(1.0, MAX_BACKING_DIM) as u32;
+    let bh = (css_h * dpr).round().clamp(1.0, MAX_BACKING_DIM) as u32;
     // Setting width/height resets the context; only do it on a real change.
     if canvas.width() != bw {
         canvas.set_width(bw);

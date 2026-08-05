@@ -39,6 +39,7 @@
 
 #![deny(missing_docs)]
 
+
 // Compile-checked usage recipes (catalog feature only).
 pub mod recipes;
 

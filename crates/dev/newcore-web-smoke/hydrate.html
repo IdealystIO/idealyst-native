@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>web smoke — hydrate</title>
+    <style>
+      /* Same mount conventions as the CLI-generated web shells. */
+      html, body, #app { height: 100%; margin: 0; }
+      body { background: #f7f8fb; font-family: system-ui, sans-serif; }
+      #app { display: flex; flex-direction: column; }
+      #app > * { flex: 1 1 auto; min-height: 0; }
+    </style>
+  </head>
+  <body>
+    <!--
+      Server-shaped DOM for `newcore_web_smoke::app()` — a hand-built
+      stand-in for `backend_ssr` output (this crate is macro-free and
+      builder-driven, so there is no SSR render of it to check in; the
+      HTML is plain adoption input).
+      Shape rules, matching what SSR emits for this author tree:
+        * view  -> <div>,  text -> <span>,  button -> <button>,
+          toggle -> <input> (type/role are re-stamped idempotently on
+          adoption)
+        * every reactive region (the Dyn hole, the Keyed list) nests
+          under a `display:contents` anchor <div>, because SSR renders
+          with `supports_child_splice() == false` — and the hydrating
+          client is forced anchored too (Host::supports_splice gate).
+      Adoption matches by TAG in pre-order; the boot verifies itself:
+      any shape error here produces a `[hydrate] SSR/client diverge`
+      console.warn and a subtree remount (visible in devtools).
+    -->
+    <div id="app"><div>
+      <span>New-core web smoke</span>
+      <span>count = 0</span>
+      <button>Increment</button>
+      <input type="checkbox" role="switch" />
+      <div style="display:contents"><span>toggle is OFF</span></div>
+      <button>Add row</button>
+      <button>Remove first</button>
+      <button>Reverse</button>
+      <div style="display:contents"><span>row #1</span><span>row #2</span><span>row #3</span></div>
+      <div>
+        <span>Styled (sheet engine)</span>
+        <div><span>themed card — hover me</span></div>
+        <div><span>large variant</span></div>
+        <button>Swap theme</button>
+      </div>
+    </div></div>
+    <script type="module">
+      // Snapshot pre-boot node identities so the page can PROVE adoption
+      // (no flash / rebuild): after init, the same JS object references
+      // must still be the live DOM nodes.
+      const root = document.querySelector("#app > div");
+      window.__preBoot = {
+        root,
+        countSpan: root.children[1],
+        incButton: root.children[2],
+        dynAnchor: root.children[4],
+        keyedAnchor: root.children[8],
+      };
+      import init from "./pkg/newcore_web_smoke.js";
+      await init();
+      const same = (a, b) => a === b;
+      const live = document.querySelector("#app > div");
+      window.__hydrateReport = {
+        rootAdopted: same(window.__preBoot.root, live),
+        countAdopted: same(window.__preBoot.countSpan, live.children[1]),
+        buttonAdopted: same(window.__preBoot.incButton, live.children[2]),
+        dynAnchorAdopted: same(window.__preBoot.dynAnchor, live.children[4]),
+        keyedAnchorAdopted: same(window.__preBoot.keyedAnchor, live.children[8]),
+        appChildCount: document.getElementById("app").childElementCount,
+      };
+      console.log("[hydrate-smoke]", JSON.stringify(window.__hydrateReport));
+    </script>
+  </body>
+</html>

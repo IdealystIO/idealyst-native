@@ -23,7 +23,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::{
-    Cursor, Easing, FontWeight, StyleRules, StyleSheet, TextAlign, Tokenized, Transition,
+    AlignSelf, Cursor, Easing, FontWeight, StyleRules, StyleSheet, TextAlign, Tokenized, Transition,
     UserSelect, VariantSet,
 };
 
@@ -31,6 +31,33 @@ use crate::theme::{IdeaTheme, IdeaThemeRef};
 use crate::theme_runtime::active_theme;
 
 use super::variant::{variant_state_overlay, InteractState};
+
+/// Every `FontWeight` arm, paired with its stable variant key. Drives
+/// Typography's `weight` axis — the axis exists so a per-instance weight
+/// override premints instead of riding a runtime-computed layer, so this table
+/// must stay exhaustive over the enum (a missing arm silently degrades that
+/// weight to `inherit`).
+pub const FONT_WEIGHT_KEYS: [(&str, FontWeight); 9] = [
+    ("thin", FontWeight::Thin),
+    ("extra_light", FontWeight::ExtraLight),
+    ("light", FontWeight::Light),
+    ("normal", FontWeight::Normal),
+    ("medium", FontWeight::Medium),
+    ("semi_bold", FontWeight::SemiBold),
+    ("bold", FontWeight::Bold),
+    ("extra_bold", FontWeight::ExtraBold),
+    ("black", FontWeight::Black),
+];
+
+/// The variant key for a `FontWeight`. Panics only if [`FONT_WEIGHT_KEYS`]
+/// drifts out of sync with the enum, which the exhaustiveness test catches.
+pub fn font_weight_key(w: FontWeight) -> &'static str {
+    FONT_WEIGHT_KEYS
+        .iter()
+        .find(|(_, candidate)| *candidate == w)
+        .map(|(key, _)| *key)
+        .expect("FONT_WEIGHT_KEYS is exhaustive over FontWeight")
+}
 use super::{
     ButtonSizeRef, RefBuiltins, ResolutionCtx, ShapeRef, ToneRef, TypographyKindRef, VariantRef,
 };
@@ -206,6 +233,15 @@ impl ButtonSheetBuilder {
             font_weight: Some(FontWeight::SemiBold),
             letter_spacing: Some(Tokenized::Literal(0.2)),
             text_align: Some(TextAlign::Center),
+            // Center the content on BOTH axes. Web centers the label "for
+            // free" via the box's `text-align: center` + inline flow; native
+            // flex needs it explicit or the label lands at the box's top-left
+            // (the macOS "not centered" bug). Applies to the plain
+            // single-label case AND the icon row — without `justify_content`
+            // even icon buttons were only vertically centered, left-packed
+            // horizontally.
+            align_items: Some(runtime_core::AlignItems::Center),
+            justify_content: Some(runtime_core::JustifyContent::Center),
             // Interaction affordances every button wants: a pointer cursor on
             // desktop/web, and a label that can't be drag-selected. The
             // framework imposes neither on the bare `pressable` primitive — a
@@ -303,13 +339,62 @@ impl ButtonSheetBuilder {
             .variant("__state_hovered", "on", |_vs| StyleRules::default())
             .variant("__state_pressed", "on", |_vs| StyleRules::default());
 
+        // Layout axes. These were one `with_computed("layout_{row}_{block}_{
+        // disabled}")` layer on the component, which is three independent
+        // booleans — so they enumerate as three axes and premint. (The
+        // unconditional half of that layer, centering on both axes, moved to
+        // the base above.)
+        //
+        // The three set disjoint properties, and none collides with
+        // appearance/size/shape, so the alphabetical cross-axis merge order
+        // is not load-bearing here.
+        sheet = sheet
+            // Icon+label buttons lay their content out in a row with a gap;
+            // the plain single-label button stays a column.
+            .variant("layout", "column", |_vs| StyleRules::default())
+            .variant("layout", "row", |_vs| StyleRules {
+                flex_direction: Some(runtime_core::FlexDirection::Row),
+                gap: Some(Tokenized::token("spacing-xs", runtime_core::Length::Px(6.0))),
+                ..Default::default()
+            })
+            // `block` fills the container; otherwise the button hugs.
+            .variant("block", "off", |_vs| StyleRules {
+                align_self: Some(AlignSelf::Center),
+                ..Default::default()
+            })
+            .variant("block", "on", |_vs| StyleRules {
+                width: Some(Tokenized::Literal(runtime_core::Length::Percent(100.0))),
+                align_self: Some(AlignSelf::Stretch),
+                ..Default::default()
+            })
+            // Deterministic dim so a disabled button reads as off on every
+            // backend. Distinct from the `__state_disabled` overlay: this is
+            // the AUTHOR's `disabled` prop, applied whether or not the host
+            // marks the node with the platform disabled state.
+            .variant("dimmed", "off", |_vs| StyleRules::default())
+            .variant("dimmed", "on", |_vs| StyleRules {
+                opacity: Some(Tokenized::Literal(0.45)),
+                ..Default::default()
+            });
+
         // Defaults so an unset axis applies the most common arm.
         sheet = sheet
             .variant_default("appearance", "primary_filled")
             .variant_default("size", "md")
-            .variant_default("shape", "md");
+            .variant_default("shape", "md")
+            .variant_default("layout", "column")
+            .variant_default("block", "off")
+            .variant_default("dimmed", "off");
 
-        Rc::new(sheet)
+        sheet.premint_as(&premint_identity(
+            "button",
+            [
+                self.tones.iter().map(|t| t.current_key()).collect::<Vec<_>>().join(","),
+                self.variants.iter().map(|v| v.current_key()).collect::<Vec<_>>().join(","),
+                self.sizes.iter().map(|z| z.current_key()).collect::<Vec<_>>().join(","),
+                self.shapes.iter().map(|h| h.current_key()).collect::<Vec<_>>().join(","),
+            ],
+        ))
     }
 }
 
@@ -324,6 +409,7 @@ impl Default for ButtonSheetBuilder {
 /// modifiers don't have to touch sheet installation.
 pub fn install_default_button_sheet() {
     install_button_sheet(ButtonSheetBuilder::new().build());
+    install_button_label_sheet(ButtonSheetBuilder::new().build_label());
 }
 
 // =============================================================================
@@ -382,6 +468,7 @@ pub fn installed_alert_sheet() -> Rc<StyleSheet> {
 /// padding/font/radius). The builder generates `appearance` arms for
 /// each `(tone, variant)` pair.
 fn build_tone_variant_sheet<B>(
+    component: &str,
     tones: Vec<ToneRef>,
     variants: Vec<VariantRef>,
     base: B,
@@ -415,25 +502,34 @@ where
     // Mirrors Button/ControlRow: 1px border in the focus-ring color; the web
     // `:focus` rule kills the browser outline and macOS suppresses its native
     // ring, so this is the sole indicator.
-    sheet = sheet.variant("__state_focused", "on", |_vs| {
-        let theme_rc = active_theme();
-        let theme_ref = theme_rc
-            .downcast_ref::<IdeaThemeRef>()
-            .expect("Sheet closure: install_idea_theme(...) first");
-        let ring = theme_ref.colors().focus_ring.clone();
-        StyleRules {
-            border_top_width: Some(Tokenized::Literal(1.0)),
-            border_right_width: Some(Tokenized::Literal(1.0)),
-            border_bottom_width: Some(Tokenized::Literal(1.0)),
-            border_left_width: Some(Tokenized::Literal(1.0)),
-            border_top_color: Some(ring.clone()),
-            border_right_color: Some(ring.clone()),
-            border_bottom_color: Some(ring.clone()),
-            border_left_color: Some(ring),
-            ..Default::default()
-        }
+    sheet = sheet.variant("__state_focused", "on", |_vs| focus_ring_rules(1.0, "Sheet closure"));
+    // Pointer cursor for the interactive consumer (Chip with an `on_select`);
+    // inert `off` default leaves Badge/Tag/Alert untouched, same rationale as
+    // the focus ring above.
+    //
+    // This is a VARIANT and not a call-site `with_computed` layer for two
+    // reasons. It premints (a constant closure blocks premint for the whole
+    // sheet), and — the bug that motivated the move — the computed layer's
+    // cache key is caller-supplied, so Chip's constant `"chip-box"` key did
+    // not carry its `clickable` flag. Two chips with the same tone+variant
+    // but different `on_select` collided on
+    // `(sheet, variants, computed_key, overrides)` and shared one resolved
+    // `StyleRules`, so whichever resolved first decided the cursor for both.
+    // A variant is part of the cache identity by construction.
+    sheet = sheet.variant("interactive", "off", |_vs| StyleRules::default());
+    sheet = sheet.variant("interactive", "on", |_vs| StyleRules {
+        cursor: Some(Cursor::Pointer),
+        ..Default::default()
     });
-    Rc::new(sheet)
+    sheet = sheet.variant_default("interactive", "off");
+    let identity = premint_identity(
+        component,
+        [
+            tones.iter().map(|t| t.current_key()).collect::<Vec<_>>().join(","),
+            variants.iter().map(|v| v.current_key()).collect::<Vec<_>>().join(","),
+        ],
+    );
+    sheet.premint_as(&identity)
 }
 
 /// Builder for the Badge component's stylesheet.
@@ -457,7 +553,13 @@ impl BadgeSheetBuilder {
         self
     }
     pub fn build(self) -> Rc<StyleSheet> {
-        build_tone_variant_sheet(self.tones, self.variants, |_vs: &VariantSet| StyleRules {
+        build_tone_variant_sheet("badge", self.tones, self.variants, |_vs: &VariantSet| StyleRules {
+            // Hug: keep the pill sized to content instead of stretching to a
+            // flex parent's cross axis (which would grow it to the row height
+            // and float its label to the top). Lives in the base rather than
+            // a `with_computed` layer at the call site — it's a constant, and
+            // a constant closure blocks premint for the whole sheet.
+            align_self: Some(AlignSelf::Center),
             padding_top: Some(Tokenized::Literal(runtime_core::Length::Px(2.0))),
             padding_bottom: Some(Tokenized::Literal(runtime_core::Length::Px(2.0))),
             padding_left: Some(Tokenized::token(
@@ -529,7 +631,10 @@ impl TagSheetBuilder {
         self
     }
     pub fn build(self) -> Rc<StyleSheet> {
-        build_tone_variant_sheet(self.tones, self.variants, |_vs: &VariantSet| StyleRules {
+        build_tone_variant_sheet("tag", self.tones, self.variants, |_vs: &VariantSet| StyleRules {
+            // Hug — see the Badge sheet's base for why this isn't a computed
+            // layer. Shared by Tag and Chip (both resolve the tag sheet).
+            align_self: Some(AlignSelf::Center),
             padding_top: Some(Tokenized::Literal(runtime_core::Length::Px(2.0))),
             padding_bottom: Some(Tokenized::Literal(runtime_core::Length::Px(2.0))),
             padding_left: Some(Tokenized::token(
@@ -578,6 +683,7 @@ impl Default for TagSheetBuilder {
 
 pub fn install_default_tag_sheet() {
     install_tag_sheet(TagSheetBuilder::new().build());
+    install_tag_text_sheets(TagSheetBuilder::new().build_text());
 }
 
 /// Builder for the Alert component's stylesheet.
@@ -601,7 +707,7 @@ impl AlertSheetBuilder {
         self
     }
     pub fn build(self) -> Rc<StyleSheet> {
-        build_tone_variant_sheet(self.tones, self.variants, |_vs: &VariantSet| StyleRules {
+        build_tone_variant_sheet("alert", self.tones, self.variants, |_vs: &VariantSet| StyleRules {
             padding_top: Some(Tokenized::token("spacing-md", runtime_core::Length::Px(12.0))),
             padding_bottom: Some(Tokenized::token("spacing-md", runtime_core::Length::Px(12.0))),
             padding_left: Some(Tokenized::token("spacing-lg", runtime_core::Length::Px(16.0))),
@@ -637,6 +743,264 @@ impl Default for AlertSheetBuilder {
 
 pub fn install_default_alert_sheet() {
     install_alert_sheet(AlertSheetBuilder::new().build());
+    install_alert_text_sheets(AlertSheetBuilder::new().build_text());
+}
+
+// ---------------------------------------------------------------------------
+// Text-slot sheets — the child TEXT nodes of tone×variant components
+// ---------------------------------------------------------------------------
+//
+// Native text nodes (`UILabel`/`NSTextField`/Android `TextView`) inherit
+// NOTHING from their container — only web's CSS cascade does — so a
+// component's label/title/body must carry the container fill's foreground
+// on its OWN node. These used to be composed at the call site: resolve
+// the container application, copy its `color` onto a fresh anonymous
+// `StyleSheet::r#static`. That composition is invisible to the premint
+// dump (the sheet's content depends on which appearance the instance
+// picked), so every Alert/Tag text node dragged the live style engine
+// into `--premint` builds.
+//
+// Instead the text sheets carry an `appearance` axis of their own,
+// mirroring the container's: one COLOR-ONLY arm per (tone, variant),
+// resolved from the same `variant.render(ctx)` the fill uses, built
+// up-front at install time. Enumerated arms premint; the component
+// just applies `.with("appearance", key)` on both its container and its
+// text nodes.
+
+/// Add the color-only `appearance` axis to a text-slot sheet — one arm
+/// per (tone, variant) carrying exactly the fill's resolved foreground.
+fn text_color_axis(
+    mut sheet: StyleSheet,
+    tones: &[ToneRef],
+    variants: &[VariantRef],
+) -> StyleSheet {
+    for tone in tones {
+        for variant in variants {
+            let key = format!("{}_{}", tone.current_key(), variant.current_key());
+            let tone_c = tone.clone();
+            let variant_c = variant.clone();
+            sheet = sheet.variant("appearance", key, move |_vs| {
+                let theme_rc = active_theme();
+                let theme_ref = theme_rc
+                    .downcast_ref::<IdeaThemeRef>()
+                    .expect("text sheet closure: install_idea_theme(...) first");
+                let ctx = ResolutionCtx {
+                    theme: theme_ref,
+                    tone: &*tone_c.0,
+                };
+                StyleRules {
+                    color: variant_c.0.render(&ctx).color,
+                    ..Default::default()
+                }
+            });
+        }
+    }
+    sheet
+}
+
+/// `premint_identity` parts for a tones×variants text sheet.
+fn tone_variant_parts(tones: &[ToneRef], variants: &[VariantRef]) -> [String; 2] {
+    [
+        tones.iter().map(|t| t.current_key()).collect::<Vec<_>>().join(","),
+        variants.iter().map(|v| v.current_key()).collect::<Vec<_>>().join(","),
+    ]
+}
+
+/// The Alert component's text-slot sheets (title / body / the bare `×`
+/// glyph), one `appearance` arm per (tone, variant). Install alongside
+/// the fill sheet — a custom `AlertSheetBuilder` (extra tones/variants)
+/// must install BOTH halves or its custom appearances fall back to the
+/// axis default on the text nodes.
+pub struct AlertTextSheets {
+    pub title: Rc<StyleSheet>,
+    pub body: Rc<StyleSheet>,
+    /// Color-only sheet for the bare `×` close glyph.
+    pub glyph: Rc<StyleSheet>,
+}
+
+impl AlertSheetBuilder {
+    /// Build the text-slot sheets for the SAME tones/variants as
+    /// [`Self::build`]. Typography mirrors the former `AlertTitle` /
+    /// `AlertBody` stylesheets; the color arms are what replaces the
+    /// call-site composition (see the module section comment above).
+    pub fn build_text(&self) -> AlertTextSheets {
+        let title = default_neutral_soft(text_color_axis(
+            StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                font_size: Some(Tokenized::token(
+                    "typography-body-size",
+                    runtime_core::Length::Px(14.0),
+                )),
+                font_weight: Some(FontWeight::SemiBold),
+                line_height: Some(Tokenized::Literal(20.0)),
+                ..Default::default()
+            }),
+            &self.tones,
+            &self.variants,
+        ))
+        .premint_as(&premint_identity(
+            "alert.title",
+            tone_variant_parts(&self.tones, &self.variants),
+        ));
+        let body = default_neutral_soft(text_color_axis(
+            StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                font_size: Some(Tokenized::token(
+                    "typography-body-sm-size",
+                    runtime_core::Length::Px(13.0),
+                )),
+                line_height: Some(Tokenized::Literal(18.0)),
+                ..Default::default()
+            }),
+            &self.tones,
+            &self.variants,
+        ))
+        .premint_as(&premint_identity(
+            "alert.body",
+            tone_variant_parts(&self.tones, &self.variants),
+        ));
+        let glyph = default_neutral_soft(text_color_axis(
+            StyleSheet::new(|_vs: &VariantSet| StyleRules::default()),
+            &self.tones,
+            &self.variants,
+        ))
+        .premint_as(&premint_identity(
+            "alert.glyph",
+            tone_variant_parts(&self.tones, &self.variants),
+        ));
+        AlertTextSheets { title, body, glyph }
+    }
+}
+
+/// The Tag component's text-slot sheets (label / the `×` glyph).
+pub struct TagTextSheets {
+    pub label: Rc<StyleSheet>,
+    /// Color-only sheet for the bare `×` remove glyph.
+    pub glyph: Rc<StyleSheet>,
+}
+
+impl TagSheetBuilder {
+    /// Text-slot sheets for the SAME tones/variants as [`Self::build`] —
+    /// see [`AlertSheetBuilder::build_text`] for the contract.
+    pub fn build_text(&self) -> TagTextSheets {
+        let label = default_neutral_soft(text_color_axis(
+            StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                font_size: Some(Tokenized::token(
+                    "typography-body-sm-size",
+                    runtime_core::Length::Px(13.0),
+                )),
+                font_weight: Some(FontWeight::SemiBold),
+                letter_spacing: Some(Tokenized::Literal(0.3)),
+                ..Default::default()
+            }),
+            &self.tones,
+            &self.variants,
+        ))
+        .premint_as(&premint_identity(
+            "tag.label",
+            tone_variant_parts(&self.tones, &self.variants),
+        ));
+        let glyph = default_neutral_soft(text_color_axis(
+            StyleSheet::new(|_vs: &VariantSet| StyleRules::default()),
+            &self.tones,
+            &self.variants,
+        ))
+        .premint_as(&premint_identity(
+            "tag.glyph",
+            tone_variant_parts(&self.tones, &self.variants),
+        ));
+        TagTextSheets { label, glyph }
+    }
+}
+
+/// Alert/Tag text sheets default to the container's own default arm.
+fn default_neutral_soft(sheet: StyleSheet) -> StyleSheet {
+    sheet.variant_default("appearance", "neutral_soft")
+}
+
+impl ButtonSheetBuilder {
+    /// The Button LABEL sheet: the container's typography split out onto
+    /// the text node (native text inherits neither color nor
+    /// weight/size/alignment from the box — the macOS "not bold / not
+    /// centered" bug), as enumerated axes instead of the former
+    /// per-instance snapshot (`label_typography_style` + a color
+    /// override), which was invisible to the premint dump.
+    ///
+    /// `appearance` arms carry the fill's foreground; `size` arms carry
+    /// the label-relevant half of the container's size arms (font-size
+    /// only — padding stays on the box). Defaults mirror the container's.
+    pub fn build_label(&self) -> Rc<StyleSheet> {
+        let mut sheet = text_color_axis(
+            StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                font_weight: Some(FontWeight::SemiBold),
+                letter_spacing: Some(Tokenized::Literal(0.2)),
+                text_align: Some(TextAlign::Center),
+                ..Default::default()
+            }),
+            &self.tones,
+            &self.variants,
+        );
+        for size in &self.sizes {
+            let sz = size.clone();
+            sheet = sheet.variant("size", size.current_key(), move |_vs| StyleRules {
+                font_size: Some(sz.0.font_size()),
+                ..Default::default()
+            });
+        }
+        sheet
+            .variant_default("appearance", "primary_filled")
+            .variant_default("size", "md")
+            .premint_as(&premint_identity(
+                "button.label",
+                [
+                    self.tones.iter().map(|t| t.current_key()).collect::<Vec<_>>().join(","),
+                    self.variants.iter().map(|v| v.current_key()).collect::<Vec<_>>().join(","),
+                    self.sizes.iter().map(|z| z.current_key()).collect::<Vec<_>>().join(","),
+                ],
+            ))
+    }
+}
+
+// ONE thread_local for every text-sheet slot (not one per sheet):
+// bionic caps pthread TLS keys at 128 and each `thread_local!` burns one
+// (see the Android TLS note in the repo docs).
+#[derive(Default)]
+struct TextSheetSlots {
+    alert: Option<Rc<AlertTextSheets>>,
+    tag: Option<Rc<TagTextSheets>>,
+    button_label: Option<Rc<StyleSheet>>,
+}
+thread_local! {
+    static TEXT_SHEETS: RefCell<TextSheetSlots> = RefCell::new(TextSheetSlots::default());
+}
+
+pub fn install_alert_text_sheets(sheets: AlertTextSheets) {
+    TEXT_SHEETS.with(|s| s.borrow_mut().alert = Some(Rc::new(sheets)));
+}
+pub fn installed_alert_text_sheets() -> Rc<AlertTextSheets> {
+    TEXT_SHEETS.with(|s| {
+        s.borrow().alert.clone().expect(
+            "no Alert text sheets installed; call install_idea_theme(...) before rendering",
+        )
+    })
+}
+pub fn install_button_label_sheet(sheet: Rc<StyleSheet>) {
+    TEXT_SHEETS.with(|s| s.borrow_mut().button_label = Some(sheet));
+}
+pub fn installed_button_label_sheet() -> Rc<StyleSheet> {
+    TEXT_SHEETS.with(|s| {
+        s.borrow().button_label.clone().expect(
+            "no Button label sheet installed; call install_idea_theme(...) before rendering",
+        )
+    })
+}
+pub fn install_tag_text_sheets(sheets: TagTextSheets) {
+    TEXT_SHEETS.with(|s| s.borrow_mut().tag = Some(Rc::new(sheets)));
+}
+pub fn installed_tag_text_sheets() -> Rc<TagTextSheets> {
+    TEXT_SHEETS.with(|s| {
+        s.borrow().tag.clone().expect(
+            "no Tag text sheets installed; call install_idea_theme(...) before rendering",
+        )
+    })
 }
 
 // =============================================================================
@@ -689,18 +1053,23 @@ impl TypographySheetBuilder {
     }
     pub fn build(self) -> Rc<StyleSheet> {
         let mut sheet = StyleSheet::new(|_vs: &VariantSet| {
-            // The theme's default font family lands on the base so every
-            // Typography instance inherits it. Reads `active_theme()` so
-            // a theme swap (which wipes the resolution cache) re-runs
-            // this and re-applies the new font. Critically, this keeps
-            // web text out of the browser's serif fallback — native
-            // backends already default to a system sans.
-            let theme_rc = active_theme();
-            let theme_ref = theme_rc
-                .downcast_ref::<IdeaThemeRef>()
-                .expect("Typography sheet: install_idea_theme(...) first");
+            // Deliberately sets NO `font_family`. The theme's font
+            // reaches every Typography instance through the framework's
+            // default-text-font channel instead: `install_idea_theme` /
+            // `set_idea_theme` both call `sync_default_text_font`, the
+            // live path fills an absent family at apply time
+            // (`fill_default_text_font`), and the preminted path emits
+            // `font-family: var(--iy-default-font, inherit)` which the
+            // host driver redefines on every theme swap.
+            //
+            // Baking `theme_ref.font_family()` here instead — which this
+            // used to do — is exactly the shape premint cannot honour: a
+            // theme-varying value that is NOT a token, so a build-time
+            // class would freeze the font of whichever theme the dump
+            // build happened to install. Both paths still keep web text
+            // out of the browser's serif fallback, which was the original
+            // point.
             StyleRules {
-                font_family: Some(theme_ref.font_family()),
                 // Color transitions for theme swap.
                 color_transition: Some(Transition::new(250, Easing::EaseInOut)),
                 ..Default::default()
@@ -767,13 +1136,76 @@ impl TypographySheetBuilder {
                 ..Default::default()
             });
 
+        // `weight` — the per-instance weight override, layered over the kind's
+        // baked-in weight. `FontWeight` is a closed enum, so it enumerates as
+        // variant arms and premints.
+        //
+        // It used to ride a `with_computed` layer, which was also a latent
+        // correctness bug: `StyleApplication` has exactly ONE computed slot
+        // (`with_computed` assigns, it doesn't stack), so a Typography with
+        // BOTH `font` and `weight` set had its font layer silently overwritten
+        // by the weight layer. Moving weight to an axis leaves `font` as the
+        // sole computed layer and the override survives.
+        sheet = sheet.variant("weight", "inherit", |_vs| StyleRules::default());
+        for (key, w) in FONT_WEIGHT_KEYS {
+            sheet = sheet.variant("weight", key, move |_vs| StyleRules {
+                font_weight: Some(w),
+                ..Default::default()
+            });
+        }
+
         sheet = sheet
             .variant_default("kind", "body")
             .variant_default("color", "default")
+            .variant_default("weight", "inherit")
             .variant_default("align", "left");
 
-        Rc::new(sheet)
+        sheet.premint_as(&premint_identity("typography", [self.kinds_key(), self.tones_key()]))
     }
+
+    /// The kind axis' declared values, in declaration order — half of
+    /// this sheet's premint identity (an app that registers an extra
+    /// kind gets a different sheet and must get a different class).
+    fn kinds_key(&self) -> String {
+        self.kinds.iter().map(|k| k.current_key()).collect::<Vec<_>>().join(",")
+    }
+
+    fn tones_key(&self) -> String {
+        self.tones.iter().map(|t| t.current_key()).collect::<Vec<_>>().join(",")
+    }
+}
+
+/// Compose a premint identity for one of this crate's assembled sheets.
+///
+/// The identity has to describe the sheet's CONTENT, because the dump
+/// build and the shipped bundle derive the CSS class from it
+/// independently (see [`StyleSheet::premint_as`]). `component` names the
+/// sheet; `parts` carry whatever the app can vary — the registered kind
+/// and tone keys — so an app that calls `add_kind(...)` gets a distinct
+/// class rather than silently wearing the builtin sheet's CSS.
+///
+/// `V1` is a manual epoch: bump it when a sheet's RULES change in a way
+/// its `parts` don't capture (a restyled arm, a new axis). Stale CSS
+/// would otherwise survive a framework upgrade, since the class name is
+/// all that ties the two halves together.
+/// Comma-joined current keys of a modifier set — the part of a sheet's
+/// premint identity an app can change by registering an extra tone or
+/// variant before `install_idea_theme`.
+pub fn tone_keys(tones: &[ToneRef]) -> String {
+    tones.iter().map(|t| t.current_key()).collect::<Vec<_>>().join(",")
+}
+
+pub fn variant_keys(variants: &[VariantRef]) -> String {
+    variants.iter().map(|v| v.current_key()).collect::<Vec<_>>().join(",")
+}
+
+pub fn premint_identity(component: &str, parts: impl IntoIterator<Item = String>) -> String {
+    let mut id = format!("idea-theme.v1.{component}");
+    for part in parts {
+        id.push('|');
+        id.push_str(&part);
+    }
+    id
 }
 impl Default for TypographySheetBuilder {
     fn default() -> Self {
@@ -945,7 +1377,14 @@ impl IconButtonSheetBuilder {
             .variant_default("size", "md")
             .variant_default("selected", "off");
 
-        Rc::new(sheet)
+        // Premint identity, like every sibling builder. Without it
+        // `premint_class()` is `None`, `dump_sheet_parts` skips the sheet
+        // entirely, and every IconButton falls through to the runtime engine
+        // no matter how static its styling is.
+        sheet.premint_as(&premint_identity(
+            "icon_button",
+            [tone_keys(&self.tones), variant_keys(&self.variants)],
+        ))
     }
 }
 impl Default for IconButtonSheetBuilder {
@@ -970,6 +1409,35 @@ pub fn install_default_icon_button_sheet() {
 // alphabetical name order (`appearance` < `checked` < `size`), the
 // `checked=off` arm reliably wins over the appearance fill, and the
 // `size` arm (dimensions only) wins over both.
+
+/// The themed focus ring as a uniform `width`px border in
+/// `colors().focus_ring`. Shared by every sheet that rides a *pressable*
+/// host (Switch track, Checkbox box, Radio ring, Tag/Chip): the state
+/// overlay resolves above the variant arms, so this wins over whatever
+/// border the `checked`/`appearance` arm set.
+///
+/// WHY a border and not an outline/box-shadow: `StyleRules` has no outline
+/// property, and a border lives inside the border-box, so swapping it on
+/// focus never changes the control's outer size (no layout nudge on
+/// focus/blur).
+fn focus_ring_rules(width: f32, whose: &'static str) -> StyleRules {
+    let theme_rc = active_theme();
+    let theme_ref = theme_rc
+        .downcast_ref::<IdeaThemeRef>()
+        .unwrap_or_else(|| panic!("{whose}: install_idea_theme(...) first"));
+    let ring = theme_ref.colors().focus_ring.clone();
+    StyleRules {
+        border_top_width: Some(Tokenized::Literal(width)),
+        border_right_width: Some(Tokenized::Literal(width)),
+        border_bottom_width: Some(Tokenized::Literal(width)),
+        border_left_width: Some(Tokenized::Literal(width)),
+        border_top_color: Some(ring.clone()),
+        border_right_color: Some(ring.clone()),
+        border_bottom_color: Some(ring.clone()),
+        border_left_color: Some(ring),
+        ..Default::default()
+    }
+}
 
 /// The neutral "unselected" look, shared by Checkbox box + Radio
 /// outer ring: transparent surface, a 1px theme border on every side,
@@ -1185,24 +1653,7 @@ impl SwitchSheetBuilder {
         // the pressable host; browser outline killed by the web `:focus` rule).
         // State overlays resolve above the `checked` arms, so this 2px border
         // wins over the OFF arm's zeroed borders.
-        sheet = sheet.variant("__state_focused", "on", |_vs| {
-            let theme_rc = active_theme();
-            let theme_ref = theme_rc
-                .downcast_ref::<IdeaThemeRef>()
-                .expect("Switch sheet: install_idea_theme(...) first");
-            let ring = theme_ref.colors().focus_ring.clone();
-            StyleRules {
-                border_top_width: Some(Tokenized::Literal(2.0)),
-                border_right_width: Some(Tokenized::Literal(2.0)),
-                border_bottom_width: Some(Tokenized::Literal(2.0)),
-                border_left_width: Some(Tokenized::Literal(2.0)),
-                border_top_color: Some(ring.clone()),
-                border_right_color: Some(ring.clone()),
-                border_bottom_color: Some(ring.clone()),
-                border_left_color: Some(ring),
-                ..Default::default()
-            }
-        });
+        sheet = sheet.variant("__state_focused", "on", |_vs| focus_ring_rules(2.0, "Switch sheet"));
 
         // Size — track width/height.
         for (key, w, h) in SWITCH_TRACK_DIMS {
@@ -1217,7 +1668,13 @@ impl SwitchSheetBuilder {
             .variant_default("appearance", "primary_filled")
             .variant_default("checked", "off")
             .variant_default("size", "md");
-        Rc::new(sheet)
+        sheet.premint_as(&premint_identity(
+            "switch",
+            [
+                self.tones.iter().map(|t| t.current_key()).collect::<Vec<_>>().join(","),
+                self.variants.iter().map(|v| v.current_key()).collect::<Vec<_>>().join(","),
+            ],
+        ))
     }
 }
 impl Default for SwitchSheetBuilder {
@@ -1308,6 +1765,13 @@ impl CheckboxSheetBuilder {
         box_sheet = box_sheet
             .variant("checked", "off", |_vs| unchecked_surface_rules())
             .variant("checked", "on", |_vs| StyleRules::default());
+        // The BOX is the pressable host (the label row around it is a plain
+        // view), so the focus ring lands on the box alone — a Tab-focused
+        // Checkbox rings the square, not the whole label row. State overlays
+        // resolve above the `checked` arms, so this 2px border wins over the
+        // OFF arm's 1px theme border and the ON arm's fill.
+        box_sheet = box_sheet
+            .variant("__state_focused", "on", |_vs| focus_ring_rules(2.0, "Checkbox sheet"));
         for (key, dim, _glyph) in CHECKBOX_DIMS {
             box_sheet = box_sheet.variant("size", key, move |_vs| StyleRules {
                 width: Some(Tokenized::Literal(Length::Px(dim))),
@@ -1338,9 +1802,10 @@ impl CheckboxSheetBuilder {
             .variant_default("appearance", "primary_filled")
             .variant_default("size", "md");
 
+        let id = premint_identity("checkbox", [tone_keys(&self.tones), variant_keys(&self.variants)]);
         CheckboxSheets {
-            box_sheet: Rc::new(box_sheet),
-            glyph_sheet: Rc::new(glyph_sheet),
+            box_sheet: box_sheet.premint_as(&format!("{id}|box")),
+            glyph_sheet: glyph_sheet.premint_as(&format!("{id}|glyph")),
         }
     }
 }
@@ -1464,6 +1929,9 @@ impl RadioSheetBuilder {
         outer = outer
             .variant("checked", "off", |_vs| unchecked_surface_rules())
             .variant("checked", "on", |_vs| StyleRules::default());
+        // The RING is the pressable host (see the Checkbox box) — focus rings
+        // the indicator alone, never the whole label row.
+        outer = outer.variant("__state_focused", "on", |_vs| focus_ring_rules(2.0, "Radio sheet"));
         for (key, dim, _dot) in RADIO_DIMS {
             outer = outer.variant("size", key, move |_vs| StyleRules {
                 width: Some(Tokenized::Literal(Length::Px(dim))),
@@ -1514,9 +1982,10 @@ impl RadioSheetBuilder {
             .variant_default("appearance", "primary_filled")
             .variant_default("size", "md");
 
+        let id = premint_identity("radio", [tone_keys(&self.tones), variant_keys(&self.variants)]);
         RadioSheets {
-            outer_sheet: Rc::new(outer),
-            dot_sheet: Rc::new(dot),
+            outer_sheet: outer.premint_as(&format!("{id}|outer")),
+            dot_sheet: dot.premint_as(&format!("{id}|dot")),
         }
     }
 }
@@ -1563,6 +2032,20 @@ pub fn installed_progress_sheets() -> ProgressSheets {
 /// Bar thickness (px) per size.
 pub const PROGRESS_DIMS: [(&str, f32); 3] = [("sm", 4.0), ("md", 8.0), ("lg", 12.0)];
 
+/// Fraction of the track the indeterminate sweep segment occupies.
+/// Shared with the `Progress` component's translate math (the sweep
+/// runs from `-fraction × track_width` to `track_width`, so the
+/// segment enters fully hidden on the left and exits fully past the
+/// right edge). Changing this without rebuilding idea-ui keeps the
+/// two in sync because the component reads THIS constant.
+pub const PROGRESS_SWEEP_FRACTION: f32 = 0.4;
+
+/// Width transition (ms) on the determinate fill: a `value` change (or
+/// a Simulated-mode creep step) animates to the new width instead of
+/// snapping. Long enough to read as motion, short enough that a
+/// fast-ticking value never lags more than one step behind.
+pub const PROGRESS_FILL_WIDTH_MS: u32 = 300;
+
 pub struct ProgressSheetBuilder {
     tones: Vec<ToneRef>,
     variants: Vec<VariantRef>,
@@ -1585,8 +2068,20 @@ impl ProgressSheetBuilder {
     pub fn build(self) -> ProgressSheets {
         use runtime_core::{Length, Overflow};
         let pill = || Tokenized::token("radius-pill", Length::Px(999.0));
+        let pill_rules = move || StyleRules {
+            border_top_left_radius: Some(pill()),
+            border_top_right_radius: Some(pill()),
+            border_bottom_left_radius: Some(pill()),
+            border_bottom_right_radius: Some(pill()),
+            ..Default::default()
+        };
 
         // ---- track ----
+        // `cap` — end-cap treatment, `none` (square) by default: a
+        // progress bar is a measurement surface and pill ends visually
+        // under-report the value at the extremes (a 2% fill vanishes
+        // into the round cap). `rounded` opts back into the pill look.
+        // The fill mirrors the axis so its ends match the track's.
         let mut track = StyleSheet::new(move |_vs: &VariantSet| {
             let theme_rc = active_theme();
             let theme_ref = theme_rc
@@ -1596,10 +2091,6 @@ impl ProgressSheetBuilder {
                 background: Some(theme_ref.colors().border.clone()),
                 width: Some(Tokenized::Literal(Length::pct(100.0))),
                 overflow: Some(Overflow::Hidden),
-                border_top_left_radius: Some(pill()),
-                border_top_right_radius: Some(pill()),
-                border_bottom_left_radius: Some(pill()),
-                border_bottom_right_radius: Some(pill()),
                 ..Default::default()
             }
         });
@@ -1610,18 +2101,21 @@ impl ProgressSheetBuilder {
             });
         }
         track = track.variant_default("size", "md");
+        track = track.variant("cap", "none", |_vs| StyleRules::default());
+        track = track.variant("cap", "rounded", move |_vs| pill_rules());
+        track = track.variant_default("cap", "none");
 
         // ---- fill ----
         let mut fill = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
             height: Some(Tokenized::Literal(Length::pct(100.0))),
-            border_top_left_radius: Some(pill()),
-            border_top_right_radius: Some(pill()),
-            border_bottom_left_radius: Some(pill()),
-            border_bottom_right_radius: Some(pill()),
             background_transition: Some(Transition::new(200, Easing::EaseOut)),
             opacity_transition: Some(Transition::new(200, Easing::EaseOut)),
             ..Default::default()
         });
+        // End caps follow the track's `cap` axis (see above).
+        fill = fill.variant("cap", "none", |_vs| StyleRules::default());
+        fill = fill.variant("cap", "rounded", move |_vs| pill_rules());
+        fill = fill.variant_default("cap", "none");
         for tone in &self.tones {
             for variant in &self.variants {
                 let key = format!("{}_{}", tone.current_key(), variant.current_key());
@@ -1645,9 +2139,29 @@ impl ProgressSheetBuilder {
         }
         fill = fill.variant_default("appearance", "primary_filled");
 
+        // `mode` — the two fill behaviors have CONSTANT sheet-side widths, so
+        // they're variant arms rather than call-site computed layers (a
+        // constant closure blocks premint for the whole sheet without
+        // expressing anything a variant can't):
+        //   - determinate (the `Value` and `Simulated` component modes): the
+        //     width itself is the live value (inline, off the sheet); the arm
+        //     carries the width TRANSITION so every width change animates.
+        //   - indeterminate: a fixed sweep segment that animates by transform
+        //     (translate), so its width is the constant sweep fraction.
+        fill = fill.variant("mode", "determinate", |_vs| StyleRules {
+            width_transition: Some(Transition::new(PROGRESS_FILL_WIDTH_MS, Easing::EaseOut)),
+            ..Default::default()
+        });
+        fill = fill.variant("mode", "indeterminate", |_vs| StyleRules {
+            width: Some(Tokenized::Literal(Length::pct(PROGRESS_SWEEP_FRACTION * 100.0))),
+            ..Default::default()
+        });
+        fill = fill.variant_default("mode", "determinate");
+
+        let id = premint_identity("progress", [tone_keys(&self.tones), variant_keys(&self.variants)]);
         ProgressSheets {
-            track_sheet: Rc::new(track),
-            fill_sheet: Rc::new(fill),
+            track_sheet: track.premint_as(&format!("{id}|track")),
+            fill_sheet: fill.premint_as(&format!("{id}|fill")),
         }
     }
 }
@@ -1791,10 +2305,17 @@ impl SliderSheetBuilder {
             .variant_default("appearance", "primary_filled")
             .variant_default("size", "md");
 
+        // Premint identities, like the checkbox/button sibling builders —
+        // without them every Slider track/fill/thumb fell through to the
+        // live engine (`--premint-report` on the docs corpus). The
+        // component's continuous values (fill `width`, thumb `left`)
+        // already ride the inline layer, so the sheets themselves are
+        // fully enumerable.
+        let id = premint_identity("slider", [tone_keys(&self.tones), variant_keys(&self.variants)]);
         SliderSheets {
-            track_sheet: Rc::new(track),
-            fill_sheet: Rc::new(fill),
-            thumb_sheet: Rc::new(thumb),
+            track_sheet: track.premint_as(&format!("{id}|track")),
+            fill_sheet: fill.premint_as(&format!("{id}|fill")),
+            thumb_sheet: thumb.premint_as(&format!("{id}|thumb")),
         }
     }
 }
@@ -1866,6 +2387,24 @@ mod selection_sheet_tests {
         assert!(has(&s.box_sheet, "size", "lg"));
     }
 
+    /// The focus ring belongs to the CONTROL, never to the label row: the
+    /// Checkbox box (and the Radio ring) is the pressable host, so its own
+    /// sheet carries the `__state_focused` overlay. Before this, the row
+    /// wrapping box + label drew the ring, which read as a stray border
+    /// around the label text.
+    #[test]
+    fn regression_focus_ring_lives_on_the_control_not_the_label_row() {
+        let cb = CheckboxSheetBuilder::new().build();
+        assert!(has(&cb.box_sheet, "__state_focused", "on"), "checkbox box rings itself");
+        assert!(
+            !has(&cb.glyph_sheet, "__state_focused", "on"),
+            "the checkmark is not a focus target"
+        );
+        let radio = RadioSheetBuilder::new().build();
+        assert!(has(&radio.outer_sheet, "__state_focused", "on"), "radio ring rings itself");
+        assert!(!has(&radio.dot_sheet, "__state_focused", "on"), "the dot is not a focus target");
+    }
+
     #[test]
     fn radio_outer_and_dot_share_appearance_matrix() {
         let s = RadioSheetBuilder::new().build();
@@ -1880,6 +2419,63 @@ mod selection_sheet_tests {
         assert_eq!(appearance_arms(&s.fill_sheet), BUILTIN_APPEARANCE_ARMS);
         assert!(has(&s.track_sheet, "size", "sm"));
         assert!(has(&s.track_sheet, "size", "lg"));
+    }
+
+    /// End caps are square unless the `cap=rounded` arm is selected —
+    /// both the track and the fill carry the axis so their ends match.
+    #[test]
+    fn progress_caps_are_square_by_default_rounded_on_opt_in() {
+        crate::testing::with_test_world(|| {
+            crate::theme::install_idea_theme(crate::theme::light_theme());
+            let s = ProgressSheetBuilder::new().build();
+            for sheet in [&s.track_sheet, &s.fill_sheet] {
+                let default_caps = sheet.resolve(&VariantSet::new());
+                assert!(
+                    default_caps.border_top_left_radius.is_none(),
+                    "default caps are square"
+                );
+                let rounded = sheet.resolve(&VariantSet::new().with("cap", "rounded"));
+                assert!(
+                    rounded.border_top_left_radius.is_some()
+                        && rounded.border_bottom_right_radius.is_some(),
+                    "cap=rounded pills the corners"
+                );
+            }
+        });
+    }
+
+    /// The fill's two `mode` arms carry the behavior contracts the
+    /// Progress component relies on: `determinate` animates width
+    /// changes (the Value / Simulated modes' glide), `indeterminate`
+    /// pins the sweep segment to the shared `PROGRESS_SWEEP_FRACTION`
+    /// of the track (the component's translate math assumes exactly
+    /// this width).
+    #[test]
+    fn progress_fill_mode_arms_carry_sweep_width_and_width_transition() {
+        use runtime_core::Length;
+        crate::testing::with_test_world(|| {
+            crate::theme::install_idea_theme(crate::theme::light_theme());
+            let s = ProgressSheetBuilder::new().build();
+
+            let det = s
+                .fill_sheet
+                .resolve(&VariantSet::new().with("mode", "determinate"));
+            let transition = det
+                .width_transition
+                .expect("determinate fill declares a width transition");
+            assert_eq!(transition.duration_ms, PROGRESS_FILL_WIDTH_MS);
+            assert!(det.width.is_none(), "determinate width stays inline (off the sheet)");
+
+            let indet = s
+                .fill_sheet
+                .resolve(&VariantSet::new().with("mode", "indeterminate"));
+            match indet.width.expect("indeterminate fill has a constant sweep width") {
+                Tokenized::Literal(l) => {
+                    assert_eq!(l, Length::pct(PROGRESS_SWEEP_FRACTION * 100.0))
+                }
+                other => panic!("sweep width is a literal percent, got {other:?}"),
+            }
+        });
     }
 
     #[test]
@@ -1926,5 +2522,38 @@ mod selection_sheet_tests {
         assert!(has(&sheet, "__state_hovered", "on"));
         // hover + press + selected = 3 compounds per appearance arm.
         assert_eq!(sheet.compound_keys().len(), BUILTIN_APPEARANCE_ARMS * 3);
+    }
+
+    /// `FONT_WEIGHT_KEYS` drives Typography's `weight` axis. A weight missing
+    /// from the table resolves to no arm and silently degrades to `inherit`,
+    /// so the table must stay exhaustive over the enum. Matching on every
+    /// variant makes adding a `FontWeight` a compile error here rather than a
+    /// silent styling regression.
+    #[test]
+    fn font_weight_keys_cover_every_weight() {
+        use runtime_core::FontWeight::*;
+        let all = [
+            Thin, ExtraLight, Light, Normal, Medium, SemiBold, Bold, ExtraBold, Black,
+        ];
+        // Exhaustiveness against the enum itself: if a variant is added, this
+        // match stops compiling until `all` (and the table) grow with it.
+        for w in all {
+            let _: () = match w {
+                Thin | ExtraLight | Light | Normal | Medium | SemiBold | Bold | ExtraBold
+                | Black => (),
+            };
+            assert!(
+                FONT_WEIGHT_KEYS.iter().any(|(_, candidate)| *candidate == w),
+                "FONT_WEIGHT_KEYS is missing {w:?}"
+            );
+        }
+        assert_eq!(FONT_WEIGHT_KEYS.len(), all.len());
+        // Keys must be distinct — a duplicate would collapse two weights onto
+        // one arm.
+        let mut keys: Vec<&str> = FONT_WEIGHT_KEYS.iter().map(|(k, _)| *k).collect();
+        keys.sort_unstable();
+        let before = keys.len();
+        keys.dedup();
+        assert_eq!(keys.len(), before, "duplicate key in FONT_WEIGHT_KEYS");
     }
 }

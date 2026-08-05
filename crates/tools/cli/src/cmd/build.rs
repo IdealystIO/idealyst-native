@@ -140,21 +140,6 @@ pub struct Args {
     #[arg(long)]
     pub no_brotli: bool,
 
-    /// Web only: compile in ONLY the named primitive families
-    /// (comma-separated: virtualizer, icon, image, text-input, toggle,
-    /// slider, activity, portal, presence, graphics, navigator, lazy;
-    /// or `none` for a text/view-only bundle). Unused families leave
-    /// the wasm entirely — a text/view-only app drops ~30% of the
-    /// bundle. Two-sided by design: this flag restricts the generated
-    /// wrapper, and the APP crate must set `default-features = false`
-    /// on its own `runtime-core` dependency or cargo feature
-    /// unification re-enables everything (the build warns when it
-    /// detects that). SDKs forward the families they render with, so
-    /// depending on one re-enables exactly what it needs. Omit the
-    /// flag for the default all-families build.
-    #[arg(long, value_delimiter = ',')]
-    pub primitives: Option<Vec<String>>,
-
     /// Web only: override where the bundle is written. Default is
     /// `<project>/dist/web`. Has no effect on non-web targets.
     #[arg(long, value_name = "PATH")]
@@ -163,7 +148,7 @@ pub struct Args {
     /// **EXPERIMENTAL, off by default.** Web + release only: opt IN to
     /// chunk-only data pruning in the main wasm bundle. When enabled, release
     /// builds zero data symbols (≥ 24 bytes) that wasm-split-cli classifies as
-    /// reachable only from `lazy!` chunks — recovering ~25-50% of the gzipped
+    /// reachable only from lazy chunks — recovering ~25-50% of the gzipped
     /// main bundle on apps with a heavy lazy chunk.
     ///
     /// Every pruned symbol is re-materialized by the chunk that owns it, from
@@ -174,7 +159,8 @@ pub struct Args {
     /// This is still OFF by default because the classification
     /// **under-approximates what `main` reaches**: it can't trace data reached
     /// via data→data pointers, `call_indirect` / the function table, or the
-    /// deferred `Element::External` registration queue. Data that `main`
+    /// deferred handler-registration queue (removed with the old core;
+    /// see docs/proposals/lazy-primitive.md). Data that `main`
     /// actually reads BEFORE the owning chunk loads gets misclassified
     /// "chunk-only" and zeroed, silently corrupting `main.wasm` (no wasm
     /// trap): fonts fail to register, a `#[component(lazy)]` route renders
@@ -201,8 +187,24 @@ pub struct Args {
     #[arg(long)]
     pub strip_panics: bool,
 
+    /// Web only: premint static styles at build time. Runs an ephemeral
+    /// native dump build that emits every `stylesheet!`'s full variant
+    /// space into a content-addressed `pkg/premint.<hash>.css` (linked
+    /// from index.html), and compiles the wasm with
+    /// `--cfg idealyst_premint` so all-constant style applications ship
+    /// as class references instead of invoking the runtime style
+    /// engine. The full size win additionally needs the app to disable
+    /// the `style-dynamic` feature on `backend-web` so the engine drops
+    /// out of the bundle — without that edit the classes premint but the
+    /// engine still ships. Composes with `--ssg`/`--ssr`: the server
+    /// binary is built with the same premint cfgs, stamps the same
+    /// `iy-*` classes the hydrating client stamps, links `premint.css`
+    /// from every page, and arms the same minted-class guard.
+    #[arg(long)]
+    pub premint: bool,
+
     /// Web only: enable the Robot bridge in the bundle (`robot` feature →
-    /// `backend-web/robot` → `runtime-core/robot`). A browser app can't host
+    /// `backend-web/robot`). A browser app can't host
     /// the bridge itself, so it dials a `robot-relay` whose URL it reads from
     /// `window.IDEALYST_ROBOT_RELAY_URL`; the relay exposes the ordinary TCP
     /// bridge to the MCP server / an evaluator. Off by default; the MCP Arena
@@ -210,9 +212,91 @@ pub struct Args {
     /// targets.
     #[arg(long)]
     pub robot: bool,
+
+    /// Accepted no-op alias: runtime v2 is the only runtime, so every
+    /// build already runs on it. Kept so existing invocations, scripts,
+    /// and CI files don't break (see `crate::core_mode`).
+    #[arg(long)]
+    pub new_core: bool,
+
+    /// REMOVED: the pre-runtime-v2 walker no longer exists. Passing
+    /// this fails with the migration pointer rather than silently
+    /// building runtime v2 with old-core semantics expected
+    /// (`crate::core_mode`, `docs/migrating-to-runtime-v2.md`).
+    #[arg(long)]
+    pub old_core: bool,
+
+
+    /// Web + release only: additionally compile the runtime style engine OUT
+    /// of the bundle. Implies `--premint`.
+    ///
+    /// `--premint` mints build-time CSS but CANNOT remove the engine: the
+    /// `stylesheet!` builder's preminted fast path falls through to the live
+    /// engine for any reactive or override-carrying style, so the engine
+    /// stays linked even when every class preminted. This strips those
+    /// fallthrough paths.
+    ///
+    /// A promise the build cannot verify. Styles that still need the engine
+    /// — a reactive input, a runtime slot override, `signal_class`, a raw
+    /// `StyleRules` closure, or passing the raw sheet (`style =
+    /// card_style()`) instead of the builder (`style = Card()`) — panic at
+    /// mount with a message naming the shape. Use `--premint` alone if
+    /// unsure; it is always safe.
+    #[arg(long)]
+    pub premint_only: bool,
+
+    /// Web only: report every style that still needs the runtime style
+    /// engine. The diagnostic for "why can't this app use
+    /// `--premint-only`?". Implies `--premint`.
+    ///
+    /// KEEPS the engine, so the app renders normally and one page load
+    /// lists everything that fell through — rather than the boot panic
+    /// `--premint-only` gives you at the first offender, which names the
+    /// shape but not the source.
+    ///
+    /// Each distinct fall-through logs once to the browser console as
+    /// `[premint-report] #N <shape> css=… overrides=… computed=… axes=…
+    /// rules=…`. `css=NONE-no-build-time-css` means the sheet never
+    /// preminted at all (give it an identity); a `computed=` key means a
+    /// `with_computed` layer, whose rules are produced at runtime under a
+    /// key the build cannot enumerate — that one needs the layer turned
+    /// into a bounded variant axis, or the app keeps the engine.
+    ///
+    /// Not a size flag: a `--premint-report` build is a debugging build.
+    #[arg(long)]
+    pub premint_report: bool,
+
+    /// Web only: which builtin primitives the bundle registers. Omit to
+    /// register every builtin (the default, and what every release before
+    /// this did).
+    ///
+    /// Accepts a preset — `core` (`view` + `text`: just the framework, with
+    /// nothing composable on top) or `all` — or an explicit list:
+    /// `--primitives view,text,button,text_input`.
+    ///
+    /// Unlisted primitives are never named at the boot seam, so their
+    /// handlers, the backend code behind them, and the web-sys imports and
+    /// JS glue they alone reached are all dropped by LLVM. Measured on a
+    /// `view`+`text` app: 195,255 → 126,813 bytes brotli (-35%) and 236 →
+    /// 163 wasm imports.
+    ///
+    /// Rendering a primitive the set omits panics at mount — deliberately
+    /// loud, the same failure a missing third-party payload gets. Note a
+    /// component library counts: `idea_ui::Button` needs `button`.
+    #[arg(long, value_delimiter = ',')]
+    pub primitives: Option<Vec<String>>,
 }
 
 pub fn run(args: Args) -> Result<()> {
+    // Removed-flag rejection runs FIRST, before the project is even
+    // resolved: these errors are about the invocation, not the project,
+    // and an operator porting a CI line should read "this flag is gone"
+    // rather than an unrelated manifest error from whatever directory
+    // the command happened to run in.
+    //
+    // One core: `--new-core` is a no-op, `--old-core` is a hard error.
+    crate::core_mode::validate_flags(args.new_core, args.old_core)?;
+
     let dir = crate::framework_source::abs_project_dir(&args.dir)?;
     let manifest = parse_manifest(&dir)?;
 
@@ -445,6 +529,9 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
     let artifact = build_web::build(
         dir,
         build_web::BuildOptions {
+            primitives: args.primitives.clone(),
+            premint_only: args.premint_only,
+            premint_report: args.premint_report,
             // `--strip-panics` is a release-only transform, so it implies
             // `--release` (panic_immediate_abort in a debug build would
             // just slow the build for no benefit).
@@ -463,7 +550,6 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
             // artifact. Debug bundles skip the q11 encode (seconds of
             // build tail for a bundle nobody ships).
             brotli: !args.no_brotli && (args.release || args.strip_panics),
-            primitives: args.primitives.clone(),
             strip_panics: args.strip_panics,
             // Compile in hydration when SSG/SSR is also being built —
             // the emitted HTML expects the wasm to adopt it on boot.
@@ -478,6 +564,10 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
                 args.data_prune,
                 args.no_data_prune,
             ),
+            // `--premint-only` strips the engine, so it MUST also premint —
+            // otherwise the bundle has neither build-time classes nor a
+            // runtime to mint them, and every styled node panics.
+            premint: args.premint || args.premint_only || args.premint_report,
         },
     )?;
     let bundle = artifact
@@ -512,7 +602,8 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
 /// `wasm-split-cli` chunk-only classification under-approximates what `main`
 /// reaches: it walks the symbol-level call graph but can't trace data reached
 /// through data→data pointers, `call_indirect` / the function table, or the
-/// deferred `Element::External` registration queue. Data `main` reads through
+/// deferred handler-registration queue (removed with the old core).
+/// Data `main` reads through
 /// those edges gets misclassified "chunk-only" and zeroed — silently corrupting
 /// `main.wasm` with no wasm trap (observed: fonts fail to register via
 /// `typeface!`, and a `#[component(lazy)]` route mounts nothing, not even its
@@ -623,6 +714,12 @@ fn build_ssr_binary(dir: &std::path::Path, args: &Args, web_built: bool) -> Resu
             release: args.release,
             source,
             user_features: Vec::new(),
+            // The server must share the wasm bundle's premint posture:
+            // both sides stamp classes during hydration, and only
+            // matching cfgs make them stamp the SAME ones.
+            premint: args.premint || args.premint_only || args.premint_report,
+            premint_only: args.premint_only,
+            premint_report: args.premint_report,
         },
     )?;
     eprintln!(
@@ -662,6 +759,12 @@ fn build_ssg_export(
             release: args.release,
             source,
             user_features: Vec::new(),
+            // The server must share the wasm bundle's premint posture:
+            // both sides stamp classes during hydration, and only
+            // matching cfgs make them stamp the SAME ones.
+            premint: args.premint || args.premint_only || args.premint_report,
+            premint_only: args.premint_only,
+            premint_report: args.premint_report,
         },
     )?;
     let out_dir = args

@@ -9,7 +9,7 @@
 //! can't run vello. A small built-in document shows until you load your own.
 //!
 //! **Run with `--local`** (`idealyst dev --macos --local`). The canvas carries a
-//! `draw` closure in its `Element::External` payload, which can't be serialized
+//! `draw` closure in its scene payload, which can't be serialized
 //! across the default dev-server wire — so canvas-based SDKs (this one,
 //! `whiteboard-demo`, `canvas-demo`) need single-process local-render mode, or
 //! the client shows "Component not available: canvas_core::CanvasProps".
@@ -24,10 +24,20 @@ use idea_ui::{install_idea_theme, light_theme, Stack, StackGap, StackPadding, Ty
 use pdf::PdfReactive;
 use runtime_core::{driver::spawn_async, signal, text, ui, Element, IntoElement, Signal};
 
+/// SDK-handler registration seam, invoked by the CLI-generated wrappers
+/// after `runtime_vocabulary::register_builtins`.
+///
 /// `canvas-vello` needs an explicit `register` (it self-gates on GPU
 /// capability); registering it last makes it win over `canvas-native` where the
 /// GPU can run vello, and step aside (leaving the native fallback) otherwise.
-pub fn register_extensions<B: runtime_core::RegisterExternal>(backend: &mut B) {
+/// Both install a handler for the same `canvas_core::CanvasPrim` payload, and
+/// last registration for a payload wins.
+pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
+where
+    H: runtime_vocabulary::caps::GraphicsOps
+        + runtime_vocabulary::style_attach::StyleServices
+        + 'static,
+{
     #[cfg(any(
         target_arch = "wasm32",
         all(
@@ -35,12 +45,16 @@ pub fn register_extensions<B: runtime_core::RegisterExternal>(backend: &mut B) {
             not(target_arch = "wasm32")
         )
     ))]
-    canvas_vello::register(backend);
-    let _ = backend;
+    canvas_vello::register(registry);
+    let _ = registry;
 }
 
+/// Recorder twin of [`register_scene_extensions`] for the dev-server
+/// sidecar. Gated by `sidecar` so device/web builds never pull `dev-server`.
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {}
+pub fn register_scene_extensions_recorder(registry: &mut dev_server::newcore::SceneRegistry) {
+    register_scene_extensions(registry);
+}
 
 pub fn app() -> Element {
     install_idea_theme(light_theme());

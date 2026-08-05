@@ -14,12 +14,26 @@ use file_picker::{FilePicker, MediaKind, PickOutcome, PickRequest};
 use idea_ui::{install_idea_theme, light_theme, Stack, StackGap, StackPadding, Typography};
 use runtime_core::{signal, text, ui, Element, Signal};
 
-/// No `Element::External` SDKs to register — `file-picker` is a capability
-/// crate, not a rendered primitive.
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+/// SDK-handler registration seam, invoked by the CLI-generated wrappers
+/// after `runtime_vocabulary::register_builtins`. Registry-generic over
+/// the scene `Host` so ONE seam serves every backend. `file-picker` is a
+/// capability crate, not a rendered primitive, so there is nothing to
+/// register.
+pub fn register_scene_extensions<H: runtime_scene::Host>(
+    _registry: &mut runtime_scene::Registry<H>,
+) {
+}
 
+/// Recorder-side seam for the runtime-server sidecar
+/// (`dev_server::sidecar::run_newcore`).
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {}
+pub fn register_scene_extensions_recorder(_registry: &mut dev_server::newcore::SceneRegistry) {}
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// through `backend_android::newcore::start`.
+pub fn scene_app() -> Element {
+    app()
+}
 
 /// Run one pick and report the result, streaming only the first chunk of each
 /// picked file (so picking a huge file stays cheap).

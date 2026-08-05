@@ -32,13 +32,18 @@ capabilities = ["haptics"]
 
 [dependencies]
 # Only pulled for the `catalog` feature's compile-checked recipes. The core
-# capability has no framework dependency — it's three platform shims.
+# capability has no framework dependency — it's three platform shims. That is
+# also why the `runtime_core` alias at the crate root carries a `catalog` cfg
+# (an optional-dependency gate, not a core selector). `runtime-vocabulary` is
+# direct because the recipes' `ui!` emission spells absolute
+# `::runtime_vocabulary::glue::…` paths.
 runtime-core = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
 
 # Compile-checked usage recipes for the docs/MCP catalog. Off in every
 # production build (the `recipe!` macro then expands to nothing).
 [features]
-catalog = ["dep:runtime-core", "runtime-core/catalog"]
+catalog = ["dep:runtime-core", "dep:runtime-vocabulary", "runtime-core/catalog"]
 
 # iOS / macOS: drive the haptic generators / NSHapticFeedbackManager through
 # the Obj-C runtime (objc2 msg_send). No typed framework crate needed — the

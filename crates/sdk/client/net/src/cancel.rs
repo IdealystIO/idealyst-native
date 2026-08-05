@@ -77,6 +77,27 @@ pub struct CancelHandle {
     inner: Arc<Inner>,
 }
 
+/// Pointer identity — a `CancelHandle` is the sender end of ONE cancel
+/// signal, so clones of it are equal and handles from two separate
+/// [`cancel_token`] calls never are.
+///
+/// Identity is the question a guarded `set` asks ("is this the same
+/// instance?"), and it is the only one with an answer here: the payload is
+/// an `AtomicBool` plus a waker list, and comparing those would make two
+/// unrelated not-yet-fired handles look interchangeable — so replacing the
+/// handle for request A with the one for request B would silently fail to
+/// notify. `Signal<T>` is bounded on `T: PartialEq` at creation and `get`,
+/// and an app parking the in-flight request's cancel button in state is the
+/// motivating case; the orphan rule means only this crate can supply the
+/// impl. Mirrors `MediaStream`.
+impl PartialEq for CancelHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
+impl Eq for CancelHandle {}
+
 impl CancelHandle {
     /// Mark the paired tokens as cancelled and wake any task waiting
     /// on a `token.cancelled()` future. Idempotent — subsequent calls
@@ -107,6 +128,20 @@ impl CancelHandle {
 pub struct CancelToken {
     pub(crate) inner: Arc<Inner>,
 }
+
+/// Pointer identity, for the same reason as [`CancelHandle`] — the token
+/// is the receiver end of the same shared `Inner`, is equally cloneable,
+/// and is equally likely to be parked in app state next to the request it
+/// guards. Note this compares the SIGNAL, so a token equals another token
+/// paired with the same handle (they cancel together) — which is exactly
+/// the grouping a subscriber cares about.
+impl PartialEq for CancelToken {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
+impl Eq for CancelToken {}
 
 impl CancelToken {
     /// Snapshot — true once any paired handle has fired.
@@ -228,5 +263,37 @@ mod tests {
         h.cancel();
         assert!(t.is_cancelled());
         assert!(t2.is_cancelled());
+    }
+
+    // -- PartialEq: identity, so the handle can live in a `Signal` -----------
+    //
+    // `Signal<T>` is bounded on `T: PartialEq`, and only THIS crate can
+    // supply the impl (the orphan rule blocks an app crate). These pin the
+    // semantics, not merely the existence.
+
+    #[test]
+    fn cancel_handle_clones_compare_equal() {
+        let (h, _t) = cancel_token();
+        assert!(h == h.clone(), "clones address the same cancel signal");
+    }
+
+    #[test]
+    fn independently_created_cancel_handles_compare_unequal() {
+        let (a, _) = cancel_token();
+        let (b, _) = cancel_token();
+        assert!(a != b, "two separate cancel signals are never the same handle");
+        // …and stay unequal once both have fired, i.e. the compare is not
+        // secretly reading the cancelled flag.
+        a.cancel();
+        b.cancel();
+        assert!(a != b, "identity does not collapse once state matches");
+    }
+
+    #[test]
+    fn cancel_token_clones_compare_equal_and_pairs_are_distinct() {
+        let (_ha, ta) = cancel_token();
+        let (_hb, tb) = cancel_token();
+        assert!(ta == ta.clone());
+        assert!(ta != tb);
     }
 }

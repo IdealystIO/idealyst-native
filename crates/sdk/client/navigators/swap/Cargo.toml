@@ -10,49 +10,34 @@ license.workspace = true
 # layout wrapped around the navigator's single outlet (`{nav.outlet}`),
 # the analog of react-router's `<Outlet/>`.
 #
-# The handler is BACKEND-NEUTRAL: it drives everything through the
-# framework's `NavigatorHost` callbacks (`build_layout_with_outlet`,
-# `mount_screen`, `insert_node`, `clear_children`) + `schedule_microtask`,
-# so ONE handler serves every backend. Per-backend modules only submit the
-# self-registration inventory entry.
-#
-# App bootstrap: `swap_navigator::register(&mut backend)` (or automatic via
-# the inventory registrar on web/macOS).
+# The authored surface lowers to the vocabulary's `swap_navigator()`
+# builder; the RUNTIME is the vocabulary's own swap handler, installed on
+# every host by `register_builtins`. So there is no per-backend handler to
+# register (hence no per-backend dependency here) and no registration call
+# for an app to forget — `swap_navigator::register` survives only as a
+# documented no-op for historical bootstrap code.
+description = "Swap navigator SDK — flat co-equal screens with author chrome around one outlet."
 
-[features]
-# Recording handler for the runtime-server sidecar's recorder backend.
-# Host-side only; off by default. Mirrors tab/drawer.
-runtime-server = ["dep:dev-server", "dep:wire"]
-# Compile-checked usage recipes for the docs/MCP catalog. Off in every
-# production build (the `recipe!` macro then expands to nothing). Must be
-# THIS crate's own feature — the `#[cfg(feature = "catalog")]` gate on
-# `src/recipes.rs` only sees this crate's features, not runtime-core's.
-catalog = ["runtime-core/catalog"]
+# No features. The MCP catalog's swap-navigator RECIPE is static data in
+# `runtime_shared::recipes` (compile-checked against this crate's live
+# surface by `crates/dev/newcore-app/tests/recipes_compile.rs`), so this
+# crate's own sources emit nothing into the catalog and need no `catalog`
+# switch.
 
 [dependencies]
-# Forward the navigator gate: depending on this SDK re-enables the
-# walker/backend navigator machinery even under default-features = false.
-runtime-core = { workspace = true, features = ["prim-navigator"] }
-# Self-registration of the per-backend navigator handler at construction.
-inventory = "0.3"
+# The builders + glue re-exports (Element/Ref/Signal/inject) + prims
+# (NavHandle/SwapNav/Screen/MountPolicy) the authored surface lowers to.
+runtime-vocabulary = { workspace = true }
 
-# Recording handler deps (feature `runtime-server`, host-side only).
-dev-server = { workspace = true, optional = true }
-wire = { workspace = true, optional = true }
-
-# The generic chrome/registration test registers the handler on a concrete
-# SsrBackend; the handler itself is backend-neutral (no backend dep, no cfg).
 [dev-dependencies]
+# The shared host-mock recording substrate drives the authored surface
+# end-to-end (tests/navigator.rs); backend-ssr renders it at a path and
+# crawls the route set (tests/ssr.rs).
+runtime-scene = { workspace = true }
+runtime-world = { workspace = true }
+runtime-shared = { workspace = true }
+# COORDINATION (runtime-v2 deletion wave): `` is
+# still required because backend-ssr's `newcore` render path is
+# feature-gated. Drop the forward once it is unconditional.
 backend-ssr = { workspace = true }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { workspace = true, features = ["prim-navigator"] }
-
-[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
-backend-macos = { workspace = true }
-
-[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
-backend-ios-mobile = { workspace = true }
-
-[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
-backend-android-mobile = { workspace = true }
+host-mock = { workspace = true }

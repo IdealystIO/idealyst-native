@@ -29,7 +29,16 @@ fn main() {
         height: 300.0,
     };
 
-    if let Err(e) = host_appkit::run_with(app, opts, |backend| {
+    // The boot seam hands us the scene `Registry`, not the backend — and
+    // `menu::install` needs `&mut MacosBackend` for its `MainThreadMarker`.
+    // The menu bar is not a scene payload (it hangs off
+    // `NSApplication.mainMenu`, not the view tree), so there is no mount
+    // handler to reach the backend through. The host installs the global
+    // weak self-handle BEFORE calling this seam and holds no borrow across
+    // it, so `with_global_backend` is the sanctioned way in — the same
+    // route `menu::install_reactive`'s re-fire path already takes.
+    if let Err(e) = host_appkit::run_with(app, opts, |_registry| {
+        backend_macos::with_global_backend(|backend| {
         // The first menu's title is the app menu by convention.
         // Leaving it empty here lets the system display whatever it
         // chooses (typically the process name); a real app would
@@ -146,6 +155,7 @@ fn main() {
         };
         menu::install(backend, bar);
         eprintln!("[menu-demo] menu bar installed");
+      });
     }) {
         eprintln!("menu-demo: runtime error: {e}");
         std::process::exit(1);

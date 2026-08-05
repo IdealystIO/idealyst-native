@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use runtime_core::scheduling::{ScheduleHandle, Scheduler};
+use runtime_shared::scheduling::{ScheduleHandle, Scheduler};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
@@ -87,15 +87,19 @@ fn dispatch_via_promise(f: Box<dyn FnOnce() + 'static>) {
 /// Register this backend's scheduler with `runtime-core`. Idempotent —
 /// first install wins.
 ///
-/// Also installs the browser URL provider for the navigator substrate's
-/// URL sync (pushState/popstate mirroring + cold-start deep-link seed)
-/// — piggybacked here because every web host already calls
-/// `install_scheduler()` at startup, so outlet-model navigators get URL
-/// routing with zero extra host wiring. Idempotent + headless-safe.
+/// Deliberately does NOT install the browser URL provider. That used to
+/// be piggybacked here ("every web host calls `install_scheduler()`
+/// anyway"), which made it unconditional — and
+/// `url_provider::install_url_provider`'s popstate listener calls
+/// `nav::handle_popstate`, so it kept `NavigatorControl::dispatch` plus
+/// its `Rc` drop glue (10,827 bytes measured) alive in bundles that had
+/// dropped the navigator primitives entirely. The install now rides
+/// `BuiltinSet::nav_services` at the boot seam
+/// ([`crate::newcore::start_in_with`] / [`crate::newcore_hydrate::hydrate_in_with`]),
+/// next to `newcore_url_sync::install`, so a set without `nav` never
+/// names it and LLVM drops the whole chain.
 pub fn install_scheduler() {
-    runtime_core::scheduling::install_scheduler(Box::new(WebScheduler));
-    #[cfg(feature = "prim-navigator")]
-    crate::url_provider::install_url_provider();
+    runtime_shared::scheduling::install_scheduler(Box::new(WebScheduler));
 }
 
 struct WebScheduler;
@@ -128,12 +132,17 @@ impl Scheduler for WebScheduler {
     ) -> Box<dyn ScheduleHandle> {
         let Some(window) = web_sys::window() else {
             f();
+            crate::dispatch_hook::fire_dispatch_hook();
             return Box::new(InertHandle);
         };
         let mut once: Option<Box<dyn FnOnce() + 'static>> = Some(f);
         let closure: Closure<dyn FnMut()> = Closure::new(move || {
             if let Some(g) = once.take() {
                 g();
+                // One-shot frame callbacks can run author code that
+                // stages new-core writes (animation ticks). See
+                // `dispatch_hook` module docs.
+                crate::dispatch_hook::fire_dispatch_hook();
             }
         });
         let handle = match window.request_animation_frame(closure.as_ref().unchecked_ref())
@@ -157,12 +166,18 @@ impl Scheduler for WebScheduler {
     ) -> Box<dyn ScheduleHandle> {
         let Some(window) = web_sys::window() else {
             f();
+            crate::dispatch_hook::fire_dispatch_hook();
             return Box::new(InertHandle);
         };
         let mut once: Option<Box<dyn FnOnce() + 'static>> = Some(f);
         let closure: Closure<dyn FnMut()> = Closure::new(move || {
             if let Some(g) = once.take() {
                 g();
+                // Timer callbacks are a primary author-code surface
+                // (`after_ms` bodies that set signals) — the flush hook
+                // is what commits those writes on the new core. See
+                // `dispatch_hook` module docs.
+                crate::dispatch_hook::fire_dispatch_hook();
             }
         });
         let handle = match window.set_timeout_with_callback_and_timeout_and_arguments_0(
@@ -209,6 +224,10 @@ impl Scheduler for WebScheduler {
                 let mut f_borrow = user_fn.borrow_mut();
                 (&mut *f_borrow)();
             }
+            // rAF-loop iterations can run author code that stages
+            // new-core writes (frame-paced drag/scroll state). See
+            // `dispatch_hook` module docs.
+            crate::dispatch_hook::fire_dispatch_hook();
             let mut s = state.borrow_mut();
             if s.cancelled {
                 return;

@@ -36,14 +36,17 @@
 
 use crate::compose::OverlayCompositor;
 use crate::compose_transform::TransformCompositor;
+use crate::anim::AnimTextures;
 use crate::encode::encode_scene;
 use crate::plan::{plan_scene, CachedRef, ScenePlan};
 use crate::shape_pass::ShapePass;
 use crate::web_layer::WebLayerCompositor;
-use canvas_core::{paint_scene, CanvasProps, DrawOp, Scene as CanvasScene, TextureLayer};
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::primitives::graphics::{GraphicsSurface, OnReadyEvent, OnResizeEvent};
-use runtime_core::{effect, Backend, RegisterExternal};
+use canvas_core::{paint_scene, CanvasPrim, CanvasProps, DrawOp, Scene as CanvasScene, TextureLayer};
+use runtime_scene::{Element, Host, MountCx, Registry};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives::graphics::{GraphicsSurface, OnReadyEvent, OnResizeEvent};
+use runtime_vocabulary::caps::GraphicsOps;
+use runtime_vocabulary::style_attach::{attach_style, on_teardown, StyleServices};
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -66,20 +69,92 @@ type RenderFn = Box<dyn FnMut(&CanvasScene)>;
 /// to the surface (whatever the surface's own format is).
 const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-/// Register the web vello canvas renderer. Overrides `canvas-native` (registered
-/// first, via inventory) only when the browser exposes WebGPU at all; the
-/// per-GPU viability decision is deferred to each canvas's `on_ready`.
-pub fn register<B: RegisterExternal>(backend: &mut B) {
-    canvas_core::ensure_wire_serde();
+/// Register the web vello canvas renderer on a scene registry. Overrides
+/// a `canvas-native` registration for the same payload (last write wins)
+/// only when the browser exposes WebGPU at all; the per-GPU viability
+/// decision is deferred to each canvas's `on_ready`.
+pub fn register<H>(registry: &mut Registry<H>)
+where
+    H: GraphicsOps + StyleServices + 'static,
+{
     // Synchronous, deterministic gate. Absent `navigator.gpu` → leave
-    // canvas-native installed; no wasted async probe. A *present* `navigator.gpu`
-    // can still fail to yield an adapter (driver blocklists, VMs); that case is
-    // handled per-canvas by the Canvas2D fallback in `on_ready`.
+    // whatever renderer is already installed; no wasted async probe. A
+    // *present* `navigator.gpu` can still fail to yield an adapter (driver
+    // blocklists, VMs); that case is handled per-canvas by the Canvas2D
+    // fallback in `on_ready`.
     if !webgpu_present() {
         return;
     }
-    backend.register_external::<CanvasProps, _>(build_canvas);
+    registry.register::<CanvasPrim, _>(mount_canvas::<H>);
 }
+
+/// Queue this renderer's [`CanvasPrim`] handler for registration from a
+/// lazily-loaded chunk, instead of installing it at boot.
+///
+/// The late-binding sibling of [`register`], for an app that code-splits the
+/// screen its canvas lives on. Registering eagerly anchors this crate (wgpu +
+/// vello + naga) in the initial bundle, because wasm-split cannot move a
+/// boot-reachable handler into a chunk; called from inside the chunk, the
+/// handler — and the renderer it reaches — is constructed there instead.
+///
+/// Requires the app to have declared `Registry::defer::<CanvasPrim>()` in its
+/// boot seam. A canvas the scene meets before this runs parks behind a
+/// layout-transparent placeholder and realizes on the drain.
+///
+/// Carries the same `navigator.gpu` gate as [`register`]: with WebGPU absent
+/// this queues nothing, leaving whatever renderer the app installed (typically
+/// `canvas-native`'s Canvas2D rasterizer) in place.
+///
+/// Generic over the host for the same reason [`register`] is — this crate takes
+/// no backend dependency (its renderer is pure wgpu, so there is no
+/// per-platform module to name). The caller pins `H` to its concrete backend,
+/// e.g. `register_from_chunk::<backend_web::WebBackend>()`.
+pub fn register_from_chunk<H>()
+where
+    H: Host + GraphicsOps + StyleServices + 'static,
+{
+    if !webgpu_present() {
+        return;
+    }
+    runtime_scene::defer_registration::<H, _>(|registry| {
+        registry.register_deferred::<CanvasPrim, _>(mount_canvas::<H>);
+    });
+}
+
+fn mount_canvas<H>(
+    cx: &mut MountCx<'_, H>,
+    prim: &Rc<CanvasPrim>,
+    _children: Vec<Element>,
+) -> H::Node
+where
+    H: GraphicsOps + StyleServices,
+{
+    let backend = cx.backend().clone();
+    let node = {
+        let mut b = backend.borrow_mut();
+        build_canvas(&prim.props, &mut *b)
+    };
+    finish_mount(&backend, &node, prim);
+    node
+}
+
+/// Shared mount tail: author style onto the graphics node, then the
+/// scope-tied `release_external` teardown (every external mount releases
+/// at unmount, handler-backed or not).
+fn finish_mount<H>(backend: &Rc<RefCell<H>>, node: &H::Node, prim: &CanvasPrim)
+where
+    H: GraphicsOps + StyleServices,
+{
+    if let Some(style) = prim.take_style() {
+        attach_style(backend, node, style);
+    }
+    let backend = backend.clone();
+    let node = node.clone();
+    on_teardown(move || {
+        backend.borrow_mut().release_external(&node);
+    });
+}
+
 
 /// One-line console note of which renderer engaged. Goes straight to
 /// `console.log` (not the `log` facade, which the web logger may filter) so the
@@ -153,7 +228,7 @@ fn web_dpr() -> f64 {
     }
 }
 
-pub fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::Node {
+pub fn build_canvas<H: GraphicsOps>(props: &Rc<CanvasProps>, backend: &mut H) -> H::Node {
     // Latest painted scene + the installed renderer, shared between the reactive
     // effect and the surface lifecycle callbacks. `render_fn` is `None` until
     // the async `on_ready` probe installs a GPU or Canvas2D renderer.
@@ -180,7 +255,7 @@ pub fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::
         let scene_cell = scene_cell.clone();
         let render_fn = render_fn.clone();
         let frame_pending = frame_pending.clone();
-        effect!({
+        runtime_world::effect(move || {
             *scene_cell.borrow_mut() = paint_scene(&props);
             schedule_repaint(&render_fn, &scene_cell, &frame_pending);
         });
@@ -357,6 +432,10 @@ struct GpuState {
     /// back WITHOUT re-uploading the cached image → the image renders blank.
     /// Image layers on their own renderer keep their atlas intact. Lazily built.
     image_renderer: Option<Renderer>,
+    /// Animated-image (video frame pump) override textures — one per animated
+    /// id, written per changed frame and read by vello via `override_image`.
+    /// See `anim.rs` / the animated branch of `encode::image_data_cached`.
+    anim: AnimTextures,
     scene: VelloScene,
     /// Intermediate Rgba8Unorm storage texture vello renders into (the surface
     /// can't be a compute storage target); blitted to the surface each frame.
@@ -546,6 +625,7 @@ impl GpuState {
             config,
             renderer,
             image_renderer,
+            anim: AnimTextures::new(),
             scene: VelloScene::new(),
             target,
             target_view,
@@ -630,6 +710,14 @@ impl GpuState {
                 )
                 .ok();
             }
+            // Flush any animated-image frames this bake's encode staged into
+            // their override textures before rendering (see `anim.rs`).
+            self.anim.apply(
+                &self.device,
+                &self.queue,
+                &mut self.renderer,
+                self.image_renderer.as_mut(),
+            );
             let view = &self.cached_layers.get(&layer.id).unwrap().1;
             let renderer = match (has_image, self.image_renderer.as_mut()) {
                 (true, Some(r)) => r,
@@ -740,6 +828,14 @@ impl GpuState {
                 )
                 .ok();
             }
+            // Flush any animated-image frames this encode staged into their
+            // override textures before rendering (see `anim.rs`).
+            self.anim.apply(
+                &self.device,
+                &self.queue,
+                &mut self.renderer,
+                self.image_renderer.as_mut(),
+            );
             let renderer = match (has_image, self.image_renderer.as_mut()) {
                 (true, Some(r)) => r,
                 _ => &mut self.renderer,

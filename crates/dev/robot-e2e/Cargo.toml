@@ -8,10 +8,15 @@ description = "Shared, in-app Playwright-style E2E harness built on the framewor
 [lib]
 crate-type = ["rlib"]
 
-# The harness is a test-support crate: it always wants the real Robot API
-# (find/click/type_text/…), which lives behind `runtime-core/robot`. A
-# consuming app still declares its OWN `robot` feature so the `ui!` macro
-# emits `test_id` slots in THAT crate's context — see the conformance app's
-# Cargo.toml. Here we just turn the API on unconditionally.
 [dependencies]
-runtime-core = { workspace = true, features = ["robot"] }
+# The harness is a test-support crate: it always wants the real Robot API
+# (find/click/type_text/…), which lives behind `runtime-vocabulary/robot`,
+# so it is on unconditionally here. A consuming app still declares its
+# OWN `robot` feature so the `ui!` macro emits `test_id` slots in THAT
+# crate's context — see the conformance app's Cargo.toml.
+runtime-vocabulary = { workspace = true, features = ["robot"] }
+# The shared substrate for everything outside the registry: the platform
+# logger (`log_info!`/`log_error!`), the scheduler the suite runner paces
+# itself with (`after_ms_detached`), the microtask drain `settle()` uses,
+# and `ViewportRect` for the layout assertions.
+runtime-shared = { workspace = true }

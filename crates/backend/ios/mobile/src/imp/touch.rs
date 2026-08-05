@@ -7,7 +7,7 @@
 //!
 //! The framework's View primitive creates instances of this class
 //! (via `create_view`) instead of plain `UIView`, so a later
-//! [`Backend::install_touch_handler`](runtime_core::Backend::install_touch_handler)
+//! [`Backend::install_touch_handler`](runtime_shared::Backend::install_touch_handler)
 //! drops the handler into the view's ivars without recreating the
 //! node. Views with no installed handler dispatch touches straight
 //! to `super` — overhead is one method call per touch event.
@@ -18,7 +18,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use runtime_core::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint};
+use runtime_shared::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
@@ -46,7 +46,7 @@ pub(crate) struct TouchViewIvars {
     /// hit-test override rather than `userInteractionEnabled = NO`
     /// because the UIKit flag disables the WHOLE subtree with no way
     /// for a descendant `Auto` to re-enable.
-    pointer_events: Cell<Option<runtime_core::PointerEvents>>,
+    pointer_events: Cell<Option<runtime_shared::PointerEvents>>,
 }
 
 declare_class!(
@@ -107,7 +107,7 @@ declare_class!(
                 unsafe { msg_send_id![super(self), hitTest: point, withEvent: event] };
             if matches!(
                 self.ivars().pointer_events.get(),
-                Some(runtime_core::PointerEvents::None)
+                Some(runtime_shared::PointerEvents::None)
             ) {
                 result.and_then(|result| {
                     let self_view: &UIView = self;
@@ -117,7 +117,7 @@ declare_class!(
                     // Walk hit → … → (excluding) self, collecting each
                     // framework host's explicit pointer_events for the
                     // shared nearest-explicit-wins verdict.
-                    let mut chain: Vec<Option<runtime_core::PointerEvents>> = Vec::new();
+                    let mut chain: Vec<Option<runtime_shared::PointerEvents>> = Vec::new();
                     let mut cur: Option<Retained<UIView>> = Some(result.clone());
                     while let Some(v) = cur {
                         if std::ptr::eq(&*v as *const UIView, self_view as *const UIView) {
@@ -190,7 +190,7 @@ impl IdealystTouchView {
     /// Map `StyleRules::pointer_events` onto this host. Called by
     /// `apply_style`; `Some` overwrites, unset leaves the prior apply.
     /// Consulted by the `hitTest:withEvent:` override above.
-    pub(crate) fn set_pointer_events(&self, v: Option<runtime_core::PointerEvents>) {
+    pub(crate) fn set_pointer_events(&self, v: Option<runtime_shared::PointerEvents>) {
         self.ivars().pointer_events.set(v);
     }
 
@@ -272,13 +272,13 @@ impl IdealystTouchView {
             // `set_pointer_modifiers`). Idempotent with the synchronous claim.
             if matches!(phase, TouchPhase::Began) {
                 let view = self.retain();
-                runtime_core::set_active_touch_claim(Some(Rc::new(move || {
+                runtime_shared::set_active_touch_claim(Some(Rc::new(move || {
                     claim_touch_internal(&view);
                 })));
             }
             let response = (handler)(&event);
             if matches!(phase, TouchPhase::Began) {
-                runtime_core::set_active_touch_claim(None);
+                runtime_shared::set_active_touch_claim(None);
             }
 
             if response.consumed {

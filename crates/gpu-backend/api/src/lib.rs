@@ -41,7 +41,7 @@
 //!    implementing one event-translation crate that depends on
 //!    this api crate plus the chosen render backend. Adding a
 //!    new render backend means implementing `EventSink` (and
-//!    `runtime_core::Backend`). The other side doesn't change.
+//!    the framework's backend surface). The other side doesn't change.
 //!
 //! 2. **Cross-mixing**. Any native shell pairs with any render
 //!    backend — they only talk through the types here. Each

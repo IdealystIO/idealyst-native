@@ -37,10 +37,21 @@
 //! typed convenience over serde_json. Expiry contract: a `set` with
 //! `Some(ttl)` makes the entry unreadable after `ttl` (backends may
 //! evict lazily); `None` means no expiry.
+//!
+//! Boot-time selection mirrors `jobs`/`pubsub`: [`configure`] installs a
+//! process-wide cache readable via [`configured`], and
+//! [`configure_from_env`] selects it from `IDEALYST_CACHE_BACKEND` /
+//! `IDEALYST_CACHE_URL` (what `idealyst dev` forwards from the `[cache]`
+//! section; `idealyst-config`'s `configure_all` wires the same section
+//! from `idealyst.toml`). For redis with no URL, it falls back to the
+//! installed `redis::Client` — the shared-connection spelling above.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
+
+mod config;
+pub use config::{configure, configure_from_env, configured};
 
 mod memory;
 pub use memory::MemoryCache;

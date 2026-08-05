@@ -556,6 +556,8 @@ mod tests {
             server_bin: None,
             server_manifest: None,
             server_port: 3000,
+            worker_bin: None,
+            worker_manifest: None,
             web: Default::default(),
             macos,
             permissions: Default::default(),

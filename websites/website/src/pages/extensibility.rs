@@ -1,9 +1,9 @@
-//! Extensibility — the two directions the framework opens up:
-//! `Element::External` + per-backend registries for adding new native
+//! Extensibility — the two directions the framework opens up: the scene
+//! `Registry` and its per-backend mount handlers for adding new native
 //! primitives from outside core, and `idealyst export` for embedding
 //! idealyst components in React/Vue/vanilla hosts as Web Components.
-//! The showcase example is real: this site's own code blocks are an
-//! external primitive (`crates/sdk/client/codeblock`).
+//! The showcase example is real: this site's own code blocks are a
+//! registered primitive (`crates/sdk/client/codeblock`).
 
 use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
@@ -19,7 +19,7 @@ pub fn page() -> Element {
     let export_ref: Ref<ViewHandle> = Ref::new();
 
     let toc = vec![
-        TocEntry { handle: hatch_ref, label: "The External element" },
+        TocEntry { handle: hatch_ref, label: "The scene registry" },
         TocEntry { handle: example_ref, label: "A real extension: code blocks" },
         TocEntry { handle: small_ref, label: "Core stays small" },
         TocEntry { handle: export_ref, label: "Export to Web Components" },
@@ -29,7 +29,7 @@ pub fn page() -> Element {
         Stack(gap = StackGap::Xl) {
             PageHeader(
                 title = "Extensibility",
-                blurb = "The framework opens up in both directions. `Element::External` \
+                blurb = "The framework opens up in both directions. The scene registry \
                  lets a third-party crate add a new native primitive \u{2014} maps, video, \
                  anything \u{2014} with per-backend renderers, fully typed end to end. And \
                  `idealyst export` packages your components as Web Components that run \
@@ -49,38 +49,46 @@ pub fn page() -> Element {
 // =============================================================================
 
 fn external_element() -> Element {
-    let example = "// The extension crate defines ONE typed props struct \u{2014} the key\n\
+    let example = "// The extension crate defines ONE typed payload struct \u{2014} the key\n\
                    // the registry dispatches on \u{2014} plus a constructor for authors:\n\
-                   #[derive(Clone, IdealystSchema)]\n\
-                   pub struct CodeBlockProps {\n    \
-                       pub spans: Vec<(String, Color)>,\n\
+                   struct CodeBlockPrim {\n    \
+                       spans: Vec<(String, Color)>,\n    \
+                       style: RefCell<Option<StyleProp>>,\n\
                    }\n\
                    \n\
-                   pub fn code_block(spans: Vec<(String, Color)>) -> Bound<CodeBlockHandle> { ... }\n\
+                   pub fn code_block(spans: Vec<(String, Color)>) -> CodeBlockBuilder { ... }\n\
                    \n\
-                   // And one handler per backend it supports \u{2014} fully typed:\n\
-                   pub fn register(backend: &mut MacosBackend) {\n    \
-                       backend.register_external::<CodeBlockProps, _>(macos::build);\n\
+                   // And one mount handler per backend it supports \u{2014} fully typed:\n\
+                   pub fn register<H>(registry: &mut Registry<H>)\n\
+                   where\n    \
+                       H: StyleServices + TextOps + 'static,\n\
+                   {\n    \
+                       registry.register::<CodeBlockPrim, _>(mount_code_block_macos);\n\
                    }\n\
                    \n\
-                   fn build(props: &Rc<CodeBlockProps>, backend: &mut MacosBackend) -> MacosNode {\n    \
+                   fn mount_code_block_macos(\n    \
+                       cx: &mut MountCx<'_, MacosBackend>,\n    \
+                       prim: &Rc<CodeBlockPrim>,\n    \
+                       children: Vec<Element>,\n\
+                   ) -> MacosNode {\n    \
                        // one NSScrollView + NSTextField, one color attribute per span\n\
                    }";
     ui! {
         Section(
-            title = "The External element".to_string(),
+            title = "The scene registry".to_string(),
             paragraphs = vec![
-                "`Element::External` is the framework's single extension point for \
-                 primitives core doesn't ship. An extension crate defines a typed props \
-                 struct and a constructor; each backend holds a registry keyed by the \
-                 props type's `TypeId` and dispatches to whichever handler the app \
-                 registered. The registry is collision-free by construction \u{2014} two \
-                 crates can both ship a \"map view\" because their props types are \
+                "The scene `Registry` is the framework's single extension point for \
+                 primitives core doesn't ship. An extension crate defines a typed \
+                 payload struct and a constructor; the registry is keyed by that \
+                 type's `TypeId` and dispatches to whichever mount handler the app \
+                 registered. It is collision-free by construction \u{2014} two \
+                 crates can both ship a \"map view\" because their payload types are \
                  distinct types.".to_string(),
-                "Type erasure is paid at exactly one line, inside `register_external`. \
-                 The author-facing constructor, the props struct, and the per-backend \
-                 handler all stay fully typed \u{2014} the handler receives \
-                 `&Rc<CodeBlockProps>`, never a `dyn Any`.".to_string(),
+                "Type erasure is paid at exactly one line, inside `register`. \
+                 The author-facing constructor, the payload struct, and the \
+                 per-backend handler all stay fully typed \u{2014} the handler \
+                 receives `&Rc<CodeBlockPrim>` and a `MountCx` carrying the real \
+                 backend, never a `dyn Any`.".to_string(),
             ],
             code = Some(example.to_string()),
         )
@@ -88,9 +96,9 @@ fn external_element() -> Element {
 }
 
 fn codeblock_example() -> Element {
-    let example = "// App bootstrap \u{2014} once per target:\n\
-                   pub fn register_extensions(backend: &mut MacosBackend) {\n    \
-                       codeblock::register(backend);\n\
+    let example = "// App bootstrap \u{2014} one seam, every target:\n\
+                   pub fn register_scene_extensions<H: Host>(registry: &mut Registry<H>) {\n    \
+                       codeblock::register(registry);\n\
                    }\n\
                    \n\
                    // Anywhere in the tree, styled like any other primitive:\n\
@@ -99,7 +107,7 @@ fn codeblock_example() -> Element {
         Section(
             title = "A real extension: code blocks".to_string(),
             paragraphs = vec![
-                "Every syntax-highlighted panel on this site is an external primitive \
+                "Every syntax-highlighted panel on this site is a registered primitive \
                  (`crates/sdk/client/codeblock`). Each `code_block(...)` renders as a \
                  single native node per backend: a `<pre>` with one `<span>` per color \
                  run on the web, a `UIScrollView` + `UILabel` with `NSAttributedString` \

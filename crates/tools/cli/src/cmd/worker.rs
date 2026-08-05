@@ -84,8 +84,8 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         cmd.arg("--release");
     }
 
-    // Forward the local queue + pubsub backends so the worker connects to the
-    // same brokers the server uses.
+    // Forward the local queue + pubsub + cache backends so the worker connects
+    // to the same shared infrastructure the server uses.
     if let Ok(cfg) = crate::dev_config::DevConfig::load(&args.dir) {
         if let Some(jobs) = &cfg.jobs {
             if let Some(b) = &jobs.backend {
@@ -101,6 +101,14 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             }
             if let Some(u) = &ps.url {
                 cmd.env("IDEALYST_PUBSUB_URL", u);
+            }
+        }
+        if let Some(cache) = &cfg.cache {
+            if let Some(b) = &cache.backend {
+                cmd.env("IDEALYST_CACHE_BACKEND", b);
+            }
+            if let Some(u) = &cache.url {
+                cmd.env("IDEALYST_CACHE_URL", u);
             }
         }
     }

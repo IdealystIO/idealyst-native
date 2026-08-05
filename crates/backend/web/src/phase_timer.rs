@@ -27,7 +27,7 @@ impl PhaseTimer {
     pub(crate) fn start(phase: &'static str) -> Self {
         Self {
             phase,
-            start_us: runtime_core::debug::now_micros(),
+            start_us: runtime_shared::debug::now_micros(),
         }
     }
 }
@@ -35,9 +35,9 @@ impl PhaseTimer {
 #[cfg(feature = "debug-stats")]
 impl Drop for PhaseTimer {
     fn drop(&mut self) {
-        let now = runtime_core::debug::now_micros();
+        let now = runtime_shared::debug::now_micros();
         let dur = now.saturating_sub(self.start_us);
-        runtime_core::debug::record_apply_phase(self.phase, dur);
+        runtime_shared::debug::record_apply_phase(self.phase, dur);
     }
 }
 
