@@ -15,6 +15,16 @@
 //!             SelectOption::new("pear", "Pear"),
 //!             SelectOption::new("plum", "Plum"),
 //!         ],
+//!         // Pinned below the rows: offer to create what the user typed.
+//!         footer = AutocompleteSlot::new(move |cx| {
+//!             let dismiss = cx.dismiss.clone();
+//!             ui! {
+//!                 Button(label = rx!(format!("Add “{}”", cx.query.get())), on_click = move || {
+//!                     // …create the option + commit it host-side, then:
+//!                     (dismiss)();
+//!                 })
+//!             }
+//!         }),
 //!     )
 //! }
 //! ```
@@ -38,6 +48,14 @@
 //! - Dismissing the menu without choosing (blur / `Escape`) reverts the
 //!   typed text to the committed selection, so the input can never be left
 //!   showing a string that isn't a valid option.
+//! - Optional `header` / `footer` slots render pinned above / below the
+//!   scrolling row area — they never scroll away with the rows. Each is a
+//!   builder invoked when the menu opens with an [`AutocompleteSlotCx`]
+//!   carrying the live typed query and a `dismiss` handle, which is what an
+//!   "Add ‹query›" footer needs: render the current text reactively and
+//!   close the menu after acting. Slots are press surfaces inside the
+//!   focus-preserving panel, so pressing them never blurs the input; they
+//!   are click-only (the keyboard cursor and `Enter` stay on the rows).
 //!
 //! The dropdown deliberately reuses `Select`'s menu/row styling so the two
 //! controls drop visually identical menus, with two combobox-specific
@@ -78,6 +96,46 @@ use crate::stylesheets::{
 /// Disclosure caret glyph (▾) shown at the input's right edge.
 const CHEVRON: &str = "\u{25BE}";
 
+/// Context handed to a menu-slot builder ([`AutocompleteProps::header`] /
+/// [`AutocompleteProps::footer`]) each time the menu opens.
+#[derive(Clone)]
+pub struct AutocompleteSlotCx {
+    /// The live text currently typed in the input (read-only — a slot
+    /// observes the query, it never edits it). The builder runs once per
+    /// open, so render query-dependent content *reactively* off this signal
+    /// (`text_fmt!` / a derived read inside the returned element) rather
+    /// than snapshotting `.get()` at build time.
+    pub query: ReadSignal<String>,
+    /// Close the menu and revert the input to the committed selection's
+    /// label — the same path as `Escape`, preserving the invariant that the
+    /// input never lingers on text that isn't a valid option. Call it from
+    /// a slot action (e.g. after "Add ‹query›" creates the option and
+    /// commits it host-side).
+    pub dismiss: Rc<dyn Fn()>,
+}
+
+/// A pinned dropdown slot ([`AutocompleteProps::header`] /
+/// [`AutocompleteProps::footer`]): a builder invoked with an
+/// [`AutocompleteSlotCx`] each time the menu opens. A builder closure
+/// rather than an `Element` because the panel is structurally rebuilt on
+/// every open, and an `Element` can only be mounted once (the same shape as
+/// `Field`'s [`crate::Adornment::element`] and `Modal`'s content).
+#[derive(Clone)]
+pub struct AutocompleteSlot(Rc<dyn Fn(AutocompleteSlotCx) -> Element>);
+
+impl AutocompleteSlot {
+    /// Build a slot from a closure:
+    /// `AutocompleteSlot::new(move |cx| ui! { … })`.
+    pub fn new(build: impl Fn(AutocompleteSlotCx) -> Element + 'static) -> Self {
+        Self(Rc::new(build))
+    }
+
+    /// Invoke the builder for one menu-open cycle.
+    fn build(&self, cx: AutocompleteSlotCx) -> Element {
+        (self.0)(cx)
+    }
+}
+
 /// Default text shown in the menu when nothing matches the query.
 const DEFAULT_EMPTY_TEXT: &str = "No results";
 
@@ -87,6 +145,9 @@ const DEFAULT_EMPTY_TEXT: &str = "No results";
 // into the reactive `input_style` sink; `placeholder` routes to the
 // `text_input`'s reactive placeholder. `empty_text` feeds the dropdown's
 // empty-state row — structural list content (see the TODO in the body).
+// `header`/`footer` are `#[prop(static)]` for the same reason as `Field`'s
+// adornments: they're ELEMENT-BUILDERS (the *children* category), whose
+// reactivity is structural/internal via the slot cx, not data-reactive.
 #[runtime_core::props]
 #[derive(IdealystSchema)]
 pub struct AutocompleteProps {
@@ -106,6 +167,16 @@ pub struct AutocompleteProps {
     /// Text shown in the menu when no option matches the query. Defaults to
     /// "No results".
     pub empty_text: Option<String>,
+    /// Optional slot pinned ABOVE the scrolling row area (a caption, a
+    /// hint, …). Built per menu-open with an [`AutocompleteSlotCx`].
+    #[prop(static)]
+    pub header: Option<AutocompleteSlot>,
+    /// Optional slot pinned BELOW the scrolling row area. The canonical use
+    /// is an "Add ‹query›" action when no existing option fits: read
+    /// `cx.query` reactively for the label, create + commit the option
+    /// host-side on press, then `(cx.dismiss)()`. Built per menu-open.
+    #[prop(static)]
+    pub footer: Option<AutocompleteSlot>,
 }
 
 impl Default for AutocompleteProps {
@@ -117,7 +188,26 @@ impl Default for AutocompleteProps {
             size: Reactive::Static(SelectSize::default()),
             placeholder: Reactive::Static(None),
             empty_text: Reactive::Static(None),
+            header: None,
+            footer: None,
         }
+    }
+}
+
+/// The [`AutocompleteSlotCx`] handed to `header`/`footer` builders on each
+/// menu-open: the live query (read-only) plus a `dismiss` that closes the
+/// menu and reverts the input to the committed selection — the exact
+/// `Escape` path, so a slot action can never leave the input showing text
+/// that isn't a valid option. Pulled out as a function so the cx contract
+/// (live query, close-and-revert dismissal) is unit-tested without a
+/// backend.
+fn slot_cx(query: Signal<String>, open: Signal<bool>, revert: Rc<dyn Fn()>) -> AutocompleteSlotCx {
+    AutocompleteSlotCx {
+        query: query.read_only(),
+        dismiss: Rc::new(move || {
+            open.set(false);
+            (revert)();
+        }),
     }
 }
 
@@ -408,6 +498,8 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let menu_options = options.clone();
     let menu_commit = commit.clone();
     let menu_revert = revert.clone();
+    let header_slot = props.header.clone();
+    let footer_slot = props.footer.clone();
     let panel = when(
         move || open.get(),
         move || {
@@ -441,10 +533,17 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
             // combobox shape additionally floors the panel's width at the
             // input's (so filtering doesn't make it jump) and marks it
             // focus-preserving (so row presses don't blur the input — see
-            // the input's `on_focus` close-on-blur).
+            // the input's `on_focus` close-on-blur). Header/footer slots are
+            // built fresh per open (the panel is a structural rebuild) and
+            // pinned outside the scrolling row area.
+            let cx = slot_cx(query, open, menu_revert.clone());
+            let header = header_slot.as_ref().map(|s| s.build(cx.clone()));
+            let footer = footer_slot.as_ref().map(|s| s.build(cx));
             let menu = crate::components::menu_panel::combobox_menu_panel(
                 vec![rows],
                 AnchorTarget::from(wrapper_ref),
+                header,
+                footer,
             );
             let dismiss_revert = menu_revert.clone();
             runtime_core::anchored_overlay(AnchorTarget::from(wrapper_ref), vec![menu])
@@ -677,6 +776,68 @@ mod tests {
             assert_ne!(cursor_bg, off_bg, "the cursor row must paint against a plain row");
             assert_ne!(cursor_bg, selected_bg, "cursor and selection must be distinct looks");
             assert_ne!(selected_bg, off_bg, "the selection must paint against a plain row");
+    });
+    }
+
+    // The slot-cx contract handed to `header`/`footer` builders: the query
+    // is LIVE (a slot renders "Add ‹query›" reactively, not a snapshot at
+    // open time) and `dismiss` takes the Escape path — close AND revert —
+    // so a slot action can never leave the input showing text that isn't a
+    // valid option.
+    #[test]
+    fn slot_cx_exposes_live_query_and_dismiss_closes_and_reverts() {
+        with_test_world(|| {
+            let query: Signal<String> = signal("Che".to_string());
+            let open: Signal<bool> = signal(true);
+            let reverted = Rc::new(std::cell::Cell::new(false));
+            let revert_flag = reverted.clone();
+            let cx = slot_cx(query, open, Rc::new(move || revert_flag.set(true)));
+
+            assert_eq!(cx.query.get(), "Che");
+            query.set("Cherry".to_string());
+            idea_theme::testing::commit();
+            assert_eq!(cx.query.get(), "Cherry", "the slot cx reads the query LIVE");
+
+            (cx.dismiss)();
+            idea_theme::testing::commit();
+            assert!(!open.get(), "dismiss closes the menu");
+            assert!(reverted.get(), "dismiss reverts the input, same as Escape");
+    });
+    }
+
+    // A tree with both menu slots wired must build without panicking, and
+    // the slot builders must NOT run at build time — they're invoked per
+    // menu-OPEN (the collapsed tree has no panel to put them in).
+    #[test]
+    fn builds_collapsed_tree_with_menu_slots() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            let built = Rc::new(std::cell::Cell::new(0u32));
+            let header_built = built.clone();
+            let footer_built = built.clone();
+            let props = AutocompleteProps {
+                options: vec![SelectOption::new("apple", "Apple")],
+                header: Some(AutocompleteSlot::new(move |_cx| {
+                    header_built.set(header_built.get() + 1);
+                    runtime_core::text("Fruits".to_string()).into_element()
+                })),
+                footer: Some(AutocompleteSlot::new(move |cx| {
+                    footer_built.set(footer_built.get() + 1);
+                    let dismiss = cx.dismiss.clone();
+                    pressable(vec![text("Add…".to_string()).into_element()], move || {
+                        (dismiss)()
+                    })
+                    .into_element()
+                })),
+                ..Default::default()
+            };
+            match classify(Autocomplete(props)) {
+                P::View { children, .. } => {
+                    assert_eq!(children.len(), 2, "wrapper view + dropdown panel");
+                }
+                _ => panic!("Autocomplete renders a view wrapper"),
+            }
+            assert_eq!(built.get(), 0, "slot builders run per menu-open, not at build");
     });
     }
 

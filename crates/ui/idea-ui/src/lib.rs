@@ -174,7 +174,9 @@ pub use breakpoint::{
 // `Foo` via the type alias, while direct fn-call sites resolve to the fn —
 // they coexist in different namespaces. See [[project_buildelement_dispatch]].
 pub use components::alert::{Alert, AlertClose, AlertProps};
-pub use components::autocomplete::{Autocomplete, AutocompleteProps};
+pub use components::autocomplete::{
+    Autocomplete, AutocompleteProps, AutocompleteSlot, AutocompleteSlotCx,
+};
 pub use components::avatar::{Avatar, AvatarColor, AvatarProps, AvatarSize};
 pub use components::badge::{Badge, BadgeProps};
 pub use components::button::{Button, ButtonProps};
