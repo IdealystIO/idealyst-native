@@ -287,6 +287,16 @@ fn set_flush_world(world: Option<World>) {
 }
 
 /// True while a new-core app is mounted (`start` ran, `stop` hasn't).
+/// Host-integration seam: an embedded renderer mounted INSIDE this app's
+/// tree — the wgpu GPU preview (`host_linux_desktop::mount`) — realizes its
+/// scene into this SAME world, so the app's existing flush driver commits
+/// the embedded app's staged writes with no second driver: one thread, one
+/// world, one logical update stream. Mirrors
+/// `backend_macos::newcore::mounted_world`.
+pub fn mounted_world() -> Option<World> {
+    FLUSH_WORLD.with(|w| w.borrow().clone())
+}
+
 pub fn is_booted() -> bool {
     FLUSH_WORLD.with(|w| w.borrow().is_some())
 }

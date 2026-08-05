@@ -56,9 +56,9 @@ use std::rc::Rc;
 
 use render_api::DeviceProfile;
 use render_wgpu::{Host, Painter, Renderer};
-use runtime_core::driver::{render_loop, RenderLoop};
-use runtime_core::primitives::graphics::{FramebufferOrigin, GlTarget};
-use runtime_core::Element;
+use runtime_shared::driver::{render_loop, RenderLoop};
+use runtime_shared::primitives::graphics::{FramebufferOrigin, GlTarget};
+use runtime_scene::Element;
 
 // --- GL constants for the framebuffer-attachment query -------------------
 const GL_FRAMEBUFFER: u32 = 0x8D40;
@@ -83,6 +83,10 @@ pub enum MountError {
     AdoptContext,
     /// `Adapter::request_device` rejected the limits we asked for.
     RequestDevice,
+    /// The embedding app's world does not exist yet — this embed was
+    /// mounted before `backend_linux::newcore::start` booted the app.
+    /// Fail fast rather than realize into a second, orphaned world.
+    NoHostWorld,
 }
 
 impl std::fmt::Display for MountError {
@@ -95,6 +99,11 @@ impl std::fmt::Display for MountError {
             MountError::RequestDevice => {
                 write!(f, "host-linux-desktop: wgpu request_device failed")
             }
+            MountError::NoHostWorld => write!(
+                f,
+                "host-linux-desktop: no host world yet \
+                 (backend_linux::newcore::mounted_world() is None)"
+            ),
         }
     }
 }
@@ -106,6 +115,9 @@ impl std::error::Error for MountError {}
 /// interior state is single-threaded, and a GL context is thread-bound
 /// besides.
 pub struct LinuxHostHandle {
+    /// The realized embedded scene. Declared FIRST so it unmounts before
+    /// the GPU state in `inner` goes away.
+    _app: render_wgpu::newcore::NewCoreApp,
     inner: Rc<RefCell<HostInner>>,
     /// Declared LAST so the loop outlives `inner`'s Rc clones inside
     /// the per-frame closure.
@@ -131,23 +143,25 @@ impl LinuxHostHandle {
 
     /// Drop the embedded app's reactive scope, keeping the GPU state.
     /// Pair with [`resume`](Self::resume) for `unmountOnBlur`.
+    /// No-op. v2 removed `Host::unmount`, and there is no host-side
+    /// visibility gate to re-implement it against — identical to
+    /// `MacosHostHandle::pause` and `WebHostHandle::pause`. Kept so the
+    /// `unmountOnBlur` call sites compile unchanged across hosts.
     pub fn pause(&self) {
-        self.inner.borrow_mut().host.unmount();
+        log::warn!("{}: pause() is a no-op (no host visibility gate)", env!("CARGO_PKG_NAME"));
     }
 
     /// Re-mount the embedded app from its cached `build_ui`. Idempotent.
+    /// No-op — see [`LinuxHostHandle::pause`].
     pub fn resume(&self) {
-        let mut inner = self.inner.borrow_mut();
-        if inner.host.is_mounted() {
-            return;
-        }
-        let build_ui = inner.build_ui.clone();
-        inner.host.mount(move || (&*build_ui)());
+        log::warn!("{}: resume() is a no-op (no host visibility gate)", env!("CARGO_PKG_NAME"));
     }
 
     /// True iff the embedded app is currently mounted.
+    /// True while the handle is alive: it owns the embedded app for its
+    /// whole lifetime now that mount/unmount is gone.
     pub fn is_running(&self) -> bool {
-        self.inner.borrow().host.is_mounted()
+        true
     }
 }
 
@@ -163,6 +177,11 @@ pub async fn mount(
 ) -> Result<LinuxHostHandle, MountError> {
     let size = (size.0.max(1), size.1.max(1));
 
+    // The app's world must exist BEFORE the async GPU init runs — fail
+    // fast on a mis-sequenced boot rather than realizing into a second,
+    // orphaned world.
+    let world = backend_linux::newcore::mounted_world().ok_or(MountError::NoHostWorld)?;
+
     // 1. Adopt the lent context. Must be current for this and for every
     //    later use of what it returns (see the module header).
     gl.make_current();
@@ -171,7 +190,7 @@ pub async fn mount(
     // 2. Render-side stack. The renderer is built for the sRGB view of
     //    the offscreen target, NOT for GTK's framebuffer format — see
     //    the colour note in the module header.
-    let session_scope = runtime_core::session::push_scope();
+    let session_scope = runtime_shared::session::push_scope();
     let renderer = Renderer::new(&device, &queue, TARGET_SRGB);
     let target = Target::new(&device, size);
     let blit = FlipBlit::new(&device);
@@ -179,10 +198,18 @@ pub async fn mount(
     let mut host = Host::new(skin, profile.color_scheme);
     let logical = (profile.logical_size.0 as f32, profile.logical_size.1 as f32);
     host.set_viewport(logical.0, logical.1);
-    {
-        let build_ui = build_ui.clone();
-        host.mount(move || (&*build_ui)());
-    }
+    // Realize into the EMBEDDING app's world so one flush driver commits
+    // both trees — one thread, one world, one update stream. Mirrors
+    // host-macos-desktop.
+    let app = render_wgpu::newcore::start_in_world(
+        host.backend().clone(),
+        |_| {},
+        {
+            let build_ui = build_ui.clone();
+            move || (&*build_ui)()
+        },
+        world,
+    );
 
     // Linux doesn't fetch pending font URLs (embedded faces cover the
     // preview); log the count for diagnosis, same as macOS.
@@ -243,7 +270,7 @@ pub async fn mount(
         draw_frame(&mut inner);
     });
 
-    Ok(LinuxHostHandle { inner, _render_loop: render_loop_handle })
+    Ok(LinuxHostHandle { _app: app, inner, _render_loop: render_loop_handle })
 }
 
 // ---------------------------------------------------------------------------
@@ -267,7 +294,7 @@ struct HostInner {
     warned_no_framebuffer: bool,
     /// RAII guard for this host's `session::REGISTRY` scope. Declared
     /// LAST so it pops after the renderer / host / wgpu objects drop.
-    _session_scope: runtime_core::session::ScopeGuard,
+    _session_scope: runtime_shared::session::ScopeGuard,
 }
 
 /// The GL context must be current to drop anything derived from the
@@ -276,7 +303,7 @@ struct HostInner {
 impl Drop for HostInner {
     fn drop(&mut self) {
         self.gl.make_current();
-        runtime_core::set_frame_active(true);
+        runtime_shared::scheduling::set_frame_active(true);
     }
 }
 
@@ -582,7 +609,7 @@ fn draw_frame(inner: &mut HostInner) {
     // because GTK may have changed either since the last one (resize, or
     // another GLArea rendering in between).
     inner.gl.make_current();
-    runtime_core::set_frame_active(true);
+    runtime_shared::scheduling::set_frame_active(true);
 
     // Scene → offscreen (sRGB view). The flip-blit into GTK's framebuffer does
     // NOT happen here — it's deferred to `present_blit`, run INSIDE GTK's

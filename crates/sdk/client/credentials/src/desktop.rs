@@ -24,6 +24,13 @@ pub struct DesktopCredentials {
 }
 
 impl DesktopCredentials {
+    /// Open the vault for `namespace`, which becomes the *service* name
+    /// every entry is stored under. Two apps passing different namespaces
+    /// get disjoint key spaces in the same OS vault; passing the same one
+    /// deliberately shares them.
+    ///
+    /// Cheap and infallible — nothing touches the platform vault until a
+    /// `get`/`set`/`delete` builds an `Entry`.
     pub fn new(namespace: &str) -> Self {
         Self {
             service: namespace.to_string(),

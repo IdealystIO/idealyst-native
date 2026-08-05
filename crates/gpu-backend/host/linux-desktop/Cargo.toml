@@ -28,7 +28,13 @@ license.workspace = true
 [dependencies]
 render-api = { workspace = true }
 render-wgpu = { workspace = true }
-runtime-core = { workspace = true, features = ["async-driver"] }
+# v2: hosts consume the substrate + scene seam directly, not the author
+# surface. Mirrors host-macos-desktop's dependency shape.
+runtime-shared = { workspace = true, features = ["async-driver"] }
+runtime-scene = { workspace = true }
+# The embedding app's backend — `mounted_world()` hands this embed the
+# SAME world, so one flush driver commits both trees.
+backend-linux = { workspace = true }
 log = "0.4"
 
 [target.'cfg(target_os = "linux")'.dependencies]
