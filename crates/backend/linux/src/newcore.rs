@@ -465,17 +465,15 @@ impl Host for LinuxBackend {
 
 impl caps::AppEnvOps for LinuxBackend {
     fn color_scheme(&self) -> ColorScheme {
-        // GTK4 exposes the system dark-mode preference via
-        // `gtk::Settings::default().gtk_application_prefer_dark_theme`,
-        // but the canonical signal is `gtk::StyleContext::settings`'s
-        // `prefer_dark_theme` property combined with the system
-        // freedesktop color-scheme setting. For the scaffold we
-        // return Auto and let the framework's theme APIs decide.
-        ColorScheme::Auto
+        // Delegates to the inherent GTK body — master's placeholder
+        // here did not render at full fidelity.
+        LinuxBackend::color_scheme(self)
     }
 
     fn platform(&self) -> Platform {
-        Platform::Custom("linux")
+        // Delegates to the inherent GTK body — master's placeholder
+        // here did not render at full fidelity.
+        LinuxBackend::platform(self)
     }
 }
 
@@ -521,9 +519,9 @@ impl caps::TextOps for LinuxBackend {
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
-        if let Some(label) = node.widget.downcast_ref::<gtk4::Label>() {
-            label.set_text(content);
-        }
+        // Delegates to the inherent GTK body — master's placeholder
+        // here did not render at full fidelity.
+        LinuxBackend::update_text(self, node, content)
     }
 }
 
@@ -542,9 +540,9 @@ impl caps::ButtonOps for LinuxBackend {
     }
 
     fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-        if let Some(btn) = node.widget.downcast_ref::<gtk4::Button>() {
-            btn.set_label(label);
-        }
+        // Delegates to the inherent GTK body — master's placeholder
+        // here did not render at full fidelity.
+        LinuxBackend::update_button_label(self, node, label)
     }
 }
 
@@ -559,7 +557,9 @@ impl caps::ImageOps for LinuxBackend {
         _alt: Option<&str>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        self.placeholder("Image not yet implemented on Linux backend")
+        // Delegates to the inherent GTK body — master's placeholder
+        // here did not render at full fidelity.
+        LinuxBackend::create_image(self, _src, _alt, _a11y)
     }
 }
 
@@ -570,7 +570,9 @@ impl caps::IconOps for LinuxBackend {
         _color: Option<&Color>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        self.placeholder("Icon not yet implemented on Linux backend")
+        // Delegates to the inherent GTK body — master's placeholder
+        // here did not render at full fidelity.
+        LinuxBackend::create_icon(self, _data, _color, _a11y)
     }
 }
 
@@ -597,11 +599,9 @@ impl caps::TextInputOps for LinuxBackend {
     }
 
     fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
-        // GTK masks by hiding the entry's characters; `visibility = !secure`
-        // toggles it in place on the same Entry.
-        if let Some(entry) = node.widget.downcast_ref::<gtk4::Entry>() {
-            entry.set_visibility(!secure);
-        }
+        // Delegates to the inherent GTK body — master's placeholder
+        // here did not render at full fidelity.
+        LinuxBackend::update_text_input_secure(self, node, secure)
     }
 
     fn create_text_area(
@@ -690,50 +690,9 @@ impl caps::VirtualizerOps for LinuxBackend {
         _layout: primitives::virtualizer::VirtualLayout,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Dispatch-site glue + world entry: mount/release run author
-        // render closures and scope cleanups; mount_item REALIZES the
-        // row (creation-side work that needs the ambient world — the
-        // flat_list-renders-zero-rows bug every backend shared).
-        // item_count/item_key/item_size are pure reads, unwrapped.
-        let VirtualizerCallbacks {
-            item_count,
-            item_key,
-            item_size,
-            measure_sizes,
-            mount_item,
-            release_item,
-            set_measured_size,
-        } = callbacks;
-        let callbacks = VirtualizerCallbacks {
-            item_count,
-            item_key,
-            item_size,
-            measure_sizes,
-            mount_item: {
-                let f = mount_item;
-                Rc::new(move |i| {
-                    let mounted = enter_mounted_world(|| f(i));
-                    schedule_flush();
-                    mounted
-                })
-            },
-            release_item: {
-                let f = release_item;
-                Rc::new(move |scope_id| {
-                    enter_mounted_world(|| f(scope_id));
-                    schedule_flush();
-                })
-            },
-            set_measured_size: {
-                let f = set_measured_size;
-                Rc::new(move |key, size| {
-                    f(key, size);
-                    schedule_flush();
-                })
-            },
-        };
-        let _callbacks = callbacks;
-        self.placeholder("Virtualizer not yet implemented on Linux backend")
+        // Delegates to the inherent GTK body — master's placeholder
+        // here did not render at full fidelity.
+        LinuxBackend::create_virtualizer(self, callbacks, _overscan, _layout, _a11y)
     }
 }
 
@@ -749,35 +708,9 @@ impl caps::GraphicsOps for LinuxBackend {
         on_lost: primitives::graphics::OnLost,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Dispatch-site glue: surface lifecycle callbacks run author
-        // code (this scaffold never fires them — graphics is a
-        // placeholder — but the wrap keeps the delegation
-        // mechanically uniform).
-        let on_ready: primitives::graphics::OnReady = {
-            let mut f = on_ready;
-            Box::new(move |ev| {
-                f(ev);
-                schedule_flush();
-            })
-        };
-        let on_resize: primitives::graphics::OnResize = {
-            let mut f = on_resize;
-            Box::new(move |ev| {
-                f(ev);
-                schedule_flush();
-            })
-        };
-        let on_lost: primitives::graphics::OnLost = {
-            let mut f = on_lost;
-            Box::new(move || {
-                f();
-                schedule_flush();
-            })
-        };
-        let _on_ready = on_ready;
-        let _on_resize = on_resize;
-        let _on_lost = on_lost;
-        self.placeholder("Graphics not yet implemented on Linux backend")
+        // Delegates to the inherent GTK body — master's placeholder
+        // here did not render at full fidelity.
+        LinuxBackend::create_graphics(self, on_ready, on_resize, on_lost, _a11y)
     }
 }
 
@@ -789,9 +722,9 @@ impl caps::PortalOps for LinuxBackend {
         _trap_focus: bool,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        let on_dismiss = on_dismiss.map(flushing0);
-        let _on_dismiss = on_dismiss;
-        self.placeholder("Portal not yet implemented on Linux backend")
+        // Delegates to the inherent GTK body — master's placeholder
+        // here did not render at full fidelity.
+        LinuxBackend::create_portal(self, _target, on_dismiss, _trap_focus, _a11y)
     }
 }
 
@@ -831,9 +764,9 @@ impl caps::DocumentOps for LinuxBackend {}
 
 impl caps::StyleOps for LinuxBackend {
     fn apply_style(&mut self, _node: &Self::Node, _style: &Rc<StyleRules>) {
-        // No-op until we wire Taffy-driven size_allocate in finish().
-        // Author code calling apply_style today shouldn't crash; the
-        // style is silently dropped.
+        // Delegates to the inherent GTK body — master's placeholder
+        // here did not render at full fidelity.
+        LinuxBackend::apply_style(self, _node, _style)
     }
 }
 
