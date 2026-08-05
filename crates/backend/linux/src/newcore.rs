@@ -497,6 +497,14 @@ impl caps::ViewOps for LinuxBackend {
         // which builds the richer widget this backend actually ships.
         LinuxBackend::create_view(self, _a11y)
     }
+
+    /// Real node handle, NOT the trait's defaulted no-op. `AnimatedValue::
+    /// bind` drives every per-frame write through this handle, so leaving
+    /// the default in place means the animation clock ticks and nothing
+    /// ever paints — the value lands in a handle wired to nowhere.
+    fn make_view_handle(&self, node: &Self::Node) -> runtime_shared::ViewHandle {
+        LinuxBackend::make_view_handle(self, node)
+    }
 }
 
 impl caps::InputOps for LinuxBackend {
@@ -530,6 +538,11 @@ impl caps::TextOps for LinuxBackend {
         // Delegates to the inherent GTK body (formerly `impl Backend`),
         // which builds the richer widget this backend actually ships.
         LinuxBackend::create_text(self, content, _a11y)
+    }
+
+    /// Real text handle — same rationale as `make_view_handle`.
+    fn make_text_handle(&self, node: &Self::Node) -> runtime_shared::TextHandle {
+        LinuxBackend::make_text_handle(self, node)
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {

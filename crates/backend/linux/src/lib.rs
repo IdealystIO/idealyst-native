@@ -645,6 +645,15 @@ impl LinuxBackend {
                             .map(|c| [(c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8, (c[3] * 255.0) as u8]),
                         st.widget.parent().map(|p| p.type_().name().to_string()),
                     );
+                    // Opacity is the usual reason a correctly-framed,
+                    // mapped, visible node still paints nothing.
+                    eprintln!(
+                        "[layout]      opacity: static={:.2} anim={:?} gtk={:.2}  z={:.1}",
+                        st.static_opacity,
+                        st.anim_opacity,
+                        st.widget.opacity(),
+                        st.z,
+                    );
                 }
             }
         }
