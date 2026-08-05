@@ -90,23 +90,9 @@ use runtime_shared::animation::AnimProp;
 use runtime_shared::assets::{
     AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
 };
-use runtime_shared::primitives::navigator::{NavigatorHandler, NavigatorHost, RegisterNavigator};
 use runtime_shared::{Length, Overflow, Tokenized};
-use runtime_shared::{
-    Action, Backend, Color, ColorScheme, NavigatorRegistry, Platform, PointerEvents,
-    RegisterExternal, StyleRules,
-};
+use runtime_shared::{Action, Color, ColorScheme, Platform, PointerEvents, StyleRules};
 use runtime_layout::{AvailableSpace, LayoutNode, LayoutTree, Size};
-
-/// An active navigator instance's handler, keyed by the navigator
-/// node's id in [`LinuxBackend::nav_handlers`].
-type NavHandler = Rc<RefCell<Box<dyn NavigatorHandler<LinuxBackend>>>>;
-
-/// Inert ops for the no-handler `make_navigator_handle` fallback (an
-/// unregistered navigator kind). `NavigatorOps` is an empty marker trait.
-struct NoopNavOps;
-impl runtime_shared::primitives::navigator::NavigatorOps for NoopNavOps {}
-static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
 
 mod color;
 mod file_drop;
@@ -447,14 +433,10 @@ pub struct LinuxBackend {
     children: HashMap<u64, Vec<u64>>,
     /// child id → parent id (for locating siblings on z change).
     parent_of: HashMap<u64, u64>,
-    pub(crate) external_handlers: runtime_shared::ExternalRegistry<LinuxBackend>,
-    /// Navigator handler factories keyed by presentation `TypeId`,
-    /// populated via [`RegisterNavigator`] (e.g. `swap_navigator::
-    /// register_generic`). `create_navigator` instantiates one per
-    /// navigator element.
-    navigator_handlers: NavigatorRegistry<LinuxBackend>,
-    /// Live navigator handler instances, keyed by the navigator node id.
-    nav_handlers: HashMap<u64, NavHandler>,
+    // The per-backend External table and navigator registry are gone in
+    // runtime-v2: SDK payloads mount through `runtime_scene::Registry`
+    // (typed by `TypeId`, installed at the app's boot seam) rather than
+    // registering handlers on the backend itself. See CLAUDE.md §3.
     /// Temp font files kept alive for the process (Pango reads lazily).
     _font_files: Vec<PathBuf>,
     /// The framework root node id, captured on first `finish`. Lets the
@@ -476,52 +458,23 @@ pub struct LinuxBackend {
     published_viewport: (f32, f32),
 }
 
-/// An SDK submits one of these so its `Element::External` handler is
-/// installed without the app naming the concrete backend — the Linux
-/// analogue of `MacosExternalRegistrar`. See
-/// [[project_inventory_self_registration]].
-///
-/// Without this, an SDK that self-registers everywhere else (the
-/// `canvas` renderers do) silently has NO handler on GTK, and
-/// `create_external` falls through to the "not registered" placeholder.
-/// That is exactly how the whiteboard demo shipped a dead canvas here.
-pub struct LinuxExternalRegistrar(pub fn(&mut LinuxBackend));
-inventory::collect!(LinuxExternalRegistrar);
-
-/// Navigator analogue of [`LinuxExternalRegistrar`]; a navigator SDK's
-/// Linux module submits one so the app needn't call `<nav>::register`
-/// per platform — the Linux mirror of `MacosNavigatorRegistrar`. See
-/// [[project_inventory_self_registration]].
-///
-/// Without this, a navigator SDK that auto-registers on macOS/iOS/Android
-/// (the `stack`/`swap` navigators do, via their `*NavigatorRegistrar`
-/// inventory submits) falls to its no-op `fallback::register` on GTK, so
-/// `register_navigator` is never called and a PUSHED screen (the
-/// whiteboard's Settings/Preview) has no handler to present it — only the
-/// stack root renders. That was exactly this bug.
-pub struct LinuxNavigatorRegistrar(pub fn(&mut LinuxBackend));
-inventory::collect!(LinuxNavigatorRegistrar);
+// The `LinuxExternalRegistrar` / `LinuxNavigatorRegistrar` inventory
+// hooks are gone with the External table they fed. In runtime-v2 an SDK
+// installs its handler on a `runtime_scene::Registry` at the app's boot
+// seam (`start_in(..., my_sdk::register, app)`) instead of submitting a
+// link-time ctor that mutates the backend. That removes the whole class
+// of "SDK compiled in but silently never registered" bug these hooks
+// existed to work around — an unregistered payload now panics at
+// realize by design rather than falling through to a placeholder.
 
 impl LinuxBackend {
-    /// Install every SDK-submitted external + navigator handler.
-    /// Native-only, so inventory's link-time ctors have populated the
-    /// slices before construction.
-    fn drain_self_registrars(&mut self) {
-        for r in inventory::iter::<LinuxExternalRegistrar> {
-            (r.0)(self);
-        }
-        for r in inventory::iter::<LinuxNavigatorRegistrar> {
-            (r.0)(self);
-        }
-    }
-
     /// Construct a backend rooted at `host_window`. The window must be
     /// realized by the host before widget operations happen.
     pub fn new(host_window: gtk4::Window) -> Self {
         // The framework root becomes the window's child in `finish`;
         // GtkWindow then stretches it to fill the content area (unlike a
         // GtkFixed, which would give it only its natural size).
-        let mut me = Self {
+        Self {
             host_window,
             next_id: 1,
             next_order: 0,
@@ -529,17 +482,12 @@ impl LinuxBackend {
             nodes: HashMap::new(),
             children: HashMap::new(),
             parent_of: HashMap::new(),
-            external_handlers: runtime_shared::ExternalRegistry::new(),
-            navigator_handlers: NavigatorRegistry::new(),
-            nav_handlers: HashMap::new(),
             _font_files: Vec::new(),
             root_id: None,
             self_ref: std::rc::Weak::new(),
             sticky_nodes: HashMap::new(),
             published_viewport: (0.0, 0.0),
-        };
-        me.drain_self_registrars();
-        me
+        }
     }
 
     pub fn host_window(&self) -> &gtk4::Window {
@@ -820,17 +768,7 @@ impl LinuxBackend {
         }
     }
 
-    pub fn register_external<T, F>(&mut self, handler: F)
-    where
-        T: 'static,
-        F: Fn(&Rc<T>, &mut LinuxBackend) -> LinuxNode + 'static,
-    {
-        self.external_handlers.register::<T, _>(handler);
-    }
 
-    pub fn has_external<T: 'static>(&self) -> bool {
-        self.external_handlers.has::<T>()
-    }
 
     /// SDK extension helper: register an existing widget with the
     /// backend's layout tree so flex parents can size + position it.
@@ -1041,37 +979,15 @@ impl LinuxBackend {
 }
 
 // =========================================================================
-// SDK registration traits — the backend-neutral `register_generic` paths
-// (`swap_navigator::register_generic`, `<sdk>::register`) resolve on
-// LinuxBackend through these.
+// GTK mechanism — formerly `impl Backend for LinuxBackend`.
+//
+// v2 deleted the 159-method mega-trait; these bodies are unchanged and now
+// live as inherent methods. `newcore.rs` implements `runtime_scene::Host` +
+// the caps traits on top by delegating here, so the same scene builds the
+// same widget tree.
 // =========================================================================
 
-impl RegisterNavigator for LinuxBackend {
-    fn register_navigator<P, F>(&mut self, factory: F)
-    where
-        P: 'static,
-        F: Fn() -> Box<dyn NavigatorHandler<LinuxBackend>> + 'static,
-    {
-        self.navigator_handlers.register::<P, _>(factory);
-    }
-}
-
-impl RegisterExternal for LinuxBackend {
-    fn register_external<T, F>(&mut self, handler: F)
-    where
-        T: 'static,
-        F: Fn(&Rc<T>, &mut Self) -> Self::Node + 'static,
-    {
-        self.external_handlers.register::<T, _>(handler);
-    }
-}
-
-// =========================================================================
-// Backend trait
-// =========================================================================
-
-impl Backend for LinuxBackend {
-    type Node = LinuxNode;
+impl LinuxBackend {
 
     fn color_scheme(&self) -> ColorScheme {
         ColorScheme::Auto
@@ -1081,12 +997,12 @@ impl Backend for LinuxBackend {
         Platform::Custom("linux")
     }
 
-    fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
+    fn create_view(&mut self, _a11y: &AccessibilityProps) -> LinuxNode {
         let widget = IdealystView::new();
         self.wrap(widget.upcast::<gtk4::Widget>(), NodeKind::View)
     }
 
-    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
+    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> LinuxNode {
         let label = gtk4::Label::new(Some(content));
         label.set_wrap(true);
         label.set_xalign(0.0);
@@ -1113,7 +1029,7 @@ impl Backend for LinuxBackend {
         _leading_icon: Option<&runtime_shared::primitives::icon::IconData>,
         _trailing_icon: Option<&runtime_shared::primitives::icon::IconData>,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> LinuxNode {
         let button = gtk4::Button::with_label(label);
         let fire = on_click.fire.clone();
         button.connect_clicked(move |_| (fire)());
@@ -1124,7 +1040,7 @@ impl Backend for LinuxBackend {
         &mut self,
         on_click: Rc<dyn Fn()>,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> LinuxNode {
         // A styled container (IdealystView) with a click gesture — the
         // framework's Pressable is "a View that fires a callback".
         let widget = IdealystView::new();
@@ -1137,7 +1053,7 @@ impl Backend for LinuxBackend {
 
     fn install_touch_handler(
         &mut self,
-        node: &Self::Node,
+        node: &LinuxNode,
         handler: runtime_shared::TouchHandler,
     ) {
         // The trait's default body is a NO-OP, so leaving this
@@ -1148,7 +1064,7 @@ impl Backend for LinuxBackend {
 
     fn install_file_drop_handler(
         &mut self,
-        node: &Self::Node,
+        node: &LinuxNode,
         handler: runtime_shared::FileDropHandler,
     ) {
         // Like `install_touch_handler`, the trait default is a NO-OP — which
@@ -1158,7 +1074,7 @@ impl Backend for LinuxBackend {
         file_drop::install(&node.widget, handler);
     }
 
-    fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
+    fn insert(&mut self, parent: &mut LinuxNode, child: LinuxNode) {
         let (Some(parent_layout), Some(child_layout)) = (
             self.nodes.get(&parent.id).map(|s| s.layout),
             self.nodes.get(&child.id).map(|s| s.layout),
@@ -1197,7 +1113,7 @@ impl Backend for LinuxBackend {
         }
     }
 
-    fn clear_children(&mut self, node: &Self::Node) {
+    fn clear_children(&mut self, node: &LinuxNode) {
         if let Some(iv) = node.widget.downcast_ref::<IdealystView>() {
             iv.remove_all_children();
         } else if let Some(scrolled) = node.widget.downcast_ref::<gtk4::ScrolledWindow>() {
@@ -1231,19 +1147,19 @@ impl Backend for LinuxBackend {
         }
     }
 
-    fn update_text(&mut self, node: &Self::Node, content: &str) {
+    fn update_text(&mut self, node: &LinuxNode, content: &str) {
         if let Some(label) = node.widget.downcast_ref::<gtk4::Label>() {
             label.set_text(content);
         }
     }
 
-    fn update_button_label(&mut self, node: &Self::Node, label: &str) {
+    fn update_button_label(&mut self, node: &LinuxNode, label: &str) {
         if let Some(btn) = node.widget.downcast_ref::<gtk4::Button>() {
             btn.set_label(label);
         }
     }
 
-    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
+    fn apply_style(&mut self, node: &LinuxNode, style: &Rc<StyleRules>) {
         let id = node.id;
         let Some((layout, kind)) = self.nodes.get(&id).map(|s| (s.layout, s.kind)) else {
             return;
@@ -1369,7 +1285,7 @@ impl Backend for LinuxBackend {
         }
     }
 
-    fn set_animated_f32(&mut self, node: &Self::Node, prop: AnimProp, value: f32) {
+    fn set_animated_f32(&mut self, node: &LinuxNode, prop: AnimProp, value: f32) {
         let id = node.id;
         let mut reorder_parent: Option<u64> = None;
         if let Some(st) = self.nodes.get_mut(&id) {
@@ -1403,7 +1319,7 @@ impl Backend for LinuxBackend {
         }
     }
 
-    fn set_animated_color(&mut self, node: &Self::Node, prop: AnimProp, value: [f32; 4]) {
+    fn set_animated_color(&mut self, node: &LinuxNode, prop: AnimProp, value: [f32; 4]) {
         let id = node.id;
         let Some(st) = self.nodes.get_mut(&id) else {
             return;
@@ -1435,22 +1351,22 @@ impl Backend for LinuxBackend {
         }
     }
 
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_shared::ViewHandle {
+    fn make_view_handle(&self, node: &LinuxNode) -> runtime_shared::ViewHandle {
         handles::make_view_handle(self, node)
     }
 
     fn make_scroll_view_handle(
         &self,
-        node: &Self::Node,
+        node: &LinuxNode,
     ) -> runtime_shared::primitives::scroll_view::ScrollViewHandle {
         handles::make_scroll_view_handle(self, node)
     }
 
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_shared::TextHandle {
+    fn make_text_handle(&self, node: &LinuxNode) -> runtime_shared::TextHandle {
         handles::make_text_handle(self, node)
     }
 
-    fn finish(&mut self, root: Self::Node) {
+    fn finish(&mut self, root: LinuxNode) {
         self.root_id = Some(root.id);
 
         // First mount: make the framework root the window's child so
@@ -1519,7 +1435,7 @@ impl Backend for LinuxBackend {
         src: &str,
         alt: Option<&str>,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> LinuxNode {
         // `gtk::Picture` with a `content-fit` for `object_fit` (see
         // `image.rs`). `register_external_view` installs the intrinsic-
         // size measure fn so an unpinned image sizes to its bitmap;
@@ -1528,13 +1444,13 @@ impl Backend for LinuxBackend {
         self.register_external_view(pic.upcast::<gtk4::Widget>())
     }
 
-    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
+    fn update_image_src(&mut self, node: &LinuxNode, src: &str) {
         if let Some(pic) = node.widget.downcast_ref::<gtk4::Picture>() {
             image::set_source(pic, src);
         }
     }
 
-    fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
+    fn update_image_alt(&mut self, node: &LinuxNode, alt: Option<&str>) {
         if let Some(pic) = node.widget.downcast_ref::<gtk4::Picture>() {
             pic.set_alternative_text(alt);
         }
@@ -1545,7 +1461,7 @@ impl Backend for LinuxBackend {
         data: &runtime_shared::primitives::icon::IconData,
         color: Option<&Color>,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> LinuxNode {
         // Default color = opaque black (the text-node default / Linux
         // analogue of web `currentColor`); a set color parses through the
         // shared sRGB parser. The custom widget scales + strokes/fills the
@@ -1581,7 +1497,7 @@ impl Backend for LinuxBackend {
         node
     }
 
-    fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
+    fn update_icon_color(&mut self, node: &LinuxNode, color: &Color) {
         if let Some(w) = node.widget.downcast_ref::<icon::IdealystIcon>() {
             w.set_color(color::to_srgb(color));
         }
@@ -1589,7 +1505,7 @@ impl Backend for LinuxBackend {
 
     fn update_icon_data(
         &mut self,
-        node: &Self::Node,
+        node: &LinuxNode,
         data: &runtime_shared::primitives::icon::IconData,
     ) {
         if let Some(w) = node.widget.downcast_ref::<icon::IdealystIcon>() {
@@ -1617,7 +1533,7 @@ impl Backend for LinuxBackend {
         _on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
         secure: bool,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> LinuxNode {
         let entry = gtk4::Entry::new();
         entry.set_text(initial_value);
         if secure {
@@ -1626,7 +1542,7 @@ impl Backend for LinuxBackend {
         self.wrap(entry.upcast::<gtk4::Widget>(), NodeKind::Other)
     }
 
-    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
+    fn update_text_input_secure(&mut self, node: &LinuxNode, secure: bool) {
         if let Some(entry) = node.widget.downcast_ref::<gtk4::Entry>() {
             entry.set_visibility(!secure);
         }
@@ -1642,7 +1558,7 @@ impl Backend for LinuxBackend {
         _on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> LinuxNode {
         let view = gtk4::TextView::new();
         view.buffer().set_text(initial_value);
         let scrolled = gtk4::ScrolledWindow::new();
@@ -1655,7 +1571,7 @@ impl Backend for LinuxBackend {
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> LinuxNode {
         let switch = gtk4::Switch::new();
         switch.set_active(initial_value);
         let fire = on_change.clone();
@@ -1671,7 +1587,7 @@ impl Backend for LinuxBackend {
         _step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> LinuxNode {
         let scale =
             gtk4::Scale::with_range(gtk4::Orientation::Horizontal, min as f64, max as f64, 1.0);
         scale.set_value(initial_value as f64);
@@ -1685,7 +1601,7 @@ impl Backend for LinuxBackend {
         horizontal: bool,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> LinuxNode {
         let scrolled = gtk4::ScrolledWindow::new();
         if horizontal {
             scrolled.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Never);
@@ -1767,7 +1683,7 @@ impl Backend for LinuxBackend {
         &mut self,
         config: runtime_shared::primitives::link::LinkConfig,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> LinuxNode {
         // A Link is "a Pressable that navigates". The trait default
         // collapses to `create_view` and DROPS `on_activate`, so every
         // link rendered as inert text and nothing in the app could be
@@ -1790,7 +1706,7 @@ impl Backend for LinuxBackend {
         _size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
         _color: Option<&Color>,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> LinuxNode {
         let spinner = gtk4::Spinner::new();
         spinner.start();
         self.wrap(spinner.upcast::<gtk4::Widget>(), NodeKind::Other)
@@ -1798,11 +1714,11 @@ impl Backend for LinuxBackend {
 
     fn create_virtualizer(
         &mut self,
-        callbacks: runtime_shared::VirtualizerCallbacks<Self::Node>,
+        callbacks: runtime_shared::VirtualizerCallbacks<LinuxNode>,
         overscan: f32,
         layout: runtime_shared::VirtualLayout,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> LinuxNode {
         // ScrolledWindow over a Fixed "document"; `virtualizer.rs` drives
         // windowed realization + recycling from the scroll adjustments.
         let horizontal = layout.axis.is_horizontal();
@@ -1827,11 +1743,11 @@ impl Backend for LinuxBackend {
         node
     }
 
-    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
+    fn virtualizer_data_changed(&mut self, node: &LinuxNode) {
         virtualizer::data_changed(node.id);
     }
 
-    fn release_virtualizer(&mut self, node: &Self::Node) {
+    fn release_virtualizer(&mut self, node: &LinuxNode) {
         virtualizer::release(node.id);
     }
 
@@ -1841,7 +1757,7 @@ impl Backend for LinuxBackend {
         on_resize: runtime_shared::primitives::graphics::OnResize,
         on_lost: runtime_shared::primitives::graphics::OnLost,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> LinuxNode {
         // A `GtkGLArea` render surface. See [`graphics`] for why this can't
         // yet satisfy the raw-window-handle `on_ready` contract on GTK4 — the
         // widget acquires a live GL context + FBO (proven by clearing to a
@@ -1850,24 +1766,6 @@ impl Backend for LinuxBackend {
         self.wrap(widget, NodeKind::Other)
     }
 
-    fn create_external(
-        &mut self,
-        type_id: std::any::TypeId,
-        type_name: &'static str,
-        payload: &Rc<dyn std::any::Any>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Apply any registrations queued from inside a `lazy!` chunk
-        // (deferred because the chunk body has no `&mut Backend`), then
-        // look up the handler. Matches the wgpu / web backends.
-        runtime_shared::drain_external_registrations(self);
-        if let Some(handler) = self.external_handlers.get(type_id) {
-            return handler(payload, self);
-        }
-        self.placeholder(&format!(
-            "External \"{type_name}\" not registered on Linux backend"
-        ))
-    }
 
     fn create_portal(
         &mut self,
@@ -1875,7 +1773,7 @@ impl Backend for LinuxBackend {
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> LinuxNode {
         // A full-viewport flex container (see `portal.rs`) mounted into a
         // window-level `gtk::Overlay`. NodeKind::View so its background /
         // flex style apply through the normal `apply_style` path.
@@ -1898,99 +1796,21 @@ impl Backend for LinuxBackend {
         node
     }
 
-    fn release_portal(&mut self, node: &Self::Node) {
+    fn release_portal(&mut self, node: &LinuxNode) {
         if let Some(v) = node.widget.downcast_ref::<IdealystView>() {
             portal::release(v);
         }
     }
 
-    fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
+    fn set_portal_hidden(&mut self, node: &LinuxNode, hidden: bool) {
         // Hide without teardown (navigation off the portal's screen).
         node.widget.set_visible(!hidden);
     }
 
-    fn create_navigator(
-        &mut self,
-        type_id: std::any::TypeId,
-        _type_name: &'static str,
-        presentation: Rc<dyn std::any::Any>,
-        host: NavigatorHost<Self::Node>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Dispatch to a registered handler (the backend-neutral swap /
-        // drawer navigators build their chrome from primitives, which
-        // GTK draws natively). With no handler, fall back to a bare
-        // container — the walker still mounts the path-matched initial
-        // screen into it via `navigator_attach_initial`, so the current
-        // page renders even without navigation chrome.
-        if let Some(factory) = self.navigator_handlers.get(type_id) {
-            let mut handler = factory();
-            let node = handler.init(self, host, presentation);
-            self.nav_handlers
-                .insert(node.id, Rc::new(RefCell::new(handler)));
-            node
-        } else {
-            self.create_view(a11y)
-        }
-    }
 
-    fn make_navigator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_shared::primitives::navigator::NavigatorHandle {
-        // Hand back the LIVE handle from this navigator's registered
-        // handler — it carries the `NavigatorControl` the SDK's dispatcher
-        // is installed on, so `Ref<StackHandle>::push` actually reaches the
-        // handler. Without this override the trait default returns an INERT
-        // handle (no control), so every `nav.push(...)` was a silent no-op
-        // on GTK — pushed screens (the whiteboard's Settings/Preview) never
-        // presented even though registration + `create_navigator` were
-        // correct. Mirrors `MacosBackend::make_navigator_handle`.
-        if let Some(handler) = self.nav_handlers.get(&node.id) {
-            return handler.borrow().make_handle();
-        }
-        // Unregistered navigator kind → inert no-op handle (the trait
-        // default), so a bound `Ref` silently does nothing rather than panic.
-        runtime_shared::primitives::navigator::NavigatorHandle::new(
-            std::rc::Rc::new(()),
-            &NOOP_NAV_OPS,
-        )
-    }
 
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn std::any::Any>,
-    ) {
-        if let Some(handler) = self.nav_handlers.get(&navigator.id).cloned() {
-            handler
-                .borrow_mut()
-                .attach_initial(self, screen, scope_id, options);
-        } else {
-            // Bare-container fallback: mount the initial screen directly.
-            let mut nav = navigator.clone();
-            self.insert(&mut nav, screen);
-        }
-    }
 
-    fn release_navigator(&mut self, node: &Self::Node) {
-        if let Some(handler) = self.nav_handlers.remove(&node.id) {
-            handler.borrow_mut().release(self);
-        }
-    }
 
-    fn apply_navigator_slot_style(
-        &mut self,
-        node: &Self::Node,
-        slot: &'static str,
-        style: &Rc<StyleRules>,
-    ) {
-        if let Some(handler) = self.nav_handlers.get(&node.id).cloned() {
-            handler.borrow_mut().apply_slot_style(self, slot, style);
-        }
-    }
 }
 
 #[cfg(test)]

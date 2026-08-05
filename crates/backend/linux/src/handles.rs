@@ -2,10 +2,10 @@
 //! back to the backend.
 //!
 //! `AnimatedValue::bind(ref, prop)` fills a `Ref` with a handle built by
-//! [`Backend::make_view_handle`](runtime_shared::Backend::make_view_handle)
-//! / `make_text_handle`, then drives per-frame writes through that
-//! handle's [`ViewOps`] / [`TextOps`]. The default trait impls return a
-//! **no-op** handle, so a backend that doesn't build real ones silently
+//! `make_view_handle` / `make_text_handle` — mega-trait methods before
+//! runtime-v2, inherent methods on [`LinuxBackend`] since — then drives
+//! per-frame writes through that handle's [`ViewOps`] / [`TextOps`]. A
+//! backend that doesn't build real handles silently
 //! drops every animation (the value ticks, nothing paints). This module
 //! supplies handles that route `set_animated_*` and `frame()` back into
 //! the [`LinuxBackend`].
@@ -25,7 +25,7 @@ use std::rc::Weak;
 
 use runtime_shared::animation::AnimProp;
 use runtime_shared::primitives::portal::ViewportRect;
-use runtime_shared::{Backend, TextHandle, TextOps, ViewHandle, ViewOps};
+use runtime_shared::{TextHandle, TextOps, ViewHandle, ViewOps};
 
 use crate::{LinuxBackend, LinuxNode};
 
