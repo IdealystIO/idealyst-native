@@ -1854,7 +1854,7 @@ mod layout_tests {
             return;
         }
         use runtime_shared::accessibility::AccessibilityProps;
-        use runtime_shared::{Backend, PointerEvents, StyleRules};
+        use runtime_shared::{PointerEvents, StyleRules};
 
         // --- 1. Non-root nodes must report their Taffy size as the
         // MINIMUM. `GtkFixedLayout` (the GtkFixed document inside a

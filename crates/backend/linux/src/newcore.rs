@@ -713,6 +713,16 @@ impl caps::ScrollOps for LinuxBackend {
         // which builds the richer widget this backend actually ships.
         LinuxBackend::create_scroll_view(self, horizontal, on_scroll, _a11y)
     }
+
+    /// Real scroll handle — same trap as `make_view_handle`: the trait
+    /// default hands back a no-op, so imperative scrolling and
+    /// scroll-position reads would silently do nothing.
+    fn make_scroll_view_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_shared::primitives::scroll_view::ScrollViewHandle {
+        LinuxBackend::make_scroll_view_handle(self, node)
+    }
 }
 
 impl caps::SafeAreaOps for LinuxBackend {}
