@@ -557,10 +557,18 @@ pub(crate) async fn start(
 /// The xdg-desktop-portal ScreenCast path has no per-window capture-exclusion
 /// mechanism (no `NSWindowSharingNone` / `PixelCopy`-exclusion analogue), so an
 /// overlay subtree cannot be hidden from the recording; [`start`] logs that a
-/// mounted layer is captured inline. Generic over
-/// [`Backend`](runtime_core::Backend) so author code can call
-/// `screen_recorder::register(&mut backend)` unconditionally.
-pub fn register<B: runtime_core::Backend>(_backend: &mut B) {}
+/// mounted layer is captured inline.
+///
+/// v2: the `Backend` mega-trait is gone and payload handlers install on a
+/// `runtime_scene::Registry`. The Linux recorder needs no scene handler —
+/// it captures through the portal, not through a mounted node — so this
+/// stays a no-op and is generic over the host so app boot code can call
+/// `screen_recorder::register(&mut registry)` unconditionally.
+pub fn register<H>(_registry: &mut runtime_scene::Registry<H>)
+where
+    H: runtime_scene::Host + 'static,
+{
+}
 
 #[cfg(test)]
 mod tests {
