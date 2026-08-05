@@ -121,7 +121,6 @@ use runtime_shared::{
 use runtime_scene::{realize, Element, Host, Realized, Registry};
 use runtime_vocabulary::caps;
 use runtime_world::World;
-use runtime_vocabulary::caps::ViewOps as _;
 // The GTK widget mechanism (moved here from the crate's old `impl
 // Backend`) leans on gtk4's trait-based API surface.
 use gtk4::prelude::*;
@@ -480,6 +479,19 @@ impl caps::AppEnvOps for LinuxBackend {
 }
 
 impl caps::LifecycleOps for LinuxBackend {
+    /// Synchronous layout pass (runtime-server shells). The trait method
+    /// takes no size; our inherent pass needs one, so read the host
+    /// window's current allocation — the same source `finish` uses. A
+    /// degenerate (pre-realize) size is skipped there, so this is safe to
+    /// call before the window is mapped.
+    fn run_layout(&mut self) {
+        let (w, h) = {
+            let win = self.host_window();
+            (win.width() as f32, win.height() as f32)
+        };
+        LinuxBackend::run_layout(self, w, h)
+    }
+
     fn finish(&mut self, root: Self::Node) {
         // The inherent pass runs Taffy over our node map, then applies
         // sticky + transforms and publishes the viewport size.
@@ -523,9 +535,10 @@ impl caps::InputOps for LinuxBackend {
 
 impl caps::PressableOps for LinuxBackend {
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Self::Node {
-        // Delegates to the inherent GTK body (formerly `impl Backend`),
-        // which builds the richer widget this backend actually ships.
-        LinuxBackend::create_pressable(self, on_click, _a11y)
+        // Wrap the author callback so ONE deduped flush microtask is queued
+        // after it returns. Without this the handler mutates its signal and
+        // nothing re-renders — the v2 flush is not implicit.
+        LinuxBackend::create_pressable(self, flushing0(on_click), _a11y)
     }
 }
 
@@ -563,7 +576,11 @@ impl caps::ButtonOps for LinuxBackend {
     ) -> Self::Node {
         // Delegates to the inherent GTK body (formerly `impl Backend`),
         // which builds the richer widget this backend actually ships.
-        LinuxBackend::create_button(self, label, on_click, _leading_icon, _trailing_icon, _a11y)
+        // Wrap the author callback so ONE deduped flush microtask is queued
+        // after it returns. Without this the handler mutates its signal and
+        // nothing re-renders — the v2 flush is not implicit.
+        let on_click = Action { fire: flushing0(on_click.fire.clone()), ..on_click.clone() };
+        LinuxBackend::create_button(self, label, &on_click, _leading_icon, _trailing_icon, _a11y)
     }
 
     fn update_button_label(&mut self, node: &Self::Node, label: &str) {
@@ -578,6 +595,15 @@ impl caps::ButtonOps for LinuxBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::ImageOps for LinuxBackend {
+    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
+        // Real GTK body; the caps default here is a silent no-op.
+        LinuxBackend::update_image_src(self, node, src)
+    }
+
+    fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
+        // Real GTK body; the caps default here is a silent no-op.
+        LinuxBackend::update_image_alt(self, node, alt)
+    }
     fn create_image(
         &mut self,
         _src: &str,
@@ -591,6 +617,15 @@ impl caps::ImageOps for LinuxBackend {
 }
 
 impl caps::IconOps for LinuxBackend {
+    fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
+        // Real GTK body; the caps default here is a silent no-op.
+        LinuxBackend::update_icon_color(self, node, color)
+    }
+
+    fn update_icon_data(&mut self, node: &Self::Node, data: &primitives::icon::IconData) {
+        // Real GTK body; the caps default here is a silent no-op.
+        LinuxBackend::update_icon_data(self, node, data)
+    }
     fn create_icon(
         &mut self,
         _data: &runtime_shared::primitives::icon::IconData,
@@ -630,7 +665,10 @@ impl caps::TextInputOps for LinuxBackend {
     ) -> Self::Node {
         // Delegates to the inherent GTK body (formerly `impl Backend`),
         // which builds the richer widget this backend actually ships.
-        LinuxBackend::create_text_input(self, initial_value, _placeholder, on_change, on_key_down, on_blur, secure, _a11y)
+        // Flush after each author callback (see `flushing0`). `on_blur` is a
+        // BlurHandler, not an Rc<dyn Fn()>, so it is left unwrapped — matching
+        // master, which wrapped only on_change + on_key_down here.
+        LinuxBackend::create_text_input(self, initial_value, _placeholder, flushing1(on_change), on_key_down.map(flushing_key), on_blur, secure, _a11y)
     }
 
     fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
@@ -652,7 +690,10 @@ impl caps::TextInputOps for LinuxBackend {
     ) -> Self::Node {
         // Delegates to the inherent GTK body (formerly `impl Backend`),
         // which builds the richer widget this backend actually ships.
-        LinuxBackend::create_text_area(self, initial_value, _placeholder, _wrap, _min_rows, _max_rows, on_change, on_key_down, _a11y)
+        // Flush after each author callback (see `flushing0`). `on_blur` is a
+        // BlurHandler, not an Rc<dyn Fn()>, so it is left unwrapped — matching
+        // master, which wrapped only on_change + on_key_down here.
+        LinuxBackend::create_text_area(self, initial_value, _placeholder, _wrap, _min_rows, _max_rows, flushing1(on_change), on_key_down.map(flushing_key), _a11y)
     }
 }
 
@@ -665,7 +706,10 @@ impl caps::ToggleOps for LinuxBackend {
     ) -> Self::Node {
         // Delegates to the inherent GTK body (formerly `impl Backend`),
         // which builds the richer widget this backend actually ships.
-        LinuxBackend::create_toggle(self, initial_value, on_change, _a11y)
+        // Wrap the author callback so ONE deduped flush microtask is queued
+        // after it returns. Without this the handler mutates its signal and
+        // nothing re-renders — the v2 flush is not implicit.
+        LinuxBackend::create_toggle(self, initial_value, flushing1(on_change), _a11y)
     }
 }
 
@@ -681,7 +725,10 @@ impl caps::SliderOps for LinuxBackend {
     ) -> Self::Node {
         // Delegates to the inherent GTK body (formerly `impl Backend`),
         // which builds the richer widget this backend actually ships.
-        LinuxBackend::create_slider(self, initial_value, min, max, _step, on_change, _a11y)
+        // Wrap the author callback so ONE deduped flush microtask is queued
+        // after it returns. Without this the handler mutates its signal and
+        // nothing re-renders — the v2 flush is not implicit.
+        LinuxBackend::create_slider(self, initial_value, min, max, _step, flushing1(on_change), _a11y)
     }
 }
 
@@ -728,6 +775,15 @@ impl caps::ScrollOps for LinuxBackend {
 impl caps::SafeAreaOps for LinuxBackend {}
 
 impl caps::VirtualizerOps for LinuxBackend {
+    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
+        // Real GTK body; the caps default here is a silent no-op.
+        LinuxBackend::virtualizer_data_changed(self, node)
+    }
+
+    fn release_virtualizer(&mut self, node: &Self::Node) {
+        // Real GTK body; the caps default here is a silent no-op.
+        LinuxBackend::release_virtualizer(self, node)
+    }
     fn create_virtualizer(
         &mut self,
         callbacks: VirtualizerCallbacks<Self::Node>,
@@ -735,8 +791,49 @@ impl caps::VirtualizerOps for LinuxBackend {
         _layout: primitives::virtualizer::VirtualLayout,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Delegates to the inherent GTK body — master's placeholder
-        // here did not render at full fidelity.
+        // Rows are REALIZED and torn down here, which is creation-side work:
+        // it needs the mounted world ambient (`World::enter`), and it must
+        // queue a flush afterwards like any other author callback. master
+        // built this same wrapper and then dropped it on the floor — its
+        // Linux virtualizer was a placeholder. Ours is real, so the wrapped
+        // callbacks are passed through to the GTK body.
+        let VirtualizerCallbacks {
+            item_count,
+            item_key,
+            item_size,
+            measure_sizes,
+            mount_item,
+            release_item,
+            set_measured_size,
+        } = callbacks;
+        let callbacks = VirtualizerCallbacks {
+            item_count,
+            item_key,
+            item_size,
+            measure_sizes,
+            mount_item: {
+                let f = mount_item;
+                Rc::new(move |i| {
+                    let mounted = enter_mounted_world(|| f(i));
+                    schedule_flush();
+                    mounted
+                })
+            },
+            release_item: {
+                let f = release_item;
+                Rc::new(move |scope_id| {
+                    enter_mounted_world(|| f(scope_id));
+                    schedule_flush();
+                })
+            },
+            set_measured_size: {
+                let f = set_measured_size;
+                Rc::new(move |key, size| {
+                    f(key, size);
+                    schedule_flush();
+                })
+            },
+        };
         LinuxBackend::create_virtualizer(self, callbacks, _overscan, _layout, _a11y)
     }
 }
@@ -760,6 +857,15 @@ impl caps::GraphicsOps for LinuxBackend {
 }
 
 impl caps::PortalOps for LinuxBackend {
+    fn release_portal(&mut self, node: &Self::Node) {
+        // Real GTK body; the caps default here is a silent no-op.
+        LinuxBackend::release_portal(self, node)
+    }
+
+    fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
+        // Real GTK body; the caps default here is a silent no-op.
+        LinuxBackend::set_portal_hidden(self, node, hidden)
+    }
     fn create_portal(
         &mut self,
         _target: primitives::portal::PortalTarget,
@@ -769,7 +875,10 @@ impl caps::PortalOps for LinuxBackend {
     ) -> Self::Node {
         // Delegates to the inherent GTK body — master's placeholder
         // here did not render at full fidelity.
-        LinuxBackend::create_portal(self, _target, on_dismiss, _trap_focus, _a11y)
+        // Wrap the author callback so ONE deduped flush microtask is queued
+        // after it returns. Without this the handler mutates its signal and
+        // nothing re-renders — the v2 flush is not implicit.
+        LinuxBackend::create_portal(self, _target, on_dismiss.map(flushing0), _trap_focus, _a11y)
     }
 }
 

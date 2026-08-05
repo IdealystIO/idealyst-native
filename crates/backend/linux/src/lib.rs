@@ -77,7 +77,6 @@
 
 #![cfg(target_os = "linux")]
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -135,7 +134,6 @@ pub fn build_gl_area_for_test(
 }
 
 
-use gtk4::glib;
 
 // Post-dispatch flush-hook slot (new-core flush driver). Unconditional
 // — the fire sites live in the out-of-repo host shell, which cannot
