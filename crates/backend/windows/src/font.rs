@@ -4,7 +4,7 @@
 //!
 //! 1. **Typeface installation** — the framework's declarative `typeface!`
 //!    / `face!` assets arrive through
-//!    [`Backend::register_typeface`](runtime_core::Backend::register_typeface)
+//!    [`Backend::register_typeface`](runtime_shared::Backend::register_typeface)
 //!    as TTF bytes (or a bundled path). Win32 needs them installed into
 //!    the process font table before `CreateFontIndirectW` can find them by
 //!    family name: [`install_face`] uses `AddFontMemResourceEx` for
@@ -33,8 +33,8 @@
 
 use std::collections::HashMap;
 
-use runtime_core::assets::AssetSource;
-use runtime_core::FontWeight;
+use runtime_shared::assets::AssetSource;
+use runtime_shared::FontWeight;
 
 use windows::core::PCWSTR;
 use windows::Win32::Graphics::Gdi::{

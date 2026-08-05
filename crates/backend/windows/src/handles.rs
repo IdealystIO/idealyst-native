@@ -2,7 +2,7 @@
 //! back to the backend.
 //!
 //! `AnimatedValue::bind(ref, prop)` fills a `Ref` with a handle built by
-//! [`Backend::make_view_handle`](runtime_core::Backend::make_view_handle)
+//! [`Backend::make_view_handle`](runtime_shared::Backend::make_view_handle)
 //! / `make_text_handle`, then drives per-frame writes through that
 //! handle's [`ViewOps`] / [`TextOps`]. The default trait impls return a
 //! **no-op** handle, so a backend that doesn't build real ones silently
@@ -22,9 +22,9 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Weak;
 
-use runtime_core::animation::AnimProp;
-use runtime_core::primitives::portal::ViewportRect;
-use runtime_core::{Backend, TextHandle, TextOps, ViewHandle, ViewOps};
+use runtime_shared::animation::AnimProp;
+use runtime_shared::primitives::portal::ViewportRect;
+use runtime_shared::{Backend, TextHandle, TextOps, ViewHandle, ViewOps};
 
 use crate::{WindowsBackend, WindowsNode};
 

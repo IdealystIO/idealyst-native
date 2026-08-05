@@ -28,7 +28,7 @@
 use std::io::Write as _;
 use std::path::PathBuf;
 
-use runtime_core::ObjectFit;
+use runtime_shared::ObjectFit;
 
 use windows::core::PCWSTR;
 use windows::Win32::Graphics::GdiPlus::{

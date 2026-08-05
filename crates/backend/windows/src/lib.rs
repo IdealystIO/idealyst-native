@@ -1,6 +1,6 @@
 //! Native Win32 backend — single-surface GDI+ scene renderer.
 //!
-//! Implements `runtime_core::Backend` with a **painted scene model**: the
+//! Implements `runtime_shared::Backend` with a **painted scene model**: the
 //! host's top-level HWND is one canvas, and the view / text / icon /
 //! image tree is painted with GDI+ into a double-buffered memory DC in
 //! tree order (see [`scene`]). Only genuinely-native interactive
@@ -39,14 +39,14 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::animation::AnimProp;
-use runtime_core::assets::{
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::animation::AnimProp;
+use runtime_shared::assets::{
     AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
 };
-use runtime_core::color::Rgba;
-use runtime_core::primitives::navigator::{NavigatorHandler, NavigatorHost, RegisterNavigator};
-use runtime_core::{
+use runtime_shared::color::Rgba;
+use runtime_shared::primitives::navigator::{NavigatorHandler, NavigatorHost, RegisterNavigator};
+use runtime_shared::{
     Action, Backend, Color, ColorScheme, Gradient, GradientKind, Length, NavigatorRegistry,
     Overflow, Platform, RadialExtent, RegisterExternal, StyleRules, Transform,
 };
@@ -353,7 +353,7 @@ pub(crate) struct TextVisual {
     /// Per-line alignment inside the node's box. Matters once frames
     /// can be wider than their longest line (wrapping); `Justify`
     /// draws as `Left`.
-    pub align: runtime_core::TextAlign,
+    pub align: runtime_shared::TextAlign,
     /// Style `line-height` in px (the css crate emits it as px). Line
     /// advance + CSS half-leading; `None` = the font's natural height.
     pub line_height: Option<f32>,
@@ -368,7 +368,7 @@ impl TextVisual {
             font_key: None,
             plan: None,
             lines: None,
-            align: runtime_core::TextAlign::Left,
+            align: runtime_shared::TextAlign::Left,
             line_height: None,
         }
     }
@@ -517,7 +517,7 @@ pub struct WindowsBackend {
     slider_handlers: HashMap<isize, Rc<dyn Fn()>>,
     /// Registered image/font assets keyed by `AssetId`.
     assets: HashMap<u64, AssetEntry>,
-    pub(crate) external_handlers: runtime_core::ExternalRegistry<WindowsBackend>,
+    pub(crate) external_handlers: runtime_shared::ExternalRegistry<WindowsBackend>,
     /// Navigator handler factories keyed by presentation `TypeId`,
     /// populated via [`RegisterNavigator`] (e.g.
     /// `swap_navigator::register_generic`). `create_navigator`
@@ -583,7 +583,7 @@ impl WindowsBackend {
             hwnd_regions: HashMap::new(),
             slider_handlers: HashMap::new(),
             assets: HashMap::new(),
-            external_handlers: runtime_core::ExternalRegistry::new(),
+            external_handlers: runtime_shared::ExternalRegistry::new(),
             navigator_handlers: NavigatorRegistry::new(),
             nav_handlers: HashMap::new(),
             ui_font,
@@ -623,7 +623,7 @@ impl WindowsBackend {
     /// belongs on a wrapping view the caller styles.
     pub fn create_colored_code_leaf(
         &mut self,
-        spans: &[(String, runtime_core::Color)],
+        spans: &[(String, runtime_shared::Color)],
     ) -> WindowsNode {
         // Cascadia Mono ships on Win11, Consolas everywhere back to
         // Vista; probe like any CSS stack so the key is drawable.
@@ -977,13 +977,13 @@ impl WindowsBackend {
             // May be a CSS fallback STACK — resolve to a family GDI+
             // can actually draw, or text paints as invisible (see
             // `resolve_family_stack`).
-            Some(runtime_core::FontFamily::System(name)) => {
+            Some(runtime_shared::FontFamily::System(name)) => {
                 font::resolve_family_stack(name, &self.default_font_key.family)
             }
             // Registered typefaces are process-private (AddFontMemResourceEx)
             // and invisible to GDI+'s system collection — do NOT probe
             // them, trust the registered name.
-            Some(runtime_core::FontFamily::Typeface(tf)) => tf.family_name.to_string(),
+            Some(runtime_shared::FontFamily::Typeface(tf)) => tf.family_name.to_string(),
             None => self.default_font_key.family.clone(),
         };
         Some(font::FontKey { family, size_px, weight, italic: false })
@@ -1014,7 +1014,7 @@ impl WindowsBackend {
                 comp.commit();
             }
             if let Some(mut lost) = st.on_lost.take() {
-                runtime_core::scheduling::after_ms_detached(0, move || lost());
+                runtime_shared::scheduling::after_ms_detached(0, move || lost());
             }
         }
         if let Some(meta) = self.nodes.remove(&id) {
@@ -1118,7 +1118,7 @@ impl WindowsBackend {
         }
         if !gfx_events.is_empty() {
             let weak = self.self_ref.clone();
-            runtime_core::scheduling::after_ms_detached(0, move || {
+            runtime_shared::scheduling::after_ms_detached(0, move || {
                 dispatch_graphics_events(&weak, &gfx_events);
             });
         }
@@ -1374,11 +1374,11 @@ fn hwnd_clip_region(
 /// A graphics callback pulled out of the backend for a borrow-free call.
 enum TakenGfx {
     Ready(
-        runtime_core::primitives::graphics::OnReady,
-        runtime_core::primitives::graphics::GraphicsSurface,
+        runtime_shared::primitives::graphics::OnReady,
+        runtime_shared::primitives::graphics::GraphicsSurface,
         (u32, u32),
     ),
-    Resize(runtime_core::primitives::graphics::OnResize, (u32, u32)),
+    Resize(runtime_shared::primitives::graphics::OnResize, (u32, u32)),
 }
 
 /// Deliver deferred graphics events (queued by `layout_pass`). Runs on
@@ -1396,7 +1396,7 @@ fn dispatch_graphics_events(
     weak: &Weak<RefCell<WindowsBackend>>,
     events: &[(u64, graphics::GfxEvent)],
 ) {
-    use runtime_core::primitives::graphics::{GraphicsTarget, OnReadyEvent, OnResizeEvent};
+    use runtime_shared::primitives::graphics::{GraphicsTarget, OnReadyEvent, OnResizeEvent};
     for &(id, ev) in events {
         let Some(backend) = weak.upgrade() else {
             return;
@@ -1537,13 +1537,13 @@ pub(crate) fn srgba_of(c: Rgba) -> [f32; 4] {
 /// Resolve a `StyleRules` color slot to canonical [`Rgba`], defaulting
 /// to fully-transparent when unset/unparseable (an unset background
 /// legitimately means "paint nothing").
-fn resolve_color(t: &Option<runtime_core::Tokenized<Color>>) -> Option<Rgba> {
+fn resolve_color(t: &Option<runtime_shared::Tokenized<Color>>) -> Option<Rgba> {
     t.as_ref()
-        .map(|c| runtime_core::color::parse_or(&c.resolve().0, Rgba::TRANSPARENT))
+        .map(|c| runtime_shared::color::parse_or(&c.resolve().0, Rgba::TRANSPARENT))
 }
 
 /// Corner radius in px, or 0.
-fn resolve_radius(t: &Option<runtime_core::Tokenized<Length>>) -> f32 {
+fn resolve_radius(t: &Option<runtime_shared::Tokenized<Length>>) -> f32 {
     match t.as_ref().map(|x| x.resolve()) {
         Some(Length::Px(v)) => v,
         _ => 0.0,
@@ -1551,7 +1551,7 @@ fn resolve_radius(t: &Option<runtime_core::Tokenized<Length>>) -> f32 {
 }
 
 /// Border-width slot in px, or 0.
-fn resolve_width(t: &Option<runtime_core::Tokenized<f32>>) -> f32 {
+fn resolve_width(t: &Option<runtime_shared::Tokenized<f32>>) -> f32 {
     t.as_ref().map(|x| x.resolve()).unwrap_or(0.0)
 }
 
@@ -1571,7 +1571,7 @@ fn resolve_gradient(g: &Gradient) -> GradientPaint {
         .stops
         .iter()
         .map(|s| {
-            let rgba = runtime_core::color::parse_or(&s.color.0, Rgba::TRANSPARENT);
+            let rgba = runtime_shared::color::parse_or(&s.color.0, Rgba::TRANSPARENT);
             (s.offset, srgba_of(rgba))
         })
         .collect();
@@ -1699,7 +1699,7 @@ impl Backend for WindowsBackend {
 
     fn create_link(
         &mut self,
-        config: runtime_core::primitives::link::LinkConfig,
+        config: runtime_shared::primitives::link::LinkConfig,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // A Link is "a Pressable that navigates". The trait default
@@ -1725,8 +1725,8 @@ impl Backend for WindowsBackend {
         &mut self,
         label: &str,
         on_click: &Action,
-        _leading_icon: Option<&runtime_core::primitives::icon::IconData>,
-        _trailing_icon: Option<&runtime_core::primitives::icon::IconData>,
+        _leading_icon: Option<&runtime_shared::primitives::icon::IconData>,
+        _trailing_icon: Option<&runtime_shared::primitives::icon::IconData>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let control_id = self.alloc_control_id();
@@ -1818,14 +1818,14 @@ impl Backend for WindowsBackend {
 
     fn create_icon(
         &mut self,
-        data: &runtime_core::primitives::icon::IconData,
+        data: &runtime_shared::primitives::icon::IconData,
         color: Option<&Color>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // No color → opaque black (the native analogue of web's
         // `currentColor`, matching the Linux default).
         let rgba = color
-            .map(|c| runtime_core::color::parse_or(&c.0, Rgba::BLACK))
+            .map(|c| runtime_shared::color::parse_or(&c.0, Rgba::BLACK))
             .unwrap_or(Rgba::BLACK);
         let paint = icon::IconPaint::from_data(data, rgba);
         let (vw, vh) = paint.view_box;
@@ -1855,7 +1855,7 @@ impl Backend for WindowsBackend {
     fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
         if let Some(meta) = self.nodes.get_mut(&node.id) {
             if let NodeKind::Icon(p) = &mut meta.kind {
-                p.color = runtime_core::color::parse_or(&color.0, Rgba::BLACK);
+                p.color = runtime_shared::color::parse_or(&color.0, Rgba::BLACK);
             }
         }
         self.invalidate();
@@ -1864,7 +1864,7 @@ impl Backend for WindowsBackend {
     fn update_icon_data(
         &mut self,
         node: &Self::Node,
-        data: &runtime_core::primitives::icon::IconData,
+        data: &runtime_shared::primitives::icon::IconData,
     ) {
         let vb = if let Some(meta) = self.nodes.get_mut(&node.id) {
             if let NodeKind::Icon(p) = &mut meta.kind {
@@ -1887,8 +1887,8 @@ impl Backend for WindowsBackend {
         initial_value: &str,
         _placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        _on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
+        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        _on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
         secure: bool,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
@@ -1919,7 +1919,7 @@ impl Backend for WindowsBackend {
         _min_rows: Option<u32>,
         _max_rows: Option<u32>,
         _on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Read-only painted text for now (parity with the previous
@@ -2049,7 +2049,7 @@ impl Backend for WindowsBackend {
 
     fn create_activity_indicator(
         &mut self,
-        _size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
+        _size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
         _color: Option<&Color>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
@@ -2067,9 +2067,9 @@ impl Backend for WindowsBackend {
 
     fn create_virtualizer(
         &mut self,
-        _callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
+        _callbacks: runtime_shared::VirtualizerCallbacks<Self::Node>,
         _overscan: f32,
-        _layout: runtime_core::VirtualLayout,
+        _layout: runtime_shared::VirtualLayout,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         self.placeholder("Virtualizer not yet implemented on Windows backend")
@@ -2077,9 +2077,9 @@ impl Backend for WindowsBackend {
 
     fn create_graphics(
         &mut self,
-        on_ready: runtime_core::primitives::graphics::OnReady,
-        on_resize: runtime_core::primitives::graphics::OnResize,
-        on_lost: runtime_core::primitives::graphics::OnLost,
+        on_ready: runtime_shared::primitives::graphics::OnReady,
+        on_resize: runtime_shared::primitives::graphics::OnResize,
+        on_lost: runtime_shared::primitives::graphics::OnLost,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // The surface is a DirectComposition visual, not a child HWND
@@ -2135,7 +2135,7 @@ impl Backend for WindowsBackend {
 
     fn create_portal(
         &mut self,
-        _target: runtime_core::primitives::portal::PortalTarget,
+        _target: runtime_shared::primitives::portal::PortalTarget,
         _on_dismiss: Option<Rc<dyn Fn()>>,
         _trap_focus: bool,
         _a11y: &AccessibilityProps,
@@ -2271,9 +2271,9 @@ impl Backend for WindowsBackend {
         self.assets.insert(id.0, entry);
     }
 
-    fn set_app_background(&mut self, color: &runtime_core::Tokenized<Color>) {
+    fn set_app_background(&mut self, color: &runtime_shared::Tokenized<Color>) {
         self.app_background =
-            Some(runtime_core::color::parse_or(&color.resolve().0, Rgba::TRANSPARENT));
+            Some(runtime_shared::color::parse_or(&color.resolve().0, Rgba::TRANSPARENT));
         self.invalidate();
     }
 
@@ -2327,11 +2327,11 @@ impl Backend for WindowsBackend {
         self.invalidate();
     }
 
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
+    fn make_view_handle(&self, node: &Self::Node) -> runtime_shared::ViewHandle {
         handles::make_view_handle(self, node)
     }
 
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
+    fn make_text_handle(&self, node: &Self::Node) -> runtime_shared::TextHandle {
         handles::make_text_handle(self, node)
     }
 
@@ -2433,7 +2433,7 @@ mod tests {
     use super::*;
 
     fn rgba(s: &str) -> Rgba {
-        runtime_core::color::parse_or(s, Rgba::TRANSPARENT)
+        runtime_shared::color::parse_or(s, Rgba::TRANSPARENT)
     }
 
     fn side(width: f32, color: Option<&str>) -> BorderSide {

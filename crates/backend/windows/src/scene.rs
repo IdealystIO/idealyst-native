@@ -41,7 +41,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{Length, TextAlign, Transform};
+use runtime_shared::{Length, TextAlign, Transform};
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::COLORREF;
@@ -955,7 +955,7 @@ fn find_scroll_node(b: &WindowsBackend, id: u64, px: f32, py: f32, ox: f32, oy: 
 /// is currently unused, but kept for the maximize-flash edge).
 #[allow(dead_code)]
 pub(crate) fn clear_colorref(b: &WindowsBackend) -> COLORREF {
-    let c = b.app_background.unwrap_or(runtime_core::color::Rgba {
+    let c = b.app_background.unwrap_or(runtime_shared::color::Rgba {
         r: 255,
         g: 255,
         b: 255,

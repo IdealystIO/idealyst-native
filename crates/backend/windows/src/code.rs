@@ -17,8 +17,8 @@
 //! emit whitespace runs spanning line breaks), and a run's color must
 //! survive the split.
 
-use runtime_core::color::{parse_or, Rgba};
-use runtime_core::Color;
+use runtime_shared::color::{parse_or, Rgba};
+use runtime_shared::Color;
 
 use crate::font;
 

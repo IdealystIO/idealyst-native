@@ -25,8 +25,8 @@
 //! line width `2 × scale` (Lucide authors at stroke-width 2 in a 24-unit
 //! box); a *filled* icon is FILLED honoring its `fill_rule`, no stroke.
 
-use runtime_core::color::Rgba;
-use runtime_core::primitives::icon::{FillRule, IconData};
+use runtime_shared::color::Rgba;
+use runtime_shared::primitives::icon::{FillRule, IconData};
 
 use windows::Win32::Graphics::GdiPlus::{
     GdipAddPathBezier, GdipAddPathLine, GdipClosePathFigure, GdipCreatePath, GdipCreatePen1,

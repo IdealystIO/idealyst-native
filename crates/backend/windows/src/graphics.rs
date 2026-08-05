@@ -28,7 +28,7 @@ use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
     WindowsDisplayHandle,
 };
-use runtime_core::primitives::graphics::{
+use runtime_shared::primitives::graphics::{
     ComposedTarget, GraphicsSurface, OnLost, OnReady, OnResize,
 };
 use windows::core::Interface;
