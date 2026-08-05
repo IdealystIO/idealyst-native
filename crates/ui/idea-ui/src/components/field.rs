@@ -452,6 +452,8 @@ pub fn build_field_input_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
         // glyph's bearing doesn't clip the edge.
         padding_left: Some(Tokenized::Literal(Length::Px(FIELD_BARE_H_PAD))),
         padding_right: Some(Tokenized::Literal(Length::Px(FIELD_BARE_H_PAD))),
+        flex_shrink: Some(Tokenized::Literal(1.0)),
+        min_width: Some(Tokenized::Literal(Length::Px(0.0))),
         border_top_width: Some(Tokenized::Literal(0.0)),
         border_right_width: Some(Tokenized::Literal(0.0)),
         border_bottom_width: Some(Tokenized::Literal(0.0)),
