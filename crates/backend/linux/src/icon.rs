@@ -43,7 +43,7 @@ use gtk4::gsk;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
-use runtime_core::primitives::icon::{FillRule, IconData};
+use runtime_shared::primitives::icon::{FillRule, IconData};
 
 use crate::color;
 

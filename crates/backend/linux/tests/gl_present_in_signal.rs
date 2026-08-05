@@ -31,7 +31,7 @@
 
 use backend_linux::gtk4;
 use gtk4::prelude::*;
-use runtime_core::primitives::graphics::{GraphicsTarget, OnReadyEvent};
+use runtime_shared::primitives::graphics::{GraphicsTarget, OnReadyEvent};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -40,7 +40,7 @@ const W: u32 = 8;
 const H: u32 = 6;
 
 /// Resolve a GL entry point through the target's own loader.
-fn gl_fn<T: Copy>(target: &runtime_core::primitives::graphics::GlTarget, sym: &str) -> Option<T> {
+fn gl_fn<T: Copy>(target: &runtime_shared::primitives::graphics::GlTarget, sym: &str) -> Option<T> {
     let p = target.get_proc_address(sym);
     if p.is_null() {
         return None;

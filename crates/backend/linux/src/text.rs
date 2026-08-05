@@ -12,7 +12,7 @@
 
 use gtk4::pango;
 use gtk4::prelude::{Cast, WidgetExt};
-use runtime_core::{FontFamily, FontStyle, FontWeight, Length, StyleRules, TextAlign};
+use runtime_shared::{FontFamily, FontStyle, FontWeight, Length, StyleRules, TextAlign};
 use runtime_layout::{AvailableSpace, Size};
 
 use crate::color;
@@ -223,7 +223,7 @@ pub fn apply(label: &gtk4::Label, tp: &TextPaint) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::{Color, Tokenized};
+    use runtime_shared::{Color, Tokenized};
 
     // Reported live: the website's TOC bolds its active entry, and every
     // entry stayed bold forever after. `resolve` layered each field over

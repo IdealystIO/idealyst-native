@@ -23,8 +23,8 @@
 
 use backend_linux::gtk4;
 use gtk4::prelude::*;
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::{Backend, Length, Position, StyleRules, Tokenized};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::{Backend, Length, Position, StyleRules, Tokenized};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -45,7 +45,7 @@ fn absolutely_positioned_pressable_is_hit_testable_where_it_paints() {
     // out as its self-reference: `finish` installs the root layout
     // callback through that weak ref, and a dead weak means the Taffy
     // pass never runs inside `size_allocate` — every child stays 0x0.
-    // That is how the real host mounts it (`runtime_core::render`).
+    // That is how the real host mounts it (`runtime_shared::render`).
     let backend = Rc::new(RefCell::new(backend_linux::LinuxBackend::new(window.clone())));
     backend.borrow_mut().set_self_ref(Rc::downgrade(&backend));
     let a11y = AccessibilityProps::default();

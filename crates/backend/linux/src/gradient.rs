@@ -1,6 +1,6 @@
 //! Gradient resolution + GSK painting.
 //!
-//! A [`runtime_core::style::Gradient`] is resolved once (in
+//! A [`runtime_shared::style::Gradient`] is resolved once (in
 //! `apply_style`) into a [`GradientPaint`] stored on the node's
 //! [`crate::view::IdealystView`]. Storing the *resolved* stops (offset
 //! + straight sRGB `[f32; 4]`) is what makes `GradientStopColor`
@@ -20,7 +20,7 @@
 use gtk4::graphene;
 use gtk4::gsk;
 use gtk4::prelude::*;
-use runtime_core::{Gradient, GradientKind, RadialExtent};
+use runtime_shared::{Gradient, GradientKind, RadialExtent};
 
 use crate::color;
 
@@ -155,7 +155,7 @@ pub fn append(snapshot: &gtk4::Snapshot, w: f32, h: f32, paint: &GradientPaint) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::{Color, GradientStop};
+    use runtime_shared::{Color, GradientStop};
 
     fn approx(a: (f32, f32), b: (f32, f32)) {
         assert!((a.0 - b.0).abs() < 1e-3, "x: {a:?} vs {b:?}");

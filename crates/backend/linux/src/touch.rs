@@ -32,7 +32,7 @@
 //! or every move event lands near the widget origin.
 
 use gtk4::prelude::*;
-use runtime_core::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint};
+use runtime_shared::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint};
 use std::cell::Cell;
 use std::rc::Rc;
 

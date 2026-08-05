@@ -39,7 +39,7 @@
 
 use gtk4::{gdk, gio, glib};
 
-use runtime_core::ObjectFit;
+use runtime_shared::ObjectFit;
 
 /// Map the framework's [`ObjectFit`] to GTK's `content-fit`. `ScaleDown`
 /// has no `ObjectFit` peer (it's "contain, but never upscale"), so it's

@@ -2,7 +2,7 @@
 //! back to the backend.
 //!
 //! `AnimatedValue::bind(ref, prop)` fills a `Ref` with a handle built by
-//! [`Backend::make_view_handle`](runtime_core::Backend::make_view_handle)
+//! [`Backend::make_view_handle`](runtime_shared::Backend::make_view_handle)
 //! / `make_text_handle`, then drives per-frame writes through that
 //! handle's [`ViewOps`] / [`TextOps`]. The default trait impls return a
 //! **no-op** handle, so a backend that doesn't build real ones silently
@@ -23,9 +23,9 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Weak;
 
-use runtime_core::animation::AnimProp;
-use runtime_core::primitives::portal::ViewportRect;
-use runtime_core::{Backend, TextHandle, TextOps, ViewHandle, ViewOps};
+use runtime_shared::animation::AnimProp;
+use runtime_shared::primitives::portal::ViewportRect;
+use runtime_shared::{Backend, TextHandle, TextOps, ViewHandle, ViewOps};
 
 use crate::{LinuxBackend, LinuxNode};
 
@@ -137,7 +137,7 @@ pub(crate) fn make_text_handle(backend: &LinuxBackend, node: &LinuxNode) -> Text
 /// to its section.
 struct LinuxScrollViewOps;
 
-impl runtime_core::primitives::scroll_view::ScrollViewOps for LinuxScrollViewOps {
+impl runtime_shared::primitives::scroll_view::ScrollViewOps for LinuxScrollViewOps {
     fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
         let Some(state) = node.downcast_ref::<HandleState>() else {
             return;
@@ -164,8 +164,8 @@ static LINUX_SCROLL_VIEW_OPS: LinuxScrollViewOps = LinuxScrollViewOps;
 pub(crate) fn make_scroll_view_handle(
     backend: &LinuxBackend,
     node: &LinuxNode,
-) -> runtime_core::primitives::scroll_view::ScrollViewHandle {
-    runtime_core::primitives::scroll_view::ScrollViewHandle::new(
+) -> runtime_shared::primitives::scroll_view::ScrollViewHandle {
+    runtime_shared::primitives::scroll_view::ScrollViewHandle::new(
         std::rc::Rc::new(HandleState {
             backend: backend.self_ref(),
             node: node.clone(),
@@ -175,7 +175,7 @@ pub(crate) fn make_scroll_view_handle(
 }
 
 #[cfg(test)]
-pub(crate) fn scroll_view_ops_for_test() -> &'static dyn runtime_core::primitives::scroll_view::ScrollViewOps
+pub(crate) fn scroll_view_ops_for_test() -> &'static dyn runtime_shared::primitives::scroll_view::ScrollViewOps
 {
     &LINUX_SCROLL_VIEW_OPS
 }

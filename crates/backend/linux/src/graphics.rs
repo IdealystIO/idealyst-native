@@ -24,7 +24,7 @@
 //! author as a [`GlTarget`]. That variant of `GraphicsTarget` exists precisely
 //! because the raw-window-handle model is unrepresentable here — see the
 //! "Why the target is an enum" section on
-//! `runtime_core::primitives::graphics`.
+//! `runtime_shared::primitives::graphics`.
 //!
 //! # Rendering model
 //!
@@ -51,7 +51,7 @@
 
 use gtk4::glib;
 use gtk4::prelude::*;
-use runtime_core::primitives::graphics::{
+use runtime_shared::primitives::graphics::{
     FramebufferOrigin, GlContextProvider, GlTarget, GraphicsTarget, OnLost, OnReady, OnReadyEvent,
     OnResize, OnResizeEvent,
 };

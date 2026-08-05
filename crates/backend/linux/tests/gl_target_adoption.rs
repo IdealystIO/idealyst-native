@@ -4,7 +4,7 @@
 //!
 //! # Why this test exists
 //!
-//! `runtime_core::primitives::graphics::GraphicsTarget::Gl` is a
+//! `runtime_shared::primitives::graphics::GraphicsTarget::Gl` is a
 //! contract with three unverifiable-by-inspection claims:
 //!
 //! 1. The proc-address loader resolves enough of GL for a GPU library
@@ -37,7 +37,7 @@
 
 use backend_linux::gtk4;
 use gtk4::prelude::*;
-use runtime_core::primitives::graphics::{
+use runtime_shared::primitives::graphics::{
     FramebufferOrigin, GlTarget, GraphicsTarget, OnReadyEvent,
 };
 use std::cell::RefCell;

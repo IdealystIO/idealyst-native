@@ -33,7 +33,7 @@
 //! *containing block*, so it stops pinning once its parent scrolls away.
 //! Deliberately left out — every other backend's v1 omits it too, and
 //! adding it here alone would make Linux the odd one out (see the
-//! per-backend coverage notes on `runtime_core::Position::Sticky`).
+//! per-backend coverage notes on `runtime_shared::Position::Sticky`).
 
 /// How far to shift a sticky node along Y, given its natural position in
 /// the scroll container's content space, the container's current scroll

@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 use gtk4::pango;
 use gtk4::pango::prelude::*;
-use runtime_core::assets::AssetSource;
+use runtime_shared::assets::AssetSource;
 
 /// Extract embedded font bytes + extension from an [`AssetSource`], if
 /// this source carries bytes (native `face!` emits `Embedded` or

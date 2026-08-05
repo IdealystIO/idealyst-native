@@ -32,7 +32,7 @@
 
 use gtk4::graphene;
 use gtk4::gsk;
-use runtime_core::{Length, Transform};
+use runtime_shared::{Length, Transform};
 
 /// Folded author transform, resolved from a `Vec<Transform>`.
 ///

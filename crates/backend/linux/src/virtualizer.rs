@@ -47,7 +47,7 @@ use std::rc::{Rc, Weak};
 use gtk4::glib;
 use gtk4::prelude::*;
 
-use runtime_core::{VirtualLayout, VirtualizerCallbacks};
+use runtime_shared::{VirtualLayout, VirtualizerCallbacks};
 
 use crate::{IdealystView, LinuxBackend, LinuxNode};
 

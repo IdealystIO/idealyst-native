@@ -1,6 +1,6 @@
 //! Native GTK4 backend.
 //!
-//! Implements [`runtime_core::Backend`] over real GTK4 widgets so a
+//! Implements [`runtime_shared::Backend`] over real GTK4 widgets so a
 //! backend-agnostic idealyst app tree renders as native Linux UI. The
 //! design goal is idealyst's core thesis: one author tree, native
 //! output — not a GPU surface emulating widgets.
@@ -85,14 +85,14 @@ use std::rc::Rc;
 use gtk4::pango::prelude::*;
 use gtk4::prelude::*;
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::animation::AnimProp;
-use runtime_core::assets::{
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::animation::AnimProp;
+use runtime_shared::assets::{
     AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
 };
-use runtime_core::primitives::navigator::{NavigatorHandler, NavigatorHost, RegisterNavigator};
-use runtime_core::{Length, Overflow, Tokenized};
-use runtime_core::{
+use runtime_shared::primitives::navigator::{NavigatorHandler, NavigatorHost, RegisterNavigator};
+use runtime_shared::{Length, Overflow, Tokenized};
+use runtime_shared::{
     Action, Backend, Color, ColorScheme, NavigatorRegistry, Platform, PointerEvents,
     RegisterExternal, StyleRules,
 };
@@ -105,7 +105,7 @@ type NavHandler = Rc<RefCell<Box<dyn NavigatorHandler<LinuxBackend>>>>;
 /// Inert ops for the no-handler `make_navigator_handle` fallback (an
 /// unregistered navigator kind). `NavigatorOps` is an empty marker trait.
 struct NoopNavOps;
-impl runtime_core::primitives::navigator::NavigatorOps for NoopNavOps {}
+impl runtime_shared::primitives::navigator::NavigatorOps for NoopNavOps {}
 static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
 
 mod color;
@@ -141,9 +141,9 @@ pub use gtk4;
 /// `create_graphics` calls.
 #[doc(hidden)]
 pub fn build_gl_area_for_test(
-    on_ready: runtime_core::primitives::graphics::OnReady,
-    on_resize: runtime_core::primitives::graphics::OnResize,
-    on_lost: runtime_core::primitives::graphics::OnLost,
+    on_ready: runtime_shared::primitives::graphics::OnReady,
+    on_resize: runtime_shared::primitives::graphics::OnResize,
+    on_lost: runtime_shared::primitives::graphics::OnLost,
 ) -> gtk4::Widget {
     graphics::build_gl_area(on_ready, on_resize, on_lost)
 }
@@ -447,7 +447,7 @@ pub struct LinuxBackend {
     children: HashMap<u64, Vec<u64>>,
     /// child id → parent id (for locating siblings on z change).
     parent_of: HashMap<u64, u64>,
-    pub(crate) external_handlers: runtime_core::ExternalRegistry<LinuxBackend>,
+    pub(crate) external_handlers: runtime_shared::ExternalRegistry<LinuxBackend>,
     /// Navigator handler factories keyed by presentation `TypeId`,
     /// populated via [`RegisterNavigator`] (e.g. `swap_navigator::
     /// register_generic`). `create_navigator` instantiates one per
@@ -470,7 +470,7 @@ pub struct LinuxBackend {
     /// their `top` threshold. Populated by `apply_style`; consumed by
     /// [`LinuxBackend::update_sticky`] on scroll and after each layout.
     sticky_nodes: HashMap<u64, StickyEntry>,
-    /// Last window size handed to `runtime_core::set_viewport_size`, so
+    /// Last window size handed to `runtime_shared::set_viewport_size`, so
     /// [`run_layout`](Self::run_layout) only schedules a publish when the
     /// size actually changed. See there for why it's deferred.
     published_viewport: (f32, f32),
@@ -529,7 +529,7 @@ impl LinuxBackend {
             nodes: HashMap::new(),
             children: HashMap::new(),
             parent_of: HashMap::new(),
-            external_handlers: runtime_core::ExternalRegistry::new(),
+            external_handlers: runtime_shared::ExternalRegistry::new(),
             navigator_handlers: NavigatorRegistry::new(),
             nav_handlers: HashMap::new(),
             _font_files: Vec::new(),
@@ -649,7 +649,7 @@ impl LinuxBackend {
         if self.published_viewport != (width, height) {
             self.published_viewport = (width, height);
             gtk4::glib::source::idle_add_local_once(move || {
-                runtime_core::set_viewport_size(runtime_core::ViewportSize { width, height });
+                runtime_shared::set_viewport_size(runtime_shared::ViewportSize { width, height });
             });
         }
 
@@ -1110,8 +1110,8 @@ impl Backend for LinuxBackend {
         &mut self,
         label: &str,
         on_click: &Action,
-        _leading_icon: Option<&runtime_core::primitives::icon::IconData>,
-        _trailing_icon: Option<&runtime_core::primitives::icon::IconData>,
+        _leading_icon: Option<&runtime_shared::primitives::icon::IconData>,
+        _trailing_icon: Option<&runtime_shared::primitives::icon::IconData>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let button = gtk4::Button::with_label(label);
@@ -1138,7 +1138,7 @@ impl Backend for LinuxBackend {
     fn install_touch_handler(
         &mut self,
         node: &Self::Node,
-        handler: runtime_core::TouchHandler,
+        handler: runtime_shared::TouchHandler,
     ) {
         // The trait's default body is a NO-OP, so leaving this
         // unimplemented is invisible: `.on_touch()` views render fine
@@ -1149,7 +1149,7 @@ impl Backend for LinuxBackend {
     fn install_file_drop_handler(
         &mut self,
         node: &Self::Node,
-        handler: runtime_core::FileDropHandler,
+        handler: runtime_shared::FileDropHandler,
     ) {
         // Like `install_touch_handler`, the trait default is a NO-OP — which
         // is exactly what left the file-picker SDK's `FileDropZone` inert on
@@ -1285,7 +1285,7 @@ impl Backend for LinuxBackend {
         // threshold live and drops the entry when a node stops being
         // sticky.
         self.sticky_nodes.remove(&id);
-        if matches!(style.position, Some(runtime_core::Position::Sticky)) {
+        if matches!(style.position, Some(runtime_shared::Position::Sticky)) {
             // Record the intent only — the scroll container is resolved
             // lazily (see `StickyEntry::scroll`). Re-inserting on every
             // restyle keeps the threshold live and re-resolves the
@@ -1435,18 +1435,18 @@ impl Backend for LinuxBackend {
         }
     }
 
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
+    fn make_view_handle(&self, node: &Self::Node) -> runtime_shared::ViewHandle {
         handles::make_view_handle(self, node)
     }
 
     fn make_scroll_view_handle(
         &self,
         node: &Self::Node,
-    ) -> runtime_core::primitives::scroll_view::ScrollViewHandle {
+    ) -> runtime_shared::primitives::scroll_view::ScrollViewHandle {
         handles::make_scroll_view_handle(self, node)
     }
 
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
+    fn make_text_handle(&self, node: &Self::Node) -> runtime_shared::TextHandle {
         handles::make_text_handle(self, node)
     }
 
@@ -1542,7 +1542,7 @@ impl Backend for LinuxBackend {
 
     fn create_icon(
         &mut self,
-        data: &runtime_core::primitives::icon::IconData,
+        data: &runtime_shared::primitives::icon::IconData,
         color: Option<&Color>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
@@ -1590,7 +1590,7 @@ impl Backend for LinuxBackend {
     fn update_icon_data(
         &mut self,
         node: &Self::Node,
-        data: &runtime_core::primitives::icon::IconData,
+        data: &runtime_shared::primitives::icon::IconData,
     ) {
         if let Some(w) = node.widget.downcast_ref::<icon::IdealystIcon>() {
             w.set_data(data);
@@ -1613,8 +1613,8 @@ impl Backend for LinuxBackend {
         initial_value: &str,
         _placeholder: Option<&str>,
         _on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
-        _on_blur: Option<runtime_core::primitives::text_input::BlurHandler>,
+        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        _on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
         secure: bool,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
@@ -1640,7 +1640,7 @@ impl Backend for LinuxBackend {
         _min_rows: Option<u32>,
         _max_rows: Option<u32>,
         _on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let view = gtk4::TextView::new();
@@ -1765,7 +1765,7 @@ impl Backend for LinuxBackend {
 
     fn create_link(
         &mut self,
-        config: runtime_core::primitives::link::LinkConfig,
+        config: runtime_shared::primitives::link::LinkConfig,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // A Link is "a Pressable that navigates". The trait default
@@ -1787,7 +1787,7 @@ impl Backend for LinuxBackend {
 
     fn create_activity_indicator(
         &mut self,
-        _size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
+        _size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
         _color: Option<&Color>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
@@ -1798,9 +1798,9 @@ impl Backend for LinuxBackend {
 
     fn create_virtualizer(
         &mut self,
-        callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
+        callbacks: runtime_shared::VirtualizerCallbacks<Self::Node>,
         overscan: f32,
-        layout: runtime_core::VirtualLayout,
+        layout: runtime_shared::VirtualLayout,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // ScrolledWindow over a Fixed "document"; `virtualizer.rs` drives
@@ -1837,9 +1837,9 @@ impl Backend for LinuxBackend {
 
     fn create_graphics(
         &mut self,
-        on_ready: runtime_core::primitives::graphics::OnReady,
-        on_resize: runtime_core::primitives::graphics::OnResize,
-        on_lost: runtime_core::primitives::graphics::OnLost,
+        on_ready: runtime_shared::primitives::graphics::OnReady,
+        on_resize: runtime_shared::primitives::graphics::OnResize,
+        on_lost: runtime_shared::primitives::graphics::OnLost,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // A `GtkGLArea` render surface. See [`graphics`] for why this can't
@@ -1860,7 +1860,7 @@ impl Backend for LinuxBackend {
         // Apply any registrations queued from inside a `lazy!` chunk
         // (deferred because the chunk body has no `&mut Backend`), then
         // look up the handler. Matches the wgpu / web backends.
-        runtime_core::drain_external_registrations(self);
+        runtime_shared::drain_external_registrations(self);
         if let Some(handler) = self.external_handlers.get(type_id) {
             return handler(payload, self);
         }
@@ -1871,7 +1871,7 @@ impl Backend for LinuxBackend {
 
     fn create_portal(
         &mut self,
-        target: runtime_core::primitives::portal::PortalTarget,
+        target: runtime_shared::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
         _a11y: &AccessibilityProps,
@@ -1937,7 +1937,7 @@ impl Backend for LinuxBackend {
     fn make_navigator_handle(
         &self,
         node: &Self::Node,
-    ) -> runtime_core::primitives::navigator::NavigatorHandle {
+    ) -> runtime_shared::primitives::navigator::NavigatorHandle {
         // Hand back the LIVE handle from this navigator's registered
         // handler — it carries the `NavigatorControl` the SDK's dispatcher
         // is installed on, so `Ref<StackHandle>::push` actually reaches the
@@ -1951,7 +1951,7 @@ impl Backend for LinuxBackend {
         }
         // Unregistered navigator kind → inert no-op handle (the trait
         // default), so a bound `Ref` silently does nothing rather than panic.
-        runtime_core::primitives::navigator::NavigatorHandle::new(
+        runtime_shared::primitives::navigator::NavigatorHandle::new(
             std::rc::Rc::new(()),
             &NOOP_NAV_OPS,
         )
@@ -2024,8 +2024,8 @@ mod layout_tests {
             eprintln!("skipping: no display available to initialize GTK");
             return;
         }
-        use runtime_core::accessibility::AccessibilityProps;
-        use runtime_core::{Backend, PointerEvents, StyleRules};
+        use runtime_shared::accessibility::AccessibilityProps;
+        use runtime_shared::{Backend, PointerEvents, StyleRules};
 
         // --- 1. Non-root nodes must report their Taffy size as the
         // MINIMUM. `GtkFixedLayout` (the GtkFixed document inside a
@@ -2137,8 +2137,8 @@ mod layout_tests {
         backend.insert(&mut row, toc.clone());
 
         let sticky_style = std::rc::Rc::new(StyleRules {
-            position: Some(runtime_core::Position::Sticky),
-            top: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(16.0))),
+            position: Some(runtime_shared::Position::Sticky),
+            top: Some(runtime_shared::Tokenized::Literal(runtime_shared::Length::Px(16.0))),
             ..StyleRules::default()
         });
         backend.apply_style(&toc, &sticky_style);
@@ -2213,10 +2213,10 @@ mod layout_tests {
         // unlike every other backend. Mapped to GTK margins.
         let leaf = backend.create_text("fn main() {}", &a11y);
         let padded = std::rc::Rc::new(StyleRules {
-            padding_top: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(16.0))),
-            padding_bottom: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(16.0))),
-            padding_left: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(12.0))),
-            padding_right: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(12.0))),
+            padding_top: Some(runtime_shared::Tokenized::Literal(runtime_shared::Length::Px(16.0))),
+            padding_bottom: Some(runtime_shared::Tokenized::Literal(runtime_shared::Length::Px(16.0))),
+            padding_left: Some(runtime_shared::Tokenized::Literal(runtime_shared::Length::Px(12.0))),
+            padding_right: Some(runtime_shared::Tokenized::Literal(runtime_shared::Length::Px(12.0))),
             ..StyleRules::default()
         });
         backend.apply_style(&leaf, &padded);
@@ -2264,9 +2264,9 @@ mod layout_tests {
         let toc_text = backend.create_text("Getting started", &a11y);
         backend.insert(&mut toc_root, toc_text.clone());
         let toc_style = std::rc::Rc::new(StyleRules {
-            padding_top: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(6.0))),
-            padding_bottom: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(6.0))),
-            padding_left: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(12.0))),
+            padding_top: Some(runtime_shared::Tokenized::Literal(runtime_shared::Length::Px(6.0))),
+            padding_bottom: Some(runtime_shared::Tokenized::Literal(runtime_shared::Length::Px(6.0))),
+            padding_left: Some(runtime_shared::Tokenized::Literal(runtime_shared::Length::Px(12.0))),
             ..StyleRules::default()
         });
         backend.apply_style(&toc_text, &toc_style);
@@ -2321,11 +2321,11 @@ mod layout_tests {
         // 0x0 and none of them appeared (the whiteboard demo's toolbar
         // was a row of blank buttons). 24x24 matches iOS/macOS.
         // Minimal valid glyph: a single closed path in a 24-unit viewBox.
-        const ICON_FIXTURE: runtime_core::primitives::icon::IconData =
-            runtime_core::primitives::icon::IconData {
+        const ICON_FIXTURE: runtime_shared::primitives::icon::IconData =
+            runtime_shared::primitives::icon::IconData {
                 view_box: (24, 24),
                 paths: &["M4 4 L20 4 L20 20 L4 20 Z"],
-                fill_rule: runtime_core::primitives::icon::FillRule::NonZero,
+                fill_rule: runtime_shared::primitives::icon::FillRule::NonZero,
                 filled: false,
             };
         let mut icon_root = backend.create_view(&a11y);
@@ -2352,8 +2352,8 @@ mod layout_tests {
         backend.apply_style(
             &sized_icon,
             &std::rc::Rc::new(StyleRules {
-                width: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(16.0))),
-                height: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(16.0))),
+                width: Some(runtime_shared::Tokenized::Literal(runtime_shared::Length::Px(16.0))),
+                height: Some(runtime_shared::Tokenized::Literal(runtime_shared::Length::Px(16.0))),
                 ..StyleRules::default()
             }),
         );
@@ -2391,7 +2391,7 @@ mod layout_tests {
         // framework installs `NoopScrollViewOps` unless the backend
         // provides a handle, so clicking a TOC entry silently did
         // nothing.
-        use runtime_core::primitives::scroll_view::ScrollViewOps;
+        use runtime_shared::primitives::scroll_view::ScrollViewOps;
         let sv_handle = backend.make_scroll_view_handle(&scroll);
         let _ = &sv_handle;
         let ops = crate::handles::scroll_view_ops_for_test();

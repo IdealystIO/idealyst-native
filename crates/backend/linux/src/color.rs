@@ -1,9 +1,9 @@
 //! Color conversion helpers shared by the paint + text modules.
 //!
-//! Every author-facing color is a [`runtime_core::Color`] — a CSS-ish
+//! Every author-facing color is a [`runtime_shared::Color`] — a CSS-ish
 //! string (`#rrggbb`, `#rrggbbaa`, `rgb(...)`, `rgba(...)`,
 //! `transparent`). The framework already owns the canonical parser
-//! ([`runtime_core::color::parse`]); we reuse it rather than
+//! ([`runtime_shared::color::parse`]); we reuse it rather than
 //! re-implementing hex/rgba parsing (and its clamping/edge-case
 //! behavior) a second time in the backend. The only backend-specific
 //! job here is turning the parsed sRGB `[f32; 4]` into the two shapes
@@ -11,8 +11,8 @@
 //! `u16`-per-channel form Pango attributes take.
 
 use gtk4::gdk;
-use runtime_core::color::Rgba;
-use runtime_core::Color;
+use runtime_shared::color::Rgba;
+use runtime_shared::Color;
 
 /// Parse a [`Color`] to straight sRGB `[r, g, b, a]` in `0..=1`.
 ///
@@ -22,7 +22,7 @@ use runtime_core::Color;
 /// welcome vignette starts every stop at alpha 0), so a loud
 /// fallback would paint garbage over a valid transparent state.
 pub fn to_srgb(color: &Color) -> [f32; 4] {
-    runtime_core::color::parse_or(&color.0, Rgba::TRANSPARENT).to_srgb_f32()
+    runtime_shared::color::parse_or(&color.0, Rgba::TRANSPARENT).to_srgb_f32()
 }
 
 /// sRGB `[f32; 4]` → [`gdk::RGBA`]. GDK's channels are the same

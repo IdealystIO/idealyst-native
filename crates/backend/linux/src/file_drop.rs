@@ -30,7 +30,7 @@
 //! no opaque backend `source` handle.
 //!
 //! `enter`/`motion` return [`gdk::DragAction::COPY`] only when the framework
-//! handler *accepts* the drag (returns [`runtime_core::TouchResponse::CONSUMED`]) — the GTK
+//! handler *accepts* the drag (returns [`runtime_shared::TouchResponse::CONSUMED`]) — the GTK
 //! analogue of web's `preventDefault` and macOS's returning a copy operation;
 //! otherwise GTK shows the no-drop cursor and rejects the drop. A drop of a
 //! non-`file://` source (a remote URI with no local path) contributes no
@@ -39,7 +39,7 @@
 use gtk4::prelude::*;
 use gtk4::{gdk, gio};
 
-use runtime_core::{DroppedFile, FileDropEvent, FileDropHandler, FileDropPhase, TouchPoint};
+use runtime_shared::{DroppedFile, FileDropEvent, FileDropHandler, FileDropPhase, TouchPoint};
 
 /// Turn one dropped [`gio::File`] into a neutral [`DroppedFile`], or `None`
 /// when it has no local filesystem path (e.g. a remote `smb://`/`http://`

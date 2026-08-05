@@ -45,7 +45,7 @@
 //! (top-left) flex placement here: precise element-tracking placement —
 //! re-pinning the content to the trigger's viewport rect on every
 //! scroll/resize — needs a per-frame scheduler, which the GTK host does
-//! not install (`runtime_core::scheduling::raf_loop` is inert without
+//! not install (`runtime_shared::scheduling::raf_loop` is inert without
 //! one). So anchored content mounts at the container's top-left rather
 //! than beside its trigger. This is the one documented gap; the common
 //! modal/sheet/centered cases (Viewport placements) are fully placed.
@@ -56,8 +56,8 @@ use std::rc::{Rc, Weak};
 use gtk4::glib;
 use gtk4::prelude::*;
 
-use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement};
-use runtime_core::{AlignItems, FlexDirection, JustifyContent, Length, StyleRules, Tokenized};
+use runtime_shared::primitives::portal::{PortalTarget, ViewportPlacement};
+use runtime_shared::{AlignItems, FlexDirection, JustifyContent, Length, StyleRules, Tokenized};
 
 use crate::{IdealystView, LinuxBackend};
 
