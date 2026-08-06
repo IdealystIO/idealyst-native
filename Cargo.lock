@@ -6158,6 +6158,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "idealyst"
+version = "1.2.2"
+dependencies = [
+ "backend-web",
+ "console_error_panic_hook",
+ "dev-client",
+ "host-terminal",
+ "idealyst-macros",
+ "js-sys",
+ "lol_alloc",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "web-sys",
+]
+
+[[package]]
 name = "idealyst-cli"
 version = "1.2.2"
 dependencies = [
@@ -6220,6 +6237,16 @@ dependencies = [
  "serde",
  "thiserror 2.0.18",
  "tokio",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "idealyst-macros"
+version = "1.2.2"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
  "toml 0.8.23",
 ]
 

@@ -31,7 +31,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use build_ios::{
-    font_preload_tags, inject_into_head, parse_manifest, remap_path_flags, FrameworkSource, Manifest,
+    font_preload_tags, inject_into_head, parse_manifest, remap_path_flags, FrameworkSource,
 };
 
 mod premint;
@@ -287,25 +287,47 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     let project_dir = fs::canonicalize(project_dir)
         .with_context(|| format!("resolve project dir {}", project_dir.display()))?;
     let manifest = parse_manifest(&project_dir)?;
-    // Validate `--primitives` BEFORE anything is generated or compiled: a
-    // typo should be a one-line CLI error, not a macro error inside a
-    // generated file the user never wrote.
-    let resolved_primitives = resolve_primitive_set(opts.primitives.as_deref())?;
+    // `--primitives` used to generate a `builtin_set!` into the wrapper.
+    // There is no wrapper to generate into: the set is now declared in
+    // the manifest, where `idealyst::entry!` reads it. Fail loudly
+    // rather than silently drop the trim — it was worth ~35% of the
+    // bundle on a small app.
+    if let Some(list) = opts.primitives.as_deref() {
+        anyhow::bail!(
+            "`--primitives` is no longer a build flag — the primitive set is \
+             part of the app's configuration now. Move it into the app's \
+             Cargo.toml:\n\n    \
+             [package.metadata.idealyst.app]\n    \
+             primitives = [{}]\n\n\
+             `idealyst::entry!` reads it and declares the `builtin_set!` in \
+             your own crate.",
+            list.iter()
+                .map(|p| format!("\"{p}\""))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
 
-    let wrapper_dir = opts
+    // The app crate is the artifact. `bin_name` is the *binary* target's
+    // name, which keeps hyphens (unlike `lib_name`, which cargo
+    // underscores) because that's what rustc writes to disk.
+    let bin_name = manifest.name.clone();
+    ensure_entry_point(&project_dir, &bin_name)?;
+
+    // Per-app staging: `pkg/` output and the premint dump wrapper. No
+    // longer holds a generated crate.
+    let build_dir = opts
         .source
         .wrapper_root(&project_dir)
         .join(&manifest.name)
-        .join("web/wrapper");
-    generate_wrapper(
-        &wrapper_dir,
-        &project_dir,
-        &opts.source,
-        &manifest,
-        &opts.user_features,
-        opts.hydrate,
-        resolved_primitives.as_deref(),
-    )?;
+        .join("web");
+    // The wasm build gets its own target dir. Not isolation for its own
+    // sake: it carries RUSTFLAGS the app's native builds don't
+    // (`--emit-relocs`, `+simd128`, the premint cfgs), so sharing a
+    // target dir with `cargo check` would invalidate one fingerprint
+    // every time the other ran. Shared across apps under one framework
+    // source so sibling apps still reuse dependency builds.
+    let target_dir = opts.source.cargo_target_dir(&project_dir).join("idealyst-web");
 
     // Direct pipeline (no wasm-pack), so we can hit the flag matrix
     // wasm-split-cli needs to actually extract chunks:
@@ -323,11 +345,11 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     //      symbols wasm-split needed — that's why my earlier
     //      website measurements showed 0 KB chunks even when the
     //      lazy body was clearly extractable.
-    let wrapper_pkg = wrapper_dir.join("pkg");
-    let original_wasm = wrapper_dir
-        .join("target/wasm32-unknown-unknown")
+    let wrapper_pkg = build_dir.join("pkg");
+    let original_wasm = target_dir
+        .join("wasm32-unknown-unknown")
         .join(if opts.release { "release" } else { "debug" })
-        .join(format!("{}.wasm", manifest.lib_name));
+        .join(format!("{bin_name}.wasm"));
     // premint × hydrate COMPOSES now: the SSR/SSG server binary is built
     // with the same `--cfg idealyst_premint*` posture (build-ssr injects
     // the cfgs and the wrapper links premint.css + arms the minted-class
@@ -336,12 +358,15 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     // historical bail here refused the combination back when the server
     // could only emit live-minted classes.
     cargo_build_wasm(
-        &wrapper_dir,
+        &project_dir,
+        &bin_name,
+        &target_dir,
         opts.release,
         opts.strip_panics,
         opts.premint,
         opts.premint_only,
         opts.premint_report,
+        opts.hydrate,
         &opts.user_features,
         &opts.source,
         &project_dir,
@@ -367,7 +392,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         // the in-project `pkg/` carry it, and before `fingerprint_pkg`
         // so it gets content-addressed with the rest of the bundle.
         let css = premint::generate_and_run_dump(
-            wrapper_dir.parent().expect("wrapper dir has a parent"),
+            &build_dir,
             &project_dir,
             &opts.source,
             &manifest,
@@ -468,7 +493,10 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
 
     Ok(BuildArtifact {
         pkg_dir,
-        wrapper_dir,
+        // No longer a generated crate — the per-app staging dir that
+        // holds `pkg/` and the premint dump. Field name kept so the
+        // display lines in `cmd/build.rs` don't churn.
+        wrapper_dir: build_dir,
         bundle_dir,
         entry_js,
     })
@@ -1226,536 +1254,6 @@ fn is_already_compressed(path: &Path) -> bool {
     )
 }
 
-/// Materialize the wrapper crate at `wrapper_dir`. Idempotent —
-/// overwrites whatever was there. Public so a future
-/// `idealyst scaffold web` command can drive the same generator.
-///
-/// `user_features` names cargo features that should be forwarded to
-/// the user-crate dep — the wrapper grows a `[features]` block that
-/// re-exports each one (`<feat> = ["<user>/<feat>"]`) so a
-/// `wasm-pack build -- --features <feat>` invocation against the
-/// wrapper turns on the matching feature on the user crate. This is
-/// the path runtime-server-mode hot reload uses to enable `dev-hot-reload` on
-/// the user crate without forcing every user crate to carry that
-/// feature in its default set.
-#[allow(clippy::too_many_arguments)]
-pub fn generate_wrapper(
-    wrapper_dir: &Path,
-    project_dir: &Path,
-    source: &FrameworkSource,
-    manifest: &Manifest,
-    user_features: &[String],
-    hydrate: bool,
-    primitives: Option<&[String]>,
-) -> Result<()> {
-    fs::create_dir_all(wrapper_dir.join("src"))
-        .with_context(|| format!("create {}", wrapper_dir.display()))?;
-
-    let wrapper_name = format!("{}-web-wrapper", manifest.name);
-    // `wasm-pack` uses `package.name` (`-` not preserved) to derive
-    // the emitted JS filename: e.g. `<name>.js`, `<name>_bg.wasm`.
-    // The user's `index.html` references `./pkg/<lib>.js`, where
-    // `<lib>` is `manifest.lib_name` (= package name with `-` → `_`).
-    // Our wrapper's package name is `<lib>-web-wrapper`; wasm-pack
-    // would produce `<lib>_web_wrapper.js`. We force the wasm-pack
-    // output to use the original lib name by setting `[lib].name`
-    // on the wrapper to `manifest.lib_name`, which wasm-pack
-    // prefers over the package name when present.
-    // `runtime-core` as a DIRECT dep so the dev build's `--features
-    // runtime-core/dev` spec resolves (cargo only accepts
-    // `<dep>/<feat>` for a direct dependency of the package being
-    // built). No `runtime-shared` here: the web wrapper spells no
-    // substrate name of its own — `install_scheduler` / the robot relay
-    // client all come through backend-web.
-    // `async-driver` is REQUIRED, not optional polish. `runtime-vocabulary`'s
-    // lazy handler gates its entire load path on its OWN `async-driver`
-    // feature; without it `mount_lazy` compiles to "paint the placeholder and
-    // return", so a `lazy! {}` / `#[component(lazy)]` boundary renders its
-    // loading UI forever and the chunk is never even fetched.
-    //
-    // `backend-web/async-driver` does NOT cover this: it forwards to
-    // `runtime-shared/async-driver` (plus `wasm-bindgen-futures`), and
-    // `runtime-shared`'s flag is a different feature from the vocabulary's
-    // own. Only `runtime-core/async-driver` forwards to
-    // `runtime-vocabulary/async-driver`, so the wrapper has to ask for it
-    // here — which is also why the failure was silent: every crate compiled,
-    // the chunk was emitted and content-addressed, and only the runtime fetch
-    // was missing. `tests/lazy-payload-split`'s build tier passes on artifact
-    // shape + size delta and cannot see it; the `--browser` tier is what
-    // catches it.
-    let runtime_core_dep = source.dep("crates/runtime/core", &["async-driver"]);
-    let runtime_vocabulary_dep = source.dep("crates/runtime/vocabulary", &[]);
-    // The wrapper always installs `backend_web::install_async_executor()`
-    // so `runtime_core::driver::spawn_async` works inside any
-    // wasm app — required by `resource()`, `mutation()`, and the
-    // server-fn batch flusher.
-    //
-    // `hydrate` is the in-place hydration machinery (cursor + remount
-    // + per-primitive `hydrate_next` paths + the divergence-diagnostic).
-    // Enabled when the bundle is paired with SSG/SSR HTML it needs to
-    // adopt; suppressed for pure SPA builds so the machinery DCE's out
-    // of the wasm. We construct this dep line by hand (not via
-    // `source.dep`) so we can spell `default-features = false` and pick
-    // an exact feature set — `backend-web`'s default set includes
-    // `hydrate`, which is the desired standalone-check default but the
-    // wrong default for a CLI-built wrapper that knows what it needs.
-    let bweb_base = source.dep("crates/backend/web", &[]);
-    // `source.dep` returns `{ path = "..." }` (or git equivalent). Splice
-    // in the explicit feature set so the wrapper opts out of `hydrate`
-    // when SSG/SSR isn't paired with this build.
-    let bweb_inner = bweb_base.trim().trim_start_matches('{').trim_end_matches('}').trim();
-    // Per-primitive-family gating is not a wrapper concern: the scene
-    // core reaches each primitive through `register_builtins`' registry
-    // handlers, so the only place a family could be compiled out is the
-    // vocabulary's registrar plus each backend's caps impls. There is no
-    // `prim-*` feature to forward, and the wrapper must not invent an
-    // app-facing lever that deletes components from the public API
-    // without shrinking the bundle.
-    let mut bweb_features: Vec<String> = vec!["async-driver".to_string()];
-    if hydrate {
-        bweb_features.push("hydrate".to_string());
-    }
-    // NOTE: no `new-core` feature is pushed. backend-web's scene module
-    // (Host + caps impls, `start_in`/`hydrate_in` boot, flush driver,
-    // viewport source) is UNCONDITIONAL — there is one core, and naming
-    // a feature that no longer exists is a hard cargo resolution error
-    // in the generated wrapper (which nothing type-checks; see the
-    // generated-code name-drift note in the deletion baseline §7.7).
-    let bweb_features_clause = format!(
-        "features = [{}]",
-        bweb_features.iter().map(|f| format!("\"{}\"", f)).collect::<Vec<_>>().join(", "),
-    );
-    let bweb_dep = format!(
-        "{{ {}, default-features = false, {} }}",
-        bweb_inner, bweb_features_clause,
-    );
-    // `dev-client` is only needed in runtime-server mode. Declared as an
-    // optional dep so plain wasm builds don't drag the `WireBackend`
-    // replay engine into their bundle. We strip the outer braces from
-    // `source.dep` so we can splice in `optional = true` alongside the
-    // git/path fields.
-    let dev_client_raw = source.dep("crates/dev/client", &[]);
-    let dev_client_inner = dev_client_raw
-        .trim()
-        .trim_start_matches('{')
-        .trim_end_matches('}')
-        .trim();
-
-    // Plain path dep on the user crate: the app's own defaults select
-    // its prim families / feature set, and there is one core.
-    let user_dep = format!("{{ path = \"{}\" }}", project_dir.display());
-
-    let cargo_toml = format!(
-        r#"# GENERATED by `idealyst build web`. Do not edit — rewritten
-# every build. Run `idealyst scaffold web` to materialize an editable
-# copy of this wrapper into your repo (once that command lands).
-
-# Empty `[workspace]` declares this wrapper as a standalone project
-# even though it physically lives under the main workspace's
-# `target/idealyst/...`. Without it, cargo refuses to build because
-# the parent Cargo.toml has `[workspace]` and would normally claim
-# this directory as a member.
-[workspace]
-
-[package]
-name = "{wrapper_name}"
-version = "0.0.1"
-edition = "2021"
-
-# Forcing `[lib].name = "{lib_name}"` so wasm-pack emits
-# `pkg/{lib_name}.js` / `pkg/{lib_name}_bg.wasm` regardless of the
-# wrapper's package name — matches what the user's `index.html`
-# expects (`import init from "./pkg/{lib_name}.js"`).
-[lib]
-name = "{lib_name}"
-crate-type = ["cdylib"]
-
-[dependencies]
-# Direct dep so the launcher's dev `--features` switch (robot registry +
-# MCP catalog) resolves — cargo only accepts a `<dep>/<feat>` spec for a
-# direct dependency. Production builds never enable it; see
-# `wrapper_does_not_enable_catalog_in_production` in build-web.
-runtime-core = {runtime_core_dep}
-# Named directly so the wrapper can spell `runtime_vocabulary::AllBuiltins`
-# / `builtin_set!` at the boot seam. Already in the graph via backend-web,
-# so this adds no compilation — it only makes the path nameable here.
-runtime-vocabulary = {runtime_vocabulary_dep}
-backend-web = {bweb_dep}
-# runtime-server-mode dep. Optional + gated by the `aas` feature so plain wasm
-# builds don't pull the `WireBackend` replay engine into their bundle.
-dev-client = {{ {dev_client_inner}, optional = true }}
-{user_name} = {user_dep}
-
-wasm-bindgen = "0.2"
-console_error_panic_hook = "0.1"
-# runtime-server-mode `start()` calls `js_sys::Reflect::get` to read
-# `window.IDEALYST_RUNTIME_SERVER_URL` and `web_sys::console` for log lines.
-# Both are already in the dep graph via backend-web; declaring them
-# here lets the wrapper template reference them directly without
-# leaking a transitive-import requirement on backend-web.
-js-sys = "0.3"
-web-sys = {{ version = "0.3", features = ["Window", "Navigator"] }}
-# Smaller WASM allocator — slightly higher per-alloc cost in exchange
-# for a few KB shaved off the bundle.
-lol_alloc = "0.4"
-
-[features]
-# runtime-server-mode hot reload. Activated by `idealyst dev --aas --web`. When
-# on, the generated `start()` reads `window.IDEALYST_RUNTIME_SERVER_URL` (the dev
-# HTTP server injects it on every served page) and connects the
-# `WebBackend` to the runtime-server host over WebSocket via
-# `backend_web::connect_web`. When off (plain `idealyst build --web`
-# or `idealyst dev --web` without `--aas`), `start()` mounts the
-# user's `app()` locally in the browser as before.
-# Two flips together: pull in the optional `dev-client` (WireBackend
-# replay engine) AND turn on `backend-web/runtime-server`, which is what
-# gates the `connect_web` + `WebClientHandle` exports we use below.
-runtime-server = ["dep:dev-client", "backend-web/runtime-server"]
-# Deprecated alias for the old "AAS" name — kept so any tooling that
-# still enables `aas` resolves. The canonical name is `runtime-server`
-# (matches the generated code's `#[cfg(feature = "runtime-server")]`
-# gates and `idealyst dev`'s `--features runtime-server`).
-aas = ["runtime-server"]
-# Robot-on-web (local/static builds only): the WebSocket dial-out transport
-# to a `robot-relay`. Enabled by `idealyst build --web --robot` /
-# `idealyst dev --web --local --robot`. Pulls `backend-web/robot`, which
-# cascades the shared substrate's `robot` gate — exposing
-# `install_robot_relay_client` and
-# the platform-agnostic dispatch core.
-robot = ["backend-web/robot"]
-{user_feature_forwards}
-{patch_block}
-# Wrapper-level release profile. wasm-pack is no longer in the
-# pipeline (build-web invokes cargo + wasm-bindgen + wasm-split +
-# wasm-opt directly), so the wrapper's [profile.release] is what
-# governs release builds.
-#
-# Key choices, all in service of letting wasm-split-cli actually do
-# its job:
-#   * `lto = "off"` — `"fat"` LTO inlines `#[wasm_split]` annotated
-#     functions back into their callers, which puts their body code
-#     in main and shrinks the chunk to a stub. "off" preserves the
-#     function boundary; wasm-opt's per-chunk pass recovers most of
-#     the LTO size win anyway.
-#   * `codegen-units = 1` — fewer cross-unit indirections in the
-#     emitted wasm gives wasm-split's reachability walker more
-#     precision (it's pessimistic across CU boundaries).
-#   * `strip = "none"` — symbol names alive for wasm-split's
-#     call-graph matching; wasm-opt strips them as a final step.
-#   * `debug = "limited"` — line tables stay so wasm-split can match
-#     calls to their reloc records; stripped by wasm-opt.
-[profile.release]
-opt-level = "z"
-codegen-units = 1
-lto = "off"
-panic = "abort"
-strip = "none"
-debug = "limited"
-
-# Dev builds default to `opt-level = 0`, which is catastrophic for compute-heavy
-# DEPENDENCY crates (e.g. a CPU rasterizer like `vello_cpu`/`hayro`): un-inlined
-# tiny-function inner loops + bounds checks run 10-40x slower, turning a sub-second
-# render into 10s+. Optimize all *dependencies* (the `"*"` glob — excludes this
-# wrapper + the app crate, so app iteration stays fast to compile) without
-# touching the size-tuned release profile above. SAFE for `#[wasm_split]` lazy
-# loading: split points are `#[no_mangle] extern "C"` FFI export/import edges the
-# optimizer can't inline across, and `lto` stays unset (not "fat"), so no bodies
-# relocate into `main`.
-[profile.dev.package."*"]
-opt-level = 3
-"#,
-        wrapper_name = wrapper_name,
-        lib_name = manifest.lib_name,
-        user_name = manifest.name,
-        user_dep = user_dep,
-        runtime_core_dep = runtime_core_dep,
-        runtime_vocabulary_dep = runtime_vocabulary_dep,
-        bweb_dep = bweb_dep,
-        dev_client_inner = dev_client_inner,
-        user_feature_forwards = user_feature_forwards(&manifest.name, user_features),
-        patch_block = source.patch_block(),
-    );
-
-    // Which builtin primitives this bundle registers. `None` keeps the
-    // historical full vocabulary; a list declares a `builtin_set!` the two
-    // boot entries BOTH instantiate. They must agree: the wrapper compiles
-    // in `start_in_with` and `hydrate_in_with` and picks at runtime, so if
-    // either still named `AllBuiltins` the whole vocabulary would stay
-    // reachable and neither path would shrink (measured: 0.4% instead of
-    // 35%). `wrapper_boot_paths_share_one_builtin_set` pins that.
-    let (builtin_set_decl, boot_set_path) = match primitives {
-        None => (String::new(), "runtime_vocabulary::AllBuiltins".to_string()),
-        Some(keep) => (
-            format!(
-                "\n/// Builtin primitives this app registers (`--primitives`).\n\
-                 /// Everything unlisted is never named, so LLVM drops its handler\n\
-                 /// and the imports/JS glue it alone reached.\n\
-                 runtime_vocabulary::builtin_set!(pub AppBuiltins: {});\n",
-                keep.join(", "),
-            ),
-            "AppBuiltins".to_string(),
-        ),
-    };
-
-    let start_local = format!(
-        r##"/// Local mode: boots through `backend_web::newcore::{{start_in,
-/// hydrate_in}}`, which own the backend + scene registry + `World`
-/// lifecycle and install the microtask flush driver + the viewport
-/// source themselves. A prerendered `#app` (SSG/SSR output) takes the
-/// adoption path (`hydrate_in` falls back to a fresh mount when there
-/// is no server DOM). Registration goes through the app's
-/// `register_scene_extensions(&mut runtime_scene::Registry<WebBackend>)`
-/// seam — an unregistered payload panics at realize.
-#[cfg(not(feature = "runtime-server"))]
-fn start_local() {{
-    let selector = "#app";
-    if backend_web::page_is_prerendered(selector) {{
-        backend_web::newcore::hydrate_in_with::<{boot_set}>(selector, {lib}::register_scene_extensions, || {lib}::app());
-    }} else {{
-        backend_web::newcore::start_in_with::<{boot_set}>(selector, {lib}::register_scene_extensions, || {lib}::app());
-    }}
-
-    // Robot-on-web (local/static only): dial the relay so this
-    // browser-hosted app exposes its Robot bridge to the MCP server /
-    // evaluator. The robot driver env is installed by the boot itself
-    // (`robot_transport::install_newcore_driver_env`). In
-    // runtime-server mode the framework runs in the native sidecar
-    // (robot is native there), so the transport lives here, not in
-    // `start_aas`.
-    #[cfg(feature = "robot")]
-    if let Some(url) = read_robot_relay_url() {{
-        if let Err(e) = backend_web::install_robot_relay_client(&url) {{
-            web_sys::console::error_2(&"[robot] relay connect failed:".into(), &e);
-        }}
-    }}
-}}"##,
-        lib = manifest.lib_name,
-        boot_set = boot_set_path,
-    );
-
-    let lib_rs = format!(
-        r##"//! GENERATED by `idealyst build web`. Two start paths, picked by
-//! the `aas` cargo feature:
-//!
-//! - **Default (no feature):** mounts `{lib}::app()` locally on the
-//!   DOM element `#app`. The browser runs the framework runtime
-//!   directly. This is what `idealyst build --web` produces and what
-//!   `idealyst dev --web` (without `--aas`) serves.
-//!
-//! - **`aas` feature on:** reads `window.IDEALYST_RUNTIME_SERVER_URL` (the dev
-//!   HTTP server injects it into every served page) and connects a
-//!   caps-driven replay client to the runtime-server host over WebSocket via
-//!   `backend_web::connect_web`. The browser becomes a thin replayer;
-//!   the framework runtime lives in the runtime-server sidecar. This is what
-//!   `idealyst dev --aas --web` produces. Without the feature the
-//!   browser would render locally and never connect to runtime-server — the
-//!   sidecar would sit idle reporting `0 session(s)` on every
-//!   hot-patch.
-
-#![cfg(target_arch = "wasm32")]
-
-// `RefCell` / `Rc` / `WebBackend` are only named by the runtime-server
-// replay client below; a plain wasm build would otherwise warn on them.
-#[cfg(feature = "runtime-server")]
-use std::cell::RefCell;
-#[cfg(feature = "runtime-server")]
-use std::rc::Rc;
-#[cfg(feature = "runtime-server")]
-use backend_web::WebBackend;
-use wasm_bindgen::prelude::*;
-{builtin_set_decl}
-// Smaller WASM allocator — trades a few cycles per allocation for a
-// few KB shaved off the bundle.
-#[global_allocator]
-static ALLOCATOR: lol_alloc::AssumeSingleThreaded<lol_alloc::FreeListAllocator> =
-    unsafe {{ lol_alloc::AssumeSingleThreaded::new(lol_alloc::FreeListAllocator::new()) }};
-
-// Local mode keeps no wrapper-side slot: `newcore::start_in` /
-// `hydrate_in` own the `World` + realized tree for the page's lifetime.
-#[cfg(feature = "runtime-server")]
-thread_local! {{
-    /// runtime-server-mode: the `WebClientHandle` owns the WebSocket + event
-    /// closures + raf pump. Drop tears down the connection, so keep it
-    /// alive for the page's lifetime.
-    static AAS_HANDLE: RefCell<Option<backend_web::WebClientHandle>> =
-        const {{ RefCell::new(None) }};
-    /// runtime-server-mode: the replay client lives behind an
-    /// `Rc<RefCell<…>>` because both the `connect_web` raf pump and the
-    /// on-disconnect reconnect closure want to retarget it.
-    static AAS_WIRE: RefCell<
-        Option<Rc<RefCell<dev_client::newcore::NewCoreReplayClient<WebBackend>>>>,
-    > = const {{ RefCell::new(None) }};
-}}
-
-// Named `main` (not `start`) because `wasm-split-cli` looks for a
-// function called `main` as the entry point of the call graph it
-// walks to decide what's reachable from the base bundle vs. only
-// from a lazy chunk. The `#[wasm_bindgen(start)]` attribute is what
-// actually marks it as the JS-init entry — the function name is
-// arbitrary as far as wasm-bindgen is concerned.
-#[wasm_bindgen(start)]
-pub fn main() {{
-    // This same wasm is also imported + initialized inside Web Workers (by the
-    // `offload` SDK / `wasmworker`) purely to make `#[offload::job]`-exported
-    // functions callable there. A Worker has no `Window` and no DOM, so the start
-    // function must NOT install the UI backend or mount — it just returns, leaving
-    // the module instantiated and the job exports reachable. Detect the Worker
-    // context (no `window`) and bail before any main-thread-only setup.
-    if web_sys::window().is_none() {{
-        return;
-    }}
-
-    console_error_panic_hook::set_once();
-
-    // Scheduler + time source + async executor + render loop -- every
-    // code path needs them. The async executor is what makes
-    // `runtime_core::driver::spawn_async` work on wasm; without it any
-    // async work (resource fetchers, server-fn calls, mutation
-    // triggers) panics at first poll with "no AsyncExecutor
-    // installed". The render-loop driver is what makes
-    // `runtime_core::driver::render_loop` tick frames; without it,
-    // host-web's per-frame paint closure (the wgpu Simulator preview,
-    // every future host-driven animation surface) gets a `NoopHandle`
-    // and never paints -- the canvas mounts but stays blank.
-    backend_web::install_scheduler();
-    backend_web::install_time_source();
-    // Route the framework's `log_*` through the browser `console.*`. Without
-    // this, `log_info!`/`log_error!` hit the wasm stderr no-op sink and
-    // vanish — Rust-side logs (incl. an in-app E2E suite's `[E2E-RESULT]`
-    // summary) never reach devtools. JS-side shim logs are unaffected; this
-    // is specifically the Rust logging channel.
-    backend_web::install_logger();
-    backend_web::install_async_executor();
-    backend_web::install_render_loop();
-    // NOTE: the viewport observer is installed INSIDE the start fns, not
-    // here — its timing differs for hydration (after mount, so the first
-    // render uses the SSR-assumed viewport) vs a fresh boot (before mount,
-    // so the first render sees the real viewport).
-
-    #[cfg(feature = "runtime-server")]
-    {{
-        start_aas();
-    }}
-    #[cfg(not(feature = "runtime-server"))]
-    {{
-        start_local();
-    }}
-}}
-
-{start_local}
-
-/// runtime-server mode: framework runtime lives in the runtime-server sidecar on the dev
-/// host. The browser is a thin client that replays wire commands and
-/// forwards events back.
-#[cfg(feature = "runtime-server")]
-fn start_aas() {{
-    // runtime-server mode doesn't hydrate (the host renders); read the
-    // real viewport up front, as the old `main()` did.
-    backend_web::install_viewport_observer();
-    let url = match read_aas_url() {{
-        Some(u) => u,
-        None => {{
-            web_sys::console::error_1(
-                &"[dev-client] runtime-server mode enabled but window.IDEALYST_RUNTIME_SERVER_URL is missing — \
-                  did the dev HTTP server fail to inject it? Falling back to local mount.".into(),
-            );
-            // Defensive fallback so the page doesn't go blank: mount
-            // locally through the same boot `start_local` uses.
-            backend_web::newcore::start_in(
-                "#app",
-                {lib}::register_scene_extensions,
-                || {lib}::app(),
-            );
-            return;
-        }}
-    }};
-
-    web_sys::console::log_1(
-        &format!("[dev-client] runtime-server mode: connecting to {{}}", url).into(),
-    );
-
-    let backend = WebBackend::new("#app");
-    // `new_newcore` drives the backend's CAPABILITY surface (the 30
-    // `runtime_vocabulary::caps` traits) instead of a `Backend` impl —
-    // wire commands in, capability calls out. SDK web modules submit
-    // their navigator/presentation handlers into backend-web's
-    // link-time inventory registrar (`prim-navigator`), so the chrome
-    // the replayer drives is registered without a wrapper-side call.
-    let outbound = dev_client::OutboundSender::new();
-    let wire = Rc::new(RefCell::new(dev_client::WireBackend::new_newcore(
-        backend, outbound,
-    )));
-    AAS_WIRE.with(|slot| *slot.borrow_mut() = Some(wire.clone()));
-
-    let wire_for_reconnect = wire.clone();
-    let url_for_reconnect = url.clone();
-    let on_disconnect: Rc<dyn Fn()> = Rc::new(move || {{
-        // The dev server is likely restarting the sidecar (hot-patch
-        // fallback). Try to reconnect; if it fails we'll drop the
-        // handle and the page will be inert until next reload.
-        let wire = wire_for_reconnect.clone();
-        let url = url_for_reconnect.clone();
-        let nested_url = url.clone();
-        let nested_wire = wire.clone();
-        let on_disconnect_again: Rc<dyn Fn()> = Rc::new(move || {{
-            web_sys::console::warn_1(&format!(
-                "[dev-client] reconnect to {{}} failed; will retry on next disconnect",
-                nested_url
-            ).into());
-            let _ = nested_wire;
-        }});
-        match backend_web::connect_web(&url, wire, on_disconnect_again) {{
-            Ok(h) => {{
-                AAS_HANDLE.with(|slot| *slot.borrow_mut() = Some(h));
-            }}
-            Err(e) => web_sys::console::error_2(
-                &"[dev-client] reconnect failed:".into(),
-                &e,
-            ),
-        }}
-    }});
-
-    match backend_web::connect_web(&url, wire, on_disconnect) {{
-        Ok(h) => {{
-            AAS_HANDLE.with(|slot| *slot.borrow_mut() = Some(h));
-        }}
-        Err(e) => web_sys::console::error_2(
-            &"[dev-client] initial runtime-server connect failed:".into(),
-            &e,
-        ),
-    }}
-}}
-
-/// Read `window.IDEALYST_RUNTIME_SERVER_URL`, the URL the dev HTTP layer injects
-/// into the page via `<script>window.IDEALYST_RUNTIME_SERVER_URL = "..."</script>`.
-#[cfg(feature = "runtime-server")]
-fn read_aas_url() -> Option<String> {{
-    let win = web_sys::window()?;
-    js_sys::Reflect::get(&win, &"IDEALYST_RUNTIME_SERVER_URL".into())
-        .ok()?
-        .as_string()
-}}
-
-/// Read `window.IDEALYST_ROBOT_RELAY_URL`, injected by the dev HTTP layer (or
-/// the arena's static server) so the browser app knows where to dial its
-/// Robot bridge relay.
-#[cfg(feature = "robot")]
-fn read_robot_relay_url() -> Option<String> {{
-    let win = web_sys::window()?;
-    js_sys::Reflect::get(&win, &"IDEALYST_ROBOT_RELAY_URL".into())
-        .ok()?
-        .as_string()
-}}
-"##,
-        lib = manifest.lib_name,
-        start_local = start_local,
-        builtin_set_decl = builtin_set_decl,
-    );
-
-    fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;
-    fs::write(wrapper_dir.join("src/lib.rs"), lib_rs)?;
-    Ok(())
-}
 
 /// Pick the nightly toolchain name to use for the `--strip-panics`
 /// (`-Z build-std`) build.
@@ -1785,8 +1283,101 @@ fn default_nightly_toolchain() -> String {
     }
 }
 
+/// Features the app forwards to the framework rather than owning.
+///
+/// These were wrapper features that gated `backend-web`; with the
+/// wrapper gone they resolve against the `idealyst` facade the app
+/// depends on. Anything NOT listed here is one of the app's own
+/// features and is passed through untouched.
+const FRAMEWORK_FEATURES: &[&str] = &["runtime-server", "robot", "hydrate"];
+
+/// Map a CLI-supplied feature name to the spec cargo needs on the app
+/// crate: `robot` → `idealyst/robot`, `my-thing` → `my-thing`.
+///
+/// `aas` is the deprecated alias for `runtime-server` and normalizes to
+/// it, which is what the wrapper's `[features]` block did.
+fn feature_spec(name: &str) -> String {
+    match name {
+        "aas" => "idealyst/runtime-server".to_string(),
+        f if FRAMEWORK_FEATURES.contains(&f) => format!("idealyst/{f}"),
+        other => other.to_string(),
+    }
+}
+
+/// Profile settings wasm-split depends on, passed as `--config` rather
+/// than written into a manifest.
+///
+/// The generated wrapper used to carry these in its own
+/// `[profile.release]`. Building the app crate directly means the
+/// profile comes from the *app's* workspace, which the framework
+/// doesn't own and shouldn't edit — so they're injected per-invocation.
+/// Each is load-bearing:
+///
+/// * `lto = "off"` — `"fat"` LTO inlines `#[wasm_split]`-annotated
+///   functions back into their callers, putting the body in the main
+///   bundle and leaving the chunk a stub. wasm-opt's per-chunk pass
+///   recovers most of the size win anyway.
+/// * `codegen-units = 1` — fewer cross-unit indirections gives
+///   wasm-split's reachability walker more precision (it is pessimistic
+///   across CU boundaries).
+/// * `strip = "none"` / `debug = "limited"` — symbol names and line
+///   tables stay alive for wasm-split's call-graph matching; wasm-opt
+///   strips both as a final step.
+///
+/// `[profile.dev.package."*"] opt-level = 3` optimizes DEPENDENCIES
+/// only (the glob excludes the app crate, so app iteration stays fast to
+/// compile). Without it, compute-heavy dependency crates — a CPU
+/// rasterizer's un-inlined inner loops — run 10-40x slower in dev.
+fn profile_config_args(release: bool) -> Vec<String> {
+    let settings: &[&str] = if release {
+        &[
+            "profile.release.opt-level=\"z\"",
+            "profile.release.codegen-units=1",
+            "profile.release.lto=\"off\"",
+            "profile.release.panic=\"abort\"",
+            "profile.release.strip=\"none\"",
+            "profile.release.debug=\"limited\"",
+        ]
+    } else {
+        &["profile.dev.package.\"*\".opt-level=3"]
+    };
+    settings
+        .iter()
+        .flat_map(|s| ["--config".to_string(), (*s).to_string()])
+        .collect()
+}
+
+/// Fail early, and in the app author's terms, when the crate has no
+/// binary target.
+///
+/// The app crate is the artifact now, so it needs a `main`. Without this
+/// the failure is cargo's `no bin target named ...`, which says nothing
+/// about the one line that fixes it.
+fn ensure_entry_point(project_dir: &Path, bin_name: &str) -> Result<()> {
+    if project_dir.join("src/main.rs").is_file() {
+        return Ok(());
+    }
+    // An explicit `[[bin]]` can put the entry anywhere, so a missing
+    // `src/main.rs` is only a problem if the manifest doesn't declare
+    // one either.
+    let manifest = fs::read_to_string(project_dir.join("Cargo.toml")).unwrap_or_default();
+    if manifest.contains("[[bin]]") {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "{} has no binary target, so there is nothing to build.\n\n\
+         An idealyst app IS its binary now — there is no generated wrapper \
+         crate supplying the entry point. Add `src/main.rs`:\n\n    \
+         idealyst::entry!({});\n\n\
+         and depend on the facade in Cargo.toml:\n\n    \
+         [dependencies]\n    idealyst = \"1.2\"",
+        project_dir.display(),
+        bin_name.replace('-', "_"),
+    )
+}
+
 /// Run `cargo build --target wasm32-unknown-unknown` against the
-/// wrapper crate. `-C link-args=--emit-relocs` is set so the rustc-emitted
+/// app crate. `-C link-args=--emit-relocs` is set so the rustc-emitted
 /// wasm carries the relocation info wasm-split-cli needs to identify
 /// indirect-call targets per chunk. Cost is a few KB of metadata
 /// pre-bindgen; stripped from the final bundle by wasm-opt.
@@ -1798,12 +1389,15 @@ fn default_nightly_toolchain() -> String {
 /// `RUSTFLAGS` is folded in, since cargo ignores it once the encoded form
 /// is set.
 fn cargo_build_wasm(
-    wrapper_dir: &Path,
+    project_dir: &Path,
+    bin_name: &str,
+    target_dir: &Path,
     release: bool,
     strip_panics: bool,
     premint: bool,
     premint_only: bool,
     premint_report: bool,
+    hydrate: bool,
     user_features: &[String],
     source: &FrameworkSource,
     project_root: &Path,
@@ -1820,9 +1414,16 @@ fn cargo_build_wasm(
             std::env::var("IDEALYST_NIGHTLY").unwrap_or_else(|_| default_nightly_toolchain());
         cmd.arg(format!("+{toolchain}"));
     }
-    cmd.current_dir(wrapper_dir)
+    cmd.current_dir(project_dir)
         .arg("build")
-        .args(["--target", "wasm32-unknown-unknown"]);
+        .args(["--target", "wasm32-unknown-unknown"])
+        // The binary target IS the app entry point. Named explicitly so
+        // a crate that also has a lib (the normal shape — components in
+        // `lib.rs`, `entry!` in `main.rs`) doesn't build both.
+        .args(["--bin", bin_name])
+        .arg("--target-dir")
+        .arg(target_dir)
+        .args(profile_config_args(release));
     if release {
         cmd.arg("--release");
     }
@@ -1838,8 +1439,18 @@ fn cargo_build_wasm(
         // in RUSTFLAGS below (still requires `-Z build-std` to recompile core).
         cmd.args(["-Z", "build-std=std,panic_abort"]);
     }
-    if !user_features.is_empty() {
-        cmd.arg("--features").arg(user_features.join(","));
+    // One `--features` list against the app crate. Framework features
+    // are spelled `idealyst/<f>`, which cargo accepts because `idealyst`
+    // is a direct dependency of the app. The wrapper's parallel
+    // `[features]` forwarding block is gone entirely.
+    let mut features: Vec<String> = user_features.iter().map(|f| feature_spec(f)).collect();
+    if hydrate {
+        features.push("idealyst/hydrate".to_string());
+    }
+    features.sort();
+    features.dedup();
+    if !features.is_empty() {
+        cmd.arg("--features").arg(features.join(","));
     }
     // Flags are assembled as a LIST and handed to cargo via
     // `CARGO_ENCODED_RUSTFLAGS` (`\x1f`-separated) rather than the
@@ -1923,7 +1534,7 @@ fn cargo_build_wasm(
         } else {
             ""
         },
-        wrapper_dir.display(),
+        project_dir.display(),
     );
     let status = cmd.status().with_context(|| "exec cargo")?;
     if !status.success() {
@@ -2189,72 +1800,6 @@ fn run_wasm_split(
     Ok(())
 }
 
-/// Render the wrapper's `[features]` block. Each *wrapper-local*
-/// feature entry becomes `<feat> = ["<user>/<feat>"]` so a
-/// `wasm-pack build -- --features <feat>` against the wrapper turns
-/// that feature on in the user crate.
-///
-/// Cross-crate feature activations of the form `<dep>/<feat>` (e.g.
-/// `runtime-core/dev`) are **skipped** here — those are valid
-/// cargo command-line arguments to `--features`, but they aren't
-/// valid feature *names*, and trying to emit them as keys produces
-/// invalid TOML. The build command passes them through to cargo as
-/// `--features <dep>/<feat>` directly and cargo activates the
-/// underlying feature on the named dep.
-///
-/// Returns the empty string when no wrapper-local features remain
-/// so the resulting Cargo.toml doesn't gain an empty `[features]`
-/// block.
-/// Render user-feature pass-throughs that sit inside the wrapper's
-/// single `[features]` block (the wrapper already declares `aas =
-/// ["dep:dev-client"]`; we append the forwards to it). Each
-/// wrapper-local feature `<f>` becomes `<f> = ["<user>/<f>"]` so a
-/// `wasm-pack build -- --features <f>` invocation against the wrapper
-/// flips the matching feature on the user crate.
-///
-/// Two filters:
-/// - **Cross-crate (`<dep>/<feat>`) features are skipped.** Those are
-///   already valid cargo `--features` values; no aliasing needed.
-/// - **`aas` is skipped** because the wrapper defines it itself
-///   (gates `dev-client` + the WireBackend `start()` branch). Without
-///   this skip, the forward would emit `aas = ["<user>/aas"]` which
-///   collides with the wrapper-local definition and fails cargo
-///   resolution.
-fn user_feature_forwards(user_name: &str, user_features: &[String]) -> String {
-    let local: Vec<&String> = user_features
-        .iter()
-        .filter(|f| {
-            !f.is_empty()
-                // `dep/feat` activations are passed straight to cargo,
-                // not forwarded through the wrapper's feature table.
-                && !f.contains('/')
-                // Wrapper-LOCAL features the template already declares.
-                // Forwarding these to the user crate (e.g.
-                // `runtime-server = ["<user>/runtime-server"]`) would
-                // require every app to declare an unused feature and
-                // breaks `idealyst dev --web` on a fresh scaffold,
-                // which is exactly the bug this guards against.
-                && f.as_str() != "aas"
-                && f.as_str() != "runtime-server"
-                // Wrapper-local: the template declares `robot` itself
-                // (`robot = ["backend-web/robot"]`); forwarding it to the
-                // user crate would collide and break cargo resolution.
-                && f.as_str() != "robot"
-        })
-        .collect();
-    if local.is_empty() {
-        return String::new();
-    }
-    let mut out = String::new();
-    for feat in local {
-        out.push_str(&format!(
-            "{feat} = [\"{user_name}/{feat}\"]\n",
-            feat = feat,
-            user_name = user_name,
-        ));
-    }
-    out
-}
 
 /// Mirror `wrapper_pkg/` → `project_pkg/`. We don't trust an OS-level
 /// symlink for this — the dev server's static-file logic uses
@@ -2286,245 +1831,121 @@ fn sync_pkg_dir(src: &Path, dst: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod regression_tests {
-    //! Wrapper-shape regression for `build-web`.
+    //! Regression coverage for how the app crate is invoked.
     //!
-    //! The web wrapper has both a `runtime-core` direct dep (so the
-    //! launcher's `--features runtime-core/dev` resolves) AND an
-    //! `aas` feature that flips on `backend-web/runtime-server`
-    //! (the WebSocket / replay-client boot path). Dropping either
-    //! breaks dev mode silently:
-    //!  - no runtime-core dep → `--features runtime-core/dev`
-    //!    errors at cargo time, MCP catalog ends up empty.
-    //!  - no `aas` feature on the wrapper → `idealyst dev --web
-    //!    --runtime-server` builds a wasm bundle that mounts
-    //!    `app()` locally in the browser instead of connecting to
-    //!    the dev-host, and saves visibly do nothing.
+    //! This module used to assert on the *text* of a generated wrapper
+    //! Cargo.toml and lib.rs — that the wrapper carried a direct
+    //! `runtime-core` dep, that both boot paths named the same builtin
+    //! set, that the runtime-server feature reached `backend-web`. All
+    //! of that compensated for generated code being unchecked until
+    //! someone ran a build.
+    //!
+    //! Those went with the wrapper. The boot sequence is ordinary
+    //! compiled code in `idealyst::boot` now, so the compiler enforces
+    //! what string-matching approximated. What's left here is what the
+    //! compiler still can't see: the shape of the cargo invocation.
 
     use super::*;
-    use build_ios::{AppMetadata, Manifest, SplashConfig};
+    use std::io::Read;
 
-    fn fake_manifest() -> Manifest {
-        Manifest {
-            name: "demo".to_string(),
-            lib_name: "demo".to_string(),
-            app: AppMetadata {
-                name: "Demo".to_string(),
-                bundle_id: Some("ai.example.demo".to_string()),
-                version: "0.0.1".to_string(),
-                build_number: "1".to_string(),
-                splash: SplashConfig {
-                    background: "#000000".to_string(),
-                    title: "Demo".to_string(),
-                    title_color: "#ffffff".to_string(),
-                    duration_ms: 0,
-                },
-                targets: Vec::new(),
-                server_bin: None,
-                server_manifest: None,
-                worker_bin: None,
-                worker_manifest: None,
-                server_port: 3000,
-                web: Default::default(),
-                macos: Default::default(),
-                permissions: Default::default(),
-            },
-        }
-    }
-
-    fn run_generator() -> (std::path::PathBuf, tempfile::TempDir) {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let project_dir = tmp.path().join("project");
-        let wrapper_dir = tmp.path().join("wrapper");
-        let workspace_root = tmp.path().join("workspace");
-        std::fs::create_dir_all(&project_dir).unwrap();
-        std::fs::create_dir_all(&workspace_root).unwrap();
-        let manifest = fake_manifest();
-        let source = FrameworkSource::Workspace {
-            root: workspace_root,
-        };
-        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &[], false, None)
-            .expect("generate wrapper");
-        (wrapper_dir, tmp)
-    }
-
-    /// `run_generator` with an explicit `--primitives` keep-list.
-    fn run_generator_with(keep: &[&str]) -> (std::path::PathBuf, tempfile::TempDir) {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let project_dir = tmp.path().join("project");
-        let wrapper_dir = tmp.path().join("wrapper");
-        let workspace_root = tmp.path().join("workspace");
-        std::fs::create_dir_all(&project_dir).unwrap();
-        std::fs::create_dir_all(&workspace_root).unwrap();
-        let manifest = fake_manifest();
-        let source = FrameworkSource::Workspace {
-            root: workspace_root,
-        };
-        let keep: Vec<String> = keep.iter().map(|s| s.to_string()).collect();
-        generate_wrapper(
-            &wrapper_dir,
-            &project_dir,
-            &source,
-            &manifest,
-            &[],
-            false,
-            Some(&keep),
-        )
-        .expect("generate wrapper");
-        (wrapper_dir, tmp)
-    }
-
-    /// The wrapper must NOT emit any `prim-*` feature: per-primitive
-    /// gating has no runtime counterpart on the scene core (each
-    /// primitive is reached through `register_builtins`' registry
-    /// handlers), so a wrapper-side lever would delete components from
-    /// the public API without shrinking the bundle.
+    /// Framework features resolve against the facade; the app's own
+    /// features pass through untouched. Getting this backwards fails at
+    /// cargo time with a message that names neither the app nor the
+    /// framework.
     #[test]
-    fn wrapper_emits_no_prim_family_features() {
-        let (wrapper_dir, _tmp) = run_generator();
-        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
-        assert!(
-            !cargo.contains("prim-"),
-            "wrapper must not gate primitive families:\n{cargo}",
-        );
-        let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
-        let feats: Vec<&str> = parsed
-            .get("dependencies")
-            .and_then(|d| d.get("backend-web"))
-            .and_then(|b| b.get("features"))
-            .and_then(|f| f.as_array())
-            .expect("backend-web features array")
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
+    fn framework_features_are_namespaced_app_features_are_not() {
+        assert_eq!(feature_spec("robot"), "idealyst/robot");
+        assert_eq!(feature_spec("runtime-server"), "idealyst/runtime-server");
+        assert_eq!(feature_spec("hydrate"), "idealyst/hydrate");
+        assert_eq!(feature_spec("my-feature"), "my-feature");
+        assert_eq!(feature_spec("dev-hot-reload"), "dev-hot-reload");
+        // An already-qualified spec is left alone.
+        assert_eq!(feature_spec("runtime-core/dev"), "runtime-core/dev");
+    }
+
+    /// `aas` is the deprecated alias and must normalize. `idealyst/aas`
+    /// would fail resolution; leaving it bare would build a bundle that
+    /// mounts locally instead of connecting to the dev host, and saves
+    /// would visibly do nothing.
+    #[test]
+    fn aas_alias_normalizes_to_runtime_server() {
+        assert_eq!(feature_spec("aas"), "idealyst/runtime-server");
+    }
+
+    /// wasm-split needs `lto = "off"` (fat LTO inlines `#[wasm_split]`
+    /// bodies back into their callers, leaving stub chunks) plus live
+    /// symbols and line tables for call-graph matching. The wrapper
+    /// carried these in its own `[profile.release]`; they now have to be
+    /// injected per-invocation rather than written into a manifest the
+    /// framework doesn't own.
+    #[test]
+    fn release_profile_config_preserves_what_wasm_split_needs() {
+        let args = profile_config_args(true);
+        let joined = args.join(" ");
+        assert!(joined.contains("profile.release.lto=\"off\""), "{joined}");
+        assert!(joined.contains("profile.release.strip=\"none\""), "{joined}");
+        assert!(joined.contains("profile.release.debug=\"limited\""), "{joined}");
+        assert!(joined.contains("profile.release.codegen-units=1"), "{joined}");
         assert_eq!(
-            feats,
-            vec!["async-driver"],
-            "backend-web features must be exactly the boot set:\n{cargo}",
+            args.iter().filter(|a| *a == "--config").count(),
+            args.len() / 2,
+            "each setting needs its own --config flag: {args:?}",
         );
     }
 
+    /// Dev builds optimize DEPENDENCIES only — the `"*"` glob excludes
+    /// the app crate so iteration stays fast to compile, while
+    /// compute-heavy deps don't run 10-40x slower.
     #[test]
-    fn wrapper_has_runtime_core_dep() {
-        let (wrapper_dir, _tmp) = run_generator();
-        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
-        let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
+    fn dev_profile_config_optimizes_dependencies_only() {
+        let args = profile_config_args(false);
+        let joined = args.join(" ");
         assert!(
-            parsed
-                .get("dependencies")
-                .and_then(|d| d.get("runtime-core"))
-                .is_some(),
-            "web wrapper missing runtime-core dep — launcher's \
-             `--features runtime-core/dev` will fail. Got:\n{cargo}",
+            joined.contains("profile.dev.package.\"*\".opt-level=3"),
+            "{joined}"
+        );
+        assert!(
+            !joined.contains("profile.dev.opt-level"),
+            "must not slow the app crate's own compile: {joined}"
         );
     }
 
-    // -----------------------------------------------------------------
-    // --primitives → builtin_set! wrapper codegen
-    // -----------------------------------------------------------------
-
-    /// THE trap this seam has. The wrapper compiles in BOTH boot entries
-    /// (`start_in_with` for a fresh mount, `hydrate_in_with` for prerendered
-    /// DOM) and picks at runtime, so both must instantiate the SAME set. If
-    /// either still named `AllBuiltins` it would re-anchor the entire
-    /// vocabulary and NEITHER path would shrink — measured as 0.4% instead
-    /// of 35% when only `start_in` had been converted.
+    /// A crate with no binary target can't be an app any more. The error
+    /// has to name the fix — cargo's own "no bin target named …" says
+    /// nothing about `entry!`.
     #[test]
-    fn wrapper_boot_paths_share_one_builtin_set() {
-        let (wrapper_dir, _tmp) = run_generator_with(&["view", "text"]);
-        let lib = std::fs::read_to_string(wrapper_dir.join("src/lib.rs")).unwrap();
+    fn missing_entry_point_is_reported_in_the_authors_terms() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("demo");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+        std::fs::write(project.join("src/lib.rs"), "pub fn app() {}").unwrap();
 
-        assert!(
-            lib.contains("start_in_with::<AppBuiltins>"),
-            "fresh-mount boot must take the selected set:\n{lib}",
-        );
-        assert!(
-            lib.contains("hydrate_in_with::<AppBuiltins>"),
-            "hydration boot must take the SAME set — otherwise it re-anchors \
-             every handler and the selection buys nothing:\n{lib}",
-        );
-        assert!(
-            !lib.contains("AllBuiltins"),
-            "no boot path may fall back to AllBuiltins once a set is selected:\n{lib}",
-        );
-        assert!(
-            lib.contains("runtime_vocabulary::builtin_set!(pub AppBuiltins: view, text);"),
-            "wrapper must declare the set it instantiates:\n{lib}",
-        );
+        let err = ensure_entry_point(&project, "demo").expect_err("no bin target");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("idealyst::entry!"), "names the fix: {msg}");
+        assert!(msg.contains("src/main.rs"), "names where it goes: {msg}");
     }
 
-    /// Absent `--primitives` must keep the historical full vocabulary, and
-    /// must not emit a set declaration at all.
+    /// `src/main.rs` is the conventional entry, but an explicit
+    /// `[[bin]]` can put it anywhere — don't reject those.
     #[test]
-    fn wrapper_without_primitives_flag_boots_all_builtins() {
-        let (wrapper_dir, _tmp) = run_generator();
-        let lib = std::fs::read_to_string(wrapper_dir.join("src/lib.rs")).unwrap();
+    fn explicit_bin_target_satisfies_the_entry_point_check() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("demo");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(
+            project.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n\n[[bin]]\nname = \"demo\"\npath = \"src/entry.rs\"\n",
+        )
+        .unwrap();
+        ensure_entry_point(&project, "demo").expect("explicit [[bin]] is an entry point");
 
-        assert!(lib.contains("start_in_with::<runtime_vocabulary::AllBuiltins>"), "{lib}");
-        assert!(lib.contains("hydrate_in_with::<runtime_vocabulary::AllBuiltins>"), "{lib}");
-        assert!(!lib.contains("builtin_set!"), "no set declared:\n{lib}");
-    }
-
-    /// Regression: `lazy! {}` / `#[component(lazy)]` never loaded its chunk.
-    ///
-    /// `runtime-vocabulary`'s lazy handler gates its ENTIRE load path on that
-    /// crate's own `async-driver` feature. Without it `mount_lazy` compiles to
-    /// "paint the placeholder and return", so a lazy boundary showed its
-    /// loading UI forever and the chunk was never fetched — verified in a
-    /// browser: only index.html, the JS shim, `__wasm_split.js` and the main
-    /// wasm were requested, never `module_0___lazy_body.wasm`.
-    ///
-    /// `backend-web/async-driver` does NOT cover it: that forwards to
-    /// `runtime-shared/async-driver`, a different feature from the
-    /// vocabulary's. Only `runtime-core/async-driver` reaches
-    /// `runtime-vocabulary/async-driver`.
-    ///
-    /// Silent by construction — every crate compiled, the chunk was emitted,
-    /// split and content-addressed, and `tests/lazy-payload-split`'s build
-    /// tier (artifact shape + eager-vs-lazy size delta) passes on a chunk
-    /// nobody ever fetches. Only the `--browser` tier can see it, which is
-    /// why this asserts the feature at codegen time instead.
-    #[test]
-    fn wrapper_enables_async_driver_so_lazy_chunks_actually_load() {
-        let (wrapper_dir, _tmp) = run_generator();
-        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
-        let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
-
-        let feats = parsed
-            .get("dependencies")
-            .and_then(|d| d.get("runtime-core"))
-            .and_then(|d| d.get("features"))
-            .and_then(|f| f.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        assert!(
-            feats.contains(&"async-driver"),
-            "web wrapper must enable `runtime-core/async-driver` — it is the \
-             ONLY path to `runtime-vocabulary/async-driver`, and without it \
-             every lazy boundary renders its placeholder forever while the \
-             chunk is never fetched. Got runtime-core features {feats:?} in:\n{cargo}",
-        );
-    }
-
-    /// The wrapper spells `runtime_vocabulary::…` at the boot seam, so the
-    /// path has to be nameable from the wrapper crate.
-    #[test]
-    fn wrapper_has_runtime_vocabulary_dep() {
-        let (wrapper_dir, _tmp) = run_generator();
-        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
-        let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
-        assert!(
-            parsed
-                .get("dependencies")
-                .and_then(|d| d.get("runtime-vocabulary"))
-                .is_some(),
-            "wrapper names `runtime_vocabulary::AllBuiltins` but does not depend \
-             on it:\n{cargo}",
-        );
+        let plain = tmp.path().join("plain");
+        std::fs::create_dir_all(plain.join("src")).unwrap();
+        std::fs::write(plain.join("Cargo.toml"), "[package]\nname = \"plain\"\n").unwrap();
+        std::fs::write(plain.join("src/main.rs"), "fn main() {}").unwrap();
+        ensure_entry_point(&plain, "plain").expect("src/main.rs is an entry point");
     }
 
     #[test]
@@ -2563,230 +1984,6 @@ mod regression_tests {
             .to_string();
         assert!(empty.contains("no names"), "{empty}");
     }
-
-    /// Production-bundle guard: the generated web wrapper must NOT enable
-    /// the catalog (`catalog` / its `mcp` alias / the `dev` umbrella) on
-    /// runtime-core. Those features pull `mcp-catalog` and make every
-    /// `#[component]` / `#[derive(IdealystSchema)]` bake its doc strings +
-    /// prop schema into the wasm as `inventory` statics — pure bundle
-    /// bloat in a shipped app. The catalog is a dev/tooling concern only
-    /// (`idealyst dev` opts in via `--features runtime-core/dev`); the
-    /// release bundle carries none of it. If this test ever fails,
-    /// documentation/catalog data is about to ship to end users.
-    #[test]
-    fn wrapper_does_not_enable_catalog_in_production() {
-        let (wrapper_dir, _tmp) = run_generator();
-        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
-        for forbidden in [
-            "runtime-core/catalog",
-            "runtime-core/mcp",
-            "runtime-core/dev",
-        ] {
-            assert!(
-                !cargo.contains(forbidden),
-                "production web wrapper must not enable {forbidden} — it pulls \
-                 mcp-catalog and bloats the bundle with doc/catalog data. Got:\n{cargo}",
-            );
-        }
-        // And the runtime-core dep line itself must carry no
-        // catalog-ish feature, however it's spelled.
-        let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
-        if let Some(feats) = parsed
-            .get("dependencies")
-            .and_then(|d| d.get("runtime-core"))
-            .and_then(|rc| rc.get("features"))
-            .and_then(|f| f.as_array())
-        {
-            for f in feats {
-                let f = f.as_str().unwrap_or("");
-                assert!(
-                    !matches!(f, "catalog" | "mcp" | "dev"),
-                    "runtime-core dep enables catalog feature {f:?} in the production wrapper",
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn wrapper_runtime_server_feature_pulls_backend_web_runtime_server() {
-        let (wrapper_dir, _tmp) = run_generator();
-        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
-        let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
-        let rs = parsed
-            .get("features")
-            .and_then(|f| f.get("runtime-server"))
-            .and_then(|a| a.as_array())
-            .expect("web wrapper declares the `runtime-server` feature");
-        let entries: Vec<&str> = rs.iter().filter_map(|v| v.as_str()).collect();
-        assert!(
-            entries.iter().any(|e| *e == "backend-web/runtime-server"),
-            "web wrapper `runtime-server` feature must enable backend-web/runtime-server; \
-             without it, `idealyst dev --web` produces a local-mount bundle that \
-             won't connect to the dev-host. Got {:?}",
-            entries,
-        );
-        // Back-compat: the deprecated `aas` alias still resolves to it.
-        let aas = parsed
-            .get("features")
-            .and_then(|f| f.get("aas"))
-            .and_then(|a| a.as_array())
-            .expect("web wrapper keeps the deprecated `aas` alias");
-        assert!(
-            aas.iter().filter_map(|v| v.as_str()).any(|e| e == "runtime-server"),
-            "`aas` must alias `runtime-server`",
-        );
-    }
-
-    /// Regression for the fresh-scaffold `idealyst dev --web` failure:
-    /// the wrapper's wrapper-LOCAL features (`runtime-server`, `aas`)
-    /// must NEVER be forwarded to the user crate as
-    /// `<user>/<feature>`. The dev launcher passes `runtime-server`
-    /// (+ a `<dep>/<feat>` entry) as `user_features`; before the
-    /// fix `user_feature_forwards` emitted
-    /// `runtime-server = ["demo/runtime-server"]`, and since a
-    /// scaffolded app declares no such feature, cargo failed with
-    /// "package ... depends on demo with feature runtime-server but
-    /// demo does not have that feature."
-    #[test]
-    fn runtime_server_feature_is_not_forwarded_to_user_crate() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let project_dir = tmp.path().join("project");
-        let wrapper_dir = tmp.path().join("wrapper");
-        let workspace_root = tmp.path().join("workspace");
-        std::fs::create_dir_all(&project_dir).unwrap();
-        std::fs::create_dir_all(&workspace_root).unwrap();
-        let manifest = fake_manifest(); // name = "demo"
-        let source = FrameworkSource::Workspace {
-            root: workspace_root,
-        };
-        // Exactly what `idealyst dev --web` (runtime-server mode) passes.
-        // The `<dep>/<feat>` entry must be skipped (it is not a valid
-        // feature NAME) and `runtime-server` must stay wrapper-local.
-        let user_features = vec![
-            "runtime-server".to_string(),
-            "runtime-core/dev".to_string(),
-        ];
-        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &user_features, false, None)
-            .expect("generate wrapper");
-        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
-
-        assert!(
-            !cargo.contains("demo/runtime-server"),
-            "wrapper must NOT forward `runtime-server` to the user crate \
-             (`demo/runtime-server`) — a fresh scaffold declares no such \
-             feature and the build would fail. Got:\n{cargo}",
-        );
-        // And it must still be a valid, resolvable feature locally.
-        let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
-        assert!(
-            parsed
-                .get("features")
-                .and_then(|f| f.get("runtime-server"))
-                .is_some(),
-            "wrapper must declare `runtime-server` locally",
-        );
-    }
-
-    /// The wrapper boots through `backend_web::newcore::{start_in,
-    /// hydrate_in}` via the `register_scene_extensions` seam, enables
-    /// backend-web's scene feature, and takes a plain path dep on the
-    /// user crate (no core pin — there is one core).
-    #[test]
-    fn wrapper_boots_newcore_with_plain_user_dep() {
-        let (wrapper_dir, _tmp) = run_generator();
-
-        let lib_rs = std::fs::read_to_string(wrapper_dir.join("src/lib.rs")).unwrap();
-        assert!(
-            lib_rs.contains("backend_web::newcore::start_in"),
-            "wrapper boots through newcore::start_in:\n{lib_rs}"
-        );
-        assert!(
-            lib_rs.contains("backend_web::newcore::hydrate_in"),
-            "wrapper takes the adoption path on prerendered DOM:\n{lib_rs}"
-        );
-        assert!(
-            lib_rs.contains("demo::register_scene_extensions"),
-            "wrapper registers through the scene-registry seam:\n{lib_rs}"
-        );
-        assert!(
-            !lib_rs.contains("runtime_core::mount")
-                && !lib_rs.contains("register_extensions(&mut"),
-            "no code path may reach the deleted walker mount:\n{lib_rs}"
-        );
-        // wasm-split-cli still keys off `fn main` as the call-graph root.
-        assert!(lib_rs.contains("pub fn main()"), "{lib_rs}");
-
-        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
-        let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
-        let user = parsed
-            .get("dependencies")
-            .and_then(|d| d.get("demo"))
-            .expect("user dep");
-        assert!(
-            user.get("default-features").is_none() && user.get("features").is_none(),
-            "user crate keeps its own defaults (one core):\n{cargo}",
-        );
-        assert!(
-            !cargo.contains("old-core"),
-            "wrapper must not mention old-core:\n{cargo}",
-        );
-        let bweb_feats: Vec<&str> = parsed
-            .get("dependencies")
-            .and_then(|d| d.get("backend-web"))
-            .and_then(|b| b.get("features"))
-            .and_then(|f| f.as_array())
-            .expect("backend-web features")
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
-        // backend-web's scene module is unconditional, so the wrapper must
-        // NOT name a `new-core` feature — that spelling was deleted with
-        // the old core and a generated manifest naming it fails cargo
-        // resolution before anything is compiled.
-        assert!(
-            !bweb_feats.contains(&"new-core"),
-            "the deleted `new-core` feature must not appear: {bweb_feats:?}",
-        );
-    }
-
-    /// The runtime-server (thin-client) leg replays wire commands
-    /// through the backend's CAPABILITY surface
-    /// (`dev_client::WireBackend::new_newcore`), and its
-    /// missing-URL fallback mounts locally through the same scene boot
-    /// `start_local` uses. `idealyst dev --web` builds this leg, so a
-    /// regression here breaks the primary dev loop.
-    #[test]
-    fn runtime_server_leg_replays_through_the_caps_surface() {
-        let (wrapper_dir, _tmp) = run_generator();
-        let lib_rs = std::fs::read_to_string(wrapper_dir.join("src/lib.rs")).unwrap();
-        let aas = lib_rs
-            .split("fn start_aas()")
-            .nth(1)
-            .expect("wrapper defines start_aas");
-        assert!(
-            aas.contains("dev_client::WireBackend::new_newcore("),
-            "replay client must drive the caps surface:\n{aas}"
-        );
-        assert!(
-            aas.contains("backend_web::newcore::start_in("),
-            "the missing-URL fallback must mount through the scene boot:\n{aas}"
-        );
-        assert!(
-            lib_rs.contains("dev_client::newcore::NewCoreReplayClient<WebBackend>"),
-            "the retained replay handle must be the caps replay client:\n{lib_rs}"
-        );
-    }
-}
-
-#[cfg(test)]
-mod bundle_tests {
-    //! Coverage for `idealyst build --web --gzip --out-dir`. These
-    //! tests don't run wasm-pack — they drive `stage_bundle` /
-    //! `gzip_bundle` against a synthetic project layout, so they
-    //! stay fast (<10ms) and don't need a wasm toolchain on CI.
-
-    use super::*;
-    use std::io::Read as _;
 
     fn fake_project(tmp: &Path) -> PathBuf {
         let project = tmp.join("proj");

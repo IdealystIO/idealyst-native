@@ -1,0 +1,75 @@
+# The app-facing facade: one dependency line that carries whatever the
+# target needs.
+#
+# This crate exists so an app's Cargo.toml doesn't have to name
+# `backend-web` + `wasm-bindgen` + `console_error_panic_hook` +
+# `lol_alloc` + `js-sys` + `web-sys` on wasm, `host-terminal` on a TTY,
+# `host-macos` on desktop, and so on — the per-target dependency blocks
+# below do that. Previously those lines lived in a CLI-generated wrapper
+# crate, which is what made the app crate un-buildable by plain `cargo
+# build` and what let the wrapper's dependency resolution drift from the
+# app's (two `runtime-core` instances → "expected `Element`, found
+# `Element`").
+[package]
+name = "idealyst"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Build and run idealyst apps with plain `cargo build` — no generated wrapper crate"
+
+[features]
+default = []
+
+# --- Native shell selection -------------------------------------------
+#
+# The target triple settles web/iOS/Android on its own. It does NOT
+# settle the *native* shells: a terminal app and a desktop-window app on
+# a Mac are both `target_os = "macos"`, so something has to choose. That
+# something is a feature.
+#
+# HAZARD: cargo features are additive and unify across a workspace. Two
+# apps in one workspace asking for different shells will both get both.
+# `boot::run` rejects that at compile time rather than silently booting
+# the wrong one — see `boot::run`'s `compile_error!` arms.
+terminal = ["dep:host-terminal"]
+
+# --- Dev / tooling ----------------------------------------------------
+
+# Runtime-server ("aas") mode: the framework runtime lives in a native
+# sidecar and this process is a thin replay client. Web only for now.
+runtime-server = ["dep:dev-client", "backend-web/runtime-server"]
+# Robot bridge — the MCP server's remote-control transport.
+robot = ["backend-web/robot"]
+# Adopt server-rendered DOM instead of mounting fresh. Set by the build
+# when the app is paired with an SSR/SSG server binary; `boot::web`'s
+# `page_is_prerendered` check picks the path at runtime, but the backend
+# needs the machinery compiled in.
+hydrate = ["backend-web/hydrate"]
+
+[dependencies]
+idealyst-macros = { path = "../idealyst-macros" }
+# `async-driver` here is the other half: it forwards to the
+# vocabulary so `driver::spawn_async` / `render_loop` resolve.
+runtime-core = { path = "../runtime/core", features = ["async-driver"] }
+runtime-vocabulary = { path = "../runtime/vocabulary" }
+runtime-scene = { path = "../runtime/scene" }
+
+# --- Web --------------------------------------------------------------
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# `async-driver` compiles in the rAF render-loop driver and the
+# `wasm_bindgen_futures` executor, and is what makes
+# `install_render_loop()` / `install_async_executor()` exist at all.
+# Without it the app renders and then panics at the first `spawn_async`
+# — i.e. the first server-fn call or resource fetch.
+backend-web = { path = "../backend/web", features = ["async-driver"] }
+console_error_panic_hook = "0.1"
+# Smaller WASM allocator — a few cycles per allocation for a few KB off
+# the bundle.
+lol_alloc = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Navigator", "console"] }
+dev-client = { path = "../dev/client", optional = true }
+
+# --- Native -----------------------------------------------------------
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+host-terminal = { path = "../gpu-backend/host/terminal", optional = true }
