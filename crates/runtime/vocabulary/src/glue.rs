@@ -128,8 +128,8 @@ use crate::builders::{self, TextContent};
 // the macro (and app preludes) reach for.
 pub use runtime_scene::{component_scope, Element};
 pub use runtime_world::{
-    effect, memo, on_cleanup, on_scope_drop, signal, untrack, Effect, Memo, ReadSignal, Signal,
-    WriteSignal,
+    effect, memo, on_cleanup, on_owned_drop, on_scope_drop, signal, untrack, Effect, Memo,
+    ReadSignal, Signal, WriteSignal,
 };
 
 // The escape hatch for the `T: PartialEq` bound those signal handles

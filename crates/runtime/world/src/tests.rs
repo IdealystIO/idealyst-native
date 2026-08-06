@@ -425,6 +425,66 @@ fn on_scope_drop_outside_a_world_is_inert() {
     assert!(weak.upgrade().is_none(), "the closure's captures must be released");
 }
 
+/// `on_owned_drop` is `on_scope_drop` without the in-effect shortcut: it
+/// fires ONLY when the owning scope drops, never on an enclosing effect's
+/// re-run.
+///
+/// This is the distinction the callback guard needs. A keyed list's
+/// structural driver is one effect that re-runs on every list edit, while
+/// reconcile preserves the surviving rows — so a row-lifetime teardown
+/// registered through `on_scope_drop` fires on the first unrelated edit and
+/// kills state for a row that is still on screen. Contrast with
+/// `on_scope_drop_inside_an_effect_behaves_like_on_cleanup`, which pins the
+/// opposite (and, for a per-run resource, correct) behavior.
+#[test]
+fn on_owned_drop_ignores_the_enclosing_effects_rerun() {
+    let world = World::new();
+    let cleaned = counter();
+    let s = world.enter(|| signal(0));
+    let ((), owned) = world.enter(|| {
+        collect_owned(|| {
+            let cleaned = Rc::clone(&cleaned);
+            effect(move || {
+                s.get();
+                let cleaned = Rc::clone(&cleaned);
+                on_owned_drop(move || bump(&cleaned));
+            });
+        })
+    });
+    assert_eq!(cleaned.get(), 0);
+
+    for i in 1..4 {
+        s.set(i);
+        world.flush();
+    }
+    assert_eq!(
+        cleaned.get(),
+        0,
+        "re-running the enclosing effect must NOT fire an ownership-scope teardown",
+    );
+
+    drop(owned);
+    assert!(cleaned.get() > 0, "fires when the owning scope really drops");
+}
+
+/// Same no-world posture as `on_scope_drop`: nothing owns the scope, so the
+/// registration is inert and `f` is dropped without running.
+#[test]
+fn on_owned_drop_outside_a_world_is_inert() {
+    let cleaned = counter();
+    let held = Rc::new(());
+    let weak = Rc::downgrade(&held);
+    {
+        let cleaned = Rc::clone(&cleaned);
+        on_owned_drop(move || {
+            let _ = &held;
+            bump(&cleaned);
+        });
+    }
+    assert_eq!(cleaned.get(), 0, "nothing owns it; it must not run");
+    assert!(weak.upgrade().is_none(), "the closure's captures must be released");
+}
+
 #[test]
 fn returned_closures_are_cleanups() {
     let world = World::new();

@@ -613,6 +613,26 @@ Pick by ownership. A resource acquired once while the component is
 BUILT belongs to the component (`on_scope_drop`); one re-acquired on
 every run of an effect belongs to that effect (`on_cleanup`).
 
+There is a third case, and it is the sharp one. `on_scope_drop` defers
+to `on_cleanup` *whenever an effect happens to be running*, so a
+teardown registered from a mount that runs inside a structural driver's
+effect also fires on that driver's next re-run. For a keyed list this is
+wrong: the driver re-runs on every edit to the list, while reconcile
+deliberately PRESERVES the surviving rows — so the teardown fires for a
+row that is still on screen. When the lifetime you mean is the mounted
+node's, not the enclosing run's, use `on_owned_drop`:
+
+```rust
+// Fires ONLY when the owning scope's `Owned` drops — never on an
+// enclosing effect's re-run.
+on_owned_drop(move || token.set_dead());
+```
+
+This is what the backend-seam callback guard
+(`runtime_vocabulary::callback_guard::ScopeAlive`) anchors to. Under
+`on_scope_drop` the first unrelated list edit silently made every live
+row's buttons inert; regression `callbacks_survive_a_keyed_reconcile`.
+
 Either shape fixes a real bug class: a cleanup owned by the scope
 cancels its timers when the component unmounts, so detached callbacks
 can't outlive a remounted world.

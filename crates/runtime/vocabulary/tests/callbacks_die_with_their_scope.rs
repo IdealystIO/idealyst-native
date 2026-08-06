@@ -249,3 +249,87 @@ fn regression_scroll_toggle_and_input_callbacks_go_inert_after_unmount() {
         "every retained callback must be inert once its scope is gone",
     );
 }
+
+/// The guard must not be so eager that it kills callbacks belonging to
+/// nodes that are still on screen.
+///
+/// A keyed list's structural driver is ONE effect that re-runs on every
+/// edit to the list, while keyed reconcile deliberately preserves the
+/// surviving rows' subtrees. The token therefore cannot be anchored with
+/// `on_scope_drop`: inside an effect that defers to `on_cleanup`, which
+/// fires before the effect's next re-run as well as at teardown, so the
+/// first unrelated edit silently made every live row's buttons inert.
+/// `runtime_world::on_owned_drop` anchors to the row's own `Owned`
+/// instead, which reconcile drops if and only if the row really goes.
+///
+/// Both directions are asserted on purpose — deleting the guard outright
+/// would satisfy the survival half while breaking the inert half.
+#[test]
+fn callbacks_survive_a_keyed_reconcile() {
+    let h = Harness::new();
+    // Splice support is what makes keyed reconcile PRESERVE surviving rows.
+    // Without it the host takes the anchored fallback (clear_children +
+    // rebuild every row), where per-row state is lost by contract and a
+    // dead row-1 callback would be entirely correct.
+    h.shared.splice.set(true);
+    let hits = Rc::new(RefCell::new(Vec::<i32>::new()));
+    let hits_for_build = hits.clone();
+
+    let list = h.world.enter(|| signal(vec![1, 2]));
+    let element = h.world.enter(move || {
+        view()
+            .children(vec![runtime_scene::keyed(
+                move || list.get(),
+                |n| *n,
+                move |n: i32| {
+                    let hp = hits_for_build.clone();
+                    // Row-OWNED state: freed with the row, so a callback
+                    // that outlived its row would read a stale slot.
+                    let own = signal(n);
+                    pressable(move || hp.borrow_mut().push(own.get())).build()
+                },
+            )])
+            .build()
+    });
+    let _realized = h.mount(element);
+    h.world.flush();
+
+    // A backend retains row 1's handler at mount and keeps calling it.
+    let row1 = h.press_handler(0);
+    row1();
+    h.world.flush();
+    assert_eq!(*hits.borrow(), [1], "callback fires while its row is mounted");
+    hits.borrow_mut().clear();
+
+    // Append a row: the driver effect re-runs, rows 1 and 2 are preserved.
+    h.clear_ops();
+    list.set(vec![1, 2, 3]);
+    h.world.flush();
+    let ops = h.ops();
+    assert!(
+        !ops.iter().any(|o| o.starts_with("clear_children")),
+        "precondition: the append must SPLICE, not rebuild — otherwise row 1 \
+         really is gone and this test proves nothing:\n{ops:?}",
+    );
+
+    row1();
+    h.world.flush();
+    assert_eq!(
+        *hits.borrow(),
+        [1],
+        "a surviving row's callback must outlive the keyed driver's re-run",
+    );
+    hits.borrow_mut().clear();
+
+    // Now actually drop row 1 — the guard's real job. Its retained handler
+    // must go inert rather than read `own` out of a freed slot.
+    list.set(vec![2, 3]);
+    h.world.flush();
+
+    row1();
+    h.world.flush();
+    assert!(
+        hits.borrow().is_empty(),
+        "a removed row's retained callback must be inert",
+    );
+}

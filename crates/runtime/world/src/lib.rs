@@ -1692,6 +1692,46 @@ pub fn on_scope_drop(f: impl FnOnce() + 'static) {
     });
 }
 
+/// Register a teardown that fires **only** when the innermost ownership
+/// scope's [`Owned`] drops — never on an enclosing effect's re-run.
+///
+/// This is [`on_scope_drop`] minus its in-effect shortcut, and the
+/// distinction is not academic. `on_scope_drop` defers to [`on_cleanup`]
+/// while an effect is running, and `on_cleanup` fires before that effect's
+/// next RE-RUN as well as at scope teardown. That is right for a resource
+/// belonging to one run, and wrong for anything whose lifetime is the
+/// mounted node's:
+///
+/// A keyed list's structural driver is one effect that re-runs on every
+/// edit to the list, while keyed reconcile deliberately PRESERVES the
+/// surviving rows' subtrees. Teardown registered from inside a row's mount
+/// via `on_scope_drop` would therefore fire on the first unrelated edit —
+/// tearing down state for a row that is still on screen. Anchoring to the
+/// ownership scope instead ties the teardown to the row's own `Owned`,
+/// which keyed reconcile drops if and only if that row really goes away.
+///
+/// Outside any world this is inert, exactly like [`on_scope_drop`]: nothing
+/// owns the scope, so there is no moment at which it could fire.
+///
+/// Regression: `callbacks_survive_a_keyed_reconcile` in runtime-vocabulary.
+pub fn on_owned_drop(f: impl FnOnce() + 'static) {
+    if !is_entered() {
+        return;
+    }
+    // Same keepalive-effect mechanism as `on_scope_drop`'s outside-an-effect
+    // path, and registered from inside the keepalive's first run for the
+    // same reason: `free_effect` drains `cleanups` explicitly, so the timing
+    // is exact rather than depending on who else holds the `Rc<EffectData>`.
+    // The keepalive reads nothing, so it never re-runs on its own — the only
+    // thing that can fire it is its owner being dropped.
+    let mut once = Some(f);
+    let _ = effect(move || {
+        if let Some(f) = once.take() {
+            on_cleanup(f);
+        }
+    });
+}
+
 /// What an effect body is allowed to return. Sealed: exactly three forms —
 /// nothing, a cleanup closure, or `Option` of one (conditional cleanup). A
 /// returned cleanup is registered through the same [`on_cleanup`] mechanism,

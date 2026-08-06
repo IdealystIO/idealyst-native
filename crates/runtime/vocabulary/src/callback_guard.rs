@@ -57,15 +57,20 @@
 //!
 //! One [`ScopeAlive`] per mounting node that actually has callbacks —
 //! plain `view`/`text` nodes allocate nothing. Acquiring it registers one
-//! [`on_scope_drop`], which inside an effect run is a plain `on_cleanup`
-//! and outside one anchors a dependency-free keepalive effect. Share a
-//! single token across all of one node's callbacks (see
-//! [`ScopeAlive::current`]).
+//! [`on_owned_drop`], a dependency-free keepalive effect owned by the
+//! node's ownership scope. Share a single token across all of one node's
+//! callbacks (see [`ScopeAlive::current`]).
+//!
+//! Note the anchor is `on_owned_drop` and deliberately NOT `on_scope_drop`:
+//! the latter degrades to `on_cleanup` inside a running effect, which also
+//! fires before that effect's next re-run, and a mount very often runs
+//! inside a structural driver that re-runs while its nodes survive. See
+//! [`ScopeAlive::current`] for the keyed-list case that forced this.
 
 use std::cell::Cell;
 use std::rc::Rc;
 
-use runtime_world::on_scope_drop;
+use runtime_world::on_owned_drop;
 
 /// Liveness token for an ownership scope: `true` until that scope's
 /// `Owned` drops, `false` forever after.
@@ -83,10 +88,23 @@ impl ScopeAlive {
     /// scope, so there is no moment at which it could flip, and a
     /// backend-less unit test that calls a callback directly must still
     /// see it fire.
+    ///
+    /// Anchored with [`on_owned_drop`], NOT `on_scope_drop`. The latter
+    /// defers to `on_cleanup` whenever an effect happens to be running, and
+    /// `on_cleanup` also fires before that effect's next re-run — but a
+    /// mount frequently runs inside a structural driver's effect that
+    /// re-runs while the node it mounted survives. A keyed list is the
+    /// clear case: its driver re-runs on every list edit, and keyed
+    /// reconcile preserves the surviving rows. Under `on_scope_drop` the
+    /// first unrelated edit flipped every live row's token to `false` and
+    /// silently made its buttons inert. The flag must track the node's own
+    /// ownership scope, which is exactly what `on_owned_drop` anchors to.
+    ///
+    /// Regression: `callbacks_survive_a_keyed_reconcile`.
     pub fn current() -> Self {
         let flag = Rc::new(Cell::new(true));
         let for_drop = flag.clone();
-        on_scope_drop(move || for_drop.set(false));
+        on_owned_drop(move || for_drop.set(false));
         Self(flag)
     }
 
