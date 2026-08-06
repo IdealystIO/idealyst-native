@@ -54,5 +54,12 @@ objc2-ui-kit = { version = "0.2", features = [
     "UIView",
     "UIViewController",
     "UIColor",
+    # `UIView::layer()` is gated behind this feature: the `UIView` feature
+    # only declares `objc2-quartz-core?/CALayer`, an OPTIONAL activation
+    # that stays off until `objc2-quartz-core` itself is enabled. Without
+    # it `view.layer()` does not exist and `style.rs`'s glyph-shadow path
+    # (`text_shadow`, mirroring macOS's `apply_text_shadow`) fails to
+    # compile — which is exactly how the iOS build broke.
+    "objc2-quartz-core",
 ] }
 raw-window-handle = "0.6"

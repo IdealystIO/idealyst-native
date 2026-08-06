@@ -576,8 +576,13 @@ mod ios_impl {
         // UTC-only `SystemWallClockSource`, and first install wins, so the
         // NSTimeZone-backed source must land first for a timezone-correct
         // "today".
+        // Fully qualified: `IosWallClockSource` is declared at file scope,
+        // outside this `ios_impl` module, so the bare name does not resolve
+        // from in here.
         #[cfg(target_os = "ios")]
-        runtime_shared::time::install_wall_clock_source(Box::new(IosWallClockSource));
+        runtime_shared::time::install_wall_clock_source(Box::new(
+            crate::newcore::IosWallClockSource,
+        ));
         runtime_shared::time::install_default_time_source(platform);
 
         // Ambient environment services (platform identity, color scheme, URL
