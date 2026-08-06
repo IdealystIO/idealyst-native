@@ -178,6 +178,7 @@
 // matching the old root's gate on the same names).
 #[cfg(feature = "async-driver")]
 pub mod async_reactive;
+pub mod backend;
 pub mod builders;
 pub mod caps;
 pub mod glue;

@@ -72,11 +72,14 @@ use routes::{
 #[component]
 pub fn app() -> Element {
     // Start light and let the reader flip the sidebar's Dark switch.
-    // (The old build seeded this from the platform's `color_scheme()`
-    // host slot; runtime-v2 boots don't install the old mount preamble
-    // that fills it, so reading it here would always report `Light`
-    // anyway — see the "old mount preamble installs public seam" residual
-    // in the migration log.)
+    //
+    // Deliberate, not a limitation: the tutorial's prose and screenshots
+    // are written against the light theme, so a reader on a dark-mode OS
+    // should still land on what the text describes. `color_scheme()` does
+    // report the real platform preference here — the boot seam installs it
+    // before the build (`runtime_vocabulary::backend::install_env_services`)
+    // — so seeding from it would be a one-line change if that ever became
+    // the wanted behavior. `examples/whiteboard-demo` is the app that does.
     install_idea_theme(light_theme());
 
     let nav: Ref<SwapHandle> = Ref::new();

@@ -19,8 +19,8 @@
 
 use crate::WebBackend;
 use runtime_shared::{
-    set_pointer_modifiers, PointerModifiers, TouchEvent, TouchHandler, TouchId, TouchPhase,
-    TouchPoint,
+    set_pointer_button, set_pointer_modifiers, PointerButton, PointerModifiers, TouchEvent,
+    TouchHandler, TouchId, TouchPhase, TouchPoint,
 };
 use std::cell::RefCell;
 use runtime_shared::collections::{SmallIdMap, SmallIdSet};
@@ -84,14 +84,16 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
         let origins = origins.clone();
         let element_for_capture = element.clone();
         let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
-            // Only the PRIMARY button begins a gesture. A secondary/middle press
-            // (notably macOS Ctrl-click → right-click, `button == 2`) must NOT
-            // start a touch: the browser's context menu can swallow the matching
-            // `pointerup`, leaving the gesture stuck (a dragged element follows the
-            // cursor forever). `button` is 0 for touch + pen contact + primary mouse.
-            if ev.button() != 0 {
-                return;
-            }
+            // `button` is 0 for touch + pen contact + primary mouse; 2 is the
+            // secondary press (including macOS Ctrl-click, which the OS folds
+            // into a right-click).
+            let button = match ev.button() {
+                0 => PointerButton::Primary,
+                1 => PointerButton::Middle,
+                2 => PointerButton::Secondary,
+                other => PointerButton::Other(other.max(0) as u16),
+            };
+            set_pointer_button(button);
             set_pointer_modifiers(PointerModifiers {
                 shift: ev.shift_key(),
                 ctrl: ev.ctrl_key(),
@@ -127,12 +129,21 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
                 // also reaching ancestor `on_touch` listeners. An unconsumed
                 // Began (no stop) still bubbles up to retry one level higher.
                 ev.stop_propagation();
-                active.borrow_mut().insert(ev.pointer_id());
-                // Cache the origin for this gesture's moves (mirrors `active`,
-                // so it's cleaned up by the same up/cancel path).
-                origins.borrow_mut().insert(ev.pointer_id(), origin);
-                if response.claim {
-                    capture_pointer(&element_for_capture, ev.pointer_id(), &captured);
+                // A non-primary press delivers ONLY this `Began` — it never
+                // enters the drag/capture path. The browser's context menu can
+                // swallow the matching `pointerup`, which would strand a
+                // claimed gesture (a dragged element following the cursor
+                // forever), so a secondary press is registered as a complete
+                // click here and nothing is left open. `PointerButton`'s docs
+                // state this contract for authors.
+                if button == PointerButton::Primary {
+                    active.borrow_mut().insert(ev.pointer_id());
+                    // Cache the origin for this gesture's moves (mirrors
+                    // `active`, so it's cleaned up by the same up/cancel path).
+                    origins.borrow_mut().insert(ev.pointer_id(), origin);
+                    if response.claim {
+                        capture_pointer(&element_for_capture, ev.pointer_id(), &captured);
+                    }
                 }
             }
         });
@@ -140,6 +151,22 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
             "pointerdown",
             closure.as_ref().unchecked_ref(),
         );
+        b._touch_closures
+            .push(closure.into_js_value().unchecked_into());
+    }
+
+    // A node that handles touch owns its secondary press (it received the
+    // `Began` above), so the browser's own menu must not open on top of
+    // whatever the app puts there. Suppressed here rather than by the author:
+    // `preventDefault` has to run on the DOM event, which never reaches app
+    // code. Bubble-phase and element-scoped, so the rest of the page keeps its
+    // native menu.
+    {
+        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
+            ev.prevent_default();
+        });
+        let _ = element
+            .add_event_listener_with_callback("contextmenu", closure.as_ref().unchecked_ref());
         b._touch_closures
             .push(closure.into_js_value().unchecked_into());
     }

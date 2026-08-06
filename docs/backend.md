@@ -13,6 +13,9 @@ teardown.
 
 Implementation:
 
+- `runtime_vocabulary::backend` — **the single import a backend needs**
+  (`crates/runtime/vocabulary/src/backend.rs`); everything below is
+  re-exported from it.
 - `runtime_scene::Host` — the structural seam
   (`crates/runtime/scene/src/host.rs`).
 - `runtime_vocabulary::caps::*` — 30 per-primitive capability traits
@@ -242,6 +245,65 @@ driver and the viewport source, and retains all of it in a thread-local
 for the page's lifetime (`crates/backend/web/src/newcore.rs`). The
 retained struct's field order is its drop order: the `Realized` unmounts
 before the `World` that owns its slots dies.
+
+### `runtime_vocabulary::backend` — the one import a backend needs
+
+Everything above is reachable from a single module. `runtime_vocabulary::backend`
+gathers the three layers a backend spans — `Host` / `Registry` / `realize`
+from `runtime-scene`, the `caps` traits and the `BuiltinSet` lever from
+`runtime-vocabulary`, and the boot-time installers from
+`runtime_shared::backend` — plus a `runtime_shared` re-export for the value
+types in the capability signatures (`StyleRules`, `AccessibilityProps`,
+`Action`, `IconData`, …). A backend crate needs no other framework
+dependency, in-tree or out.
+
+A backend must **not** depend on `runtime-core`. That root is the *author*
+surface, and its `glue` re-export deliberately shadows several substrate
+names with authoring wrappers.
+
+`crates/runtime/vocabulary/tests/third_party_backend.rs` is a complete
+worked backend written under exactly the constraints an out-of-tree crate
+has, and it scans its own source to prove it never reaches past the public
+surface.
+
+### Environment services: `install_env_services`
+
+Five author-facing free functions read thread-local slots rather than
+taking a backend reference, so author code can call them from any
+component body, effect, or event handler:
+
+| Author call | Backend capability |
+|---|---|
+| `platform()` | `AppEnvOps::platform` |
+| `color_scheme()` | `AppEnvOps::color_scheme` |
+| `open_url(url)` | `AppEnvOps::url_opener` |
+| `set_fullscreen(on)` | `AppEnvOps::fullscreen_setter` |
+| `announce(msg, priority)` | `A11yOps::announce_for_accessibility` |
+
+Filling those slots is the boot entry's job — there is no central
+`mount()` to hang it on, because the backend's boot entry *is* the mount
+path. One call does all five:
+
+```rust
+runtime_vocabulary::backend::install_env_services(&backend);
+```
+
+**It must precede the root build**, since a component body may read
+`platform()` or `color_scheme()` while constructing — theme selection at
+the app root is the common case. A backend that leaves a capability at
+its trait default gets the documented no-op for that one service and
+working behavior for the rest.
+
+The announcer is the only one that captures the backend, because
+`announce_for_accessibility` takes `&mut self`. It is captured **weakly**:
+the thread-local is never cleared on teardown, so a strong `Rc` would pin
+the backend and its whole view tree for the life of the thread.
+`install_env_services` handles that; a hand-rolled `install_announcer`
+call must do the same.
+
+Forgetting the call is silent — the app renders correctly and those five
+APIs just do nothing. `boot_seam_surface.rs` scans every backend boot file
+for it, and `backend_env_seam.rs` pins the behavior.
 
 ### The flush driver is part of the backend's job
 
@@ -506,23 +568,37 @@ keyed row root, spliced hole root) panics.
 
 ## A minimal new backend
 
-The order to build it in:
+One dependency (`runtime-vocabulary`) and one import
+(`runtime_vocabulary::backend`). The order to build it in:
 
 1. **`Host`** — the seven structural ops and `type Node`. Decide
    `supports_splice` honestly; `false` is always correct and costs an
    anchor node per reactive region.
-2. **`ViewOps` + `TextOps` + `StyleOps` + `LifecycleOps::finish`** — enough
-   for a real tree.
-3. **A `newcore::start(backend, register, build)` entry** that creates the
-   `Registry`, calls `register_builtins`, creates the `World`, realizes
-   under `enter`, and calls `finish`.
+2. **The six required capability methods.** Everything else has a
+   default, but these six do not, so `AllCaps` is unsatisfiable without
+   them: `ViewOps::create_view`, `TextOps::create_text`,
+   `TextOps::update_text`, `ButtonOps::create_button`,
+   `StyleOps::apply_style`, `LifecycleOps::finish`. That is enough for a
+   real tree.
+3. **A `newcore::start_with::<S>(backend, register, build)` entry**,
+   generic over `BuiltinSet` — see the boot-order contract in
+   `runtime_shared::backend`. It installs the scheduler and clock, calls
+   [`install_env_services`](#environment-services-install_env_services),
+   creates the `Registry`, calls `register_builtins_with::<H, S>`, creates
+   the `World`, realizes under `enter`, and calls `finish`. Keep it
+   generic: an entry that pins `AllBuiltins` re-anchors the whole
+   vocabulary and costs every app on the platform ~65 KB.
 4. **The flush driver** — wrap author callbacks, install the
    `dispatch_hook`, expose `schedule_flush` (and `flush_sync` if the host
-   owns the cadence).
-5. **The remaining caps traits**, in the order your app needs them. Every
-   one you skip degrades to a placeholder or a container.
+   owns the cadence). This is the one omission that compiles, mounts, and
+   then silently never commits an author write.
+5. **The remaining caps traits**, in the order your app needs them. Each
+   is an empty `impl Trait for MyBackend {}` until you want it; every one
+   you skip degrades to a placeholder or a container.
 
 ```rust
+use runtime_vocabulary::backend::{caps, Host};
+
 impl Host for TuiBackend {
     type Node = TuiNodeRef;
     fn insert(&mut self, parent: &mut TuiNodeRef, child: TuiNodeRef) { /* … */ }
@@ -533,15 +609,84 @@ impl Host for TuiBackend {
     fn supports_splice(&self) -> bool { false }
 }
 
-impl caps::ViewOps for TuiBackend { /* create_view, make_view_handle */ }
-impl caps::TextOps for TuiBackend { /* create_text, update_text, make_text_handle */ }
+impl caps::ViewOps for TuiBackend { /* create_view */ }
+impl caps::TextOps for TuiBackend { /* create_text, update_text */ }
+impl caps::ButtonOps for TuiBackend { /* create_button */ }
+impl caps::StyleOps for TuiBackend { /* apply_style */ }
+impl caps::LifecycleOps for TuiBackend { /* finish */ }
+
+// The other 25 are empty until you want them — every method defaults.
+impl caps::InputOps for TuiBackend {}
+impl caps::ScrollOps for TuiBackend {}
 // …
 ```
 
+`crates/runtime/vocabulary/tests/third_party_backend.rs` is the complete
+version of that sketch, written under out-of-tree constraints and
+compiled on every test run.
 `crates/backend/terminal/src/newcore.rs` and
-`crates/backend/cpu/src/newcore.rs` are the smallest complete worked
+`crates/backend/cpu/src/newcore.rs` are the smallest in-tree worked
 examples; `crates/backend/web/src/newcore.rs` is the reference with every
 fast path turned on.
+
+---
+
+## Selecting a backend at build time
+
+Today the CLI generates a per-platform wrapper crate into
+`target/idealyst/<app>/<platform>/wrapper/` whose `Cargo.toml` names
+exactly one backend and whose `src/lib.rs` carries the platform entry
+symbol (`#[wasm_bindgen(start)]`, `ios_main`, `Java_…_attach`, `fn main`).
+The app crate itself stays backend-free (`crate-type = ["rlib"]`), so the
+same source ships to every backend. The generators live in
+`crates/tools/build/*`.
+
+That means a third-party backend cannot currently go through
+`idealyst build`: `crates/tools/cli/src/platform.rs` is a closed clap
+`ValueEnum`, so a custom backend has to be booted from a hand-written
+wrapper or `main.rs`.
+
+**The intended replacement** is a Cargo dependency alias plus a
+per-backend entry macro, which keeps backend choice entirely in the app's
+manifest and out of the framework:
+
+```toml
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+idealyst-backend = { package = "backend-web", version = "…" }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+idealyst-backend = { package = "my-company-uikit-backend", path = "../mine" }
+```
+
+```rust
+idealyst::entry!(app);   // expands to ::idealyst_backend::idealyst_entry! { … }
+```
+
+A custom backend is then just a different `package =`. Nothing in the
+framework enumerates backends, and the cfg-selection is Cargo's job.
+
+Two constraints any such macro contract has to respect — both discovered
+by walking the existing generators, and both the reason the entry macro
+belongs to the *backend* rather than to a central `entry!`:
+
+- **The entry symbol shape is platform contract, not detail.** A
+  `#[wasm_bindgen(start)]` fn, a `#[no_mangle] extern "C"` fn, a JNI
+  symbol whose name embeds the app's Java package, and a plain `fn main`
+  cannot be papered over by one signature. Backends also differ in their
+  host-attachment argument (`selector`, root-view pointer, JNI context,
+  window options), so no single `trait Boot` covers them.
+- **A macro that emits `#[wasm_bindgen(start)]` expands in the *app's*
+  crate**, so either the app declares `wasm-bindgen` directly or the
+  backend re-exports the attribute for its expansion to name. Likewise
+  Android's JNI symbol name cannot be built from a string literal by
+  `macro_rules!` (no stable `concat_idents!`) — that backend's entry macro
+  must be a proc-macro, or the JNI binding must move to
+  `JNI_OnLoad` + `RegisterNatives`. The contract is the *invocation
+  shape*, not the macro kind, so both are allowed.
+
+Whatever the entry macro does, it must keep forwarding the `BuiltinSet`
+type parameter: an entry that pins `AllBuiltins` silently re-anchors the
+whole vocabulary (`boot_seam_surface.rs`).
 
 ---
 

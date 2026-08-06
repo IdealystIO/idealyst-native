@@ -237,6 +237,12 @@ pub fn start_with<S, R, B>(
     let platform = caps::AppEnvOps::platform(&*backend.borrow());
     runtime_shared::time::install_default_time_source(platform);
 
+    // Ambient environment services (platform identity, color scheme, URL
+    // opener, full-screen setter, AX announcer) -> the thread-locals
+    // `platform()` / `open_url()` / `announce()` etc. read. MUST precede
+    // the build: a component body may read `platform()` while
+    // constructing. See `runtime_vocabulary::backend`.
+    runtime_vocabulary::backend::install_env_services(&backend);
     let mut registry: Registry<RokuBackend> = Registry::new();
     runtime_vocabulary::register_builtins_with::<_, S>(&mut registry);
     register(&mut registry);

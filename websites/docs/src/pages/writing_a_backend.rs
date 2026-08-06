@@ -302,25 +302,40 @@ docs! {
     },
 
     section(heading = "Driving the render") {
-        p("A boot entry does five things in order: create the ",
-          code("World"), ", build a ", code("Registry"),
-          " and register the primitive handlers on it, run the app's root \
-           component inside ", code("World::enter"),
+        p("A boot entry does six things in order: forward your \
+           environment capabilities into the ambient thread-locals, build \
+           a ", code("Registry"),
+          " and register the primitive handlers on it, create the ",
+          code("World"), ", run the app's root component inside ",
+          code("World::enter"),
           ", realize the returned scene tree against your backend, and \
-           install the flush driver:"),
+           install the flush driver. Everything you need comes from one \
+           module — ", code("runtime_vocabulary::backend"), ":"),
 
         code(rust, r##"
             use std::cell::RefCell;
             use std::rc::Rc;
 
-            use runtime_scene::{realize, Registry};
-            use runtime_world::World;
+            use runtime_vocabulary::backend::{
+                install_env_services, realize, register_builtins_with,
+                BuiltinSet, Registry, World,
+            };
 
-            fn boot() {
+            // Generic over `S` on purpose: an entry that pins `AllBuiltins`
+            // re-anchors the whole primitive vocabulary, so an app that
+            // selected a smaller set pays for handlers it never mounts.
+            fn boot<S: BuiltinSet>() {
                 let backend = Rc::new(RefCell::new(MyBackend::new(/* platform args */)));
 
+                // `platform()`, `color_scheme()`, `open_url()`,
+                // `set_fullscreen()` and `announce()` read thread-local
+                // slots; this fills them from your `AppEnvOps` / `A11yOps`
+                // impls. It must precede the build — a component body may
+                // read `platform()` while constructing.
+                install_env_services(&backend);
+
                 let mut registry = Registry::new();
-                runtime_vocabulary::register_builtins(&mut registry);
+                register_builtins_with::<MyBackend, S>(&mut registry);
                 // …plus any third-party SDK registers the app hands you.
                 let registry = Rc::new(registry);
 
@@ -331,9 +346,11 @@ docs! {
                 });
 
                 // Hold `world` + `realized` for the app's lifetime; dropping
-                // them tears the tree down. Then install the flush driver so
-                // staged writes commit after each dispatch, and run the
-                // platform's event loop.
+                // them tears the tree down, and `realized` must drop FIRST —
+                // it unmounts before the `World` that owns the slots its
+                // effects read. Then install the flush driver so staged
+                // writes commit after each dispatch, and run the platform's
+                // event loop.
             }
         "##),
 

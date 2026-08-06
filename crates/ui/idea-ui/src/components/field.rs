@@ -452,6 +452,8 @@ pub fn build_field_input_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
         // glyph's bearing doesn't clip the edge.
         padding_left: Some(Tokenized::Literal(Length::Px(FIELD_BARE_H_PAD))),
         padding_right: Some(Tokenized::Literal(Length::Px(FIELD_BARE_H_PAD))),
+        flex_shrink: Some(Tokenized::Literal(1.0)),
+        min_width: Some(Tokenized::Literal(Length::Px(0.0))),
         border_top_width: Some(Tokenized::Literal(0.0)),
         border_right_width: Some(Tokenized::Literal(0.0)),
         border_bottom_width: Some(Tokenized::Literal(0.0)),
@@ -532,6 +534,14 @@ pub fn build_field_input_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
         sheet = sheet.compound(vec![("adorned", "on"), ("size", size_key)], move |_vs| {
             StyleRules {
                 gap: Some(Tokenized::Literal(Length::Px(gap))),
+                // The size axis's vertical padding must not reach the row
+                // shell — the inner input owns the field height (see the
+                // `slot=shell` comment above). The lone `adorned=on` variant
+                // can't out-rank the sibling size axis in the premint
+                // cascade, so an adorned Field stacked BOTH paddings (16px
+                // taller than a bare Field); the compound wins.
+                padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
+                padding_bottom: Some(Tokenized::Literal(Length::Px(0.0))),
                 ..Default::default()
             }
         });
@@ -1184,6 +1194,37 @@ mod tests {
                 app.preminted_class_list().is_some(),
                 "the on-demand help line must premint (it constructs on first error)"
             );
+        });
+    }
+
+    // Regression (user-reported): an ADORNED Field sat visibly taller than
+    // a bare one. The `adorned=on` arm zeroes the shell's vertical padding,
+    // but axes merge ALPHABETICALLY ("adorned" < "size"), so the size
+    // axis's vertical padding re-applied OVER it — in the runtime resolver
+    // and as equal-specificity stacked classes in the premint cascade
+    // alike. The (adorned, size) compounds re-zero it; compounds resolve
+    // after every variant arm, so they win in both worlds.
+    #[test]
+    fn regression_adorned_shell_drops_size_axis_vertical_padding() {
+        with_test_world(|| {
+            theme();
+            for size in ["sm", "md", "lg"] {
+                let rules = resolve_style(
+                    &StyleApplication::new(field_input_sheet())
+                        .with("size", size.to_string())
+                        .with("adorned", "on"),
+                );
+                assert_eq!(
+                    rules.padding_top,
+                    Some(Tokenized::Literal(Length::Px(0.0))),
+                    "adorned {size} shell must drop the size axis's top padding"
+                );
+                assert_eq!(
+                    rules.padding_bottom,
+                    Some(Tokenized::Literal(Length::Px(0.0))),
+                    "adorned {size} shell must drop the size axis's bottom padding"
+                );
+            }
         });
     }
 

@@ -123,9 +123,29 @@ pub(crate) fn scrolling_menu_panel(rows: Vec<Element>) -> Element {
 ///   a row (or dragging the scrollbar) doesn't blur the input; the
 ///   component's close-on-blur only fires on genuine focus departure and a
 ///   row press can never unmount the row before its own click lands.
-pub(crate) fn combobox_menu_panel(rows: Vec<Element>, anchor: AnchorTarget) -> Element {
+/// - **pins optional `header`/`footer` slots** as direct panel children
+///   above/below the capped scroller — a slot (e.g. an "Add ‹query›"
+///   action) stays visible while the rows scroll, and being inside the
+///   focus-preserving panel its presses never blur the input either. The
+///   panel's own `gap` spaces slots from the row area like any children.
+pub(crate) fn combobox_menu_panel(
+    rows: Vec<Element>,
+    anchor: AnchorTarget,
+    header: Option<Element>,
+    footer: Option<Element>,
+) -> Element {
+    // Received-elements plumbing (the panel's children arrive as params),
+    // not ad-hoc child authoring — the legitimate Vec<Element> shape.
+    let mut children = Vec::with_capacity(3);
+    if let Some(h) = header {
+        children.push(h);
+    }
+    children.push(capped_scroller(rows));
+    if let Some(f) = footer {
+        children.push(f);
+    }
     let viewport = viewport_size();
-    runtime_core::view(vec![capped_scroller(rows)])
+    runtime_core::view(children)
         .preserves_focus(true)
         .with_style(move || {
             // Reading the viewport subscribes this style: a window resize
@@ -237,6 +257,8 @@ mod tests {
             let panel = combobox_menu_panel(
                 vec![runtime_core::text("A".to_string()).into_element()],
                 AnchorTarget::from(anchor_ref),
+                None,
+                None,
             );
 
             let P::View { preserves_focus, style, mut children, .. } = classify(panel) else {
@@ -266,6 +288,47 @@ mod tests {
                 .expect("a measurable anchor must produce a min_width floor")
                 .resolve();
             assert_eq!(min_width, Length::Px(240.0));
+    });
+    }
+
+    /// The combobox panel's `header`/`footer` slots must land as direct
+    /// panel children AROUND the capped scroller — pinned, so an
+    /// "Add ‹query›" footer stays visible while a long row list scrolls.
+    /// If a refactor moves a slot inside the scroller it scrolls away with
+    /// the rows and this fails. The panel must also keep its
+    /// `preserves_focus` mark so slot presses don't blur the anchoring
+    /// input (close-on-blur safety, same as rows).
+    #[test]
+    fn combobox_panel_pins_header_and_footer_outside_the_scroller() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+
+            let anchor_ref: runtime_core::Ref<FixedAnchor> = runtime_core::Ref::new();
+            anchor_ref.fill(FixedAnchor);
+            let panel = combobox_menu_panel(
+                vec![runtime_core::text("Row".to_string()).into_element()],
+                AnchorTarget::from(anchor_ref),
+                Some(runtime_core::text("Header".to_string()).into_element()),
+                Some(runtime_core::text("Footer".to_string()).into_element()),
+            );
+
+            let P::View { preserves_focus, mut children, .. } = classify(panel) else {
+                panic!("the combobox panel is a View (the SelectMenu surface)");
+            };
+            assert!(preserves_focus, "slot presses must not blur the anchoring input");
+            assert_eq!(children.len(), 3, "panel children are [header, scroller, footer]");
+            match classify(children.remove(0)) {
+                P::Text { text, .. } => assert_eq!(text.as_deref(), Some("Header")),
+                _ => panic!("the header slot is the panel's first child, outside the scroller"),
+            }
+            assert!(
+                matches!(classify(children.remove(0)), P::ScrollView { .. }),
+                "the row scroller sits between the pinned slots"
+            );
+            match classify(children.remove(0)) {
+                P::Text { text, .. } => assert_eq!(text.as_deref(), Some("Footer")),
+                _ => panic!("the footer slot is the panel's last child, outside the scroller"),
+            }
     });
     }
 

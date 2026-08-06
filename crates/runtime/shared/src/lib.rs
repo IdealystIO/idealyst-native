@@ -75,6 +75,7 @@ pub(crate) use diag_panic;
 pub mod accessibility;
 pub mod animation;
 pub mod assets;
+pub mod backend;
 pub mod breakpoint;
 pub mod by_identity;
 pub mod container_query;
@@ -281,8 +282,9 @@ pub use sources::{
     __idealyst_text_from_parts,
 };
 pub use touch::{
-    active_touch_claim, pointer_modifiers, set_active_touch_claim, set_pointer_modifiers,
-    PointerModifiers, TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint, TouchResponse,
+    active_touch_claim, pointer_button, pointer_modifiers, set_active_touch_claim,
+    set_pointer_button, set_pointer_modifiers, PointerButton, PointerModifiers, TouchEvent,
+    TouchHandler, TouchId, TouchPhase, TouchPoint, TouchResponse,
 };
 pub use wheel::{WheelEvent, WheelHandler, WheelKind};
 pub use hover::HoverHandler;

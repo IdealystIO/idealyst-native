@@ -231,6 +231,12 @@ pub fn hydrate_in_with<S: runtime_vocabulary::BuiltinSet>(
         runtime_shared::set_viewport_size(runtime_shared::ViewportSize::new(w, h));
     }
 
+    // Ambient environment services (platform identity, color scheme, URL
+    // opener, full-screen setter, AX announcer) -> the thread-locals
+    // `platform()` / `open_url()` / `announce()` etc. read. MUST precede
+    // the build: a component body may read `platform()` while
+    // constructing. See `runtime_vocabulary::backend`.
+    runtime_vocabulary::backend::install_env_services(&backend);
     let mut registry: Registry<WebBackend> = Registry::new();
     runtime_vocabulary::register_builtins_with::<WebBackend, S>(&mut registry);
     register(&mut registry);

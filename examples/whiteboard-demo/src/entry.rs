@@ -203,14 +203,12 @@ impl Default for BoardState {
 #[component]
 pub fn app() -> Element {
     // Open matching the OS appearance (the Settings toggle still overrides). On
-    // `Auto` (no platform preference) we fall back to light. `color_scheme()` is
-    // stashed at mount like `platform()`, so it's readable here in the app body.
-    // `color_scheme()` is a shared host-slot read; the facade root does not
-    // mirror it yet, so it is spelled against the substrate directly.
-    let start_dark = matches!(
-        runtime_shared::host::color_scheme(),
-        runtime_core::ColorScheme::Dark
-    );
+    // `Auto` (no platform preference) we fall back to light. The boot seam
+    // installs the backend's reported scheme before the root build
+    // (`runtime_vocabulary::backend::install_env_services`), so this reads the
+    // real platform preference here in the app body — same one-shot model as
+    // `platform()`, not a live subscription to OS theme changes.
+    let start_dark = matches!(runtime_core::color_scheme(), runtime_core::ColorScheme::Dark);
 
     // ---- State (root scope → survives navigation) ------------------------
     let nav: Ref<StackHandle> = node_ref!();
