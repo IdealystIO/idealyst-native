@@ -137,6 +137,52 @@ pub trait StyleOps: Host {
 
     /// Wire native interaction events (hover/press/focus) to the
     /// framework's per-node state signal via `setter(state, on)`.
+    ///
+    /// # This default is a TRAP on any backend that reports
+    /// [`handles_states_natively`](Self::handles_states_natively) `== false`
+    ///
+    /// `false` — the default, and the correct answer for every backend
+    /// without a CSS pseudo-class layer — selects the **event-driven**
+    /// path: the framework builds a per-node state signal, hands you the
+    /// setter, and waits for you to call it. Not overriding this method
+    /// compiles, renders every node's BASE style correctly, and lights no
+    /// `state hover` / `state pressed` / `state focused` variant *ever*.
+    /// Nothing warns. The symptom is a UI where hover highlights, press
+    /// feedback and focus rings simply do not exist — which reads as a
+    /// styling bug, not a missing capability. GTK shipped exactly this.
+    ///
+    /// Coverage as of this writing — `-` means the bit is never flipped:
+    ///
+    /// | backend  | HOVERED | PRESSED | FOCUSED | notes |
+    /// |----------|---------|---------|---------|-------|
+    /// | web, ssr | n/a     | n/a     | n/a     | `handles_states_natively() == true`; CSS owns it |
+    /// | macos    | yes     | yes     | yes     | tracking area + mouseDown/Up |
+    /// | linux    | yes     | yes     | yes     | `EventControllerMotion` / `GestureClick` / `EventControllerFocus` |
+    /// | android  | n/a     | yes     | yes     | no hover on a touch device — deliberate |
+    /// | ios      | n/a     | **-**   | yes     | only the text-field focus setter is wired |
+    /// | windows  | **-**   | **-**   | **-**   | not overridden at all |
+    /// | terminal, cpu, roku | **-** | **-** | **-** | not overridden at all |
+    ///
+    /// `DISABLED` is not in the table: it is not input-driven. The
+    /// framework sets it from the author's `disabled` prop and routes the
+    /// native side through [`set_disabled`](Self::set_disabled).
+    ///
+    /// # Lifetime: the setter is already scope-guarded
+    ///
+    /// `setter` writes a signal owned by the node's reactive scope, and
+    /// native input machinery routinely outlives that scope — a toolkit
+    /// emits focus-leave *while* the framework unparents a focused widget.
+    /// You do **not** need to guard against that: the framework hands over
+    /// a setter that is inert once its scope drops
+    /// (`runtime_vocabulary::callback_guard`), so a late call is a no-op
+    /// rather than a stale-signal panic inside a non-unwinding C
+    /// trampoline (which aborts the process). The same holds for every
+    /// author callback a backend is given.
+    ///
+    /// Detaching your native observers on
+    /// [`on_node_unstyled`](Self::on_node_unstyled) is still worthwhile —
+    /// better not to deliver at all than to deliver into a guard — but it
+    /// is an optimization, not a correctness requirement.
     #[allow(unused_variables)]
     fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
         // default: no-op

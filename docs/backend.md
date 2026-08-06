@@ -358,6 +358,44 @@ get right in a new backend after `Host`.
 9. **Calls are single-threaded and never re-entrant by the framework's
    own choice** — the mount path holds `Rc<RefCell<H>>` and borrows it
    per call.
+10. **Every author callback handed to a backend is scope-guarded.** Once
+    the scope that produced it is torn down, calling it does nothing.
+
+### Why #10 exists, and what it does *not* excuse
+
+Author callbacks (`on_press`, `on_activate`, `on_change`, `on_scroll`, the
+`attach_states` setter, the `install_*_handler` inputs) capture signals owned
+by the mounting scope. Backends store them on native objects whose lifetime
+the toolkit owns, and toolkits invoke them after that scope is gone as a
+matter of course:
+
+- GTK emits `focus-leave` *while* a focused widget is being unparented — i.e.
+  during the very teardown that frees the scope.
+- A callback deferred to a run-loop source (GLib idle, `dispatch_async`,
+  `Handler.post`) fires after a route change dropped the screen.
+- A gesture recognizer or observer outlives the view it was attached to.
+
+Unguarded, the closure writes a freed signal slot and the kernel raises
+`idealyst[stale-signal-handle]`. That panic is correct, but it is raised on a
+stack the framework does not own — a GObject signal trampoline, an objc
+callback — which is `extern "C"` and **cannot unwind**. The process aborts
+instead of reporting a panic.
+
+This is fixed at the seam (`runtime_vocabulary::callback_guard`) rather than
+per backend, because a backend cannot fix it properly: it has no way to ask
+whether the producing scope is still alive. So backends need no lifetime
+discipline for framework-supplied callbacks at all.
+
+Two things it does **not** cover:
+
+- **Callbacks a backend or SDK wires itself.** A scene `Registry` extension
+  that connects its own GTK signal or UIKit target is handing over a closure
+  the framework never saw. Guard those with `runtime_core::ScopeAlive`, which
+  is the same mechanism.
+- **Releasing native observers.** A guarded callback still costs a call, and
+  the native object still holds memory. Detaching on `on_node_unstyled` (or
+  the matching `release_*`) is still the right thing — it is now an
+  optimization rather than the difference between working and aborting.
 
 ## The contract: what a backend must hold up
 

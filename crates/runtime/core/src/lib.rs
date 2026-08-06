@@ -109,3 +109,16 @@ mod tests {
         assert!(c == crate::ByIdentityArc::from_ptr(arc));
     }
 }
+
+#[cfg(test)]
+mod _scope_alive_reachable {
+    /// `ScopeAlive` must be reachable from the AUTHOR/SDK root, not just
+    /// from `runtime-vocabulary`: a third-party scene `Registry` extension
+    /// wires native callbacks the framework never sees, so it needs the
+    /// same guard, and it depends on this crate rather than the vocabulary.
+    #[test]
+    fn scope_alive_is_on_the_author_surface() {
+        let t = crate::ScopeAlive::immortal();
+        assert!(t.get());
+    }
+}

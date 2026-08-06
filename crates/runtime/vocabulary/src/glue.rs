@@ -149,6 +149,20 @@ pub use runtime_shared::{ByIdentity, ByIdentityArc};
 // NEW pair: the generated builder's conversion impl targets them instead
 // of the old `IntoStyleSource`/`StyleSource`.
 pub use crate::style_attach::{signal_class, IntoStyleProp, StyleProp};
+
+/// Scope-liveness guard for callbacks handed to native code.
+///
+/// The framework already guards every callback it passes across the
+/// backend seam (see [`crate::callback_guard`]). A third-party scene
+/// `Registry` extension wires its OWN native callbacks — a GTK signal, a
+/// UIKit target, a JS closure — which the framework never sees and
+/// therefore cannot guard. Those have the same hazard: the toolkit can
+/// invoke them after the payload's scope is torn down, and the resulting
+/// stale-signal panic is raised inside a non-unwinding C trampoline,
+/// which aborts the process rather than reporting a panic.
+///
+/// Acquire one token in the mount handler and wrap each callback with it.
+pub use crate::callback_guard::ScopeAlive;
 pub use crate::theme;
 pub use runtime_shared::{
     cached_stylesheet, derived, Breakpoint, IntoOverrideSource, IntoVariantSource, Length,

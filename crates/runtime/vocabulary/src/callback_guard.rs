@@ -169,7 +169,7 @@ impl ScopeAlive {
     // — so an unmounted node replies exactly as a node that never
     // subscribed would.
 
-    /// `on_key_down`. Dead scope → [`KeyOutcome::Default`]: let the
+    /// `on_key_down`. Dead scope → [`KeyOutcome::Default`](runtime_shared::primitives::key::KeyOutcome::Default): let the
     /// platform's own behavior run, which is what happens with no handler.
     pub fn wrap_key(
         &self,
@@ -180,7 +180,7 @@ impl ScopeAlive {
         Rc::new(move |ev| if alive.get() { f(ev) } else { KeyOutcome::Default })
     }
 
-    /// `on_blur`. Dead scope → [`BlurOutcome::Allow`]: never veto a blur on
+    /// `on_blur`. Dead scope → [`BlurOutcome::Allow`](runtime_shared::primitives::text_input::BlurOutcome::Allow): never veto a blur on
     /// behalf of a node that no longer exists, or focus would be trapped.
     pub fn wrap_blur(
         &self,
