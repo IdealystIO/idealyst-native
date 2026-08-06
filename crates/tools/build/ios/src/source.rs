@@ -23,8 +23,15 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{Context, Result};
+
+/// The framework crate whose resolution decides everything. Every
+/// generated wrapper depends on it, and so does the user's app crate —
+/// if those two resolve differently, nothing type-checks across the
+/// boundary.
+const FRAMEWORK_PKG: &str = "runtime-core";
 
 /// Which git refspec a git-sourced framework dep should pin to.
 /// Cargo lets us choose between three forms; we surface all three so
@@ -98,21 +105,44 @@ impl FrameworkSource {
     ///    test the CLI against an unrelated working directory.
     /// 2. Walk up from `project_dir`; if an idealyst framework
     ///    workspace root is found, use it.
-    /// 3. **Read the project's `Cargo.toml`** and reuse whatever
-    ///    `runtime-core = { git, rev }` (or `path`) spec it
-    ///    already has. This is the most important branch in
-    ///    practice — it makes the user's Cargo.toml authoritative,
-    ///    so the generated wrapper picks up the same `runtime-core`
-    ///    revision the user crate uses and cargo can unify them.
-    ///    Without this, a CLI re-installed against a different commit
-    ///    than the project was scaffolded against would generate a
-    ///    wrapper pointing at a different rev → cargo treats them as
-    ///    two `runtime-core` instances → `Element` type
-    ///    mismatch at link.
+    /// 3. **Ask cargo** (`cargo metadata`) where the project's
+    ///    `runtime-core` actually resolves, and mirror that. This is
+    ///    the most important branch in practice — it makes the user's
+    ///    real dependency graph authoritative, so the generated
+    ///    wrapper picks up the same `runtime-core` the app crate uses
+    ///    and cargo can unify them. Without it, a CLI re-installed
+    ///    against a different commit than the project was scaffolded
+    ///    against would generate a wrapper pointing at a different rev
+    ///    → cargo treats them as two `runtime-core` instances →
+    ///    `Element` type mismatch at link.
+    /// 3b. If cargo can't be run (or reports nothing useful), fall
+    ///    back to parsing the project's `Cargo.toml` by hand —
+    ///    including `{ workspace = true }` inheritance.
     /// 4. Fall back to git, using the supplied defaults (only used
     ///    for fresh `idealyst new` scaffolding where there isn't a
     ///    project `Cargo.toml` yet).
+    ///
+    /// # Why cargo is asked rather than the manifest read
+    ///
+    /// Step 3b is a partial reimplementation of cargo's resolver, and
+    /// every dependency form it doesn't model is a silent fallback to
+    /// step 4 — i.e. a wrapper pinned to a different framework than
+    /// the app, i.e. the `Element` mismatch this whole function exists
+    /// to prevent. That has bitten four separate ways (relative
+    /// `project_dir`, the `crates/framework/core` → `crates/runtime/core`
+    /// reorg, relative `path` deps, and `{ workspace = true }`
+    /// inheritance), and `[patch]`, `[replace]`, `paths` overrides and
+    /// vendored sources are all still unmodelled. `cargo metadata`
+    /// reports the *resolved* source after all of those, so step 3
+    /// is correct by construction for dep forms nobody here has
+    /// thought of yet.
     pub fn detect(project_dir: &Path, git: GitDefaults) -> Result<Self> {
+        let resolved = Self::detect_inner(project_dir, git)?;
+        eprintln!("idealyst: framework source — {}", resolved.describe());
+        Ok(resolved)
+    }
+
+    fn detect_inner(project_dir: &Path, git: GitDefaults) -> Result<Self> {
         if let Ok(p) = std::env::var("IDEALYST_FRAMEWORK_PATH") {
             let root = PathBuf::from(&p);
             if !is_framework_root(&root) {
@@ -127,10 +157,33 @@ impl FrameworkSource {
         if let Some(root) = find_framework_workspace(project_dir) {
             return Ok(Self::Workspace { root });
         }
+        // A duplicate-`runtime-core` graph is a hard error, not a
+        // fallback — see `framework_source_from_metadata`.
+        if let Some(from_cargo) = resolve_via_cargo_metadata(project_dir)? {
+            return Ok(from_cargo);
+        }
         if let Some(from_project) = read_project_framework_dep(project_dir) {
             return Ok(from_project);
         }
         Ok(Self::Git { url: git.url, refspec: git.refspec })
+    }
+
+    /// One-line summary for the "which framework am I building
+    /// against?" log line `detect` emits.
+    ///
+    /// The git-defaults fallback used to be indistinguishable from a
+    /// deliberate git pin, so a misdetected project looked identical
+    /// to a correctly-detected one right up until the wasm build died
+    /// with a type error naming `Element` twice. Printing the resolved
+    /// source makes that visible in one line of `idealyst dev` output.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Workspace { root } => format!("path {}", root.display()),
+            Self::Git { url, refspec } => {
+                let (key, value) = refspec.as_pair();
+                format!("git {url} ({key} {value})")
+            }
+        }
     }
 
     /// True if this source is an in-tree workspace.
@@ -417,16 +470,213 @@ fn is_framework_root(root: &Path) -> bool {
     content.contains("[workspace]")
 }
 
+/// Ask cargo to resolve the project's graph and report where
+/// `runtime-core` actually comes from.
+///
+/// `cargo metadata` runs the real resolver, so its answer already
+/// accounts for workspace inheritance, `[patch]`, `[replace]`,
+/// `.cargo/config.toml` `paths` overrides, vendored sources and
+/// whatever cargo adds next — none of which the hand-rolled manifest
+/// parser below models.
+///
+/// Returns `Ok(None)` (→ caller falls through) when cargo can't run or
+/// reports nothing usable, which covers the `idealyst new` case where
+/// there is no manifest yet. Returns `Err` only for a graph that is
+/// *provably* broken, i.e. more than one `runtime-core`.
+fn resolve_via_cargo_metadata(project_dir: &Path) -> Result<Option<FrameworkSource>> {
+    let manifest = project_dir.join("Cargo.toml");
+    if !manifest.is_file() {
+        return Ok(None);
+    }
+    // `CARGO` is set when we're invoked from a cargo subcommand, and
+    // points at the exact toolchain's binary — preferable to whatever
+    // `cargo` resolves to on PATH under rustup shims.
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let out = Command::new(cargo)
+        .arg("metadata")
+        .arg("--format-version")
+        .arg("1")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .current_dir(project_dir)
+        .output();
+    let out = match out {
+        Ok(out) => out,
+        Err(e) => {
+            eprintln!("idealyst: could not run `cargo metadata` ({e}); falling back to reading Cargo.toml");
+            return Ok(None);
+        }
+    };
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let first = stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+        eprintln!("idealyst: `cargo metadata` failed ({first}); falling back to reading Cargo.toml");
+        return Ok(None);
+    }
+    let meta: serde_json::Value = match serde_json::from_slice(&out.stdout) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("idealyst: could not parse `cargo metadata` output ({e}); falling back to reading Cargo.toml");
+            return Ok(None);
+        }
+    };
+    framework_source_from_metadata(&meta)
+}
+
+/// Pull the framework source out of a parsed `cargo metadata` document.
+///
+/// Split from [`resolve_via_cargo_metadata`] so the interesting logic is
+/// testable without shelling out to cargo.
+fn framework_source_from_metadata(meta: &serde_json::Value) -> Result<Option<FrameworkSource>> {
+    let Some(packages) = meta.get("packages").and_then(|p| p.as_array()) else {
+        return Ok(None);
+    };
+    let hits: Vec<&serde_json::Value> = packages
+        .iter()
+        .filter(|p| p.get("name").and_then(|n| n.as_str()) == Some(FRAMEWORK_PKG))
+        .collect();
+
+    match hits.as_slice() {
+        [] => Ok(None),
+        [only] => Ok(package_to_source(only)),
+        many => {
+            // Two `runtime-core`s in one graph can never work: cargo
+            // compiles both, their types are nominally distinct, and
+            // the app↔wrapper boundary fails to unify. Today that
+            // surfaces as "expected `Element`, found `Element`" from
+            // deep inside generated code. Say it here instead, while
+            // we still know the two sources by name.
+            let mut listed: Vec<String> = many.iter().map(|p| describe_metadata_pkg(p)).collect();
+            listed.sort();
+            listed.dedup();
+            anyhow::bail!(
+                "this project resolves {} different `{FRAMEWORK_PKG}` crates:\n  {}\n\n\
+                 cargo treats those as unrelated crates, so every type crossing the \
+                 generated wrapper → app boundary will fail to unify (the classic \
+                 \"expected `Element`, found `Element`\"). Point every crate in the \
+                 workspace at ONE framework source, or add a `[patch]` unifying them.",
+                many.len(),
+                listed.join("\n  "),
+            )
+        }
+    }
+}
+
+/// `"<source> (<manifest path>)"` for the duplicate-crate error.
+fn describe_metadata_pkg(pkg: &serde_json::Value) -> String {
+    let source = pkg
+        .get("source")
+        .and_then(|s| s.as_str())
+        .unwrap_or("local path");
+    let manifest = pkg
+        .get("manifest_path")
+        .and_then(|s| s.as_str())
+        .unwrap_or("<unknown manifest>");
+    format!("{source} ({manifest})")
+}
+
+/// Map one resolved `cargo metadata` package to a `FrameworkSource`.
+///
+/// `None` means "cargo resolved it to something a wrapper dep can't
+/// spell" (a registry release, say) — the caller falls through to the
+/// git defaults exactly as it did before this branch existed.
+fn package_to_source(pkg: &serde_json::Value) -> Option<FrameworkSource> {
+    match pkg.get("source").and_then(|s| s.as_str()) {
+        // `source: null` is cargo's encoding for a path dependency —
+        // either a workspace member or a `path = "..."` dep. The
+        // manifest path is absolute and already normalized, which is
+        // what the deeper wrapper Cargo.toml needs.
+        None => {
+            let manifest = pkg.get("manifest_path").and_then(|s| s.as_str())?;
+            let core_dir = Path::new(manifest).parent()?;
+            // Strip `crates/runtime/core` to recover the workspace
+            // root. `is_framework_root` is the authoritative check —
+            // if the strip lands somewhere that isn't the framework
+            // workspace, fall through rather than emit a bad path.
+            let root = core_dir.ancestors().nth(3)?;
+            is_framework_root(root).then(|| FrameworkSource::Workspace {
+                root: root.to_path_buf(),
+            })
+        }
+        Some(s) if s.starts_with("git+") => parse_git_source(s),
+        // registry+/sparse+ — a published `runtime-core`. Wrapper deps
+        // only know how to spell path and git, so leave it alone.
+        Some(_) => None,
+    }
+}
+
+/// Parse a cargo git source id: `git+<url>[?<ref>]#<sha>`.
+///
+/// The refspec **form** matters as much as its value: cargo keys crate
+/// identity on the whole source id, so a wrapper pinning `rev = <sha>`
+/// against an app pinning `tag = v1.2.5` yields two crates even though
+/// both name the same commit. The user's form is preserved verbatim.
+///
+/// A ref-less `git+<url>#<sha>` (the app wrote a bare `git = "..."`,
+/// tracking the default branch) returns `None`: [`GitRef`] has no way
+/// to spell "no refspec", and guessing one would produce exactly the
+/// mismatch this function exists to avoid. Falling through to the git
+/// defaults is the pre-existing behavior for that case.
+fn parse_git_source(source: &str) -> Option<FrameworkSource> {
+    let rest = source.strip_prefix("git+")?;
+    let base = rest.split_once('#').map(|(b, _sha)| b).unwrap_or(rest);
+    let (url, query) = base.split_once('?')?;
+    // Query is `key=value[&key=value...]`; cargo emits one ref key,
+    // but scan them all rather than assume position.
+    let refspec = query.split('&').find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        let value = percent_decode(value);
+        match key {
+            "tag" => Some(GitRef::Tag(value)),
+            "branch" => Some(GitRef::Branch(value)),
+            "rev" => Some(GitRef::Rev(value)),
+            _ => None,
+        }
+    })?;
+    Some(FrameworkSource::Git { url: url.to_string(), refspec })
+}
+
+/// Minimal `%XX` decoding for git source query values.
+///
+/// Branch names legitimately contain `/` (`release/1.2`), which cargo
+/// percent-encodes into the source id. Emitting the encoded form back
+/// into a Cargo.toml would fail to check out. Malformed escapes are
+/// passed through untouched rather than dropped.
+fn percent_decode(s: &str) -> String {
+    if !s.contains('%') {
+        return s.to_string();
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(byte) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
 /// Parse `<project>/Cargo.toml` and extract the `runtime-core` dep
-/// as a `FrameworkSource`. Supports the three common forms:
+/// as a `FrameworkSource`. Fallback for when `cargo metadata` can't
+/// run; supports the common forms:
 ///
 /// - `runtime-core = { git = "<url>", rev = "<sha>" }` → `Git`.
 /// - `runtime-core = { git = "<url>", branch = "<b>" }` → `Git`
 ///   with rev set to the branch name (cargo accepts branches).
 /// - `runtime-core = { path = "/p/to/framework/core" }` → strip
-///   `/crates/framework/core` to get the workspace root and emit
+///   `/crates/runtime/core` to get the workspace root and emit
 ///   `Workspace`. (Falls through to git defaults if the path
 ///   doesn't end with the expected suffix.)
+/// - `runtime-core = { workspace = true }` → re-read the real spec
+///   from the workspace root's `[workspace.dependencies]`.
 ///
 /// Returns `None` if the project has no `runtime-core` dep, or
 /// the dep is in a form we can't interpret (e.g. plain version
@@ -435,14 +685,37 @@ fn is_framework_root(root: &Path) -> bool {
 fn read_project_framework_dep(project_dir: &Path) -> Option<FrameworkSource> {
     let raw = fs::read_to_string(project_dir.join("Cargo.toml")).ok()?;
     let parsed: toml::Value = toml::from_str(&raw).ok()?;
-    let dep = parsed.get("dependencies")?.get("runtime-core")?;
-    let table = dep.as_table()?;
+    let table = parsed
+        .get("dependencies")?
+        .get(FRAMEWORK_PKG)?
+        .as_table()?;
 
+    // `{ workspace = true }` carries no spec of its own — the real one
+    // lives in the workspace root's `[workspace.dependencies]`, and any
+    // relative `path` in it is relative to THAT manifest, not this one.
+    if table.get("workspace").and_then(|v| v.as_bool()) == Some(true) {
+        let root_dir = find_cargo_workspace_root(project_dir)?;
+        let root_raw = fs::read_to_string(root_dir.join("Cargo.toml")).ok()?;
+        let root_parsed: toml::Value = toml::from_str(&root_raw).ok()?;
+        let inherited = root_parsed
+            .get("workspace")?
+            .get("dependencies")?
+            .get(FRAMEWORK_PKG)?
+            .as_table()?;
+        return framework_dep_from_table(inherited, &root_dir);
+    }
+
+    framework_dep_from_table(table, project_dir)
+}
+
+/// Interpret one `runtime-core` dep table. `base_dir` is the directory
+/// holding the manifest the table was written in — a relative `path`
+/// resolves against it, per cargo's rules.
+fn framework_dep_from_table(table: &toml::Table, base_dir: &Path) -> Option<FrameworkSource> {
     if let Some(path_str) = table.get("path").and_then(|v| v.as_str()) {
-        // The user's `path = ...` is relative to THIS project's
-        // Cargo.toml. Resolve it against `project_dir` and canonicalize
-        // so the recovered workspace root is ABSOLUTE. This matters
-        // because the generated wrapper Cargo.toml lives deeper
+        // Resolve against `base_dir` and canonicalize so the recovered
+        // workspace root is ABSOLUTE. This matters because the
+        // generated wrapper Cargo.toml lives deeper
         // (`<root>/target/idealyst/<proj>/<platform>/wrapper`) and cargo
         // resolves a wrapper `path = ...` dep relative to the wrapper
         // file — a relative root copied verbatim (e.g. `../idealyst-native`)
@@ -452,7 +725,7 @@ fn read_project_framework_dep(project_dir: &Path) -> Option<FrameworkSource> {
         let core_path = if raw_core.is_absolute() {
             raw_core
         } else {
-            project_dir.join(&raw_core)
+            base_dir.join(&raw_core)
         };
         // canonicalize() also collapses `..` segments; fall back to the
         // un-canonicalized join if the path doesn't exist yet.
@@ -487,6 +760,39 @@ fn read_project_framework_dep(project_dir: &Path) -> Option<FrameworkSource> {
         return None;
     };
     Some(FrameworkSource::Git { url, refspec })
+}
+
+/// Nearest ancestor manifest declaring `[workspace]` — the root a
+/// `{ workspace = true }` dep inherits from.
+///
+/// Unlike [`find_framework_workspace`] this does NOT require the
+/// directory to be a framework checkout; it's looking for the *user's*
+/// workspace. Starts at `start` itself, since a workspace root can also
+/// be a package (the `[workspace]` + `[package]` combo).
+fn find_cargo_workspace_root(start: &Path) -> Option<PathBuf> {
+    let anchored;
+    let start = if start.is_absolute() {
+        start
+    } else {
+        anchored = std::env::current_dir().ok()?.join(start);
+        anchored.as_path()
+    };
+    for ancestor in start.ancestors() {
+        let manifest = ancestor.join("Cargo.toml");
+        if !manifest.is_file() {
+            continue;
+        }
+        let Ok(raw) = fs::read_to_string(&manifest) else {
+            continue;
+        };
+        let Ok(parsed) = toml::from_str::<toml::Value>(&raw) else {
+            continue;
+        };
+        if parsed.get("workspace").is_some() {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+    None
 }
 
 /// Back-compat thin wrapper around the legacy `find_workspace_root`
@@ -741,6 +1047,237 @@ runtime-core = { path = "../fw/crates/runtime/core" }
                 panic!("relative path dep must resolve to Workspace, not Git")
             }
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Workspace-inherited framework deps (`{ workspace = true }`).
+    //
+    // The regression: a multi-crate app writes `runtime-core =
+    // { workspace = true }` in the member and the real spec in the root's
+    // `[workspace.dependencies]`. The manifest parser only looked at the
+    // member, found neither `path` nor `git`, and silently fell through to
+    // the CLI's compile-time git default — so the wrapper built against a
+    // released tag while the app built against the local checkout. Two
+    // `runtime_core` instances, and `mount` fails with "expected
+    // `Element`, found `Element`".
+    // ---------------------------------------------------------------
+
+    /// Lay out a directory that `is_framework_root` will accept.
+    fn fake_framework(at: &Path) -> PathBuf {
+        fs::create_dir_all(at.join("crates/runtime/core")).expect("mk fw tree");
+        fs::write(at.join("Cargo.toml"), "[workspace]\n").expect("fw root Cargo.toml");
+        fs::write(
+            at.join("crates/runtime/core/Cargo.toml"),
+            "[package]\nname = \"runtime-core\"\nversion = \"0.0.1\"\n",
+        )
+        .expect("fw core Cargo.toml");
+        fs::canonicalize(at).expect("canon fw")
+    }
+
+    /// A workspace MEMBER inheriting `runtime-core` from the root must
+    /// resolve the root's spec — and resolve its relative `path`
+    /// against the ROOT's directory, not the member's.
+    ///
+    /// Resolving against the member would land at
+    /// `<root>/crates/idealyst-native/...`, fail `is_framework_root`,
+    /// and fall through to git defaults — the same silent mismatch with
+    /// a fix nominally in place.
+    #[test]
+    fn workspace_member_inherits_framework_path_dep_from_root() {
+        let parent = TempProject::new("ws-inherit");
+        let fw = fake_framework(&parent.path.join("fw"));
+
+        let root = parent.path.join("app");
+        let member = root.join("crates/app-main");
+        fs::create_dir_all(&member).expect("mk member");
+        fs::write(
+            root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["crates/app-main"]
+
+[workspace.dependencies]
+runtime-core = { path = "../fw/crates/runtime/core" }
+"#,
+        )
+        .expect("write root Cargo.toml");
+        fs::write(
+            member.join("Cargo.toml"),
+            r#"
+[package]
+name = "app-main"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+runtime-core = { workspace = true }
+"#,
+        )
+        .expect("write member Cargo.toml");
+
+        match read_project_framework_dep(&member) {
+            Some(FrameworkSource::Workspace { root: found }) => assert_eq!(
+                found, fw,
+                "the member's relative path must resolve against the workspace root",
+            ),
+            other => panic!(
+                "workspace-inherited path dep must resolve to the framework \
+                 checkout, got {other:?} — this is the silent git-default \
+                 fallback that produces two `runtime_core` instances",
+            ),
+        }
+    }
+
+    /// Same inheritance path, git flavour: the root's refspec form must
+    /// survive so the wrapper and the app land on one source id.
+    #[test]
+    fn workspace_member_inherits_framework_git_dep_from_root() {
+        let parent = TempProject::new("ws-inherit-git");
+        let root = parent.path.join("app");
+        let member = root.join("crates/app-main");
+        fs::create_dir_all(&member).expect("mk member");
+        fs::write(
+            root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["crates/app-main"]
+
+[workspace.dependencies]
+runtime-core = { git = "https://github.com/IdealystIO/idealyst-native", tag = "1.2.5" }
+"#,
+        )
+        .expect("write root Cargo.toml");
+        fs::write(
+            member.join("Cargo.toml"),
+            "[package]\nname = \"app-main\"\nversion = \"0.0.1\"\n\n\
+             [dependencies]\nruntime-core = { workspace = true }\n",
+        )
+        .expect("write member Cargo.toml");
+
+        match read_project_framework_dep(&member) {
+            Some(FrameworkSource::Git { url, refspec: GitRef::Tag(t) }) => {
+                assert_eq!(url, "https://github.com/IdealystIO/idealyst-native");
+                assert_eq!(t, "1.2.5");
+            }
+            other => panic!("expected the root's Git/Tag spec, got {other:?}"),
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // `cargo metadata` — the authoritative branch. Exercised against
+    // synthetic documents so the tests don't shell out or need network.
+    // ---------------------------------------------------------------
+
+    fn metadata_with(packages: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "packages": packages })
+    }
+
+    /// A path-resolved `runtime-core` (`source: null`) becomes a
+    /// `Workspace` rooted three levels above `crates/runtime/core`.
+    #[test]
+    fn metadata_path_package_yields_workspace_root() {
+        let parent = TempProject::new("meta-path");
+        let fw = fake_framework(&parent.path.join("fw"));
+        let meta = metadata_with(serde_json::json!([
+            { "name": "some-other-crate", "source": serde_json::Value::Null,
+              "manifest_path": "/elsewhere/Cargo.toml" },
+            { "name": "runtime-core", "source": serde_json::Value::Null,
+              "manifest_path": fw.join("crates/runtime/core/Cargo.toml").to_str().unwrap() },
+        ]));
+
+        match framework_source_from_metadata(&meta).expect("single hit is not an error") {
+            Some(FrameworkSource::Workspace { root }) => assert_eq!(root, fw),
+            other => panic!("expected Workspace, got {other:?}"),
+        }
+    }
+
+    /// Two `runtime-core`s in one graph is the failure this whole
+    /// module exists to prevent. Report it here — naming both sources —
+    /// rather than letting it surface as a type error inside generated
+    /// code that names `Element` twice.
+    #[test]
+    fn metadata_duplicate_framework_crates_is_a_hard_error() {
+        let meta = metadata_with(serde_json::json!([
+            { "name": "runtime-core", "source": serde_json::Value::Null,
+              "manifest_path": "/local/fw/crates/runtime/core/Cargo.toml" },
+            { "name": "runtime-core",
+              "source": "git+https://github.com/IdealystIO/idealyst-native?tag=1.2.5#abc123",
+              "manifest_path": "/cargo/git/checkouts/idealyst/abc123/crates/runtime/core/Cargo.toml" },
+        ]));
+
+        let err = framework_source_from_metadata(&meta)
+            .expect_err("a two-instance graph must not resolve silently");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("/local/fw"), "names the path source: {msg}");
+        assert!(msg.contains("tag=1.2.5"), "names the git source: {msg}");
+        assert!(msg.contains("Element"), "explains the symptom: {msg}");
+    }
+
+    /// No `runtime-core` at all → fall through, don't error. Covers
+    /// `idealyst new` scaffolding and non-idealyst projects.
+    #[test]
+    fn metadata_without_framework_package_falls_through() {
+        let meta = metadata_with(serde_json::json!([
+            { "name": "serde", "source": "registry+https://github.com/rust-lang/crates.io-index",
+              "manifest_path": "/cargo/registry/serde/Cargo.toml" },
+        ]));
+        assert!(framework_source_from_metadata(&meta).expect("no hit is not an error").is_none());
+    }
+
+    /// Cargo keys crate identity on the whole source id, so the refspec
+    /// FORM has to round-trip: a wrapper pinning `rev = <sha>` against
+    /// an app pinning `tag = 1.2.5` is two crates even though both name
+    /// the same commit.
+    #[test]
+    fn git_source_ids_round_trip_their_refspec_form() {
+        let cases = [
+            ("git+https://example.invalid/fw?tag=1.2.5#deadbeef", ("tag", "1.2.5")),
+            ("git+https://example.invalid/fw?branch=main#deadbeef", ("branch", "main")),
+            ("git+https://example.invalid/fw?rev=deadbeef#deadbeef", ("rev", "deadbeef")),
+            // Branch names contain `/`, which cargo percent-encodes.
+            ("git+https://example.invalid/fw?branch=release%2F1.2#deadbeef", ("branch", "release/1.2")),
+        ];
+        for (source, (want_key, want_value)) in cases {
+            match parse_git_source(source) {
+                Some(FrameworkSource::Git { url, refspec }) => {
+                    assert_eq!(url, "https://example.invalid/fw", "url from {source}");
+                    assert_eq!(refspec.as_pair(), (want_key, want_value), "refspec from {source}");
+                }
+                other => panic!("expected Git from {source}, got {other:?}"),
+            }
+        }
+    }
+
+    /// A bare `git = "..."` (default branch) has no refspec `GitRef`
+    /// can spell. Inventing one would produce a source id that differs
+    /// from the app's — the exact mismatch being avoided — so fall
+    /// through to the git defaults instead.
+    #[test]
+    fn git_source_without_refspec_falls_through() {
+        assert!(parse_git_source("git+https://example.invalid/fw#deadbeef").is_none());
+    }
+
+    /// A published `runtime-core` isn't spellable as a wrapper dep
+    /// (wrappers know path and git only), so leave it to the fallback.
+    #[test]
+    fn metadata_registry_package_falls_through() {
+        let meta = metadata_with(serde_json::json!([
+            { "name": "runtime-core", "source": "registry+https://github.com/rust-lang/crates.io-index",
+              "manifest_path": "/cargo/registry/runtime-core-1.2.5/Cargo.toml" },
+        ]));
+        assert!(framework_source_from_metadata(&meta).expect("registry is not an error").is_none());
+    }
+
+    /// A path-resolved package whose manifest ISN'T inside a framework
+    /// checkout must fall through rather than emit a bogus root — an
+    /// unrelated crate that happens to be named `runtime-core`.
+    #[test]
+    fn metadata_path_package_outside_a_checkout_falls_through() {
+        let meta = metadata_with(serde_json::json!([
+            { "name": "runtime-core", "source": serde_json::Value::Null,
+              "manifest_path": "/nowhere/near/a/checkout/Cargo.toml" },
+        ]));
+        assert!(framework_source_from_metadata(&meta).expect("not an error").is_none());
     }
 
     /// `require_workspace_root` is the legacy fail-clear helper. The

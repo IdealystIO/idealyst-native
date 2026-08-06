@@ -6,6 +6,11 @@ members = [
     # name every consumer already spells (`runtime_core::…`). The pre-v2
     # walker that used to live here — Element, the Backend mega-trait,
     # the render walker, Bound/builders — is deleted.
+    # The app-facing facade + entry macro: what lets an app crate be
+    # built by plain `cargo build` instead of through a generated
+    # per-platform wrapper crate.
+    "crates/idealyst",
+    "crates/idealyst-macros",
     "crates/runtime/core",
     # The permanent shared substrate: the style engine, assets, animation,
     # touch, scheduling, robot, and the shared prop/handle types — every

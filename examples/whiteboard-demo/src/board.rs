@@ -404,6 +404,12 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
                     }
                     TouchResponse::CONSUMED
                 }
+                // Unpressed pointer motion (mouse/trackpad only). Drawing is
+                // press-driven, so a hover must not open a stroke, extend the
+                // active one, or count toward the multi-finger swipe. `IGNORED`
+                // rather than `CONSUMED` so it still bubbles to anything that
+                // does care about hover.
+                TouchPhase::Hovered => TouchResponse::IGNORED,
             }
         })
     }
@@ -590,6 +596,9 @@ pub fn CameraWidget(props: &CameraWidgetProps) -> Element {
                     *drag.borrow_mut() = None;
                     TouchResponse::CONSUMED
                 }
+                // Hover carries no drag intent — moving the mouse over the
+                // camera without pressing must not move it.
+                TouchPhase::Hovered => TouchResponse::IGNORED,
             })
         }
     }

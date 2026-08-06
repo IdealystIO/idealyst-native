@@ -337,6 +337,10 @@ fn pan_zoom_card() -> Element {
                 version.set(version.get().wrapping_add(1));
                 TouchResponse::CONSUMED
             }
+            // Unpressed pointer motion. Panning is press-driven, so a hover
+            // must not move the camera or raise the `gesturing` flag — doing
+            // so would force a re-bake on every mouse move across the canvas.
+            TouchPhase::Hovered => TouchResponse::IGNORED,
         })
         .into_element();
 

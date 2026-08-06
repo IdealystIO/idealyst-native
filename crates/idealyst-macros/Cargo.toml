@@ -1,0 +1,23 @@
+# The `entry!` macro behind the `idealyst` facade crate.
+#
+# Separate from `runtime-macros` (the authoring macros: `ui!`, `lazy!`,
+# `recipe!`) because this one exists for a different reason: it is the
+# only part of the app-entry story that MUST run at compile time, since
+# it reads the consuming crate's `Cargo.toml` metadata. Everything else
+# the old generated wrappers did is a plain library function in
+# `idealyst::boot`.
+[package]
+name = "idealyst-macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Entry-point macro for idealyst apps"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+toml = "0.8"

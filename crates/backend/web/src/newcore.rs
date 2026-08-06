@@ -243,8 +243,20 @@ pub fn start_in_with<S: runtime_vocabulary::BuiltinSet>(
     register: impl FnOnce(&mut Registry<WebBackend>),
     build: impl FnOnce() -> Element,
 ) {
-    // Same idempotent installs the CLI wrapper performs — the flush
-    // driver below rides the scheduler, so it must exist first.
+    // The clock/scheduling services this function itself depends on —
+    // the flush driver below rides the scheduler, so it must exist
+    // first. Idempotent, so an embedder that already installed them
+    // pays nothing.
+    //
+    // This is NOT the full host bootstrap, despite what the comment
+    // here used to imply. `install_logger`, `install_async_executor`
+    // and `install_render_loop` are the embedder's job
+    // (`idealyst::boot::web::run` does it) and are deliberately absent:
+    // nothing below reaches them, and calling them unconditionally
+    // would anchor executor and render-loop code in bundles that
+    // trimmed their vocabulary. An embedder that skips them gets a
+    // clean first render followed by "no AsyncExecutor installed" at
+    // the first server-fn call or resource fetch.
     crate::install_scheduler();
     crate::install_time_source();
     crate::install_wall_clock_source();
