@@ -586,6 +586,19 @@ impl caps::ViewOps for LinuxBackend {
 
 impl caps::InputOps for LinuxBackend {
     fn install_touch_handler(&mut self, node: &Self::Node, handler: runtime_shared::TouchHandler) {
+        // Dispatch-site glue, same as every other author callback here.
+        // These two can't use `flushing0`/`flushing1`: they RETURN a
+        // `TouchResponse` the backend acts on, so the wrapper has to
+        // forward the value rather than swallow it. Mirrors
+        // `MacosBackend::install_touch_handler`.
+        let handler: runtime_shared::TouchHandler = {
+            let f = handler;
+            Rc::new(move |ev| {
+                let response = f(ev);
+                schedule_flush();
+                response
+            })
+        };
         LinuxBackend::install_touch_handler(self, node, handler)
     }
 
@@ -594,6 +607,14 @@ impl caps::InputOps for LinuxBackend {
         node: &Self::Node,
         handler: runtime_shared::FileDropHandler,
     ) {
+        let handler: runtime_shared::FileDropHandler = {
+            let f = handler;
+            Rc::new(move |ev| {
+                let response = f(ev);
+                schedule_flush();
+                response
+            })
+        };
         LinuxBackend::install_file_drop_handler(self, node, handler)
     }
 }
@@ -709,6 +730,23 @@ impl caps::LinkOps for LinuxBackend {
         config: runtime_shared::primitives::link::LinkConfig,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
+        // Wrap `on_activate` so ONE deduped flush microtask is queued after
+        // it returns — the same treatment every other interactive cap here
+        // gives its callback (pressable, button, text_input, toggle, slider,
+        // portal on_dismiss).
+        //
+        // This was the ONLY interactive cap that delegated RAW, and it is
+        // the whole "links do nothing" bug: for an in-app link the framework
+        // wraps navigator push/replace dispatch in `on_activate`, so clicking
+        // one STAGED the route write and nothing ever committed it. The click
+        // landed, the gesture fired, the author callback ran, the route
+        // signal changed — and the screen never re-rendered. Nothing warns
+        // about this: a raw delegation compiles and the widget still reacts
+        // to input, so the only symptom is a UI that quietly ignores you.
+        let config = runtime_shared::primitives::link::LinkConfig {
+            on_activate: flushing0(config.on_activate.clone()),
+            ..config
+        };
         LinuxBackend::create_link(self, config, a11y)
     }
 }
@@ -823,6 +861,21 @@ impl caps::ScrollOps for LinuxBackend {
     ) -> Self::Node {
         // Delegates to the inherent GTK body (formerly `impl Backend`),
         // which builds the richer widget this backend actually ships.
+        //
+        // `on_scroll` needs the flush wrapper like every other author
+        // callback: a scroll-spy (the docs/website table of contents is
+        // exactly this) writes the active-section signal from here, and
+        // unwrapped that write stages and never commits — the TOC would
+        // track internally and never repaint. Two args, so neither
+        // `flushing0` nor `flushing1` fits; the flush microtask is
+        // deduped, so a scroll burst still costs one commit. Mirrors
+        // `MacosBackend::create_scroll_view`.
+        let on_scroll = on_scroll.map(|f| -> Rc<dyn Fn(f32, f32)> {
+            Rc::new(move |x, y| {
+                f(x, y);
+                schedule_flush();
+            })
+        });
         LinuxBackend::create_scroll_view(self, horizontal, on_scroll, _a11y)
     }
 
