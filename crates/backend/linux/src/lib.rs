@@ -77,7 +77,7 @@
 
 #![cfg(target_os = "linux")]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -94,6 +94,7 @@ use runtime_shared::{Action, Color, ColorScheme, Platform, PointerEvents, StyleR
 use runtime_layout::{AvailableSpace, LayoutNode, LayoutTree, Size};
 
 mod color;
+mod cursor;
 mod file_drop;
 mod fonts;
 mod gl_loader;
@@ -454,6 +455,30 @@ pub struct LinuxBackend {
     /// [`run_layout`](Self::run_layout) only schedules a publish when the
     /// size actually changed. See there for why it's deferred.
     published_viewport: (f32, f32),
+    /// Node ids of portal containers, which are NOT real children of the
+    /// element that declared them: they mount themselves into the window
+    /// overlay and are their own detached Taffy roots. [`insert`] consults
+    /// this to SKIP them — see there for the bug that made it necessary.
+    ///
+    /// No matching guard is needed in `clear_children` / `remove_child`:
+    /// because the insert was skipped, a portal never lands in `children`
+    /// or in the parent's GTK child list, so those paths already miss it.
+    /// Teardown runs through `release_portal` instead.
+    ///
+    /// [`insert`]: LinuxBackend::insert
+    portal_roots: HashSet<u64>,
+    /// Anchored portals → the trigger + placement intent they track.
+    /// Only `PortalTarget::Anchor` portals get an entry; viewport-placed
+    /// ones are fully positioned by their container's flex.
+    portal_anchors: HashMap<u64, portal::AnchorSpec>,
+    /// Anchored portal → the child whose frame is re-pinned to the
+    /// trigger. LATEST inserted child wins: an overlay lowers to
+    /// `[backdrop, content]` when it has a backdrop and `[content]` when
+    /// it doesn't, and content is always inserted last, so tracking the
+    /// latest pins the content in both shapes. (Pinning the FIRST would
+    /// move the backdrop and leave the popover at the container's
+    /// top-left — the exact bug macOS's `portal_policy` documents.)
+    portal_anchor_child: HashMap<u64, u64>,
 }
 
 // The `LinuxExternalRegistrar` / `LinuxNavigatorRegistrar` inventory
@@ -485,6 +510,9 @@ impl LinuxBackend {
             self_ref: std::rc::Weak::new(),
             sticky_nodes: HashMap::new(),
             published_viewport: (0.0, 0.0),
+            portal_roots: HashSet::new(),
+            portal_anchors: HashMap::new(),
+            portal_anchor_child: HashMap::new(),
         }
     }
 
@@ -515,6 +543,21 @@ impl LinuxBackend {
         if let Some(root) = self.root_id.and_then(|id| self.nodes.get(&id)) {
             root.widget.queue_allocate();
             root.widget.queue_draw();
+        }
+        // Portal containers are DETACHED roots: they hang off the window
+        // overlay, not off the framework root, so re-allocating the root
+        // above does not reach them. Pump them too — that re-runs
+        // `layout_detached_root`, which is where an anchored portal
+        // re-resolves its placement. Without this a popover pins once at
+        // open and then stays put while its trigger scrolls away.
+        //
+        // Only anchored portals actually need the beat, so only they pay
+        // for it; a modal / sheet is fully placed by its container's flex
+        // and re-allocates on window resize like any other widget.
+        for id in self.portal_anchors.keys() {
+            if let Some(st) = self.nodes.get(id) {
+                st.widget.queue_allocate();
+            }
         }
     }
 
@@ -752,6 +795,13 @@ impl LinuxBackend {
         };
         self.layout.compute(root_layout, width, height);
 
+        // Anchored portal: re-pin the content child to its trigger. Read
+        // AFTER `compute` so the content's MEASURED size is available —
+        // the shared resolver needs it to center-align, to decide whether
+        // the requested side actually fits, and to clamp the overlay
+        // inside the viewport.
+        let anchor_override = self.anchor_override(id, width, height);
+
         // Collect `id` + every tracked descendant (self.children is the
         // parent→children linkage the walker's `insert` populates).
         let mut ids = Vec::new();
@@ -770,8 +820,17 @@ impl LinuxBackend {
                 };
                 (self.layout.frame_of(st.layout), st.widget.clone())
             };
+            // The anchored content child ignores its flex-computed
+            // origin and takes the resolved placement instead. Its size
+            // is untouched (the overlay still sizes to its content), and
+            // descendants are positioned relative to it, so overriding
+            // the one frame moves the whole popover subtree.
+            let (fx, fy) = match anchor_override {
+                Some((cid, x, y)) if cid == *nid => (x, y),
+                _ => (frame.x, frame.y),
+            };
             if let Some(st) = self.nodes.get_mut(nid) {
-                st.frame = (frame.x, frame.y, frame.width, frame.height);
+                st.frame = (fx, fy, frame.width, frame.height);
             }
             let (w, h) = (
                 (frame.width.round() as i32).max(0),
@@ -798,6 +857,43 @@ impl LinuxBackend {
     }
 
 
+
+    /// Where an anchored portal's content child should sit this frame:
+    /// `(child_id, x, y)` in the container's coordinate space, or `None`
+    /// when `portal_id` isn't anchored / the trigger isn't measurable yet.
+    ///
+    /// The container spans the whole overlay from its top-left, so its
+    /// coordinate space IS viewport space — the same space
+    /// `AnchorTarget::rect()` reports in. That equivalence is what lets
+    /// the resolved placement be used as a frame origin directly.
+    ///
+    /// The geometry itself is deliberately NOT computed here: it comes
+    /// from `resolve_anchored_placement`, the placement algorithm shared
+    /// by every backend (collision flip + edge clamp included). Web, iOS
+    /// and Android each carried their own copy once and they drifted —
+    /// the same author intent placing differently per platform. This
+    /// backend supplies measured rects and applies the answer; it does
+    /// not get its own opinion about geometry (CLAUDE.md §7).
+    fn anchor_override(&self, portal_id: u64, vw: f32, vh: f32) -> Option<(u64, f32, f32)> {
+        let spec = self.portal_anchors.get(&portal_id)?;
+        let child_id = *self.portal_anchor_child.get(&portal_id)?;
+        let child_layout = self.nodes.get(&child_id)?.layout;
+        // Trigger not mounted / not yet measured: leave the flex origin
+        // alone rather than pinning to a bogus rect. The next pass picks
+        // it up once the trigger has a frame.
+        let rect = spec.target.rect()?;
+        let content = self.layout.frame_of(child_layout);
+        let placed = runtime_shared::primitives::portal::resolve_anchored_placement(
+            rect,
+            (content.width, content.height),
+            (vw, vh),
+            spec.side,
+            spec.align,
+            spec.offset,
+            portal::ANCHOR_EDGE_GAP,
+        );
+        Some((child_id, placed.x, placed.y))
+    }
 
     /// SDK extension helper: register an existing widget with the
     /// backend's layout tree so flex parents can size + position it.
@@ -1104,6 +1200,39 @@ impl LinuxBackend {
     }
 
     fn insert(&mut self, parent: &mut LinuxNode, child: LinuxNode) {
+        // Portal containers are NOT children of the element that declared
+        // them. `create_portal` mounts the container into the window-level
+        // `gtk::Overlay` and gives it its own detached Taffy root (laid out
+        // from the container's own `size_allocate` — see `portal.rs`). The
+        // scene still calls `insert(declaration_parent, portal_node)` for
+        // it, exactly as it does for any other returned node, so the
+        // BACKEND has to skip it — macOS/iOS do this via `portal_roots`
+        // too.
+        //
+        // Without the skip a portal is doubly broken. GTK-side,
+        // `iv.add_child` reparents the container into the declaration
+        // site, so `attach_to_overlay`'s idle then finds `parent().is_some()`
+        // and bails — the overlay never happens and the content renders
+        // INLINE where it was declared. Taffy-side, the container becomes a
+        // real flex child of that parent while still carrying its
+        // full-viewport `100% x 100%` placement style, which blows out the
+        // parent's layout. That pair is the "popover renders inline and is
+        // really funky" bug.
+        //
+        // Old-core didn't need this guard: the walker never inserted a
+        // portal node into its logical parent. runtime-v2 moved that
+        // responsibility to the backend, and this backend was ported
+        // without it.
+        if self.portal_roots.contains(&child.id) {
+            return;
+        }
+
+        // Inserting INTO an anchored portal: this child becomes the one
+        // re-pinned to the trigger. Latest wins — see `portal_anchor_child`.
+        if self.portal_anchors.contains_key(&parent.id) {
+            self.portal_anchor_child.insert(parent.id, child.id);
+        }
+
         let (Some(parent_layout), Some(child_layout)) = (
             self.nodes.get(&parent.id).map(|s| s.layout),
             self.nodes.get(&child.id).map(|s| s.layout),
@@ -1279,6 +1408,30 @@ impl LinuxBackend {
                 .unwrap_or_default();
         }
         self.rebuild_transform(id, false);
+
+        // 2a. Pointer affordance. Kind-independent, like opacity above:
+        // `cursor` is a plain visual property that applies to any widget
+        // the pointer can be over, not just interactive ones (a `Text`
+        // node can carry `Cursor::Text`).
+        //
+        // This was simply UNIMPLEMENTED — `apply_style` never read
+        // `style.cursor`, so every clickable on Linux kept the plain
+        // arrow while the identical tree showed a hand on web and macOS.
+        // The framework sets no default cursor anywhere; idea-ui opts its
+        // clickables into `Cursor::Pointer` through this property and
+        // that is the only source of truth, so dropping it here is the
+        // entire symptom.
+        //
+        // Always write, including the `None` (unset) case: styles
+        // re-apply reactively, and leaving a stale cursor installed when
+        // a restyle drops the property would strand the old affordance
+        // on the widget.
+        if let Some(st) = self.nodes.get(&id) {
+            match style.cursor.and_then(cursor::cursor_name) {
+                Some(name) => st.widget.set_cursor_from_name(Some(name)),
+                None => st.widget.set_cursor(None),
+            }
+        }
 
         // 3. Per-kind visuals.
         match kind {
@@ -1808,6 +1961,30 @@ impl LinuxBackend {
         // flex style apply through the normal `apply_style` path.
         let view = IdealystView::new();
         let node = self.wrap(view.clone().upcast::<gtk4::Widget>(), NodeKind::View);
+        // Mark it a portal root BEFORE returning, so the `insert` the scene
+        // makes against the declaration parent is skipped (see `insert`).
+        self.portal_roots.insert(node.id);
+        // Anchored portals track their trigger every layout pass; record
+        // the intent so `anchor_override` can resolve it. The container's
+        // own flex stays neutral (top-left) — it only supplies the
+        // viewport coordinate space the resolved placement lives in.
+        if let runtime_shared::primitives::portal::PortalTarget::Anchor {
+            target,
+            side,
+            align,
+            offset,
+        } = &target
+        {
+            self.portal_anchors.insert(
+                node.id,
+                portal::AnchorSpec {
+                    target: target.clone(),
+                    side: *side,
+                    align: *align,
+                    offset: *offset,
+                },
+            );
+        }
         // Base placement flex from the target (author/composition style
         // overrides via a later `apply_style`).
         if let Some(layout) = self.nodes.get(&node.id).map(|s| s.layout) {
@@ -1826,6 +2003,9 @@ impl LinuxBackend {
     }
 
     fn release_portal(&mut self, node: &LinuxNode) {
+        self.portal_roots.remove(&node.id);
+        self.portal_anchors.remove(&node.id);
+        self.portal_anchor_child.remove(&node.id);
         if let Some(v) = node.widget.downcast_ref::<IdealystView>() {
             portal::release(v);
         }
@@ -2264,6 +2444,158 @@ mod layout_tests {
             backend.sticky_nodes.get(&orphan.id).unwrap().scroll,
             None,
             "no enclosing scroll_view - stays unresolved and is never pinned",
+        );
+
+        // --- 9. A portal must NOT become a child of the element that
+        // declared it. runtime-v2 calls `insert(declaration_parent,
+        // portal_node)` for portals just like any other node and expects
+        // the BACKEND to skip it (macOS/iOS do, via their own
+        // `portal_roots`). This backend was ported without the guard, so
+        // the popover/menu/tooltip content was reparented INLINE into the
+        // declaration site — and because `attach_to_overlay` bails when
+        // the container already has a parent, the window overlay never
+        // happened at all.
+        use runtime_shared::primitives::portal::{PortalTarget, ViewportPlacement};
+        let mut declarer = backend.create_view(&a11y);
+        let portal =
+            backend.create_portal(PortalTarget::Viewport(ViewportPlacement::Center), None, false, &a11y);
+        let portal_widget = portal.widget.clone();
+        backend.insert(&mut declarer, portal.clone());
+
+        assert!(
+            !backend
+                .children
+                .get(&declarer.id)
+                .is_some_and(|kids| kids.contains(&portal.id)),
+            "the portal must not be tracked as a child of its declarer",
+        );
+        let declarer_layout = backend.nodes.get(&declarer.id).unwrap().layout;
+        assert_eq!(
+            backend.layout.children_of(declarer_layout).len(),
+            0,
+            "the portal must stay a DETACHED Taffy root: as a real flex child it \
+             still carries its full-viewport 100%x100% placement style and blows \
+             out the declarer's layout",
+        );
+        assert!(
+            portal_widget.parent().is_none(),
+            "the portal widget must stay unparented until the idle attaches it to \
+             the window overlay - a GTK parent here means it rendered inline AND \
+             made `attach_to_overlay` bail",
+        );
+
+        // Teardown drops the marker, so the id can't leak into a later
+        // node's insert (ids are monotonic, but the set must not grow
+        // unboundedly across open/close cycles either).
+        backend.release_portal(&portal);
+        assert!(
+            !backend.portal_roots.contains(&portal.id),
+            "release_portal must un-mark the node",
+        );
+
+        // --- 9a. An ANCHORED portal must pin its content beside the
+        // trigger, not at the container's top-left. This backend used to
+        // give anchored targets a neutral flex placement and document it
+        // as a gap ("needs a per-frame scheduler the GTK host does not
+        // install") — but the host installs a raf_loop driver and Linux
+        // handles already measure viewport rects, so the gap was stale.
+        // Placement now comes from the shared `resolve_anchored_placement`
+        // and rides the `pump` beat.
+        #[derive(Clone)]
+        struct FixedAnchor;
+        impl runtime_shared::primitives::portal::AnchorableHandle for FixedAnchor {
+            fn rect(&self) -> runtime_shared::ViewportRect {
+                runtime_shared::ViewportRect { x: 100.0, y: 200.0, width: 80.0, height: 20.0 }
+            }
+        }
+        let anchor_ref: runtime_shared::Ref<FixedAnchor> = runtime_shared::Ref::new();
+        anchor_ref.fill(FixedAnchor);
+
+        let mut anchored = backend.create_portal(
+            PortalTarget::Anchor {
+                target: runtime_shared::primitives::portal::AnchorTarget::from(anchor_ref),
+                side: runtime_shared::primitives::portal::ElementSide::Below,
+                align: runtime_shared::primitives::portal::ElementAlign::Start,
+                offset: 4.0,
+            },
+            None,
+            false,
+            &a11y,
+        );
+        // `[backdrop, content]` — the shape a popover lowers to. The
+        // tracker must land on CONTENT (inserted last), not the backdrop.
+        let backdrop = backend.create_view(&a11y);
+        backend.insert(&mut anchored, backdrop.clone());
+        let content = backend.create_view(&a11y);
+        backend.insert(&mut anchored, content.clone());
+        assert_eq!(
+            backend.portal_anchor_child.get(&anchored.id),
+            Some(&content.id),
+            "the LAST inserted child must be the tracked one - pinning the backdrop \
+             would move the wrong node and strand the popover at the top-left",
+        );
+
+        // Give the content a size so the resolver has something to place.
+        backend.apply_style(
+            &content,
+            &std::rc::Rc::new(StyleRules {
+                width: Some(runtime_shared::Length::Px(120.0).into()),
+                height: Some(runtime_shared::Length::Px(60.0).into()),
+                ..Default::default()
+            }),
+        );
+        backend.layout_detached_root(anchored.id, 1000.0, 800.0);
+
+        let placed = backend.node_frame(content.id).unwrap();
+        // Below + Start: y = 200 + 20 + 4 = 224, x = trigger.x = 100.
+        assert_eq!(
+            (placed.0, placed.1),
+            (100.0, 224.0),
+            "anchored content must sit directly under its trigger; (0,0) means the \
+             flex origin won and the popover is parked at the container's top-left",
+        );
+        // The override must move the origin only — the overlay still sizes
+        // to its own content.
+        assert_eq!((placed.2, placed.3), (120.0, 60.0), "size must be untouched");
+
+        // The backdrop is NOT the tracked child, so it keeps its flex origin.
+        assert_eq!(
+            backend.node_frame(backdrop.id).map(|f| (f.0, f.1)),
+            Some((0.0, 0.0)),
+            "only the tracked child is re-pinned",
+        );
+
+        backend.release_portal(&anchored);
+        assert!(
+            !backend.portal_anchors.contains_key(&anchored.id)
+                && !backend.portal_anchor_child.contains_key(&anchored.id),
+            "release must drop the anchor tracking too, or `pump` keeps \
+             queue-allocating a dead container every frame",
+        );
+
+        // --- 10. `cursor` must reach the widget. It was never read from
+        // `StyleRules`, so every clickable kept the arrow on Linux while
+        // the same tree showed a hand on web and macOS.
+        let hand = backend.create_view(&a11y);
+        backend.apply_style(
+            &hand,
+            &std::rc::Rc::new(StyleRules {
+                cursor: Some(runtime_shared::Cursor::Pointer),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(
+            hand.widget.cursor().map(|c| c.name()).flatten().map(|n| n.to_string()),
+            Some("pointer".to_string()),
+            "Cursor::Pointer must install the GDK `pointer` cursor",
+        );
+
+        // Re-styling without a cursor must CLEAR it, not strand the old
+        // affordance on the widget.
+        backend.apply_style(&hand, &std::rc::Rc::new(StyleRules::default()));
+        assert!(
+            hand.widget.cursor().is_none(),
+            "dropping the property must clear the widget cursor",
         );
     }
 }

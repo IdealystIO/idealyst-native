@@ -41,14 +41,21 @@
 //!
 //! ## `PortalTarget::Anchor`
 //!
-//! Anchored portals (tooltips/popovers/dropdowns) get a NEUTRAL
-//! (top-left) flex placement here: precise element-tracking placement —
-//! re-pinning the content to the trigger's viewport rect on every
-//! scroll/resize — needs a per-frame scheduler, which the GTK host does
-//! not install (`runtime_shared::scheduling::raf_loop` is inert without
-//! one). So anchored content mounts at the container's top-left rather
-//! than beside its trigger. This is the one documented gap; the common
-//! modal/sheet/centered cases (Viewport placements) are fully placed.
+//! Anchored portals (tooltips/popovers/dropdowns) ARE element-tracked.
+//! The container keeps a neutral top-left flex — it exists only to supply
+//! the viewport coordinate space — and the content child's frame is
+//! overridden every layout pass from
+//! [`runtime_shared::primitives::portal::resolve_anchored_placement`], the
+//! ONE placement algorithm every backend shares (collision flip + viewport
+//! clamp included). See [`AnchorSpec`] and
+//! [`LinuxBackend::anchor_override`].
+//!
+//! The re-pin rides the existing frame beat rather than a per-portal
+//! `raf_loop`: [`LinuxBackend::pump`] queue-allocates every live portal
+//! container each tick, which re-runs
+//! [`LinuxBackend::layout_detached_root`], which re-resolves the
+//! placement. So a popover follows its trigger through scrolling and
+//! resizing without any extra scheduler handle to own or leak.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -56,10 +63,28 @@ use std::rc::{Rc, Weak};
 use gtk4::glib;
 use gtk4::prelude::*;
 
-use runtime_shared::primitives::portal::{PortalTarget, ViewportPlacement};
+use runtime_shared::primitives::portal::{
+    AnchorTarget, ElementAlign, ElementSide, PortalTarget, ViewportPlacement,
+};
 use runtime_shared::{AlignItems, FlexDirection, JustifyContent, Length, StyleRules, Tokenized};
 
 use crate::{IdealystView, LinuxBackend};
+
+/// Minimum gutter kept between an anchored overlay and every viewport
+/// edge. Matches the value the other backends pass to
+/// `resolve_anchored_placement`, so a popover pinned near a window edge
+/// lands in the same place on GTK as it does on web / AppKit.
+pub(crate) const ANCHOR_EDGE_GAP: f32 = 8.0;
+
+/// What an anchored portal needs to re-pin itself: the trigger it tracks
+/// plus the author's placement intent. Recorded by `create_portal` and
+/// consumed by `LinuxBackend::anchor_override` on every layout pass.
+pub(crate) struct AnchorSpec {
+    pub target: AnchorTarget,
+    pub side: ElementSide,
+    pub align: ElementAlign,
+    pub offset: f32,
+}
 
 /// Base Taffy style for a portal container: a full-viewport column flex
 /// box whose justify/align place the content child per the target's
@@ -231,9 +256,12 @@ mod tests {
 
     #[test]
     fn anchor_and_named_use_neutral_top_left() {
-        // The anchor gap: neutral placement (see module doc). `Named`
-        // shares the same match arm, so it exercises the same mapping
-        // without the `AnchorableHandle` scaffolding.
+        // The anchored CONTAINER stays neutral on purpose: it exists only
+        // to supply the viewport coordinate space, and the content child's
+        // frame is overridden from the shared placement resolver (see the
+        // module doc + `LinuxBackend::anchor_override`). A centering flex
+        // here would fight that override. `Named` shares the match arm, so
+        // it exercises the mapping without `AnchorableHandle` scaffolding.
         let s = placement_style(&PortalTarget::Named("slot"));
         assert_eq!(s.justify_content, Some(JustifyContent::FlexStart));
         assert_eq!(s.align_items, Some(AlignItems::FlexStart));
