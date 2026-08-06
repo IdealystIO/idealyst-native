@@ -116,9 +116,24 @@ fn regression_hover_variant_restyles_the_node() {
     let backend = Rc::new(RefCell::new(LinuxBackend::new(window.clone())));
     backend.borrow_mut().set_self_ref(Rc::downgrade(&backend));
 
-    let app = newcore::start(backend.clone(), |_r| {}, || {
+    // `mounted` gates the styled child through a structural hole, so it
+    // can be unmounted mid-life while the world stays alive. Created
+    // INSIDE the build closure (signals need an active World) and handed
+    // back out so the test can flip it.
+    let mounted_slot: Rc<RefCell<Option<runtime_world::Signal<bool>>>> =
+        Rc::new(RefCell::new(None));
+    let slot_for_build = mounted_slot.clone();
+    let app = newcore::start(backend.clone(), |_r| {}, move || {
+        let mounted = runtime_world::signal(true);
+        *slot_for_build.borrow_mut() = Some(mounted);
         view()
-            .children(vec![view().style(hoverable()).build()])
+            .child(move || {
+                if mounted.get() {
+                    view().style(hoverable()).build()
+                } else {
+                    view().build()
+                }
+            })
             .build()
     });
 
@@ -207,6 +222,43 @@ fn regression_hover_variant_restyles_the_node() {
         "a cancelled press must clear PRESSED. Still 150 means only `released` \
          was wired, so dragging off a button leaves it pressed forever",
     );
+
+    // --- teardown: a focus/hover event AFTER the node's scope dies must
+    // not write through the freed signal slot.
+    //
+    // This ABORTED the process rather than panicking. The setter writes a
+    // signal owned by the node's own reactive scope; GTK emits
+    // `focus-leave` while the framework unparents a focused widget, i.e.
+    // after that scope is already gone. The stale-handle panic then
+    // originates inside a GObject signal trampoline (`extern "C"`, cannot
+    // unwind) → "panic in a function that cannot unwind" → abort.
+    //
+    // Unmount MID-LIFE, which is the real shape (a route change dropping
+    // a screen's scope) — not app shutdown, where the whole world goes at
+    // once and the write is short-circuited for unrelated reasons.
+    let orphan = node.clone();
+    let focus_controllers = controllers_of::<gtk4::EventControllerFocus>(&orphan);
+    let motion_controllers = controllers_of::<gtk4::EventControllerMotion>(&orphan);
+    assert!(
+        !focus_controllers.is_empty() && !motion_controllers.is_empty(),
+        "controllers must exist before teardown, or this asserts nothing",
+    );
+
+    let mounted = mounted_slot.borrow().expect("build closure filled the slot");
+    mounted.set(false);
+    settle(&ctx, &backend);
+
+    // Every one of these reaches the setter unless `on_node_unstyled`
+    // detached it. Before the fix this aborted the test binary.
+    for f in &focus_controllers {
+        f.emit_by_name::<()>("leave", &[]);
+        f.emit_by_name::<()>("enter", &[]);
+    }
+    for m in &motion_controllers {
+        m.emit_by_name::<()>("leave", &[]);
+        m.emit_by_name::<()>("enter", &[&1.0f64, &1.0f64]);
+    }
+    settle(&ctx, &backend);
 
     app.stop();
 }

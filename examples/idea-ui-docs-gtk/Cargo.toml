@@ -14,3 +14,7 @@ idea-ui-docs = { workspace = true, default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 host-gtk = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+backend-linux = { workspace = true }
+runtime-shared = { workspace = true }

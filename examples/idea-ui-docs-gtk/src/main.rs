@@ -15,7 +15,13 @@ fn main() {
         width: 1280,
         height: 860,
     };
-    let code = host_gtk::run(opts, idea_ui_docs::app);
+    // `run_with`, not `run`: `run` passes a NO-OP registry hook, so every
+    // SDK payload the docs use (codeblock, table, svg, …) would be
+    // unregistered and realizing one panics —
+    // "no handler registered for item payload (TypeId(…))". That panic
+    // surfaces inside a GLib source trampoline, which cannot unwind, so
+    // it aborts the process instead of reporting cleanly.
+    let code = host_gtk::run_with(opts, idea_ui_docs::register_scene_extensions, idea_ui_docs::app);
     std::process::exit(code);
 }
 

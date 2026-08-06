@@ -472,6 +472,29 @@ pub struct LinuxBackend {
     /// Only `PortalTarget::Anchor` portals get an entry; viewport-placed
     /// ones are fully positioned by their container's flex.
     portal_anchors: HashMap<u64, portal::AnchorSpec>,
+    /// Per-node "is this node's reactive scope still alive" flags, for
+    /// callbacks GTK can invoke AFTER that scope dies.
+    ///
+    /// The author callbacks a backend is handed close over signals owned
+    /// by the node's scope. GTK does not respect that lifetime: it emits
+    /// `focus-leave` while the framework unparents a focused widget, and
+    /// `on_scroll` is deliberately deferred to a GLib idle (see
+    /// `create_scroll_view`) which can run after a route change has torn
+    /// the screen down. Writing through the freed slot panics, and
+    /// because the panic originates inside a GObject/GLib trampoline
+    /// (`extern "C"`, cannot unwind) it ABORTS the process.
+    ///
+    /// Cleared by `on_node_unstyled`. That hook only fires for STYLED
+    /// nodes, which is every node these callbacks attach to in practice
+    /// (a `scroll_view` with an `on_scroll` but no style would be
+    /// unguarded — there is no unstyled per-node teardown hook on `Host`
+    /// to hang it on).
+    node_alive: HashMap<u64, Rc<std::cell::Cell<bool>>>,
+    /// Per-node hover/press/focus controllers installed by
+    /// `attach_states`, kept so `on_node_unstyled` can detach them when
+    /// the node's style scope dies. See `states.rs` for why leaking them
+    /// aborts the process rather than merely leaking.
+    state_controllers: HashMap<u64, states::StateControllers>,
     /// Anchored portal → the child whose frame is re-pinned to the
     /// trigger. LATEST inserted child wins: an overlay lowers to
     /// `[backdrop, content]` when it has a backdrop and `[content]` when
@@ -512,6 +535,8 @@ impl LinuxBackend {
             sticky_nodes: HashMap::new(),
             published_viewport: (0.0, 0.0),
             portal_roots: HashSet::new(),
+            node_alive: HashMap::new(),
+            state_controllers: HashMap::new(),
             portal_anchors: HashMap::new(),
             portal_anchor_child: HashMap::new(),
         }
@@ -559,6 +584,22 @@ impl LinuxBackend {
             if let Some(st) = self.nodes.get(id) {
                 st.widget.queue_allocate();
             }
+        }
+    }
+
+    /// The liveness flag for `id`, creating it on first use. See the
+    /// `node_alive` field for what it guards and why.
+    pub(crate) fn alive_flag(&mut self, id: u64) -> Rc<std::cell::Cell<bool>> {
+        self.node_alive
+            .entry(id)
+            .or_insert_with(|| Rc::new(std::cell::Cell::new(true)))
+            .clone()
+    }
+
+    /// Mark `id`'s scope dead so deferred callbacks become no-ops.
+    pub(crate) fn kill_alive_flag(&mut self, id: u64) {
+        if let Some(f) = self.node_alive.remove(&id) {
+            f.set(false);
         }
     }
 
@@ -1806,6 +1847,10 @@ impl LinuxBackend {
         let inner = gtk4::Fixed::new();
         scrolled.set_child(Some(&inner));
 
+        // Allocated BEFORE `wrap` (which mints the id) so the deferred
+        // scroll closure can capture it; registered under the node id
+        // immediately after, where `on_node_unstyled` can find it.
+        let pending_alive = Rc::new(std::cell::Cell::new(true));
         if let Some(cb) = on_scroll {
             // Deferred to an idle, NOT called inline. Author `on_scroll`
             // handlers write signals (the website's scroll-spy does
@@ -1818,9 +1863,23 @@ impl LinuxBackend {
             // app on exactly this once the TOC's scroll-spy started
             // reading real frames. Same deferral as the viewport publish
             // in `run_layout`.
+            // The idle can outlive the node's reactive scope: a route
+            // change tears the screen down while a queued `value-changed`
+            // idle is still pending, and GTK moves the adjustment DURING
+            // that teardown. The author's `scroll_y.set(y)` would then
+            // write a freed slot — a stale-handle panic raised inside a
+            // GLib source trampoline, which cannot unwind, so it aborts
+            // the process rather than surfacing as a panic. The flag is
+            // cleared by `on_node_unstyled`.
+            let alive = pending_alive.clone();
             let fire = move |x: f32, y: f32| {
                 let cb = cb.clone();
-                gtk4::glib::source::idle_add_local_once(move || cb(x, y));
+                let alive = alive.clone();
+                gtk4::glib::source::idle_add_local_once(move || {
+                    if alive.get() {
+                        cb(x, y);
+                    }
+                });
             };
             let fire_for_h = fire.clone();
             let scrolled_for_h = scrolled.clone();
@@ -1838,6 +1897,7 @@ impl LinuxBackend {
         }
 
         let node = self.wrap(scrolled.clone().upcast::<gtk4::Widget>(), NodeKind::Other);
+        self.node_alive.insert(node.id, pending_alive);
 
         // Drive `position: sticky` from this container's own scroll
         // offset. Separate from the `on_scroll` prop wiring above because

@@ -6131,8 +6131,10 @@ dependencies = [
 name = "idea-ui-docs-gtk"
 version = "1.2.2"
 dependencies = [
+ "backend-linux",
  "host-gtk",
  "idea-ui-docs",
+ "runtime-shared",
 ]
 
 [[package]]

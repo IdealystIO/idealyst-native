@@ -1097,7 +1097,27 @@ impl caps::StyleOps for LinuxBackend {
                 schedule_flush();
             })
         };
-        crate::states::attach(&node.widget(), setter)
+        let installed = crate::states::attach(&node.widget(), setter);
+        // Replacing an existing entry detaches the old controllers first,
+        // so a re-attach on the same node can't stack duplicates.
+        if let Some(prev) = self.state_controllers.insert(node.id(), installed) {
+            prev.detach(&node.widget());
+        }
+    }
+
+    /// Release the state controllers when the node's style scope tears
+    /// down. NOT optional: the setter writes a signal owned by that
+    /// scope, and GTK emits `focus-leave` while the framework unparents a
+    /// focused widget — i.e. AFTER the scope can already be gone. Writing
+    /// through the freed slot panics inside a GObject signal trampoline,
+    /// which cannot unwind, so it aborts the process rather than
+    /// surfacing as a panic. See `states.rs`.
+    fn on_node_unstyled(&mut self, node: &Self::Node) {
+        if let Some(installed) = self.state_controllers.remove(&node.id()) {
+            installed.detach(&node.widget());
+        }
+        // Also kills the deferred-scroll guard — see `LinuxBackend::node_alive`.
+        self.kill_alive_flag(node.id());
     }
 }
 
