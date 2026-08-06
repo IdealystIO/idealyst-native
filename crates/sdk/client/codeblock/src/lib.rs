@@ -94,6 +94,8 @@ mod android;
 mod ios;
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 mod macos;
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+mod linux;
 
 /// Payload for a code block. Single-take style slot (the vocabulary
 /// `PrimCell` discipline, inlined): the scene hands the handler a
@@ -199,6 +201,21 @@ fn mount_code_block_macos(
     node
 }
 
+/// Linux (GTK4) single-node handler — `Registry<LinuxBackend>`-concrete.
+/// One `gtk::Label` carrying the concatenated spans plus a per-run colour
+/// `pango::AttrList` — the GTK analogue of the macOS NSAttributedString leaf.
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+fn mount_code_block_linux(
+    cx: &mut MountCx<'_, backend_linux::LinuxBackend>,
+    prim: &Rc<CodeBlockPrim>,
+    _children: Vec<Element>,
+) -> backend_linux::LinuxNode {
+    let backend = cx.backend().clone();
+    let node = linux::build(&prim.spans, &mut backend.borrow_mut());
+    attach_author_style(&backend, &node, prim);
+    node
+}
+
 /// iOS single-node handler — `Registry<IosBackend>`-concrete.
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 fn mount_code_block_ios(
@@ -249,6 +266,15 @@ where
             return;
         }
     }
+    #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+    {
+        let any: &mut dyn std::any::Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_linux::LinuxBackend>>() {
+            reg.register::<CodeBlockPrim, _>(mount_code_block_linux);
+            return;
+        }
+    }
+
     #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
     {
         let any: &mut dyn std::any::Any = registry;

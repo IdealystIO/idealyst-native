@@ -34,12 +34,12 @@
 //! a backend-side follow-up, same shape as macOS's
 //! `install_external_content_measure`.
 
-use crate::CodeBlockProps;
+
 use backend_linux::{LinuxBackend, LinuxNode};
 use gtk4::pango;
 use gtk4::prelude::*;
-use runtime_core::color::{parse_or, Rgba};
-use runtime_core::Color;
+use runtime_shared::color::{parse_or, Rgba};
+use runtime_shared::Color;
 use std::rc::Rc;
 
 /// Monospace point size for the code label. Matches the macOS/iOS
@@ -47,14 +47,10 @@ use std::rc::Rc;
 const MONO_SIZE_PT: f64 = 13.0;
 
 /// Register the Linux `code_block` external handler on `backend`.
-pub fn register(backend: &mut LinuxBackend) {
-    backend.register_external::<CodeBlockProps, _>(|props, b| build(props, b));
-}
-
 /// `Element::External` handler for the Linux codeblock kind: one
 /// `gtk::Label` carrying the concatenated spans + a per-run color
 /// `AttrList`.
-fn build(props: &Rc<CodeBlockProps>, b: &mut LinuxBackend) -> LinuxNode {
+pub(crate) fn build(spans: &[(String, Color)], b: &mut LinuxBackend) -> LinuxNode {
     let label = gtk4::Label::new(None);
     // Match the framework `text` leaf defaults + code-panel expectations.
     label.set_wrap(true);
@@ -62,7 +58,7 @@ fn build(props: &Rc<CodeBlockProps>, b: &mut LinuxBackend) -> LinuxNode {
     label.set_xalign(0.0);
     label.set_yalign(0.0);
 
-    let (text, attrs) = build_text_and_attrs(&props.spans);
+    let (text, attrs) = build_text_and_attrs(&spans);
     label.set_text(&text);
     label.set_attributes(Some(&attrs));
 
