@@ -77,6 +77,8 @@ mod ios;
 
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 mod macos;
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+mod linux;
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -552,6 +554,20 @@ fn mount_video_macos(
     node
 }
 
+/// Linux (GTK4) mount handler — `Registry<LinuxBackend>`-concrete.
+/// Builds a real `gtk::Video` (GStreamer-backed), not the placeholder.
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+fn mount_video_linux(
+    cx: &mut MountCx<'_, backend_linux::LinuxBackend>,
+    prim: &Rc<VideoPrim>,
+    _children: Vec<Element>,
+) -> backend_linux::LinuxNode {
+    let backend = cx.backend().clone();
+    let node = crate::linux::build_video(&prim.props, &mut backend.borrow_mut());
+    finish_mount(&backend, &node, prim);
+    node
+}
+
 /// iOS mount handler — `Registry<IosBackend>`-concrete.
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 fn mount_video_ios(
@@ -613,6 +629,14 @@ where
         let any: &mut dyn Any = registry;
         if let Some(reg) = any.downcast_mut::<Registry<backend_android::AndroidBackend>>() {
             reg.register::<VideoPrim, _>(mount_video_android);
+            return;
+        }
+    }
+    #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_linux::LinuxBackend>>() {
+            reg.register::<VideoPrim, _>(mount_video_linux);
             return;
         }
     }

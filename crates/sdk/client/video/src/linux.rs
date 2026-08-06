@@ -131,27 +131,16 @@ thread_local! {
     static VIDEOS: RefCell<HashMap<u64, gtk4::Video>> = RefCell::new(HashMap::new());
 }
 
-/// Register the Linux `Video` external handler on `backend`. Call once at
-/// app boot (the app's `register_extensions` on Linux) so `Video`
-/// elements lower to a native `gtk::Video` instead of the framework's
-/// External placeholder.
-pub fn register(backend: &mut LinuxBackend) {
-    backend.register_external::<VideoProps, _>(|props, b| build_video(props, b));
-}
-
-// Self-register at backend construction (no app-side `register` call needed) —
-// the mirror of the macOS submit. Without this, `Video` elements fell through
-// to the External placeholder on GTK and never played. See
-// [[project_inventory_self_registration]].
-inventory::submit! {
-    backend_linux::LinuxExternalRegistrar(register)
-}
+// v2: no inventory self-registration. The External table these registrars
+// fed is gone; an app installs this handler on the scene `Registry` at its
+// boot seam instead, and an unregistered payload panics at realize rather
+// than silently falling through to a placeholder.
 
 // =========================================================================
 // Build + reactive source
 // =========================================================================
 
-fn build_video(props: &Rc<VideoProps>, b: &mut LinuxBackend) -> LinuxNode {
+pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut LinuxBackend) -> LinuxNode {
     let video = gtk4::Video::new();
 
     // Static, construction-time props. `Video::set_autoplay` / `set_loop`
