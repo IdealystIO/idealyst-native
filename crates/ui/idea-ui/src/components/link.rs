@@ -62,3 +62,35 @@ pub fn Link(props: &LinkProps) -> Element {
     }
     node.into_element()
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::stylesheets::LinkText;
+    use idea_theme::testing::with_test_world;
+    use runtime_core::{resolve_style, Cursor, StyleApplication};
+
+    /// A link must show the pointer affordance on EVERY backend.
+    ///
+    /// Web gets it free from the UA stylesheet (`a[href]` is
+    /// `cursor: pointer`); no native backend has an equivalent, and the
+    /// framework deliberately imposes no default cursor on any primitive.
+    /// So an undeclared cursor here means identical author code renders a
+    /// hand on web and a plain arrow on GTK/AppKit — exactly the
+    /// cross-platform divergence CLAUDE.md §7 forbids, and exactly how it
+    /// was reported ("cursor changes don't work" on Linux, while the same
+    /// docs site looked right in a browser).
+    #[test]
+    fn regression_link_declares_the_pointer_cursor_for_native_backends() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            let rules = resolve_style(&StyleApplication::new(LinkText::sheet()));
+            assert_eq!(
+                rules.cursor,
+                Some(Cursor::Pointer),
+                "LinkText must declare `cursor: Pointer`. Web would still look \
+                 correct without it (the UA gives `<a href>` a hand), which is \
+                 what let this hide — native backends show an arrow.",
+            );
+        });
+    }
+}

@@ -918,6 +918,12 @@ stylesheet! {
             padding_horizontal: 11.0,
             border_radius: 8.0,
             background: Color("transparent".into()),
+            // These rows sit inside a `link(route = …)`. On web that lowers
+            // to a real `<a href>`, which the UA stylesheet gives a hand for
+            // free; no native backend has that, and the framework defaults
+            // no cursor on any primitive. Declare it so the sidebar reads as
+            // clickable on GTK/AppKit too.
+            cursor: Cursor::Pointer,
         }
         variant active {
             #[default]

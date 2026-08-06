@@ -2688,6 +2688,14 @@ stylesheet! {
             color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
             font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
             font_weight: FontWeight::Medium,
+            // Web gets this free from the UA stylesheet (`a[href]` is
+            // `cursor: pointer`); no native backend has an equivalent, and
+            // the framework imposes no default cursor on any primitive. So
+            // without declaring it the SAME author code shows a hand on web
+            // and an arrow everywhere else — the divergence CLAUDE.md §7
+            // exists to prevent. Declaring it converges them and stays
+            // overridable, unlike the old hardcoded inline style.
+            cursor: Cursor::Pointer,
         }
         state hovered(t) { color: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())) }
         // Focus mirrors hover (color brighten) — an inline text link takes a
