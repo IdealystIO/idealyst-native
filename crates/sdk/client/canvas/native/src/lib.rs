@@ -23,13 +23,19 @@ use runtime_vocabulary::caps::ExternalOps;
 use runtime_vocabulary::style_attach::{attach_style, on_teardown, StyleServices};
 
 // Shared glyph-outline expansion for `DrawOp::Glyphs`, used by every CPU
-// backend (web / apple / android). Gated to those targets so the
+// backend (web / apple / android / linux). Gated to those targets so the
 // placeholder build (no native 2D engine) doesn't carry an unused skrifa
-// dependency.
+// dependency. Linux is included: the GTK leaf rasterizes through Cairo,
+// which is a CPU 2D engine and needs the same outline expansion.
 #[cfg(any(
     target_arch = "wasm32",
     all(
-        any(target_os = "ios", target_os = "macos", target_os = "android"),
+        any(
+            target_os = "ios",
+            target_os = "macos",
+            target_os = "android",
+            target_os = "linux"
+        ),
         not(target_arch = "wasm32")
     )
 ))]
@@ -60,6 +66,8 @@ mod ios;
 mod macos;
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 mod android;
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+mod linux;
 
 /// Shared mount tail for a concrete-backend canvas handler: author style
 /// onto the node the platform builder returned, then the scope-tied
@@ -158,7 +166,30 @@ where
             return;
         }
     }
+    #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_linux::LinuxBackend>>() {
+            reg.register::<CanvasPrim, _>(mount_canvas_linux);
+            return;
+        }
+    }
     registry.register::<CanvasPrim, _>(mount_placeholder::<H>);
+}
+
+/// Linux (GTK4) mount handler — `Registry<LinuxBackend>`-concrete.
+/// Builds the real Cairo-backed `IdealystCanvas` widget rather than the
+/// placeholder: GTK's own 2D engine is already linked by the toolkit.
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+fn mount_canvas_linux(
+    cx: &mut MountCx<'_, backend_linux::LinuxBackend>,
+    prim: &Rc<CanvasPrim>,
+    _children: Vec<Element>,
+) -> backend_linux::LinuxNode {
+    let backend = cx.backend().clone();
+    let node = crate::linux::build_canvas(&prim.props, &mut backend.borrow_mut());
+    finish_mount(&backend, &node, prim);
+    node
 }
 
 /// Queue this renderer's [`CanvasPrim`] handler for registration from a

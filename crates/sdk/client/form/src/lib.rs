@@ -98,6 +98,8 @@
 // types).
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod web_util;
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+mod linux;
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -376,6 +378,25 @@ where
     node
 }
 
+/// Linux (GTK4) mount handler — `Registry<LinuxBackend>`-concrete.
+///
+/// A `<form>` element only means something on web; natively a form is a
+/// passthrough container. The generic fallback would hand back a labeled
+/// "not registered" placeholder, so this builds the plain `IdealystView`
+/// container instead and realizes children into it.
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+fn mount_form_linux(
+    cx: &mut MountCx<'_, backend_linux::LinuxBackend>,
+    prim: &Rc<FormPrim>,
+    children: Vec<Element>,
+) -> backend_linux::LinuxNode {
+    let backend = cx.backend().clone();
+    let mut node = crate::linux::build_form(&mut backend.borrow_mut());
+    cx.realize_children_into(&mut node, children);
+    finish_mount(&backend, &node, prim);
+    node
+}
+
 /// Register the form payload handler on a scene registry. Pass this as
 /// the boot registration seam (the `register` argument of
 /// `backend_web::newcore::start_in` / `backend_ssr::newcore::
@@ -385,6 +406,14 @@ pub fn register<H>(registry: &mut Registry<H>)
 where
     H: ExternalOps + StyleServices + 'static,
 {
+    #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_linux::LinuxBackend>>() {
+            reg.register::<FormPrim, _>(mount_form_linux);
+            return;
+        }
+    }
     registry.register::<FormPrim, _>(mount_placeholder::<H>);
 }
 

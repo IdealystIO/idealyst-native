@@ -40,7 +40,7 @@ use canvas_core::{
 use gtk4::cairo;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
-use runtime_core::effect;
+use runtime_vocabulary::effect;
 
 // ============================================================================
 // Op replay
@@ -512,21 +512,11 @@ impl IdealystCanvas {
 // register + build
 // ============================================================================
 
-/// Register the Linux/GTK canvas renderer against a `LinuxBackend`.
-pub fn register(backend: &mut backend_linux::LinuxBackend) {
-    canvas_core::ensure_wire_serde();
-    backend.register_external::<CanvasProps, _>(|props, b| build_canvas(props, b));
-}
+// v2: no inventory self-registration, and no backend-side `register`. The
+// External table those fed is gone; `lib.rs`'s `mount_canvas_linux` installs
+// this builder on the scene `Registry` at the app's boot seam instead.
 
-// Self-register at backend construction (no app-side `register` call
-// needed). Behind the default-on `self-register` feature, matching every
-// other platform module in this crate.
-#[cfg(feature = "self-register")]
-inventory::submit! {
-    backend_linux::LinuxExternalRegistrar(register)
-}
-
-fn build_canvas(
+pub(crate) fn build_canvas(
     props: &Rc<CanvasProps>,
     b: &mut backend_linux::LinuxBackend,
 ) -> backend_linux::LinuxNode {

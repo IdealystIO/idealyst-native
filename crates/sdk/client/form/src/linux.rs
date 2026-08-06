@@ -31,11 +31,7 @@ pub(crate) static OPS: &dyn FormOps = &LinuxFormOps;
 /// Register the Form handler against a `LinuxBackend`. One-line call from
 /// app bootstrap so `Form` elements lower to the native passthrough
 /// container.
-pub fn register(backend: &mut LinuxBackend) {
-    backend.register_external::<FormProps, _>(|_props, b| build_form(b));
-}
-
-fn build_form(b: &mut LinuxBackend) -> LinuxNode {
+pub(crate) fn build_form(b: &mut LinuxBackend) -> LinuxNode {
     // Plain container view. `IdealystView` is the framework's own
     // container widget, so `register_external_view` gives it a Taffy
     // layout node and `LinuxBackend::insert` will parent the form's
