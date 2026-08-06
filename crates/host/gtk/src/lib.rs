@@ -2,7 +2,7 @@
 //!
 //! [`run`] opens a real `gtk::ApplicationWindow`, builds a
 //! [`LinuxBackend`](backend_linux::LinuxBackend) rooted at it, mounts
-//! the app tree via [`runtime_core::mount`], and hands control to the
+//! the app tree via `backend_linux::newcore::start`, and hands control to the
 //! GLib main loop. The framework's scheduler is installed (on the same
 //! main loop) *before* the mount so animations advance.
 //!
@@ -63,13 +63,20 @@ where
     run_with(opts, |_| {}, build_ui)
 }
 
-/// As [`run`], but invokes `register` on the freshly-built
-/// [`LinuxBackend`] before the tree mounts — the hook for registering
-/// `Element::External` / navigator SDK handlers (mirrors the winit /
-/// AppKit hosts' `run_with`).
+/// As [`run`], but invokes `register` on the scene [`Registry`] before the
+/// tree realizes — the seam where an app installs its SDK payload handlers
+/// (codeblock, table, svg, …). Runs after `register_builtins`, mirroring
+/// `host_appkit::run_with`.
+///
+/// The hook takes the REGISTRY, not the backend: `Element::External` and
+/// the per-backend External table are gone in v2, so a handler that isn't
+/// registered here has no entry at all and realizing that payload panics
+/// by design.
+///
+/// [`Registry`]: runtime_scene::Registry
 pub fn run_with<R, F>(opts: RunOptions, register: R, build_ui: F) -> i32
 where
-    R: FnOnce(&mut LinuxBackend) + 'static,
+    R: FnOnce(&mut runtime_scene::Registry<LinuxBackend>) + 'static,
     F: FnOnce() -> Element + 'static,
 {
     // Install the scheduler before the event loop runs (and therefore
@@ -93,7 +100,7 @@ where
     // activation consumes.
     type Init = (
         RunOptions,
-        Box<dyn FnOnce(&mut LinuxBackend)>,
+        Box<dyn FnOnce(&mut runtime_scene::Registry<LinuxBackend>)>,
         Box<dyn FnOnce() -> Element>,
     );
     let init: Rc<RefCell<Option<Init>>> = Rc::new(RefCell::new(Some((
@@ -119,8 +126,7 @@ where
         window.set_title(Some(&opts.title));
         window.set_default_size(opts.width, opts.height);
 
-        let mut backend = LinuxBackend::new(window.clone().upcast());
-        register(&mut backend);
+        let backend = LinuxBackend::new(window.clone().upcast());
         let backend_rc = Rc::new(RefCell::new(backend));
         // Give the backend a weak handle to itself so node handles
         // (ViewHandle/TextHandle) can route per-frame animation writes
@@ -147,12 +153,16 @@ where
         // pump on "is any animation active" (e.g. off the animation
         // clock's registration count) — a follow-on optimization.
         // v2 boot: `newcore::start` installs the time source, builds the
-        // scene `Registry` (builtins + any app handlers), enters the world
-        // and realizes the tree. It replaces `runtime_core::mount`, which
-        // went away with the old walker. The registry closure is a no-op
-        // here — `run_with`'s `register` hook already ran against the
-        // backend above, and this host ships no SDK payload handlers.
-        let app_handle = newcore::start(backend_rc.clone(), |_registry| {}, build_ui);
+        // scene `Registry` (builtins, then the app's own handlers), enters
+        // the world and realizes the tree. It replaces `runtime_core::mount`,
+        // which went away with the old walker.
+        //
+        // `register` runs on the REGISTRY, not the backend: SDK payloads
+        // (codeblock, table, svg, …) install typed handlers there now that
+        // `Element::External` and the per-backend External table are gone.
+        // Passing a no-op here — as this host did briefly — silently left
+        // every SDK unregistered, so any payload realize would panic.
+        let app_handle = newcore::start(backend_rc.clone(), register, build_ui);
         let backend_for_pump = backend_rc.clone();
         gtk4::glib::source::timeout_add_local(std::time::Duration::from_millis(16), move || {
             if let Ok(b) = backend_for_pump.try_borrow() {

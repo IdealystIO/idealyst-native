@@ -25,6 +25,9 @@ crate-type = ["rlib"]
 # and the `spawn_async` executor its async `mount` needs. Same feature
 # `host-macos-desktop` turns on for the AppKit equivalent.
 runtime-core = { workspace = true, features = ["async-driver"] }
+# `run_with`'s register hook takes a `runtime_scene::Registry` — SDK payload
+# handlers install there in v2, not on the backend.
+runtime-scene = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk4 = { version = "0.9", features = ["v4_12"] }

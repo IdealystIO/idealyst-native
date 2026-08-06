@@ -97,6 +97,11 @@ fn generate_wrapper(
     // wrapper-local `dev` feature (→ `runtime-core/dev`) and reach
     // `__mcp::catalog_json()` for `idealyst mcp`.
     let fcore_dep = _opts.source.dep("crates/runtime/core", &[]);
+    // `runtime-shared` as a DIRECT dep too: it carries the Robot bridge
+    // TRANSPORT (`robot::bridge`), which the identity stamp below calls.
+    // `runtime-core` only re-exports the author surface, so reaching the
+    // bridge through it does not resolve. Mirrors the macOS wrapper.
+    let fshared_dep = _opts.source.dep("crates/runtime/shared", &[]);
     let user_dep = format!("{{ path = \"{}\" }}", project_dir.display());
     let bundle_id = manifest
         .app
@@ -107,10 +112,15 @@ fn generate_wrapper(
     let deps_block = format!(
         "host-gtk = {host_dep}\n\
          runtime-core = {fcore_dep}\n\
+         runtime-shared = {fshared_dep}\n\
          {user_name} = {user_dep}\n",
         user_name = manifest.name,
     );
-    let features_block = "[features]\ndev = [\"runtime-core/dev\"]\n".to_string();
+    // `dev` turns on the robot REGISTRY (`runtime-core/dev`) AND the bridge
+    // TRANSPORT (`runtime-shared/robot`) — the latter is what makes
+    // `robot::bridge::set_app_identity` below resolve.
+    let features_block =
+        "[features]\ndev = [\"runtime-core/dev\", \"runtime-shared/robot\"]\n".to_string();
     let main_rs = local_main_rs(&manifest.lib_name, &manifest.name, &bundle_id);
 
     let cargo_toml = format!(
@@ -163,8 +173,8 @@ fn main() {{
     // process registration file. No-op when `dev` is off.
     #[cfg(feature = "dev")]
     {{
-        ::runtime_core::robot::bridge::set_app_identity(
-            ::runtime_core::robot::bridge::AppIdentity {{
+        ::runtime_shared::robot::bridge::set_app_identity(
+            ::runtime_shared::robot::bridge::AppIdentity {{
                 name: "{app_name}".to_string(),
                 bundle_id: Some("{bundle_id}".to_string()),
                 project_root: ::std::option::Option::None,
@@ -178,10 +188,12 @@ fn main() {{
         height: 768,
     }};
     // `run_with` (not `run`) so the user crate's
-    // `pub fn register_extensions(&mut LinuxBackend)` runs — this is how
-    // SDK externals register their per-backend handlers. Mirrors the
-    // web / macOS / terminal / iOS / android templates.
-    let code = host_gtk::run_with(opts, {user_lib}::register_extensions, app);
+    // `pub fn register_scene_extensions(&mut Registry<_>)` seam runs after
+    // `register_builtins` — this is how SDK payload handlers (codeblock,
+    // table, svg, …) get into the scene registry. Mirrors the macOS
+    // template; `register_extensions` was the pre-v2 name and took the
+    // backend, which no longer has an External table to register into.
+    let code = host_gtk::run_with(opts, {user_lib}::register_scene_extensions, app);
     std::process::exit(code);
 }}
 "#,
@@ -290,16 +302,21 @@ mod regression_tests {
     }
 
     /// The generated `main.rs` must call `host_gtk::run_with` with the
-    /// user crate's `register_extensions` so `Element::External` SDK
-    /// handlers register (mirrors every other target's wrapper).
+    /// user crate's `register_scene_extensions` so SDK payload handlers
+    /// reach the scene registry (mirrors the macOS wrapper).
+    ///
+    /// Regression: this emitted the pre-v2 `register_extensions`, which
+    /// takes `&mut LinuxBackend`. Apps ported to v2 only expose the
+    /// registry-generic seam, so `idealyst dev --linux` failed to compile
+    /// the generated wrapper — rustc even suggested the right name.
     #[test]
-    fn wrapper_calls_run_with_and_register_extensions() {
+    fn wrapper_calls_run_with_and_register_scene_extensions() {
         let (wrapper_dir, _tmp) = run_generator();
         let main_rs =
             std::fs::read_to_string(wrapper_dir.join("src/main.rs")).expect("read main.rs");
         assert!(
-            main_rs.contains("host_gtk::run_with(opts, demo::register_extensions, app)"),
-            "wrapper must mount via run_with + register_extensions; got:\n{main_rs}",
+            main_rs.contains("host_gtk::run_with(opts, demo::register_scene_extensions, app)"),
+            "wrapper must mount via run_with + register_scene_extensions; got:\n{main_rs}",
         );
     }
 
@@ -312,8 +329,11 @@ mod regression_tests {
         let cargo =
             std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).expect("read Cargo.toml");
         assert!(
-            cargo.contains("dev = [\"runtime-core/dev\"]"),
-            "linux wrapper missing `[features] dev = [\"runtime-core/dev\"]`; got:\n{cargo}",
+            cargo.contains("dev = [\"runtime-core/dev\", \"runtime-shared/robot\"]"),
+            "linux wrapper's `dev` must enable BOTH the robot registry \
+             (runtime-core/dev) and the bridge transport (runtime-shared/robot) — \
+             the identity stamp in main.rs calls `runtime_shared::robot::bridge`; \
+             got:\n{cargo}",
         );
     }
 }
