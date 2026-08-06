@@ -19,6 +19,11 @@
 //! non-generic `register_builtins` outside of tests. A new backend that
 //! copies an old one's boot fn fails here rather than quietly costing every
 //! app on that platform ~65 KB.
+//!
+//! The same "code that never runs" shape covers the boot seam's other
+//! obligation: forwarding the backend's environment capabilities into the
+//! ambient thread-locals (`install_env_services`). See
+//! `every_backend_boot_installs_env_services` below.
 
 use std::path::{Path, PathBuf};
 
@@ -291,6 +296,136 @@ fn url_provider_install_is_gated_on_nav_services() {
     assert!(
         bad.is_empty(),
         "navigator URL services escaped the BuiltinSet gate:\n  {}",
+        bad.join("\n  "),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Environment services must ride every boot entry
+// ---------------------------------------------------------------------------
+
+/// Regression: five author-facing reads were dead on every backend.
+///
+/// `platform()`, `color_scheme()`, `open_url()`, `set_fullscreen()` and
+/// `announce()` read thread-local slots so author code can call them
+/// without a backend reference. The pre-v2 `mount()` filled those slots
+/// from the backend; `mount()` was deleted with the walker and nothing
+/// replaced it. Every backend still *implemented* `AppEnvOps` and
+/// `A11yOps::announce_for_accessibility`, so the caps-conformance suite
+/// stayed green — but no boot entry forwarded them, so on every shipped
+/// backend `platform()` returned `Custom("")` and the three routed
+/// services were silent no-ops.
+///
+/// That is a hole in *absent* code, which no unit test can see: the
+/// behavior tests in `backend_env_seam.rs` pass against a backend that
+/// calls `install_env_services`, and say nothing about one that forgets.
+/// `backend_macos::newcore` even documented the gap in a comment instead
+/// of a test, which is exactly why it survived the migration.
+///
+/// So this scans the source. A new backend that copies an old one's boot
+/// fn now fails here rather than shipping five quietly broken APIs.
+#[test]
+fn every_backend_boot_installs_env_services() {
+    let root = repo_root();
+    let mut missing: Vec<String> = Vec::new();
+
+    for rel in BOOT_FILES {
+        let path = root.join(rel);
+        // Same policy as the scan above: the list is the contract, not
+        // the filesystem — a backend that isn't checked out is skipped.
+        let Ok(src) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let src = without_test_modules(&src);
+
+        let installs = src
+            .lines()
+            .filter(|l| {
+                let t = l.trim_start();
+                !t.starts_with("//") && t.contains("install_env_services(")
+            })
+            .count();
+
+        if installs == 0 {
+            missing.push(format!(
+                "{rel}: never calls `install_env_services` — `platform()`, \
+                 `color_scheme()`, `open_url()`, `set_fullscreen()` and \
+                 `announce()` are all dead on this backend"
+            ));
+            continue;
+        }
+
+        // Every registry-booting entry needs it, not just the first one.
+        // `render_wgpu::newcore` has two (`start_with` + `start_in_world_with`)
+        // and `backend_web` splits start/hydrate across two files — a boot
+        // entry that builds a registry without the install is a live app
+        // path with dead env services.
+        let boots = src.matches("Registry::new()").count();
+        if installs < boots {
+            missing.push(format!(
+                "{rel}: {boots} registry-booting entr{} but only {installs} \
+                 `install_env_services` call(s) — every boot entry needs one",
+                if boots == 1 { "y" } else { "ies" },
+            ));
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "backend boot entries missing the environment seam:\n  {}",
+        missing.join("\n  "),
+    );
+}
+
+/// The install must precede the root build.
+///
+/// A component body may read `platform()` while constructing — theme
+/// selection off `color_scheme()` at the app root is the common case — so
+/// seeding the slots after `realize` is too late and produces a
+/// first-paint that branched on `Custom("")`. `Registry::new()` is the
+/// stable landmark for "boot preamble is over"; requiring the install
+/// above it keeps ordering enforceable without parsing the fn body.
+#[test]
+fn env_services_install_before_the_registry_and_build() {
+    let root = repo_root();
+    let mut bad: Vec<String> = Vec::new();
+
+    for rel in BOOT_FILES {
+        let Ok(src) = std::fs::read_to_string(root.join(rel)) else {
+            continue;
+        };
+        let src = without_test_modules(&src);
+
+        // Pair each install with the registry construction that follows
+        // it: walking forward, an install must be seen before the next
+        // `Registry::new()`.
+        let mut pending_install = false;
+        for (i, line) in src.lines().enumerate() {
+            let t = line.trim_start();
+            if t.starts_with("//") {
+                continue;
+            }
+            if t.contains("install_env_services(") {
+                pending_install = true;
+            }
+            if t.contains("Registry::new()") {
+                if !pending_install {
+                    bad.push(format!(
+                        "{rel}:{}: builds a `Registry` with no preceding \
+                         `install_env_services` — a component body that reads \
+                         `platform()` / `color_scheme()` during the root build \
+                         would see the uninstalled default",
+                        i + 1
+                    ));
+                }
+                pending_install = false;
+            }
+        }
+    }
+
+    assert!(
+        bad.is_empty(),
+        "environment seam installed too late:\n  {}",
         bad.join("\n  "),
     );
 }

@@ -15,7 +15,7 @@ use crate::primitives;
 // ---------------------------------------------------------------------------
 
 /// A captured frame of the backend's real rendered surface, returned by
-/// [`Backend::capture_screenshot`]. `png` is a complete PNG file; the
+/// `IntrospectionOps::capture_screenshot`. `png` is a complete PNG file; the
 /// backend owns the encode so each platform uses its native encoder
 /// (AppKit `NSBitmapImageRep`, UIKit `UIImagePNGRepresentation`, Android
 /// `Bitmap.compress`). `width`/`height` are the PNG's pixel dimensions
@@ -31,7 +31,7 @@ pub struct Screenshot {
 // VirtualizerCallbacks
 // ---------------------------------------------------------------------------
 
-/// Callbacks handed to `Backend::create_virtualizer`. All Rc'd so
+/// Callbacks handed to `VirtualizerOps::create_virtualizer`. All Rc'd so
 /// the backend can clone into per-event closures (scroll handler,
 /// cell binder, etc.). Generic over the backend's `Node` type so
 /// the mount callback returns the backend's actual native node
@@ -73,8 +73,9 @@ pub struct VirtualizerCallbacks<N: Clone + 'static> {
 // ---------------------------------------------------------------------------
 
 /// The platform's current appearance mode. Backends return this from
-/// [`Backend::color_scheme`] so the app can pick an appropriate
-/// default theme before the first render.
+/// `AppEnvOps::color_scheme` so the app can pick an appropriate
+/// default theme before the first render; the boot seam forwards it to
+/// [`color_scheme`] via [`install_current_color_scheme`].
 ///
 /// `Auto` means the platform has no explicit preference (e.g. iOS
 /// `UIUserInterfaceStyleUnspecified`, or the browser has no
@@ -92,8 +93,9 @@ pub enum ColorScheme {
 // Platform
 // ---------------------------------------------------------------------------
 
-/// Identifies the host platform a backend is rendering to. Author
-/// code reads this via [`Backend::platform`] to branch on host —
+/// Identifies the host platform a backend is rendering to. Backends
+/// return it from `AppEnvOps::platform`; author code reads it via the
+/// free [`platform`] function to branch on host —
 /// e.g. show iOS-style chrome only on `Ios`, rely on
 /// `position: fixed` only on `Web`, swap keyboard shortcuts for
 /// menu-bar items on `MacOs`.
@@ -211,11 +213,17 @@ pub fn platform() -> Platform {
     CURRENT_PLATFORM.with(|c| c.get())
 }
 
-/// Internal: invoked by `mount(...)` to stash the active backend's
-/// identity in the thread-local accessor above. Not part of the
-/// public API surface; backends should override [`Backend::platform`]
-/// instead.
-#[doc(hidden)]
+/// Seed the thread-local [`platform`] accessor with the booting
+/// backend's identity.
+///
+/// Part of the **backend-author surface** — see
+/// [`crate::backend`] for the full boot-time install set and the
+/// ordering contract. Backends do not normally call this directly:
+/// `runtime_vocabulary::backend::install_env_services` reads
+/// `AppEnvOps::platform` off the backend and installs it here, and
+/// every in-house boot entry calls that one function. Reach for this
+/// only when a host has an identity to declare before a backend
+/// instance exists.
 pub fn install_current_platform(platform: Platform) {
     CURRENT_PLATFORM.with(|c| c.set(platform));
 }
@@ -244,11 +252,13 @@ pub fn color_scheme() -> ColorScheme {
     CURRENT_COLOR_SCHEME.with(|c| c.get())
 }
 
-/// Internal: invoked by `mount(...)` to stash the backend's reported
-/// color scheme in the thread-local accessor above. Not part of the
-/// public API surface; backends should override [`Backend::color_scheme`]
-/// instead.
-#[doc(hidden)]
+/// Seed the thread-local [`color_scheme`] accessor with the booting
+/// backend's reported appearance preference.
+///
+/// Part of the **backend-author surface** — see [`crate::backend`].
+/// Normally reached through
+/// `runtime_vocabulary::backend::install_env_services`, which reads
+/// `AppEnvOps::color_scheme` off the backend.
 pub fn install_current_color_scheme(scheme: ColorScheme) {
     CURRENT_COLOR_SCHEME.with(|c| c.set(scheme));
 }
@@ -284,10 +294,10 @@ thread_local! {
 /// ambient navigator; an external URL has neither, so it gets its own
 /// imperative entry point rather than overloading `Link`.
 ///
-/// Routes to the opener the active backend installed during
-/// [`mount`](crate::mount). Before any mount — or on a backend that
-/// reports no external-open capability ([`Backend::url_opener`]
-/// returned `None`: terminal, CPU, runtime-server) — this is a no-op
+/// Routes to the opener the active backend installed at boot (see
+/// [`install_url_opener`]). Before boot — or on a backend that reports
+/// no external-open capability (`AppEnvOps::url_opener` returned
+/// `None`: terminal, CPU, runtime-server) — this is a no-op
 /// that logs once at debug level. Fire-and-forget: there is no
 /// success signal, matching the lowest common denominator across
 /// `window.open` / `openURL` / `startActivity`.
@@ -308,10 +318,13 @@ pub fn open_url(url: &str) {
     }
 }
 
-/// Internal: invoked by `mount(...)` to stash the active backend's
-/// external-URL opener (from [`Backend::url_opener`]). Not part of the
-/// public API surface; backends override `url_opener` instead.
-#[doc(hidden)]
+/// Install the closure [`open_url`] routes to, or `None` for a backend
+/// with no external-open capability.
+///
+/// Part of the **backend-author surface** — see [`crate::backend`].
+/// Normally reached through
+/// `runtime_vocabulary::backend::install_env_services`, which reads
+/// `AppEnvOps::url_opener` off the backend.
 pub fn install_url_opener(opener: Option<Rc<dyn Fn(&str)>>) {
     URL_OPENER.with(|cell| *cell.borrow_mut() = opener);
 }
@@ -348,8 +361,8 @@ thread_local! {
 ///   outside one may be ignored.
 /// - **Terminal / other** — no system chrome to hide; no-op.
 ///
-/// Routes to the setter the active backend installed during
-/// [`mount`](crate::mount). Before any mount — or on a backend with no
+/// Routes to the setter the active backend installed at boot (see
+/// [`install_fullscreen_setter`]). Before boot — or on a backend with no
 /// full-screen concept — this is a no-op that logs once at debug
 /// level. It's an explicit, navigation-independent app control: any
 /// screen can enter or leave full-screen, drawing surface or not.
@@ -367,10 +380,13 @@ pub fn set_fullscreen(enabled: bool) {
     }
 }
 
-/// Internal: invoked by `mount(...)` to stash the active backend's
-/// full-screen setter (from [`Backend::fullscreen_setter`]). Not part
-/// of the public API surface; backends override `fullscreen_setter`.
-#[doc(hidden)]
+/// Install the closure [`set_fullscreen`] routes to, or `None` for a
+/// backend with no full-screen concept.
+///
+/// Part of the **backend-author surface** — see [`crate::backend`].
+/// Normally reached through
+/// `runtime_vocabulary::backend::install_env_services`, which reads
+/// `AppEnvOps::fullscreen_setter` off the backend.
 pub fn install_fullscreen_setter(setter: Option<Rc<dyn Fn(bool)>>) {
     FULLSCREEN_SETTER.with(|cell| *cell.borrow_mut() = setter);
 }
@@ -388,8 +404,8 @@ thread_local! {
 /// Post a one-shot live-region accessibility announcement to the host's
 /// AX subsystem — transient feedback with no focus target ("Saved",
 /// "Form submitted", "Loading complete"). Author-facing entry point for
-/// [`Backend::announce_for_accessibility`]; callable from any event
-/// handler or effect without holding a `Backend` reference.
+/// `A11yOps::announce_for_accessibility`; callable from any event
+/// handler or effect without holding a backend reference.
 ///
 /// Per-backend mechanism (rule 7: converge in behavior, diverge in
 /// mechanism): web writes a hidden `aria-live` region, iOS posts
@@ -399,8 +415,8 @@ thread_local! {
 /// announcements. Use [`LiveRegionPriority::Assertive`] sparingly — it
 /// interrupts whatever the screen reader is currently speaking.
 ///
-/// Routes to the announcer the active backend installed during
-/// [`mount`](crate::mount). Before any mount — or on a backend with no
+/// Routes to the announcer the active backend installed at boot (see
+/// [`install_announcer`]). Before boot — or on a backend with no
 /// AX subsystem (terminal, CPU, Roku) — this is a no-op that logs once
 /// at debug level.
 ///
@@ -419,13 +435,19 @@ pub fn announce(msg: &str, priority: crate::accessibility::LiveRegionPriority) {
     }
 }
 
-/// Internal: invoked by `mount(...)` to stash a closure that forwards to
-/// the active backend's [`Backend::announce_for_accessibility`]. Unlike
-/// the URL opener / full-screen setter (self-contained platform-singleton
-/// closures), this captures the live backend handle because
-/// `announce_for_accessibility` takes `&mut self`. Not part of the public
-/// API surface; backends override `announce_for_accessibility` instead.
-#[doc(hidden)]
+/// Install the closure [`announce`] routes to, or `None` for a backend
+/// with no AX subsystem.
+///
+/// Part of the **backend-author surface** — see [`crate::backend`].
+/// Normally reached through
+/// `runtime_vocabulary::backend::install_env_services`.
+///
+/// Unlike the URL opener and full-screen setter (self-contained
+/// platform-singleton closures), the announcer must capture the live
+/// backend handle, because `A11yOps::announce_for_accessibility` takes
+/// `&mut self`. Capture it **weakly**: this thread-local outlives the
+/// app, so an `Rc` here would leak the whole backend and its view tree.
+/// `install_env_services` does that for you.
 pub fn install_announcer(
     announcer: Option<Rc<dyn Fn(&str, crate::accessibility::LiveRegionPriority)>>,
 ) {

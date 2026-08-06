@@ -230,6 +230,62 @@ pub fn pointer_modifiers() -> PointerModifiers {
     POINTER_MODIFIERS.with(|c| c.get())
 }
 
+/// Which pointer button produced the current event. Passed out-of-band for the
+/// same reason as [`PointerModifiers`]: [`TouchEvent`] is `Copy` and constructed
+/// by every backend, so widening it would be a breaking change across all of
+/// them.
+///
+/// Touch and pen contact report [`Primary`](PointerButton::Primary), so a
+/// handler that only acts on `Primary` behaves identically on every input
+/// device.
+///
+/// **A secondary press delivers only a [`Began`](TouchPhase::Began)** — no
+/// `Moved`, no `Ended`. Non-primary presses deliberately never enter the
+/// drag/capture path: a browser context menu can swallow the matching
+/// `pointerup`, which would strand a claimed gesture (a dragged element
+/// following the cursor forever). Treat the `Began` as the whole click.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PointerButton {
+    /// Left mouse button, or any touch / pen contact.
+    #[default]
+    Primary,
+    /// Right mouse button — and, on macOS, a Ctrl-held left click, which the
+    /// OS reports as a secondary press.
+    Secondary,
+    /// Middle button / wheel click.
+    Middle,
+    /// Anything else the platform reports (back / forward / pen barrel).
+    Other(u16),
+}
+
+impl PointerButton {
+    /// Whether this press should open a context menu — the platform-correct
+    /// test, rather than each call site re-deriving "right click OR macOS
+    /// Ctrl-click" (the OS has already folded the latter into `Secondary`).
+    pub fn opens_context_menu(self) -> bool {
+        matches!(self, PointerButton::Secondary)
+    }
+}
+
+thread_local! {
+    static POINTER_BUTTON: std::cell::Cell<PointerButton> =
+        const { std::cell::Cell::new(PointerButton::Primary) };
+}
+
+/// Record which button produced the touch/pointer event about to be dispatched.
+/// **Backend-facing** — call right before invoking the [`TouchHandler`], next to
+/// [`set_pointer_modifiers`]. A backend with no button concept leaves it alone;
+/// the default is [`Primary`](PointerButton::Primary).
+pub fn set_pointer_button(b: PointerButton) {
+    POINTER_BUTTON.with(|c| c.set(b));
+}
+
+/// The button recorded for the in-flight pointer/touch event. Valid only while a
+/// touch handler is running (read it synchronously inside `on_touch`).
+pub fn pointer_button() -> PointerButton {
+    POINTER_BUTTON.with(|c| c.get())
+}
+
 thread_local! {
     static ACTIVE_TOUCH_CLAIM: std::cell::RefCell<Option<Rc<dyn Fn()>>> =
         const { std::cell::RefCell::new(None) };
@@ -264,4 +320,45 @@ pub fn set_active_touch_claim(claim: Option<Rc<dyn Fn()>>) {
 /// must treat the absence as "claiming unavailable", not an error.
 pub fn active_touch_claim() -> Option<Rc<dyn Fn()>> {
     ACTIVE_TOUCH_CLAIM.with(|c| c.borrow().clone())
+}
+
+#[cfg(test)]
+mod pointer_button_tests {
+    use super::*;
+
+    /// The default must be `Primary`: backends with no button concept
+    /// (touch, pen, and every native platform that doesn't call
+    /// `set_pointer_button`) never set it, and a handler that gates on
+    /// `Primary` has to keep working there.
+    #[test]
+    fn defaults_to_primary_so_buttonless_backends_behave() {
+        assert_eq!(PointerButton::default(), PointerButton::Primary);
+        assert_eq!(pointer_button(), PointerButton::Primary);
+    }
+
+    /// Only a secondary press opens a context menu. macOS Ctrl-click is
+    /// folded into `Secondary` by the OS before it reaches us, which is
+    /// why call sites must NOT re-derive "right click or Ctrl held" —
+    /// on Windows/Linux a Ctrl-held LEFT click is an additive click, not
+    /// a menu.
+    #[test]
+    fn only_secondary_opens_a_context_menu() {
+        assert!(PointerButton::Secondary.opens_context_menu());
+        assert!(!PointerButton::Primary.opens_context_menu());
+        assert!(!PointerButton::Middle.opens_context_menu());
+        assert!(!PointerButton::Other(3).opens_context_menu());
+    }
+
+    #[test]
+    fn round_trips_through_the_thread_local() {
+        for b in [
+            PointerButton::Secondary,
+            PointerButton::Middle,
+            PointerButton::Other(4),
+            PointerButton::Primary,
+        ] {
+            set_pointer_button(b);
+            assert_eq!(pointer_button(), b);
+        }
+    }
 }

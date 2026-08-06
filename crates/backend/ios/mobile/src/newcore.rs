@@ -89,11 +89,11 @@
 //! "backend is wired to a root view" onward, mirroring
 //! `backend_macos::newcore::start` step for step:
 //!
-//! 1. Install the default monotonic time source. The old `mount`
-//!    preamble's other ambient installs (current platform, color
-//!    scheme, URL opener, announcer) are runtime-core-private and
-//!    skipped, exactly as on the web/macOS new-core boots — public
-//!    seams for them are a later-phase migration item.
+//! 1. Install the default monotonic time source, then
+//!    `runtime_vocabulary::backend::install_env_services` for the
+//!    ambient environment reads (current platform, color scheme, URL
+//!    opener, full-screen setter, AX announcer). Both precede the
+//!    build — a component body may read `platform()` while constructing.
 //! 2. `Registry` (`register_builtins` + the `register` seam) + `World`
 //!    + `world.enter(realize)`.
 //! 3. `runtime_shared::scheduling::drain_buffered_microtasks()` — the
@@ -568,8 +568,8 @@ mod ios_impl {
         B: FnOnce() -> Element,
     {
         // Monotonic clock (step 1) — idempotent, first install wins.
-        // The old `mount` preamble's other ambient installs are
-        // runtime-core-private and skipped, same as web/macOS.
+        // The other ambient installs ride `install_env_services` below,
+        // same as web/macOS.
         let platform = backend.borrow().platform_impl();
         // Wall clock BEFORE the defaults — same ordering rationale as the
         // macOS backend: `install_default_time_source` also installs the
@@ -580,6 +580,12 @@ mod ios_impl {
         runtime_shared::time::install_wall_clock_source(Box::new(IosWallClockSource));
         runtime_shared::time::install_default_time_source(platform);
 
+        // Ambient environment services (platform identity, color scheme, URL
+        // opener, full-screen setter, AX announcer) -> the thread-locals
+        // `platform()` / `open_url()` / `announce()` etc. read. MUST precede
+        // the build: a component body may read `platform()` while
+        // constructing. See `runtime_vocabulary::backend`.
+        runtime_vocabulary::backend::install_env_services(&backend);
         let mut registry: Registry<IosBackend> = Registry::new();
         runtime_vocabulary::register_builtins_with::<_, S>(&mut registry);
         register(&mut registry);

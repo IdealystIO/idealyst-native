@@ -812,8 +812,8 @@ pub use runtime_shared::{
     Swipe, SwipeDirection, SwipeDirs, SwipeRecognizer, Tap, TapRecognizer,
 };
 pub use runtime_shared::{
-    pointer_modifiers, PointerModifiers, TouchEvent, TouchId, TouchPhase, TouchPoint,
-    TouchResponse,
+    pointer_button, pointer_modifiers, PointerButton, PointerModifiers, TouchEvent, TouchId,
+    TouchPhase, TouchPoint, TouchResponse,
 };
 
 // Safe-area: still the old-core value read (same read the vocabulary's

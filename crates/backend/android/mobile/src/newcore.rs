@@ -85,11 +85,11 @@
 //!
 //! 1. Install the default monotonic time source (the Android analogue
 //!    of web `start_in`'s `install_time_source` — without it the
-//!    animation clock and `PhaseTimer` read 0). The old `mount`
-//!    preamble's other ambient installs (current platform, color
-//!    scheme, URL opener, announcer) are runtime-core-private and
-//!    skipped here, exactly as on the web/macOS new-core boots — a
-//!    public seam for them is a later-phase migration item.
+//!    animation clock and `PhaseTimer` read 0), then
+//!    `runtime_vocabulary::backend::install_env_services` for the
+//!    ambient environment reads (current platform, color scheme, URL
+//!    opener, full-screen setter, AX announcer). Both precede the
+//!    build — a component body may read `platform()` while constructing.
 //! 2. `Registry` (`register_builtins` + the `register` seam) + `World`
 //!    + `world.enter(realize)`.
 //! 3. `runtime_shared::scheduling::drain_buffered_microtasks()` — a
@@ -567,13 +567,17 @@ mod native {
 
         // Monotonic clock (step 1 in the module docs) — the Android
         // analogue of web `start_in`'s `install_time_source`.
-        // Idempotent, first install wins. The old `mount` preamble's
-        // other ambient installs live in a runtime-core-private module
-        // and are NOT reachable from a backend crate — same situation
-        // as the web/macOS new-core boots (later-phase seam).
+        // Idempotent, first install wins. The other ambient installs
+        // ride `install_env_services` below, same as web/macOS.
         let platform = backend.borrow().platform_impl();
         runtime_shared::time::install_default_time_source(platform);
 
+        // Ambient environment services (platform identity, color scheme, URL
+        // opener, full-screen setter, AX announcer) -> the thread-locals
+        // `platform()` / `open_url()` / `announce()` etc. read. MUST precede
+        // the build: a component body may read `platform()` while
+        // constructing. See `runtime_vocabulary::backend`.
+        runtime_vocabulary::backend::install_env_services(&backend);
         let mut registry: Registry<AndroidBackend> = Registry::new();
         runtime_vocabulary::register_builtins_with::<_, S>(&mut registry);
         register(&mut registry);
