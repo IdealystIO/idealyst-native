@@ -28,6 +28,8 @@ runtime-core = { workspace = true, features = ["async-driver"] }
 # `run_with`'s register hook takes a `runtime_scene::Registry` — SDK payload
 # handlers install there in v2, not on the backend.
 runtime-scene = { workspace = true }
+# Seeding the viewport signal before mount (see `run_with`).
+runtime-shared = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk4 = { version = "0.9", features = ["v4_12"] }

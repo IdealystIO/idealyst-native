@@ -596,6 +596,20 @@ impl LinuxBackend {
             self.published_viewport = (width, height);
             gtk4::glib::source::idle_add_local_once(move || {
                 runtime_shared::set_viewport_size(runtime_shared::ViewportSize { width, height });
+                // ...and COMMIT it. `set_viewport_size` only stages a signal
+                // write; in runtime-v2 a staged write reaches its dependent
+                // effects/memos on the next flush, and GTK has no periodic
+                // flush — the only ones come from the dispatch-site wrappers
+                // around author callbacks. Without this the signal held the
+                // right size while every `current_breakpoint()` reader kept
+                // its stale value, so responsive layout froze at the bucket
+                // it booted in: the docs drawer stayed collapsed (and in
+                // overlay mode) in a 1280px window, and RESIZING DID NOT HELP
+                // — each resize re-published and was re-swallowed.
+                //
+                // This is the same discipline as `flushing0`/`flushing1`: a
+                // platform-originated write must queue exactly one flush.
+                crate::newcore::schedule_flush();
             });
         }
 

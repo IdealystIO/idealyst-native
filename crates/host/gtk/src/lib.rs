@@ -126,6 +126,31 @@ where
         window.set_title(Some(&opts.title));
         window.set_default_size(opts.width, opts.height);
 
+        // Seed the reactive viewport BEFORE anything realizes.
+        //
+        // Breakpoint overlays (`__bp_*`) are STATIC styling: on a backend
+        // that doesn't handle variants natively — GTK — `merge_active_
+        // breakpoints` bakes the winning overlay into the node's rules at
+        // APPLY time, reading `current_breakpoint()` right then. Styles are
+        // not re-applied when the breakpoint later changes (crossing one
+        // deliberately remounts nothing), so whatever is active during the
+        // first style pass is what the tree keeps.
+        //
+        // The window is not allocated yet at that point, so the viewport
+        // signal still held `ViewportSize::ZERO` and every overlay resolved
+        // to the smallest bucket: the docs app pinned its sidebar nowhere
+        // and rendered the mobile drawer in a 1600px window. Resizing could
+        // not fix it — the later allocation publishes the real size, but no
+        // style re-apply consumes it.
+        //
+        // `opts` is the size we are about to ask GTK for, which is the best
+        // information available pre-realize; the allocation-driven publish
+        // in `run_layout` still corrects the signal once GTK settles.
+        runtime_shared::set_viewport_size(runtime_shared::ViewportSize {
+            width: opts.width as f32,
+            height: opts.height as f32,
+        });
+
         let backend = LinuxBackend::new(window.clone().upcast());
         let backend_rc = Rc::new(RefCell::new(backend));
         // Give the backend a weak handle to itself so node handles
