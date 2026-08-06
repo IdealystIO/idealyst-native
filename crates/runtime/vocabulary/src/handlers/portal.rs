@@ -20,7 +20,10 @@ where
     H: PortalOps + StyleServices,
 {
     let backend = cx.backend().clone();
-    let dismiss_for_backend = prim.on_dismiss.clone();
+    // `on_dismiss` is held by native chrome (an Escape controller, a
+    // backdrop tap target) that can outlive the portal's scope.
+    let alive = crate::callback_guard::ScopeAlive::current();
+    let dismiss_for_backend = alive.wrap0_opt(prim.on_dismiss.clone());
     let mut node = backend.borrow_mut().create_portal(
         prim.target,
         dismiss_for_backend,

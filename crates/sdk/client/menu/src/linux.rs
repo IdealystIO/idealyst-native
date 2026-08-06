@@ -76,7 +76,11 @@ pub fn install(backend: &mut LinuxBackend, spec: MenuBarSpec) {
         let mut state = cell.borrow_mut();
         // If a previous install already replaced the window's
         // child with a vbox, just swap the menubar inside it.
-        if let Some(prev_vbox) = state.vbox.as_ref() {
+        // Clone the vbox handle out (a GObject ref bump) rather than
+        // holding a borrow of `state` across `state.menubar.take()` —
+        // an `as_ref()` borrow here overlaps the `take()`'s mutable one
+        // and does not compile.
+        if let Some(prev_vbox) = state.vbox.clone() {
             // Remove the prior menubar (always the first child).
             if let Some(prev_bar) = state.menubar.take() {
                 prev_vbox.remove(&prev_bar);

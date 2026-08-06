@@ -1116,8 +1116,6 @@ impl caps::StyleOps for LinuxBackend {
         if let Some(installed) = self.state_controllers.remove(&node.id()) {
             installed.detach(&node.widget());
         }
-        // Also kills the deferred-scroll guard — see `LinuxBackend::node_alive`.
-        self.kill_alive_flag(node.id());
     }
 }
 

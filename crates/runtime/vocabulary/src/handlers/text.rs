@@ -250,9 +250,15 @@ where
     // closure with the update binding (see `mount_text`).
     #[cfg(feature = "robot")]
     let dyn_label: Option<std::rc::Rc<dyn Fn() -> String>> = dyn_label.map(std::rc::Rc::from);
+    // The Action's `fire` is an author callback like any other.
+    let alive = crate::callback_guard::ScopeAlive::current();
+    let guarded_press = runtime_shared::Action {
+        fire: alive.wrap0(prim.on_press.fire.clone()),
+        ..prim.on_press.clone()
+    };
     let node = backend.borrow_mut().create_button(
         &initial_label,
-        &prim.on_press,
+        &guarded_press,
         prim.leading_icon.as_ref(),
         prim.trailing_icon.as_ref(),
         &prim.a11y,

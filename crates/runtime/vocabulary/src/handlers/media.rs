@@ -214,11 +214,15 @@ where
     };
     #[cfg(feature = "robot")]
     let robot_click = on_activate.clone();
+    // Scope-guard: for an in-app link `on_activate` wraps navigator
+    // push/replace dispatch, and a backend can fire it from a gesture that
+    // outlives the screen. See `callback_guard`.
+    let alive = crate::callback_guard::ScopeAlive::current();
     let config = LinkConfig {
         route: route_name,
         url: initial_url,
         external: prim.external,
-        on_activate,
+        on_activate: alive.wrap0(on_activate),
     };
     let mut node = backend.borrow_mut().create_link(config, &prim.a11y);
     // Links register WITHOUT a test_id (`LinkPrim` carries no slot —

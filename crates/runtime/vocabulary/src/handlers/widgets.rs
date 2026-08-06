@@ -26,9 +26,12 @@ where
     let initial = initial_of(&prim.value);
     #[cfg(feature = "robot")]
     let robot_set_toggle = prim.on_change.clone();
+    // Scope-guard every author callback before the backend stores it —
+    // see `callback_guard` for the abort this prevents.
+    let alive = crate::callback_guard::ScopeAlive::current();
     let node = backend
         .borrow_mut()
-        .create_toggle(initial, prim.on_change, &prim.a11y);
+        .create_toggle(initial, alive.wrap1(prim.on_change), &prim.a11y);
     #[cfg(feature = "robot")]
     let _robot = crate::robot::register_mount(
         &backend,
@@ -84,12 +87,13 @@ where
     } else {
         prim.on_change.clone()
     };
+    let alive = crate::callback_guard::ScopeAlive::current();
     let node = backend.borrow_mut().create_slider(
         initial,
         prim.min,
         prim.max,
         prim.step,
-        on_change_snapped,
+        alive.wrap1(on_change_snapped),
         &prim.a11y,
     );
     #[cfg(feature = "robot")]
@@ -195,12 +199,13 @@ where
     let initial_placeholder = initial_of(&prim.placeholder);
     #[cfg(feature = "robot")]
     let robot_set_text = prim.on_change.clone();
+    let alive = crate::callback_guard::ScopeAlive::current();
     let node = backend.borrow_mut().create_text_input(
         &initial_value,
         initial_placeholder.as_deref(),
-        prim.on_change,
-        prim.on_key_down,
-        prim.on_blur,
+        alive.wrap1(prim.on_change),
+        prim.on_key_down.map(|f| alive.wrap_key(f)),
+        prim.on_blur.map(|f| alive.wrap_blur(f)),
         initial_secure,
         &prim.a11y,
     );
@@ -286,14 +291,15 @@ where
     let initial_value = initial_of(&prim.value);
     #[cfg(feature = "robot")]
     let robot_set_text = prim.on_change.clone();
+    let alive = crate::callback_guard::ScopeAlive::current();
     let node = backend.borrow_mut().create_text_area(
         &initial_value,
         prim.placeholder.as_deref(),
         prim.wrap,
         prim.min_rows,
         prim.max_rows,
-        prim.on_change,
-        prim.on_key_down,
+        alive.wrap1(prim.on_change),
+        prim.on_key_down.map(|f| alive.wrap_key(f)),
         &prim.a11y,
     );
     // `ElementKind::TextInput`, like the old core: the robot surface

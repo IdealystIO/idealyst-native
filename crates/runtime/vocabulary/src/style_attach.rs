@@ -943,9 +943,17 @@ fn attach_rules_dynamic<H: StyleServices>(
     on_teardown(move || {
         b.borrow_mut().on_node_unstyled(&n);
     });
-    let setter: Rc<dyn Fn(StateBits, bool)> = Rc::new(move |bit, on| {
+    // Scope-guarded: `states` is owned by THIS scope, and a backend wires
+    // the setter to native input that outlives it — GTK emits
+    // `focus-leave` while the framework unparents a focused widget, i.e.
+    // during the very teardown that frees the signal. The resulting
+    // stale-handle panic is raised inside a non-unwinding C trampoline and
+    // ABORTS the process. See `crate::callback_guard`.
+    let alive = crate::callback_guard::ScopeAlive::current();
+    let raw: Rc<dyn Fn(StateBits, bool)> = Rc::new(move |bit, on| {
         states.update(move |bits| if on { bits.with(bit) } else { bits.without(bit) });
     });
+    let setter = alive.wrap2(raw);
     backend.borrow_mut().attach_states(node, setter.clone());
     setter
 }
@@ -1392,10 +1400,17 @@ fn attach_sheet_dynamic<H: StyleServices>(
         b.borrow_mut().on_node_unstyled(&n);
     });
 
+    // Scope-guarded for the same reason as the dynamic-rules path above:
+    // the state signal dies with this scope, the backend's native input
+    // wiring does not. See `crate::callback_guard`.
     let setter: Rc<dyn Fn(StateBits, bool)> = match states {
-        Some(sig) => Rc::new(move |bit, on| {
-            sig.update(move |bits| if on { bits.with(bit) } else { bits.without(bit) });
-        }),
+        Some(sig) => {
+            let alive = crate::callback_guard::ScopeAlive::current();
+            let raw: Rc<dyn Fn(StateBits, bool)> = Rc::new(move |bit, on| {
+                sig.update(move |bits| if on { bits.with(bit) } else { bits.without(bit) });
+            });
+            alive.wrap2(raw)
+        }
         None => noop_setter(),
     };
     backend.borrow_mut().attach_states(node, setter.clone());

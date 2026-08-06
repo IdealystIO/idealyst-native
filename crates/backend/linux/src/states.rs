@@ -46,7 +46,6 @@
 //! [`StateBits::PRESSED`]: runtime_shared::StateBits::PRESSED
 //! [`StateBits::FOCUSED`]: runtime_shared::StateBits::FOCUSED
 
-use std::cell::Cell;
 use std::rc::Rc;
 
 use gtk4::prelude::*;
@@ -54,45 +53,29 @@ use runtime_shared::StateBits;
 
 /// What [`attach`] installed on a node, so [`detach`] can undo it.
 ///
-/// ## Why this bookkeeping is not optional
+/// ## Why this bookkeeping exists
 ///
 /// The first cut of this file asserted "the controllers are owned by the
-/// widget, so they die with it — no teardown needed". That is wrong, and
-/// it aborted the process:
+/// widget, so they die with it — no teardown needed". That is wrong: a
+/// GTK widget outlives the node's reactive scope, and GTK emits
+/// `focus-leave` *during* teardown, when the framework unparents a
+/// focused widget and GTK moves focus off it.
 ///
-/// ```text
-/// panicked at runtime/world: signal used through a stale handle
-///   (world 1, slot 139)
-/// ...
-/// gtk4::auto::event_controller_focus::connect_leave::leave_trampoline
-/// panic in a function that cannot unwind
-/// ```
+/// Writing through the freed signal slot no longer aborts — the framework
+/// hands every backend a setter that is already inert past its scope
+/// (`runtime_vocabulary::callback_guard`), so liveness is NOT this file's
+/// job and there is deliberately no flag here duplicating it.
 ///
-/// The setter the framework hands us writes a signal owned by the NODE'S
-/// reactive scope. A GTK widget outlives that scope — and worse, GTK
-/// emits `focus-leave` *during* teardown, when the framework unparents a
-/// focused widget and GTK moves focus off it. The setter then writes
-/// through a freed slot and panics. Because the panic originates inside a
-/// GObject signal trampoline (`extern "C"`, cannot unwind), it does not
-/// even surface as a normal panic — it aborts.
-///
-/// So teardown is handled twice over, deliberately:
-///
-/// 1. `alive` is cleared, and every closure checks it. This is the one
-///    that actually has to hold, because GTK can emit into a controller
-///    between the scope dying and us being told about it.
-/// 2. The controllers are removed from the widget, so GTK stops
-///    delivering to them at all.
+/// Removing the controllers is still worth doing on its own terms: it
+/// stops GTK delivering events to a node that is gone, rather than
+/// delivering them into a guard that discards them.
 pub(crate) struct StateControllers {
-    alive: Rc<Cell<bool>>,
     controllers: Vec<gtk4::EventController>,
 }
 
 impl StateControllers {
-    /// Stop delivering state flips: clear the guard first (so an event
-    /// already in flight is a no-op), then unhook from the widget.
+    /// Unhook from the widget so GTK stops delivering to a dead node.
     pub(crate) fn detach(self, widget: &gtk4::Widget) {
-        self.alive.set(false);
         for c in self.controllers {
             widget.remove_controller(&c);
         }
@@ -103,23 +86,12 @@ impl StateControllers {
 /// handle MUST be kept and handed to [`StateControllers::detach`] when
 /// the node is torn down — see the type's docs for the abort this
 /// prevents.
-#[must_use = "dropping this leaks the controllers past the node's reactive \
-              scope, which aborts the process on the next focus/hover event"]
+#[must_use = "dropping this leaves the controllers attached, so GTK keeps \
+              delivering events to a node that is gone"]
 pub(crate) fn attach(
     widget: &gtk4::Widget,
     setter: Rc<dyn Fn(StateBits, bool)>,
 ) -> StateControllers {
-    let alive = Rc::new(Cell::new(true));
-    // One guarded entry point: every controller below routes through it,
-    // so the liveness check can't be forgotten on one of the six arms.
-    let setter: Rc<dyn Fn(StateBits, bool)> = {
-        let alive = alive.clone();
-        Rc::new(move |bits, on| {
-            if alive.get() {
-                setter(bits, on);
-            }
-        })
-    };
     // --- hover -------------------------------------------------------
     let motion = gtk4::EventControllerMotion::new();
     {
@@ -177,7 +149,6 @@ pub(crate) fn attach(
     widget.add_controller(focus.clone());
 
     StateControllers {
-        alive,
         controllers: vec![motion.upcast(), click.upcast(), focus.upcast()],
     }
 }

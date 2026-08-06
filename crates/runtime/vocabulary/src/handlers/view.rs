@@ -57,17 +57,36 @@ where
             .borrow_mut()
             .apply_safe_area_padding(&node, prim.safe_area);
     }
-    if let Some(h) = prim.on_touch {
-        backend.borrow_mut().install_touch_handler(&node, h);
-    }
-    if let Some(h) = prim.on_wheel {
-        backend.borrow_mut().install_wheel_handler(&node, h);
-    }
-    if let Some(h) = prim.on_hover {
-        backend.borrow_mut().install_hover_handler(&node, h);
-    }
-    if let Some(h) = prim.on_file_drop {
-        backend.borrow_mut().install_file_drop_handler(&node, h);
+    // Input handlers are the longest-lived callbacks a backend holds: they
+    // live on gesture recognizers / event controllers whose lifetime the
+    // toolkit owns, so they are the most likely to be invoked after the
+    // scope dies. Guarded before hand-off — see `callback_guard`.
+    if prim.on_touch.is_some()
+        || prim.on_wheel.is_some()
+        || prim.on_hover.is_some()
+        || prim.on_file_drop.is_some()
+    {
+        let alive = crate::callback_guard::ScopeAlive::current();
+        if let Some(h) = prim.on_touch {
+            backend
+                .borrow_mut()
+                .install_touch_handler(&node, alive.wrap_touch(h));
+        }
+        if let Some(h) = prim.on_wheel {
+            backend
+                .borrow_mut()
+                .install_wheel_handler(&node, alive.wrap_wheel(h));
+        }
+        if let Some(h) = prim.on_hover {
+            backend
+                .borrow_mut()
+                .install_hover_handler(&node, alive.wrap_hover(h));
+        }
+        if let Some(h) = prim.on_file_drop {
+            backend
+                .borrow_mut()
+                .install_file_drop_handler(&node, alive.wrap_file_drop(h));
+        }
     }
     if prim.preserves_focus {
         backend.borrow_mut().mark_preserves_focus(&node);
@@ -117,6 +136,13 @@ where
     };
 
     let backend = cx.backend().clone();
+    // Scope-guard before the backend ever sees it: a native toolkit can
+    // invoke a stored callback after this node's scope dies (GTK fires
+    // `focus-leave` mid-unparent; a deferred run-loop source outlives a
+    // route change), and the resulting stale-signal panic is raised inside
+    // a non-unwinding C trampoline, which ABORTS. See `callback_guard`.
+    let alive = crate::callback_guard::ScopeAlive::current();
+    let on_press = alive.wrap0(on_press);
     let mut node = backend.borrow_mut().create_pressable(on_press, &prim.a11y);
     #[cfg(feature = "robot")]
     let _robot = crate::robot::register_mount(
@@ -175,9 +201,15 @@ where
     H: ScrollOps + SafeAreaOps + StyleServices + IntrospectionOps,
 {
     let backend = cx.backend().clone();
+    // `on_scroll` is the worst offender for post-teardown delivery: some
+    // backends must defer it to a run-loop source (calling it inline
+    // re-enters the reactive runtime mid-allocation), so the call can land
+    // well after a route change dropped the screen. See `callback_guard`.
+    let alive = crate::callback_guard::ScopeAlive::current();
+    let on_scroll = alive.wrap2_opt(prim.on_scroll);
     let mut node = backend
         .borrow_mut()
-        .create_scroll_view(prim.horizontal, prim.on_scroll, &prim.a11y);
+        .create_scroll_view(prim.horizontal, on_scroll, &prim.a11y);
     // Robot `set_scroll` routes through the scroll HANDLE (whose ops
     // take no backend borrow), NOT `set_node_scroll` under a live
     // `borrow_mut`: native scroll writes fire scroll notifications

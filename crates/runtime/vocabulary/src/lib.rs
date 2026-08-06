@@ -180,6 +180,7 @@
 pub mod async_reactive;
 pub mod backend;
 pub mod builders;
+pub mod callback_guard;
 pub mod caps;
 pub mod glue;
 // `glue::primitives::lazy` lives in its own file (re-exported into the
