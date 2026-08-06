@@ -5492,10 +5492,12 @@ dependencies = [
 name = "host-linux-desktop"
 version = "1.2.2"
 dependencies = [
+ "backend-linux",
  "log",
  "render-api",
  "render-wgpu",
- "runtime-core",
+ "runtime-scene",
+ "runtime-shared",
  "wgpu",
  "wgpu-hal",
  "wgpu-types",
@@ -6121,6 +6123,14 @@ dependencies = [
  "idea-ui-docs",
  "render-wgpu",
  "runtime-shared",
+]
+
+[[package]]
+name = "idea-ui-docs-gtk"
+version = "1.2.2"
+dependencies = [
+ "host-gtk",
+ "idea-ui-docs",
 ]
 
 [[package]]
@@ -13547,6 +13557,7 @@ dependencies = [
  "js-sys",
  "render-api",
  "runtime-core",
+ "runtime-scene",
  "runtime-vocabulary",
  "swap-navigator",
  "wasm-bindgen",
