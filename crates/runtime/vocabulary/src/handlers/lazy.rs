@@ -105,6 +105,47 @@ where
         let loader: Rc<crate::prims::lazy::LazyLoader> = Rc::new(prim.loader);
         let error = prim.error;
 
+        // ---- Off-web fast path: `lazy` is a no-op when there is no chunk ----
+        //
+        // `wasm_split` emits the chunk body as a PLAIN FN off wasm32
+        // (`#[cfg(not(target_arch = "wasm32"))] #default_item`), so there is
+        // nothing to fetch and the loader's future is already complete the
+        // first time it is polled. Running the full streaming dance for it
+        // costs a placeholder paint, an executor round-trip, and a
+        // realize → tear-down → realize swap, for zero benefit — and it makes
+        // every native screen depend on a per-poll flush hook that only the
+        // web and Apple backends install.
+        //
+        // So: poll once. If the body is already there, realize it directly.
+        //
+        // The future is POLLED, never re-created. `#[component(lazy)]` panics
+        // on a second invocation of a non-`retryable` loader, so a future that
+        // comes back `Pending` (or `Err`) is handed to the streaming path
+        // below rather than dropped and rebuilt. That also means a host whose
+        // loader genuinely is async keeps today's behaviour untouched — the
+        // fast path is an optimisation that proves itself, not a cfg guess.
+        #[cfg(not(target_arch = "wasm32"))]
+        let primed: Option<crate::prims::lazy::LazyFuture> = {
+            use std::future::Future;
+            let mut fut = (loader)();
+            let mut ctx = std::task::Context::from_waker(std::task::Waker::noop());
+            match fut.as_mut().poll(&mut ctx) {
+                std::task::Poll::Ready(Ok(thunk)) => {
+                    cx.realize_children_into(&mut container, vec![component_scope(thunk)]);
+                    if let Some(cb) = on_state.as_ref() {
+                        cb(LazyState::Rendered);
+                    }
+                    return container;
+                }
+                _ => Some(fut),
+            }
+        };
+        #[cfg(target_arch = "wasm32")]
+        let primed: Option<crate::prims::lazy::LazyFuture> = None;
+        // First attempt reuses the already-polled future; retries call the
+        // loader (which `retryable` makes legal).
+        let primed = Rc::new(RefCell::new(primed));
+
         // The currently mounted state UI. Owned by the swap effect's
         // closure (collected into the enclosing subtree) — teardown
         // drops the effect, the slot, and with it the live subtree's
@@ -184,8 +225,9 @@ where
             let loader = loader.clone();
             let pending = pending.clone();
             let cancelled = cancelled.clone();
+            let primed = primed.clone();
             Rc::new(move || {
-                let fut = (loader)();
+                let fut = primed.borrow_mut().take().unwrap_or_else(|| (loader)());
                 let pending = pending.clone();
                 let cancelled = cancelled.clone();
                 runtime_shared::driver::spawn_async(async move {

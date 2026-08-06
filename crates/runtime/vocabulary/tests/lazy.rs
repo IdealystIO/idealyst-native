@@ -340,3 +340,131 @@ fn regression_chunk_construction_state_owned_by_subtree() {
         "unmount must free construction-time signals (chunk-scope ownership)"
     );
 }
+
+// ===========================================================================
+// Off-web fast path
+// ===========================================================================
+
+/// A loader whose future is ALREADY COMPLETE at first poll — the shape
+/// `wasm_split` emits off wasm32, where the chunk body is a plain fn and
+/// there is nothing to fetch.
+fn ready_loader(
+    outcome: impl Fn() -> Result<LazyBodyThunk, String> + 'static,
+) -> impl Fn() -> LazyFuture + 'static {
+    let outcome = Rc::new(outcome);
+    move || {
+        let outcome = outcome.clone();
+        Box::pin(async move { outcome() })
+    }
+}
+
+/// Regression: off web, `lazy` must be a NO-OP — the body mounts
+/// synchronously at realize, with no loading placeholder ever painted.
+///
+/// ## What this pins
+///
+/// `wasm_split` emits the chunk body as a plain fn off wasm32
+/// (`#[cfg(not(target_arch = "wasm32"))] #default_item`), so there is no
+/// chunk to fetch and the loader's future is complete on first poll. The
+/// handler nevertheless ran the full streaming dance for it: paint the
+/// placeholder, `spawn_async`, mailbox the outcome, bump a tick, then on
+/// the next flush tear the placeholder subtree down and realize the body.
+///
+/// Three costs, all user-visible on desktop:
+///
+/// 1. a flash of the loading UI on every screen mount;
+/// 2. a double realize (placeholder subtree, then body subtree) plus a
+///    `clear_children` between them — churning anything the placeholder
+///    held;
+/// 3. a dependency on a per-executor-poll flush hook, which only the web
+///    and Apple backends install. On GTK the swap rode `pollster`'s
+///    inline completion — it happened to work, but nothing on that host
+///    flushes on a timer, so it was one scheduling change away from
+///    screens that never leave "loading".
+///
+/// The assertions are deliberately about the ABSENCE of the streaming
+/// ops (no placeholder paint, no clear, no spawned task), not just the
+/// presence of the body: a body that arrives via the slow path would
+/// still satisfy a naive "is the body there?" check.
+#[test]
+fn regression_ready_loader_mounts_body_synchronously_without_placeholder() {
+    let h = harness(true);
+    let states: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+
+    let el = {
+        let states = states.clone();
+        lazy_split(ready_loader(|| {
+            Ok(Box::new(|| text_el("chunk-body")) as LazyBodyThunk)
+        }))
+        .placeholder(|| text_el("loading"))
+        .on_state(move |s| states.borrow_mut().push(format!("{s:?}")))
+        .into_element()
+    };
+    let realized = h.mount(el);
+
+    let ops = h.ops();
+    assert_eq!(ops[0], "create n0 view", "container view first: {ops:?}");
+    assert!(
+        ops.iter().any(|o| o.contains("text \"chunk-body\"")),
+        "body must realize synchronously at mount: {ops:?}"
+    );
+    assert!(
+        !ops.iter().any(|o| o.contains("text \"loading\"")),
+        "the loading placeholder must NEVER be painted when the body is \
+         already available — that flash is the whole bug: {ops:?}"
+    );
+    assert!(
+        !ops.iter().any(|o| o.starts_with("clear")),
+        "no placeholder subtree to tear down, so nothing may be cleared: {ops:?}"
+    );
+    assert_eq!(
+        pending_tasks(),
+        0,
+        "no executor task may be spawned for a body that is already resolved"
+    );
+    assert_eq!(
+        states.borrow().as_slice(),
+        ["Loading", "Rendered"],
+        "state contract is unchanged — authors still observe Loading then \
+         Rendered, they just never see a rendered placeholder"
+    );
+
+    drop(realized);
+}
+
+/// The fast path must not fire when the loader really is async: a
+/// `Pending` first poll keeps the streaming behaviour intact. Guards
+/// against "optimise off `cfg(not(wasm32))`" — the handler polls to find
+/// out rather than assuming, so a native host with a genuinely deferred
+/// loader still gets placeholder-then-swap.
+#[test]
+fn regression_pending_loader_still_streams_on_native() {
+    let h = harness(true);
+    let ready = Rc::new(Cell::new(false));
+
+    let el = lazy_split(gated_loader(ready.clone(), || {
+        Ok(Box::new(|| text_el("chunk-body")) as LazyBodyThunk)
+    }))
+    .placeholder(|| text_el("loading"))
+    .into_element();
+    let realized = h.mount(el);
+
+    let ops = h.ops();
+    assert!(
+        ops.iter().any(|o| o.contains("text \"loading\"")),
+        "a Pending loader must still paint the placeholder: {ops:?}"
+    );
+    assert_eq!(pending_tasks(), 1, "and must still spawn the load");
+
+    ready.set(true);
+    h.clear_ops();
+    pump_tasks();
+    h.world.flush();
+    assert!(
+        h.ops().iter().any(|o| o.contains("chunk-body")),
+        "body still swaps in on completion: {:?}",
+        h.ops()
+    );
+
+    drop(realized);
+}
