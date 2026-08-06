@@ -345,8 +345,16 @@ mod embed {
     /// `graphics` `on_ready` → async wgpu init → `mount_newcore` into
     /// the app's world.
     pub fn mount(event: OnReadyEvent) {
-        let surface = event.surface;
+        // `OnReadyEvent` now carries a `GraphicsTarget` rather than a bare
+        // surface field: `into_surface()` yields the raw-window handle by
+        // value (what `mount` wants), or `None` on a GL-context backend.
+        // Read `size` first — `into_surface` consumes the event.
         let size = event.size;
+        let Some(surface) = event.into_surface() else {
+            eprintln!("[SMOKE-EMBED] on_ready gave a GL context, not a raw-window surface; \
+                       this embed needs wgpu — skipping mount");
+            return;
+        };
         runtime_shared::driver::spawn_async(async move {
             let profile = host_macos_desktop::DeviceProfile {
                 logical_size: (EMBED_W, EMBED_H),
