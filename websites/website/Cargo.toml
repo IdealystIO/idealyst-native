@@ -20,6 +20,8 @@ crate-type = ["cdylib", "rlib"]
 # `runtime_core::driver::spawn_async` to wait on the wgpu mount without
 # blocking the build).
 runtime-core = { workspace = true }
+# v2: the native register seam takes a `runtime_scene::Registry`.
+runtime-scene = { workspace = true }
 runtime-vocabulary = { workspace = true, features = ["async-driver"] }
 # `default-features = false`: idea-ui's `table` default stays out of this
 # graph — the website renders no idea-ui Table, so the SDK would be pure

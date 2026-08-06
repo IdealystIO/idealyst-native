@@ -282,11 +282,15 @@ pub fn register_extensions(_backend: &mut backend_macos::MacosBackend) {}
 // preview uses) so the site's navigator renders natively instead of a
 // placeholder — the GTK backend now implements `RegisterNavigator`.
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32"), not(feature = "terminal")))]
-pub fn register_extensions(backend: &mut backend_linux::LinuxBackend) {
-    swap_navigator::register_generic(backend);
-    // Docs pages render fenced code via the `codeblock` SDK's
-    // `Element::External`; its GTK leaf lowers to a Pango-styled label.
-    codeblock::register(backend);
+pub fn register_extensions(
+    registry: &mut runtime_scene::Registry<backend_linux::LinuxBackend>,
+) {
+    // `swap_navigator::register_generic` is gone: navigators are builtin
+    // vocabulary in v2, so there is nothing to install for them.
+    //
+    // Docs pages render fenced code through the `codeblock` SDK; its GTK
+    // leaf lowers to a Pango-styled label (see codeblock's linux arm).
+    codeblock::register(registry);
 }
 
 // Native Windows (Win32). Same `not(feature = "terminal")` guard as

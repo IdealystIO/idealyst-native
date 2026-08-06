@@ -329,6 +329,7 @@ fn pan_zoom_card() -> Element {
                 }
                 TouchResponse::CONSUMED
             }
+            TouchPhase::Hovered => TouchResponse::IGNORED,
             TouchPhase::Ended | TouchPhase::Cancelled => {
                 // Settle: drop the gesture flag and tick so the next paint
                 // re-bakes the world at the new camera (`dirty = true`).

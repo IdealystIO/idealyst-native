@@ -1659,10 +1659,12 @@ impl GfxSim {
     /// in these scenarios only reads size/scale — real handle plumbing
     /// is backend territory, outside the mount contract).
     pub fn fire_ready(&self, size: (u32, u32), scale: f32) {
+        // `target` is an enum since the GL work: a backend either lends a raw
+        // window handle or a GL context. This harness fakes the window arm.
         (self.on_ready.borrow_mut())(primitives::graphics::OnReadyEvent {
-            surface: primitives::graphics::GraphicsSurface::new(std::sync::Arc::new(
-                DummySurface,
-            )),
+            target: primitives::graphics::GraphicsTarget::RawWindow(
+                primitives::graphics::GraphicsSurface::new(std::sync::Arc::new(DummySurface)),
+            ),
             size,
             scale,
         });

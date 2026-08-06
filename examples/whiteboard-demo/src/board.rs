@@ -388,6 +388,11 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
                     version.set(version.get().wrapping_add(1));
                     TouchResponse::CONSUMED
                 }
+                // Unpressed pointer motion (master's new `TouchPhase::Hovered`).
+                // These are drag/draw surfaces — nothing to do without a
+                // pressed contact, and claiming would swallow hover from
+                // anything underneath.
+                TouchPhase::Hovered => return TouchResponse::IGNORED,
                 TouchPhase::Ended | TouchPhase::Cancelled => {
                     touches.borrow_mut().remove(&ev.id);
                     if touches.borrow().is_empty() {
@@ -586,6 +591,11 @@ pub fn CameraWidget(props: &CameraWidgetProps) -> Element {
                     }
                     TouchResponse::CONSUMED
                 }
+                // Unpressed pointer motion (master's new `TouchPhase::Hovered`).
+                // These are drag/draw surfaces — nothing to do without a
+                // pressed contact, and claiming would swallow hover from
+                // anything underneath.
+                TouchPhase::Hovered => return TouchResponse::IGNORED,
                 TouchPhase::Ended | TouchPhase::Cancelled => {
                     *drag.borrow_mut() = None;
                     TouchResponse::CONSUMED

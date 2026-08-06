@@ -1152,7 +1152,7 @@ fn launch_windows(
             release: false,
             source,
             background: true,
-            user_features: dev_user_features_macos(),
+            user_features: dev_user_features_native(),
             env_vars,
         },
     )
@@ -1212,7 +1212,7 @@ fn launch_linux(
             mode: run_linux::RunMode::Local,
             source,
             background: true,
-            user_features: dev_user_features_macos(),
+            user_features: dev_user_features_native(),
             env_vars,
         },
     )

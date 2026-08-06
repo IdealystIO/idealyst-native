@@ -332,8 +332,13 @@ pub fn Simulator(props: SimulatorProps) -> Element {
         // and on web wasm-split keeps that behind the lazy chunk
         // that materializes this on_ready closure.
         let profile = default_profile();
-        let surface = event.surface;
         let size = event.size;
+        // `target` is an enum since the GL work — a GL target has no raw
+        // window handle, so the swapchain preview steps aside rather than
+        // fabricating a surface.
+        let Some(surface) = event.into_surface() else {
+            return;
+        };
         // `spawn_async` is the runtime-installed executor. On wasm it
         // rides wasm-bindgen-futures; on iOS the `async-driver`
         // feature on `backend-ios-mobile` plugs into libdispatch.
