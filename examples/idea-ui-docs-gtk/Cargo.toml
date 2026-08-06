@@ -1,0 +1,16 @@
+[package]
+name = "idea-ui-docs-gtk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Runs the idea-ui docs app natively on the GTK4 backend (backend-linux) via host-gtk. Diagnostic harness for the native Linux path — exercises codeblock, table, icons and the builtin swap navigator. Linux-only; run with `cargo run -p idea-ui-docs-gtk`."
+
+[[bin]]
+name = "idea-ui-docs-gtk"
+path = "src/main.rs"
+
+[dependencies]
+idea-ui-docs = { workspace = true, default-features = false }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+host-gtk = { workspace = true }

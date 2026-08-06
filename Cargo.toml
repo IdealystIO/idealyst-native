@@ -346,6 +346,7 @@ members = [
     "examples/welcome",
     # Runs `welcome` natively on the GTK backend (host-gtk). Linux-only.
     "examples/welcome-gtk",
+    "examples/idea-ui-docs-gtk",
     "examples/fiddle",
     "examples/baseline",
     "examples/inspector",
@@ -483,6 +484,7 @@ backend-windows = { path = "crates/backend/windows" }
 backend-linux = { path = "crates/backend/linux" }
 host-gtk = { path = "crates/host/gtk" }
 welcome = { path = "examples/welcome" }
+idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false }
 render-api = { path = "crates/gpu-backend/api" }
 render-wgpu = { path = "crates/gpu-backend/engine" }
 ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }
