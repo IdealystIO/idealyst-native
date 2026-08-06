@@ -87,11 +87,11 @@ fn last_width(applied: &Applied) -> Option<Length> {
 }
 
 #[test]
-#[ignore = "viewport signal is on the legacy arena; v2 effects cannot subscribe (see module docs)"]
 fn regression_breakpoint_overlay_reapplies_when_viewport_grows() {
     let h = Harness::new();
     h.shared.handles_states_natively.set(false);
-    runtime_shared::set_viewport_size(ViewportSize::new(400.0, 800.0));
+    h.world.enter(|| runtime_vocabulary::viewport::viewport_ctx().set(ViewportSize::new(400.0, 800.0)));
+    h.world.flush();
     let applied = capture(&h);
     let realized = h.mount(responsive_view());
 
@@ -104,7 +104,7 @@ fn regression_breakpoint_overlay_reapplies_when_viewport_grows() {
     // Cross into `lg`. The publish stages the signal; the flush commits it,
     // which is what re-runs the style effect (a staged write alone would
     // leave the node on its boot-time styling — that is the GTK bug).
-    runtime_shared::set_viewport_size(ViewportSize::new(1200.0, 800.0));
+    h.world.enter(|| runtime_vocabulary::viewport::viewport_ctx().set(ViewportSize::new(1200.0, 800.0)));
     h.world.flush();
 
     assert_eq!(
@@ -119,11 +119,11 @@ fn regression_breakpoint_overlay_reapplies_when_viewport_grows() {
 }
 
 #[test]
-#[ignore = "viewport signal is on the legacy arena; v2 effects cannot subscribe (see module docs)"]
 fn regression_breakpoint_overlay_reapplies_when_viewport_shrinks() {
     let h = Harness::new();
     h.shared.handles_states_natively.set(false);
-    runtime_shared::set_viewport_size(ViewportSize::new(1200.0, 800.0));
+    h.world.enter(|| runtime_vocabulary::viewport::viewport_ctx().set(ViewportSize::new(1200.0, 800.0)));
+    h.world.flush();
     let applied = capture(&h);
     let realized = h.mount(responsive_view());
 
@@ -136,7 +136,7 @@ fn regression_breakpoint_overlay_reapplies_when_viewport_shrinks() {
     // Shrink below `md`. The shrink direction is tested separately because
     // this is the face the user hit second: after the boot-time seed fix,
     // the sidebar pinned correctly at wide but would not collapse.
-    runtime_shared::set_viewport_size(ViewportSize::new(400.0, 800.0));
+    h.world.enter(|| runtime_vocabulary::viewport::viewport_ctx().set(ViewportSize::new(400.0, 800.0)));
     h.world.flush();
 
     assert_eq!(
@@ -153,9 +153,9 @@ fn regression_breakpoint_overlay_reapplies_when_viewport_shrinks() {
 /// a tree of plain nodes pays no effect and no re-styling churn.
 #[test]
 fn plain_node_does_not_restyle_on_viewport_change() {
-    runtime_shared::set_viewport_size(ViewportSize::new(400.0, 800.0));
 
     let h = Harness::new();
+    h.world.enter(|| runtime_vocabulary::viewport::viewport_ctx().set(ViewportSize::new(400.0, 800.0)));
     h.shared.handles_states_natively.set(false);
     let applied = capture(&h);
     let plain = Rc::new(StyleSheet::new(|_vs| StyleRules {
@@ -165,7 +165,7 @@ fn plain_node_does_not_restyle_on_viewport_change() {
     let realized = h.mount(view().style(plain).build());
 
     let before = applied.borrow().len();
-    runtime_shared::set_viewport_size(ViewportSize::new(1200.0, 800.0));
+    h.world.enter(|| runtime_vocabulary::viewport::viewport_ctx().set(ViewportSize::new(1200.0, 800.0)));
     h.world.flush();
 
     assert_eq!(

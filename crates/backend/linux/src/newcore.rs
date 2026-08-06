@@ -179,6 +179,7 @@ impl NewCoreApp {
     pub fn stop(self) {
         crate::dispatch_hook::clear_dispatch_hook();
         set_flush_world(None);
+        set_viewport_sink(None);
         BACKEND.with(|b| *b.borrow_mut() = None);
         drop(self);
     }
@@ -241,9 +242,17 @@ pub fn start_with<S, R, B>(
     let registry = Rc::new(registry);
 
     let world = World::new();
-    let realized = world.enter(|| {
+    let (vp_sig, realized) = world.enter(|| {
         let element = build();
-        realize(&backend, &registry, element)
+        let realized = realize(&backend, &registry, element);
+        // Captured POST-BUILD on purpose: the ctx's derived-bucket memo
+        // snapshots the breakpoint threshold table at creation, and an app
+        // may install a custom table inside its root component (the docs
+        // app does). Creating the ctx eagerly would pin the DEFAULT table
+        // and misclassify every width the two disagree on — same ordering
+        // backend-web documents.
+        let vp_sig = runtime_vocabulary::viewport::viewport_ctx().size_signal();
+        (vp_sig, realized)
     });
 
     // Buffered-microtask drain — a no-op under a real host scheduler
@@ -273,6 +282,10 @@ pub fn start_with<S, R, B>(
     // (b) the host shell's post-dispatch hook fires.
     crate::dispatch_hook::install_dispatch_hook(schedule_flush);
     set_flush_world(Some(world.clone()));
+    // Live viewport source: `LinuxBackend::run_layout` now reaches the
+    // world's ctx through `forward_viewport`, so breakpoint-dependent
+    // author reactivity re-fires on resize instead of freezing at its seed.
+    set_viewport_sink(Some(vp_sig));
     BACKEND.with(|b| *b.borrow_mut() = Some(Rc::downgrade(&backend)));
     NewCoreApp {
         realized,
@@ -284,6 +297,42 @@ pub fn start_with<S, R, B>(
 
 fn set_flush_world(world: Option<World>) {
     FLUSH_WORLD.with(|w| *w.borrow_mut() = world);
+}
+
+thread_local! {
+    /// The mounted world's viewport signal (`Copy` handle). `None`
+    /// outside a boot, so `forward_viewport` costs one TLS read and
+    /// nothing else when no app is mounted.
+    static VIEWPORT_SINK: std::cell::Cell<
+        Option<runtime_world::Signal<runtime_shared::ViewportSize>>,
+    > = const { std::cell::Cell::new(None) };
+}
+
+fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_shared::ViewportSize>>) {
+    VIEWPORT_SINK.with(|s| s.set(sig));
+}
+
+/// Forward one viewport report into the mounted world's viewport ctx.
+/// No-op before [`start`] / after teardown.
+///
+/// `runtime_shared::set_viewport_size` alone is NOT enough: that writes the
+/// legacy thread-local signal, which a `runtime_world` effect cannot
+/// subscribe to. Author reactivity (`current_breakpoint()`, and everything
+/// idea-ui-nav's `AppShell` derives from it) reads the PER-WORLD ctx, so a
+/// backend that only writes the shared TLS value leaves every breakpoint
+/// reader frozen at the ctx's seed — the GTK docs app's sidebar never
+/// re-pinned on resize.
+///
+/// Capture, don't inject: the caller runs outside `World::enter` (a GLib
+/// idle), so the handle is captured at boot and the write stages through
+/// it (equality-guarded, routed to its own world) then rides one deduped
+/// [`schedule_flush`] — the backend-web resize-listener discipline.
+pub(crate) fn forward_viewport(size: runtime_shared::ViewportSize) {
+    let Some(sig) = VIEWPORT_SINK.with(|s| s.get()) else {
+        return;
+    };
+    sig.set(size);
+    schedule_flush();
 }
 
 /// True while a new-core app is mounted (`start` ran, `stop` hasn't).

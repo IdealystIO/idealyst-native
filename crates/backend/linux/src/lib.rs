@@ -595,7 +595,15 @@ impl LinuxBackend {
         if self.published_viewport != (width, height) {
             self.published_viewport = (width, height);
             gtk4::glib::source::idle_add_local_once(move || {
-                runtime_shared::set_viewport_size(runtime_shared::ViewportSize { width, height });
+                let size = runtime_shared::ViewportSize { width, height };
+                // Legacy thread-local signal (old-core readers + the style
+                // engine's `merge_active_breakpoints` read this one)...
+                runtime_shared::set_viewport_size(size);
+                // ...AND the mounted world's viewport ctx, which is what v2
+                // author reactivity actually subscribes to. Writing only the
+                // former leaves every `current_breakpoint()` reader frozen at
+                // the ctx's seed. See `newcore::forward_viewport`.
+                crate::newcore::forward_viewport(size);
                 // ...and COMMIT it. `set_viewport_size` only stages a signal
                 // write; in runtime-v2 a staged write reaches its dependent
                 // effects/memos on the next flush, and GTK has no periodic

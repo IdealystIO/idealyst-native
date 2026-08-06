@@ -1433,11 +1433,51 @@ pub(crate) fn apply_sheet<H: StyleServices>(
     } else {
         let base = resolve_style(app);
         let bp_overlays = resolve_breakpoint_overlays(app);
-        let resolved = merge_active_breakpoints(base, &bp_overlays);
         let cq_overlays = resolve_container_overlays(app);
-        let resolved = merge_active_containers(resolved, &cq_overlays, 0.0);
-        let resolved = fill_default_text_font(resolved, ctx.default_text_font());
-        backend.borrow_mut().apply_style(node, &resolved);
+        let default_font = ctx.default_text_font();
+
+        let resolve_now = move |base: Rc<StyleRules>,
+                                bps: &[(Breakpoint, Rc<StyleRules>)],
+                                cqs: &[(f32, Rc<StyleRules>)],
+                                font: Option<runtime_shared::FontFamily>| {
+            let resolved = merge_active_breakpoints(base, bps);
+            let resolved = merge_active_containers(resolved, cqs, 0.0);
+            fill_default_text_font(resolved, font)
+        };
+
+        if bp_overlays.is_empty() {
+            // No breakpoint blocks — resolve once and subscribe to nothing,
+            // keeping the common node off the reactive graph entirely.
+            let resolved = resolve_now(base, &bp_overlays, &cq_overlays, default_font);
+            backend.borrow_mut().apply_style(node, &resolved);
+        } else {
+            // RESPONSIVE. Backends that handle variants natively (web) never
+            // reach this branch — they get every overlay and let `@media` do
+            // the switching. Here the winning overlay is BAKED at apply time,
+            // so without a subscription the first resolution is permanent:
+            // the GTK docs app pinned its sidebar at boot width and would not
+            // collapse when the window shrank.
+            //
+            // The dependency is the PER-WORLD viewport ctx, not
+            // `runtime_shared::current_breakpoint()`. The latter is a legacy
+            // thread-local-arena signal that a `runtime_world` effect cannot
+            // subscribe to at all — reading it here would create an effect
+            // that never re-runs, which looks fixed and isn't. Backends feed
+            // the ctx via their `forward_viewport` seam.
+            let backend = backend.clone();
+            let node = node.clone();
+            effect(move || {
+                // Subscribe: re-runs whenever the bucket changes.
+                let _bucket = crate::viewport::viewport_ctx().breakpoint().get();
+                let resolved = resolve_now(
+                    base.clone(),
+                    &bp_overlays,
+                    &cq_overlays,
+                    default_font.clone(),
+                );
+                backend.borrow_mut().apply_style(&node, &resolved);
+            });
+        }
     }
 }
 
@@ -1534,7 +1574,15 @@ fn merge_active_breakpoints(
     if overlays.is_empty() {
         return base;
     }
-    let current = runtime_shared::current_breakpoint().get();
+    // The PER-WORLD ctx, not `runtime_shared::current_breakpoint()`. The
+    // legacy thread-local memo cannot be subscribed to from a world effect
+    // (that is the whole reason `ViewportCtx` exists), so resolving against
+    // it made the responsive re-apply above depend on one value while
+    // resolving with another — the node re-ran and recomputed the same
+    // answer. The ctx seeds from the shared old-core value at creation, so
+    // seams that write `set_viewport_size` before the first build (SSR seed,
+    // hydrate attribute, native samples) still classify correctly.
+    let current = crate::viewport::viewport_ctx().breakpoint().get();
     let mut merged: Option<StyleRules> = None;
     for (bp, overlay) in overlays {
         if bp.rank() <= current.rank() {
@@ -1675,10 +1723,22 @@ mod overlay_merge_tests {
         let base = resolve_style(&app);
         let overlays = resolve_breakpoint_overlays(&app);
 
+        // Drives the PER-WORLD ctx, which is what `merge_active_breakpoints`
+        // classifies against. It used to drive `set_viewport_size` (the
+        // legacy thread-local); that value now only SEEDS the ctx at
+        // creation, so writing it after the ctx exists moves nothing.
+        let world = runtime_world::World::new();
+        let bump = |w: f32| {
+            world.enter(|| {
+                crate::viewport::viewport_ctx().set(ViewportSize::new(w, 800.0))
+            });
+            world.flush();
+        };
+
         // Below sm: nothing active → base width, and the SAME Rc back
         // (no allocation on the common mobile path).
-        set_viewport_size(ViewportSize::new(390.0, 800.0));
-        let merged = merge_active_breakpoints(base.clone(), &overlays);
+        bump(390.0);
+        let merged = world.enter(|| merge_active_breakpoints(base.clone(), &overlays));
         assert_eq!(width_of(&merged), Length::Px(100.0));
         assert!(
             Rc::ptr_eq(&merged, &base),
@@ -1686,14 +1746,14 @@ mod overlay_merge_tests {
         );
 
         // Md bucket: only md is active (lg is above).
-        set_viewport_size(ViewportSize::new(800.0, 800.0));
-        let merged = merge_active_breakpoints(base.clone(), &overlays);
+        bump(800.0);
+        let merged = world.enter(|| merge_active_breakpoints(base.clone(), &overlays));
         assert_eq!(width_of(&merged), Length::Px(500.0));
 
         // Lg bucket: md AND lg both active (min-width is cumulative);
         // lg wins the conflicting `width`.
-        set_viewport_size(ViewportSize::new(1100.0, 800.0));
-        let merged = merge_active_breakpoints(base.clone(), &overlays);
+        bump(1100.0);
+        let merged = world.enter(|| merge_active_breakpoints(base.clone(), &overlays));
         assert_eq!(width_of(&merged), Length::Px(900.0));
     }
 
