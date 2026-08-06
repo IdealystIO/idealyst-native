@@ -5469,6 +5469,8 @@ dependencies = [
  "backend-linux",
  "gtk4",
  "runtime-core",
+ "runtime-scene",
+ "runtime-shared",
 ]
 
 [[package]]
