@@ -24,7 +24,7 @@ use std::rc::Weak;
 
 use runtime_shared::animation::AnimProp;
 use runtime_shared::primitives::portal::ViewportRect;
-use runtime_shared::{Backend, TextHandle, TextOps, ViewHandle, ViewOps};
+use runtime_shared::{TextHandle, TextOps, ViewHandle, ViewOps};
 
 use crate::{WindowsBackend, WindowsNode};
 

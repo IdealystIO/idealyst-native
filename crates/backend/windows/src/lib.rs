@@ -1,11 +1,19 @@
 //! Native Win32 backend — single-surface GDI+ scene renderer.
 //!
-//! Implements `runtime_shared::Backend` with a **painted scene model**: the
-//! host's top-level HWND is one canvas, and the view / text / icon /
+//! Implements the scene seam — `runtime_scene::Host` plus the `caps::*Ops`
+//! capability traits, both in [`newcore`] — with a **painted scene model**:
+//! the host's top-level HWND is one canvas, and the view / text / icon /
 //! image tree is painted with GDI+ into a double-buffered memory DC in
 //! tree order (see [`scene`]). Only genuinely-native interactive
 //! controls — button, edit, checkbox, trackbar, progress — are real
 //! child HWNDs, positioned on top by the layout pass.
+//!
+//! The per-primitive bodies live in this module as **inherent** methods on
+//! [`WindowsBackend`]; `newcore`'s caps impls delegate to them. That is the
+//! same split the GTK backend uses. They were an `impl Backend` before the
+//! v2 port — that mega-trait, and the per-backend External/Navigator
+//! registries alongside it, are gone (CLAUDE.md §3): third-party leaves
+//! register on the scene `Registry` instead.
 //!
 //! ## Why not HWND-per-view
 //!
@@ -45,10 +53,9 @@ use runtime_shared::assets::{
     AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
 };
 use runtime_shared::color::Rgba;
-use runtime_shared::primitives::navigator::{NavigatorHandler, NavigatorHost, RegisterNavigator};
+
 use runtime_shared::{
-    Action, Backend, Color, ColorScheme, Gradient, GradientKind, Length, NavigatorRegistry,
-    Overflow, Platform, RadialExtent, RegisterExternal, StyleRules, Transform,
+    Action, Color, Gradient, GradientKind, Length, Overflow, RadialExtent, StyleRules, Transform,
 };
 use runtime_layout::LayoutTree;
 
@@ -71,10 +78,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
     BS_DEFPUSHBUTTON, HMENU, NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SWP_NOACTIVATE,
     SWP_NOZORDER, SW_SHOW, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WINDOW_EX_STYLE, WM_SETFONT,
     WS_BORDER, WS_CHILD, WS_VISIBLE,
-    // Symbols master's newcore.rs boot path needs (window-class registration,
-    // WndProc dispatch, wheel/destroy messages).
-    DefWindowProcW, GetWindowLongPtrW, RegisterClassExW, SetWindowLongPtrW,
-    CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, WM_MOUSEWHEEL, WM_NCDESTROY, WNDCLASSEXW,
 };
 
 // Post-dispatch flush-hook slot (new-core flush driver). Unconditional
@@ -254,7 +257,7 @@ impl std::fmt::Debug for WindowsNode {
 // =========================================================================
 
 /// Per-frame animated transform slots, written by
-/// [`Backend::set_animated_f32`]. `scale` and `scale_x`/`scale_y`
+/// `AnimationOps::set_animated_f32`. `scale` and `scale_x`/`scale_y`
 /// multiply (matching the Linux backend's composition).
 #[derive(Clone, Copy)]
 pub(crate) struct AnimTransform {
@@ -292,7 +295,7 @@ pub(crate) enum GradKind {
 
 /// A gradient resolved for painting: shape + `(offset, sRGB [r,g,b,a])`
 /// stops in ascending-offset order. Stops stay in float sRGB — not
-/// packed ARGB — because [`Backend::set_animated_color`] overwrites
+/// packed ARGB — because `AnimationOps::set_animated_color` overwrites
 /// individual stop colors per frame (the welcome sun pulse).
 pub(crate) struct GradientPaint {
     pub kind: GradKind,
@@ -517,16 +520,6 @@ pub struct WindowsBackend {
     slider_handlers: HashMap<isize, Rc<dyn Fn()>>,
     /// Registered image/font assets keyed by `AssetId`.
     assets: HashMap<u64, AssetEntry>,
-    pub(crate) external_handlers: runtime_shared::ExternalRegistry<WindowsBackend>,
-    /// Navigator handler factories keyed by presentation `TypeId`,
-    /// populated via [`RegisterNavigator`] (e.g.
-    /// `swap_navigator::register_generic`). `create_navigator`
-    /// instantiates one per mounted navigator element.
-    navigator_handlers: NavigatorRegistry<WindowsBackend>,
-    /// Live navigator handler instances keyed by their container node
-    /// id, so `navigator_attach_initial` / slot-style / release calls
-    /// reach the same handler `create_navigator` built.
-    nav_handlers: HashMap<u64, Rc<RefCell<Box<dyn NavigatorHandler<WindowsBackend>>>>>,
     /// The shell message font (Segoe UI) applied to native controls and
     /// used when a text style names no typography.
     ui_font: HFONT,
@@ -583,9 +576,6 @@ impl WindowsBackend {
             hwnd_regions: HashMap::new(),
             slider_handlers: HashMap::new(),
             assets: HashMap::new(),
-            external_handlers: runtime_shared::ExternalRegistry::new(),
-            navigator_handlers: NavigatorRegistry::new(),
-            nav_handlers: HashMap::new(),
             ui_font,
             line_height,
             font_cache: font::FontCache::new(),
@@ -687,20 +677,10 @@ impl WindowsBackend {
         handled
     }
 
-    /// Register a handler for the third-party external primitive whose
-    /// payload type is `T`. Mirrors the iOS / macOS pattern.
-    pub fn register_external<T, F>(&mut self, handler: F)
-    where
-        T: 'static,
-        F: Fn(&Rc<T>, &mut WindowsBackend) -> WindowsNode + 'static,
-    {
-        self.external_handlers.register::<T, _>(handler);
-    }
-
-    /// `true` if a handler for payload type `T` has been registered.
-    pub fn has_external<T: 'static>(&self) -> bool {
-        self.external_handlers.has::<T>()
-    }
+    // `register_external` / `has_external` lived here. Third-party leaves
+    // now register on the scene `Registry` (`registry.register::<T, _>`),
+    // which is typed and collision-free per payload `TypeId` — see
+    // CLAUDE.md §3. The backend keeps no external table of its own.
 
     /// SDK extension helper: allocate a fresh Win32 control id + install
     /// `on_click` as its WM_COMMAND handler.
@@ -998,7 +978,6 @@ impl WindowsBackend {
             }
         }
         // A navigator node in the removed subtree drops its live handler.
-        self.nav_handlers.remove(&id);
         // A graphics node fires `on_lost` (deferred — remove can run
         // inside author effects that already borrow the backend) so
         // the author drops every wgpu object built on the visual. The
@@ -1639,48 +1618,26 @@ pub(crate) fn radial_radius(center: (f32, f32), radius: f32, farthest: bool, w: 
     (reference * radius).max(0.0)
 }
 
-// =========================================================================
-// SDK registration traits — the backend-neutral `register_generic` paths
-// (`swap_navigator::register_generic`, `<sdk>::register`) resolve on
-// WindowsBackend through these. Mirrors the Linux backend.
-// =========================================================================
-
-impl RegisterNavigator for WindowsBackend {
-    fn register_navigator<P, F>(&mut self, factory: F)
-    where
-        P: 'static,
-        F: Fn() -> Box<dyn NavigatorHandler<WindowsBackend>> + 'static,
-    {
-        self.navigator_handlers.register::<P, _>(factory);
-    }
-}
-
-impl RegisterExternal for WindowsBackend {
-    fn register_external<T, F>(&mut self, handler: F)
-    where
-        T: 'static,
-        F: Fn(&Rc<T>, &mut Self) -> Self::Node + 'static,
-    {
-        self.external_handlers.register::<T, _>(handler);
-    }
-}
+// The pre-v2 `RegisterNavigator` / `RegisterExternal` impls lived here.
+// Both tables are gone in v2: third-party leaves register on the scene
+// `Registry` instead (CLAUDE.md §3), and navigators are an extension
+// rather than a backend table. The inherent `register_external` above
+// is what the scene Registry mount path uses.
 
 // =========================================================================
-// Backend trait
+// Primitive bodies — inherent, not a trait impl
 // =========================================================================
+//
+// These were `impl Backend for WindowsBackend` before the v2 port. The
+// `Backend` mega-trait is gone; `newcore.rs` implements
+// `runtime_scene::Host` plus the `caps::*Ops` traits and delegates here.
+// Same split the GTK backend uses (`port(linux): make the GTK bodies
+// inherent`) — one body per primitive, reachable from the caps impls
+// without a trait in between.
 
-impl Backend for WindowsBackend {
-    type Node = WindowsNode;
+impl WindowsBackend {
 
-    fn color_scheme(&self) -> ColorScheme {
-        ColorScheme::Auto
-    }
-
-    fn platform(&self) -> Platform {
-        Platform::Custom("windows")
-    }
-
-    fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
+    fn create_view(&mut self, _a11y: &AccessibilityProps) -> WindowsNode {
         self.add_node(NodeKind::View(ViewVisual::default()))
     }
 
@@ -1688,7 +1645,7 @@ impl Backend for WindowsBackend {
         &mut self,
         on_click: Rc<dyn Fn()>,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> WindowsNode {
         // A Pressable is a styleable painted container carrying an
         // on_click; the host's hit-tested WM_LBUTTONUP fires it.
         self.add_node(NodeKind::View(ViewVisual {
@@ -1701,7 +1658,7 @@ impl Backend for WindowsBackend {
         &mut self,
         config: runtime_shared::primitives::link::LinkConfig,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> WindowsNode {
         // A Link is "a Pressable that navigates". The trait default
         // collapses to `create_view` and DROPS `on_activate`, so every
         // link renders as inert text and nothing can be navigated to —
@@ -1715,7 +1672,7 @@ impl Backend for WindowsBackend {
         }))
     }
 
-    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
+    fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> WindowsNode {
         let node = self.add_node(NodeKind::Text(TextVisual::new(content)));
         self.set_text_measure(node.id);
         node
@@ -1728,7 +1685,7 @@ impl Backend for WindowsBackend {
         _leading_icon: Option<&runtime_shared::primitives::icon::IconData>,
         _trailing_icon: Option<&runtime_shared::primitives::icon::IconData>,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> WindowsNode {
         let control_id = self.alloc_control_id();
         let handler = on_click.fire.clone();
         self.command_handlers.insert(
@@ -1747,7 +1704,7 @@ impl Backend for WindowsBackend {
         node
     }
 
-    fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
+    fn insert(&mut self, parent: &mut WindowsNode, child: WindowsNode) {
         let Some(parent_layout) = self.layout_for_id.get(&parent.id).copied() else {
             return;
         };
@@ -1762,7 +1719,7 @@ impl Backend for WindowsBackend {
         self.layout_dirty = true;
     }
 
-    fn clear_children(&mut self, node: &Self::Node) {
+    fn clear_children(&mut self, node: &WindowsNode) {
         let Some(child_ids) = self.children.remove(&node.id) else {
             return;
         };
@@ -1773,7 +1730,7 @@ impl Backend for WindowsBackend {
         self.invalidate();
     }
 
-    fn update_text(&mut self, node: &Self::Node, content: &str) {
+    fn update_text(&mut self, node: &WindowsNode, content: &str) {
         if let Some(meta) = self.nodes.get_mut(&node.id) {
             if let NodeKind::Text(t) = &mut meta.kind {
                 t.content = content.to_string();
@@ -1783,14 +1740,14 @@ impl Backend for WindowsBackend {
         self.invalidate();
     }
 
-    fn update_button_label(&mut self, node: &Self::Node, label: &str) {
+    fn update_button_label(&mut self, node: &WindowsNode, label: &str) {
         let wide = to_pcwstr(label);
         let _ = unsafe { SetWindowTextW(node.hwnd, wide.as_pcwstr()) };
         let (tw, th) = self.measure_with_key(label, None);
         self.set_intrinsic(node, tw + 24, th + 8);
     }
 
-    fn finish(&mut self, root: Self::Node) {
+    fn finish(&mut self, root: WindowsNode) {
         self.root_id = Some(root.id);
         self.layout_pass();
         self.invalidate();
@@ -1801,7 +1758,7 @@ impl Backend for WindowsBackend {
         src: &str,
         _alt: Option<&str>,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> WindowsNode {
         let decoded = self.decode_src(src);
         let natural = decoded.as_ref().map(|d| d.natural());
         let node = self.add_node(NodeKind::Image(image::ImagePaint {
@@ -1821,7 +1778,7 @@ impl Backend for WindowsBackend {
         data: &runtime_shared::primitives::icon::IconData,
         color: Option<&Color>,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> WindowsNode {
         // No color → opaque black (the native analogue of web's
         // `currentColor`, matching the Linux default).
         let rgba = color
@@ -1836,7 +1793,7 @@ impl Backend for WindowsBackend {
         node
     }
 
-    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
+    fn update_image_src(&mut self, node: &WindowsNode, src: &str) {
         let decoded = self.decode_src(src);
         let natural = decoded.as_ref().map(|d| d.natural());
         if let Some(meta) = self.nodes.get_mut(&node.id) {
@@ -1852,7 +1809,7 @@ impl Backend for WindowsBackend {
         self.invalidate();
     }
 
-    fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
+    fn update_icon_color(&mut self, node: &WindowsNode, color: &Color) {
         if let Some(meta) = self.nodes.get_mut(&node.id) {
             if let NodeKind::Icon(p) = &mut meta.kind {
                 p.color = runtime_shared::color::parse_or(&color.0, Rgba::BLACK);
@@ -1863,7 +1820,7 @@ impl Backend for WindowsBackend {
 
     fn update_icon_data(
         &mut self,
-        node: &Self::Node,
+        node: &WindowsNode,
         data: &runtime_shared::primitives::icon::IconData,
     ) {
         let vb = if let Some(meta) = self.nodes.get_mut(&node.id) {
@@ -1891,7 +1848,7 @@ impl Backend for WindowsBackend {
         _on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
         secure: bool,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> WindowsNode {
         let control_id = self.alloc_control_id();
         let mut style = ES_AUTOHSCROLL | WS_BORDER.0;
         if secure {
@@ -1921,7 +1878,7 @@ impl Backend for WindowsBackend {
         _on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> WindowsNode {
         // Read-only painted text for now (parity with the previous
         // STATIC-based placeholder; a real multi-line EDIT is a later
         // control refinement).
@@ -1935,7 +1892,7 @@ impl Backend for WindowsBackend {
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> WindowsNode {
         // A `BUTTON` with `BS_AUTOCHECKBOX` maintains its own checked
         // state on click, then fires `BN_CLICKED`.
         let control_id = self.alloc_control_id();
@@ -1963,7 +1920,7 @@ impl Backend for WindowsBackend {
         node
     }
 
-    fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
+    fn update_toggle_value(&mut self, node: &WindowsNode, value: bool) {
         unsafe {
             SendMessageW(
                 node.hwnd,
@@ -1982,7 +1939,7 @@ impl Backend for WindowsBackend {
         _step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> WindowsNode {
         ensure_common_controls();
         let hwnd = self.create_control_hwnd(class_trackbar(), "", TBS_HORZ, None);
         unsafe {
@@ -2008,7 +1965,7 @@ impl Backend for WindowsBackend {
         horizontal: bool,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> WindowsNode {
         let node = self.add_node(NodeKind::View(ViewVisual {
             scroll: Some(ScrollInfo {
                 horizontal,
@@ -2031,7 +1988,7 @@ impl Backend for WindowsBackend {
         node
     }
 
-    fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
+    fn set_node_scroll(&mut self, node: &WindowsNode, x: f32, y: f32) {
         if let Some(meta) = self.nodes.get_mut(&node.id) {
             if let NodeKind::View(v) = &mut meta.kind {
                 if let Some(s) = &mut v.scroll {
@@ -2052,7 +2009,7 @@ impl Backend for WindowsBackend {
         _size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
         _color: Option<&Color>,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> WindowsNode {
         // A marquee progress bar is the native indeterminate-activity
         // affordance; comctl32 animates it on its own timer.
         ensure_common_controls();
@@ -2067,11 +2024,11 @@ impl Backend for WindowsBackend {
 
     fn create_virtualizer(
         &mut self,
-        _callbacks: runtime_shared::VirtualizerCallbacks<Self::Node>,
+        _callbacks: runtime_shared::VirtualizerCallbacks<WindowsNode>,
         _overscan: f32,
         _layout: runtime_shared::VirtualLayout,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> WindowsNode {
         self.placeholder("Virtualizer not yet implemented on Windows backend")
     }
 
@@ -2081,7 +2038,7 @@ impl Backend for WindowsBackend {
         on_resize: runtime_shared::primitives::graphics::OnResize,
         on_lost: runtime_shared::primitives::graphics::OnLost,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> WindowsNode {
         // The surface is a DirectComposition visual, not a child HWND
         // — see `dcomp.rs` for the architecture. Tree init is lazy so
         // apps without graphics never touch dcomp.dll.
@@ -2118,20 +2075,6 @@ impl Backend for WindowsBackend {
         node
     }
 
-    fn create_external(
-        &mut self,
-        type_id: std::any::TypeId,
-        type_name: &'static str,
-        payload: &Rc<dyn std::any::Any>,
-        _a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        if let Some(handler) = self.external_handlers.get(type_id) {
-            return handler(payload, self);
-        }
-        self.placeholder(&format!(
-            "External \"{type_name}\" not registered on Windows backend"
-        ))
-    }
 
     fn create_portal(
         &mut self,
@@ -2139,11 +2082,11 @@ impl Backend for WindowsBackend {
         _on_dismiss: Option<Rc<dyn Fn()>>,
         _trap_focus: bool,
         _a11y: &AccessibilityProps,
-    ) -> Self::Node {
+    ) -> WindowsNode {
         self.placeholder("Portal not yet implemented on Windows backend")
     }
 
-    fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
+    fn set_portal_hidden(&mut self, node: &WindowsNode, hidden: bool) {
         // Hide without teardown (navigation off a portal's screen). The
         // painter + hit tester skip hidden subtrees; native control
         // HWNDs inside the subtree hide/show explicitly since they
@@ -2178,66 +2121,6 @@ impl Backend for WindowsBackend {
         self.invalidate();
     }
 
-    fn create_navigator(
-        &mut self,
-        type_id: std::any::TypeId,
-        _type_name: &'static str,
-        presentation: Rc<dyn std::any::Any>,
-        host: NavigatorHost<Self::Node>,
-        a11y: &AccessibilityProps,
-    ) -> Self::Node {
-        // Dispatch to a registered handler (the backend-neutral swap /
-        // stack navigators build their chrome from primitives, which
-        // the scene painter draws). With no handler, fall back to a
-        // bare container — the walker still mounts the path-matched
-        // initial screen into it via `navigator_attach_initial`, so the
-        // current page renders even without navigation chrome. Same
-        // posture as the Linux backend.
-        if let Some(factory) = self.navigator_handlers.get(type_id) {
-            let mut handler = factory();
-            let node = handler.init(self, host, presentation);
-            self.nav_handlers
-                .insert(node.id, Rc::new(RefCell::new(handler)));
-            node
-        } else {
-            self.create_view(a11y)
-        }
-    }
-
-    fn navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: Box<dyn std::any::Any>,
-    ) {
-        if let Some(handler) = self.nav_handlers.get(&navigator.id).cloned() {
-            handler
-                .borrow_mut()
-                .attach_initial(self, screen, scope_id, options);
-        } else {
-            // Bare-container fallback: mount the initial screen directly.
-            let mut nav = navigator.clone();
-            self.insert(&mut nav, screen);
-        }
-    }
-
-    fn release_navigator(&mut self, node: &Self::Node) {
-        if let Some(handler) = self.nav_handlers.remove(&node.id) {
-            handler.borrow_mut().release(self);
-        }
-    }
-
-    fn apply_navigator_slot_style(
-        &mut self,
-        node: &Self::Node,
-        slot: &'static str,
-        style: &Rc<StyleRules>,
-    ) {
-        if let Some(handler) = self.nav_handlers.get(&node.id).cloned() {
-            handler.borrow_mut().apply_slot_style(self, slot, style);
-        }
-    }
 
     fn register_typeface(
         &mut self,
@@ -2277,7 +2160,7 @@ impl Backend for WindowsBackend {
         self.invalidate();
     }
 
-    fn set_animated_f32(&mut self, node: &Self::Node, prop: AnimProp, value: f32) {
+    fn set_animated_f32(&mut self, node: &WindowsNode, prop: AnimProp, value: f32) {
         if let Some(meta) = self.nodes.get_mut(&node.id) {
             match prop {
                 AnimProp::Opacity => meta.anim_opacity = Some(value),
@@ -2299,7 +2182,7 @@ impl Backend for WindowsBackend {
         self.invalidate();
     }
 
-    fn set_animated_color(&mut self, node: &Self::Node, prop: AnimProp, value: [f32; 4]) {
+    fn set_animated_color(&mut self, node: &WindowsNode, prop: AnimProp, value: [f32; 4]) {
         if let Some(meta) = self.nodes.get_mut(&node.id) {
             match prop {
                 AnimProp::BackgroundColor => {
@@ -2327,15 +2210,15 @@ impl Backend for WindowsBackend {
         self.invalidate();
     }
 
-    fn make_view_handle(&self, node: &Self::Node) -> runtime_shared::ViewHandle {
+    fn make_view_handle(&self, node: &WindowsNode) -> runtime_shared::ViewHandle {
         handles::make_view_handle(self, node)
     }
 
-    fn make_text_handle(&self, node: &Self::Node) -> runtime_shared::TextHandle {
+    fn make_text_handle(&self, node: &WindowsNode) -> runtime_shared::TextHandle {
         handles::make_text_handle(self, node)
     }
 
-    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
+    fn apply_style(&mut self, node: &WindowsNode, style: &Rc<StyleRules>) {
         // Box layout via the shared StyleRules→Taffy translator.
         if let Some(layout) = self.layout_for_id.get(&node.id).copied() {
             self.layout.set_style(layout, style);

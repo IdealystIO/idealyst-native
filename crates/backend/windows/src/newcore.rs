@@ -130,20 +130,11 @@ use runtime_shared::{
     Action, Color, ColorScheme, Platform, StyleRules,
     VirtualizerCallbacks,
 };
+use runtime_shared::animation::AnimProp;
+use runtime_shared::assets::{AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId};
 use runtime_scene::{realize, Element, Host, Realized, Registry};
 use runtime_vocabulary::caps;
 use runtime_world::World;
-use runtime_vocabulary::caps::ViewOps as _;
-use windows::Win32::Foundation::{HWND, RECT};
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, BS_DEFPUSHBUTTON,
-    GWLP_USERDATA, SWP_NOACTIVATE, SWP_NOZORDER,
-};
-
-use crate::{
-    class_button, class_static, ensure_scroll_class_registered, to_pcwstr, ScrollState,
-    SCROLL_CLASS_NAME, SS_LEFT, SS_NOTIFY,
-};
 
 use crate::{WindowsBackend, WindowsNode};
 
@@ -427,24 +418,12 @@ impl Host for WindowsBackend {
     type Node = WindowsNode;
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
-        let Some(parent_layout) = self.layout_for_id.get(&parent.id).copied() else {
-            return;
-        };
-        let Some(child_layout) = self.layout_for_id.get(&child.id).copied() else {
-            return;
-        };
-        self.layout.add_child(parent_layout, child_layout);
-        // SetParent: re-parent the HWND so the host's WM_PAINT
-        // walks reach this node. Without it, the framework's
-        // logical parent/child differs from Win32's HWND tree.
-        unsafe {
-            // windows 0.58 dropped the `Option<HWND>` parent param;
-            // it's now `Param<HWND>`. Pass the bare HWND.
-            let _ = windows::Win32::UI::WindowsAndMessaging::SetParent(
-                child.hwnd,
-                parent.hwnd,
-            );
-        }
+        // Delegates to the inherent painted-scene body, which links the
+        // Taffy child AND records the parent→children edge the painter and
+        // hit tester walk. The scaffold this replaced only did the Taffy
+        // link plus a `SetParent`, which is meaningless for painted nodes
+        // (they have no HWND) and left the paint tree empty.
+        WindowsBackend::insert(self, parent, child)
     }
 
     // `insert_many` is deliberately NOT implemented: `Host`'s default is
@@ -472,11 +451,12 @@ impl Host for WindowsBackend {
         // default: no-op
     }
 
-    fn clear_children(&mut self, _node: &Self::Node) {
-        // Placeholder: walk children HWNDs and DestroyWindow each.
-        // The full implementation needs a parent → children map so
-        // we can iterate efficiently. Skipped here so author code
-        // doesn't panic on a clear pass.
+    fn clear_children(&mut self, node: &Self::Node) {
+        // Delegates to the inherent body, which drops each child subtree
+        // (`remove_subtree`: node meta, Taffy node, and any real control
+        // HWND). The scaffold this replaced was a no-op, so every reactive
+        // rebuild leaked the old subtree and painted it under the new one.
+        WindowsBackend::clear_children(self, node)
     }
 
     /// Explicit port of the old `Backend::create_reactive_anchor` DEFAULT
@@ -520,78 +500,23 @@ impl caps::AppEnvOps for WindowsBackend {
     fn platform(&self) -> Platform {
         Platform::Custom("windows")
     }
+
+    fn set_app_background(&mut self, color: &runtime_shared::Tokenized<Color>) {
+        WindowsBackend::set_app_background(self, color)
+    }
 }
 
 impl caps::LifecycleOps for WindowsBackend {
     fn finish(&mut self, root: Self::Node) {
-        // Run Taffy against the host window's client rect, then
-        // walk every registered HWND and call SetWindowPos with
-        // its computed frame. Frames in Taffy are relative to the
-        // immediate parent; SetWindowPos takes coordinates
-        // relative to the parent HWND, and our `insert` reparents
-        // each child to its framework parent via `SetParent`, so
-        // the two coordinate systems line up directly.
-        let Some(root_layout) = self.layout_for_id.get(&root.id).copied() else {
-            return;
-        };
-
-        // Host client rect in pixels. GetClientRect can fail if the
-        // window has been destroyed; bail rather than feed garbage
-        // dimensions to the layout pass.
-        let mut rect = RECT::default();
-        if unsafe { GetClientRect(self.host_hwnd, &mut rect) }.is_err() {
-            return;
-        }
-        let width = (rect.right - rect.left).max(0) as f32;
-        let height = (rect.bottom - rect.top).max(0) as f32;
-        if width <= 0.0 || height <= 0.0 {
-            return;
-        }
-
-        self.layout.compute(root_layout, width, height);
-
-        // Collect (hwnd, frame) pairs first so we can release the
-        // borrow on `self.nodes` before issuing the Win32 calls.
-        // SetWindowPos is documented as safe to call from the
-        // owning thread; we issue them serially so the HWND tree
-        // doesn't see partial-state intermediate frames.
-        let mut updates: Vec<(HWND, i32, i32, i32, i32)> =
-            Vec::with_capacity(self.nodes.len());
-        for (id, meta) in &self.nodes {
-            let Some(layout) = self.layout_for_id.get(id).copied() else {
-                continue;
-            };
-            let frame = self.layout.frame_of(layout);
-            updates.push((
-                meta.hwnd,
-                frame.x.round() as i32,
-                frame.y.round() as i32,
-                frame.width.round() as i32,
-                frame.height.round() as i32,
-            ));
-        }
-        for (hwnd, x, y, w, h) in updates {
-            if hwnd.is_invalid() {
-                continue;
-            }
-            // `HWND_TOP` here would force every child to the top of
-            // the z-order on every layout pass — wasteful and
-            // visually disruptive. `SWP_NOZORDER` preserves whatever
-            // z-order the HWND already has. `SWP_NOACTIVATE` keeps
-            // input focus from jumping to whatever child we
-            // happen to move first.
-            let _ = unsafe {
-                SetWindowPos(
-                    hwnd,
-                    None,
-                    x,
-                    y,
-                    w,
-                    h,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                )
-            };
-        }
+        // Delegates to the inherent painted-scene body: record the root,
+        // run the Taffy layout pass, invalidate for repaint.
+        //
+        // The scaffold this replaced walked `self.nodes` and issued a
+        // `SetWindowPos` per node, which only works when every node is a
+        // child HWND. In the painted model most nodes have no window at
+        // all — `layout_pass` computes frames for painting and
+        // `position_native_children` moves the few real controls.
+        WindowsBackend::finish(self, root)
     }
 }
 
@@ -601,10 +526,18 @@ impl caps::LifecycleOps for WindowsBackend {
 
 impl caps::ViewOps for WindowsBackend {
     fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
-        // STATIC class with no text — acts as a transparent
-        // container. Real Win32 apps typically use a custom WNDCLASS
-        // for layout containers; STATIC is fine as a scaffold.
-        self.create_child(class_static(), "", SS_LEFT as u32, None)
+        // Delegates to the inherent painted-scene body (formerly
+        // `impl Backend`). The scaffold this replaced made every view a
+        // STATIC child HWND, which cannot carry background/border/radius
+        // or clip its children — the painter does all of that.
+        WindowsBackend::create_view(self, _a11y)
+    }
+
+    /// Real node handle, NOT the trait's defaulted no-op: `AnimatedValue::bind`
+    /// drives every per-frame write through this handle, so the default means
+    /// the animation clock ticks and nothing ever paints.
+    fn make_view_handle(&self, node: &Self::Node) -> runtime_shared::ViewHandle {
+        WindowsBackend::make_view_handle(self, node)
     }
 }
 
@@ -612,32 +545,15 @@ impl caps::InputOps for WindowsBackend {}
 
 impl caps::PressableOps for WindowsBackend {
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Self::Node {
-        // Dispatch-site glue: the wrapped closure is what the old
-        // `create_pressable` body registers in `command_handlers`,
-        // so the host WndProc's `dispatch_command` (WM_COMMAND)
-        // call gets the flush for free.
-        let on_click = flushing0(on_click);
-        // STATIC controls don't fire WM_COMMAND natively, so the
-        // control-id approach doesn't help for Pressable as it
-        // does for BUTTON. A proper Pressable needs an `STN_*`
-        // notification (via `SS_NOTIFY` style + `WM_COMMAND`
-        // with `STN_CLICKED`) or a `WM_LBUTTONDOWN`-subclassed
-        // wndproc on the static. For the scaffold we allocate a
-        // control id and install `SS_NOTIFY` so the host's
-        // dispatcher path treats it like Button; the actual
-        // subclassing is a follow-up the host owns.
-        let control_id = self.alloc_control_id();
-        self.command_handlers.insert(control_id, on_click.clone());
-        let node = self.create_child(
-            class_static(),
-            "",
-            (SS_LEFT | SS_NOTIFY) as u32,
-            Some(control_id),
-        );
-        if let Some(meta) = self.nodes.get_mut(&node.id) {
-            meta.on_click = Some(on_click);
-        }
-        node
+        // Wrap the author callback so ONE deduped flush microtask is queued
+        // after it returns — the v2 flush is not implicit.
+        //
+        // Delegates to the inherent painted body: a Pressable is a styleable
+        // painted container carrying an on_click, fired by the host's
+        // hit-tested WM_LBUTTONUP. The scaffold this replaced tried to drive
+        // it through a STATIC control id + WM_COMMAND, which STATIC controls
+        // do not emit without subclassing — so presses never fired at all.
+        WindowsBackend::create_pressable(self, flushing0(on_click), _a11y)
     }
 }
 
@@ -647,12 +563,20 @@ impl caps::PressableOps for WindowsBackend {
 
 impl caps::TextOps for WindowsBackend {
     fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
-        self.create_child(class_static(), content, SS_LEFT as u32, None)
+        // Delegates to the inherent painted body — text is a painted leaf
+        // with real typography/measurement, not a STATIC control.
+        WindowsBackend::create_text(self, content, _a11y)
+    }
+
+    /// Real text handle, NOT the trait's defaulted no-op: `AnimatedValue::bind`
+    /// drives per-frame writes through it, so the default silently animates
+    /// nothing.
+    fn make_text_handle(&self, node: &Self::Node) -> runtime_shared::TextHandle {
+        WindowsBackend::make_text_handle(self, node)
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
-        let wide = to_pcwstr(content);
-        let _ = unsafe { SetWindowTextW(node.hwnd, wide.as_pcwstr()) };
+        WindowsBackend::update_text(self, node, content)
     }
 }
 
@@ -665,41 +589,23 @@ impl caps::ButtonOps for WindowsBackend {
         _trailing_icon: Option<&primitives::icon::IconData>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Dispatch-site glue: wrap the Action's runtime evaluator
-        // (the closure the old body stores in `command_handlers`
-        // for the host's WM_COMMAND routing); the serialization
-        // metadata passes through untouched.
-        let on_click = Action {
-            method: on_click.method,
-            inputs: on_click.inputs.clone(),
-            initial: on_click.initial.clone(),
-            output: on_click.output,
-            fire: flushing0(on_click.fire.clone()),
-        };
-        let on_click = &on_click;
-        // Allocate a control id, install the handler in the
-        // dispatch table, and pass the id to `create_child` so
-        // CreateWindowExW records it on the HWND. The host's
-        // WndProc routes `WM_COMMAND` with `LOWORD(wParam)` ==
-        // this id back through `dispatch_command`.
-        let control_id = self.alloc_control_id();
-        let handler = on_click.fire.clone();
-        self.command_handlers.insert(control_id, handler.clone());
-        let node = self.create_child(
-            class_button(),
+        // Wrap the Action's runtime evaluator so the press queues a flush;
+        // the serialization metadata passes through untouched.
+        let on_click = Action { fire: flushing0(on_click.fire.clone()), ..on_click.clone() };
+        // Delegates to the inherent body, which creates the real BUTTON
+        // control and registers the WM_COMMAND handler itself.
+        WindowsBackend::create_button(
+            self,
             label,
-            BS_DEFPUSHBUTTON as u32,
-            Some(control_id),
-        );
-        if let Some(meta) = self.nodes.get_mut(&node.id) {
-            meta.on_click = Some(handler);
-        }
-        node
+            &on_click,
+            _leading_icon,
+            _trailing_icon,
+            _a11y,
+        )
     }
 
     fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-        let wide = to_pcwstr(label);
-        let _ = unsafe { SetWindowTextW(node.hwnd, wide.as_pcwstr()) };
+        WindowsBackend::update_button_label(self, node, label)
     }
 }
 
@@ -714,7 +620,13 @@ impl caps::ImageOps for WindowsBackend {
         _alt: Option<&str>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        self.placeholder("Image not yet implemented on Windows backend")
+        // Delegates to the inherent painted-scene body — the branch's
+        // Win32 implementation, which master's seam stubbed out.
+        WindowsBackend::create_image(self, _src, _alt, _a11y)
+    }
+
+    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
+        WindowsBackend::update_image_src(self, node, src)
     }
 }
 
@@ -725,11 +637,42 @@ impl caps::IconOps for WindowsBackend {
         _color: Option<&Color>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        self.placeholder("Icon not yet implemented on Windows backend")
+        // Delegates to the inherent painted-scene body — the branch's
+        // Win32 implementation, which master's seam stubbed out.
+        WindowsBackend::create_icon(self, _data, _color, _a11y)
+    }
+
+    fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
+        WindowsBackend::update_icon_color(self, node, color)
+    }
+
+    fn update_icon_data(
+        &mut self,
+        node: &Self::Node,
+        data: &runtime_shared::primitives::icon::IconData,
+    ) {
+        WindowsBackend::update_icon_data(self, node, data)
     }
 }
 
-impl caps::LinkOps for WindowsBackend {}
+impl caps::LinkOps for WindowsBackend {
+    fn create_link(
+        &mut self,
+        config: primitives::link::LinkConfig,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        // The trait DEFAULT collapses to `create_view` and drops
+        // `on_activate` — every link renders as inert text and nothing can
+        // be navigated to. Same bug the Linux and terminal backends fixed.
+        //
+        // Wrap the activation so the navigation's signal writes are flushed.
+        let config = primitives::link::LinkConfig {
+            on_activate: flushing0(config.on_activate.clone()),
+            ..config
+        };
+        WindowsBackend::create_link(self, config, _a11y)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Form widgets
@@ -746,22 +689,28 @@ impl caps::TextInputOps for WindowsBackend {
         _secure: bool,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Wrapped uniformly, though the scaffold does not yet wire
-        // on_change/on_key_down/on_blur to the native editor (see
-        // lib.rs) — when it does, the flush comes with it for free.
-        let _on_change = flushing1(on_change);
-        let _on_key_down = on_key_down.map(flushing_key);
-        let _on_blur = on_blur.map(|f| -> primitives::text_input::BlurHandler {
+        let on_change = flushing1(on_change);
+        let on_key_down = on_key_down.map(flushing_key);
+        let on_blur = on_blur.map(|f| -> primitives::text_input::BlurHandler {
                 Rc::new(move || {
                     let outcome = f();
                     schedule_flush();
                     outcome
                 })
             });
-        // Real Win32 EDIT control would land here. For the scaffold,
-        // use a STATIC with the initial value so the field is at
-        // least visible.
-        self.create_child(class_static(), initial_value, SS_LEFT as u32, None)
+        // Delegates to the inherent body, which creates a real EDIT
+        // control and wires its EN_CHANGE notification. The scaffold this
+        // replaced made a read-only STATIC, so typing did nothing.
+        WindowsBackend::create_text_input(
+            self,
+            initial_value,
+            _placeholder,
+            on_change,
+            on_key_down,
+            on_blur,
+            _secure,
+            _a11y,
+        )
     }
 
     fn create_text_area(
@@ -775,9 +724,19 @@ impl caps::TextInputOps for WindowsBackend {
         on_key_down: Option<primitives::key::KeyDownHandler>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        let _on_change = flushing1(on_change);
-        let _on_key_down = on_key_down.map(flushing_key);
-        self.create_child(class_static(), initial_value, SS_LEFT as u32, None)
+        let on_change = flushing1(on_change);
+        let on_key_down = on_key_down.map(flushing_key);
+        WindowsBackend::create_text_area(
+            self,
+            initial_value,
+            _placeholder,
+            _wrap,
+            _min_rows,
+            _max_rows,
+            on_change,
+            on_key_down,
+            _a11y,
+        )
     }
 }
 
@@ -788,10 +747,14 @@ impl caps::ToggleOps for WindowsBackend {
         on_change: Rc<dyn Fn(bool)>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Placeholder today (never fires on_change) — wrapped
-        // uniformly anyway, per the GraphicsOps-comment model.
-        let _on_change = flushing1(on_change);
-        self.placeholder("Toggle not yet implemented on Windows backend")
+        let on_change = flushing1(on_change);
+        // Delegates to the inherent painted-scene body — the branch's
+        // Win32 implementation, which master's seam stubbed out.
+        WindowsBackend::create_toggle(self, _initial_value, on_change, _a11y)
+    }
+
+    fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
+        WindowsBackend::update_toggle_value(self, node, value)
     }
 }
 
@@ -805,8 +768,18 @@ impl caps::SliderOps for WindowsBackend {
         on_change: Rc<dyn Fn(f32)>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        let _on_change = flushing1(on_change);
-        self.placeholder("Slider not yet implemented on Windows backend")
+        let on_change = flushing1(on_change);
+        // Delegates to the inherent painted-scene body — the branch's
+        // Win32 implementation, which master's seam stubbed out.
+        WindowsBackend::create_slider(
+            self,
+            _initial_value,
+            _min,
+            _max,
+            _step,
+            on_change,
+            _a11y,
+        )
     }
 }
 
@@ -817,7 +790,9 @@ impl caps::ActivityIndicatorOps for WindowsBackend {
         _color: Option<&Color>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        self.placeholder("ActivityIndicator not yet implemented on Windows backend")
+        // Delegates to the inherent painted-scene body — the branch's
+        // Win32 implementation, which master's seam stubbed out.
+        WindowsBackend::create_activity_indicator(self, _size, _color, _a11y)
     }
 }
 
@@ -832,38 +807,28 @@ impl caps::ScrollOps for WindowsBackend {
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Dispatch-site glue: the old body stashes on_scroll in the
-        // `ScrollState` the `IdealystScroll` WndProc fires per
-        // WM_MOUSEWHEEL; the flush is deduped so a wheel burst
-        // costs one commit.
-        let on_scroll = on_scroll.map(|f| -> Rc<dyn Fn(f32, f32)> {
+        // Dispatch-site glue: an author `on_scroll` mutates signals, so it
+        // needs the deduped flush like every other callback here.
+        let on_scroll: Option<Rc<dyn Fn(f32, f32)>> = on_scroll.map(|f| {
             Rc::new(move |x, y| {
                 f(x, y);
                 schedule_flush();
-            })
+            }) as Rc<dyn Fn(f32, f32)>
         });
-        // Register the `IdealystScroll` WNDCLASS on first use; the
-        // call is idempotent across multiple backend instances in
-        // the same process.
-        ensure_scroll_class_registered();
-        let node = self.create_child(SCROLL_CLASS_NAME, "", 0, None);
+        // Delegates to the inherent painted body: a scroll view is a painted
+        // View carrying `ScrollInfo`, and the body also marks the Taffy node
+        // `overflow: scroll` on the axis — without that the viewport sizes to
+        // its content and there is nothing to scroll.
+        //
+        // The scaffold this replaced registered an `IdealystScroll` WNDCLASS
+        // and stashed state in `GWLP_USERDATA`; the painted model scrolls by
+        // offsetting the painter and `position_native_children`, so no
+        // per-scroller window class is needed.
+        WindowsBackend::create_scroll_view(self, horizontal, on_scroll, _a11y)
+    }
 
-        // Stash per-window scroll state (callback + offsets) in
-        // `GWLP_USERDATA`. The WndProc reads it on every
-        // `WM_MOUSEWHEEL`, advances the offset, calls
-        // `ScrollWindowEx` to move children, and fires the user
-        // callback. `WM_NCDESTROY` releases the box.
-        let state = Box::new(ScrollState {
-            horizontal,
-            offset_x: 0.0,
-            offset_y: 0.0,
-            on_scroll,
-        });
-        let raw = Box::into_raw(state) as isize;
-        unsafe {
-            SetWindowLongPtrW(node.hwnd, GWLP_USERDATA, raw);
-        }
-        node
+    fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
+        WindowsBackend::set_node_scroll(self, node, x, y)
     }
 }
 
@@ -919,8 +884,9 @@ impl caps::VirtualizerOps for WindowsBackend {
                 })
             },
         };
-        let _callbacks = callbacks;
-        self.placeholder("Virtualizer not yet implemented on Windows backend")
+        // Delegates to the inherent painted-scene body — the branch's
+        // Win32 implementation, which master's seam stubbed out.
+        WindowsBackend::create_virtualizer(self, callbacks, _overscan, _layout, _a11y)
     }
 }
 
@@ -936,10 +902,8 @@ impl caps::GraphicsOps for WindowsBackend {
         on_lost: primitives::graphics::OnLost,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Dispatch-site glue: surface lifecycle callbacks run author
-        // code (this scaffold never fires them — graphics is a
-        // placeholder — but the wrap keeps the delegation
-        // mechanically uniform).
+        // Dispatch-site glue: surface lifecycle callbacks run author code,
+        // so each queues the deduped flush before handing off.
         let on_ready: primitives::graphics::OnReady = {
             let mut f = on_ready;
             Box::new(move |ev| {
@@ -961,10 +925,9 @@ impl caps::GraphicsOps for WindowsBackend {
                 schedule_flush();
             })
         };
-        let _on_ready = on_ready;
-        let _on_resize = on_resize;
-        let _on_lost = on_lost;
-        self.placeholder("Graphics not yet implemented on Windows backend")
+        // Delegates to the inherent painted-scene body — the branch's
+        // Win32 implementation, which master's seam stubbed out.
+        WindowsBackend::create_graphics(self, on_ready, on_resize, on_lost, _a11y)
     }
 }
 
@@ -977,8 +940,13 @@ impl caps::PortalOps for WindowsBackend {
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let on_dismiss = on_dismiss.map(flushing0);
-        let _on_dismiss = on_dismiss;
-        self.placeholder("Portal not yet implemented on Windows backend")
+        // Delegates to the inherent painted-scene body — the branch's
+        // Win32 implementation, which master's seam stubbed out.
+        WindowsBackend::create_portal(self, _target, on_dismiss, _trap_focus, _a11y)
+    }
+
+    fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
+        WindowsBackend::set_portal_hidden(self, node, hidden)
     }
 }
 
@@ -1017,14 +985,33 @@ impl caps::DocumentOps for WindowsBackend {}
 // ---------------------------------------------------------------------------
 
 impl caps::StyleOps for WindowsBackend {
-    fn apply_style(&mut self, _node: &Self::Node, _style: &Rc<StyleRules>) {
-        // No-op until we wire Taffy-driven SetWindowPos in finish().
-        // Author code calling apply_style today shouldn't crash; the
-        // style is silently dropped.
+    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
+        // Delegates to the inherent body, which translates the rules into
+        // the Taffy style AND the painted visual (background, border,
+        // radius, gradient, opacity, transform, overflow). The scaffold
+        // this replaced dropped every style silently — the whole app
+        // rendered unstyled.
+        WindowsBackend::apply_style(self, node, style)
     }
 }
 
-impl caps::AssetOps for WindowsBackend {}
+impl caps::AssetOps for WindowsBackend {
+    fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
+        WindowsBackend::register_asset(self, id, kind, source)
+    }
+
+    fn register_typeface(
+        &mut self,
+        id: TypefaceId,
+        family_name: &str,
+        faces: &[TypefaceFace],
+        fallback: SystemFallback,
+    ) {
+        // Installs each face into the process font table so later text
+        // measurement and painting can name the family.
+        WindowsBackend::register_typeface(self, id, family_name, faces, fallback)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // A11y + animation + introspection
@@ -1032,7 +1019,17 @@ impl caps::AssetOps for WindowsBackend {}
 
 impl caps::A11yOps for WindowsBackend {}
 
-impl caps::AnimationOps for WindowsBackend {}
+impl caps::AnimationOps for WindowsBackend {
+    // Per-frame animation writes. The trait defaults are no-ops, so without
+    // these an animation's clock runs and the scene never changes.
+    fn set_animated_f32(&mut self, node: &Self::Node, prop: AnimProp, value: f32) {
+        WindowsBackend::set_animated_f32(self, node, prop, value)
+    }
+
+    fn set_animated_color(&mut self, node: &Self::Node, prop: AnimProp, value: [f32; 4]) {
+        WindowsBackend::set_animated_color(self, node, prop, value)
+    }
+}
 
 impl caps::IntrospectionOps for WindowsBackend {}
 
