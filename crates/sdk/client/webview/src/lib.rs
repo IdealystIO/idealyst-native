@@ -62,6 +62,12 @@
 // types).
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod web_util;
+// Real WebKitGTK leaf, behind the OFF-by-default `linux-webkit` feature:
+// webkit6-sys links the system `webkitgtk-6.0` through pkg-config, so an
+// unconditional dep would break the build of this crate — and everything
+// depending on it — on any Linux host without that dev package.
+#[cfg(all(target_os = "linux", feature = "linux-webkit", not(target_arch = "wasm32")))]
+mod linux;
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -403,6 +409,20 @@ where
     node
 }
 
+/// Linux (GTK4) mount handler — `Registry<LinuxBackend>`-concrete. A real
+/// embedded browser via WebKitGTK 6 (`webkit6::WebView`).
+#[cfg(all(target_os = "linux", feature = "linux-webkit", not(target_arch = "wasm32")))]
+fn mount_webview_linux(
+    cx: &mut MountCx<'_, backend_linux::LinuxBackend>,
+    prim: &Rc<WebViewPrim>,
+    _children: Vec<Element>,
+) -> backend_linux::LinuxNode {
+    let backend = cx.backend().clone();
+    let node = crate::linux::build_web_view(&prim.props, &mut backend.borrow_mut());
+    finish_mount(&backend, &node, prim);
+    node
+}
+
 /// Register the webview payload handler on a scene registry. Pass this
 /// as the boot registration seam (the `register` argument of
 /// `backend_web::newcore::start_in` / `backend_ssr::newcore::
@@ -412,6 +432,16 @@ pub fn register<H>(registry: &mut Registry<H>)
 where
     H: ExternalOps + StyleServices + 'static,
 {
+    #[cfg(all(target_os = "linux", feature = "linux-webkit", not(target_arch = "wasm32")))]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_linux::LinuxBackend>>() {
+            reg.register::<WebViewPrim, _>(mount_webview_linux);
+            return;
+        }
+    }
+    // Feature off (or no WebKitGTK): fall through to the placeholder — the
+    // same graceful degradation an unsupported target gets.
     registry.register::<WebViewPrim, _>(mount_placeholder::<H>);
 }
 

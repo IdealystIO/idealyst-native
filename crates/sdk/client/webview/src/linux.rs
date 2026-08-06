@@ -98,15 +98,11 @@ const POST_MESSAGE_SHIM_JS: &str = r#"
 /// at app boot (the app's `register_extensions` on Linux) so `WebView`
 /// elements lower to a real `webkit6::WebView` instead of the framework's
 /// External placeholder.
-pub fn register(backend: &mut LinuxBackend) {
-    backend.register_external::<WebViewProps, _>(|props, b| build_web_view(props, b));
-}
-
 // =========================================================================
 // Build + reactive source
 // =========================================================================
 
-fn build_web_view(props: &Rc<WebViewProps>, b: &mut LinuxBackend) -> LinuxNode {
+pub(crate) fn build_web_view(props: &Rc<WebViewProps>, b: &mut LinuxBackend) -> LinuxNode {
     // A UserContentManager owns the script-message channel + the injected
     // shim. It's a construct-only property on WebView, so it must be set
     // via the builder (there's no post-construction setter).
