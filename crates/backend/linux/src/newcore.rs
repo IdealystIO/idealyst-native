@@ -25,9 +25,8 @@
 //!
 //! # Boot sequence ([`start`])
 //!
-//! The host shell (out-of-repo; see the crate docs' test plan)
-//! realizes + presents its `gtk::Window`, wraps it in
-//! [`LinuxBackend::new`], and — if it has one — installs its
+//! The host shell — `host-gtk` in this repo — realizes + presents its
+//! `gtk::Window`, wraps it in [`LinuxBackend::new`], and installs its
 //! `runtime_shared::scheduling::Scheduler` BEFORE calling [`start`]:
 //!
 //! 1. Monotonic time source (idempotent, first install wins).
@@ -45,29 +44,45 @@
 //!
 //! The new core stages signal writes; nothing observes them until the
 //! driver calls [`World::flush`]. GTK dispatches author callbacks
-//! exclusively through signal closures the old `Backend` bodies
-//! connect, and every one captures the closure handed in at
-//! creation: `connect_clicked` (Button `Action::fire`),
-//! `GestureClick::connect_released` (Pressable),
-//! `connect_state_notify` (Toggle's `gtk::Switch`),
-//! `connect_value_changed` (Slider's `gtk::Scale`), and the
-//! ScrolledWindow h/v `Adjustment` `value-changed` signals
-//! (`on_scroll`). Under new-core the closures handed in ARE the
-//! caps-layer wrapped ones (wrapped BEFORE the UFCS delegation), so
-//! every GTK signal dispatch schedules a flush with zero host changes.
+//! exclusively through signal closures the mechanism bodies connect, and
+//! every one captures the closure handed in at creation. Under new-core
+//! the closures handed in ARE the caps-layer wrapped ones (wrapped
+//! BEFORE the UFCS delegation), so every GTK signal dispatch schedules a
+//! flush with zero host changes.
 //!
-//! Text input / text area `on_change`/`on_key_down`/`on_blur` are
-//! DROPPED by the scaffold today (never connected to the
-//! `Entry`/`TextView` change signals); graphics / portal / virtualizer
-//! are placeholders that fire nothing. All are wrapped uniformly
-//! anyway so the flush arrives for free the day a placeholder becomes
-//! a real widget.
+//! **Every author callback this backend accepts must be wrapped.** The
+//! full list, because an unwrapped one is invisible — it compiles, the
+//! widget still reacts to input, the reactive graph really does update,
+//! and only the commit is missing, so the sole symptom is a UI that
+//! quietly ignores the user:
 //!
-//! **Scheduler contract (honest statement).** The scaffold installs no
-//! `runtime_shared::scheduling::Scheduler` and this repo has no Linux
-//! host crate. Two regimes:
+//! - `connect_clicked` (Button `Action::fire`), `GestureClick::
+//!   connect_released` (Pressable **and** Link) — `flushing0`.
+//! - `connect_state_notify` (Toggle's `gtk::Switch`),
+//!   `connect_value_changed` (Slider's `gtk::Scale`), text input /
+//!   text area `on_change` — `flushing1`; `on_key_down` —
+//!   `flushing_key`.
+//! - ScrolledWindow h/v `Adjustment` `value-changed` (`on_scroll`) —
+//!   hand-written (two args). This is the scroll-spy path: a table of
+//!   contents writes its active-section signal from here.
+//! - `install_touch_handler` / `install_file_drop_handler` —
+//!   hand-written, because they RETURN a `TouchResponse` the backend
+//!   acts on, so the wrapper must forward the value rather than swallow
+//!   it.
+//! - `attach_states` (hover / press / focus → style variants) and
+//!   `install_hover_handler` — hand-written. See `states.rs`.
 //!
-//! - *No scheduler installed* (the scaffold's world today):
+//! Historical note, since it cost real debugging time: `create_link` was
+//! the one cap that delegated its callback RAW. The framework wraps
+//! navigator push/replace dispatch inside `on_activate`, so every in-app
+//! link fired, changed the route signal, and never re-rendered — the
+//! whole app read as "buttons don't do anything".
+//!
+//! **Scheduler contract.** `host-gtk` installs a
+//! `runtime_shared::scheduling::Scheduler` (and a `raf_loop` driver) on
+//! the GLib main loop. Two regimes:
+//!
+//! - *No scheduler installed* (a bare embedder, and most tests):
 //!   `schedule_microtask` falls back to SYNCHRONOUS execution off-Web
 //!   (the `runtime-shared::scheduling` contract), so the deduped flush
 //!   runs inline before the wrapped author callback returns. That is
@@ -87,25 +102,25 @@
 //!
 //! # Viewport
 //!
-//! **No viewport source on this scaffold.** `finish()` reads
-//! `host_window.width()/height()` directly for the Taffy pass, and
-//! nothing writes `runtime_shared::set_viewport_size` on EITHER core, so
-//! the world's viewport ctx keeps its default seed and old/new
-//! behavior matches by construction. When a resize seam lands (window
-//! `default-width`/`default-height` notify or surface layout signal)
-//! it must write the old TLS value and a new-core sink side by side —
-//! the terminal's `set_viewport` + `forward_viewport` pattern; the two
-//! sinks must never diverge.
+//! `run_layout` publishes the window size to BOTH sinks whenever it
+//! changes: `runtime_shared::set_viewport_size` (the legacy TLS) and
+//! `forward_viewport`, which feeds the per-world
+//! `runtime_vocabulary::viewport` ctx that v2 breakpoint resolution
+//! actually reads. The two must never diverge — the terminal backend's
+//! `set_viewport` + `forward_viewport` pairing is the model.
+//! `host-gtk` additionally seeds the viewport from its `RunOptions`
+//! before the first realize, because a component body may resolve a
+//! `__bp_*` overlay while constructing, and the window is not allocated
+//! yet at that point.
 //!
 //! # Residual seams (named, none silent)
 //!
-//! - `register_external` / `register_external_view` externals: author
-//!   callbacks an External leaf wires natively (its own GTK signals)
-//!   must call [`schedule_flush`] when those SDKs are ported.
-//! - The old-core `NavigatorRegistry`/inventory registrars keep
-//!   serving the old path only; new-core navigators are vocabulary
-//!   built-ins (swap/stack), so `Element::Navigator` routes through
-//!   `Backend::create_navigator` exactly as before.
+//! - Third-party payloads mounted through the scene `Registry`: author
+//!   callbacks such a leaf wires to its own GTK signals must call
+//!   [`schedule_flush`] themselves. Nothing in the caps layer can wrap
+//!   them, because the caps layer never sees them.
+//! - `trap_focus` on a portal is best-effort (focusable + grab on map).
+//!   Real modal focus confinement needs a `gtk::Window`-hosted popup.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -617,6 +632,20 @@ impl caps::InputOps for LinuxBackend {
         };
         LinuxBackend::install_file_drop_handler(self, node, handler)
     }
+
+    /// Author-facing `.on_hover(…)`. The trait default is a NO-OP, so
+    /// leaving it unimplemented is invisible: the node renders fine and
+    /// the callback simply never fires. See `states.rs`.
+    fn install_hover_handler(&mut self, node: &Self::Node, handler: runtime_shared::HoverHandler) {
+        let handler: runtime_shared::HoverHandler = {
+            let f = handler;
+            Rc::new(move |entered| {
+                f(entered);
+                schedule_flush();
+            })
+        };
+        crate::states::install_hover(&node.widget(), handler)
+    }
 }
 
 impl caps::PressableOps for LinuxBackend {
@@ -1039,6 +1068,36 @@ impl caps::StyleOps for LinuxBackend {
         // Delegates to the inherent GTK body — master's placeholder
         // here did not render at full fidelity.
         LinuxBackend::apply_style(self, _node, _style)
+    }
+
+    /// Drive `hover` / `pressed` / `focused` style variants from real GTK
+    /// input.
+    ///
+    /// `handles_states_natively()` is `false` here (the trait default,
+    /// and the right answer for GTK — there are no CSS pseudo-classes to
+    /// hand states off to), which selects the EVENT-DRIVEN path: the
+    /// framework hands us a setter and this backend is responsible for
+    /// calling it. The default body is a no-op, so leaving it
+    /// unimplemented compiles, renders every base style correctly, and
+    /// silently lights no variant at all — every hover highlight, press
+    /// feedback and focus ring in idea-ui was dead on Linux. See
+    /// `states.rs` for the event mapping.
+    fn attach_states(
+        &mut self,
+        node: &Self::Node,
+        setter: Rc<dyn Fn(runtime_shared::StateBits, bool)>,
+    ) {
+        // Dispatch-site glue: flipping a state bit stages the re-resolve;
+        // on native this IS the live state path, so it needs the flush
+        // like any other author-visible write. Mirrors macOS.
+        let setter: Rc<dyn Fn(runtime_shared::StateBits, bool)> = {
+            let f = setter;
+            Rc::new(move |bits, on| {
+                f(bits, on);
+                schedule_flush();
+            })
+        };
+        crate::states::attach(&node.widget(), setter)
     }
 }
 

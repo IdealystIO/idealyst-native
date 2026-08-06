@@ -103,6 +103,7 @@ mod gradient;
 mod handles;
 mod image;
 mod portal;
+mod states;
 mod sticky;
 mod touch;
 mod virtualizer;
@@ -561,9 +562,21 @@ impl LinuxBackend {
         }
     }
 
+    /// The node id backing `widget`, if this backend created it.
+    ///
+    /// Linear scan: the reverse map would have to be maintained on every
+    /// create/teardown to serve diagnostics and tests, which is not worth
+    /// the invariant. Not on any hot path.
+    pub fn node_id_of_widget(&self, widget: &gtk4::Widget) -> Option<u64> {
+        self.nodes
+            .iter()
+            .find(|(_, st)| st.widget.as_ptr() == widget.as_ptr())
+            .map(|(id, _)| *id)
+    }
+
     /// A node's current Taffy frame `(x, y, w, h)`, for handle `frame()`
     /// reads (welcome's orbit math reads the page's viewport size).
-    pub(crate) fn node_frame(&self, id: u64) -> Option<(f32, f32, f32, f32)> {
+    pub fn node_frame(&self, id: u64) -> Option<(f32, f32, f32, f32)> {
         self.nodes.get(&id).map(|s| s.frame)
     }
 
