@@ -320,6 +320,58 @@ impl ScrollObserverTarget {
     }
 }
 
+/// Wire an author `on_scroll` closure to `scroll_view`'s clip view and
+/// return the observer target for the caller to retain.
+///
+/// Shared by `create_scroll_view` and `create_virtualizer` — both wrap
+/// an `NSScrollView` and must report offsets identically (CLAUDE.md §7:
+/// the two primitives converge in observable behavior, so they cannot
+/// have independently-drifting scroll-reporting code).
+///
+/// Delivery is ASYNCHRONOUS (next main-queue turn), matching web, where
+/// a programmatic scroll fires its event after the current task rather
+/// than on the caller's stack. AppKit's bounds notification is
+/// synchronous, so dispatching inline re-enters the reactive system
+/// while the scrolling caller may still hold an arena borrow — that is
+/// the "RefCell already borrowed" abort from `handle.scroll_to(..)` in
+/// a click handler combined with a `signal.set` inside `on_scroll`.
+///
+/// Returns `None` when the scroll view has no clip view (nothing to
+/// observe); the caller then has nothing to retain.
+pub(crate) fn install_scroll_observer(
+    mtm: MainThreadMarker,
+    scroll_view: &objc2_app_kit::NSView,
+    callback: Rc<dyn Fn(f32, f32)>,
+) -> Option<Retained<NSObject>> {
+    let deferred: Rc<dyn Fn(f32, f32)> = Rc::new(move |x, y| {
+        let cb = callback.clone();
+        runtime_shared::schedule_microtask(move || cb(x, y));
+    });
+    let target = ScrollObserverTarget::new(mtm, deferred);
+
+    let clip_view: *mut objc2::runtime::AnyObject =
+        unsafe { msg_send![scroll_view, contentView] };
+    if clip_view.is_null() {
+        return None;
+    }
+    let _: () = unsafe { msg_send![clip_view, setPostsBoundsChangedNotifications: true] };
+    let center: *mut objc2::runtime::AnyObject =
+        unsafe { msg_send![objc2::class!(NSNotificationCenter), defaultCenter] };
+    let name: Retained<objc2_foundation::NSString> =
+        objc2_foundation::NSString::from_str("NSViewBoundsDidChangeNotification");
+    let sel = objc2::sel!(boundsDidChange:);
+    let _: () = unsafe {
+        msg_send![
+            center,
+            addObserver: &*target,
+            selector: sel,
+            name: &*name,
+            object: clip_view,
+        ]
+    };
+    Some(unsafe { Retained::cast::<NSObject>(target) })
+}
+
 // =========================================================================
 // PrivateLayerPassthroughView — the screen_recorder `PrivateLayer` overlay
 // window's root content view. The macOS analogue of iOS's

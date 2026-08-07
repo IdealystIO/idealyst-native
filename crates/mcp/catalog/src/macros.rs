@@ -176,8 +176,8 @@ inventory::submit! {
         invocation: "stylesheet! { … }",
         kind: MacroKind::Styling,
         module_path: "runtime_macros",
-        docs: "Declare a typed stylesheet with variants and per-state overrides. `state foo(theme) { … }` arms accept exactly the four framework interaction states (`hovered`, `pressed`, `focused`, `disabled`). See [[styling]] for the grammar.",
-        expansion: "",
+        docs: "Declare a typed stylesheet with variants and per-state overrides. The `<…>` slot names the sheet's TOKEN VOCABULARY and each block's binding IS that vocabulary, so a theme token is a checked path, not a string: `pub Card<IdeaThemeRef> { base(t) { padding: t.spacing.md(), background: t.color.surface() } }`. The accessor path is the token name (`t.spacing.md()` → `spacing-md`, `t.intent.primary.solid_bg()` → `intent-primary-solid-bg`); namespaces are `t.color.*`, `t.intent.<intent>.<slot>()`, `t.spacing.*`, `t.radius.*`, `t.typography.*_size()`. The binding carries names only — theme VALUES arrive at resolve time from the token registry, so `theme.colors.primary` does not compile. Declare `<()>` when the sheet has no vocabulary (write its bindings `_t`) and reference any tokens with `Tokenized::token(\"name\", fallback)` — still the right form for app-defined token names. Outside a stylesheet, `idea_ui::tokens()` hands back the same namespace. `state foo(t) { … }` arms accept exactly the four framework interaction states (`hovered`, `pressed`, `focused`, `disabled`). See [[styling]] for the grammar and [[theming]] for the token table.",
+        expansion: "builder fn + one enum per variant axis + `<name>_style() -> Rc<StyleSheet>`",
         _seal: (),
     }
 }

@@ -8,11 +8,11 @@
 //! ## Semantics
 //!
 //! A view with `Position::Sticky` behaves like `Relative` until
-//! its enclosing scroll container's `offset_y` would scroll the
-//! view's natural top above `threshold` from the scroll
-//! container's top edge. At that point the view pins at
-//! `threshold` from the scroll container's top edge. Scrolling
-//! back up un-pins it. Matches CSS sticky.
+//! its enclosing scroll container's offset would scroll the view's
+//! natural leading edge past `threshold` from the scroll container's
+//! own leading edge, on either axis. At that point the view pins at
+//! `threshold` from that edge. Scrolling back un-pins it. Matches
+//! CSS sticky.
 //!
 //! ## Implementation shape
 //!
@@ -20,20 +20,20 @@
 //!
 //! 1. **Registry** (this module). A side table on `WgpuBackend`
 //!    maps a sticky node's pointer → `StickyChild` carrying the
-//!    pin threshold + the cached natural y (in the enclosing
-//!    scroll view's content space). `apply_style` registers and
-//!    `drop_subtree` deregisters. Per frame, after Taffy
-//!    re-computes the layout, [`refresh_layout_positions`] walks
-//!    Taffy parents from each sticky child up to its enclosing
-//!    `ScrollView` and sums `frame.y` to derive natural-y.
+//!    pin thresholds + the cached natural position (in the
+//!    enclosing scroll view's content space). `apply_style`
+//!    registers and `drop_subtree` deregisters. Per frame, after
+//!    Taffy re-computes the layout, [`refresh_layout_positions`]
+//!    walks Taffy parents from each sticky child up to its enclosing
+//!    `ScrollView`, summing frame origins.
 //!
 //! 2. **Render-walk hook**. The render walker threads an
 //!    `Option<EnclosingScroll>` parameter through recursion; when
 //!    it encounters a node registered in the sticky registry, it
-//!    consults [`compute_translate`] and adds the resulting
-//!    y-shift to the node's draw origin. No matrix / transform
-//!    composition needed beyond what the existing animated
-//!    `translate_y` path already does.
+//!    consults `runtime_shared::sticky::translate` and adds the
+//!    resulting shift to the node's draw origin on both axes. No
+//!    matrix / transform composition needed beyond what the existing
+//!    animated `translate_x`/`translate_y` path already does.
 //!
 //! ## Why a registry side-table, not a flag on `NodeData`
 //!
@@ -45,15 +45,12 @@
 //! HashMap lookup keyed by node pointer — no per-frame ancestor
 //! walks.
 //!
-//! ## v1 scope
+//! ## Axis coverage
 //!
-//! Vertical pinning via the `top` field only, matching iOS v1.
-//! CSS sticky also supports `left`, `bottom`, and `right`;
-//! extending here means widening `StickyChild` to track each
-//! axis and threading both `(scroll_x, scroll_y)` into
-//! [`compute_translate`]. The render walker's enclosing-scroll
-//! handle already carries both offsets — only the registry and
-//! the natural-position cache need to widen.
+//! Leading-edge pinning on both axes — `top` against the enclosing
+//! scroll's `offset_y`, `left` against its `offset_x`. Trailing-edge
+//! (`bottom` / `right`) is not implemented; see
+//! `runtime_shared::sticky` for why.
 
 use std::collections::HashMap;
 
@@ -65,9 +62,10 @@ use crate::node::{NodeKind, WgpuNode};
 /// One sticky child registered against a scroll view.
 #[derive(Clone, Debug)]
 pub(crate) struct StickyChild {
-    /// Pin threshold, in px, read from `StyleRules.top`. The view
-    /// pins when `scroll_y + threshold > natural_y`.
-    pub(crate) threshold_top: f32,
+    /// Per-axis pin thresholds, in px, resolved from `StyleRules`
+    /// by `runtime_shared::sticky::StickyInsets` (`top` → vertical,
+    /// `left` → horizontal). An axis with no inset scrolls normally.
+    pub(crate) insets: StickyInsets,
     /// Layout id of the sticky child's Taffy node. Used by
     /// [`refresh_layout_positions`] to walk Taffy parents up to
     /// the enclosing scroll view.
@@ -80,12 +78,12 @@ pub(crate) struct StickyChild {
     /// the standard deregister path) but the render walker
     /// won't apply any pin transform.
     pub(crate) scroll_layout: Option<LayoutNode>,
-    /// Natural y of the child in the scroll view's content
+    /// Natural `(x, y)` of the child in the scroll view's content
     /// coordinate space, in px. Refreshed by
     /// [`refresh_layout_positions`] after each Taffy compute.
-    /// Initialized to 0; the first layout pass replaces it with a
-    /// real value before any render walk reads it.
-    pub(crate) natural_y: f32,
+    /// Initialized to the origin; the first layout pass replaces it
+    /// with real values before any render walk reads it.
+    pub(crate) natural: (f32, f32),
 }
 
 /// Map from sticky-node pointer (`Rc::as_ptr` cast to `usize`) →
@@ -95,51 +93,13 @@ pub(crate) struct StickyChild {
 /// per-node tween keys in the animator).
 pub(crate) type StickyRegistry = HashMap<usize, StickyChild>;
 
-/// Pure compute used by the per-frame walk and the unit tests.
-///
-/// Returns the y-translation that should be applied to the
-/// sticky child's draw origin given its natural layout y in the
-/// scroll view's content space, the configured pin threshold
-/// (the `top` value), and the scroll view's current `offset_y`.
-///
-/// The math is identical to iOS's — we duplicate the 3-line
-/// helper rather than share via `runtime_shared` because there's
-/// no other consumer and the inline copy keeps the call site
-/// readable.
-///
-/// TODO: horizontal sticky via `left` mirrors this shape with
-/// `(natural_x, threshold_left, scroll_x)`. Wire it once a
-/// real layout asks for it; CSS supports it but no current
-/// page uses it.
-#[inline]
-pub(crate) fn compute_translate(natural_y: f32, threshold_top: f32, scroll_y: f32) -> f32 {
-    // Pin condition: the natural top of the child has scrolled
-    // above the threshold band measured from the scroll view's
-    // top edge. Translate the child *down* by the overshoot so
-    // its rendered position stays at `scroll_y + threshold_top`.
-    let pinned_y = scroll_y + threshold_top;
-    if pinned_y > natural_y {
-        pinned_y - natural_y
-    } else {
-        0.0
-    }
-}
-
-/// Extract the pin threshold (the `top` value, in px) from a
-/// style. Percent / Auto aren't meaningful for the sticky pin
-/// offset (CSS resolves percent against the scroll container's
-/// padding box, but no current page uses that and the iOS
-/// reference treats both as zero); collapse to 0 here.
-pub(crate) fn threshold_top_from_style(style: &StyleRules) -> f32 {
-    style
-        .top
-        .as_ref()
-        .map(|t: &Tokenized<Length>| match t.resolve() {
-            Length::Px(v) => v,
-            _ => 0.0,
-        })
-        .unwrap_or(0.0)
-}
+// The pin arithmetic and the threshold extraction live in
+// `runtime_shared::sticky` — one implementation for every backend, so
+// the GPU renderer cannot drift from UIKit/AppKit (CLAUDE.md §7).
+// This module keeps only the wgpu mechanism: the registry keyed by
+// node pointer, the Taffy-parent natural-position walk, and the
+// render-walk hook that adds the pin to a draw origin.
+use runtime_shared::sticky::{translate, StickyInsets};
 
 /// Register a sticky child against its enclosing scroll view.
 ///
@@ -167,7 +127,7 @@ pub(crate) fn register(
     layout: &LayoutTree,
     roots: &[WgpuNode],
     node: &WgpuNode,
-    threshold_top: f32,
+    insets: StickyInsets,
 ) -> bool {
     let node_key = std::rc::Rc::as_ptr(node) as usize;
     let child_layout = node.borrow().layout;
@@ -175,10 +135,10 @@ pub(crate) fn register(
     registry.insert(
         node_key,
         StickyChild {
-            threshold_top,
+            insets,
             child_layout,
             scroll_layout,
-            natural_y: 0.0,
+            natural: (0.0, 0.0),
         },
     );
     scroll_layout.is_some()
@@ -260,11 +220,10 @@ fn find_node_by_layout_recursive(node: &WgpuNode, target: LayoutNode) -> Option<
     None
 }
 
-/// Refresh the cached `natural_y` for every sticky child after a
+/// Refresh the cached natural `(x, y)` for every sticky child after a
 /// Taffy compute. Walks layout parents from the child up to (but
-/// not including) its registered scroll view, summing
-/// `frame_of(...).y`. Identical algorithm to iOS's
-/// `compute_natural_y_in_scroll`.
+/// not including) its registered scroll view, summing frame origins.
+/// Identical algorithm to iOS's `compute_natural_in_scroll`.
 ///
 /// Cheap: O(sum of sticky-child depths). The registry is tiny by
 /// construction — at most a handful of sticky elements per app.
@@ -272,13 +231,13 @@ pub(crate) fn refresh_layout_positions(registry: &mut StickyRegistry, layout: &L
     for child in registry.values_mut() {
         let Some(scroll_layout) = child.scroll_layout else {
             // No scroll ancestor — render walker won't apply any
-            // pin transform regardless of `natural_y`. Leaving the
+            // pin transform regardless of `natural`. Leaving the
             // value untouched matches the "no-op when no scroll
             // ancestor" branch in the walker.
             continue;
         };
-        let Some(natural_y) =
-            compute_natural_y_in_scroll(child.child_layout, scroll_layout, layout)
+        let Some(natural) =
+            compute_natural_in_scroll(child.child_layout, scroll_layout, layout)
         else {
             // Couldn't trace child up to the scroll view (the
             // child may have been detached mid-frame or the
@@ -287,23 +246,29 @@ pub(crate) fn refresh_layout_positions(registry: &mut StickyRegistry, layout: &L
             // pass will retry.
             continue;
         };
-        child.natural_y = natural_y;
+        child.natural = natural;
     }
 }
 
-/// Sum Taffy `frame_of(...).y` from `child` up to (but not
-/// including) `scroll`. Returns `None` if we walk off the root
+/// Sum Taffy frame origins from `child` up to (but not including)
+/// `scroll`, on both axes. Returns `None` if we walk off the root
 /// without finding `scroll`.
-fn compute_natural_y_in_scroll(
+///
+/// Both axes summed unconditionally: a reactive style change can add
+/// a `left` inset between layout passes, and a child that only
+/// tracked y would then pin against a stale natural x.
+fn compute_natural_in_scroll(
     child: LayoutNode,
     scroll: LayoutNode,
     layout: &LayoutTree,
-) -> Option<f32> {
-    let mut sum_y = 0.0_f32;
+) -> Option<(f32, f32)> {
+    let mut sum = (0.0_f32, 0.0_f32);
     let mut cursor = child;
     let mut steps = 0;
     while cursor != scroll {
-        sum_y += layout.frame_of(cursor).y;
+        let frame = layout.frame_of(cursor);
+        sum.0 += frame.x;
+        sum.1 += frame.y;
         let parent = layout.parent_of(cursor)?;
         cursor = parent;
         steps += 1;
@@ -313,7 +278,7 @@ fn compute_natural_y_in_scroll(
             return None;
         }
     }
-    Some(sum_y)
+    Some(sum)
 }
 
 /// Render-walk context describing the nearest enclosing scroll
@@ -326,10 +291,10 @@ pub(crate) struct EnclosingScroll {
     /// [`StickyChild::scroll_layout`] when the child is registered
     /// against this scroll view.
     pub(crate) scroll_layout: LayoutNode,
-    /// Current `offset_y` of the scroll view, read once at walk
-    /// time so a sticky child sees the same scroll position as
-    /// the surrounding rect generation.
-    pub(crate) scroll_offset_y: f32,
+    /// Current `(offset_x, offset_y)` of the scroll view, read once
+    /// at walk time so a sticky child sees the same scroll position
+    /// as the surrounding rect generation.
+    pub(crate) scroll_offset: (f32, f32),
 }
 
 // =========================================================================
@@ -359,51 +324,54 @@ mod tests {
     //! regression test there.
     use super::*;
 
-    /// Pin compute: scrolling past the threshold translates the
-    /// child down by the overshoot; scrolling above the threshold
-    /// leaves the child at its natural position. Boundary case
-    /// (`scroll_y + threshold == natural_y`) stays at 0 — matches
-    /// the iOS reference's `>` (strict) comparison.
+    /// Which DRAW-ORIGIN component the render hook shifts. The pin
+    /// arithmetic's own regressions (including the strict-`>`
+    /// boundary) live with the arithmetic in `runtime_shared::sticky`;
+    /// what this backend owns is composing the result into
+    /// `(base_x, base_y)` — and the renderer adds both components
+    /// unconditionally, so an axis the element does not pin on must
+    /// come back exactly `0.0` or the draw origin drifts sideways.
     #[test]
     fn regression_sticky_compute_translate_pins_past_threshold() {
         // Child sits at y=100 in the scroll view's content; pin
         // threshold (top) is 20px from the scroll view's top edge.
-        let natural_y = 100.0;
-        let threshold = 20.0;
+        let vertical = StickyInsets { top: Some(20.0), left: None };
+        let natural = (7.0_f32, 100.0_f32);
 
-        // Far above the pin point — no translate.
-        assert_eq!(compute_translate(natural_y, threshold, 0.0), 0.0);
+        // Far above the pin point — no translate on either axis.
+        assert_eq!(translate(vertical, natural, (0.0, 0.0)), (0.0, 0.0));
 
-        // Just at the pin point (scroll_y + threshold == natural_y).
-        // Boundary: still 0 (`>` strict).
-        assert_eq!(compute_translate(natural_y, threshold, 80.0), 0.0);
-
-        // 1px past the pin point — translate by 1px.
-        let t = compute_translate(natural_y, threshold, 81.0);
-        assert!((t - 1.0).abs() < 1e-5, "expected ~1.0, got {t}");
-
-        // Way past the pin point — translate compensates fully so
-        // the child renders at scroll_y + threshold = 300.
-        let t = compute_translate(natural_y, threshold, 280.0);
+        // Way past the pin point: y compensates fully so the child
+        // renders at scroll_y + threshold = 300, and x stays 0 so
+        // `base_x` keeps its laid-out value.
+        let (dx, dy) = translate(vertical, natural, (0.0, 280.0));
+        assert_eq!(dx, 0.0, "a vertical-only pin must not shift base_x");
         assert!(
-            (t - 200.0).abs() < 1e-5,
-            "expected ~200.0 (so rendered y == scroll_y + threshold = 300), got {t}",
+            ((natural.1 + dy) - 300.0).abs() < 1e-5,
+            "pinned rendered y should equal scroll_y + threshold",
         );
+    }
 
-        // Sanity: rendered y while pinned == scroll_y + threshold.
-        let scroll_y = 500.0;
-        let t = compute_translate(natural_y, threshold, scroll_y);
-        let rendered_y = natural_y + t;
+    /// A frozen COLUMN on the GPU backend: `left` shifts `base_x`
+    /// against the enclosing scroll's `offset_x` while the child
+    /// scrolls freely vertically. Before horizontal support the
+    /// registry held a single `threshold_top` and `EnclosingScroll`
+    /// only carried `offset_y`, so this was unreachable.
+    #[test]
+    fn regression_sticky_left_never_pins_horizontally() {
+        let horizontal = StickyInsets { top: None, left: Some(0.0) };
+        let (dx, dy) = translate(horizontal, (160.0, 40.0), (600.0, 250.0));
         assert!(
-            (rendered_y - (scroll_y + threshold)).abs() < 1e-5,
-            "pinned rendered_y should equal scroll_y + threshold",
+            ((160.0 + dx) - 600.0).abs() < 1e-5,
+            "pinned rendered x should equal scroll_x + threshold",
         );
+        assert_eq!(dy, 0.0, "a horizontal-only pin must not shift base_y");
     }
 
     /// Registry must shrink back to empty after a register +
     /// deregister round-trip. The leak-equivalent regression
     /// would surface as a non-empty registry after deregister and
-    /// would leave stale `natural_y` values pinned to a since-
+    /// would leave stale `natural` values pinned to a since-
     /// removed node id (which the renderer would then read every
     /// frame, producing ghost translates on whatever node Rc
     /// happens to reuse the slot).
@@ -431,7 +399,7 @@ mod tests {
         // shape `register` produces — except for `child_layout` /
         // `scroll_layout`, which we leave at a dummy value pulled
         // from a fresh `LayoutTree`. The test only inspects
-        // `registry.len()`, `contains_key`, and the `threshold_top`
+        // `registry.len()`, `contains_key`, and the `insets`
         // round-trip, so the layout-id values are inert.
         let mut layout = LayoutTree::new();
         let dummy_a = layout.new_node();
@@ -440,25 +408,25 @@ mod tests {
         registry.insert(
             key_a,
             StickyChild {
-                threshold_top: 12.0,
+                insets: StickyInsets { top: Some(12.0), left: None },
                 child_layout: dummy_a,
                 scroll_layout: None,
-                natural_y: 0.0,
+                natural: (0.0, 0.0),
             },
         );
         registry.insert(
             key_b,
             StickyChild {
-                threshold_top: 16.0,
+                insets: StickyInsets { top: Some(16.0), left: None },
                 child_layout: dummy_b,
                 scroll_layout: None,
-                natural_y: 0.0,
+                natural: (0.0, 0.0),
             },
         );
         assert_eq!(registry.len(), 2);
         assert!(registry.contains_key(&key_a));
         assert!(registry.contains_key(&key_b));
-        assert_eq!(registry.get(&key_a).unwrap().threshold_top, 12.0);
+        assert_eq!(registry.get(&key_a).unwrap().insets.top, Some(12.0));
 
         // Simulate one node being removed via `drop_subtree` → the
         // `deregister_by_ptr` path. The OTHER entry must survive.
@@ -502,20 +470,21 @@ mod tests {
         registry.insert(
             key,
             StickyChild {
-                threshold_top: 20.0,
+                insets: StickyInsets { top: Some(20.0), left: None },
                 child_layout: dummy,
                 scroll_layout: None,
-                natural_y: 0.0,
+                natural: (0.0, 0.0),
             },
         );
 
         // refresh_layout_positions must NOT panic and must NOT
-        // touch `natural_y` for an entry with no scroll ancestor.
+        // touch `natural` for an entry with no scroll ancestor.
         refresh_layout_positions(&mut registry, &layout);
         let entry = registry.get(&key).unwrap();
         assert_eq!(
-            entry.natural_y, 0.0,
-            "natural_y must stay at its initial value when scroll_layout is None",
+            entry.natural,
+            (0.0, 0.0),
+            "natural must stay at its initial value when scroll_layout is None",
         );
         assert!(
             entry.scroll_layout.is_none(),
@@ -527,9 +496,13 @@ mod tests {
         // `scroll_layout: None` blocking the walker's lookup,
         // this is the structural fall-back-to-relative property.)
         assert_eq!(
-            compute_translate(100.0, 20.0, 0.0),
-            0.0,
-            "scroll_y=0 implies no pin regardless of threshold",
+            translate(
+                StickyInsets { top: Some(20.0), left: Some(20.0) },
+                (100.0, 100.0),
+                (0.0, 0.0),
+            ),
+            (0.0, 0.0),
+            "zero scroll implies no pin on either axis, regardless of threshold",
         );
     }
 }

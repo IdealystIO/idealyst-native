@@ -135,20 +135,25 @@ stylesheet! {
 
 A few things about the grammar:
 
-- The `<()>` slot and the `(_theme)` bindings are **vestigial** —
-  parsed for backward-compatibility but ignored. Closures don't receive
-  a theme; reading `theme.*` inside a body is a compile error
-  (`check_no_theme_refs`). Write `(_theme)` (or any `_`-prefixed name)
-  and pull theme values from tokens instead.
+- The `<…>` slot names the sheet's **token vocabulary**, and each block's
+  binding (`base(t)`) is that vocabulary. `<()>` declares none — its
+  bindings are conventionally written `_theme` / `_t`. The binding carries
+  token *names*, not the theme's values: values still arrive at resolve
+  time from the token registry, which is what makes a theme swap one write
+  per token. Reading `theme.colors.primary` therefore doesn't compile —
+  there is no such field.
 - `Tokenized::token("name", fallback)` references a style token; a bare
   literal (`padding: 8.0`, `background: "#fff"`) becomes
   `Tokenized::Literal` via `From`. The `fallback` is mandatory at this
   layer — runtime-core doesn't know any palette, so a token reference
-  must carry its own default. If you're styling on top of the **idea-ui
-  design system**, reach for its `theme_token!("color-surface")` /
-  `theme_length!("spacing-md")` macros instead: they pull the fallback
-  from idea-theme's canonical palette (so you restate no hex) and check
-  the name at compile time. See the idea-ui theming guide.
+  must carry its own default. Use this form for tokens your app defines
+  itself. If you're styling on top of the **idea-ui design system**,
+  declare `<IdeaThemeRef>` and name its tokens through the binding
+  instead — `background: t.color.surface()`, `padding: t.spacing.md()`.
+  The accessor path *is* the token name, the fallback comes from
+  idea-theme's palette (so you restate no hex), and a name that doesn't
+  exist fails the build rather than silently rendering its fallback. See
+  the idea-ui theming guide.
 
 It produces:
 

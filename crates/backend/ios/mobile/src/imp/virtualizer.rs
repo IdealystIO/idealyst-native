@@ -230,6 +230,36 @@ declare_class!(
         }
     }
 
+    // ---- UIScrollViewDelegate ----
+    //
+    // `UICollectionViewDelegate` refines `UIScrollViewDelegate`, and a
+    // UICollectionView IS a UIScrollView, so the author's `on_scroll`
+    // rides the delegate this object already is — no second delegate
+    // object to install, and no risk of one clobbering the other
+    // (UIKit allows exactly one `delegate`).
+    unsafe impl VirtualizerDataSource {
+        #[method(scrollViewDidScroll:)]
+        fn scroll_view_did_scroll(&self, scroll_view: &NSObject) {
+            if !*self.ivars().alive.borrow() {
+                return;
+            }
+            let on_scroll = {
+                let cb_opt = self.ivars().callbacks.borrow();
+                cb_opt.as_ref().and_then(|c| c.on_scroll.clone())
+            };
+            let Some(on_scroll) = on_scroll else { return };
+            // `contentOffset` in UIKit points — the same units the web
+            // backend reports in CSS pixels and macOS reports from its
+            // clip-view bounds origin. Delivery to the author is
+            // deferred (see `create`, which wraps the closure), so what
+            // runs here is only the read + enqueue.
+            let offset: CGPoint = unsafe { msg_send![scroll_view, contentOffset] };
+            crate::imp::ffi_guard::guard_ffi("VirtualizerDataSource::scrollViewDidScroll", || {
+                on_scroll(offset.x as f32, offset.y as f32)
+            });
+        }
+    }
+
     // ---- UICollectionViewDelegateFlowLayout ----
     unsafe impl VirtualizerDataSource {
         #[method(collectionView:layout:sizeForItemAtIndexPath:)]
@@ -492,10 +522,26 @@ pub(crate) struct VirtualizerInstance {
 pub(crate) fn create(
     mtm: MainThreadMarker,
     instances: &mut HashMap<usize, VirtualizerInstance>,
-    callbacks: VirtualizerCallbacks<IosNode>,
+    mut callbacks: VirtualizerCallbacks<IosNode>,
     _overscan: f32,
     layout: VirtualLayout,
 ) -> Retained<UIView> {
+    // Deliver the author's `on_scroll` ASYNCHRONOUSLY (next turn),
+    // matching `create_scroll_view` and web. `scrollViewDidScroll:`
+    // fires synchronously from `setContentOffset`, so a handler that
+    // scrolls inside a `Ref::with` (holding the refs/arena borrow)
+    // while `on_scroll` writes a signal would re-enter the reactive
+    // arena and abort with "RefCell already borrowed". The scroll_view
+    // twin hit exactly this; a virtualizer is the same UIScrollView on
+    // the same delegate channel, so it needs the same deferral rather
+    // than rediscovering the crash (Rule #7).
+    callbacks.on_scroll = callbacks.on_scroll.take().map(|cb| -> Rc<dyn Fn(f32, f32)> {
+        Rc::new(move |x, y| {
+            let cb = cb.clone();
+            runtime_shared::schedule_microtask(move || cb(x, y));
+        })
+    });
+
     // `overscan` is parked: UICollectionView's built-in cell prefetch
     // (default-on since iOS 10) already overscans implicitly; exposing
     // an exact-count knob would require either a custom
@@ -694,6 +740,7 @@ mod tests {
             }),
             release_item: Rc::new(|_| {}),
             set_measured_size: Rc::new(|_, _| {}),
+            on_scroll: None,
         }
     }
 

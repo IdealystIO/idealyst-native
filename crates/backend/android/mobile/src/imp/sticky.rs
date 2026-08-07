@@ -1,8 +1,8 @@
 //! `Position::Sticky` on Android — pins views to their enclosing
 //! `ScrollView` / `HorizontalScrollView` as the user scrolls. Mirror
 //! of `backend/ios/mobile/src/imp/sticky.rs`; see that file for the
-//! shared design rationale (side registry, layout-y caching, v1
-//! vertical-only scope). Differences below are Android-specific.
+//! shared design rationale (side registry, natural-position caching,
+//! axis coverage). Differences below are Android-specific.
 //!
 //! ## Hosting choice — side registry, not subclass
 //!
@@ -37,19 +37,27 @@
 //! All registry state is stored in `dp` (the dimension Taffy
 //! produces and `StyleRules` reason in). The scroll listener
 //! receives device pixels from Android; we convert at the entry
-//! point. `View.setTranslationY` takes device pixels per
-//! `[[project_android_setTranslation_device_px]]` — we convert with
-//! `dp_to_px` at the apply site.
+//! point. `View.setTranslationX/Y` take device pixels per
+//! `[[project_android_setTranslation_device_px]]` — we convert at the
+//! apply site.
 //!
-//! ## Layout-y caching
+//! ## Natural-position caching
 //!
-//! Same rationale as iOS: `View.setTranslationY` shifts the view's
+//! Same rationale as iOS: `View.setTranslationX/Y` shift the view's
 //! drawn position without changing its layout frame, so reading
-//! `view.getY()` after applying a translation returns a corrupted
-//! natural-y. We walk Taffy parents from the sticky child to the
-//! scroll view summing per-node `frame_of(node).y`, exactly like
-//! iOS. Taffy frames are pure layout output, unaffected by Android
-//! transforms.
+//! `view.getX()/getY()` after applying a translation returns a
+//! corrupted natural position. We walk Taffy parents from the sticky
+//! child to the scroll view summing per-node `frame_of(node)`, exactly
+//! like iOS. Taffy frames are pure layout output, unaffected by
+//! Android transforms.
+//!
+//! ## Axis coverage
+//!
+//! Leading-edge pinning on both axes — `top` off `getScrollY()`,
+//! `left` off `getScrollX()`. Unlike UIKit's single `setTransform:`,
+//! Android has two independent setters, so `write_translate`
+//! epsilon-gates each axis separately. Trailing-edge (`bottom` /
+//! `right`) is not implemented; see `runtime_shared::sticky`.
 
 use std::collections::HashMap;
 
@@ -58,29 +66,30 @@ use jni::JNIEnv;
 
 /// Sub-pixel threshold below which the sticky scroll-event handler
 /// treats the child as already in the right place. Avoids per-event
-/// `setTranslationY` churn when the scroll position isn't actually
+/// `setTranslationX/Y` churn when the scroll position isn't actually
 /// changing the translation. Matches iOS's `STICKY_EPSILON`.
 const STICKY_EPSILON: f32 = 0.5;
 
 /// One sticky child registered against a scroll view.
 pub(crate) struct StickyChild {
     /// Global ref to the child's `View`. Held so the per-scroll
-    /// recompute can call `setTranslationY` even if the framework's
+    /// recompute can call `setTranslationX/Y` even if the framework's
     /// own retain is released — the `deregister` path drops this
     /// entry well before that happens.
     pub(crate) view: GlobalRef,
-    /// Pin threshold, in dp, read from `StyleRules.top`. The view
-    /// pins when `scroll_y_dp + threshold_top > layout_y_dp`.
-    pub(crate) threshold_top: f32,
-    /// Natural y of the child in the scroll view's content
+    /// Per-axis pin thresholds, in dp, resolved from `StyleRules`
+    /// by `runtime_shared::sticky::StickyInsets` (`top` → vertical,
+    /// `left` → horizontal). An axis with no inset scrolls normally.
+    pub(crate) insets: StickyInsets,
+    /// Natural `(x, y)` of the child in the scroll view's content
     /// coordinate space, in dp. Refreshed after every layout pass
-    /// by [`refresh_layout_positions`]. Initialized to 0; the first
-    /// layout pass replaces it with a real value.
-    pub(crate) layout_y: f32,
-    /// Last applied translation, in dp. Used to epsilon-skip
-    /// redundant `setTranslationY` writes — matches the iOS
-    /// implementation's `current_translate_y` read.
-    pub(crate) last_translate: f32,
+    /// by [`refresh_layout_positions`]. Initialized to the origin;
+    /// the first layout pass replaces it with real values.
+    pub(crate) layout: (f32, f32),
+    /// Last applied translation, in dp, per axis. Used to
+    /// epsilon-skip redundant `setTranslationX/Y` writes — matches
+    /// the iOS implementation's `current_translate` read.
+    pub(crate) last_translate: (f32, f32),
 }
 
 /// Per-scroll-view sticky state. Listener lifecycle lives in the
@@ -100,35 +109,17 @@ pub(crate) struct StickyScrollEntry {
 /// Map from scroll view's JObject pointer → sticky bookkeeping.
 pub(crate) type StickyRegistry = HashMap<usize, StickyScrollEntry>;
 
-/// Pure compute used by the per-scroll-event handler and the unit
-/// tests.
-///
-/// Returns the translation (in dp) that should be applied to the
-/// sticky child given its natural layout y in the scroll view's
-/// content space, the configured pin threshold (the `top` value),
-/// and the scroll view's current scroll position. All inputs are
-/// in dp; output is in dp.
-///
-/// TODO: horizontal sticky via `left` mirrors this shape with
-/// `(layout_x, threshold_left, scroll_x)`. Wire it once an author
-/// asks for it; matches the iOS module's same-shape TODO.
-#[inline]
-pub(crate) fn compute_translate_dp(
-    layout_y_dp: f32,
-    threshold_dp: f32,
-    scroll_y_dp: f32,
-) -> f32 {
-    // Pin condition: the natural top of the child has scrolled
-    // above the threshold band measured from the scroll view's
-    // top edge. Translate the child *down* by the overshoot so its
-    // rendered position stays at `scroll_y + threshold_top`.
-    let pinned_y = scroll_y_dp + threshold_dp;
-    if pinned_y > layout_y_dp {
-        pinned_y - layout_y_dp
-    } else {
-        0.0
-    }
-}
+// The pin arithmetic lives in `runtime_shared::sticky` — one
+// implementation for every backend, so Android and UIKit cannot drift
+// apart (CLAUDE.md §7). This module keeps only the Android mechanism:
+// the scroll-listener trampoline, the dp<->px conversion, and the
+// `setTranslationX/Y` writes.
+//
+// NOTE the units: the shared helper is unit-agnostic and everything
+// handed to it here is dp. `setTranslation*` takes device pixels
+// ([[project_android_setTranslation_device_px]]), so the RESULT is
+// converted back at each write site — never the inputs.
+use runtime_shared::sticky::{translate, StickyInsets};
 
 /// Walk `view`'s parent chain looking for a `ScrollView` or
 /// `HorizontalScrollView` ancestor. Returns the matching parent's
@@ -140,11 +131,12 @@ pub(crate) fn compute_translate_dp(
 /// We accept both Android scroll-view shapes (`ScrollView` and
 /// `HorizontalScrollView`) because the framework's
 /// `create_scroll_view(horizontal)` chooses based on direction;
-/// the sticky implementation only cares about the vertical scroll
-/// position today, so a HorizontalScrollView ancestor still
-/// satisfies "you're inside a scroll container" — it just won't
-/// pin (compute_translate's `scroll_y` will always be 0). Future
-/// horizontal-sticky support reuses the same ancestor walk.
+/// both are recognised as "you're inside a scroll container". Which
+/// axis actually pins is decided by the child's insets, not by the
+/// ancestor's shape: a `HorizontalScrollView` reports movement on
+/// `getScrollX()`, so a `left`-inset child pins there while a
+/// `top`-inset child inside it simply never moves (its axis never
+/// scrolls) — the same outcome CSS gives.
 pub(crate) fn find_enclosing_scroll_view(
     env: &mut JNIEnv,
     view: &JObject,
@@ -217,7 +209,7 @@ pub(crate) fn register(
     registry: &mut StickyRegistry,
     scroll_listeners: &mut HashMap<usize, GlobalRef>,
     view: &GlobalRef,
-    threshold_top: f32,
+    insets: StickyInsets,
     on_scroll_observers: &HashMap<usize, std::rc::Rc<dyn Fn(f32, f32)>>,
 ) -> bool {
     let child_key = key_of(view);
@@ -239,9 +231,9 @@ pub(crate) fn register(
         child_key,
         StickyChild {
             view: view.clone(),
-            threshold_top,
-            layout_y: 0.0,
-            last_translate: 0.0,
+            insets,
+            layout: (0.0, 0.0),
+            last_translate: (0.0, 0.0),
         },
     );
 
@@ -273,15 +265,13 @@ pub(crate) fn deregister(
     for (scroll_key, entry) in registry.iter_mut() {
         if entry.children.remove(&child_key).is_some() {
             // Reset translation on the freshly-deregistered view so
-            // a previously-pinned translate doesn't persist. Pass
-            // 0.0 dp; the JVM-side `setTranslationY` takes device
-            // pixels but converting 0 → 0 doesn't need density.
-            let _ = env.call_method(
-                view.as_obj(),
-                "setTranslationY",
-                "(F)V",
-                &[JValue::Float(0.0)],
-            );
+            // a previously-pinned translate doesn't persist. BOTH
+            // axes: a horizontally-pinned child left with a stale
+            // `translationX` would sit off to the side of its laid-out
+            // position for the rest of its life. Pass 0.0 dp; the
+            // JVM-side setters take device pixels but converting
+            // 0 → 0 doesn't need density.
+            reset_translation(env, view);
             if entry.children.is_empty() {
                 emptied_scrolls.push(*scroll_key);
             }
@@ -316,12 +306,7 @@ pub(crate) fn deregister_scroll_view(
         return;
     };
     for (_, child) in entry.children.drain() {
-        let _ = env.call_method(
-            child.view.as_obj(),
-            "setTranslationY",
-            "(F)V",
-            &[JValue::Float(0.0)],
-        );
+        reset_translation(env, &child.view);
     }
     release_scroll_listener_if_unused(
         env,
@@ -331,6 +316,13 @@ pub(crate) fn deregister_scroll_view(
         registry,
         on_scroll_observers,
     );
+}
+
+/// Clear both translation axes on a view leaving the sticky registry.
+fn reset_translation(env: &mut JNIEnv, view: &GlobalRef) {
+    for setter in ["setTranslationX", "setTranslationY"] {
+        let _ = env.call_method(view.as_obj(), setter, "(F)V", &[JValue::Float(0.0)]);
+    }
 }
 
 /// Install the Kotlin `RustStickyScrollListener` on `scroll_view`
@@ -441,7 +433,7 @@ pub(crate) fn on_scroll_event(
     env: &mut JNIEnv,
     registry: &mut StickyRegistry,
     scroll_key: usize,
-    _scroll_x_px: f32,
+    scroll_x_px: f32,
     scroll_y_px: f32,
 ) {
     let Some(entry) = registry.get_mut(&scroll_key) else {
@@ -457,24 +449,48 @@ pub(crate) fn on_scroll_event(
     // and produce visibly-wrong pin positions on those devices.
     let density = super::density_of(env, &entry.scroll_view.as_obj()).unwrap_or(1.0);
     let density = if density <= 0.0 { 1.0 } else { density };
-    let scroll_y_dp = scroll_y_px / density;
+    let scroll_dp = (scroll_x_px / density, scroll_y_px / density);
 
     for (_, child) in entry.children.iter_mut() {
-        let translate_dp =
-            compute_translate_dp(child.layout_y, child.threshold_top, scroll_y_dp);
-        if (translate_dp - child.last_translate).abs() < STICKY_EPSILON {
-            continue;
-        }
-        // `setTranslationY` takes device pixels —
-        // [[project_android_setTranslation_device_px]].
-        let translate_px = translate_dp * density;
+        let t_dp = translate(child.insets, child.layout, scroll_dp);
+        write_translate(env, child, t_dp, density);
+    }
+}
+
+/// Apply a per-axis translate to a sticky child, epsilon-skipping the
+/// JNI write on each axis independently.
+///
+/// Per-axis rather than all-or-nothing: `setTranslationX` and
+/// `setTranslationY` are separate setters (unlike UIKit's single
+/// `setTransform:`), so a child that is pinned horizontally and free
+/// vertically would otherwise pay a redundant `setTranslationY(0)`
+/// on every frame of a vertical scroll.
+fn write_translate(
+    env: &mut JNIEnv,
+    child: &mut StickyChild,
+    translate_dp: (f32, f32),
+    density: f32,
+) {
+    let (dx, dy) = translate_dp;
+    // `setTranslation*` takes device pixels —
+    // [[project_android_setTranslation_device_px]].
+    if (dx - child.last_translate.0).abs() >= STICKY_EPSILON {
+        let _ = env.call_method(
+            child.view.as_obj(),
+            "setTranslationX",
+            "(F)V",
+            &[JValue::Float(dx * density)],
+        );
+        child.last_translate.0 = dx;
+    }
+    if (dy - child.last_translate.1).abs() >= STICKY_EPSILON {
         let _ = env.call_method(
             child.view.as_obj(),
             "setTranslationY",
             "(F)V",
-            &[JValue::Float(translate_px)],
+            &[JValue::Float(dy * density)],
         );
-        child.last_translate = translate_dp;
+        child.last_translate.1 = dy;
     }
 }
 
@@ -518,38 +534,30 @@ pub(crate) fn refresh_layout_positions(
         // shortcut.
         let density = super::density_of(env, &entry.scroll_view.as_obj()).unwrap_or(1.0);
         let density = if density <= 0.0 { 1.0 } else { density };
-        let scroll_y_px = env
-            .call_method(entry.scroll_view.as_obj(), "getScrollY", "()I", &[])
-            .and_then(|v| v.i())
-            .unwrap_or(0) as f32;
-        let scroll_y_dp = scroll_y_px / density;
+        let read_scroll = |env: &mut JNIEnv, method: &str| {
+            env.call_method(entry.scroll_view.as_obj(), method, "()I", &[])
+                .and_then(|v| v.i())
+                .unwrap_or(0) as f32
+        };
+        let scroll_x_px = read_scroll(env, "getScrollX");
+        let scroll_y_px = read_scroll(env, "getScrollY");
+        let scroll_dp = (scroll_x_px / density, scroll_y_px / density);
 
         for (child_key, child) in entry.children.iter_mut() {
-            if let Some(layout_y) = compute_layout_y_in_scroll(
+            if let Some(natural) = compute_layout_in_scroll(
                 *child_key,
                 scroll_key,
                 layout,
                 view_to_layout,
             ) {
-                child.layout_y = layout_y;
+                child.layout = natural;
             }
             // Recompute against the live scroll position so a
             // tree-rebuild-without-scroll picks up the corrected
-            // layout-y immediately. Skips the JNI write when
-            // unchanged (epsilon-gated).
-            let translate_dp =
-                compute_translate_dp(child.layout_y, child.threshold_top, scroll_y_dp);
-            if (translate_dp - child.last_translate).abs() < STICKY_EPSILON {
-                continue;
-            }
-            let translate_px = translate_dp * density;
-            let _ = env.call_method(
-                child.view.as_obj(),
-                "setTranslationY",
-                "(F)V",
-                &[JValue::Float(translate_px)],
-            );
-            child.last_translate = translate_dp;
+            // natural position immediately. Skips the JNI write when
+            // unchanged (epsilon-gated, per axis).
+            let t_dp = translate(child.insets, child.layout, scroll_dp);
+            write_translate(env, child, t_dp, density);
         }
     }
 }
@@ -558,21 +566,26 @@ pub(crate) fn refresh_layout_positions(
 /// including) `scroll_key`. Returns `None` if we can't trace the
 /// chain (child or an ancestor isn't in `view_to_layout`, or we
 /// walked off the root without finding the scroll view).
-fn compute_layout_y_in_scroll(
+fn compute_layout_in_scroll(
     child_key: usize,
     scroll_key: usize,
     layout: &runtime_layout::LayoutTree,
     view_to_layout: &HashMap<usize, (GlobalRef, runtime_layout::LayoutNode)>,
-) -> Option<f32> {
+) -> Option<(f32, f32)> {
     let (_, child_node) = view_to_layout.get(&child_key)?;
     let (_, scroll_node) = view_to_layout.get(&scroll_key)?;
 
-    let mut sum_y = 0.0_f32;
+    // Both axes summed unconditionally: a reactive style change can
+    // add a `left` inset between layout passes, and a child that only
+    // tracked y would then pin against a stale natural x.
+    let mut sum = (0.0_f32, 0.0_f32);
     let mut cursor = *child_node;
 
     let mut steps = 0;
     while cursor != *scroll_node {
-        sum_y += layout.frame_of(cursor).y;
+        let frame = layout.frame_of(cursor);
+        sum.0 += frame.x;
+        sum.1 += frame.y;
         let Some(parent) = layout.parent_of(cursor) else {
             return None;
         };
@@ -582,7 +595,7 @@ fn compute_layout_y_in_scroll(
             return None;
         }
     }
-    Some(sum_y)
+    Some(sum)
 }
 
 // =========================================================================
@@ -591,10 +604,10 @@ fn compute_layout_y_in_scroll(
 //
 // Host-runnable regression coverage lives in
 // `crate::sticky_compute::tests` (a sibling module outside the
-// `cfg(target_os = "android")` gate). That module duplicates
-// `compute_translate_dp` so the math regression and the
-// shrink-on-empty registry invariant run from `cargo test
-// -p backend-android-mobile` without needing a JVM. See the doc on
+// `cfg(target_os = "android")` gate), so the per-axis write policy
+// and the shrink-on-empty registry invariant run from `cargo test
+// -p backend-android-mobile` without needing a JVM. The pin math
+// itself is tested once in `runtime_shared::sticky`. See the doc on
 // `crate::sticky_compute` for the rationale (this `imp::sticky`
 // module is target-gated because of the `jni` dep, so its tests
 // would never reach host).

@@ -155,43 +155,64 @@ The sections above customize the *theme*. This one is the other direction: you'r
 writing your **own** `stylesheet!` for an app-specific layout (a custom sidebar,
 say) and you want it to track the installed theme's colors — no hardcoded palette.
 
-At the framework level a token reference is `Tokenized::token("color-surface",
-fallback)`, and the `fallback` is a **required literal** (see [[styling]]). Supplying
-the design's concrete hex there duplicates a value the theme already defines under
-the same name — a second source of truth that silently drifts if the theme's value
-later changes.
-
-idea-theme closes that gap with `theme_token!` (colors) and `theme_length!`
-(spacing / radius / typography sizes). They reference a canonical token **by name
-only** — the fallback is pulled from idea-theme's base palette, so you restate no
-hex, and the name is validated **at compile time**:
+**Name the token through the binding in your block header.** Declare the theme in
+the sheet's `<…>` slot and the block's `(t)` is the token vocabulary — every token
+is a path, not a string:
 
 ```rust
-use idea_ui::{theme_token, theme_length};
+use idea_ui::IdeaThemeRef;
 
 stylesheet! {
-    Sidebar<()> {
-        base(_theme) {
-            background: theme_token!("color-surface"),
-            border_color: theme_token!("color-border"),
-            color: theme_token!("intent-primary-fg"),
-            padding: theme_length!("spacing-lg"),
-            border_radius: theme_length!("radius-md"),
+    Sidebar<IdeaThemeRef> {
+        base(t) {
+            background: t.color.surface(),
+            border_color: t.color.border(),
+            color: t.intent.primary.fg(),
+            padding: t.spacing.lg(),
+            border_radius: t.radius.md(),
         }
     }
 }
 ```
 
-A typo — `theme_token!("color-surfaze")` — fails the build instead of silently
-rendering a transparent fallback. At runtime the installed theme's value wins over
-the fallback, exactly as with a hand-written `Tokenized::token`, so a reskin (or a
-light/dark swap) re-flows the stylesheet with zero changes to it. The theme stays
+**The accessor path is the token name**: `t.color.surface()` is `color-surface`,
+`t.intent.primary.fg()` is `intent-primary-fg`, `t.spacing.lg()` is `spacing-lg`.
+So the vocabulary is the token table — reach for autocomplete on `t.`, and a typo
+(`t.color.surfaze()`) fails the build. That matters more than it sounds: a
+misspelled *string* used to compile fine and render its fallback forever, which is
+exactly what two sheets in this repo were doing before the typed path landed.
+
+The reference itself is unchanged — each accessor returns the same
+`Tokenized::Token { name, fallback }` a hand-written `Tokenized::token(…)` builds,
+with the fallback pulled from idea-theme's base palette rather than restated by
+you. At runtime the installed theme's value wins over the fallback, so a reskin (or
+a light/dark swap) re-flows the stylesheet with zero changes to it. The theme stays
 the single source of truth.
 
-Use the canonical names from the token table: the neutral colors
-(`CANONICAL_NEUTRAL_TOKENS` — `color-background`, `color-surface`, `color-text`,
-`color-border`, …), the intent slots (`intent-<intent>-<slot>`, e.g.
-`intent-primary-soft-bg`), and the length tokens (`CANONICAL_LENGTH_TOKENS` —
-`spacing-*`, `radius-*`, `typography-*-size`). For a token name computed at runtime,
-the `theme_color(name)` / `theme_length(name)` functions are the string-driven
-(runtime-checked) equivalents the macros delegate to.
+The namespaces are `t.color.*` (neutrals), `t.intent.<intent>.<slot>()` (the seven
+intents × six slots), `t.spacing.*`, `t.radius.*`, and `t.typography.*_size()`.
+
+**Don't guess a token — ask.** `list_tokens` returns the whole vocabulary as data
+(`name`, `path`, `accessor`, `value_type`, `default_value`); `describe_token`
+takes either spelling (`spacing-md` or `spacing.md`) and hands back the accessor
+to write. `search` matches both spellings too, so a token you know by its old
+string name resolves to its accessor. The same slice drives token completion in
+the VS Code extension.
+
+Outside a `stylesheet!` — component code assembling `StyleRules` by hand — call
+`tokens()` for the same namespace:
+
+```rust
+use idea_ui::tokens;
+
+let rules = StyleRules {
+    gap: Some(tokens().spacing.sm()),
+    background: Some(tokens().color.surface()),
+    ..Default::default()
+};
+```
+
+For a token name only known at runtime (author-supplied, read from data), the
+string-driven `theme_color(name)` / `theme_length(name)` functions remain. They're
+runtime-checked: an unknown name yields a transparent/0px fallback and warns in
+debug builds.

@@ -49,9 +49,10 @@ pub(crate) struct NoopActivityIndicatorOps;
 impl primitives::activity_indicator::ActivityIndicatorOps for NoopActivityIndicatorOps {}
 
 pub(crate) struct NoopVirtualizerOps;
-impl primitives::virtualizer::VirtualizerOps for NoopVirtualizerOps {
-    fn scroll_to_index(&self, _: &dyn Any, _: usize) {}
-}
+// Every method defaults to a no-op / `(0.0, 0.0)`, which is exactly
+// this handle's contract — the backend either has no virtualizer or
+// never overrode `make_virtualizer_handle`.
+impl primitives::virtualizer::VirtualizerOps for NoopVirtualizerOps {}
 
 pub(crate) struct NoopGraphicsOps;
 impl primitives::graphics::GraphicsOps for NoopGraphicsOps {}

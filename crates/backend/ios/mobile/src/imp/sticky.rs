@@ -44,15 +44,20 @@
 //! layout output and are not affected by UIKit transforms. The
 //! cached layout-y is refreshed on every layout pass.
 //!
-//! ## v1 scope
+//! ## Axis coverage
 //!
-//! Only vertical sticky pinning via the `top` field is wired. CSS
-//! also supports horizontal sticky via `left` and bottom/right
-//! anchors; left-axis support has the same shape but uses
-//! `contentOffset.x` and the scroll view's horizontal axis.
-//! Documented as TODO at `compute_translate` so a follow-up can
-//! extend the registry to a `(threshold_x, threshold_y)` tuple
-//! without restructuring the lifecycle code.
+//! Leading-edge pinning on BOTH axes: `top` drives the vertical pin
+//! off `contentOffset.y`, `left` the horizontal pin off
+//! `contentOffset.x`. An axis with no inset scrolls normally, so a
+//! frozen column (`left` only) still scrolls vertically with the
+//! content — which is the whole point of having the thresholds be
+//! per-axis `Option`s rather than one number.
+//!
+//! Trailing-edge pinning (`bottom` / `right`) is NOT implemented: it
+//! needs the scrollport extent and the child's own extent threaded
+//! into the tick, neither of which this registry carries. Those sides
+//! are ignored here and honored on web, where the browser owns
+//! pinning.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -78,14 +83,16 @@ pub(crate) struct StickyChild {
     /// even if the framework's own retain is released — the
     /// `deregister` path drops this entry well before that happens.
     pub(crate) view: Retained<UIView>,
-    /// Pin threshold, in points, read from `StyleRules.top`. The
-    /// view pins when `scroll_y + threshold > natural_y`.
-    pub(crate) threshold_top: f32,
-    /// Natural y of the child in the scroll view's content
+    /// Per-axis pin thresholds, in points, resolved from
+    /// `StyleRules` by `runtime_shared::sticky::StickyInsets`
+    /// (`top` → vertical, `left` → horizontal). An axis whose
+    /// threshold is `None` scrolls normally.
+    pub(crate) insets: StickyInsets,
+    /// Natural `(x, y)` of the child in the scroll view's content
     /// coordinate space, in points. Refreshed after every layout
-    /// pass by `refresh_layout_positions`. Initialized to 0; the
-    /// first layout pass replaces it with a real value.
-    pub(crate) natural_y: f32,
+    /// pass by `refresh_layout_positions`. Initialized to the
+    /// origin; the first layout pass replaces it with real values.
+    pub(crate) natural: (f32, f32),
 }
 
 /// Per-scroll-view sticky state. Owns the CADisplayLink that drives
@@ -103,29 +110,12 @@ pub(crate) struct StickyScrollEntry {
 /// Map from scroll view pointer → sticky bookkeeping.
 pub(crate) type StickyRegistry = HashMap<usize, StickyScrollEntry>;
 
-/// Pure compute used by the per-vsync tick and the unit tests.
-///
-/// Returns the translation that should be applied to the sticky
-/// child's transform on the y-axis given its natural layout y in
-/// the scroll view's content space, the configured pin threshold
-/// (the `top` value), and the scroll view's current contentOffset.y.
-///
-/// TODO: horizontal sticky via `left` mirrors this shape with
-/// `(natural_x, threshold_left, scroll_x)`. Wire it once an author
-/// asks for it; CSS supports it but no current page uses it.
-#[inline]
-pub(crate) fn compute_translate(natural_y: f32, threshold_top: f32, scroll_y: f32) -> f32 {
-    // Pin condition: the natural top of the child has scrolled
-    // above the threshold band measured from the scroll view's
-    // top edge. Translate the child *down* by the overshoot so
-    // its rendered position stays at `scroll_y + threshold_top`.
-    let pinned_y = scroll_y + threshold_top;
-    if pinned_y > natural_y {
-        pinned_y - natural_y
-    } else {
-        0.0
-    }
-}
+// The pin arithmetic lives in `runtime_shared::sticky` — one
+// implementation for every backend, so UIKit and AppKit cannot drift
+// a pixel apart (CLAUDE.md §7). This module keeps only the UIKit
+// mechanism: the display-link cadence, where the natural position
+// comes from, and how the pin is written to `transform`.
+use runtime_shared::sticky::{translate, StickyInsets};
 
 /// Find the enclosing `UIScrollView` ancestor of `view`. Returns
 /// `None` if `view` isn't inside any scroll view (treat as Relative,
@@ -160,7 +150,7 @@ pub(crate) fn register(
     mtm: MainThreadMarker,
     registry: &mut StickyRegistry,
     view: &UIView,
-    threshold_top: f32,
+    insets: StickyInsets,
 ) -> bool {
     let child_key = view as *const UIView as usize;
 
@@ -192,8 +182,8 @@ pub(crate) fn register(
         child_key,
         StickyChild {
             view: child_retained,
-            threshold_top,
-            natural_y: 0.0,
+            insets,
+            natural: (0.0, 0.0),
         },
     );
 
@@ -257,93 +247,62 @@ pub(crate) fn deregister_scroll_view(registry: &mut StickyRegistry, scroll_view:
     }
 }
 
-/// Reset `view.transform` to the identity. `CGAffineTransformIdentity`
-/// is `(1, 0, 0, 1, 0, 0)`.
-fn reset_view_transform(view: &UIView) {
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct CGAffineTransform {
-        a: f64,
-        b: f64,
-        c: f64,
-        d: f64,
-        tx: f64,
-        ty: f64,
-    }
-    unsafe impl objc2::Encode for CGAffineTransform {
-        const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
-            "CGAffineTransform",
-            &[
-                f64::ENCODING,
-                f64::ENCODING,
-                f64::ENCODING,
-                f64::ENCODING,
-                f64::ENCODING,
-                f64::ENCODING,
-            ],
-        );
-    }
-    let identity = CGAffineTransform { a: 1.0, b: 0.0, c: 0.0, d: 1.0, tx: 0.0, ty: 0.0 };
-    let _: () = unsafe { msg_send![view, setTransform: identity] };
+/// UIKit's 2-D affine transform. Declared once here rather than
+/// re-declared inside each helper: the three sticky helpers below all
+/// need the same layout, and a `#[repr(C)]` struct whose field order
+/// must match a C ABI is precisely the thing that should not exist in
+/// three copies.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CGAffineTransform {
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    tx: f64,
+    ty: f64,
 }
 
-/// Apply `(0, translate_y)` translation to `view.transform`.
-fn apply_translate_y(view: &UIView, translate_y: f64) {
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct CGAffineTransform {
-        a: f64,
-        b: f64,
-        c: f64,
-        d: f64,
-        tx: f64,
-        ty: f64,
+unsafe impl objc2::Encode for CGAffineTransform {
+    const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
+        "CGAffineTransform",
+        &[
+            f64::ENCODING,
+            f64::ENCODING,
+            f64::ENCODING,
+            f64::ENCODING,
+            f64::ENCODING,
+            f64::ENCODING,
+        ],
+    );
+}
+
+impl CGAffineTransform {
+    /// `CGAffineTransformIdentity` — `(1, 0, 0, 1, 0, 0)`.
+    const IDENTITY: Self = Self { a: 1.0, b: 0.0, c: 0.0, d: 1.0, tx: 0.0, ty: 0.0 };
+
+    const fn translation(tx: f64, ty: f64) -> Self {
+        Self { a: 1.0, b: 0.0, c: 0.0, d: 1.0, tx, ty }
     }
-    unsafe impl objc2::Encode for CGAffineTransform {
-        const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
-            "CGAffineTransform",
-            &[
-                f64::ENCODING,
-                f64::ENCODING,
-                f64::ENCODING,
-                f64::ENCODING,
-                f64::ENCODING,
-                f64::ENCODING,
-            ],
-        );
-    }
-    let t = CGAffineTransform { a: 1.0, b: 0.0, c: 0.0, d: 1.0, tx: 0.0, ty: translate_y };
+}
+
+/// Reset `view.transform` to the identity.
+fn reset_view_transform(view: &UIView) {
+    let _: () = unsafe { msg_send![view, setTransform: CGAffineTransform::IDENTITY] };
+}
+
+/// Apply `(translate_x, translate_y)` translation to `view.transform`.
+fn apply_translate(view: &UIView, translate_x: f64, translate_y: f64) {
+    let t = CGAffineTransform::translation(translate_x, translate_y);
     let _: () = unsafe { msg_send![view, setTransform: t] };
 }
 
-/// Read `view.transform.ty` — the current y translate. Used to
-/// epsilon-skip when nothing has changed since the last tick.
-fn current_translate_y(view: &UIView) -> f64 {
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct CGAffineTransform {
-        a: f64,
-        b: f64,
-        c: f64,
-        d: f64,
-        tx: f64,
-        ty: f64,
-    }
-    unsafe impl objc2::Encode for CGAffineTransform {
-        const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
-            "CGAffineTransform",
-            &[
-                f64::ENCODING,
-                f64::ENCODING,
-                f64::ENCODING,
-                f64::ENCODING,
-                f64::ENCODING,
-                f64::ENCODING,
-            ],
-        );
-    }
+/// Read `(view.transform.tx, view.transform.ty)` — the current
+/// translate. Used to epsilon-skip when nothing changed since the last
+/// tick.
+fn current_translate(view: &UIView) -> (f64, f64) {
     let t: CGAffineTransform = unsafe { msg_send![view, transform] };
-    t.ty
+    (t.tx, t.ty)
 }
 
 /// Start a `CADisplayLink` that runs the per-vsync sticky recompute
@@ -388,34 +347,39 @@ fn start_display_link(mtm: MainThreadMarker, scroll_key: usize) -> Retained<NSOb
 }
 
 /// Per-vsync recompute for one scroll view's sticky children.
-/// Reads `contentOffset.y`, computes each child's translate via
-/// [`compute_translate`], and writes it to the child's
-/// `CGAffineTransform`. Skips the write when the translate is
-/// within [`STICKY_EPSILON`] of the live value, matching the
+/// Reads `contentOffset`, computes each child's per-axis translate
+/// via the shared `runtime_shared::sticky::translate`, and writes it
+/// to the child's `CGAffineTransform`. Skips the write when both axes
+/// are within [`STICKY_EPSILON`] of the live value, matching the
 /// portal anchor tracker's idle-frame discipline.
 fn tick(backend: &mut crate::imp::IosBackend, scroll_key: usize) {
     let Some(entry) = backend.sticky_registry.get(&scroll_key) else {
         return;
     };
-    let scroll_y: f32 = {
+    let scroll: (f32, f32) = {
         let offset: objc2_foundation::CGPoint = unsafe {
             msg_send![&*entry.scroll_view, contentOffset]
         };
-        offset.y as f32
+        (offset.x as f32, offset.y as f32)
     };
     for (_, child) in entry.children.iter() {
-        let translate = compute_translate(child.natural_y, child.threshold_top, scroll_y);
-        let cur = current_translate_y(&child.view) as f32;
-        if (cur - translate).abs() < STICKY_EPSILON {
+        let (tx, ty) = translate(child.insets, child.natural, scroll);
+        let (cur_x, cur_y) = current_translate(&child.view);
+        // One combined write: `setTransform:` replaces the whole
+        // matrix, so writing the axes separately would have the second
+        // write clobber the first.
+        if (cur_x as f32 - tx).abs() < STICKY_EPSILON
+            && (cur_y as f32 - ty).abs() < STICKY_EPSILON
+        {
             continue;
         }
-        apply_translate_y(&child.view, translate as f64);
+        apply_translate(&child.view, tx as f64, ty as f64);
     }
 }
 
-/// Refresh the cached `natural_y` for every sticky child after a
+/// Refresh the cached natural `(x, y)` for every sticky child after a
 /// layout pass. Walks Taffy parents from the child up to its
-/// registered scroll view, summing frame y values.
+/// registered scroll view, summing frame origins.
 ///
 /// Why Taffy parents and not UIView superviews: UIView frames are
 /// undefined when the view's `transform` isn't the identity (Apple
@@ -430,7 +394,7 @@ pub(crate) fn refresh_layout_positions(
 ) {
     for (scroll_key, entry) in registry.iter_mut() {
         for (child_key, child) in entry.children.iter_mut() {
-            let Some(natural_y) = compute_natural_y_in_scroll(
+            let Some(natural) = compute_natural_in_scroll(
                 *child_key,
                 *scroll_key,
                 layout,
@@ -442,7 +406,7 @@ pub(crate) fn refresh_layout_positions(
                 // try again.
                 continue;
             };
-            child.natural_y = natural_y;
+            child.natural = natural;
         }
     }
 }
@@ -451,23 +415,29 @@ pub(crate) fn refresh_layout_positions(
 /// including) `scroll_key`. Returns `None` if we can't trace the
 /// chain (child or an ancestor isn't in `view_to_layout`, or we
 /// walked off the root without finding the scroll view).
-fn compute_natural_y_in_scroll(
+fn compute_natural_in_scroll(
     child_key: usize,
     scroll_key: usize,
     layout: &runtime_layout::LayoutTree,
     view_to_layout: &HashMap<usize, (Retained<UIView>, runtime_layout::LayoutNode)>,
-) -> Option<f32> {
+) -> Option<(f32, f32)> {
     let (_, child_node) = view_to_layout.get(&child_key)?;
     let (_, scroll_node) = view_to_layout.get(&scroll_key)?;
 
-    let mut sum_y = 0.0_f32;
+    // Both axes are summed unconditionally, not just the pinned one: a
+    // reactive style change can add a `left` inset between layout
+    // passes, and a child that only tracked `y` would then tick
+    // against a stale `natural.x`.
+    let mut sum = (0.0_f32, 0.0_f32);
     let mut cursor = *child_node;
 
     // Defensive depth cap — if Taffy hands us a cycle, we'd loop
     // forever otherwise.
     let mut steps = 0;
     while cursor != *scroll_node {
-        sum_y += layout.frame_of(cursor).y;
+        let frame = layout.frame_of(cursor);
+        sum.0 += frame.x;
+        sum.1 += frame.y;
         let Some(parent) = layout.parent_of(cursor) else {
             // Walked off the root before reaching the scroll view.
             return None;
@@ -478,7 +448,7 @@ fn compute_natural_y_in_scroll(
             return None;
         }
     }
-    Some(sum_y)
+    Some(sum)
 }
 
 // =========================================================================
@@ -503,43 +473,48 @@ mod tests {
 
     use super::*;
 
-    /// Pin compute: scrolling past the threshold translates the
-    /// child down by the overshoot; scrolling above the threshold
-    /// leaves the child at its natural position.
+    /// Which TRANSFORM COMPONENTS the tick writes. The pin
+    /// arithmetic's own regressions live with the arithmetic, in
+    /// `runtime_shared::sticky`; what iOS owns is composing that
+    /// result into a single `CGAffineTransform` — and `setTransform:`
+    /// replaces the whole matrix, so an axis the element does not pin
+    /// on must come back exactly `0.0` or the combined write would
+    /// drag it off its laid-out position.
     #[test]
     fn regression_sticky_registry_pins_when_scrolled_past_threshold() {
         // Child sits at y=100 in the scroll view's content; pin
         // threshold (top) is 20pt from the scroll view's top edge.
-        let natural_y = 100.0;
-        let threshold = 20.0;
+        let vertical = StickyInsets { top: Some(20.0), left: None };
+        let natural = (33.0_f32, 100.0_f32);
 
-        // Far above the pin point — no translate.
-        assert_eq!(compute_translate(natural_y, threshold, 0.0), 0.0);
+        // Far above the pin point — no translate on either axis.
+        assert_eq!(translate(vertical, natural, (0.0, 0.0)), (0.0, 0.0));
 
-        // Just above the pin point (scroll_y + threshold == natural_y).
-        // That's the boundary: still 0 (the `>` in compute, not `>=`).
-        assert_eq!(compute_translate(natural_y, threshold, 80.0), 0.0);
-
-        // 1pt past the pin point — translate by 1pt.
-        let t = compute_translate(natural_y, threshold, 81.0);
-        assert!((t - 1.0).abs() < 1e-5, "expected ~1.0, got {t}");
-
-        // Way past the pin point — translate compensates fully so
-        // the child renders at scroll_y + threshold = 200.
-        let t = compute_translate(natural_y, threshold, 280.0);
+        // Way past the pin point — ty compensates fully so the child
+        // renders at scroll_y + threshold, and tx stays 0 so the
+        // combined write preserves the laid-out x.
+        let (tx, ty) = translate(vertical, natural, (0.0, 280.0));
+        assert_eq!(tx, 0.0, "a vertical-only pin must leave transform.tx at 0");
         assert!(
-            (t - 200.0).abs() < 1e-5,
-            "expected ~200.0 (so rendered y == scroll_y + threshold = 300), got {t}",
+            ((natural.1 + ty) - 300.0).abs() < 1e-5,
+            "pinned rendered y should equal scroll_y + threshold",
         );
+    }
 
-        // Sanity: rendered y while pinned == scroll_y + threshold.
-        let scroll_y = 500.0;
-        let t = compute_translate(natural_y, threshold, scroll_y);
-        let rendered_y = natural_y + t;
+    /// A frozen COLUMN on iOS: `left` pins horizontally off
+    /// `contentOffset.x` while the child keeps scrolling vertically.
+    /// Before horizontal support the registry held a single
+    /// `threshold_top`, so `left` produced no horizontal pin at all —
+    /// a frozen column was inexpressible on every backend.
+    #[test]
+    fn regression_sticky_left_never_pins_horizontally() {
+        let horizontal = StickyInsets { top: None, left: Some(0.0) };
+        let (tx, ty) = translate(horizontal, (160.0, 40.0), (600.0, 250.0));
         assert!(
-            (rendered_y - (scroll_y + threshold)).abs() < 1e-5,
-            "pinned rendered_y should equal scroll_y + threshold",
+            ((160.0 + tx) - 600.0).abs() < 1e-5,
+            "pinned rendered x should equal scroll_x + threshold",
         );
+        assert_eq!(ty, 0.0, "a horizontal-only pin must leave transform.ty at 0");
     }
 
     /// Registry must be empty after a register + deregister
@@ -604,8 +579,8 @@ mod tests {
                                 std::ptr::NonNull::<UIView>::dangling().as_ptr(),
                             )
                         },
-                        threshold_top: 0.0,
-                        natural_y: 0.0,
+                        insets: StickyInsets { top: Some(0.0), left: None },
+                        natural: (0.0, 0.0),
                     },
                 );
                 m
@@ -660,12 +635,16 @@ mod tests {
         // observable property.
         assert_eq!(registry.len(), 0);
 
-        // compute_translate must also be a no-translate path when
+        // The shared translate must also be a no-translate path when
         // the scroll position can't possibly pin the child
-        // (scroll_y == 0 and threshold > 0). This is the same
-        // numeric result the registry-less path would yield —
-        // i.e. "rendered y == natural y" → no transform applied.
-        let t = compute_translate(/* natural_y */ 100.0, /* threshold */ 20.0, /* scroll_y */ 0.0);
-        assert_eq!(t, 0.0, "no scroll ancestor implies no scroll → no pin");
+        // (scroll == 0 and threshold > 0). This is the same numeric
+        // result the registry-less path would yield — i.e.
+        // "rendered position == natural position" → no transform.
+        let insets = StickyInsets { top: Some(20.0), left: Some(20.0) };
+        assert_eq!(
+            translate(insets, (100.0, 100.0), (0.0, 0.0)),
+            (0.0, 0.0),
+            "no scroll ancestor implies no scroll → no pin",
+        );
     }
 }

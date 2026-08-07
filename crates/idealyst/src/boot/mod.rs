@@ -42,10 +42,22 @@ pub use terminal::run;
 /// app's own `register_scene_extensions` carries these same supertraits,
 /// and having one name for the set means adding a capability to the
 /// seam is a one-line change here instead of an edit in every app.
+///
+/// `AllCaps` — not a hand-picked subset — because this bound is what an
+/// app's registration seam is type-checked against, and a seam may ask
+/// for ANY capability its handlers touch: the codeblock handler wants
+/// `TextOps`, canvas/video want `ExternalOps`, a virtualizer wants
+/// `VirtualizerOps`. Naming a subset here doesn't make the boot path
+/// cheaper (`E::register` is monomorphized against one concrete backend
+/// that implements every trait — it is the same bound
+/// `register_builtins` already requires); it only makes seams outside
+/// the subset uncompilable, which is exactly the failure the narrower
+/// `Host + StyleServices + InputOps` version produced on every app
+/// carrying a real SDK handler.
 pub trait SceneHost:
     runtime_scene::Host
     + runtime_vocabulary::style_attach::StyleServices
-    + runtime_vocabulary::caps::InputOps
+    + runtime_vocabulary::caps::AllCaps
     + 'static
 {
 }
@@ -53,7 +65,7 @@ pub trait SceneHost:
 impl<T> SceneHost for T where
     T: runtime_scene::Host
         + runtime_vocabulary::style_attach::StyleServices
-        + runtime_vocabulary::caps::InputOps
+        + runtime_vocabulary::caps::AllCaps
         + 'static
 {
 }

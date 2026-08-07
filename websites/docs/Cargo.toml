@@ -24,6 +24,9 @@ sidecar = ["dep:dev-server"]
 runtime-world = { workspace = true }
 
 [dependencies]
+# The platform surface, used by `src/main.rs` only — it carries whatever
+# the target needs so this manifest names no backend directly.
+idealyst = { workspace = true }
 # The author surface: `extern crate runtime_core as runtime_core;` in
 # lib.rs shadows the extern prelude for the whole crate, so every
 # `runtime_core::…` path (including the ones `ui!`, `#[component]`, and

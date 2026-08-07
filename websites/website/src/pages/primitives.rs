@@ -33,6 +33,7 @@ use crate::styles::{
     PrimCard, PrimControl, PrimGrid, PrimIcon, PrimPopCard, PrimRow, PrimScrollBox, PrimSwatch,
     PrimTag,
 };
+use idea_ui::tokens;
 
 pub fn page() -> Element {
     let containers_ref: Ref<ViewHandle> = Ref::new();
@@ -202,7 +203,7 @@ fn styled_runs_demo() -> Element {
         font_family: Some(FontFamily::System(
             "ui-monospace, SFMono-Regular, Menlo, monospace".into(),
         )),
-        background: Some(Tokenized::token("color-surface-alt", Color("#f4eedb".into()))),
+        background: Some(tokens().color.surface_alt()),
         ..Default::default()
     };
     runtime_core::IntoElement::into_element(styled_text(vec![

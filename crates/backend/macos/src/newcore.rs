@@ -1079,6 +1079,7 @@ impl caps::VirtualizerOps for MacosBackend {
             mount_item,
             release_item,
             set_measured_size,
+            on_scroll,
         } = callbacks;
         let callbacks = VirtualizerCallbacks {
             item_count,
@@ -1107,12 +1108,29 @@ impl caps::VirtualizerOps for MacosBackend {
                     schedule_flush();
                 })
             },
+            // Author scroll observer — same dispatch-site glue as
+            // `create_scroll_view`'s `on_scroll` (stage writes, then
+            // flush). Stays `None` when unset so the impl can skip
+            // installing scroll observation entirely.
+            on_scroll: on_scroll.map(|f| -> Rc<dyn Fn(f32, f32)> {
+                Rc::new(move |x, y| {
+                    f(x, y);
+                    schedule_flush();
+                })
+            }),
         };
         MacosBackend::create_virtualizer_impl(self, callbacks, overscan, layout, a11y)
     }
 
     fn virtualizer_data_changed(&mut self, node: &Self::Node) {
         MacosBackend::virtualizer_data_changed_impl(self, node)
+    }
+
+    fn make_virtualizer_handle(
+        &self,
+        node: &Self::Node,
+    ) -> primitives::virtualizer::VirtualizerHandle {
+        crate::imp::handles::make_virtualizer_handle(node)
     }
 
     fn release_virtualizer(&mut self, node: &Self::Node) {

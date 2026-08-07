@@ -1,10 +1,11 @@
 use runtime_core::{stylesheet, Color, FlexDirection, Length, Tokenized};
+use idea_ui::IdeaThemeRef;
 
 stylesheet! {
-    pub Panel<()> {
-        base(_t) {
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
-            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+    pub Panel<IdeaThemeRef> {
+        base(t) {
+            background: t.color.surface(),
+            border_radius: t.radius.md(),
             padding: 16.0, // bare literal — auto-wrapped
             flex_direction: FlexDirection::Column,
         }

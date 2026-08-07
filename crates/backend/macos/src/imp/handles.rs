@@ -262,6 +262,103 @@ pub(crate) fn make_scroll_view_handle(
 }
 
 // =========================================================================
+// Virtualizer ops
+// =========================================================================
+
+/// The virtualizer's node IS its outer `NSScrollView` (see
+/// `imp::virtualizer::create`, which returns the scroll view as the
+/// mountable node), so offset read/write is the same clip-view
+/// manipulation `MacosScrollViewOps` performs — the two primitives
+/// converge on one coordinate space rather than each inventing its own.
+pub(crate) struct MacosVirtualizerOps;
+
+impl runtime_shared::primitives::virtualizer::VirtualizerOps for MacosVirtualizerOps {
+    /// Delegates to `NSCollectionView.scrollToItemsAtIndexPaths:` so
+    /// AppKit resolves the item's frame from its own live layout —
+    /// item sizes may have been refined by measurement since mount, so
+    /// recomputing the offset here would drift from what is on screen.
+    /// `NSCollectionViewScrollPositionTop` (1 << 0) mirrors the web
+    /// shim's leading-edge alignment.
+    fn scroll_to_index(&self, node: &dyn Any, index: usize) {
+        let Some(MacosNode::View(scroll)) = node.downcast_ref::<MacosNode>() else {
+            return;
+        };
+        let doc_view: *mut objc2_app_kit::NSView = unsafe { msg_send![&**scroll, documentView] };
+        if doc_view.is_null() {
+            return;
+        }
+        // NSIndexPath's collection-view initializer is
+        // `indexPathForItem:inSection:`; single-section lists always
+        // use section 0, matching the data source.
+        let index_path: *mut objc2::runtime::AnyObject = unsafe {
+            msg_send![
+                objc2::class!(NSIndexPath),
+                indexPathForItem: index as isize,
+                inSection: 0isize,
+            ]
+        };
+        if index_path.is_null() {
+            return;
+        }
+        let set: *mut objc2::runtime::AnyObject =
+            unsafe { msg_send![objc2::class!(NSSet), setWithObject: index_path] };
+        // NSCollectionViewScrollPositionTop = 1 << 0; the horizontal
+        // twin (…Left = 1 << 3) is unnecessary — AppKit ignores the
+        // off-axis component for a single-direction flow layout.
+        let _: () = unsafe {
+            msg_send![doc_view, scrollToItemsAtIndexPaths: set, scrollPosition: 1usize]
+        };
+    }
+
+    fn scroll_offset(&self, node: &dyn Any) -> (f32, f32) {
+        let Some(MacosNode::View(scroll)) = node.downcast_ref::<MacosNode>() else {
+            return (0.0, 0.0);
+        };
+        let clip: *mut objc2_app_kit::NSView = unsafe { msg_send![&**scroll, contentView] };
+        if clip.is_null() {
+            return (0.0, 0.0);
+        }
+        // Clip-view `bounds.origin` is the scrolled offset — the same
+        // value `ScrollObserverTarget` reports to `on_scroll`, so a
+        // pull read and a push callback can never disagree.
+        let bounds: objc2_foundation::CGRect = unsafe { msg_send![clip, bounds] };
+        (bounds.origin.x as f32, bounds.origin.y as f32)
+    }
+
+    fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
+        let Some(MacosNode::View(scroll)) = node.downcast_ref::<MacosNode>() else {
+            return;
+        };
+        let clip: *mut objc2_app_kit::NSView = unsafe { msg_send![&**scroll, contentView] };
+        if clip.is_null() {
+            return;
+        }
+        let point = objc2_foundation::CGPoint {
+            x: x as f64,
+            y: y as f64,
+        };
+        let _: () = unsafe { msg_send![clip, scrollToPoint: point] };
+        // Without `reflectScrolledClipView:` the scrollers and the
+        // document stay where they were — the clip moves but nothing
+        // redraws against it.
+        let _: () = unsafe { msg_send![&**scroll, reflectScrolledClipView: clip] };
+    }
+}
+
+pub(crate) static MACOS_VIRTUALIZER_OPS: MacosVirtualizerOps = MacosVirtualizerOps;
+
+/// Build a [`VirtualizerHandle`] for `node` backed by
+/// [`MacosVirtualizerOps`].
+pub(crate) fn make_virtualizer_handle(
+    node: &MacosNode,
+) -> runtime_shared::primitives::virtualizer::VirtualizerHandle {
+    runtime_shared::primitives::virtualizer::VirtualizerHandle::new(
+        Rc::new(node.clone()) as Rc<dyn Any>,
+        &MACOS_VIRTUALIZER_OPS,
+    )
+}
+
+// =========================================================================
 // Text ops
 // =========================================================================
 

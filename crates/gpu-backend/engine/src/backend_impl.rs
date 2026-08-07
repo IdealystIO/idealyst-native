@@ -1836,7 +1836,7 @@ impl WgpuBackend {
         // relative behaviour matches CSS in the meantime.
         match style.position {
             Some(runtime_shared::Position::Sticky) => {
-                let threshold_top = crate::sticky::threshold_top_from_style(style);
+                let insets = runtime_shared::sticky::StickyInsets::from_style(style);
                 // Split-borrow the registry against `layout` and
                 // `roots` — `register` walks Taffy parents to
                 // resolve the enclosing scroll view, which would
@@ -1847,7 +1847,7 @@ impl WgpuBackend {
                     roots,
                     ..
                 } = self;
-                crate::sticky::register(sticky_registry, layout, roots, node, threshold_top);
+                crate::sticky::register(sticky_registry, layout, roots, node, insets);
             }
             _ => {
                 crate::sticky::deregister(&mut self.sticky_registry, node);

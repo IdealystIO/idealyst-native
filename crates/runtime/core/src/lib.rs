@@ -67,7 +67,7 @@ pub use runtime_macros::lazy;
 // vocabulary's mirrors: the pre-v2 expansions anchored their scope and
 // cleanup in the deleted arena, which made them inert here (the frozen
 // Switch-thumb bug).
-pub use runtime_vocabulary::{animated, effect, rx, timeline};
+pub use runtime_vocabulary::{animated, effect, register_style_token, rx, timeline};
 
 // Shared-substrate `#[macro_export]` decl macros whose `$crate::…`
 // expansions resolve against runtime-shared (where they and the types

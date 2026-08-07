@@ -266,13 +266,17 @@ pub struct Args {
     #[arg(long)]
     pub premint_report: bool,
 
-    /// Web only: which builtin primitives the bundle registers. Omit to
-    /// register every builtin (the default, and what every release before
-    /// this did).
+    /// MOVED to the app's manifest — passing this is an error that tells
+    /// you what to write instead. The primitive set is a property of the
+    /// app, not of one invocation of a build tool, and it has to be a
+    /// *type* at the boot call site for the dead-code elimination to fire
+    /// at all, so it now lives where `idealyst::entry!` can read it:
     ///
-    /// Accepts a preset — `core` (`view` + `text`: just the framework, with
-    /// nothing composable on top) or `all` — or an explicit list:
-    /// `--primitives view,text,button,text_input`.
+    ///     [package.metadata.idealyst.app]
+    ///     primitives = ["view", "text", "button"]
+    ///
+    /// Omit it to register every builtin (the default). `entry!` also
+    /// accepts the `core` (`view` + `text`) and `all` presets.
     ///
     /// Unlisted primitives are never named at the boot seam, so their
     /// handlers, the backend code behind them, and the web-sys imports and
@@ -283,6 +287,9 @@ pub struct Args {
     /// Rendering a primitive the set omits panics at mount — deliberately
     /// loud, the same failure a missing third-party payload gets. Note a
     /// component library counts: `idea_ui::Button` needs `button`.
+    ///
+    /// Kept as an argument rather than deleted so the migration message
+    /// reaches anyone with it in a script; see `build_web::build`.
     #[arg(long, value_delimiter = ',')]
     pub primitives: Option<Vec<String>>,
 }

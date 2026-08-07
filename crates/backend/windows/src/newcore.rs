@@ -855,6 +855,7 @@ impl caps::VirtualizerOps for WindowsBackend {
             mount_item,
             release_item,
             set_measured_size,
+            on_scroll,
         } = callbacks;
         let callbacks = VirtualizerCallbacks {
             item_count,
@@ -883,6 +884,16 @@ impl caps::VirtualizerOps for WindowsBackend {
                     schedule_flush();
                 })
             },
+            // Author scroll observer — same dispatch-site glue as
+            // `create_scroll_view`'s `on_scroll` (stage writes, then
+            // flush). Stays `None` when unset so the impl can skip
+            // installing scroll observation entirely.
+            on_scroll: on_scroll.map(|f| -> Rc<dyn Fn(f32, f32)> {
+                Rc::new(move |x, y| {
+                    f(x, y);
+                    schedule_flush();
+                })
+            }),
         };
         // Delegates to the inherent painted-scene body — the branch's
         // Win32 implementation, which master's seam stubbed out.

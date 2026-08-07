@@ -20,6 +20,7 @@ use runtime_core::{
 };
 
 use crate::stylesheets::ImageBox;
+use idea_theme::tokens;
 
 // Reactive-by-default: `#[props]` wraps each scalar-DATA field `T` →
 // `Reactive<T>`. `src` routes to the framework `image` primitive's reactive
@@ -86,7 +87,7 @@ pub fn Image(props: &ImageProps) -> Element {
             let w = width.get();
             let h = height.get();
             let rounded = rounded.get();
-            let key = format!(
+            let _key = format!(
                 "img-{}-{}-{}",
                 w.map(|x| x as i32).unwrap_or(-1),
                 h.map(|x| x as i32).unwrap_or(-1),
@@ -103,7 +104,7 @@ pub fn Image(props: &ImageProps) -> Element {
                     r.height = Some(Tokenized::Literal(Length::Px(h)));
                 }
                 if rounded {
-                    let pill = Tokenized::token("radius-pill", Length::Px(999.0));
+                    let pill = tokens().radius.pill();
                     r.border_top_left_radius = Some(pill.clone());
                     r.border_top_right_radius = Some(pill.clone());
                     r.border_bottom_left_radius = Some(pill.clone());

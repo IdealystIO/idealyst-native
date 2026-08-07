@@ -384,7 +384,7 @@ pub struct AndroidBackend {
     /// here and complete the registration in `insert` once the
     /// view is actually in a parent chain. Mirrors iOS's
     /// `pending_sticky`.
-    pub(crate) pending_sticky: HashMap<usize, f32>,
+    pub(crate) pending_sticky: HashMap<usize, runtime_shared::sticky::StickyInsets>,
     /// Portal overlays awaiting their first laid-out frame. Each is the
     /// overlay `FrameLayout`'s `GlobalRef`, set `View.INVISIBLE` at
     /// `create_overlay_portal` time and flipped back to `View.VISIBLE`
@@ -1853,6 +1853,33 @@ impl runtime_shared::primitives::scroll_view::ScrollViewOps for AndroidScrollVie
 }
 pub(crate) static ANDROID_SCROLL_VIEW_OPS: AndroidScrollViewOps = AndroidScrollViewOps;
 
+/// `VirtualizerOps` for Android — the node is the `RecyclerView`
+/// itself, so every method is a direct call on it. Offsets are dp on
+/// both the read and write side, matching `AndroidScrollViewOps` and
+/// therefore web/iOS/macOS.
+pub(crate) struct AndroidVirtualizerOps;
+impl runtime_shared::primitives::virtualizer::VirtualizerOps for AndroidVirtualizerOps {
+    fn scroll_to_index(&self, node: &dyn std::any::Any, index: usize) {
+        if let Some(n) = node.downcast_ref::<GlobalRef>() {
+            primitives::virtualizer::scroll_to_index(n, index);
+        }
+    }
+
+    fn scroll_offset(&self, node: &dyn std::any::Any) -> (f32, f32) {
+        match node.downcast_ref::<GlobalRef>() {
+            Some(n) => primitives::virtualizer::scroll_offset(n),
+            None => (0.0, 0.0),
+        }
+    }
+
+    fn scroll_to(&self, node: &dyn std::any::Any, x: f32, y: f32) {
+        if let Some(n) = node.downcast_ref::<GlobalRef>() {
+            primitives::virtualizer::scroll_to(n, x, y);
+        }
+    }
+}
+pub(crate) static ANDROID_VIRTUALIZER_OPS: AndroidVirtualizerOps = AndroidVirtualizerOps;
+
 // ---------------------------------------------------------------------------
 // Global self-handle. Mirrors `IOS_BACKEND_SELF` — host code installs
 // a `Weak<RefCell<AndroidBackend>>` once at `attach` so the
@@ -1950,15 +1977,15 @@ fn read_system_bar_dimens(
 fn promote_pending_sticky_recursive(
     env: &mut JNIEnv,
     view: &GlobalRef,
-    pending: &mut HashMap<usize, f32>,
+    pending: &mut HashMap<usize, runtime_shared::sticky::StickyInsets>,
     registry: &mut sticky::StickyRegistry,
     scroll_listeners: &mut HashMap<usize, GlobalRef>,
     scroll_observers: &HashMap<usize, Rc<dyn Fn(f32, f32)>>,
     to_remove: &mut Vec<usize>,
 ) {
     let key = view.as_obj().as_raw() as usize;
-    if let Some(&threshold) = pending.get(&key) {
-        if sticky::register(env, registry, scroll_listeners, view, threshold, scroll_observers) {
+    if let Some(&insets) = pending.get(&key) {
+        if sticky::register(env, registry, scroll_listeners, view, insets, scroll_observers) {
             to_remove.push(key);
         }
         // If register returned false, the view STILL has no scroll
@@ -2041,7 +2068,7 @@ fn walk_and_deregister_sticky(
     registry: &mut sticky::StickyRegistry,
     scroll_listeners: &mut HashMap<usize, GlobalRef>,
     scroll_observers: &mut HashMap<usize, Rc<dyn Fn(f32, f32)>>,
-    pending: &mut HashMap<usize, f32>,
+    pending: &mut HashMap<usize, runtime_shared::sticky::StickyInsets>,
     sv_class: Option<&jni::objects::JClass>,
     hsv_class: Option<&jni::objects::JClass>,
 ) {
@@ -3041,6 +3068,16 @@ impl AndroidBackend {
         )
     }
 
+    pub(crate) fn make_virtualizer_handle_impl(
+        &self,
+        node: &GlobalRef,
+    ) -> runtime_shared::primitives::virtualizer::VirtualizerHandle {
+        runtime_shared::primitives::virtualizer::VirtualizerHandle::new(
+            Rc::new(node.clone()),
+            &ANDROID_VIRTUALIZER_OPS,
+        )
+    }
+
     pub(crate) fn clear_children_impl(&mut self, node: &GlobalRef) {
         // Drop any sticky bookkeeping for the entire subtree we're
         // about to remove BEFORE the native `removeAllViews` call.
@@ -3187,26 +3224,48 @@ impl AndroidBackend {
         // in `pending_sticky` for the first-mount case. `insert`
         // consults `pending_sticky` after attaching the subtree
         // and promotes any entries it can now resolve.
+        // `overscroll-behavior` → `View.setOverScrollMode`. A plain
+        // `ScrollView` doesn't participate in nested scrolling, so
+        // there is no chaining to suppress and `Contain` coincides
+        // with `Auto`; only `None` is observable, removing the edge
+        // glow / stretch. Applied on every style pass so a reactive
+        // flip back to `Auto` restores the effect.
+        //
+        // View.OVER_SCROLL_ALWAYS = 0, OVER_SCROLL_NEVER = 2.
+        {
+            let mode: i32 = match style.overscroll_behavior {
+                Some(runtime_shared::OverscrollBehavior::None) => 2,
+                _ => 0,
+            };
+            with_env(|env| {
+                let _ = env.call_method(
+                    node.as_obj(),
+                    "setOverScrollMode",
+                    "(I)V",
+                    &[JValue::Int(mode)],
+                );
+                // A non-scrolling View also accepts this call, so no
+                // class check is needed — but a pending exception from
+                // an exotic subclass must not leak into the next JNI
+                // call ([[project_android_net_pending_exception_clear]]).
+                let _ = env.exception_clear();
+            });
+        }
+
         match style.position {
             Some(runtime_shared::Position::Sticky) => {
-                let threshold_top = style
-                    .top
-                    .as_ref()
-                    .map(|t| match t.resolve() {
-                        runtime_shared::Length::Px(v) => v,
-                        // Percent / Auto for sticky's pin offset
-                        // isn't meaningful — same rationale as
-                        // iOS's `_ => 0.0` fallthrough.
-                        _ => 0.0,
-                    })
-                    .unwrap_or(0.0);
+                // Per-axis thresholds (`top` → vertical off
+                // `getScrollY()`, `left` → horizontal off
+                // `getScrollX()`), resolved by the shared helper so
+                // every backend reads the same sides the same way.
+                let insets = runtime_shared::sticky::StickyInsets::from_style(style);
                 let registered = with_env(|env| {
                     sticky::register(
                         env,
                         &mut self.sticky_registry,
                         &mut self.scroll_listeners,
                         node,
-                        threshold_top,
+                        insets,
                         &self.scroll_observers,
                     )
                 });
@@ -3216,7 +3275,7 @@ impl AndroidBackend {
                     // not in a scroll view. Record either way;
                     // `insert` retries and `clear_children` /
                     // `on_node_unstyled` clear the entry.
-                    self.pending_sticky.insert(key, threshold_top);
+                    self.pending_sticky.insert(key, insets);
                 }
             }
             _ => {

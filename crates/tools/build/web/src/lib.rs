@@ -1,28 +1,31 @@
 //! Web build orchestration for `idealyst build web` and the dev
 //! server.
 //!
-//! Mirror of `crates/build/ios/` and `crates/build/android/`: the
-//! user's app crate is intentionally platform-agnostic — it exposes
-//! `pub fn app() -> Primitive` and nothing else. The web target has
-//! historically required the user to also write a `web.rs` with a
-//! `#[wasm_bindgen(start)]` function plus a `[lib] crate-type =
-//! ["cdylib", "rlib"]` and a handful of wasm-only deps
-//! (`wasm-bindgen`, `console_error_panic_hook`, `lol_alloc`). That's
-//! the same per-platform plumbing the iOS / Android wrapper crates
-//! exist to absorb, and now web absorbs it the same way.
+//! **No wrapper crate.** Unlike `crates/build/ios/` and
+//! `crates/build/android/`, which still generate an ephemeral crate to
+//! carry the platform entry point, the web target builds the app crate
+//! *itself*. The app owns a `src/main.rs` holding one
+//! `idealyst::entry!(<lib>)` line, and the `idealyst` facade carries the
+//! wasm-only deps (`backend-web`, `wasm-bindgen`,
+//! `console_error_panic_hook`, `lol_alloc`) the author used to have to
+//! name. See [`ensure_entry_point`], which reports a missing one in the
+//! author's terms.
 //!
-//! `build()` generates an ephemeral `cdylib` wrapper at:
+//! That removes the failure mode the wrapper existed to create: the
+//! wrapper resolved `runtime-core` independently of the app, and any
+//! disagreement produced two `runtime_core` crates and "expected
+//! `Element`, found `Element`" at a boundary the author never wrote.
+//!
+//! What's left here is packaging, which `cargo build` does not do:
+//! `cargo build --target wasm32-unknown-unknown` against the app,
+//! then `wasm-bindgen` over the resulting `.wasm`, then (release)
+//! `wasm-split` + `wasm-opt`, then staging `pkg/` + `index.html` +
+//! assets into `dist/web`.
 //!
 //! ```text
-//! <workspace>/target/idealyst/<project>/web/wrapper/
+//! <workspace>/target/idealyst/<project>/web/
 //! ```
-//!
-//! whose `src/lib.rs` is the wasm-bindgen entry point boilerplate
-//! identical for every project — only the `<project>::app()` call
-//! site changes. wasm-pack runs against the wrapper, producing the
-//! `pkg/` bundle. We then copy that `pkg/` over to the user
-//! project's root so the user's `index.html` (which references
-//! `./pkg/<lib>.js`) keeps working without changes.
+//! is now a staging directory for that output, not a crate.
 
 use std::fs;
 use std::io::Write;
@@ -281,8 +284,11 @@ pub fn resolve_primitive_set(spec: Option<&[String]>) -> Result<Option<Vec<Strin
 }
 
 /// Build the user's project at `project_dir` for the web target.
-/// Generates the wrapper, runs `wasm-pack build --target web`, and
-/// copies the resulting `pkg/` over to `project_dir/pkg/`.
+///
+/// Builds the app crate's own binary for `wasm32-unknown-unknown`, runs
+/// `wasm-bindgen` (plus `wasm-split` + `wasm-opt` on release) over the
+/// result, and stages the `pkg/` bundle into `project_dir/pkg/` and
+/// `dist/web`. No wrapper crate is involved — see the module docs.
 pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     let project_dir = fs::canonicalize(project_dir)
         .with_context(|| format!("resolve project dir {}", project_dir.display()))?;
@@ -1360,8 +1366,19 @@ fn ensure_entry_point(project_dir: &Path, bin_name: &str) -> Result<()> {
     // An explicit `[[bin]]` can put the entry anywhere, so a missing
     // `src/main.rs` is only a problem if the manifest doesn't declare
     // one either.
+    //
+    // Matched per line with comments stripped, NOT as a substring of the
+    // whole file: the scaffold's own Cargo.toml mentions `[[bin]]` in a
+    // prose comment, and a raw `contains` therefore reported every
+    // freshly-scaffolded project as having an entry point — swapping the
+    // one actionable message below for cargo's bare `no bin target
+    // named <app>`.
     let manifest = fs::read_to_string(project_dir.join("Cargo.toml")).unwrap_or_default();
-    if manifest.contains("[[bin]]") {
+    let declares_bin = manifest
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or("").trim())
+        .any(|line| line == "[[bin]]");
+    if declares_bin {
         return Ok(());
     }
     anyhow::bail!(
@@ -1946,6 +1963,47 @@ mod regression_tests {
         std::fs::write(plain.join("Cargo.toml"), "[package]\nname = \"plain\"\n").unwrap();
         std::fs::write(plain.join("src/main.rs"), "fn main() {}").unwrap();
         ensure_entry_point(&plain, "plain").expect("src/main.rs is an entry point");
+    }
+
+    /// A `[[bin]]` mentioned in PROSE is not a bin target.
+    ///
+    /// `idealyst new`'s generated Cargo.toml carries the sentence "No
+    /// `catalog` feature or `[[bin]] catalog` is needed…", and the check
+    /// used to substring-match the whole file — so every freshly
+    /// scaffolded project looked like it had an entry point and the
+    /// author got cargo's bare `no bin target named <app>` instead of
+    /// the message above.
+    #[test]
+    fn regression_bin_target_in_a_comment_is_not_an_entry_point() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("demo");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(
+            project.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n\n\
+             # No `catalog` feature or `[[bin]] catalog` is needed for the MCP server.\n\
+             [dependencies]\n",
+        )
+        .unwrap();
+        std::fs::write(project.join("src/lib.rs"), "pub fn app() {}").unwrap();
+
+        let err = ensure_entry_point(&project, "demo")
+            .expect_err("a commented-out [[bin]] must not count as a bin target");
+        assert!(format!("{err:#}").contains("idealyst::entry!"));
+    }
+
+    /// A trailing comment on the real table header must still count.
+    #[test]
+    fn bin_target_with_a_trailing_comment_is_an_entry_point() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("demo");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(
+            project.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n\n[[bin]] # the app entry\nname = \"demo\"\n",
+        )
+        .unwrap();
+        ensure_entry_point(&project, "demo").expect("real [[bin]] header, comment and all");
     }
 
     #[test]

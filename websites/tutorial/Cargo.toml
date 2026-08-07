@@ -28,6 +28,9 @@ crate-type = ["cdylib", "rlib"]
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The platform surface, used by `src/main.rs` only — it carries whatever
+# the target needs so this manifest names no backend directly.
+idealyst = { workspace = true }
 # The runtime-v2 author surface. `runtime-core` is the alias target for
 # `extern crate runtime_core as runtime_core;` (its root re-exports
 # `runtime_vocabulary::glue`).

@@ -64,18 +64,22 @@ pub fn stylesheets() -> Element {
             Typography(
                 content = "stylesheet! declares a style once. The base block is the \
                     unconditional rules; property values are either literals or token references \
-                    via Tokenized::token. The macro generates a builder (Panel()), an associated \
+                    named through the block binding (t.spacing.md()). The macro generates a builder (Panel()), an associated \
                     Panel::sheet(), and the convention-named panel_style() \u{2014} both \
                     accessors hand back the same cached Rc<StyleSheet>.".to_string()
             )
             CodePanel(src = include_str!("../samples/st_sheet.rs").to_string())
 
-            Callout(label = "The <()> and (_t) are vestigial".to_string()) {
+            Callout(label = "The <..> slot names your token vocabulary".to_string()) {
                 Typography(
-                    content = "The angle-bracket slot and the (_t) binding are parsed for \
-                        backward-compat but ignored. Reading theme.* inside a body is a compile \
-                        error \u{2014} pull values from tokens instead. Write (_t) (or any \
-                        _-prefixed name).".to_string(),
+                    content = "The angle-bracket slot names a token vocabulary and the block \
+                        binding hands it to the body, so a theme token is a path the compiler \
+                        checks: base(t) { padding: t.spacing.md() } references the spacing-md \
+                        token. The binding carries names, not values \u{2014} values arrive at \
+                        resolve time from the token registry, which is what makes a theme swap \
+                        one write per token rather than a re-mint. So theme.colors.primary does \
+                        not compile; there is no such field. Declare <()> when the sheet has no \
+                        vocabulary and write its binding (_t).".to_string(),
                     muted = true,
                 )
             }

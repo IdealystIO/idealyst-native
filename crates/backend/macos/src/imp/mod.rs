@@ -132,8 +132,9 @@ pub struct MacosBackend {
     pub(crate) sticky_registry: sticky::StickyRegistry,
     /// Sticky views whose `apply_style` ran before `insert` gave them a
     /// scroll ancestor (walker ordering). `insert` retries these;
-    /// value = pin threshold (`top`). Mirrors iOS `pending_sticky`.
-    pub(crate) pending_sticky: HashMap<usize, f32>,
+    /// value = the per-axis pin thresholds. Mirrors iOS
+    /// `pending_sticky`.
+    pub(crate) pending_sticky: HashMap<usize, runtime_shared::sticky::StickyInsets>,
     /// Per-view cached gradient state. Keyed by view pointer; holds
     /// the gradient `CAGradientLayer` retained handle plus the
     /// current sRGB stop colors so `AnimProp::GradientStopColor(idx)`
@@ -4140,50 +4141,27 @@ impl MacosBackend {
         // it as the (x, y) scroll offset \u{2014} same units as web
         // (CSS pixels) and iOS (UIKit points), so author code reads
         // identical values across platforms.
+        // `overscroll-behavior` is applied by `apply_style`, not here —
+        // it's a style property and can change reactively, so wiring it
+        // at construction would freeze whatever the first frame said.
+
+        // The install itself (and the reason delivery is deferred to
+        // the next main-queue turn) lives in `install_scroll_observer`
+        // — shared with `create_virtualizer`, which wraps its own
+        // NSScrollView and must report offsets identically. The sticky
+        // retick observer deliberately does NOT go through here: it
+        // stays synchronous because it only writes frames and must
+        // track the scroll beat-for-beat.
         if let Some(cb) = on_scroll {
-            // Deliver the author's `on_scroll` ASYNCHRONOUSLY (next
-            // main-queue turn), matching web: a programmatic scroll fires
-            // the scroll event after the current task, never on the
-            // caller's stack. AppKit's bounds notification is synchronous,
-            // so dispatching inline re-enters the reactive system while
-            // the scrolling caller may still hold the refs/arena borrow —
-            // `scroll_ref.with(|h| h.scroll_to(...))` in a click handler
-            // plus a scroll-spy `signal.set` inside `on_scroll` aborted
-            // with "RefCell already borrowed" in the non-unwinding
-            // notification callback (the website TOC-link crash). The
-            // sticky retick observer stays synchronous by design — it
-            // only writes frames and must track the scroll beat-for-beat.
-            let deferred: Rc<dyn Fn(f32, f32)> = Rc::new(move |x, y| {
-                let cb = cb.clone();
-                runtime_shared::schedule_microtask(move || cb(x, y));
-            });
-            let target = crate::imp::callbacks::ScrollObserverTarget::new(self.mtm, deferred);
-            let clip_view: *mut objc2::runtime::AnyObject =
-                unsafe { msg_send![&scroll_view, contentView] };
-            if !clip_view.is_null() {
-                let _: () =
-                    unsafe { msg_send![clip_view, setPostsBoundsChangedNotifications: true] };
-                let center: *mut objc2::runtime::AnyObject =
-                    unsafe { msg_send![objc2::class!(NSNotificationCenter), defaultCenter] };
-                let name: Retained<objc2_foundation::NSString> =
-                    objc2_foundation::NSString::from_str("NSViewBoundsDidChangeNotification");
-                let sel = objc2::sel!(boundsDidChange:);
-                let _: () = unsafe {
-                    msg_send![
-                        center,
-                        addObserver: &*target,
-                        selector: sel,
-                        name: &*name,
-                        object: clip_view,
-                    ]
-                };
+            if let Some(target) =
+                crate::imp::callbacks::install_scroll_observer(self.mtm, &scroll_view, cb)
+            {
+                // Retain across the backend's lifetime so the observer
+                // outlives the scroll view it watches. The notification
+                // center holds a non-owning ref — same pattern as
+                // every other macOS callback target.
+                self.callback_targets.push(target);
             }
-            // Retain across the backend's lifetime so the observer
-            // outlives the scroll view it watches. The notification
-            // center holds a non-owning ref \u{2014} same pattern as
-            // every other macOS callback target.
-            self.callback_targets
-                .push(unsafe { Retained::cast::<NSObject>(target) });
         }
 
         let node = MacosNode::View(scroll_view);
@@ -4354,16 +4332,16 @@ impl MacosBackend {
         // retry-all here is simpler than the recursive subtree walk iOS
         // does, with identical results.
         if !self.pending_sticky.is_empty() {
-            let pending: Vec<(usize, f32)> =
+            let pending: Vec<(usize, runtime_shared::sticky::StickyInsets)> =
                 self.pending_sticky.iter().map(|(k, v)| (*k, *v)).collect();
-            for (key, threshold) in pending {
+            for (key, insets) in pending {
                 let Some(view) = self.view_to_layout.get(&key).map(|(v, _)| v.clone()) else {
                     // The view unmounted before ever gaining a scroll
                     // ancestor — drop the stale entry.
                     self.pending_sticky.remove(&key);
                     continue;
                 };
-                if sticky::register(self.mtm, &mut self.sticky_registry, &view, threshold) {
+                if sticky::register(self.mtm, &mut self.sticky_registry, &view, insets) {
                     self.pending_sticky.remove(&key);
                 }
             }
@@ -4740,6 +4718,28 @@ impl MacosBackend {
             }
         }
 
+        // `overscroll-behavior` → NSScrollView elasticity. AppKit has
+        // no scroll *chaining* to suppress (a nested scroll view keeps
+        // its own gesture), so `Contain` and `Auto` coincide and only
+        // `None` is observable: it disables the rubber-band on both
+        // axes. Applied unconditionally on every style pass so a
+        // reactive flip back to `Auto` restores elasticity rather than
+        // latching.
+        //
+        // NSScrollElasticity: 0 = Automatic, 1 = None, 2 = Allowed.
+        {
+            let is_scroll: bool =
+                unsafe { msg_send![view, isKindOfClass: objc2::class!(NSScrollView)] };
+            if is_scroll {
+                let elasticity: isize = match style.overscroll_behavior {
+                    Some(runtime_shared::OverscrollBehavior::None) => 1,
+                    _ => 0,
+                };
+                let _: () = unsafe { msg_send![view, setHorizontalScrollElasticity: elasticity] };
+                let _: () = unsafe { msg_send![view, setVerticalScrollElasticity: elasticity] };
+            }
+        }
+
         // Position::Sticky → register against the enclosing
         // NSScrollView so the clip-view bounds-change observer pins
         // this view once scrolled past its `top` threshold. Any other
@@ -4752,24 +4752,18 @@ impl MacosBackend {
             let sticky_key = view as *const NSView as usize;
             match style.position {
                 Some(runtime_shared::Position::Sticky) => {
-                    let threshold_top = style
-                        .top
-                        .as_ref()
-                        .map(|t| match t.resolve() {
-                            runtime_shared::Length::Px(v) => v,
-                            // Percent/Auto pin offsets aren't meaningful
-                            // for sticky (see the iOS twin). Treat as 0.
-                            _ => 0.0,
-                        })
-                        .unwrap_or(0.0);
+                    // Per-axis thresholds (`top` → vertical, `left` →
+                    // horizontal) resolved by the shared helper, so
+                    // every backend reads the same sides the same way.
+                    let insets = runtime_shared::sticky::StickyInsets::from_style(style);
                     let registered = sticky::register(
                         self.mtm,
                         &mut self.sticky_registry,
                         view,
-                        threshold_top,
+                        insets,
                     );
                     if !registered {
-                        self.pending_sticky.insert(sticky_key, threshold_top);
+                        self.pending_sticky.insert(sticky_key, insets);
                     }
                 }
                 _ => {

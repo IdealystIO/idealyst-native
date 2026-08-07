@@ -821,6 +821,7 @@ impl caps::VirtualizerOps for CpuBackend {
             mount_item,
             release_item,
             set_measured_size,
+            on_scroll,
         } = callbacks;
         let callbacks = VirtualizerCallbacks {
             item_count,
@@ -849,6 +850,16 @@ impl caps::VirtualizerOps for CpuBackend {
                     schedule_flush();
                 })
             },
+            // Author scroll observer — same dispatch-site glue as
+            // `create_scroll_view`'s `on_scroll` (stage writes, then
+            // flush). Stays `None` when unset so the impl can skip
+            // installing scroll observation entirely.
+            on_scroll: on_scroll.map(|f| -> Rc<dyn Fn(f32, f32)> {
+                Rc::new(move |x, y| {
+                    f(x, y);
+                    schedule_flush();
+                })
+            }),
         };
         let _callbacks = callbacks;
         self.alloc_node(
@@ -952,6 +963,26 @@ impl caps::DocumentOps for CpuBackend {}
 
 impl caps::StyleOps for CpuBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
+        // Degrade LOUDLY, once. `CPU` has no scrolling gesture model,
+        // so `Position::Sticky` renders as `Relative` and
+        // `overscroll-behavior` has nothing to govern. Both were
+        // previously dropped in silence — the exact "no warning,
+        // nothing to grep for" failure `runtime_shared::unsupported`
+        // exists to end.
+        if matches!(style.position, Some(runtime_shared::Position::Sticky)) {
+            runtime_shared::unsupported::warn_once(
+                "cpu.sticky",
+                "position: Sticky on the CPU backend — rendered as Relative (this backend \
+                 has no scroll gesture model). Web and the native backends pin.",
+            );
+        }
+        if style.overscroll_behavior.is_some() {
+            runtime_shared::unsupported::warn_once(
+                "cpu.overscroll_behavior",
+                "overscroll-behavior on the CPU backend — ignored (no scroll gesture \
+                 model to govern).",
+            );
+        }
         let Some(layout_node) = self.nodes.get(&node.id).map(|d| d.layout) else { return };
 
         // Eagerly resolve `background` and `color` BEFORE handing the

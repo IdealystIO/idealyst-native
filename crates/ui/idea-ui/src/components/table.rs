@@ -481,9 +481,16 @@ mod tests {
                 .with("row_hovered", "on");
             assert!(hovered_app.preminted_class_list().is_some());
             let hovered = runtime_core::resolve_style(&hovered_app);
+            // Asserted against the palette, not a literal: this used to
+            // pin `#eef0f7`, the fallback the cell's own
+            // `Tokenized::token("color-surface-alt", …)` restated — which
+            // had drifted from the palette's `#f1f5f9`. Deriving the
+            // expectation from `light_theme()` means the two can't
+            // disagree again.
+            let surface_alt = crate::light_theme().colors.surface_alt.value().0.to_ascii_lowercase();
             assert_eq!(
                 hovered.background.as_ref().map(|b| b.resolve().0.to_ascii_lowercase()),
-                Some("#eef0f7".into()),
+                Some(surface_alt),
                 "row_hovered arm resolves the themed surface-alt highlight"
             );
         });

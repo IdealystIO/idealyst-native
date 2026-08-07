@@ -518,7 +518,10 @@ where
 /// Placeholder handler for hosts with no real video player — the frozen
 /// External degradation path (each backend's "not supported" box; SSR
 /// renders a bare `<div>`).
-#[cfg(not(target_arch = "wasm32"))]
+///
+/// Compiled on wasm too: `register` is registry-generic there now, so a
+/// non-`WebBackend` registry on a wasm build (the SSR / style-dump
+/// paths) reaches this same fallback rather than failing to have one.
 fn mount_placeholder<H>(
     cx: &mut MountCx<'_, H>,
     prim: &Rc<VideoPrim>,
@@ -645,9 +648,29 @@ where
 
 /// Register the video payload handler on the web backend's scene
 /// registry — the real `<video>` renderer.
+///
+/// Registry-GENERIC with an internal downcast, matching the native arm
+/// above and `canvas_native::register` on every target. It used to take
+/// a concrete `Registry<WebBackend>`, which forced any app registering
+/// video to carry a `#[cfg(target_arch = "wasm32")]` twin of its own
+/// registration seam with a different *signature* — and that shape
+/// cannot cross `idealyst::SceneExtensions::register<H: SceneHost>`,
+/// the one seam `entry!` boots every platform through. Uniform
+/// signature, per-backend mechanism (CLAUDE.md §7).
 #[cfg(target_arch = "wasm32")]
-pub fn register(registry: &mut Registry<backend_web::WebBackend>) {
-    registry.register::<VideoPrim, _>(web_glue::mount_video_web);
+pub fn register<H>(registry: &mut Registry<H>)
+where
+    H: ExternalOps + StyleServices + 'static,
+{
+    let any: &mut dyn Any = registry;
+    if let Some(reg) = any.downcast_mut::<Registry<backend_web::WebBackend>>() {
+        reg.register::<VideoPrim, _>(web_glue::mount_video_web);
+        return;
+    }
+    // A non-web registry on a wasm build is the SSR/dump path, which has
+    // no `<video>` element to drive — same placeholder the native arm
+    // installs for an unrecognized backend.
+    registry.register::<VideoPrim, _>(mount_placeholder::<H>);
 }
 
 /// Declare this SDK's payload kind **late-bound** instead of installing

@@ -9,6 +9,9 @@ description = "Marketing site for idealyst-native — built with idealyst-native
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+# The platform surface, used by `src/main.rs` only — it carries whatever
+# the target needs so this manifest names no backend directly.
+idealyst = { workspace = true }
 # The author-surface alias target: `extern crate runtime_core as
 # runtime_core;` in lib.rs shadows the extern prelude for the whole
 # crate, so every `runtime_core::…` path resolves against

@@ -15,20 +15,13 @@ use runtime_core::{
 };
 use std::rc::Rc;
 
-/// Web registration seam — registry-CONCRETE: `video::register` takes a
-/// `Registry<WebBackend>` on wasm32 (the real `<video>` handler has no
-/// caps-trait expression). `camera` renders nothing, so it registers nothing.
+/// Registration seam — one registry-GENERIC fn for every target.
+/// `video::register` type-dispatches ONCE at registration: web gets the real
+/// `<video>`, macOS / iOS / Android get the native player, every other host
+/// gets the External placeholder. `camera` renders nothing, so it registers
+/// nothing.
 ///
 /// Registration is MANDATORY: an unregistered payload panics at realize.
-#[cfg(target_arch = "wasm32")]
-pub fn register_scene_extensions(registry: &mut runtime_scene::Registry<backend_web::WebBackend>) {
-    video::register(registry);
-}
-
-/// Native registration seam. `video::register` is registry-GENERIC off web
-/// and type-dispatches ONCE at registration: macOS / iOS / Android get the
-/// real player, every other host gets the External placeholder.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
 where
     H: runtime_vocabulary::caps::ExternalOps

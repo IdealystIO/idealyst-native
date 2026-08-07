@@ -1325,8 +1325,8 @@ fn walk<'a>(
     let base_y_pre_sticky = parent_y + frame.y * acc_scale_y;
     // `Position::Sticky` pin shift. When the node is in the
     // sticky registry AND its enclosing scroll context matches
-    // the one we're currently walking inside of, add the pin
-    // translate computed by `sticky::compute_translate`. The
+    // the one we're currently walking inside of, add the per-axis
+    // pin translate from `runtime_shared::sticky::translate`. The
     // shift propagates to children too (sticky pins the whole
     // subtree, matching CSS).
     //
@@ -1340,28 +1340,33 @@ fn walk<'a>(
     // `scroll_layout` is `None`) or when the node isn't in the
     // registry — matches the CSS "no scrolling parent ⇒
     // relative" fall-back and the non-sticky default.
-    let sticky_translate_y = if let Some(scroll) = enclosing_scroll {
+    let (sticky_translate_x, sticky_translate_y) = if let Some(scroll) = enclosing_scroll {
         let key = std::rc::Rc::as_ptr(node) as usize;
         backend
             .sticky_registry
             .get(&key)
             .and_then(|child| {
                 if child.scroll_layout == Some(scroll.scroll_layout) {
-                    Some(
-                        crate::sticky::compute_translate(
-                            child.natural_y,
-                            child.threshold_top,
-                            scroll.scroll_offset_y,
-                        ) * acc_scale_y,
-                    )
+                    let (dx, dy) = runtime_shared::sticky::translate(
+                        child.insets,
+                        child.natural,
+                        scroll.scroll_offset,
+                    );
+                    // Each axis pre-multiplied by ITS OWN accumulated
+                    // scale, matching how `frame.x` / `frame.y` were
+                    // scaled into the base origin above. Using one
+                    // scale for both would skew the pin under a
+                    // non-uniform ancestor scale.
+                    Some((dx * acc_scale_x, dy * acc_scale_y))
                 } else {
                     None
                 }
             })
-            .unwrap_or(0.0)
+            .unwrap_or((0.0, 0.0))
     } else {
-        0.0
+        (0.0, 0.0)
     };
+    let base_x = base_x + sticky_translate_x;
     let base_y = base_y_pre_sticky + sticky_translate_y;
     // Static transform from stylesheet `transform: [...]`. Translate
     // and scale only; percent translates resolve against the node's
@@ -1916,10 +1921,12 @@ fn walk<'a>(
     // subtree carry `None` here, which is what makes
     // sticky-in-non-scrolling-parent fall back to relative.
     let child_enclosing_scroll = match &data.kind {
-        NodeKind::ScrollView { offset_y, .. } => Some(crate::sticky::EnclosingScroll {
-            scroll_layout: data.layout,
-            scroll_offset_y: *offset_y,
-        }),
+        NodeKind::ScrollView { offset_x, offset_y, .. } => {
+            Some(crate::sticky::EnclosingScroll {
+                scroll_layout: data.layout,
+                scroll_offset: (*offset_x, *offset_y),
+            })
+        }
         _ => enclosing_scroll,
     };
 

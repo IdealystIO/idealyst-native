@@ -18,6 +18,10 @@ pub(crate) fn create(
     overscan: f32,
     layout: VirtualLayout,
 ) -> GlobalRef {
+    // Read before the box moves — the scroll listener is installed
+    // conditionally and the callbacks are unreachable afterwards.
+    let has_on_scroll = callbacks.on_scroll.is_some();
+
     // We leak the box to get a stable pointer; `nativeDrop` (called
     // from the adapter teardown path, if ever wired) frees it. The
     // Activity outlives the list in this demo so the leak is bounded.
@@ -149,9 +153,92 @@ pub(crate) fn create(
         )
         .unwrap();
 
+        // Author scroll observer. Installed ONLY when the author
+        // supplied one — a RecyclerView scroll listener fires on every
+        // frame of a fling, so an unconditional listener would pay a
+        // JNI crossing per frame for every list in the app.
+        //
+        // `has_on_scroll` is read off the leaked box (the callbacks
+        // themselves already moved into it); the listener shares that
+        // same pointer, so it must not outlive `nativeDrop`.
+        if has_on_scroll {
+            let listener_class = env
+                .find_class("io/idealyst/runtime/RustScrollListener")
+                .expect("RustScrollListener class — staged with the Kotlin runtime");
+            let listener = env
+                .new_object(&listener_class, "(J)V", &[JValue::Long(ptr)])
+                .unwrap();
+            env.call_method(
+                &rv,
+                "addOnScrollListener",
+                "(Landroidx/recyclerview/widget/RecyclerView$OnScrollListener;)V",
+                &[JValue::Object(&listener)],
+            )
+            .unwrap();
+        }
+
         apply_default_layout_params(env, &rv);
         env.new_global_ref(rv).unwrap()
     })
+}
+
+/// Scroll the list so `index` is on screen. `scrollToPosition` hands
+/// the work to the layout manager, which knows the live item extents —
+/// recomputing an offset in Rust would drift once measured sizes
+/// refine.
+pub(crate) fn scroll_to_index(node: &GlobalRef, index: usize) {
+    with_env(|env| {
+        let _ = env.call_method(
+            node.as_obj(),
+            "scrollToPosition",
+            "(I)V",
+            &[JValue::Int(index as i32)],
+        );
+    });
+}
+
+/// Current scroll offset in density-independent units — the same space
+/// `RustScrollListener` reports and the same space web/iOS/macOS use.
+/// Density comes from the view's own display (`density_of`), matching
+/// `AndroidScrollViewOps::scroll_to`.
+pub(crate) fn scroll_offset(node: &GlobalRef) -> (f32, f32) {
+    with_env(|env| {
+        let view = node.as_obj();
+        let d = crate::imp::density_of(env, &view).unwrap_or(1.0);
+        let x = env
+            .call_method(&view, "computeHorizontalScrollOffset", "()I", &[])
+            .and_then(|v| v.i())
+            .unwrap_or(0) as f32;
+        let y = env
+            .call_method(&view, "computeVerticalScrollOffset", "()I", &[])
+            .and_then(|v| v.i())
+            .unwrap_or(0) as f32;
+        (x / d, y / d)
+    })
+}
+
+/// Scroll to an absolute offset. RecyclerView deliberately does NOT
+/// support `View.scrollTo` (it throws / corrupts its own layout
+/// bookkeeping) — the supported form is the relative `scrollBy`, so
+/// the delta is computed against the current offset. That's why this
+/// reads the offset first instead of assuming a starting position.
+pub(crate) fn scroll_to(node: &GlobalRef, x: f32, y: f32) {
+    let (cur_x, cur_y) = scroll_offset(node);
+    with_env(|env| {
+        let view = node.as_obj();
+        let d = crate::imp::density_of(env, &view).unwrap_or(1.0);
+        let dx = ((x - cur_x) * d).round() as i32;
+        let dy = ((y - cur_y) * d).round() as i32;
+        if dx == 0 && dy == 0 {
+            return;
+        }
+        let _ = env.call_method(
+            &view,
+            "scrollBy",
+            "(II)V",
+            &[JValue::Int(dx), JValue::Int(dy)],
+        );
+    });
 }
 
 pub(crate) fn data_changed(node: &GlobalRef) {

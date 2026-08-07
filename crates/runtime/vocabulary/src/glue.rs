@@ -166,8 +166,8 @@ pub use crate::callback_guard::ScopeAlive;
 pub use crate::theme;
 pub use runtime_shared::{
     cached_stylesheet, derived, Breakpoint, IntoOverrideSource, IntoVariantSource, Length,
-    StateBits, StyleApplication, StyleRules, StyleSheet, TokenEntry, TokenValue, Tokenized,
-    Transition, VariantEnum, VariantSet,
+    NoTokens, StateBits, StyleApplication, StyleRules, StyleSheet, TokenEntry, TokenValue,
+    TokenVocabulary, Tokenized, Transition, VariantEnum, VariantSet,
 };
 
 // Anchor plumbing for `anchored_overlay(target = …)`: `AnchorTarget`
@@ -2379,6 +2379,14 @@ pub mod primitives {
             /// P2 form of the old `.bind(ref)`.
             pub fn on_handle(mut self, fill: impl FnOnce(VirtualizerHandle) + 'static) -> Self {
                 self.b = self.b.on_handle(fill);
+                self
+            }
+
+            /// Observe the list's own scroll offset — same `(x, y)`
+            /// contract as `scroll_view`'s `.on_scroll(..)`. See
+            /// `builders::VirtualizerBuilder::on_scroll`.
+            pub fn on_scroll(mut self, handler: impl Fn(f32, f32) + 'static) -> Self {
+                self.b = self.b.on_scroll(handler);
                 self
             }
         }

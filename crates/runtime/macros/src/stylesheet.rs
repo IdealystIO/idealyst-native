@@ -22,30 +22,39 @@
 //!
 //! ```ignore
 //! stylesheet! {
-//!     pub Card<Theme> {
-//!         base(theme) {
-//!             background: Color(theme.colors.surface.clone()),
-//!             padding: theme.spacing.medium,
+//!     pub Card<IdeaThemeRef> {
+//!         base(t) {
+//!             background: t.color.surface(),
+//!             padding: t.spacing.md(),
 //!             border_radius: 8.0,
 //!         }
 //!         variant size {
-//!             small(theme)  { padding: theme.spacing.medium * 0.5 }
+//!             small(t)  { padding: t.spacing.sm() }
 //!             #[default]
-//!             medium(_theme) {}
-//!             large(theme)  { padding: theme.spacing.medium * 2.0 }
+//!             medium(_t) {}
+//!             large(t)  { padding: t.spacing.xl() }
 //!         }
 //!         variant kind {
 //!             #[default]
-//!             elevated(theme) { background: Color(theme.colors.surface.clone()) }
-//!             outlined(theme) {
+//!             elevated(t) { background: t.color.surface() }
+//!             outlined(t) {
 //!                 background: Color("transparent".into()),
-//!                 border: Border::new(2, theme.colors.foreground.clone()),
+//!                 border_color: t.color.border(),
 //!             }
 //!         }
 //!         override padding: f32
 //!     }
 //! }
 //! ```
+//!
+//! The `<…>` slot names a **token vocabulary** — a type implementing
+//! [`runtime_core::TokenVocabulary`] — and each block's binding (`base(t)`)
+//! is that vocabulary, so a theme token is spelled as a path the compiler
+//! checks (`t.spacing.md()` → the `spacing-md` token) rather than a string
+//! literal. The binding carries names only; values arrive at resolve time
+//! from the token registry, which is what keeps a theme swap one write per
+//! token. `<()>` declares no vocabulary — such a sheet writes its bindings
+//! `_t` and references any tokens with `Tokenized::token("name", fallback)`.
 //!
 //! # What it generates
 //!
@@ -93,10 +102,12 @@ use syn::{braced, parenthesized, Expr, Ident, Token, Type, Visibility};
 pub struct StyleSheetDecl {
     vis: Visibility,
     name: Ident,
-    /// Parsed for syntactic backward-compatibility (`pub Card<Theme>`).
-    /// Ignored at emission — stylesheet closures take `&VariantSet`,
-    /// not a theme reference. See `check_no_theme_refs`.
-    #[allow(dead_code)]
+    /// The token vocabulary this sheet references (`pub Card<IdeaThemeRef>`).
+    /// Resolved through `runtime_core::TokenVocabulary` at emission: each
+    /// block's binding is bound to `<theme_ty as TokenVocabulary>::Tokens`,
+    /// so `base(t) { padding: t.spacing.md() }` type-checks the token name
+    /// instead of trusting a string literal. `<()>` yields the empty
+    /// `NoTokens`, so a sheet that declares no vocabulary can't read one.
     theme_ty: Type,
     base: BaseBlock,
     variants: Vec<VariantAxisDecl>,
@@ -133,7 +144,6 @@ pub struct StyleSheetDecl {
 /// time.
 struct StateArm {
     name: Ident,
-    #[allow(dead_code)]
     theme_binding: Ident,
     rules: RulesBlock,
 }
@@ -144,7 +154,6 @@ struct StateArm {
 /// write a base-shadowing overlay.
 struct BreakpointArm {
     name: Ident,
-    #[allow(dead_code)]
     theme_binding: Ident,
     rules: RulesBlock,
 }
@@ -156,7 +165,6 @@ struct BreakpointArm {
 struct ContainerArm {
     /// The `min_width` threshold in px.
     threshold: f32,
-    #[allow(dead_code)]
     theme_binding: Ident,
     rules: RulesBlock,
 }
@@ -175,7 +183,6 @@ struct TransitionDecl {
 }
 
 struct BaseBlock {
-    #[allow(dead_code)]
     theme_binding: Ident,
     rules: RulesBlock,
 }
@@ -188,7 +195,6 @@ struct VariantAxisDecl {
 struct VariantArm {
     name: Ident,
     is_default: bool,
-    #[allow(dead_code)]
     theme_binding: Ident,
     rules: RulesBlock,
 }
@@ -319,8 +325,8 @@ impl Parse for StyleSheetDecl {
                     // Grammar: `container (min_width: 400px)(theme) { … }`.
                     // The first paren group is the query; v1 supports only
                     // `min_width: <length>` (mobile-first cascade). The
-                    // second is the (vestigial) theme binding, kept for
-                    // consistency with `base`/`breakpoint`/`state`.
+                    // second is the token-vocabulary binding, same as
+                    // `base`/`breakpoint`/`state`.
                     let query;
                     parenthesized!(query in body);
                     let cmp: Ident = query.parse()?;
@@ -510,9 +516,6 @@ pub fn content_hash(input: &str) -> u64 {
 }
 
 pub fn emit(decl: StyleSheetDecl, content_hash: u64) -> TokenStream2 {
-    if let Err(err) = check_no_theme_refs(&decl) {
-        return err.to_compile_error();
-    }
     let enums = decl.variants.iter().map(|v| emit_variant_enum(&decl, v)).collect::<Vec<_>>();
 
     // Premint eligibility — one disqualifier, keeping the sheet on the
@@ -623,99 +626,46 @@ fn emit_premint_registration(decl: &StyleSheetDecl, base_class: &str) -> TokenSt
     }
 }
 
-/// Walk every rules-block expression in the declaration and reject
-/// references to the theme binding (`base(theme) { theme.colors.fg }`,
-/// `base(t) { t.colors().fg }` — whatever name the author chose for
-/// the binding). The token primitives now live in `runtime-core`,
-/// so author code emits `Tokenized::Token { name, fallback }`
-/// directly. The legacy theme-struct pattern (where rules could read
-/// `theme.colors.primary` etc) lives in `idea-ui`'s theme runtime but
-/// it's no longer wired through the stylesheet macro — emitting a
-/// clear error here keeps the migration explicit.
-fn check_no_theme_refs(decl: &StyleSheetDecl) -> syn::Result<()> {
-    // Collect every theme-binding name the declaration uses so the
-    // check is agnostic to whether the author wrote `theme`, `t`, or
-    // anything else. Bindings prefixed with `_` (idiomatic "unused")
-    // are skipped — those don't reference the theme by name in the
-    // body anyway, and rejecting them would flag stylesheets that
-    // already opted out by writing `_theme`.
-    let mut bindings: Vec<String> = Vec::new();
-    let add = |list: &mut Vec<String>, ident: &Ident| {
-        let s = ident.to_string();
-        if !s.starts_with('_') && !list.contains(&s) {
-            list.push(s);
-        }
-    };
-    add(&mut bindings, &decl.base.theme_binding);
-    for axis in &decl.variants {
-        for arm in &axis.arms {
-            add(&mut bindings, &arm.theme_binding);
-        }
-    }
-    for arm in &decl.states {
-        add(&mut bindings, &arm.theme_binding);
-    }
-    for arm in &decl.breakpoints {
-        add(&mut bindings, &arm.theme_binding);
-    }
-    for arm in &decl.containers {
-        add(&mut bindings, &arm.theme_binding);
-    }
-
+/// Does any property expression in `rules` mention `binding`?
+///
+/// Decides whether the block gets a token-namespace binding emitted (see
+/// `bind_tokens` in `emit_stylesheet_fn`). A bare-path match is the right
+/// granularity: `t.spacing.md()` and `t.color.surface()` both parse with
+/// `t` as an `ExprPath` receiver, and a false positive costs only an
+/// unused ZST binding, while a false negative would be a confusing
+/// "cannot find value `t`" in author code.
+fn block_uses_binding(rules: &RulesBlock, binding: &Ident) -> bool {
     struct Finder<'a> {
-        bindings: &'a [String],
-        offender: Option<syn::Ident>,
+        binding: &'a Ident,
+        found: bool,
     }
     impl<'ast, 'a> Visit<'ast> for Finder<'a> {
         fn visit_expr_path(&mut self, node: &'ast syn::ExprPath) {
-            if self.offender.is_some() {
+            if self.found {
                 return;
             }
-            // Detect a bare ident path matching one of the
-            // theme-binding names (`theme`, `t`, etc.). This catches
-            // both `theme.colors.fg` field chains and
-            // `theme.colors()` method chains, since the receiver
-            // parses as an `ExprPath`.
-            if let Some(seg) = node.path.segments.last() {
-                let name = seg.ident.to_string();
-                if self.bindings.iter().any(|b| b == &name) {
-                    self.offender = Some(seg.ident.clone());
-                    return;
-                }
+            if node.path.is_ident(self.binding) {
+                self.found = true;
+                return;
             }
             visit::visit_expr_path(self, node);
         }
     }
-    let mut finder = Finder { bindings: &bindings, offender: None };
-    let mut blocks: Vec<&RulesBlock> = vec![&decl.base.rules];
-    for axis in &decl.variants {
-        for arm in &axis.arms {
-            blocks.push(&arm.rules);
+    // A binding the author already marked unused (`_t`) never counts,
+    // even if something in the block happens to name it — that spelling
+    // IS the opt-out, and honouring it keeps `<()>`-typed sheets off the
+    // `TokenVocabulary` projection entirely.
+    if binding.to_string().starts_with('_') {
+        return false;
+    }
+    let mut finder = Finder { binding, found: false };
+    for (_, expr) in &rules.fields {
+        finder.visit_expr(expr);
+        if finder.found {
+            return true;
         }
     }
-    for arm in &decl.states {
-        blocks.push(&arm.rules);
-    }
-    for arm in &decl.breakpoints {
-        blocks.push(&arm.rules);
-    }
-    for arm in &decl.containers {
-        blocks.push(&arm.rules);
-    }
-    for block in blocks {
-        for (_, expr) in &block.fields {
-            finder.visit_expr(expr);
-            if let Some(offender) = finder.offender.take() {
-                return Err(syn::Error::new(
-                    offender.span(),
-                    "theme.* references are no longer supported in stylesheet bodies — \
-                     use `Tokenized::Token { name: \"...\", fallback: ... }` directly. \
-                     See idea-ui's theme runtime for the legacy theme-struct pattern.",
-                ));
-            }
-        }
-    }
-    Ok(())
+    false
 }
 
 fn snake_case(ident: &Ident) -> Ident {
@@ -736,14 +686,48 @@ fn snake_case(ident: &Ident) -> Ident {
 /// than a `thread_local!` per sheet (see the constructor body for the
 /// Android pthread-key-limit rationale).
 ///
-/// The declared `<Theme>` generic and `base(theme) { ... }` bindings
-/// are accepted for syntactic backward-compatibility but ignored at
-/// emission: stylesheet closures now take `&VariantSet`, not a theme
-/// reference. Authors who relied on `theme.*` field reads will see a
-/// compile error from `check_no_theme_refs`.
+/// Each rules closure takes `&VariantSet` and opens by binding the
+/// block's declared ident to the vocabulary's token namespace, so a
+/// block can name a token as `t.spacing.md()`. The namespace is a ZST
+/// carrying names only — the theme's *values* still arrive at resolve
+/// time through the token registry, which is what keeps a theme swap a
+/// per-token write. Authors who relied on the old `theme.colors.fg`
+/// field reads get a type error naming the vocabulary's namespace.
 fn emit_stylesheet_fn(decl: &StyleSheetDecl, premint_class: Option<&str>) -> TokenStream2 {
     let fn_name = format_ident!("{}_style", snake_case(&decl.name));
     let vis = &decl.vis;
+    let theme_ty = &decl.theme_ty;
+
+    // Every block header names a binding (`base(t)`, `md(t)`, …). Bind it
+    // to the declared vocabulary's token namespace so the block can spell
+    // a token as `t.spacing.md()` instead of a string literal. The
+    // namespace is zero-sized and carries only names — see
+    // `runtime_shared::TokenVocabulary` for why the theme's *values* don't
+    // (and must not) flow through here.
+    //
+    // Emitted ONLY for blocks that actually reference the binding. The
+    // `<Theme as TokenVocabulary>` projection would otherwise be a hard
+    // requirement on every declared type, and most sheets in the tree
+    // name one that has no vocabulary at all (`<()>`, or a local marker
+    // struct) purely to satisfy the grammar. Gating on use keeps those
+    // compiling untouched and makes the trait an opt-in of exactly the
+    // sheets that reference a token.
+    //
+    // `#[allow(unused_variables)]` guards the reverse case: a reference
+    // this walk sees but the compiler doesn't (inside `stringify!`, a
+    // skipped `cfg` arm), which would otherwise warn in author crates.
+    let bind_tokens = |binding: &Ident, rules: &RulesBlock| {
+        if !block_uses_binding(rules, binding) {
+            return TokenStream2::new();
+        }
+        quote! {
+            #[allow(unused_variables)]
+            let #binding = <
+                <#theme_ty as ::runtime_core::TokenVocabulary>::Tokens
+                as ::core::default::Default
+            >::default();
+        }
+    };
     // The base rules carry the transition declarations too. Transitions
     // are property values on `StyleRules` — same field layout, just
     // sitting alongside the regular property fields.
@@ -763,8 +747,12 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl, premint_class: Option<&str>) -> Tok
         let arm_calls = axis.arms.iter().map(|arm| {
             let arm_name = arm.name.to_string();
             let rules = emit_rules_struct(&arm.rules);
+            let bind = bind_tokens(&arm.theme_binding, &arm.rules);
             quote! {
-                .variant(#axis_name, #arm_name, |_vs: &::runtime_core::VariantSet| #rules)
+                .variant(#axis_name, #arm_name, |_vs: &::runtime_core::VariantSet| {
+                    #bind
+                    #rules
+                })
             }
         }).collect::<Vec<_>>();
         let default_calls = axis.arms.iter().filter(|a| a.is_default).map(|arm| {
@@ -785,8 +773,12 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl, premint_class: Option<&str>) -> Tok
     let state_chain = decl.states.iter().map(|arm| {
         let axis = format!("__state_{}", arm.name);
         let rules = emit_rules_struct(&arm.rules);
+        let bind = bind_tokens(&arm.theme_binding, &arm.rules);
         quote! {
-            .variant(#axis, "on", |_vs: &::runtime_core::VariantSet| #rules)
+            .variant(#axis, "on", |_vs: &::runtime_core::VariantSet| {
+                #bind
+                #rules
+            })
         }
     });
 
@@ -798,8 +790,12 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl, premint_class: Option<&str>) -> Tok
     let breakpoint_chain = decl.breakpoints.iter().map(|arm| {
         let axis = format!("__bp_{}", arm.name);
         let rules = emit_rules_struct(&arm.rules);
+        let bind = bind_tokens(&arm.theme_binding, &arm.rules);
         quote! {
-            .variant(#axis, "on", |_vs: &::runtime_core::VariantSet| #rules)
+            .variant(#axis, "on", |_vs: &::runtime_core::VariantSet| {
+                #bind
+                #rules
+            })
         }
     });
 
@@ -813,8 +809,12 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl, premint_class: Option<&str>) -> Tok
     let container_chain = decl.containers.iter().map(|arm| {
         let axis = format!("__cq_minw_{:08x}", arm.threshold.to_bits());
         let rules = emit_rules_struct(&arm.rules);
+        let bind = bind_tokens(&arm.theme_binding, &arm.rules);
         quote! {
-            .variant(#axis, "on", |_vs: &::runtime_core::VariantSet| #rules)
+            .variant(#axis, "on", |_vs: &::runtime_core::VariantSet| {
+                #bind
+                #rules
+            })
         }
     });
 
@@ -826,9 +826,13 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl, premint_class: Option<&str>) -> Tok
     // to the live engine. The CSS was already being emitted for these
     // sheets (they register in `PREMINT_SHEETS` whenever `premintable`);
     // only the runtime half was missing.
+    let bind_base = bind_tokens(&decl.base.theme_binding, &decl.base.rules);
     let sheet_expr = quote! {
         ::runtime_core::StyleSheet::new(
-            |_vs: &::runtime_core::VariantSet| #base_rules
+            |_vs: &::runtime_core::VariantSet| {
+                #bind_base
+                #base_rules
+            }
         )
             #(#variant_chain)*
             #(#state_chain)*

@@ -8,8 +8,10 @@
 //! Each animated property is an `AnimatedValue` bound to a `Ref` via
 //! [`AnimatedValue::bind`] (or `bind_color` / `bind_gradient_stop` /
 //! `bind_text_color`). The framework owns all per-platform dispatch —
-//! this project is pure platform-agnostic Rust; the per-target entry
-//! points are in the wrapper crates the CLI generates at build time.
+//! this library is pure platform-agnostic Rust. The entry point is
+//! `src/main.rs`, one `idealyst::entry!(welcome)` line whose shell the
+//! target triple selects; the iOS / Android wrappers the CLI still
+//! generates depend on this crate as an `rlib`.
 
 mod color;
 #[macro_use]

@@ -15,6 +15,9 @@ server = ["server/server", "server-kit/server", "dep:cache", "dep:axum", "dep:to
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The platform surface, used by `src/main.rs` only — it carries whatever
+# the target needs so this manifest names no backend directly.
+idealyst = { workspace = true }
 server = { workspace = true }
 # Conventional policy layer (middleware chain, Auth, csrf_guard, Sessions)
 # over the server-fn primitive's dispatch hook.

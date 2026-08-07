@@ -787,6 +787,15 @@ pub fn track_size_css(t: &runtime_shared::TrackSize) -> String {
     }
 }
 
+pub fn overscroll_behavior_css(v: runtime_shared::OverscrollBehavior) -> &'static str {
+    use runtime_shared::OverscrollBehavior;
+    match v {
+        OverscrollBehavior::Auto => "auto",
+        OverscrollBehavior::Contain => "contain",
+        OverscrollBehavior::None => "none",
+    }
+}
+
 pub fn position_css(v: runtime_shared::Position) -> &'static str {
     use runtime_shared::Position;
     match v {
@@ -1188,6 +1197,13 @@ fn rules_to_css_impl(rules: &StyleRules, pin_flex_direction: bool, promote_flex:
         ("text-transform", V::Kw(rules.text_transform.map(text_transform_css))),
         ("opacity", V::Num(&rules.opacity)),
         ("overflow", V::Kw(rules.overflow.map(overflow_css))),
+        // Emitted right after `overflow` because they describe the
+        // same surface: `overflow` decides whether the box scrolls,
+        // `overscroll-behavior` what happens at its ends.
+        (
+            "overscroll-behavior",
+            V::Kw(rules.overscroll_behavior.map(overscroll_behavior_css)),
+        ),
         ("object-fit", V::Kw(rules.object_fit.map(object_fit_css))),
         ("box-shadow", V::Owned(rules.shadow.as_ref().map(|sh| {
             format!("{}px {}px {}px {}", css_num(sh.x), css_num(sh.y), css_num(sh.blur), sh.color.0)

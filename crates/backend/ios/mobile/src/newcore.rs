@@ -1164,6 +1164,7 @@ mod ios_impl {
                 mount_item,
                 release_item,
                 set_measured_size,
+                on_scroll,
             } = callbacks;
             let callbacks = VirtualizerCallbacks {
                 item_count,
@@ -1192,6 +1193,16 @@ mod ios_impl {
                         schedule_flush();
                     })
                 },
+                // Author scroll observer — same dispatch-site glue as
+                // `create_scroll_view`'s `on_scroll` (stage writes, then
+                // flush). Stays `None` when unset so the impl can skip
+                // installing scroll observation entirely.
+                on_scroll: on_scroll.map(|f| -> Rc<dyn Fn(f32, f32)> {
+                    Rc::new(move |x, y| {
+                        f(x, y);
+                        schedule_flush();
+                    })
+                }),
             };
             IosBackend::create_virtualizer_impl(self, callbacks, overscan, layout, a11y)
         }
@@ -1202,6 +1213,13 @@ mod ios_impl {
 
         fn release_virtualizer(&mut self, node: &Self::Node) {
             IosBackend::release_virtualizer_impl(self, node)
+        }
+
+        fn make_virtualizer_handle(
+            &self,
+            node: &Self::Node,
+        ) -> primitives::virtualizer::VirtualizerHandle {
+            IosBackend::make_virtualizer_handle_impl(self, node)
         }
     }
 

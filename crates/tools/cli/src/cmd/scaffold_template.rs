@@ -158,6 +158,11 @@ fn write_project(
     // Source tree — copied verbatim from `examples/welcome/src/`.
     // The welcome source has no self-name references so it compiles
     // under any crate name.
+    //
+    // `src/main.rs` is the ONE exception: it is generated rather than
+    // copied, because `entry!`'s argument IS the crate name and
+    // welcome's copy says `entry!(welcome)`.
+    fs::write(dir.join("src/main.rs"), project_main_rs(lib_name))?;
     fs::write(dir.join("src/lib.rs"), WELCOME_LIB_RS)?;
     fs::write(dir.join("src/app.rs"), WELCOME_APP_RS)?;
     fs::write(dir.join("src/coordinator.rs"), WELCOME_COORDINATOR_RS)?;
@@ -196,6 +201,29 @@ fn write_project(
     Ok(())
 }
 
+/// The app's entry point. One line, every platform.
+///
+/// The app crate IS the artifact now — there is no CLI-generated web
+/// wrapper supplying `main`, so a scaffold without this file produces a
+/// project that `idealyst build --web` refuses to build.
+fn project_main_rs(lib_name: &str) -> String {
+    format!(
+        r##"//! The app's entry point — every platform, one line.
+//!
+//! `entry!` reads `[package.metadata.idealyst.app]` from this crate's
+//! Cargo.toml, lifts `{lib_name}::register_scene_extensions` into the
+//! `SceneExtensions` impl the boot seam needs, and emits a `main` that
+//! hands both to `idealyst::boot::run`.
+//!
+//! Which shell that resolves to is CONFIG, not code: the target triple
+//! settles web/iOS/Android, and a feature on the `idealyst` dep picks
+//! between the native shells that share a triple. Nothing here names a
+//! platform, so this one file serves every target.
+idealyst::entry!({lib_name});
+"##
+    )
+}
+
 fn project_cargo_toml(
     name: &str,
     app_title: &str,
@@ -208,6 +236,7 @@ fn project_cargo_toml(
     // paths land, and `runtime-scene` carries the `Registry` the
     // registration seam is generic over. Mirrors
     // `examples/welcome/Cargo.toml` — the scaffold's source of truth.
+    let idealyst_dep = source.dep("crates/idealyst", &[]);
     let runtime_core_dep = source.dep("crates/runtime/core", &[]);
     let vocab_dep = source.dep("crates/runtime/vocabulary", &[]);
     let scene_dep = source.dep("crates/runtime/scene", &[]);
@@ -220,19 +249,18 @@ version = "0.0.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
-# Pure `rlib`. The per-platform wrappers the CLI generates at build
-# time (`target/idealyst/{name}/{{web,ios,android}}/wrapper/`) carry
-# the platform-specific crate-type (cdylib for web/Android, staticlib
-# for iOS) and the platform entry-point boilerplate
-# (`#[wasm_bindgen(start)]`, `ios_main`, `Java_..._attach`). This
-# crate stays platform-agnostic — no `web.rs` / `ios.rs` /
-# `android.rs`, no `#[cfg(target_os = "...")]` blocks, no
-# `wasm-bindgen` / `backend-*` direct deps. Same source ships to
-# every backend.
+# The library half stays platform-agnostic — no `web.rs` / `ios.rs` /
+# `android.rs`, no `#[cfg(target_os = "...")]` blocks, no `wasm-bindgen`
+# / `backend-*` direct deps. Same source ships to every backend.
+#
+# The platform-specific half is `src/main.rs`: one `idealyst::entry!`
+# line whose shell is picked by the target triple. The iOS / Android
+# wrappers the CLI still generates at build time depend on this crate as
+# an `rlib` and supply their own `staticlib` / `cdylib` crate-type.
 [lib]
 crate-type = ["rlib"]
 
-# No `catalog` feature or `[[bin]] catalog` is needed for the MCP server:
+# No `catalog` feature or catalog binary is needed for the MCP server:
 # `idealyst mcp` generates an ephemeral wrapper crate on demand that turns
 # on the `catalog` feature (and each component-library dependency's own
 # `catalog` feature) across the whole graph and force-links those deps, so
@@ -246,6 +274,11 @@ crate-type = ["rlib"]
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The platform surface, used by `src/main.rs` only. It carries whatever
+# the target needs — `backend-web` + the wasm-bindgen glue on wasm, a
+# native shell otherwise — so this manifest names no backend directly
+# and `cargo build` alone produces a runnable artifact.
+idealyst = {idealyst_dep}
 # The author surface. `runtime-core` is the crate this project aliases
 # to `runtime_core` at its root (see src/lib.rs). `runtime-vocabulary` is
 # needed because the `ui!` emission spells absolute
@@ -284,6 +317,7 @@ version   = "0.0.1"
 # leave this alone and invoke them directly.
 targets   = ["web"]
 "##,
+        idealyst_dep = idealyst_dep,
         runtime_core_dep = runtime_core_dep,
         vocab_dep = vocab_dep,
         scene_dep = scene_dep,
@@ -801,4 +835,51 @@ fn pascal_case(s: &str) -> String {
             }
         })
         .collect::<String>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// The scaffold must emit an entry point.
+    ///
+    /// The app crate IS the artifact — there is no CLI-generated web
+    /// wrapper supplying `main` any more — so a scaffold that writes only
+    /// `src/lib.rs` produces a project `idealyst build --web` refuses to
+    /// build. That was the state `idealyst new` shipped in: the front door
+    /// of the framework generated a project that could not be built.
+    #[test]
+    fn regression_scaffold_emits_an_entry_point_naming_the_projects_own_crate() {
+        let main_rs = project_main_rs("my_app");
+        assert!(
+            main_rs.contains("idealyst::entry!(my_app);"),
+            "entry! must name the scaffolded crate, not `welcome`: {main_rs}"
+        );
+    }
+
+    /// `src/main.rs` is generated rather than copied from
+    /// `examples/welcome/` like the rest of the tree, because `entry!`'s
+    /// argument IS the crate name. Copying welcome's verbatim would emit
+    /// `entry!(welcome)` into every new project.
+    #[test]
+    fn regression_scaffold_entry_point_is_not_welcomes_copy() {
+        assert!(
+            !project_main_rs("my_app").contains("entry!(welcome)"),
+            "the welcome copy must not leak into a differently-named project"
+        );
+    }
+
+    /// `entry!` and `boot::run` live in the `idealyst` facade, so a
+    /// scaffold that doesn't depend on it emits a `src/main.rs` that
+    /// cannot resolve its own first token.
+    #[test]
+    fn regression_scaffold_manifest_depends_on_the_facade() {
+        let source = FrameworkSource::Workspace { root: PathBuf::from("/framework") };
+        let manifest = project_cargo_toml("my-app", "My App", "com.example.my_app", &source);
+        assert!(
+            manifest.contains("idealyst = { path = \"/framework/crates/idealyst\" }"),
+            "the facade must be a dependency of every scaffolded project: {manifest}"
+        );
+    }
 }

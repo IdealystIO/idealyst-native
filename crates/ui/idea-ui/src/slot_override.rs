@@ -23,7 +23,7 @@
 //!     tone = tone::Neutral,
 //!     variant = variant::Filled,               // white surface
 //!     label_style = Rc::new(StyleSheet::r#static(StyleRules {
-//!         color: Some(Tokenized::token("intent-success-fg", Color("#0b6b3a".into()))),
+//!         color: Some(tokens().intent.success.fg()),
 //!         ..Default::default()
 //!     })),                                       // dark-green label, native-safe
 //! )

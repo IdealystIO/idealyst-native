@@ -38,8 +38,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, pressable, recipe, resolve_style, text, ui, Element, IdealystSchema, Reactive,
-    Signal, StyleApplication, StyleRules, StyleSheet,
+    component, pressable, recipe, resolve_style, text, ui, Element, IdealystSchema, Reactive, StyleApplication, StyleRules, StyleSheet,
 };
 
 use crate::stylesheets::{TabBar, TabButton};

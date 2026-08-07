@@ -30,7 +30,7 @@ use std::rc::Rc;
 
 use runtime_core::primitives::key::{KeyEvent, KeyOutcome};
 use runtime_core::{
-    component, pressable, recipe, ui, AlignItems, Color, Cursor, Easing, Element, FlexDirection,
+    component, pressable, recipe, ui, AlignItems, Color, Cursor, Easing, Element,
     IconData, IdealystSchema, IntoElement, JustifyContent, Length, Reactive, Signal,
     StyleApplication, StyleRules, StyleSheet, Tokenized, Transition, VariantEnum, VariantSet,
 };
@@ -51,6 +51,7 @@ use idea_theme::theme::{IdeaTheme, IdeaThemeRef};
 
 use crate::stylesheets::{FieldGroup, FieldLabel};
 pub use crate::stylesheets::{FieldAppearance, FieldSize};
+use idea_theme::tokens;
 
 /// A leading/trailing adornment inside a [`Field`]'s box — an icon or a custom
 /// element rendered beside the input (e.g. a search glyph, a unit suffix, a
@@ -124,7 +125,7 @@ fn adornment_icon_px(size: FieldSize) -> f32 {
 
 /// The muted glyph color shared by `Icon`/`Button` adornments.
 fn adornment_icon_color() -> Color {
-    Tokenized::token("color-text-muted", Color("#8a8270".into())).resolve()
+    tokens().color.text_muted().resolve()
 }
 
 /// Resolve an adornment to its renderable elements (empty for `None` /
@@ -337,10 +338,10 @@ pub(crate) fn field_help_sheet() -> Rc<StyleSheet> {
 /// Build the Field input sheet — size axis, tone axis (default +
 /// per-tone border color), and focused/disabled state overlays.
 pub fn build_field_input_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
-    let surface = || Tokenized::token("color-surface", runtime_core::Color("#ffffff".into()));
-    let text = || Tokenized::token("color-text", runtime_core::Color("#1a1a1f".into()));
-    let border = || Tokenized::token("color-border", runtime_core::Color("#e4e6ef".into()));
-    let radius = || Tokenized::token("radius-md", Length::Px(8.0));
+    let surface = || tokens().color.surface();
+    let text = || tokens().color.text();
+    let border = || tokens().color.border();
+    let radius = || tokens().radius.md();
 
     let mut sheet = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
         background: Some(surface()),
@@ -367,30 +368,29 @@ pub fn build_field_input_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
     });
 
     // Size arms.
-    let pad = |t: &'static str, px: f32| Tokenized::token(t, Length::Px(px));
     sheet = sheet
         .variant("size", "sm", move |_vs| StyleRules {
-            padding_top: Some(pad("spacing-xs", 4.0)),
-            padding_bottom: Some(pad("spacing-xs", 4.0)),
-            padding_left: Some(pad("spacing-sm", 8.0)),
-            padding_right: Some(pad("spacing-sm", 8.0)),
-            font_size: Some(pad("typography-body-sm-size", 13.0)),
+            padding_top: Some(tokens().spacing.xs()),
+            padding_bottom: Some(tokens().spacing.xs()),
+            padding_left: Some(tokens().spacing.sm()),
+            padding_right: Some(tokens().spacing.sm()),
+            font_size: Some(tokens().typography.body_sm_size()),
             ..Default::default()
         })
         .variant("size", "md", move |_vs| StyleRules {
-            padding_top: Some(pad("spacing-sm", 8.0)),
-            padding_bottom: Some(pad("spacing-sm", 8.0)),
-            padding_left: Some(pad("spacing-md", 12.0)),
-            padding_right: Some(pad("spacing-md", 12.0)),
-            font_size: Some(pad("typography-body-size", 14.0)),
+            padding_top: Some(tokens().spacing.sm()),
+            padding_bottom: Some(tokens().spacing.sm()),
+            padding_left: Some(tokens().spacing.md()),
+            padding_right: Some(tokens().spacing.md()),
+            font_size: Some(tokens().typography.body_size()),
             ..Default::default()
         })
         .variant("size", "lg", move |_vs| StyleRules {
-            padding_top: Some(pad("spacing-md", 12.0)),
-            padding_bottom: Some(pad("spacing-md", 12.0)),
-            padding_left: Some(pad("spacing-lg", 16.0)),
-            padding_right: Some(pad("spacing-lg", 16.0)),
-            font_size: Some(pad("typography-body-lg-size", 18.0)),
+            padding_top: Some(tokens().spacing.md()),
+            padding_bottom: Some(tokens().spacing.md()),
+            padding_left: Some(tokens().spacing.lg()),
+            padding_right: Some(tokens().spacing.lg()),
+            font_size: Some(tokens().typography.body_lg_size()),
             ..Default::default()
         });
 
@@ -402,7 +402,7 @@ pub fn build_field_input_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
     //   - contained: filled, borderless.
     //   - bare: no fill, no border.
     let surface_alt =
-        || Tokenized::token("color-surface-alt", runtime_core::Color("#eef0f7".into()));
+        || tokens().color.surface_alt();
     let clear = || Tokenized::Literal(runtime_core::Color("transparent".into()));
     sheet = sheet
         .variant("appearance", "outline", |_vs| StyleRules::default())
@@ -579,10 +579,7 @@ pub fn build_field_input_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
 /// color (default = muted, each tone = its soft foreground).
 pub fn build_field_help_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
     let mut sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules {
-        font_size: Some(Tokenized::token(
-            "typography-caption-size",
-            Length::Px(12.0),
-        )),
+        font_size: Some(tokens().typography.caption_size()),
         color_transition: Some(Transition::new(250, Easing::EaseInOut)),
         ..Default::default()
     });

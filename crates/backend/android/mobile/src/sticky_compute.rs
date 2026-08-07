@@ -1,26 +1,27 @@
 //! Host-runnable regression coverage for `Position::Sticky` on
-//! Android — the pure compute function + the registry invariants
-//! that don't require a JVM. Sister to `imp::sticky`, which holds
-//! the full JNI-driven implementation (target_os = "android" only).
+//! Android — the axis/write policy and the registry invariants that
+//! don't require a JVM. Sister to `imp::sticky`, which holds the full
+//! JNI-driven implementation (target_os = "android" only).
 //!
 //! Why this module exists: `imp::sticky` lives under `cfg(target_os
 //! = "android")` because it depends on the `jni` crate (which the
 //! `Cargo.toml` itself gates to Android). The iOS reference puts
 //! all of its sticky tests inside the parallel iOS gate, which
 //! means they don't run from `cargo test` on a host machine. We
-//! deliberately mirror the pure parts here so the math + the
+//! deliberately mirror the pure parts here so the axis policy + the
 //! empty-registry invariant ARE host-testable; the JNI-driven
-//! pieces (scroll-listener install, `setTranslationY` writes,
+//! pieces (scroll-listener install, `setTranslationX/Y` writes,
 //! `getParent` ancestor walk) are out of scope for host tests and
 //! verified on-device.
 //!
 //! ## What's covered
 //!
-//! - `compute_translate_dp` — the pure pin math used by the live
-//!   scroll-event handler. Identical function body to
-//!   `imp::sticky::compute_translate_dp`; duplicated here rather
-//!   than re-exported because the imp module is target-gated and
-//!   the host build can't reach it.
+//! - Which axis the tick writes, via the shared
+//!   `runtime_shared::sticky::translate`. Android has two
+//!   INDEPENDENT translation setters (unlike UIKit's single
+//!   `setTransform:`), so "the unpinned axis stays exactly 0" is an
+//!   Android-specific correctness property, not just restated math.
+//!   The math's own regressions live once, with the math.
 //! - Registry shrink invariant — `cargo test` reaches this even
 //!   without an Android target.
 //!
@@ -31,33 +32,18 @@
 //!   sticky-header demo and scrolling.
 //! - The `getParent` ancestor walk for `find_enclosing_scroll_view`
 //!   — requires a real `View` hierarchy. Same on-device coverage.
-//! - The `setTranslationY` write in `on_scroll_event` —
-//!   `View.setTranslationY` is a JVM call. On-device.
+//! - The `setTranslationX/Y` writes in `on_scroll_event` — both are
+//!   JVM calls. On-device.
 //!
 //! Per CLAUDE.md §8, each `#[test]` below is named after the bug
 //! it prevents, not the function it exercises.
 
-/// Pure compute used by [`imp::sticky::on_scroll_event`] and the
-/// tests below. Mirror of the function in `imp/sticky.rs`; the
-/// duplication is intentional — see the module doc above.
-///
-/// Returns the translation (in dp) that should be applied to the
-/// sticky child's `View.translationY` given its natural layout y
-/// in the scroll view's content space, the configured pin
-/// threshold (the `top` value), and the scroll view's current
-/// scroll position. All inputs and the output are in dp.
-#[inline]
-#[allow(dead_code)] // Used only from `#[cfg(test)]` here; the live
-                    // copy in `imp::sticky` (target_os = "android")
-                    // is the one called at runtime.
-pub fn compute_translate_dp(layout_y_dp: f32, threshold_dp: f32, scroll_y_dp: f32) -> f32 {
-    let pinned_y = scroll_y_dp + threshold_dp;
-    if pinned_y > layout_y_dp {
-        pinned_y - layout_y_dp
-    } else {
-        0.0
-    }
-}
+// The pin arithmetic no longer lives here (nor in `imp::sticky`): it
+// is `runtime_shared::sticky`, shared by every backend and tested
+// there. This module keeps the host-runnable ANDROID-specific
+// invariants — the registry's shrink-on-empty discipline and the
+// per-axis write policy — which is what it was always for.
+use runtime_shared::sticky::{translate, StickyInsets};
 
 // =========================================================================
 // Tests
@@ -68,48 +54,48 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    /// Pin compute: scrolling past the threshold translates the
-    /// child down by the overshoot; scrolling above the threshold
-    /// leaves the child at its natural position.
-    ///
-    /// Regression: a previous draft had `>=` instead of `>` at the
-    /// pinned_y / layout_y comparison, which would have made the
-    /// child snap to pinned position one device pixel early. The
-    /// boundary assertion below locks that down.
+    /// Which AXIS the tick writes. The pin arithmetic's own
+    /// regressions (including the `>` vs `>=` boundary) live with the
+    /// arithmetic in `runtime_shared::sticky`; what Android owns is
+    /// that `setTranslationX` and `setTranslationY` are INDEPENDENT
+    /// setters, so an axis the element does not pin on must come back
+    /// exactly `0.0` — `write_translate` epsilon-gates each axis
+    /// separately and would otherwise leave a stale translation on
+    /// the free axis.
     #[test]
     fn regression_sticky_registry_pins_when_scrolled_past_threshold() {
         // Child sits at y=100 dp in the scroll view's content; pin
         // threshold (top) is 20 dp from the scroll view's top edge.
-        let layout_y = 100.0;
-        let threshold = 20.0;
+        let vertical = StickyInsets { top: Some(20.0), left: None };
+        let natural = (12.0_f32, 100.0_f32);
 
-        // Far above the pin point — no translate.
-        assert_eq!(compute_translate_dp(layout_y, threshold, 0.0), 0.0);
+        // Far above the pin point — no translate on either axis.
+        assert_eq!(translate(vertical, natural, (0.0, 0.0)), (0.0, 0.0));
 
-        // Just at the pin point (scroll_y + threshold == layout_y).
-        // Boundary: still 0 (the `>` in compute, not `>=`).
-        assert_eq!(compute_translate_dp(layout_y, threshold, 80.0), 0.0);
-
-        // 1 dp past the pin point — translate by 1 dp.
-        let t = compute_translate_dp(layout_y, threshold, 81.0);
-        assert!((t - 1.0).abs() < 1e-5, "expected ~1.0, got {t}");
-
-        // Way past the pin point — translate compensates fully so
-        // the child renders at scroll_y + threshold = 300.
-        let t = compute_translate_dp(layout_y, threshold, 280.0);
+        // Way past the pin point: y compensates fully so the child
+        // renders at scroll_y + threshold = 300 dp, and x stays 0 so
+        // `setTranslationX` is never written.
+        let (dx, dy) = translate(vertical, natural, (0.0, 280.0));
+        assert_eq!(dx, 0.0, "a vertical-only pin must not write translationX");
         assert!(
-            (t - 200.0).abs() < 1e-5,
-            "expected ~200.0 (so rendered y == scroll_y + threshold = 300), got {t}",
+            ((natural.1 + dy) - 300.0).abs() < 1e-5,
+            "pinned rendered y should equal scroll_y + threshold",
         );
+    }
 
-        // Sanity: rendered y while pinned == scroll_y + threshold.
-        let scroll_y = 500.0;
-        let t = compute_translate_dp(layout_y, threshold, scroll_y);
-        let rendered_y = layout_y + t;
+    /// A frozen COLUMN on Android: `left` pins off `getScrollX()`
+    /// while the child scrolls freely vertically. Before horizontal
+    /// support the registry carried a single `threshold_top`, so
+    /// `left` wrote nothing at all.
+    #[test]
+    fn regression_sticky_left_never_pins_horizontally() {
+        let horizontal = StickyInsets { top: None, left: Some(0.0) };
+        let (dx, dy) = translate(horizontal, (160.0, 40.0), (600.0, 250.0));
         assert!(
-            (rendered_y - (scroll_y + threshold)).abs() < 1e-5,
-            "pinned rendered_y should equal scroll_y + threshold",
+            ((160.0 + dx) - 600.0).abs() < 1e-5,
+            "pinned rendered x should equal scroll_x + threshold",
         );
+        assert_eq!(dy, 0.0, "a horizontal-only pin must not write translationY");
     }
 
     /// Registry must shrink back to empty when its last child
@@ -179,18 +165,18 @@ mod tests {
     /// live `View` hierarchy and is verified on-device.
     #[test]
     fn regression_sticky_falls_back_to_relative_without_scroll_ancestor() {
-        // With no scroll ancestor, no scroll listener fires, so
-        // `compute_translate_dp` is never called. But the math
-        // helper's "no pin while scroll_y < layout_y - threshold"
-        // property is the same: the child sits at its natural
-        // layout position with translation = 0, identical to what
-        // a `Relative`-positioned view would render.
-        let t = compute_translate_dp(
-            /* layout_y */ 100.0,
-            /* threshold */ 20.0,
-            /* scroll_y */ 0.0,
+        // With no scroll ancestor, no scroll listener fires, so the
+        // shared translate is never called. But its "no pin while the
+        // content hasn't scrolled past the threshold" property is the
+        // same on both axes: the child sits at its natural layout
+        // position with translation = 0, identical to what a
+        // `Relative`-positioned view would render.
+        let insets = StickyInsets { top: Some(20.0), left: Some(20.0) };
+        assert_eq!(
+            translate(insets, (100.0, 100.0), (0.0, 0.0)),
+            (0.0, 0.0),
+            "no scroll ancestor → no scroll → no pin",
         );
-        assert_eq!(t, 0.0, "no scroll ancestor → no scroll → no pin");
 
         // Also: the absent-key path must not panic and must
         // observe the registry as empty.

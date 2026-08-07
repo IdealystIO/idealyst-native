@@ -155,6 +155,51 @@ impl<T> Tokenized<T> {
 
 impl<T: Copy> Copy for Tokenized<T> where T: Copy {}
 
+// ----------------------------------------------------------------------------
+// TokenVocabulary — the typed handle a stylesheet references tokens through
+// ----------------------------------------------------------------------------
+
+/// The set of tokens a stylesheet may reference, as a *type*.
+///
+/// A `stylesheet!` declares one in its `<...>` slot and binds it in each
+/// block header (`base(t) { padding: t.spacing.md() }`). The macro
+/// materializes `Self::Tokens` and hands it to the block, so a token
+/// reference is a method call the compiler checks rather than a string
+/// literal nothing validates.
+///
+/// **Why a vocabulary and not the theme.** A token's *value* comes from
+/// the installed theme at resolve time — that's [`Tokenized::resolve`]
+/// reading the registry, and it's what makes a theme swap a per-token
+/// write instead of a class regeneration. What a stylesheet needs at
+/// authoring time is only the token's *name and type*, which every theme
+/// over that vocabulary shares. So `Tokens` is a zero-sized accessor
+/// namespace: it carries no values, just the names, and each accessor
+/// returns `Tokenized::Token { name, fallback }` exactly as a hand-written
+/// `Tokenized::token("spacing-md", …)` would. Nothing about resolution,
+/// premint, or install changes — only how the name is spelled.
+///
+/// Implementors pair each accessor with the canonical name the theme
+/// installs under, so the accessor path and the token name stay in
+/// lockstep (`t.intent.primary.solid_bg()` → `intent-primary-solid-bg`).
+///
+/// [`Tokenized::resolve`]: Tokenized::<Color>::resolve
+pub trait TokenVocabulary {
+    /// The zero-sized accessor namespace bound in stylesheet blocks.
+    type Tokens: Default;
+}
+
+/// The vocabulary of a stylesheet that declares no tokens (`<()>`).
+///
+/// Empty on purpose: it has no accessors, so any attempt to read a token
+/// from a sheet that never named a vocabulary is a type error naming this
+/// struct, not a silently unresolvable string.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct NoTokens;
+
+impl TokenVocabulary for () {
+    type Tokens = NoTokens;
+}
+
 // Per-token reactive resolution. Backends inside an `apply_style` Effect
 // call `.resolve()` instead of `.value()` so the effect subscribes to
 // the per-token signal in `TOKEN_REGISTRY` — only nodes that read a
@@ -409,59 +454,82 @@ pub enum Position {
     #[default]
     Relative,
     Absolute,
-    /// Acts like `Relative` until the element would scroll past one
-    /// of the edges of its enclosing scroll container, at which
-    /// point it pins to that edge. The pin threshold comes from
-    /// the matching side field on [`StyleRules`] — typically `top`,
-    /// less commonly `bottom` / `left` / `right`. With no side set,
-    /// pins to the leading edge of the scroll container.
+    /// Acts like `Relative` until the element would scroll past a
+    /// leading edge of its enclosing scroll container, at which point
+    /// it pins to that edge. The pin threshold comes from the matching
+    /// side field on [`StyleRules`]: `top` pins vertically, `left`
+    /// pins horizontally, and the two are independent — a frozen
+    /// column sets `left` only and keeps scrolling vertically with the
+    /// content. With no side set, pins to the top edge.
+    ///
+    /// The per-axis thresholds are resolved once, for every backend,
+    /// by [`sticky::StickyInsets::from_style`](crate::sticky::StickyInsets::from_style),
+    /// and the pin arithmetic lives in
+    /// [`sticky::translate`](crate::sticky::translate). Backends
+    /// supply only the mechanism — where the natural position comes
+    /// from and how the pin is written — so their observable behavior
+    /// cannot drift (CLAUDE.md §7).
+    ///
+    /// **Trailing edges (`bottom` / `right`) are web-only.** They pin
+    /// correctly on web (the browser owns it) and are ignored by every
+    /// native backend, which would need the scrollport extent and the
+    /// element's own extent threaded into their per-scroll tick. A
+    /// native backend asked to pin on a trailing edge emits a one-time
+    /// `[unsupported]` warning in debug builds rather than degrading in
+    /// silence (see [`crate::unsupported`]).
     ///
     /// **Per-backend coverage**:
-    /// - **Web** — emits CSS `position: sticky`; the browser owns
-    ///   the pinning. Full support.
+    /// - **Web** — emits CSS `position: sticky` plus the inset
+    ///   properties; the browser owns the pinning. Full support, all
+    ///   four edges. Note the usual CSS caveat: sticky pins to the
+    ///   NEAREST ancestor scroll container, so an intermediate
+    ///   `overflow: hidden` silently becomes that container.
     /// - **iOS** — walks up to the enclosing `UIScrollView` at
-    ///   `apply_style` time, registers a per-vsync
-    ///   `CADisplayLink` that applies a `CGAffineTransform`
-    ///   translate to pin the view at `top` from the scroll
-    ///   container's top edge once scrolled past the threshold.
-    ///   Vertical (`top`) only in v1; horizontal (`left`) is a
-    ///   follow-up. Falls back to `Relative` when no enclosing
-    ///   scroll view exists (matches CSS).
+    ///   `apply_style` time and registers a per-vsync `CADisplayLink`
+    ///   that writes a `CGAffineTransform` translate. Both axes:
+    ///   `top` pins against `contentOffset.y`, `left` against
+    ///   `contentOffset.x`, composed into one matrix write. Falls back
+    ///   to `Relative` when no enclosing scroll view exists (matches
+    ///   CSS).
     /// - **macOS** — same registry model as iOS, but scroll-driven
     ///   instead of vsync-polled: an `NSViewBoundsDidChangeNotification`
     ///   observer on the scroll view's clip view reticks the pin, and
-    ///   the pin moves the view's FRAME (`setFrameOrigin:` = Taffy y +
-    ///   translate) rather than a layer transform — AppKit culls/purges
-    ///   scroll-view drawing by frame, so a transform-pinned view's
-    ///   drawn text goes blank once its frame scrolls out of the
-    ///   prepared content rect. Vertical (`top`) only in v1; falls
+    ///   the pin moves the view's FRAME (`setFrameOrigin:` = Taffy
+    ///   origin + translate) rather than a layer transform — AppKit
+    ///   culls/purges scroll-view drawing by frame, so a
+    ///   transform-pinned view's drawn text goes blank once its frame
+    ///   scrolls out of the prepared content rect. Both axes; falls
     ///   back to `Relative` with no enclosing `NSScrollView`. See
     ///   `backend-macos/src/imp/sticky.rs`.
     /// - **wgpu** — walks up to the enclosing `ScrollView` at
     ///   `apply_style` time, registers the node in a per-backend
-    ///   sticky registry, and the render walker applies the pin
-    ///   translate at draw time. `refresh_layout_positions`
-    ///   refreshes cached natural-y values after each Taffy
-    ///   compute. Vertical (`top`) only in v1; falls back to
-    ///   `Relative` when there's no enclosing `ScrollView`.
+    ///   sticky registry, and the render walker adds the pin translate
+    ///   to the draw origin on both axes.
+    ///   `refresh_layout_positions` refreshes cached natural positions
+    ///   after each Taffy compute. Falls back to `Relative` when
+    ///   there's no enclosing `ScrollView`.
     /// - **Android** — same model as iOS but driven by a per-
-    ///   scroll-event `View.OnScrollChangeListener` (Android
-    ///   delivers scroll events only when the position actually
-    ///   changes, so per-event is strictly cheaper than the
-    ///   per-vsync display-link tick iOS uses). The Kotlin
-    ///   `RustStickyScrollListener` trampolines back into Rust
-    ///   via JNI and writes `View.setTranslationY` (device
-    ///   pixels, dp→px via the view's display density) on each
-    ///   registered sticky child. Walks up to the enclosing
-    ///   `ScrollView`/`HorizontalScrollView` at `apply_style`
-    ///   time; deferred to `insert` for first-mount children
-    ///   whose parent chain isn't yet wired up. Vertical (`top`)
-    ///   only in v1, same scope as iOS. Falls back to `Relative`
-    ///   when no enclosing scroll-view ancestor exists.
-    /// - **Terminal / Roku / CPU** — silently treated as `Relative`.
-    ///   Scrolling on these targets is either inapplicable
-    ///   (terminal) or driven by a different model (Roku
-    ///   SceneGraph, ESP32 displays).
+    ///   scroll-event `View.OnScrollChangeListener` (Android delivers
+    ///   scroll events only when the position actually changes, so
+    ///   per-event is strictly cheaper than the per-vsync display-link
+    ///   tick iOS uses). The Kotlin `RustStickyScrollListener`
+    ///   trampolines back into Rust via JNI and writes
+    ///   `View.setTranslationX` / `setTranslationY` (device pixels,
+    ///   dp→px via the view's display density). Because those are two
+    ///   independent setters, each axis is epsilon-gated separately.
+    ///   Walks up to the enclosing `ScrollView`/`HorizontalScrollView`
+    ///   at `apply_style` time; deferred to `insert` for first-mount
+    ///   children whose parent chain isn't yet wired up. Falls back to
+    ///   `Relative` when no enclosing scroll-view ancestor exists.
+    /// - **Linux (GTK)** — vertical (`top`) only. The one backend
+    ///   without horizontal pinning; a `left` inset falls back to
+    ///   relative on that axis, so a frozen column does not work here.
+    ///   See `backend-linux/src/sticky.rs`.
+    /// - **Terminal / Roku / CPU** — treated as `Relative`. Scrolling
+    ///   on these targets is either inapplicable (terminal) or driven
+    ///   by a different model (Roku SceneGraph, ESP32 displays). They
+    ///   emit a one-time `[unsupported]` warning in debug builds
+    ///   rather than degrading silently.
     Sticky,
 }
 
@@ -612,6 +680,58 @@ pub enum Overflow {
     #[default]
     Visible,
     Hidden,
+}
+
+/// What the platform does with a scroll gesture that reaches the end
+/// of a scrolling container's content. Mirrors CSS
+/// `overscroll-behavior`, and only means anything on a scrolling
+/// surface (`scroll_view`, `flat_list` / `virtualizer`) — every other
+/// primitive ignores it.
+///
+/// The problem it exists to solve is *scroll chaining*: by default a
+/// gesture that runs out of content keeps travelling outward, to the
+/// ancestor scroller and finally to the host. At the host that becomes
+/// a platform navigation gesture — a horizontal scroller reaching its
+/// left edge turns a continued left-swipe into the browser's "back",
+/// and `preventDefault` from `on_wheel` does not win that race because
+/// the host commits to the gesture before the event is delivered.
+/// [`Contain`](Self::Contain) is the declarative fix.
+///
+/// **Per-backend coverage**:
+/// - **Web** — emits CSS `overscroll-behavior`; the browser owns it.
+///   Full support, including the root-level back-swipe suppression
+///   that otherwise requires an app-wide `html { overscroll-behavior-x:
+///   none }` in `index.html`.
+/// - **iOS** — `None` clears `UIScrollView.bounces` (no rubber-band at
+///   the edge). `Contain` keeps the bounce; UIScrollView does not
+///   chain to an ancestor scroller in the first place, so containment
+///   is already its behavior.
+/// - **macOS** — `None` sets both `NSScrollView` elasticities to
+///   `NSScrollElasticityNone`. `Contain` is the AppKit default (no
+///   chaining).
+/// - **Android** — `None` sets `View.OVER_SCROLL_NEVER` (no glow / no
+///   stretch). `Contain` leaves the edge effect but is otherwise the
+///   default for a plain `ScrollView`, which doesn't participate in
+///   nested scrolling.
+/// - **Terminal / Roku / CPU** — no gesture model; ignored.
+///
+/// Because `Contain` and `Auto` coincide on every native backend, the
+/// property is effectively "web: full; native: `None` disables the
+/// edge effect". That's stated rather than hidden: the declarative
+/// spelling is the point, so an app doesn't need a web-only escape
+/// hatch in its HTML shell.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum OverscrollBehavior {
+    /// Platform default — the gesture chains outward past this
+    /// container's edges.
+    #[default]
+    Auto,
+    /// Don't chain to ancestors (or the host), but keep the
+    /// platform's own edge effect.
+    Contain,
+    /// Don't chain, and suppress the edge effect (bounce / glow)
+    /// entirely.
+    None,
 }
 
 /// How a replaced element's content (an `image`'s bitmap) is fitted into
@@ -1063,6 +1183,9 @@ pub struct StyleRules {
     // --- Visual ---
     pub opacity: Option<Tokenized<f32>>,
     pub overflow: Option<Overflow>,
+    /// Scroll-chaining / edge-effect policy. Only meaningful on a
+    /// scrolling surface; see [`OverscrollBehavior`].
+    pub overscroll_behavior: Option<OverscrollBehavior>,
     /// How an `image`'s bitmap fits its box (CSS `object-fit`). `None` ⇒
     /// the framework default [`ObjectFit::Contain`] on every backend.
     /// Ignored by every primitive except `image` (no replaced content to
@@ -1224,6 +1347,7 @@ impl Clone for StyleRules {
             text_transform: self.text_transform.clone(),
             opacity: self.opacity.clone(),
             overflow: self.overflow.clone(),
+            overscroll_behavior: self.overscroll_behavior.clone(),
             object_fit: self.object_fit.clone(),
             shadow: self.shadow.clone(),
             text_shadow: self.text_shadow.clone(),
@@ -1301,7 +1425,8 @@ impl StyleRules {
             position, top, right, bottom, left,
             font_family, font_weight, font_style, line_height, letter_spacing,
             text_align, underline, strikethrough, text_transform,
-            opacity, overflow, object_fit, shadow, text_shadow, background_gradient,
+            opacity, overflow, overscroll_behavior, object_fit, shadow, text_shadow,
+            background_gradient,
             transform, transform_origin,
             cursor, user_select, pointer_events,
             background_transition, color_transition, caret_color_transition,
@@ -1427,6 +1552,7 @@ impl StyleRules {
         // Visual
         write_tokenized_f32(&mut s, "op", &self.opacity);
         write_enum(&mut s, "ov", self.overflow.map(|x| x as u8));
+        write_enum(&mut s, "osb", self.overscroll_behavior.map(|x| x as u8));
         write_enum(&mut s, "objf", self.object_fit.map(|x| x as u8));
         if let Some(sh) = &self.shadow {
             s.push_str("sh=");

@@ -1451,6 +1451,7 @@ impl Harness {
             mount_item: v.mount_item.clone(),
             release_item: v.release_item.clone(),
             set_measured_size: v.set_measured_size.clone(),
+            on_scroll: v.on_scroll.clone(),
         }
     }
 

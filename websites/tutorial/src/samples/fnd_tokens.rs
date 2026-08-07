@@ -1,12 +1,13 @@
 use idea_ui::{dark_theme, set_idea_theme};
 use runtime_core::{stylesheet, Color, FlexDirection, Tokenized};
+use idea_ui::IdeaThemeRef;
 
 // A rule stores a token REFERENCE, not a concrete value. Resolving it is
 // a signal read, so this style subscribes to exactly `color-surface`.
 stylesheet! {
-    pub Card<()> {
-        base(_t) {
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+    pub Card<IdeaThemeRef> {
+        base(t) {
+            background: t.color.surface(),
             flex_direction: FlexDirection::Column,
             padding: 16.0,
         }

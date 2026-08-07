@@ -5,13 +5,13 @@ edition.workspace = true
 license.workspace = true
 description = "Animated welcome demo — three-act cinematic intro driven by the framework's animation system (springs + tweens + a raf-driven sun/vignette/planet pulse). Also the source of truth for the `idealyst new` scaffold; the CLI copies this project verbatim."
 
-# Pure `rlib`. The per-platform wrappers the CLI generates
-# (`target/idealyst/welcome/{web,ios,android}/wrapper/`) carry the
-# platform-specific crate-type (cdylib for web/Android, staticlib for
-# iOS) and entry-point boilerplate; this crate depends on nothing
-# platform-specific, has no `#[cfg(target_os = "...")]` blocks, no
-# `web.rs`/`ios.rs`/`android.rs`, and ships the same bytes to every
-# backend.
+# The library half stays platform-agnostic: no `#[cfg(target_os =
+# "...")]` blocks, no `web.rs`/`ios.rs`/`android.rs`, the same bytes to
+# every backend. The platform-specific half is `src/main.rs`, one
+# `idealyst::entry!` line whose shell is picked by the target triple.
+#
+# The iOS/Android wrappers the CLI still generates depend on this crate
+# as an `rlib` and supply their own `staticlib`/`cdylib` crate-type.
 [lib]
 crate-type = ["rlib"]
 
@@ -23,6 +23,10 @@ crate-type = ["rlib"]
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The platform surface, used by `src/main.rs` only. Carries whatever the
+# target needs (backend-web + wasm-bindgen glue on wasm, a native shell
+# otherwise) so this manifest names no backend directly.
+idealyst = { workspace = true }
 # The author surface. `runtime-core` is the crate this project aliases
 # to `runtime_core` at its root (see src/lib.rs) — one core, no feature
 # switch. `runtime-vocabulary` is needed because the `ui!` emission

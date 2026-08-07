@@ -1,19 +1,20 @@
 use runtime_core::{stylesheet, Color, Tokenized};
+use idea_ui::IdeaThemeRef;
 
 stylesheet! {
-    pub Btn<()> {
+    pub Btn<IdeaThemeRef> {
         base(_t) { padding: 12.0, border_radius: 8.0 }
         variant tone {
             #[default]
-            neutral(_t) {
-                background: Tokenized::token("color-surface-alt", Color("#eeeeee".into())),
+            neutral(t) {
+                background: t.color.surface_alt(),
             }
-            primary(_t) {
-                background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
+            primary(t) {
+                background: t.intent.primary.solid_bg(),
             }
         }
-        state hovered(_t) {
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+        state hovered(t) {
+            background: t.color.surface(),
         }
     }
 }

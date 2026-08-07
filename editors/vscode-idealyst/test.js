@@ -11,7 +11,7 @@ const Module = require("module");
 
 // --- vscode mock, installed before extension.js loads ---
 const mock = {
-    CompletionItemKind: { Function: 2, Field: 4, Class: 6 },
+    CompletionItemKind: { Function: 2, Field: 4, Class: 6, Module: 8, Constant: 20 },
     CompletionItem: class {
         constructor(label, kind) {
             this.label = label;
@@ -43,7 +43,8 @@ Module._resolveFilename = function (request, ...rest) {
 require.cache["vscode"] = { id: "vscode", filename: "vscode", loaded: true, exports: mock };
 
 const { __test } = require(path.join(__dirname, "extension.js"));
-const { digest, insideUiMacro, propContext } = __test;
+const { digest, insideUiMacro, propContext, insideStylesheetMacro, tokenPathContext } =
+    __test;
 
 let failures = 0;
 function check(name, cond, extra) {
@@ -141,5 +142,88 @@ check("sanitize: string braces don't break block detection", insideUiMacro(prose
 // A commented-out `ui! {` opener must not count as a block.
 const commented = `// ui! {\nlet x = 1;\n`;
 check("sanitize: commented ui! opener ignored", !insideUiMacro(commented, commented.length));
+
+// --- stylesheet! theme-token completion ---------------------------------
+
+check(
+    "digest: style tokens grouped by path prefix",
+    (cat.tokensByPrefix.get("") || []).some((t) => t.segment === "spacing")
+);
+const spacing = cat.tokensByPrefix.get("spacing") || [];
+check("digest: spacing namespace has leaves", spacing.some((t) => t.segment === "md"));
+const md = spacing.find((t) => t.segment === "md");
+check("digest: leaf inserts a call", md && md.insert === "md()", md && md.insert);
+check("digest: leaf carries its registry name", md && md.name === "spacing-md", md && md.name);
+check("digest: leaf carries a base value", md && /px$/.test(md.defaultValue), md && md.defaultValue);
+check(
+    "digest: namespace segment is not a leaf",
+    (cat.tokensByPrefix.get("") || []).find((t) => t.segment === "spacing").leaf === false
+);
+check(
+    "digest: nested intent path groups three deep",
+    (cat.tokensByPrefix.get("intent.primary") || []).some((t) => t.segment === "solid_bg")
+);
+
+const sheet = `
+stylesheet! {
+    pub Sidebar<IdeaThemeRef> {
+        base(t) {
+            padding: t.spacing.
+        }
+    }
+}`;
+const atNs = sheet.indexOf("t.spacing.") + "t.spacing.".length;
+check("stylesheet: inside the macro", insideStylesheetMacro(sheet, atNs));
+check("stylesheet: not a ui! block", !insideUiMacro(sheet, atNs));
+check("token path: namespace prefix resolved", tokenPathContext(sheet, atNs) === "spacing",
+    JSON.stringify(tokenPathContext(sheet, atNs)));
+
+const atRoot = sheet.indexOf("t.spacing.") + 2;
+check("token path: bare `t.` yields the root prefix", tokenPathContext(sheet, atRoot) === "",
+    JSON.stringify(tokenPathContext(sheet, atRoot)));
+
+// A three-segment path (intent) must resolve its two-segment prefix.
+const intentSheet = `
+stylesheet! {
+    pub S<IdeaThemeRef> {
+        base(t) {
+            background: t.intent.primary.
+        }
+    }
+}`;
+const atIntent = intentSheet.indexOf("primary.") + "primary.".length;
+check("token path: nested prefix resolved", tokenPathContext(intentSheet, atIntent) === "intent.primary",
+    JSON.stringify(tokenPathContext(intentSheet, atIntent)));
+
+// `_t` is the opt-out spelling — the macro doesn't bind it, so offering
+// tokens there would suggest code that doesn't compile.
+const optedOut = `
+stylesheet! {
+    pub S<()> {
+        base(_t) {
+            padding: _t.
+        }
+    }
+}`;
+const atOptOut = optedOut.indexOf("_t.") + 3 + optedOut.slice(optedOut.indexOf("_t.") + 3).indexOf("");
+check("token path: `_t` binding offers nothing",
+    tokenPathContext(optedOut, optedOut.lastIndexOf("_t.") + 3) === null);
+
+// A dotted chain whose root ISN'T the block binding is someone else's
+// receiver — RA owns that completion, we must not hijack it.
+const otherRecv = `
+stylesheet! {
+    pub S<IdeaThemeRef> {
+        base(t) {
+            padding: other.
+        }
+    }
+}`;
+check("token path: unrelated receiver ignored",
+    tokenPathContext(otherRecv, otherRecv.indexOf("other.") + 6) === null);
+
+// Outside any stylesheet!, a `t.` chain must not offer tokens.
+const plain = `fn f() { let t = thing(); t. }`;
+check("stylesheet: plain code is not a sheet", !insideStylesheetMacro(plain, plain.indexOf("t. ") + 2));
 
 process.exit(failures ? 1 : 0);

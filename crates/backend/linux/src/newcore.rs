@@ -952,6 +952,7 @@ impl caps::VirtualizerOps for LinuxBackend {
             mount_item,
             release_item,
             set_measured_size,
+            on_scroll,
         } = callbacks;
         let callbacks = VirtualizerCallbacks {
             item_count,
@@ -980,6 +981,16 @@ impl caps::VirtualizerOps for LinuxBackend {
                     schedule_flush();
                 })
             },
+            // Author scroll observer — same dispatch-site glue as
+            // `create_scroll_view`'s `on_scroll` (stage writes, then
+            // flush). Stays `None` when unset so the impl can skip
+            // installing scroll observation entirely.
+            on_scroll: on_scroll.map(|f| -> Rc<dyn Fn(f32, f32)> {
+                Rc::new(move |x, y| {
+                    f(x, y);
+                    schedule_flush();
+                })
+            }),
         };
         LinuxBackend::create_virtualizer(self, callbacks, _overscan, _layout, _a11y)
     }

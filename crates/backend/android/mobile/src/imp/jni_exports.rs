@@ -794,6 +794,32 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustListAdapter_nativeSet
     let _ = with_callbacks(ptr, |cbs| (cbs.set_measured_size)(scope_id as u64, size));
 }
 
+/// Forward a `RecyclerView` scroll to the author's `on_scroll`.
+///
+/// Note the class name: this export belongs to `RustScrollListener`,
+/// not `RustListAdapter`, even though both share the same leaked
+/// `VirtualizerCallbacks` pointer. JNI resolves natives by the
+/// declaring class, so the symbol must match the Kotlin class that
+/// declares `external fun nativeOnScroll`.
+///
+/// `x`/`y` arrive already converted to density-independent units by
+/// the Kotlin side, so they land in the framework in the same space as
+/// web CSS pixels and UIKit points.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustScrollListener_nativeOnScroll(
+    _env: JNIEnv,
+    _this: JObject,
+    ptr: jlong,
+    x: f32,
+    y: f32,
+) {
+    let _ = with_callbacks(ptr, |cbs| {
+        if let Some(on_scroll) = cbs.on_scroll.as_ref() {
+            on_scroll(x, y);
+        }
+    });
+}
+
 /// Free the leaked `VirtualizerCallbacks` box. Called from Kotlin
 /// when the adapter is detached or the activity tears down. Unused in
 /// the current demo (the activity outlives the list); wired so

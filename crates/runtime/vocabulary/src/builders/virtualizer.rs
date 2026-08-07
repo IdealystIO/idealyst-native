@@ -35,6 +35,7 @@ pub fn virtualizer(
             style: None,
             a11y: AccessibilityProps::default(),
             ref_fill: None,
+            on_scroll: None,
         },
     }
 }
@@ -89,6 +90,27 @@ impl VirtualizerBuilder {
 
     pub fn on_handle(mut self, fill: impl FnOnce(VirtualizerHandle) + 'static) -> Self {
         self.prim.ref_fill = Some(Box::new(fill));
+        self
+    }
+
+    /// Observe the virtualizer's own scroll offset. Fires per scroll
+    /// event with `(x, y)` in CSS px / native points — identical
+    /// contract to `scroll_view`'s `.on_scroll(..)`, including which
+    /// component is meaningful: a `Axis::Vertical` virtualizer reports
+    /// `y` and a constant `0.0` for `x`, and vice versa.
+    ///
+    /// A virtualizer owns its scroller, so this is the only way a
+    /// sibling can align to it — a sticky header that tracks the list,
+    /// an edge-triggered "load more", a second pane synced to the same
+    /// offset. Without it those all force the app to hand-roll
+    /// virtualization over a `scroll_view` purely to get the offset
+    /// back.
+    ///
+    /// Runs like any author callback (outside `World::enter`); writes
+    /// staged here flush with the surrounding dispatch. Keep it cheap
+    /// — it fires at scroll frequency.
+    pub fn on_scroll(mut self, handler: impl Fn(f32, f32) + 'static) -> Self {
+        self.prim.on_scroll = Some(Rc::new(handler));
         self
     }
 

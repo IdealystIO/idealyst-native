@@ -74,6 +74,7 @@ use runtime_core::{
 
 use crate::slot_override::apply_override;
 use crate::stylesheets::Modal as ModalStyle;
+use crate::theme::IdeaThemeRef;
 
 /// Desired surface width when the viewport has room for it.
 const DEFAULT_MODAL_WIDTH: f32 = 520.0;
@@ -313,8 +314,8 @@ fn modal_body_sheet() -> Rc<StyleSheet> {
 }
 
 stylesheet! {
-    ModalBodySheet<()> {
-        base(_t) {
+    ModalBodySheet<IdeaThemeRef> {
+        base(t) {
             flex_direction: FlexDirection::Column,
             // Don't shrink inside the scroll viewport. The scroller is capped
             // at the viewport height (`max_height` on `modal_scroll_sheet`);
@@ -323,8 +324,8 @@ stylesheet! {
             // keeps its full height and overflows the viewport → it scrolls.
             flex_shrink: 0.0,
             // Mirrors `ModalStyle`'s base `gap`/`padding`.
-            gap: Tokenized::token("spacing-md", Length::Px(12.0)),
-            padding: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            gap: t.spacing.md(),
+            padding: t.spacing.lg(),
         }
     }
 }

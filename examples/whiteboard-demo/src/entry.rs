@@ -23,23 +23,18 @@ use crate::{BoardScreen, CanvasDoc, CanvasStore, PreviewScreen, SettingsScreen, 
 /// Registration is MANDATORY: an unregistered payload panics at realize, so a
 /// missed `register` here fails loud instead of drawing a placeholder box.
 ///
-/// Web is registry-CONCRETE — `canvas_native::register` and `video::register`
-/// take a `Registry<WebBackend>` there, which is what makes the real
-/// `<canvas>`/`<video>` handlers reachable. See the generic twin below.
-#[cfg(target_arch = "wasm32")]
-pub fn register_scene_extensions(
-    registry: &mut runtime_scene::Registry<backend_web::WebBackend>,
-) {
-    canvas_native::register(registry);
-    video::register(registry);
-}
-
-/// Native registration seam. Both SDKs are registry-GENERIC off web and
-/// type-dispatch internally: `video::register` downcasts to the macOS / iOS /
-/// Android registry and installs the real player, and `canvas_native::register`
-/// installs the External placeholder — the GPU/vello renderer has no scene
-/// handler, so drawing on native shows the placeholder until one exists.
-#[cfg(not(target_arch = "wasm32"))]
+/// ONE registry-generic seam for every target. Both SDKs type-dispatch
+/// internally — `video::register` downcasts to the web / macOS / iOS / Android
+/// registry and installs the real `<video>`/AVPlayer/`VideoView`, and
+/// `canvas_native::register` downcasts to the web registry for the real
+/// `<canvas>` and installs the External placeholder elsewhere (the GPU/vello
+/// renderer has no scene handler, so drawing on native shows the placeholder
+/// until one exists).
+///
+/// This used to be a `cfg`-split pair whose web half took a concrete
+/// `Registry<WebBackend>`. That signature cannot cross
+/// `idealyst::SceneExtensions::register<H: SceneHost>` — the seam `entry!`
+/// boots every platform through — so the app was unbuildable on web.
 pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
 where
     H: runtime_vocabulary::caps::ExternalOps

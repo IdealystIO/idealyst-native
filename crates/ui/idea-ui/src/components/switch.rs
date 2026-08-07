@@ -27,14 +27,15 @@ use std::time::Duration;
 
 use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use runtime_core::{
-    component, effect, icon, ui, Color, Element, IconData, IdealystSchema, IntoElement, Reactive,
-    Ref, Signal, StyleApplication, Tokenized, ViewHandle,
+    component, effect, icon, ui, Element, IconData, IdealystSchema, IntoElement, Reactive,
+    Ref, Signal, StyleApplication, ViewHandle,
 };
 
 use idea_theme::extensible::{installed_switch_sheet, ToneRef, VariantRef};
 
 use crate::components::ControlSize;
 use crate::stylesheets::{ControlRow, FieldLabel, SwitchThumb};
+use idea_theme::tokens;
 
 /// Duration of the thumb-slide / track-color animation.
 const SWITCH_ANIM_MS: u64 = 180;
@@ -151,7 +152,7 @@ pub fn Switch(props: &SwitchProps) -> Element {
     let thumb_kids: Vec<Element> = match props.icon.get() {
         Some(data) => vec![icon(data)
             .size(icon_px)
-            .color(|| Tokenized::token("color-text", Color("#1a1a1f".into())).resolve())
+            .color(|| tokens().color.text().resolve())
             .into_element()],
         None => Vec::new(),
     };

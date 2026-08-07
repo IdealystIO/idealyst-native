@@ -8,22 +8,23 @@ use runtime_core::{
     component, stylesheet, ui, AlignItems, Color, Element, FlexDirection, FontWeight, Length,
     StyleApplication, TextAlign, TextTransform, Tokenized,
 };
+use idea_ui::IdeaThemeRef;
 
 // =============================================================================
 // Styles — cards, connectors, the row split, and the text tiers.
 // =============================================================================
 
 stylesheet! {
-    pub ChartCard<()> {
-        base(_t) {
+    pub ChartCard<IdeaThemeRef> {
+        base(t) {
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
             gap: 6.0,
             padding: 18.0,
             border_radius: 14.0,
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_color: t.color.border(),
+            background: t.color.surface(),
             width: Length::pct(100.0),
             min_width: 0.0,
         }
@@ -35,16 +36,16 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub ChartCardAccent<()> {
-        base(_t) {
+    pub ChartCardAccent<IdeaThemeRef> {
+        base(t) {
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
             gap: 6.0,
             padding: 18.0,
             border_radius: 14.0,
             border_width: 1.0,
-            border_color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
-            background: Tokenized::token("intent-primary-soft-bg", Color("rgba(91, 108, 255, 0.12)".into())),
+            border_color: t.intent.primary.fg(),
+            background: t.intent.primary.soft_bg(),
             width: Length::pct(100.0),
             min_width: 0.0,
         }
@@ -78,13 +79,13 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub ChartEyebrow<()> {
-        base(_t) {
+    pub ChartEyebrow<IdeaThemeRef> {
+        base(t) {
             font_size: 11.0,
             font_weight: FontWeight::SemiBold,
             letter_spacing: 0.8,
             text_transform: TextTransform::Uppercase,
-            color: Tokenized::token("color-text-muted", Color("#8a8270".into())),
+            color: t.color.text_muted(),
             text_align: TextAlign::Center,
         }
         transitions { color: 250ms EaseInOut, }
@@ -92,11 +93,11 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub ChartTitle<()> {
-        base(_t) {
+    pub ChartTitle<IdeaThemeRef> {
+        base(t) {
             font_size: 17.0,
             font_weight: FontWeight::Bold,
-            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            color: t.color.text(),
             text_align: TextAlign::Center,
         }
         transitions { color: 250ms EaseInOut, }
@@ -104,11 +105,11 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub ChartBody<()> {
-        base(_t) {
+    pub ChartBody<IdeaThemeRef> {
+        base(t) {
             font_size: 14.0,
             line_height: 20.0,
-            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            color: t.color.text_muted(),
             text_align: TextAlign::Center,
         }
         transitions { color: 250ms EaseInOut, }
@@ -116,10 +117,10 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub ChartArrowText<()> {
-        base(_t) {
+    pub ChartArrowText<IdeaThemeRef> {
+        base(t) {
             font_size: 20.0,
-            color: Tokenized::token("color-text-muted", Color("#8a8270".into())),
+            color: t.color.text_muted(),
             text_align: TextAlign::Center,
         }
         transitions { color: 250ms EaseInOut, }

@@ -279,7 +279,9 @@ fn building_your_own() -> Element {
                          }\n\
                          \n\
                          // 2. Stylesheets reference values by token NAME \u{2014} not by reading\n\
-                         //    a theme struct. The `<()>` / `(_t)` slots are vestigial.\n\
+                         //    a theme struct. `<()>` means \"no token vocabulary\": name your\n\
+                         //    own tokens as strings. A design system supplies a vocabulary,\n\
+                         //    and then the block binding types them (`t.radius.md()`).\n\
                          stylesheet! {\n    \
                              pub MyButton<()> {\n        \
                                  base(_t) {\n            \

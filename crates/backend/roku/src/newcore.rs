@@ -973,6 +973,26 @@ impl caps::DocumentOps for RokuBackend {}
 
 impl caps::StyleOps for RokuBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
+        // Degrade LOUDLY, once. `Roku` has no scrolling gesture model,
+        // so `Position::Sticky` renders as `Relative` and
+        // `overscroll-behavior` has nothing to govern. Both were
+        // previously dropped in silence — the exact "no warning,
+        // nothing to grep for" failure `runtime_shared::unsupported`
+        // exists to end.
+        if matches!(style.position, Some(runtime_shared::Position::Sticky)) {
+            runtime_shared::unsupported::warn_once(
+                "roku.sticky",
+                "position: Sticky on the Roku backend — rendered as Relative (this backend \
+                 has no scroll gesture model). Web and the native backends pin.",
+            );
+        }
+        if style.overscroll_behavior.is_some() {
+            runtime_shared::unsupported::warn_once(
+                "roku.overscroll_behavior",
+                "overscroll-behavior on the Roku backend — ignored (no scroll gesture \
+                 model to govern).",
+            );
+        }
         let wire = style::lower_style(style);
         self.push(RokuCommand::ApplyStyle {
             id: *node,

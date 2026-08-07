@@ -31,7 +31,8 @@ use crate::slice::LeakFromJson;
 use crate::{
     AnimationEntry, ComponentEntry, EdgeRef, GuideEntry, IconRef, IconSetEntry, MacroEntry,
     MacroKind, MethodEntry, ParamSpec, PrimitiveCategory, PrimitiveEntry, PropFieldSpec,
-    RecipeEntry, ScopeEntry, SdkCategory, SdkEntry, SdkKind, StateEntry, ToolEntry, TypeEntry,
+    RecipeEntry, ScopeEntry, SdkCategory, SdkEntry, SdkKind, StateEntry, StyleTokenEntry,
+    ToolEntry, TypeEntry,
     TypeShape, UtilityCategory, UtilityEntry, VariantSpec,
 };
 
@@ -120,6 +121,7 @@ pub struct ResolvedCatalog {
     utilities: Vec<&'static crate::UtilityEntry>,
     macros: Vec<&'static crate::MacroEntry>,
     states: Vec<&'static crate::StateEntry>,
+    style_tokens: Vec<&'static crate::StyleTokenEntry>,
     guides: Vec<&'static crate::GuideEntry>,
     methods: Vec<&'static crate::MethodEntry>,
     animations: Vec<&'static crate::AnimationEntry>,
@@ -140,6 +142,7 @@ impl ResolvedCatalog {
         cat.utilities = crate::utilities().collect();
         cat.macros = crate::macros().collect();
         cat.states = crate::states().collect();
+        cat.style_tokens = crate::style_tokens().collect();
         cat.guides = crate::guides().collect();
         cat.methods = crate::methods().collect();
         cat.animations = crate::animations().collect();
@@ -185,6 +188,7 @@ impl ResolvedCatalog {
         cat.utilities = slice_vec::<UtilityEntry>(&value);
         cat.macros = slice_vec::<MacroEntry>(&value);
         cat.states = slice_vec::<StateEntry>(&value);
+        cat.style_tokens = slice_vec::<StyleTokenEntry>(&value);
         cat.guides = slice_vec::<GuideEntry>(&value);
         cat.methods = slice_vec::<MethodEntry>(&value);
         cat.animations = slice_vec::<AnimationEntry>(&value);
@@ -208,6 +212,11 @@ impl ResolvedCatalog {
     }
     pub fn states(&self) -> &[&'static crate::StateEntry] {
         &self.states
+    }
+    /// The theme tokens a `stylesheet!` can name through its block
+    /// binding — see [`crate::StyleTokenEntry`].
+    pub fn style_tokens(&self) -> &[&'static crate::StyleTokenEntry] {
+        &self.style_tokens
     }
     pub fn guides(&self) -> &[&'static crate::GuideEntry] {
         &self.guides
@@ -708,6 +717,26 @@ fn leak_state_from_json(v: &serde_json::Value) -> Option<&'static StateEntry> {
     })))
 }
 
+fn leak_style_token_from_json(v: &serde_json::Value) -> Option<&'static StyleTokenEntry> {
+    let name = v["name"].as_str()?.to_string();
+    let path = v["path"].as_str()?.to_string();
+    let namespace = v["namespace"].as_str().unwrap_or("").to_string();
+    let value_type = v["value_type"].as_str().unwrap_or("").to_string();
+    let default_value = v["default_value"].as_str().unwrap_or("").to_string();
+    let vocabulary = v["vocabulary"].as_str().unwrap_or("").to_string();
+    Some(Box::leak(Box::new(StyleTokenEntry {
+        name: leak_str(name),
+        path: leak_str(path),
+        namespace: leak_str(namespace),
+        value_type: leak_str(value_type),
+        // Rehydrated: the accessor that produced this value lives in a
+        // crate this process may not even link, so the rendered string
+        // IS the value here. See `TokenDefault`.
+        default_value: crate::TokenDefault::Value(leak_str(default_value)),
+        vocabulary: leak_str(vocabulary),
+    })))
+}
+
 fn leak_guide_from_json(v: &serde_json::Value) -> Option<&'static GuideEntry> {
     let slug = v["slug"].as_str()?.to_string();
     let title = v["title"].as_str().unwrap_or(&slug).to_string();
@@ -951,6 +980,11 @@ impl LeakFromJson for MacroEntry {
 impl LeakFromJson for StateEntry {
     fn from_json(v: &serde_json::Value) -> Option<&'static Self> {
         leak_state_from_json(v)
+    }
+}
+impl LeakFromJson for StyleTokenEntry {
+    fn from_json(v: &serde_json::Value) -> Option<&'static Self> {
+        leak_style_token_from_json(v)
     }
 }
 impl LeakFromJson for GuideEntry {

@@ -22,11 +22,25 @@
 //! and doesn't cull by frame, so there's no equivalent of AppKit purging
 //! a transform-pinned view's drawing.
 //!
-//! ## Scope (v1)
+//! ## Scope
 //!
-//! Vertical (`top`) only, matching every other backend's v1 — iOS,
-//! macOS, wgpu and Android all ship `top`-only and treat `left` as a
-//! follow-up. With no enclosing scroll container the node falls back to
+//! Vertical (`top`) only. This is now the ONLY backend without
+//! horizontal pinning: iOS, macOS, wgpu and Android all read per-axis
+//! thresholds via `runtime_shared::sticky::StickyInsets` and pin on
+//! `left` as well, and web has always had both from the browser. A
+//! `left`-inset element here silently falls back to relative on the
+//! horizontal axis — so a frozen COLUMN does not work on GTK.
+//!
+//! Bringing this backend in line means widening the registry to
+//! `StickyInsets`, summing frame origins on both axes in the
+//! natural-position walk, and driving the pin from the scrolled
+//! window's `hadjustment` alongside its `vadjustment` — the same
+//! change the other four already took. It is deliberately NOT done
+//! blind: the GTK toolchain isn't available in the environment this
+//! landed from, and CLAUDE.md §5 rules out shipping unverified
+//! low-level backend code.
+//!
+//! With no enclosing scroll container the node falls back to
 //! `Relative`, which is what CSS does.
 //!
 //! Not modelled yet: CSS also confines a sticky element to its

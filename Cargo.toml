@@ -399,6 +399,10 @@ version = "1.2.2"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+# The app-facing facade. An app depends on this, writes
+# `idealyst::entry!(<lib>)` in `src/main.rs`, and builds with plain
+# cargo — there is no CLI-generated web wrapper crate any more.
+idealyst = { path = "crates/idealyst" }
 runtime-core = { path = "crates/runtime/core" }
 runtime-shared = { path = "crates/runtime/shared" }
 runtime-world = { path = "crates/runtime/world" }

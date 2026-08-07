@@ -91,11 +91,27 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: WheelHandler) {
         // repaint tick, all coalesced into one reactive flush so web's rAF renders
         // one consistent frame, not the last stray write.
         let response = (handler)(&we);
-        if response.consumed {
+        if response.consumed || response.claim {
             // Stop the page from also scrolling / browser-zooming. Must be a
             // non-passive listener (the default for `addEventListener` without
             // `{passive:true}`, which is what `add_event_listener_with_callback`
             // gives us) for preventDefault to take effect on `wheel`.
+            //
+            // `claim` is honored alongside `consumed` because on wheel the two
+            // asks are the same ask. `claim` means "preempt any competing
+            // native consumer of this gesture", and on web the only competing
+            // consumer of a wheel is the default action — page scroll, browser
+            // zoom, or an ancestor scroller. `preventDefault` is the entire
+            // claim protocol here; there is no pointer to capture the way
+            // there is for touch. Dropping `claim` (the previous behavior)
+            // meant a handler that claimed without consuming silently let the
+            // page scroll underneath it.
+            //
+            // NOTE this does NOT stop the browser's history back-swipe at a
+            // scroller's edge — the host commits to that gesture before the
+            // event is delivered, so no `preventDefault` can win the race.
+            // `overscroll-behavior: contain` is the fix for that (see
+            // `runtime_shared::OverscrollBehavior`).
             ev.prevent_default();
         }
     });

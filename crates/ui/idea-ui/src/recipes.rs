@@ -1072,6 +1072,45 @@ recipe!(
 );
 
 recipe!(
+    IdeaTokens,
+    /// Write your OWN `stylesheet!` that follows the installed idea-ui theme.
+    /// Declare the theme type in the `<…>` slot and the block binding (`base(t)`)
+    /// becomes the token vocabulary: `t.spacing.md()` references the `spacing-md`
+    /// token. The accessor path IS the token name, so a typo won't compile —
+    /// unlike a string, which used to compile and silently render its fallback
+    /// forever. Namespaces: `t.color.*`, `t.intent.<intent>.<slot>()`,
+    /// `t.spacing.*`, `t.radius.*`, `t.typography.*_size()`. No palette hex
+    /// appears here, so a reskin (or a light/dark swap) re-flows this sheet with
+    /// zero edits to it — the theme stays the single source of truth.
+    pub fn custom_sheet_theme_tokens() -> ::runtime_core::Element {
+        use crate::{install_idea_theme, light_theme, IdeaThemeRef};
+        use ::runtime_core::{stylesheet, ui, FlexDirection, Length};
+
+        stylesheet! {
+            Sidebar<IdeaThemeRef> {
+                base(t) {
+                    flex_direction: FlexDirection::Column,
+                    height: Length::pct(100.0),
+                    padding: t.spacing.md(),
+                    gap: t.spacing.md(),
+                    background: t.color.surface(),
+                    border_color: t.color.border(),
+                    border_radius: t.radius.lg(),
+                }
+                // Overlays bind the vocabulary too — variants, states,
+                // breakpoints, and container queries all take a binding.
+                state hovered(t) {
+                    border_color: t.color.border_hover(),
+                }
+            }
+        }
+
+        install_idea_theme(light_theme());
+        ui! { view(style = Sidebar()) { text { "Navigation" } } }
+    }
+);
+
+recipe!(
     install_idea_theme_reactive,
     /// Signal-driven light/dark. `install_idea_theme_reactive` re-runs its
     /// selector whenever a signal the selector reads changes, swapping the

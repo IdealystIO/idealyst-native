@@ -47,14 +47,17 @@ pub(crate) struct StickyChild {
     /// The sticky view. Retained for the registry's lifetime; dropped
     /// (and its pin offset removed) on `deregister`.
     pub(crate) view: Retained<NSView>,
-    /// Pin threshold in points, from `StyleRules.top`.
-    pub(crate) threshold_top: f32,
-    /// Natural y of the child in the scroll view's content space.
-    /// Refreshed after every layout pass by `refresh_layout_positions`.
-    pub(crate) natural_y: f32,
-    /// Last pin translate applied to the frame. Used to shift the
-    /// frame back on deregister without needing layout access.
-    pub(crate) last_translate: f32,
+    /// Per-axis pin thresholds in points, resolved from `StyleRules`
+    /// by `runtime_shared::sticky::StickyInsets`.
+    pub(crate) insets: runtime_shared::sticky::StickyInsets,
+    /// Natural `(x, y)` of the child in the scroll view's content
+    /// space. Refreshed after every layout pass by
+    /// `refresh_layout_positions`.
+    pub(crate) natural: (f32, f32),
+    /// Last pin translate applied to the frame, per axis. Used to
+    /// shift the frame back on deregister without needing layout
+    /// access.
+    pub(crate) last_translate: (f32, f32),
 }
 
 /// Per-scroll-view sticky state. Owns the bounds-change observer
@@ -69,19 +72,12 @@ pub(crate) struct StickyScrollEntry {
 /// Map from scroll view pointer → sticky bookkeeping.
 pub(crate) type StickyRegistry = HashMap<usize, StickyScrollEntry>;
 
-/// Pure pin compute — identical to the iOS module's (the duplicated
-/// pure-fn-with-tests pattern `private_layer_hittest` also follows).
-/// Translation that keeps the child rendered at `scroll_y +
-/// threshold_top` once its natural top scrolls past the threshold.
-#[inline]
-pub(crate) fn compute_translate(natural_y: f32, threshold_top: f32, scroll_y: f32) -> f32 {
-    let pinned_y = scroll_y + threshold_top;
-    if pinned_y > natural_y {
-        pinned_y - natural_y
-    } else {
-        0.0
-    }
-}
+// The pin arithmetic itself lives in `runtime_shared::sticky` — one
+// implementation shared by every backend, so "AppKit pins a pixel
+// differently from UIKit" cannot happen (CLAUDE.md §7). This module
+// keeps only the AppKit mechanism: where the natural position comes
+// from, and how the pin is written.
+use runtime_shared::sticky::{translate, StickyInsets};
 
 /// Find the enclosing `NSScrollView` ancestor of `view`. The native
 /// parent chain runs child → documentView → NSClipView →
@@ -109,7 +105,7 @@ pub(crate) fn register(
     mtm: MainThreadMarker,
     registry: &mut StickyRegistry,
     view: &NSView,
-    threshold_top: f32,
+    insets: StickyInsets,
 ) -> bool {
     let child_key = view as *const NSView as usize;
     deregister(registry, view);
@@ -132,9 +128,9 @@ pub(crate) fn register(
         child_key,
         StickyChild {
             view: child_retained,
-            threshold_top,
-            natural_y: 0.0,
-            last_translate: 0.0,
+            insets,
+            natural: (0.0, 0.0),
+            last_translate: (0.0, 0.0),
         },
     );
 
@@ -224,25 +220,26 @@ fn remove_observer(observer: Option<Retained<NSObject>>) {
 /// below its natural position. No layout access needed — the offset is
 /// tracked per child.
 fn remove_pin_offset(child: &StickyChild) {
-    if child.last_translate == 0.0 {
+    let (dx, dy) = child.last_translate;
+    if dx == 0.0 && dy == 0.0 {
         return;
     }
     let cur: CGRect = unsafe { msg_send![&*child.view, frame] };
     let origin = CGPoint {
-        x: cur.origin.x,
-        y: cur.origin.y - child.last_translate as f64,
+        x: cur.origin.x - dx as f64,
+        y: cur.origin.y - dy as f64,
     };
     let _: () = unsafe { msg_send![&*child.view, setFrameOrigin: origin] };
 }
 
-/// Current scroll offset of the scroll view's clip view — the y the
-/// content has scrolled, in points (the document view is flipped, so
-/// y grows downward exactly like web/iOS).
-fn scroll_offset_y(scroll_view: &NSView) -> f32 {
+/// Current scroll offset of the scroll view's clip view, in points
+/// (the document view is flipped, so y grows downward exactly like
+/// web/iOS; x grows rightward on every backend).
+fn scroll_offset(scroll_view: &NSView) -> (f32, f32) {
     let clip: Option<Retained<NSView>> = unsafe { msg_send_id![scroll_view, contentView] };
-    let Some(clip) = clip else { return 0.0 };
+    let Some(clip) = clip else { return (0.0, 0.0) };
     let bounds: CGRect = unsafe { msg_send![&clip, bounds] };
-    bounds.origin.y as f32
+    (bounds.origin.x as f32, bounds.origin.y as f32)
 }
 
 /// Recompute + apply the pin for one scroll view's sticky children.
@@ -254,22 +251,25 @@ pub(crate) fn tick_scroll_view(backend: &mut crate::imp::MacosBackend, scroll_ke
     let Some(entry) = backend.sticky_registry.get_mut(&scroll_key) else {
         return;
     };
-    let scroll_y = scroll_offset_y(&entry.scroll_view);
+    let scroll = scroll_offset(&entry.scroll_view);
     for (child_key, child) in entry.children.iter_mut() {
         // Parent-relative Taffy frame — the same coordinates the
         // layout pass applies with `setFrame:`.
         let Some((_, node)) = backend.view_to_layout.get(child_key) else {
             continue;
         };
-        let natural = backend.layout.frame_of(*node);
-        let translate = compute_translate(child.natural_y, child.threshold_top, scroll_y);
-        let target_y = natural.y as f64 + translate as f64;
+        let frame = backend.layout.frame_of(*node);
+        let (dx, dy) = translate(child.insets, child.natural, scroll);
+        let target_x = frame.x as f64 + dx as f64;
+        let target_y = frame.y as f64 + dy as f64;
         let cur: CGRect = unsafe { msg_send![&*child.view, frame] };
-        child.last_translate = translate;
-        if (cur.origin.y - target_y).abs() < STICKY_EPSILON {
+        child.last_translate = (dx, dy);
+        if (cur.origin.x - target_x).abs() < STICKY_EPSILON
+            && (cur.origin.y - target_y).abs() < STICKY_EPSILON
+        {
             continue;
         }
-        let origin = CGPoint { x: natural.x as f64, y: target_y };
+        let origin = CGPoint { x: target_x, y: target_y };
         let _: () = unsafe { msg_send![&*child.view, setFrameOrigin: origin] };
     }
 }
@@ -294,32 +294,40 @@ pub(crate) fn refresh_layout_positions(
 ) {
     for (scroll_key, entry) in registry.iter_mut() {
         for (child_key, child) in entry.children.iter_mut() {
-            let Some(natural_y) =
-                compute_natural_y_in_scroll(*child_key, *scroll_key, layout, view_to_layout)
+            let Some(natural) =
+                compute_natural_in_scroll(*child_key, *scroll_key, layout, view_to_layout)
             else {
                 continue;
             };
-            child.natural_y = natural_y;
+            child.natural = natural;
         }
     }
 }
 
-/// Sum Taffy frame y values from `child_key` up to (but not
-/// including) `scroll_key`. `None` when the chain can't be traced.
-fn compute_natural_y_in_scroll(
+/// Sum Taffy frame origins from `child_key` up to (but not including)
+/// `scroll_key`, on both axes. `None` when the chain can't be traced.
+///
+/// Both components are summed unconditionally rather than only the
+/// pinned axis: `refresh_layout_positions` runs once per layout pass
+/// for every registered child, and branching per axis here would mean
+/// a child that later gains a `left` inset (a reactive style change)
+/// would tick against a stale `natural.x` until the next layout.
+fn compute_natural_in_scroll(
     child_key: usize,
     scroll_key: usize,
     layout: &runtime_layout::LayoutTree,
     view_to_layout: &HashMap<usize, (Retained<NSView>, runtime_layout::LayoutNode)>,
-) -> Option<f32> {
+) -> Option<(f32, f32)> {
     let (_, child_node) = view_to_layout.get(&child_key)?;
     let (_, scroll_node) = view_to_layout.get(&scroll_key)?;
 
-    let mut sum_y = 0.0_f32;
+    let mut sum = (0.0_f32, 0.0_f32);
     let mut cursor = *child_node;
     let mut steps = 0;
     while cursor != *scroll_node {
-        sum_y += layout.frame_of(cursor).y;
+        let frame = layout.frame_of(cursor);
+        sum.0 += frame.x;
+        sum.1 += frame.y;
         let parent = layout.parent_of(cursor)?;
         cursor = parent;
         steps += 1;
@@ -327,45 +335,61 @@ fn compute_natural_y_in_scroll(
             return None;
         }
     }
-    Some(sum_y)
+    Some(sum)
 }
 
 // =========================================================================
-// Tests — pure compute, host-runnable (macOS host). Mirrors the iOS
-// module's regression names per CLAUDE.md §8.
+// Tests
+//
+// The pin arithmetic's own regressions now live with the arithmetic,
+// in `runtime_shared::sticky` — one suite instead of a copy per
+// backend. What stays here is the AppKit-specific consequence of that
+// math: which frame origin components the tick writes.
 // =========================================================================
 
 #[cfg(test)]
 mod tests {
-    use super::compute_translate;
+    use runtime_shared::sticky::{translate, StickyInsets};
 
-    /// The "TOC scrolls away with the content on macOS" regression:
-    /// scrolling past the threshold must translate the child down by
-    /// the overshoot so it renders pinned at `scroll_y + threshold`.
+    /// The "TOC scrolls away with the content on macOS" regression, at
+    /// the layer this module owns: `tick_scroll_view` composes the
+    /// shared translate onto the Taffy frame origin, so a vertical pin
+    /// must move `origin.y` and leave `origin.x` on its laid-out value.
     #[test]
     fn regression_macos_sticky_pins_when_scrolled_past_threshold() {
-        let natural_y = 100.0;
-        let threshold = 32.0;
+        let insets = StickyInsets {
+            top: Some(32.0),
+            left: None,
+        };
+        let frame = (12.0_f32, 100.0_f32);
 
         // Above the pin point — child stays at its natural position
         // (this was ALL macOS did before the fix, at every offset).
-        assert_eq!(compute_translate(natural_y, threshold, 0.0), 0.0);
-        assert_eq!(compute_translate(natural_y, threshold, 68.0), 0.0);
+        assert_eq!(translate(insets, frame, (0.0, 0.0)), (0.0, 0.0));
+        assert_eq!(translate(insets, frame, (0.0, 68.0)), (0.0, 0.0));
 
-        // Past the pin point — the rendered y tracks the viewport.
-        let scroll_y = 500.0;
-        let t = compute_translate(natural_y, threshold, scroll_y);
+        // Past the pin point — the rendered y tracks the viewport and
+        // x is untouched, so `setFrameOrigin:` keeps the laid-out x.
+        let (dx, dy) = translate(insets, frame, (0.0, 500.0));
+        assert_eq!(dx, 0.0, "a vertical pin must not move the frame's x");
         assert!(
-            ((natural_y + t) - (scroll_y + threshold)).abs() < 1e-5,
+            ((frame.1 + dy) - 532.0).abs() < 1e-5,
             "pinned rendered y must equal scroll_y + threshold",
         );
     }
 
-    /// Scrolling back up un-pins: translate returns to zero.
+    /// A frozen column on macOS: `left` must move `origin.x` while the
+    /// child keeps scrolling vertically. Before horizontal support the
+    /// registry carried a single `threshold_top`, so this produced no
+    /// horizontal movement at all.
     #[test]
-    fn regression_macos_sticky_unpins_on_scroll_back() {
-        let t = compute_translate(100.0, 32.0, 500.0);
-        assert!(t > 0.0);
-        assert_eq!(compute_translate(100.0, 32.0, 0.0), 0.0);
+    fn regression_macos_sticky_left_never_pins_horizontally() {
+        let insets = StickyInsets {
+            top: None,
+            left: Some(0.0),
+        };
+        let (dx, dy) = translate(insets, (100.0, 40.0), (400.0, 900.0));
+        assert!(((100.0 + dx) - 400.0).abs() < 1e-5);
+        assert_eq!(dy, 0.0, "a horizontal pin must not move the frame's y");
     }
 }

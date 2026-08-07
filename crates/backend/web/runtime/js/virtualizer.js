@@ -37,6 +37,9 @@
 //  * @property {(scopeId: number, size: number) => void} setMeasuredSize
 //  *   Backend->framework: notify a measured size change.
 //  * @property {boolean} measureSizes
+//  * @property {(x: number, y: number) => void} [onScroll]
+//  *   Author scroll observer. Absent unless `.on_scroll(..)` was set;
+//  *   the scroll handler skips the wasm crossing when it is.
 //  * @property {number} overscan
 //  * @property {boolean} horizontal
 //  * @property {number} [lanesFixed]   Fixed lane count (>=1).
@@ -109,6 +112,18 @@
             this._scrollHandler = () => {
                 if (this._released) return;
                 this.update();
+                // Report the offset AFTER the range diff, so an author
+                // handler that reads back geometry (a sticky header
+                // measuring the list, a "load more" checking the tail)
+                // observes the window this scroll produced rather than
+                // the previous one. `onScroll` is absent unless the
+                // author asked for it — the guard keeps the common
+                // case free of a wasm-boundary crossing per frame,
+                // which is the whole reason this class owns the
+                // listener.
+                if (this.cb.onScroll) {
+                    this.cb.onScroll(this.container.scrollLeft, this.container.scrollTop);
+                }
             };
             container.addEventListener('scroll', this._scrollHandler, { passive: true });
             // Also re-update on container resize so viewport changes
@@ -413,6 +428,31 @@
                 }
             }
             return lo;
+        }
+
+        /**
+         * Scroll so item `idx` sits at the leading edge of the
+         * scrollport. Called by Rust from
+         * `VirtualizerHandle::scroll_to_index`.
+         *
+         * The target offset is the item's GRID-ROW origin, not the
+         * item's own — in an L-lane grid, items `[r*L, (r+1)*L)` share
+         * one main-axis offset, so scrolling "to item 5" of a 3-lane
+         * grid means scrolling to row 1. `prefixRow` is only valid
+         * after a `refresh()`, so a call landing before the
+         * constructor's queued microtask clamps to 0 rather than
+         * reading `undefined`.
+         */
+        scrollToIndex(idx) {
+            if (this._released) return;
+            const L = this.lanes || 1;
+            const row = Math.max(0, (idx / L) | 0);
+            const main = this.prefixRow[Math.min(row, this.rowCount)] || 0;
+            if (this.horizontal) {
+                this.container.scrollLeft = main;
+            } else {
+                this.container.scrollTop = main;
+            }
         }
 
         /** Called by Rust when data changes (item_count effect fires).

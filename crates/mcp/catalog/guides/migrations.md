@@ -48,6 +48,7 @@ principle is **one clean experience per version — no legacy-support hacks**:
 | 0.5 → 1.0 | [[migration-0-5-0-to-1-0-0]] |
 | 1.0 → 1.1 | [[migration-1-0-0-to-1-1-0]] |
 | 1.1 → 1.2 | [[migration-1-1-0-to-1-2-0]] |
+| 1.2 → 1.3 | [[migration-1-2-0-to-1-3-0]] |
 
 ## Updating the dependency
 

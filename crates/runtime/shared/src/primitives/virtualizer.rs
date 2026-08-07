@@ -191,13 +191,24 @@ impl VirtualLayout {
     }
 }
 
-/// Handle for `Ref<VirtualizerHandle>`. Future methods: scroll to
-/// index, scroll to top, get visible range, etc.
+/// Handle for `Ref<VirtualizerHandle>` — the imperative surface on a
+/// mounted virtualizer.
+///
+/// A virtualizer OWNS its scroller (unlike `scroll_view`, where the
+/// author supplies the container), so without these methods no sibling
+/// can align to it: a sticky header, an edge-triggered fetch, or a
+/// second pane synced to the same offset all need to read or write the
+/// scroll position of a scroller they don't hold. That surface is
+/// deliberately the same shape as
+/// [`ScrollViewHandle`](super::scroll_view::ScrollViewHandle) — same
+/// coordinate space (CSS px / native points, content-box origin), same
+/// `scroll_to(x, y)` signature — so swapping a hand-rolled
+/// `scroll_view` for a real virtualizer doesn't rewrite the call sites.
+///
+/// Pair with the builder's `.on_scroll(..)` for the push direction.
 #[derive(Clone)]
 pub struct VirtualizerHandle {
-    #[allow(dead_code)]
     node: Rc<dyn Any>,
-    #[allow(dead_code)]
     ops: &'static dyn VirtualizerOps,
 }
 
@@ -210,10 +221,46 @@ impl VirtualizerHandle {
     pub fn scroll_to_index(&self, index: usize) {
         self.ops.scroll_to_index(&*self.node, index);
     }
+
+    /// Current scroll offset `(x, y)` of the virtualizer's own
+    /// scroller, in the same units the `on_scroll` callback reports.
+    /// The off-axis component is always `0.0` — a virtualizer scrolls
+    /// on exactly one axis ([`VirtualLayout::axis`]).
+    ///
+    /// Returns `(0.0, 0.0)` before the scroller exists (a handle read
+    /// in the same tick as mount) and on backends with no virtualizer.
+    pub fn scroll_offset(&self) -> (f32, f32) {
+        self.ops.scroll_offset(&*self.node)
+    }
+
+    /// Scroll to an absolute pixel offset within the content box. The
+    /// off-axis component is ignored. Mirrors
+    /// [`ScrollViewHandle::scroll_to`](super::scroll_view::ScrollViewHandle::scroll_to)
+    /// so an app that hand-rolled virtualization over a `scroll_view`
+    /// can retarget without changing its call sites.
+    pub fn scroll_to(&self, x: f32, y: f32) {
+        self.ops.scroll_to(&*self.node, x, y);
+    }
 }
 
+/// Backend-side implementation of [`VirtualizerHandle`]'s methods.
+///
+/// Every method has a no-op default so a backend can adopt the surface
+/// incrementally and a backend with no virtualizer at all
+/// (`impl VirtualizerOps for FooOps {}`) still compiles. A default
+/// `scroll_offset` returning `(0.0, 0.0)` is the same "harmless on a
+/// non-scroller" contract `ScrollOps::node_scroll` already uses.
 pub trait VirtualizerOps {
-    fn scroll_to_index(&self, node: &dyn Any, index: usize);
+    #[allow(unused_variables)]
+    fn scroll_to_index(&self, node: &dyn Any, index: usize) {}
+
+    #[allow(unused_variables)]
+    fn scroll_offset(&self, node: &dyn Any) -> (f32, f32) {
+        (0.0, 0.0)
+    }
+
+    #[allow(unused_variables)]
+    fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {}
 }
 
 #[cfg(test)]

@@ -66,6 +66,23 @@ pub struct VirtualizerCallbacks<N: Clone + 'static> {
     /// The framework stores the new size and the backend uses it
     /// for future layout passes.
     pub set_measured_size: Rc<dyn Fn(u64, f32)>,
+    /// Author's scroll observer, if any (`.on_scroll(..)` on the
+    /// builder). The backend calls it per scroll event with the
+    /// scroller's `(x, y)` offset in CSS px / native points — the same
+    /// contract and coordinate space as
+    /// `ScrollOps::create_scroll_view`'s `on_scroll`, so the two
+    /// primitives report offsets identically.
+    ///
+    /// `None` when the author didn't ask for one; backends should skip
+    /// installing any observation machinery in that case rather than
+    /// calling a no-op closure per frame.
+    ///
+    /// Unlike `mount_item` / `release_item`, this does NOT need to run
+    /// inside `World::enter` — it's an ordinary author callback that
+    /// only stages writes through captured handles, exactly like
+    /// `create_scroll_view`'s. Backends that route it through their
+    /// dispatch-site glue get the flush for free.
+    pub on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
 }
 
 // ---------------------------------------------------------------------------

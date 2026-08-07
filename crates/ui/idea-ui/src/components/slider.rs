@@ -28,7 +28,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, icon, AlignItems, Color, Cursor, Element, FlexDirection, IconData, IdealystSchema,
+    component, icon, AlignItems, Cursor, Element, FlexDirection, IconData, IdealystSchema,
     IntoElement, JustifyContent, Length, Position, Reactive, StyleApplication, StyleRules,
     StyleSheet, Tokenized, TouchPhase, TouchResponse, VariantSet,
 };
@@ -36,6 +36,7 @@ use runtime_core::{
 use idea_theme::extensible::{installed_slider_sheets, ToneRef, VariantRef};
 
 use crate::components::ControlSize;
+use idea_theme::tokens;
 
 /// Thumb diameter (px) per size — mirrors `SLIDER_DIMS` in idea-theme, used to
 /// offset the thumb's `left` so its *center* tracks the value.
@@ -247,7 +248,7 @@ pub fn Slider(props: &SliderProps) -> Element {
     let mk_icon = |data: IconData| -> Element {
         icon(data)
             .size(16.0)
-            .color(|| Tokenized::token("color-text-muted", Color("#6b7280".into())).resolve())
+            .color(|| tokens().color.text_muted().resolve())
             .into_element()
     };
     // TODO(reactive-sweep): the leading/trailing icons drive STRUCTURE (whether
@@ -272,7 +273,7 @@ pub fn Slider(props: &SliderProps) -> Element {
     let row_style = Rc::new(StyleSheet::r#static(StyleRules {
         flex_direction: Some(FlexDirection::Row),
         align_items: Some(AlignItems::Center),
-        gap: Some(Tokenized::token("spacing-sm", Length::Px(8.0))),
+        gap: Some(tokens().spacing.sm()),
         ..Default::default()
     }));
     runtime_core::view(kids).with_style(row_style).into_element()

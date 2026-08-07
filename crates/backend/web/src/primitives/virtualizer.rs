@@ -143,6 +143,21 @@ pub(crate) fn create(
     };
     let set_measured_size_js = set_measured_size_cb.as_ref().clone();
 
+    // Author scroll observer. Built ONLY when the author asked for one
+    // — the JS `_scrollHandler` checks `cb.onScroll` before calling, so
+    // a virtualizer without `.on_scroll(..)` never crosses the wasm
+    // boundary on scroll. That's the property this class exists to
+    // preserve (see the module header), so an unconditional no-op
+    // closure here would quietly undo it.
+    let on_scroll_cb = callbacks.on_scroll.clone().map(|f| {
+        Closure::<dyn FnMut(JsValue, JsValue)>::new(move |x: JsValue, y: JsValue| {
+            f(
+                x.as_f64().unwrap_or(0.0) as f32,
+                y.as_f64().unwrap_or(0.0) as f32,
+            );
+        })
+    });
+
     // Build the callbacks object.
     let cb_obj = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&cb_obj, &JsValue::from_str("itemCount"), &item_count_js);
@@ -160,6 +175,9 @@ pub(crate) fn create(
         &JsValue::from_str("measureSizes"),
         &JsValue::from_bool(callbacks.measure_sizes),
     );
+    if let Some(cb) = on_scroll_cb.as_ref() {
+        let _ = js_sys::Reflect::set(&cb_obj, &JsValue::from_str("onScroll"), cb.as_ref());
+    }
     let _ = js_sys::Reflect::set(
         &cb_obj,
         &JsValue::from_str("overscan"),
@@ -262,7 +280,7 @@ pub(crate) fn create(
     // Store the JS instance + the closure handles. Drop order on
     // `release` (Vec drops in reverse insertion order, but order
     // among them doesn't matter — none of them touch each other).
-    let closures: Vec<Box<dyn std::any::Any>> = vec![
+    let mut closures: Vec<Box<dyn std::any::Any>> = vec![
         Box::new(item_count_cb),
         Box::new(item_key_cb),
         Box::new(item_size_cb),
@@ -270,6 +288,22 @@ pub(crate) fn create(
         Box::new(release_item_cb),
         Box::new(set_measured_size_cb),
     ];
+    // The scroll closure captures author state (the `Signal` a handler
+    // writes to), so it MUST be owned here alongside the others rather
+    // than `.forget()`-ed — otherwise a scroll event queued after the
+    // surrounding scope drops would fire into a freed signal arena,
+    // which is exactly the panic the module header describes.
+    if let Some(cb) = on_scroll_cb {
+        let _ = js_sys::Reflect::set(&instance, &JsValue::from_str("_rust_cb_on_scroll"), cb.as_ref());
+        closures.push(Box::new(cb));
+    }
+    // Park the instance on its own container so `VirtualizerHandle`
+    // can reach it without borrowing the backend (see
+    // `JS_INSTANCE_PROP`). The resulting container↔instance cycle is
+    // collectable — JS GC is a tracing collector — and `release`
+    // deletes the property anyway.
+    let _ = js_sys::Reflect::set(&container, &JsValue::from_str(JS_INSTANCE_PROP), &instance);
+
     b.virtualizer_instances.insert(
         id,
         VirtualizerInstance { js: instance, _closures: closures },
@@ -301,6 +335,16 @@ pub(crate) fn create(
 pub(crate) fn release(b: &mut WebBackend, node: &Node) {
     let Some(id) = virtualizer_id_of(node) else { return };
     let Some(instance) = b.virtualizer_instances.remove(&id) else { return };
+
+    // Drop the handle's back-reference first. A `VirtualizerHandle`
+    // outliving its virtualizer keeps the container alive; without
+    // this the instance (and every `_rust_cb_*` Closure hanging off
+    // it) would stay reachable through that container forever. The
+    // handle's `scroll_offset` / `scroll_to` keep working — they only
+    // touch element properties.
+    if let Ok(el) = node.clone().dyn_into::<web_sys::Element>() {
+        let _ = js_sys::Reflect::delete_property(&el, &JsValue::from_str(JS_INSTANCE_PROP));
+    }
 
     // Step 1: flip `_released` on the JS instance synchronously, so
     // any queued scroll/resize events that fire BEFORE the
@@ -351,6 +395,77 @@ pub(crate) fn data_changed(b: &mut WebBackend, node: &Node) {
         .ok()
         .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
         .map(|f| f.call0(&instance.js));
+}
+
+// =========================================================================
+// Imperative handle (`VirtualizerHandle`)
+// =========================================================================
+
+/// Property under which `create` parks the JS instance on its own
+/// container element.
+///
+/// `scroll_to_index` needs the shim (the target offset is a prefix-sum
+/// over grid-rows that only the shim knows — item sizes may have been
+/// refined by measurement since mount), but reaching it through
+/// `WebBackend::virtualizer_instances` would mean borrowing the
+/// backend from inside an author callback, which is exactly the
+/// re-entrant `borrow_mut` the release path goes to such lengths to
+/// avoid. Hanging it off the element keeps the handle self-contained:
+/// no backend access, no id lookup, nothing to keep in sync.
+const JS_INSTANCE_PROP: &str = "_idealystVirtualizerInstance";
+
+pub(crate) struct WebVirtualizerOps;
+
+impl runtime_shared::primitives::virtualizer::VirtualizerOps for WebVirtualizerOps {
+    fn scroll_to_index(&self, node: &dyn std::any::Any, index: usize) {
+        let Some(el) = node.downcast_ref::<web_sys::HtmlElement>() else {
+            return;
+        };
+        let Ok(instance) = js_sys::Reflect::get(el, &JsValue::from_str(JS_INSTANCE_PROP)) else {
+            return;
+        };
+        if instance.is_undefined() || instance.is_null() {
+            return;
+        }
+        let _ = js_sys::Reflect::get(&instance, &JsValue::from_str("scrollToIndex"))
+            .ok()
+            .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+            .map(|f| f.call1(&instance, &JsValue::from_f64(index as f64)));
+    }
+
+    /// Plain element properties — no shim involvement, so this stays
+    /// correct even after `release()` has made the instance inert.
+    fn scroll_offset(&self, node: &dyn std::any::Any) -> (f32, f32) {
+        match node.downcast_ref::<web_sys::HtmlElement>() {
+            Some(el) => (el.scroll_left() as f32, el.scroll_top() as f32),
+            None => (0.0, 0.0),
+        }
+    }
+
+    fn scroll_to(&self, node: &dyn std::any::Any, x: f32, y: f32) {
+        if let Some(el) = node.downcast_ref::<web_sys::HtmlElement>() {
+            el.set_scroll_left(x as i32);
+            el.set_scroll_top(y as i32);
+        }
+    }
+}
+
+pub(crate) static WEB_VIRTUALIZER_OPS: WebVirtualizerOps = WebVirtualizerOps;
+
+/// Build a [`VirtualizerHandle`] for `node` backed by
+/// [`WebVirtualizerOps`]. Mirrors `scroll_view::make_handle` — the
+/// handle owns the `HtmlElement`, not a backend id.
+pub(crate) fn make_handle(
+    node: &Node,
+) -> runtime_shared::primitives::virtualizer::VirtualizerHandle {
+    let el: web_sys::HtmlElement = node
+        .clone()
+        .dyn_into()
+        .expect("virtualizer node is not an HtmlElement");
+    runtime_shared::primitives::virtualizer::VirtualizerHandle::new(
+        std::rc::Rc::new(el),
+        &WEB_VIRTUALIZER_OPS,
+    )
 }
 
 /// Read the `data-virtualizer-id` attribute that `create` stamps on

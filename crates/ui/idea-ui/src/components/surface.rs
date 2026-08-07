@@ -25,7 +25,7 @@
 //! `Surface` without touching call sites.
 
 use runtime_core::{
-    component, ui, ChildList, Element, Length, Reactive, StyleApplication, StyleRules, Tokenized,
+    component, ui, ChildList, Element, Length, StyleApplication, StyleRules, Tokenized,
 };
 
 pub use crate::stylesheets::StackPadding;

@@ -668,6 +668,11 @@ pub(crate) struct VirtualizerInstance {
     pub(crate) layout: Retained<NSObject>,
     #[allow(dead_code)]
     pub(crate) collection_view: Retained<NSView>,
+    /// `NSViewBoundsDidChangeNotification` target for the author's
+    /// `on_scroll`, when one was supplied. `None` otherwise — no
+    /// observer is installed at all, so a virtualizer without
+    /// `.on_scroll(..)` costs nothing per scroll event.
+    pub(crate) scroll_observer: Option<Retained<NSObject>>,
 }
 
 /// Build an `NSScrollView`-wrapped `NSCollectionView` with a
@@ -676,10 +681,14 @@ pub(crate) struct VirtualizerInstance {
 pub(crate) fn create(
     mtm: MainThreadMarker,
     instances: &mut HashMap<usize, VirtualizerInstance>,
-    callbacks: VirtualizerCallbacks<MacosNode>,
+    mut callbacks: VirtualizerCallbacks<MacosNode>,
     _overscan: f32,
     virt_layout: VirtualLayout,
 ) -> Retained<NSView> {
+    // Taken out before the bundle moves into the data source — the
+    // observer watches the outer scroll view, not the collection view,
+    // so it has nothing to do with row supply.
+    let on_scroll = callbacks.on_scroll.take();
     // ── Flow layout ────────────────────────────────────────────────
     // Our subclass — invalidates on cross-axis bounds changes so item
     // sizes re-resolve against the live width (see the type's doc).
@@ -760,6 +769,16 @@ pub(crate) fn create(
     let _: () = unsafe { msg_send![&scroll, setAutohidesScrollers: true] };
     let _: () = unsafe { msg_send![&scroll, setDocumentView: &*cv] };
 
+    // Author scroll observer on the SAME clip-view notification channel
+    // `create_scroll_view` uses, so a virtualizer and a scroll_view
+    // report byte-identical offsets for the same gesture. The target is
+    // owned by the instance rather than the backend's global
+    // `callback_targets`: a virtualizer's `release` is deterministic
+    // (the surrounding scope drops), so the observer can and should die
+    // with it instead of accumulating for the process lifetime.
+    let scroll_observer = on_scroll
+        .and_then(|cb| crate::imp::callbacks::install_scroll_observer(mtm, &scroll, cb));
+
     let scroll_key = &*scroll as *const NSView as usize;
     instances.insert(
         scroll_key,
@@ -767,6 +786,7 @@ pub(crate) fn create(
             data_source: data_source.clone(),
             layout,
             collection_view: cv,
+            scroll_observer,
         },
     );
 
@@ -794,9 +814,20 @@ pub(crate) fn release(
     scroll_view: &NSView,
 ) {
     let key = scroll_view as *const NSView as usize;
-    let Some(instance) = instances.remove(&key) else {
+    let Some(mut instance) = instances.remove(&key) else {
         return;
     };
+    // Detach the scroll observer BEFORE anything else. The
+    // notification center holds a non-owning reference, so a bounds
+    // change delivered after the per-item scopes drain below would
+    // call the author's closure against freed signal state — the same
+    // use-after-free class the JS-side `_released` guard prevents on
+    // web.
+    if let Some(target) = instance.scroll_observer.take() {
+        let center: *mut objc2::runtime::AnyObject =
+            unsafe { msg_send![objc2::class!(NSNotificationCenter), defaultCenter] };
+        let _: () = unsafe { msg_send![center, removeObserver: &*target] };
+    }
     let doc_view: *mut NSView =
         unsafe { msg_send![scroll_view, documentView] };
     if !doc_view.is_null() {
@@ -852,6 +883,7 @@ mod tests {
             }),
             release_item: Rc::new(|_| {}),
             set_measured_size: Rc::new(|_, _| {}),
+            on_scroll: None,
         }
     }
 

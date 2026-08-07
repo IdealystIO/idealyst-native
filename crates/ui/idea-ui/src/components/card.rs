@@ -36,6 +36,7 @@ use idea_theme::theme::IdeaThemeRef;
 use crate::slot_override::apply_override;
 
 pub use crate::stylesheets::CardPadding;
+use idea_theme::tokens;
 
 /// Built-in Card variants. Card's variants don't consume a Tone (a
 /// surface container isn't intent-colored) — they read the theme's
@@ -129,10 +130,10 @@ fn card_sheet() -> Rc<StyleSheet> {
 /// pulls its background/shadow from `variant.render(ctx)` (Card
 /// variants ignore the tone, so a placeholder Neutral is passed).
 pub fn build_card_sheet(variants: Vec<VariantRef>, tones: Vec<ToneRef>) -> Rc<StyleSheet> {
-    let radius = || Tokenized::token("radius-lg", Length::Px(12.0));
+    let radius = || tokens().radius.lg();
 
     let mut sheet = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
-        gap: Some(Tokenized::token("spacing-sm", Length::Px(8.0))),
+        gap: Some(tokens().spacing.sm()),
         border_top_left_radius: Some(radius()),
         border_top_right_radius: Some(radius()),
         border_bottom_left_radius: Some(radius()),
@@ -141,22 +142,10 @@ pub fn build_card_sheet(variants: Vec<VariantRef>, tones: Vec<ToneRef>) -> Rc<St
         border_right_width: Some(Tokenized::Literal(1.0)),
         border_bottom_width: Some(Tokenized::Literal(1.0)),
         border_left_width: Some(Tokenized::Literal(1.0)),
-        border_top_color: Some(Tokenized::token(
-            "color-border",
-            runtime_core::Color("#e4e6ef".into()),
-        )),
-        border_right_color: Some(Tokenized::token(
-            "color-border",
-            runtime_core::Color("#e4e6ef".into()),
-        )),
-        border_bottom_color: Some(Tokenized::token(
-            "color-border",
-            runtime_core::Color("#e4e6ef".into()),
-        )),
-        border_left_color: Some(Tokenized::token(
-            "color-border",
-            runtime_core::Color("#e4e6ef".into()),
-        )),
+        border_top_color: Some(tokens().color.border()),
+        border_right_color: Some(tokens().color.border()),
+        border_bottom_color: Some(tokens().color.border()),
+        border_left_color: Some(tokens().color.border()),
         background_transition: Some(Transition::new(250, Easing::EaseInOut)),
         color_transition: Some(Transition::new(250, Easing::EaseInOut)),
         border_top_color_transition: Some(Transition::new(250, Easing::EaseInOut)),
@@ -179,7 +168,6 @@ pub fn build_card_sheet(variants: Vec<VariantRef>, tones: Vec<ToneRef>) -> Rc<St
         });
     }
 
-    let pad = |tok: &'static str, px: f32| Tokenized::token(tok, Length::Px(px));
     sheet = sheet
         .variant("padding", "none", |_vs| StyleRules {
             padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
@@ -189,24 +177,24 @@ pub fn build_card_sheet(variants: Vec<VariantRef>, tones: Vec<ToneRef>) -> Rc<St
             ..Default::default()
         })
         .variant("padding", "sm", move |_vs| StyleRules {
-            padding_top: Some(pad("spacing-sm", 8.0)),
-            padding_bottom: Some(pad("spacing-sm", 8.0)),
-            padding_left: Some(pad("spacing-sm", 8.0)),
-            padding_right: Some(pad("spacing-sm", 8.0)),
+            padding_top: Some(tokens().spacing.sm()),
+            padding_bottom: Some(tokens().spacing.sm()),
+            padding_left: Some(tokens().spacing.sm()),
+            padding_right: Some(tokens().spacing.sm()),
             ..Default::default()
         })
         .variant("padding", "md", move |_vs| StyleRules {
-            padding_top: Some(pad("spacing-lg", 16.0)),
-            padding_bottom: Some(pad("spacing-lg", 16.0)),
-            padding_left: Some(pad("spacing-lg", 16.0)),
-            padding_right: Some(pad("spacing-lg", 16.0)),
+            padding_top: Some(tokens().spacing.lg()),
+            padding_bottom: Some(tokens().spacing.lg()),
+            padding_left: Some(tokens().spacing.lg()),
+            padding_right: Some(tokens().spacing.lg()),
             ..Default::default()
         })
         .variant("padding", "lg", move |_vs| StyleRules {
-            padding_top: Some(pad("spacing-xl", 24.0)),
-            padding_bottom: Some(pad("spacing-xl", 24.0)),
-            padding_left: Some(pad("spacing-xl", 24.0)),
-            padding_right: Some(pad("spacing-xl", 24.0)),
+            padding_top: Some(tokens().spacing.xl()),
+            padding_bottom: Some(tokens().spacing.xl()),
+            padding_left: Some(tokens().spacing.xl()),
+            padding_right: Some(tokens().spacing.xl()),
             ..Default::default()
         })
         .variant_default("variant", "flat")

@@ -41,6 +41,7 @@ use serde_json::{json, Value};
 
 use crate::client::Snapshot;
 use crate::{client_action, format};
+use idea_ui::tokens;
 
 /// Tail cap on rendered log lines (after filtering).
 const LOG_TAIL: usize = 250;
@@ -161,7 +162,7 @@ fn row_sheet(depth: usize, selected: bool) -> Rc<StyleSheet> {
     let pad_left = 6.0 + depth as f32 * INDENT_PX;
     Rc::new(StyleSheet::new(move |_vs: &VariantSet| StyleRules {
         background: selected
-            .then(|| Tokenized::token("color-surface-alt", Color("#e5e7eb".to_string()))),
+            .then(|| tokens().color.surface_alt()),
         padding_left: Some(Tokenized::Literal(Length::Px(pad_left))),
         padding_top: Some(Tokenized::Literal(Length::Px(3.0))),
         padding_bottom: Some(Tokenized::Literal(Length::Px(3.0))),

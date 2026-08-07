@@ -196,7 +196,7 @@ pub fn Textarea(props: &TextareaProps) -> Element {
             // `min_height` override (when the author pins one) + width.
             let min_height = min_height_prop.get();
             let width = width_prop.get();
-            let dim_key = format!("ta-dim-{:?}-{:?}-{}", min_height, width, size_key);
+            let _dim_key = format!("ta-dim-{:?}-{:?}-{}", min_height, width, size_key);
             StyleApplication::new(field_input_sheet())
                 .with("size", size_key)
                 .with("appearance", appearance)

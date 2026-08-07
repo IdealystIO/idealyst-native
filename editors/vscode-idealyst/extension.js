@@ -1,4 +1,5 @@
-// Idealyst VS Code extension — DSL-vocabulary completion for ui!/jsx!.
+// Idealyst VS Code extension — DSL-vocabulary completion for ui!/jsx!
+// and theme-token completion for stylesheet!.
 //
 // rust-analyzer owns types and expressions (including inside the macros,
 // via the macro's IDE-recovery expansion). What RA can NOT know is the
@@ -6,6 +7,14 @@
 // mean. That data lives in the idealyst catalog (`inventory`-registered
 // components/primitives with docs), fetched here by shelling out to
 // `idealyst catalog-json` once per workspace and cached in memory.
+//
+// Theme tokens are the same story one level down. Inside `stylesheet!`,
+// `t.spacing.md()` is a real typed accessor, so RA *can* complete it —
+// but only when the macro body still parses, which mid-typing (`t.`) it
+// does not. We own that: the catalog's `style_tokens` slice carries every
+// token's accessor path, registry name, type, and base value, so the
+// completion works on a half-written body and shows the token name and
+// default the accessor resolves to.
 //
 // Deliberately dependency-free plain JS: installable by symlinking this
 // folder into ~/.vscode/extensions — no build step, no vsce.
@@ -99,7 +108,41 @@ function digest(json) {
         propsByTag.set(c.name, props);
     }
 
-    return { tags, propsByTag };
+    // Theme tokens, grouped by their accessor-path prefix so a
+    // completion at `t.` offers namespaces and at `t.spacing.` offers
+    // that namespace's leaves. `path` is what gets inserted; `name` is
+    // the registry key the author is really choosing.
+    //
+    // Grouping is derived from the paths themselves rather than a fixed
+    // list of namespaces, so a design system with its own vocabulary
+    // (or extra nesting, like `intent.primary.solid_bg`) works with no
+    // change here.
+    const tokensByPrefix = new Map();
+    const addToken = (prefix, item) => {
+        if (!tokensByPrefix.has(prefix)) tokensByPrefix.set(prefix, []);
+        const bucket = tokensByPrefix.get(prefix);
+        if (!bucket.some((x) => x.segment === item.segment)) bucket.push(item);
+    };
+    for (const t of json.style_tokens || []) {
+        const segs = (t.path || "").split(".").filter(Boolean);
+        if (!segs.length) continue;
+        for (let i = 0; i < segs.length; i++) {
+            const prefix = segs.slice(0, i).join(".");
+            const isLeaf = i === segs.length - 1;
+            addToken(prefix, {
+                segment: segs[i],
+                leaf: isLeaf,
+                // Leaves are calls; groups are plain path segments.
+                insert: isLeaf ? `${segs[i]}()` : segs[i],
+                name: isLeaf ? t.name : "",
+                valueType: isLeaf ? t.value_type || "" : "",
+                defaultValue: isLeaf ? t.default_value || "" : "",
+                vocabulary: t.vocabulary || "",
+            });
+        }
+    }
+
+    return { tags, propsByTag, tokensByPrefix };
 }
 
 function loadCatalog(folder, { force = false } = {}) {
@@ -219,6 +262,65 @@ function insideUiMacro(text, offset) {
 }
 
 /**
+ * True when `offset` sits inside a `stylesheet! { … }` block. Same
+ * unmatched-opener walk as `insideUiMacro`; kept separate because the
+ * two macros offer completely different vocabularies.
+ */
+function insideStylesheetMacro(text, offset) {
+    const start = Math.max(0, offset - LOOKBACK);
+    const slice = sanitize(text.slice(start, offset));
+    const re = /\bstylesheet!\s*\{/g;
+    let opener = -1;
+    let m;
+    while ((m = re.exec(slice)) !== null) opener = m.index + m[0].length;
+    if (opener === -1) return false;
+    let depth = 1;
+    for (let i = opener; i < slice.length; i++) {
+        const ch = slice[i];
+        if (ch === "{") depth++;
+        else if (ch === "}") depth--;
+        if (depth === 0) return false;
+    }
+    return true;
+}
+
+/**
+ * If the cursor sits on a token path rooted at the enclosing block's
+ * binding — `base(t) { padding: t.spacing.│ }` — return the path prefix
+ * already typed (`"spacing"`, or `""` at `t.`). `null` when the cursor
+ * isn't on such a path.
+ *
+ * The binding is read from the nearest block header rather than assumed
+ * to be `t`: `base(theme)` is just as valid, and a sheet that opted out
+ * with `_t` must NOT complete (that spelling means "no vocabulary here",
+ * and the macro doesn't bind it).
+ */
+function tokenPathContext(text, offset) {
+    const start = Math.max(0, offset - LOOKBACK);
+    const slice = sanitize(text.slice(start, offset));
+
+    // The dotted path immediately before the cursor.
+    const chain = slice.match(/([A-Za-z_][A-Za-z0-9_]*)((?:\s*\.\s*[A-Za-z0-9_]*)+)$/);
+    if (!chain) return null;
+    const root = chain[1];
+    if (root.startsWith("_")) return null;
+
+    // The enclosing block header must bind exactly this identifier.
+    // Scan back for the last `name(binding) {` before the cursor.
+    const headers = [...slice.matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\s*\(\s*(_?[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\{/g)];
+    if (!headers.length) return null;
+    const binding = headers[headers.length - 1][1];
+    if (binding !== root) return null;
+
+    // Path segments between the root and the cursor, dropping the
+    // partially-typed final segment (VS Code filters on that itself).
+    const segs = chain[2].split(".").map((x) => x.trim());
+    segs.shift(); // text before the first dot belongs to the root
+    segs.pop();   // the in-progress segment
+    return segs.join(".");
+}
+
+/**
  * If the cursor is inside a tag's prop parens — `Tag(…│…)` — return
  * { tag, written } where `written` is the set of prop names already
  * assigned in the list. Walk backwards counting parens to find the
@@ -272,6 +374,45 @@ const provider = {
 
         const text = document.getText();
         const offset = document.offsetAt(position);
+
+        // stylesheet! — theme tokens off the block binding.
+        if (insideStylesheetMacro(text, offset)) {
+            const prefix = tokenPathContext(text, offset);
+            if (prefix === null) return undefined;
+            const bucket = (catalog.tokensByPrefix || new Map()).get(prefix);
+            if (!bucket || !bucket.length) return undefined;
+            return bucket.map((t) => {
+                const it = new vscode.CompletionItem(
+                    t.segment,
+                    t.leaf
+                        ? vscode.CompletionItemKind.Constant
+                        : vscode.CompletionItemKind.Module
+                );
+                it.insertText = t.insert;
+                if (t.leaf) {
+                    // The registry name is what the author is really
+                    // choosing; the default is what they'll see before a
+                    // theme installs.
+                    it.detail = `${t.name} · ${t.defaultValue}`;
+                    const md = new vscode.MarkdownString();
+                    md.appendCodeblock(
+                        `Tokenized<${t.valueType}>  //  ${t.name} = ${t.defaultValue}`,
+                        "rust"
+                    );
+                    md.appendMarkdown(
+                        `Theme token \`${t.name}\`. Resolves from the installed ` +
+                        `theme at render time; \`${t.defaultValue}\` is the ` +
+                        `${t.vocabulary} base value shown before a theme installs.`
+                    );
+                    it.documentation = md;
+                } else {
+                    it.detail = "token namespace";
+                }
+                it.sortText = `0_${t.segment}`; // above RA's inherent-method noise
+                return it;
+            });
+        }
+
         if (!insideUiMacro(text, offset)) return undefined;
 
         const ctx = propContext(text, offset);
@@ -313,7 +454,8 @@ function activate(context) {
             { language: "rust" },
             provider,
             "(", // prop list opens
-            ","  // next prop
+            ",", // next prop
+            "."  // token path segment
         ),
         vscode.commands.registerCommand("idealyst.refreshCatalog", () => {
             for (const f of vscode.workspace.workspaceFolders || []) {
@@ -334,5 +476,11 @@ module.exports = {
     activate,
     deactivate,
     // Pure helpers exposed for the node-side test harness (test.js).
-    __test: { digest, insideUiMacro, propContext },
+    __test: {
+        digest,
+        insideUiMacro,
+        propContext,
+        insideStylesheetMacro,
+        tokenPathContext,
+    },
 };

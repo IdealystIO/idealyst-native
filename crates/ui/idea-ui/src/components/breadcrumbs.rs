@@ -17,11 +17,12 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, icon, ui, Color, Element, IconData, IdealystSchema, IntoElement, Reactive,
-    StyleApplication, Tokenized,
+    component, icon, ui, Element, IconData, IdealystSchema, IntoElement, Reactive,
+    StyleApplication,
 };
 
 use crate::stylesheets::{BreadcrumbItem, BreadcrumbRow, BreadcrumbSeparator};
+use idea_theme::tokens;
 
 /// Pixel size of an icon separator — matches the crumb text's `body-sm`
 /// line so the glyph sits on the same baseline as the labels.
@@ -127,7 +128,7 @@ pub fn Breadcrumbs(props: BreadcrumbsProps) -> Element {
                 Some(data) => icon(data)
                     .size(SEPARATOR_ICON_PX)
                     .color(|| {
-                        Tokenized::token("color-text-muted", Color("#6b7280".into())).resolve()
+                        tokens().color.text_muted().resolve()
                     })
                     .into_element(),
                 None => runtime_core::text(sep.clone())

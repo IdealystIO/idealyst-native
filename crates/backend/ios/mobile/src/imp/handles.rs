@@ -222,6 +222,70 @@ impl runtime_shared::primitives::scroll_view::ScrollViewOps for IosScrollViewOps
 }
 pub(crate) static IOS_SCROLL_OPS: IosScrollViewOps = IosScrollViewOps;
 
+/// `VirtualizerOps` for iOS. The virtualizer's node is its
+/// `UICollectionView` wrapped as `IosNode::View` (see
+/// `create_virtualizer_impl`) — and a UICollectionView *is* a
+/// UIScrollView, so offset read/write is the same `contentOffset`
+/// surface `IosScrollViewOps` uses. That's what makes a virtualizer
+/// and a scroll_view report identical offsets for the same gesture.
+///
+/// Note the node arrives as `View`, not `ScrollView`: the enum variant
+/// records how the framework mounts the node, not what UIKit class it
+/// is, so matching on `ScrollView` here would silently no-op.
+pub(crate) struct IosVirtualizerOps;
+impl runtime_shared::primitives::virtualizer::VirtualizerOps for IosVirtualizerOps {
+    /// `scrollToItemAtIndexPath:` lets UIKit resolve the item's frame
+    /// from its own live layout; recomputing the offset here would
+    /// drift from what is on screen once sizes are refined.
+    fn scroll_to_index(&self, node: &dyn Any, index: usize) {
+        let Some(IosNode::View(cv)) = node.downcast_ref::<IosNode>() else {
+            return;
+        };
+        let index_path: *mut objc2::runtime::AnyObject = unsafe {
+            msg_send![
+                objc2::class!(NSIndexPath),
+                indexPathForItem: index as isize,
+                inSection: 0isize,
+            ]
+        };
+        if index_path.is_null() {
+            return;
+        }
+        // UICollectionViewScrollPositionTop = 1 << 0. UIKit ignores
+        // the off-axis component for a single-direction flow layout,
+        // so one constant serves both axes — the same leading-edge
+        // alignment the web shim implements.
+        let _: () = unsafe {
+            msg_send![
+                cv,
+                scrollToItemAtIndexPath: index_path,
+                atScrollPosition: 1usize,
+                animated: false,
+            ]
+        };
+    }
+
+    fn scroll_offset(&self, node: &dyn Any) -> (f32, f32) {
+        let Some(IosNode::View(cv)) = node.downcast_ref::<IosNode>() else {
+            return (0.0, 0.0);
+        };
+        let offset: CGPoint = unsafe { msg_send![cv, contentOffset] };
+        (offset.x as f32, offset.y as f32)
+    }
+
+    fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
+        let Some(IosNode::View(cv)) = node.downcast_ref::<IosNode>() else {
+            return;
+        };
+        let offset = CGPoint { x: x as f64, y: y as f64 };
+        // animated:false for the same reason `IosScrollViewOps` uses
+        // it — a caller driving pacing per frame would fight UIKit's
+        // own animation.
+        let _: () = unsafe { msg_send![cv, setContentOffset: offset, animated: false] };
+    }
+}
+pub(crate) static IOS_VIRTUALIZER_OPS: IosVirtualizerOps = IosVirtualizerOps;
+
 // `IosTextOps` provides the same animated-color dispatch as
 // `IosViewOps` but on a text-bearing widget — `set_animated_color`
 // routes to `set_animated_color` on the backend, which (in turn)

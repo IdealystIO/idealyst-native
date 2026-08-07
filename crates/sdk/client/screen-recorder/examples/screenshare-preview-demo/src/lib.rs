@@ -18,24 +18,14 @@ use runtime_core::{
 use screen_recorder::{MediaStream, PrivateLayer, RecorderError, RecordingConfig, ScreenRecorder};
 use std::rc::Rc;
 
-/// Web registration seam — registry-CONCRETE. `video::register` takes a
-/// `Registry<WebBackend>` on wasm32 (the real `<video>` handler has no
-/// caps-trait expression), so the seam is specialized to that registry here.
+/// Registration seam — one registry-GENERIC fn for every target. Both SDKs
+/// type-dispatch ONCE at registration: `video::register` downcasts to the web
+/// / macOS / iOS / Android registry and installs the real player, and
+/// `screen_recorder::register` installs the capture-excluded overlay window
+/// where the platform has one (passthrough container elsewhere).
 ///
 /// Registration is MANDATORY for anything the tree renders: an unregistered
 /// payload panics at realize.
-#[cfg(target_arch = "wasm32")]
-pub fn register_scene_extensions(registry: &mut runtime_scene::Registry<backend_web::WebBackend>) {
-    video::register(registry);
-    screen_recorder::register(registry);
-}
-
-/// Native registration seam. Both SDKs are registry-GENERIC off web and
-/// type-dispatch ONCE at registration: `video::register` downcasts to the
-/// macOS / iOS / Android registry and installs the real player, and
-/// `screen_recorder::register` installs the capture-excluded overlay
-/// window where the platform has one (passthrough container elsewhere).
-#[cfg(not(target_arch = "wasm32"))]
 pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
 where
     H: runtime_vocabulary::caps::ExternalOps

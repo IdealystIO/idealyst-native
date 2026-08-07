@@ -204,7 +204,7 @@ pub fn IconButton(props: &IconButtonProps) -> Element {
             // IconButton "Sizes" row). Keyed by `size_px` so distinct sizes
             // don't share a cache entry.
             let sp = size_px.get();
-            let layer_key =
+            let _layer_key =
                 format!("ib-layout-{}", sp.map(|p| (p * 100.0).round() as i32).unwrap_or(-1));
             // `size_px` is an author-supplied pixel value — continuous, so
             // inline. As a computed layer keyed `ib-layout-{px}` it minted an

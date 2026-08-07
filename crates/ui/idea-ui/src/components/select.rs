@@ -29,8 +29,7 @@ use runtime_core::primitives::overlay::{overlay, BackdropMode};
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
 use runtime_core::{
     component, effect, signal, ui, Color, Element, FillRule, IconData, IdealystSchema,
-    IntoElement, Length, Position, PressableHandle, Reactive, Ref, Signal, StyleApplication,
-    StyleRules, StyleSheet, Tokenized, VariantEnum, ViewHandle
+    IntoElement, Length, Position, PressableHandle, Reactive, Ref, Signal, StyleApplication, StyleSheet, VariantEnum, ViewHandle
 };
 
 use idea_theme::theme::IdeaThemeRef;
@@ -64,6 +63,7 @@ stylesheet! {
 }
 
 pub use crate::stylesheets::SelectTriggerSize as SelectSize;
+use idea_theme::tokens;
 
 /// Default trigger affordance: a chevron that rotates when the menu opens.
 /// Authors override it via [`SelectProps::icon`].
@@ -186,7 +186,7 @@ pub fn Select(props: SelectProps) -> Element {
     });
     let chevron_glyph = icon(icon_data)
         .size(16.0)
-        .color(|| Tokenized::token("color-text-muted", Color("#6b7280".into())).resolve())
+        .color(|| tokens().color.text_muted().resolve())
         .into_element();
     let chevron = runtime_core::view(vec![chevron_glyph]).bind(chevron_ref).into_element();
 
@@ -343,7 +343,7 @@ mod tests {
             install_idea_theme(light_theme());
 
             // The focus-ring color the trigger must resolve to when focused.
-            let ring = Tokenized::token("color-focus-ring", Color("#5b6cff".into())).resolve();
+            let ring = tokens().color.focus_ring().resolve();
 
             let focused = resolve_style(
                 &StyleApplication::new(SelectTrigger::sheet()).with("__state_focused", "on"),

@@ -158,6 +158,7 @@ inventory::collect!(PrimitiveEntry);
 inventory::collect!(UtilityEntry);
 inventory::collect!(MacroEntry);
 inventory::collect!(StateEntry);
+inventory::collect!(StyleTokenEntry);
 inventory::collect!(GuideEntry);
 inventory::collect!(MethodEntry);
 inventory::collect!(AnimationEntry);
@@ -373,6 +374,80 @@ impl MacroKind {
             Self::Catalog => "catalog",
         }
     }
+}
+
+/// How a [`StyleTokenEntry`] carries its base value.
+///
+/// Two forms because the entry has two origins. A **live** registration
+/// points at the accessor itself, so the catalog displays exactly what
+/// the accessor emits as its fallback — a literal there would be a
+/// second copy free to drift, the very failure the token vocabulary
+/// exists to end. It must also be a plain `fn` pointer, since
+/// `inventory::submit!` builds a `static` and a capturing closure isn't
+/// const-constructible.
+///
+/// A catalog **rehydrated from JSON** (what the MCP server serves) has
+/// only the already-rendered string, and no accessor to call.
+#[derive(Debug, Clone, Copy)]
+pub enum TokenDefault {
+    /// Live registration: call the vocabulary's accessor.
+    Resolver(fn() -> String),
+    /// Rehydrated from catalog JSON.
+    Value(&'static str),
+}
+
+impl TokenDefault {
+    /// The rendered base value, whichever form backs it.
+    pub fn get(&self) -> String {
+        match self {
+            TokenDefault::Resolver(f) => f(),
+            TokenDefault::Value(v) => (*v).to_string(),
+        }
+    }
+}
+
+/// One theme token, as an author reaches it from a `stylesheet!`.
+///
+/// A design system registers its whole token vocabulary here, so
+/// tooling can offer the token set **as data** rather than guessing at
+/// it: the VS Code extension completes `t.spacing.│` from this slice,
+/// and `list_tokens` / `describe_token` answer the same question over
+/// MCP.
+///
+/// Registration rides the same macro that generates the accessor (see
+/// `idea_theme::tokens`), so an entry can't describe a token the
+/// vocabulary doesn't have, and a new token can't ship uncatalogued.
+///
+/// **Open** — any crate defining a `TokenVocabulary` submits its own
+/// entries, so there is deliberately no `_seal`/`#[non_exhaustive]`
+/// lock here. Unlike [`StateEntry`], this set is not fixed by the
+/// cross-platform contract; a design system owns its token names.
+#[derive(Debug)]
+pub struct StyleTokenEntry {
+    /// The registry key the token installs and resolves under —
+    /// `spacing-md`, `intent-primary-solid-bg`. What a hand-written
+    /// `Tokenized::token(name, …)` would pass.
+    pub name: &'static str,
+    /// The accessor path relative to the block binding, without the
+    /// binding itself — `spacing.md`, `intent.primary.solid_bg`. Held
+    /// separately from `name` because the completion inserts THIS while
+    /// the user is reasoning about `name`.
+    pub path: &'static str,
+    /// First path segment (`color`, `intent`, `spacing`, `radius`,
+    /// `typography`) — the grouping a completion offers first.
+    pub namespace: &'static str,
+    /// The `Tokenized<T>` payload: `"Color"` or `"Length"`. Decides
+    /// which properties the token is valid on.
+    pub value_type: &'static str,
+    /// The vocabulary's base value for display (`#ffffff`, `12px`) —
+    /// the token's fallback before a theme installs, shown in completion
+    /// so the author sees what they're picking without leaving the
+    /// editor. See [`TokenDefault`].
+    pub default_value: TokenDefault,
+    /// Type that names this vocabulary in a sheet's `<…>` slot
+    /// (`IdeaThemeRef`), so tooling can tell which sheets the token
+    /// applies to when more than one vocabulary is registered.
+    pub vocabulary: &'static str,
 }
 
 /// A framework-defined interaction state — `hovered`, `pressed`,
@@ -853,6 +928,12 @@ pub fn states() -> impl Iterator<Item = &'static StateEntry> {
     inventory::iter::<StateEntry>()
 }
 
+/// Iterate every registered [`StyleTokenEntry`] — the theme tokens a
+/// `stylesheet!` can name through its block binding.
+pub fn style_tokens() -> impl Iterator<Item = &'static StyleTokenEntry> {
+    inventory::iter::<StyleTokenEntry>()
+}
+
 /// Iterate every bundled [`GuideEntry`].
 pub fn guides() -> impl Iterator<Item = &'static GuideEntry> {
     inventory::iter::<GuideEntry>()
@@ -963,6 +1044,7 @@ pub fn catalog_json() -> serde_json::Value {
         "utilities": slice_array::<UtilityEntry>(),
         "macros": slice_array::<MacroEntry>(),
         "states": slice_array::<StateEntry>(),
+        "style_tokens": slice_array::<StyleTokenEntry>(),
         "guides": slice_array::<GuideEntry>(),
         "methods": slice_array::<MethodEntry>(),
         "animations": slice_array::<AnimationEntry>(),

@@ -1651,6 +1651,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 name = "baseline"
 version = "1.2.2"
 dependencies = [
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -3516,6 +3517,7 @@ dependencies = [
  "host-web",
  "idea-ui",
  "idea-ui-nav",
+ "idealyst",
  "ios-sim",
  "lol_alloc",
  "render-api",
@@ -6096,6 +6098,7 @@ dependencies = [
  "icons-lucide",
  "idea-ui",
  "idea-ui-nav",
+ "idealyst",
  "lol_alloc",
  "robot-test",
  "runtime-core",
@@ -7095,6 +7098,7 @@ dependencies = [
  "credentials",
  "dev-server",
  "idea-ui",
+ "idealyst",
  "net",
  "runtime-core",
  "runtime-scene",
@@ -7643,6 +7647,7 @@ dependencies = [
  "dev-server",
  "idea-ui",
  "idea-ui-nav",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -12606,6 +12611,7 @@ dependencies = [
  "dev-server",
  "idea-ui",
  "idea-ui-nav",
+ "idealyst",
  "runtime-core",
  "runtime-vocabulary",
  "swap-navigator",
@@ -13584,6 +13590,7 @@ dependencies = [
  "host-wgpu",
  "idea-ui",
  "idea-ui-nav",
+ "idealyst",
  "ios-sim",
  "js-sys",
  "render-api",
@@ -13633,6 +13640,7 @@ name = "welcome"
 version = "1.2.2"
 dependencies = [
  "dev-server",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -13837,6 +13845,7 @@ dependencies = [
  "files",
  "icons-lucide",
  "idea-ui",
+ "idealyst",
  "media-stream",
  "media-writer",
  "microphone",

@@ -1702,6 +1702,7 @@ fn clone_round_trips_a_fully_populated_struct() {
         strikethrough: Some(false),
         text_transform: Some(TextTransform::Lowercase),
         overflow: Some(Overflow::Hidden),
+        overscroll_behavior: Some(crate::OverscrollBehavior::Contain),
         object_fit: Some(ObjectFit::Cover),
         shadow: Some(Shadow { x: 1.0, y: 2.0, blur: 3.0, color: Color("#s".into()) }),
         text_shadow: Some(Shadow { x: 4.0, y: 5.0, blur: 6.0, color: Color("#ts".into()) }),

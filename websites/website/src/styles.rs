@@ -15,9 +15,9 @@ use runtime_core::{
     AlignItems, Color, FlexDirection, Gradient, GradientKind, GradientStop, JustifyContent, Length, Shadow,
     Overflow, Position, RadialExtent, TextAlign, Tokenized, Transform,
 };
-use idea_ui::IdeaThemeRef;
 
 use crate::typeface::INTER;
+use idea_ui::IdeaThemeRef;
 
 // =============================================================================
 // Layout root — a full-screen flex-column root. Fills the screen and
@@ -60,12 +60,12 @@ stylesheet! {
 
 stylesheet! {
     pub MobileHeader<IdeaThemeRef> {
-        base(_t) {
+        base(t) {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
             gap: 4.0,
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
-            border_bottom_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            background: t.color.surface(),
+            border_bottom_color: t.color.border(),
             font_family: &INTER,
             width: Length::pct(100.0),
             overflow: runtime_core::Overflow::Hidden,
@@ -116,19 +116,19 @@ stylesheet! {
 /// Square 40x40 touch target, rounded, subtle hover dim.
 stylesheet! {
     pub MobileHeaderButton<IdeaThemeRef> {
-        base(_t) {
+        base(t) {
             width: 40.0,
             height: 40.0,
-            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            border_radius: t.radius.md(),
             background: Color("transparent".into()),
-            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            color: t.color.text(),
             font_size: 22.0,
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
             flex_shrink: 0.0,
         }
-        state hovered(_t) {
-            background: Tokenized::token("color-surface-alt", Color("#f4eedb".into())),
+        state hovered(t) {
+            background: t.color.surface_alt(),
         }
         transitions {
             background: 150ms EaseOut,
@@ -154,8 +154,8 @@ stylesheet! {
 
 stylesheet! {
     pub MobileHeaderTitle<IdeaThemeRef> {
-        base(_t) {
-            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+        base(t) {
+            color: t.color.text(),
             font_size: 17.0,
             font_weight: runtime_core::FontWeight::SemiBold,
             text_align: TextAlign::Left,
@@ -193,10 +193,10 @@ stylesheet! {
 
 stylesheet! {
     pub SidebarFrame<IdeaThemeRef> {
-        base(_t) {
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+        base(t) {
+            background: t.color.surface(),
             border_right_width: 1.0,
-            border_right_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            border_right_color: t.color.border(),
             flex_direction: FlexDirection::Column,
             width: Length::pct(100.0),
             // Fill the AppShell panel (`Surface(grow = 1)` parent).
@@ -227,14 +227,14 @@ stylesheet! {
 
 stylesheet! {
     pub SidebarBody<IdeaThemeRef> {
-        base(_t) {
+        base(t) {
             // Top inset is the small gap under the pinned header's
             // divider (the header owns the large outer padding).
-            padding_top: Tokenized::token("spacing-xs", Length::Px(4.0)),
-            padding_left: Tokenized::token("spacing-lg", Length::Px(16.0)),
-            padding_right: Tokenized::token("spacing-lg", Length::Px(16.0)),
-            padding_bottom: Tokenized::token("spacing-lg", Length::Px(16.0)),
-            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            padding_top: t.spacing.xs(),
+            padding_left: t.spacing.lg(),
+            padding_right: t.spacing.lg(),
+            padding_bottom: t.spacing.lg(),
+            gap: t.spacing.xs(),
             flex_direction: FlexDirection::Column,
             // Fill the scroller's viewport when the nav list is short so
             // `Spacer` can pin the theme toggle to the bottom; taller
@@ -270,9 +270,9 @@ stylesheet! {
 /// wider than the sidebar.
 stylesheet! {
     pub SidebarBrandText<IdeaThemeRef> {
-        base(_t) {
+        base(t) {
             flex_direction: FlexDirection::Column,
-            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            gap: t.spacing.xs(),
             min_width: 0.0,
             flex_shrink: 1.0,
         }
@@ -294,17 +294,17 @@ stylesheet! {
 
 stylesheet! {
     pub SidebarHeader<IdeaThemeRef> {
-        base(_t) {
+        base(t) {
             // Pinned above the nav scroller (outside `SidebarBody`), so
             // it carries its own outer padding on the top three sides.
-            padding_top: Tokenized::token("spacing-lg", Length::Px(16.0)),
-            padding_left: Tokenized::token("spacing-lg", Length::Px(16.0)),
-            padding_right: Tokenized::token("spacing-lg", Length::Px(16.0)),
-            padding_bottom: Tokenized::token("spacing-md", Length::Px(12.0)),
+            padding_top: t.spacing.lg(),
+            padding_left: t.spacing.lg(),
+            padding_right: t.spacing.lg(),
+            padding_bottom: t.spacing.md(),
             border_bottom_width: 1.0,
-            border_bottom_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
-            margin_bottom: Tokenized::token("spacing-sm", Length::Px(8.0)),
-            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            border_bottom_color: t.color.border(),
+            margin_bottom: t.spacing.sm(),
+            gap: t.spacing.xs(),
             flex_direction: FlexDirection::Column,
         }
         transitions {
@@ -319,12 +319,12 @@ stylesheet! {
 /// nav-link list is short.
 stylesheet! {
     pub SidebarFooter<IdeaThemeRef> {
-        base(_t) {
-            padding_top: Tokenized::token("spacing-md", Length::Px(12.0)),
+        base(t) {
+            padding_top: t.spacing.md(),
             border_top_width: 1.0,
-            border_top_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            border_top_color: t.color.border(),
             flex_direction: FlexDirection::Column,
-            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            gap: t.spacing.sm(),
         }
         transitions {
             border_top_color: 250ms EaseInOut,
@@ -335,11 +335,11 @@ stylesheet! {
 /// Section header above a group of nav links in the sidebar.
 stylesheet! {
     pub SidebarSection<IdeaThemeRef> {
-        base(_t) {
-            padding_top: Tokenized::token("spacing-md", Length::Px(12.0)),
-            padding_bottom: Tokenized::token("spacing-xs", Length::Px(4.0)),
-            padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
-            color: Tokenized::token("color-text-muted", Color("#8a8270".into())),
+        base(t) {
+            padding_top: t.spacing.md(),
+            padding_bottom: t.spacing.xs(),
+            padding_horizontal: t.spacing.md(),
+            color: t.color.text_muted(),
             font_size: 11.0,
             font_weight: runtime_core::FontWeight::SemiBold,
             letter_spacing: 0.8,
@@ -350,7 +350,7 @@ stylesheet! {
 
 stylesheet! {
     pub ScreenScroll<IdeaThemeRef> {
-        base(_t) {
+        base(t) {
             // The website's OWN scroll surface (and the wrapper that
             // fills the navigator body around it). The drawer
             // navigator no longer owns scroll — its body is a plain
@@ -366,8 +366,8 @@ stylesheet! {
             flex_grow: 1.0,
             flex_shrink: 1.0,
             flex_basis: 0.0,
-            background: Tokenized::token("color-background", Color("#f7f5ef".into())),
-            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            background: t.color.background(),
+            color: t.color.text(),
             font_family: &INTER,
         }
         transitions {
@@ -491,9 +491,9 @@ stylesheet! {
 
 stylesheet! {
     pub TocPanel<IdeaThemeRef> {
-        base(_t) {
+        base(t) {
             flex_direction: FlexDirection::Column,
-            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            gap: t.spacing.xs(),
             width: 220.0,
             min_width: 220.0,
             flex_shrink: 0.0,
@@ -511,8 +511,8 @@ stylesheet! {
 
 stylesheet! {
     pub TocHeader<IdeaThemeRef> {
-        base(_t) {
-            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+        base(t) {
+            color: t.color.text_muted(),
             font_size: 11.0,
             font_weight: runtime_core::FontWeight::SemiBold,
             letter_spacing: 0.8,
@@ -524,12 +524,12 @@ stylesheet! {
 
 stylesheet! {
     pub TocLink<IdeaThemeRef> {
-        base(_t) {
+        base(t) {
             padding_vertical: 6.0,
             padding_left: 12.0,
             border_left_width: 2.0,
-            border_left_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
-            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            border_left_color: t.color.border(),
+            color: t.color.text_muted(),
             font_size: 13.0,
             line_height: 18.0,
             text_align: TextAlign::Left,
@@ -538,13 +538,13 @@ stylesheet! {
             #[default]
             off(_t) {}
             on(t) {
-                border_left_color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
-                color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+                border_left_color: t.intent.primary.fg(),
+                color: t.intent.primary.fg(),
                 font_weight: runtime_core::FontWeight::SemiBold,
             }
         }
-        state hovered(_t) {
-            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+        state hovered(t) {
+            color: t.color.text(),
         }
         transitions {
             color: 180ms EaseOut,
@@ -559,30 +559,30 @@ stylesheet! {
 
 stylesheet! {
     pub NavLink<IdeaThemeRef> {
-        base(_t) {
-            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
-            padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
-            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+        base(t) {
+            padding_vertical: t.spacing.sm(),
+            padding_horizontal: t.spacing.md(),
+            border_radius: t.radius.md(),
             background: Color("transparent".into()),
-            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
-            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
+            color: t.color.text_muted(),
+            font_size: t.typography.body_size(),
             text_align: TextAlign::Left,
         }
         variant active {
             #[default]
             off(_t) {}
-            on(_t) {
+            on(t) {
                 // Theme-tokenized so the active-link highlight adapts
                 // to dark mode. Uses idea-ui's intent-primary-soft
                 // tokens (the same pair Badge/Tag/Alert use for the
                 // Soft kind), so the active link reads as "selected"
                 // in the framework's vocabulary on either palette.
-                background: Tokenized::token("intent-primary-soft-bg", Color("rgba(91, 108, 255, 0.12)".into())),
-                color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+                background: t.intent.primary.soft_bg(),
+                color: t.intent.primary.fg(),
             }
         }
-        state hovered(_t) {
-            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+        state hovered(t) {
+            color: t.color.text(),
         }
         transitions {
             background: 180ms EaseOut,
@@ -601,15 +601,15 @@ stylesheet! {
 /// vertical rhythm).
 stylesheet! {
     pub Hero<IdeaThemeRef> {
-        base(_t) {
+        base(t) {
             position: Position::Relative,
             overflow: Overflow::Hidden,
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
             // Slight surface lift over the page background.
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            background: t.color.surface(),
             border_bottom_width: 1.0,
-            border_bottom_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            border_bottom_color: t.color.border(),
         }
         variant size {
             #[default]
@@ -693,8 +693,8 @@ stylesheet! {
 
 stylesheet! {
     pub HeroHeadline<IdeaThemeRef> {
-        base(_t) {
-            color: Tokenized::token("color-text", Color("#0a0c11".into())),
+        base(t) {
+            color: t.color.text(),
             font_weight: runtime_core::FontWeight::Bold,
         }
         variant size {
@@ -715,8 +715,8 @@ stylesheet! {
 
 stylesheet! {
     pub HeroSubhead<IdeaThemeRef> {
-        base(_t) {
-            color: Tokenized::token("color-text-muted", Color("#5b5446".into())),
+        base(t) {
+            color: t.color.text_muted(),
             font_weight: runtime_core::FontWeight::Normal,
             max_width: 680.0,
         }
@@ -753,15 +753,15 @@ stylesheet! {
 
 stylesheet! {
     pub CodePanel<IdeaThemeRef> {
-        base(_t) {
+        base(t) {
             // Theme-tokenized so the code panel adapts in dark mode.
             // `color-surface-alt` is idea-ui's secondary surface
             // token \u{2014} a touch off the page background so the
             // panel reads as a distinct surface in both themes.
-            background: Tokenized::token("color-surface-alt", Color("#f4eedb".into())),
+            background: t.color.surface_alt(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
-            border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            border_color: t.color.border(),
+            border_radius: t.radius.lg(),
             // NO padding here: the panel's inset lives on the code block
             // itself (`CodeText`'s `padding`), INSIDE its scroll region,
             // so scrolled code reaches this panel's edge before clipping.
@@ -800,7 +800,7 @@ stylesheet! {
 
 stylesheet! {
     pub CodeText<IdeaThemeRef> {
-        base(_t) {
+        base(t) {
             // Inherited by the code-block leaf so each colored span
             // renders monospace without per-span font wiring. The
             // base color is theme-tokenized (this is the color the
@@ -811,7 +811,7 @@ stylesheet! {
             font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
             font_size: 14.0,
             line_height: 22.0,
-            color: Tokenized::token("color-text", Color("#1f2328".into())),
+            color: t.color.text(),
             // The code surface's inset. Lives on the code block (not the
             // wrapping panel) so it sits INSIDE the scroll region: native
             // backends divert it to the text widget's insets, so the
@@ -844,12 +844,12 @@ stylesheet! {
 
 stylesheet! {
     pub ShowcaseCard<IdeaThemeRef> {
-        base(_t) {
+        base(t) {
             flex_direction: FlexDirection::Column,
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            background: t.color.surface(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
-            border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            border_color: t.color.border(),
+            border_radius: t.radius.lg(),
             // Clip the tinted code region's background to the rounded
             // corners (otherwise its square bottom corners poke past the
             // card radius).
@@ -860,21 +860,21 @@ stylesheet! {
 
 stylesheet! {
     pub ShowcaseDemo<IdeaThemeRef> {
-        base(_t) {
+        base(t) {
             flex_direction: FlexDirection::Column,
-            gap: Tokenized::token("spacing-md", Length::Px(12.0)),
+            gap: t.spacing.md(),
             padding: 20.0,
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            background: t.color.surface(),
         }
     }
 }
 
 stylesheet! {
     pub ShowcaseCode<IdeaThemeRef> {
-        base(_t) {
-            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+        base(t) {
+            background: t.color.surface_alt(),
             border_top_width: 1.0,
-            border_top_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_top_color: t.color.border(),
             // NO padding — the inset lives on the code block itself
             // (`CodeText`), inside its scroll region. See `CodePanel`.
             overflow: Overflow::Hidden,
@@ -901,11 +901,11 @@ stylesheet! {
 
 stylesheet! {
     pub PillarCard<IdeaThemeRef> {
-        base(_t) {
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+        base(t) {
+            background: t.color.surface(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
-            border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            border_color: t.color.border(),
+            border_radius: t.radius.lg(),
             padding: 20.0,
             gap: 10.0,
             flex_direction: FlexDirection::Column,
@@ -945,10 +945,10 @@ stylesheet! {
 
 stylesheet! {
     pub Footer<IdeaThemeRef> {
-        base(_t) {
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+        base(t) {
+            background: t.color.surface(),
             border_top_width: 1.0,
-            border_top_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            border_top_color: t.color.border(),
             // Set Inter on the footer root so every Text child picks it
             // up regardless of the surrounding scroll/page font chain.
             font_family: &INTER,
@@ -1033,8 +1033,8 @@ stylesheet! {
 /// Section header above each link column ("Project", "Resources").
 stylesheet! {
     pub FooterTitle<IdeaThemeRef> {
-        base(_t) {
-            color: Tokenized::token("color-text-muted", Color("#8a8270".into())),
+        base(t) {
+            color: t.color.text_muted(),
             font_size: 11.0,
             font_weight: runtime_core::FontWeight::SemiBold,
             letter_spacing: 0.8,
@@ -1051,14 +1051,14 @@ stylesheet! {
 /// the footer reads as "more nav" rather than "ad surface".
 stylesheet! {
     pub FooterLink<IdeaThemeRef> {
-        base(_t) {
-            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+        base(t) {
+            color: t.color.text_muted(),
             font_size: 14.0,
             line_height: 20.0,
             text_align: TextAlign::Left,
         }
-        state hovered(_t) {
-            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+        state hovered(t) {
+            color: t.color.text(),
         }
         transitions {
             color: 180ms EaseOut,
@@ -1071,9 +1071,9 @@ stylesheet! {
 /// + theme-typography overrides apply consistently.
 stylesheet! {
     pub FooterWordmark<IdeaThemeRef> {
-        base(_t) {
-            color: Tokenized::token("color-text", Color("#0a0c11".into())),
-            font_size: Tokenized::token("typography-h3-size", Length::Px(22.0)),
+        base(t) {
+            color: t.color.text(),
+            font_size: t.typography.h3_size(),
             font_weight: runtime_core::FontWeight::SemiBold,
         }
         transitions {
@@ -1084,8 +1084,8 @@ stylesheet! {
 
 stylesheet! {
     pub FooterTagline<IdeaThemeRef> {
-        base(_t) {
-            color: Tokenized::token("color-text-muted", Color("#5b5446".into())),
+        base(t) {
+            color: t.color.text_muted(),
             font_size: 14.0,
             line_height: 20.0,
         }
@@ -1100,13 +1100,13 @@ stylesheet! {
 /// content max-width.
 stylesheet! {
     pub FooterBottom<IdeaThemeRef> {
-        base(_t) {
+        base(t) {
             width: Length::pct(100.0),
             max_width: 1120.0,
             align_self: runtime_core::AlignSelf::Center,
             padding_top: 24.0,
             border_top_width: 1.0,
-            border_top_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            border_top_color: t.color.border(),
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
@@ -1119,8 +1119,8 @@ stylesheet! {
 
 stylesheet! {
     pub FooterCopy<IdeaThemeRef> {
-        base(_t) {
-            color: Tokenized::token("color-text-muted", Color("#8a8270".into())),
+        base(t) {
+            color: t.color.text_muted(),
             font_size: 12.0,
             text_align: TextAlign::Center,
         }
@@ -1230,14 +1230,14 @@ stylesheet! {
 
 stylesheet! {
     pub DemoStageRow<IdeaThemeRef> {
-        base(_t) {
+        base(t) {
             flex_direction: FlexDirection::Row,
             gap: 24.0,
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
             padding_vertical: 24.0,
             min_height: 140.0,
-            background: Tokenized::token("color-surface-alt", Color("#f0ead7".into())),
+            background: t.color.surface_alt(),
             border_radius: 12.0,
         }
     }
@@ -1245,10 +1245,10 @@ stylesheet! {
 
 stylesheet! {
     pub PlaceholderBox<IdeaThemeRef> {
-        base(_t) {
-            background: Tokenized::token("color-surface-alt", Color("#f0ead7".into())),
+        base(t) {
+            background: t.color.surface_alt(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            border_color: t.color.border(),
             border_radius: 12.0,
             padding: 24.0,
             gap: 12.0,
@@ -1284,11 +1284,11 @@ stylesheet! {
 /// pair makes same-row cells share width evenly.
 stylesheet! {
     pub PrimCard<IdeaThemeRef> {
-        base(_t) {
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+        base(t) {
+            background: t.color.surface(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
-            border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            border_color: t.color.border(),
+            border_radius: t.radius.lg(),
             padding: 16.0,
             gap: 12.0,
             flex_direction: FlexDirection::Column,
@@ -1309,11 +1309,11 @@ stylesheet! {
 /// code identifier, matching the lowercase-primitive convention.
 stylesheet! {
     pub PrimTag<IdeaThemeRef> {
-        base(_t) {
+        base(t) {
             font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
             font_size: 14.0,
             font_weight: runtime_core::FontWeight::SemiBold,
-            color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+            color: t.intent.primary.fg(),
         }
         transitions {
             color: 250ms EaseInOut,
@@ -1375,16 +1375,16 @@ stylesheet! {
 /// rounded corners over the scrolling content.
 stylesheet! {
     pub PrimScrollBox<IdeaThemeRef> {
-        base(_t) {
+        base(t) {
             height: 160.0,
             width: Length::pct(100.0),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            border_color: t.color.border(),
             border_radius: 8.0,
             padding: 8.0,
             gap: 6.0,
             flex_direction: FlexDirection::Column,
-            background: Tokenized::token("color-surface-alt", Color("#f4eedb".into())),
+            background: t.color.surface_alt(),
             overflow: Overflow::Hidden,
             // Undo the native scroll-view flex seed. Backends seed a
             // scroll node with `flex_grow:1 / flex_basis:0` (the
@@ -1407,10 +1407,10 @@ stylesheet! {
 /// the content that escapes the cell's layout into a window-level portal.
 stylesheet! {
     pub PrimPopCard<IdeaThemeRef> {
-        base(_t) {
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+        base(t) {
+            background: t.color.surface(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            border_color: t.color.border(),
             border_radius: 12.0,
             padding: 20.0,
             gap: 12.0,

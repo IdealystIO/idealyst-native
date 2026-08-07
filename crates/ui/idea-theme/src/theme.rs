@@ -393,34 +393,34 @@ pub fn is_canonical_token(name: &str) -> bool {
 }
 
 // =============================================================================
-// Canonical token references — theme_token! / theme_length!
+// Canonical token names + the string-driven reference path
 // =============================================================================
 //
-// The problem these solve (field report): a `stylesheet!` that wants to
-// track a theme color could previously only write
-// `Tokenized::token("color-surface", Color("#ffffff".into()))` — the
-// `fallback` hex is mandatory, so to look right *before* a theme installs
-// the author had to restate the design palette's concrete value. That
-// value already lives in idea-theme's base palette under the same
-// canonical name, so the palette ended up with two sources of truth that
-// silently drift (idea-ui's own `stylesheets.rs` had exactly this: an
-// `intent-primary-solid-bg` fallback of `#5b6cff` while `light_theme()`
-// said `#4f46e5` — dead, drifted).
+// The typed path is [`crate::tokens`]: a stylesheet names a token as
+// `t.color.surface()`, so the name is checked by the compiler and the
+// fallback comes from the base palette. Prefer it — everything here is for
+// the cases it can't cover.
 //
-// `theme_token!("color-surface")` / `theme_length!("spacing-md")` close
-// the gap: they pull the fallback from idea-theme's base palette (the one
-// place it's defined) and validate the name at *compile time*. At runtime
-// the installed theme's registry value still wins — the fallback only ever
-// shows before a theme installs — so a reskin remains the single source of
-// truth. `theme_color` / `theme_length` are the string-driven (runtime-
-// checked) functions the macros delegate to; reach for them only when the
-// token name is computed at runtime.
+// What's left in this section:
+//
+// - `CANONICAL_*` name lists + the `is_canonical_*` predicates, which
+//   tooling (lints, the catalog) uses to validate a name it only has as a
+//   string. `tokens.rs` asserts its accessors agree with these lists, so
+//   the two spellings of "which tokens exist" can't diverge.
+// - `theme_color(name)` / `theme_length(name)`, the runtime-checked
+//   reference for a name computed at runtime (an author-supplied token, a
+//   name read from data). An unknown name returns a transparent/0px
+//   fallback and warns in debug — the loud version of the failure the
+//   typed path makes impossible.
+//
+// The `theme_token!` / `theme_length!` macros that used to live here are
+// gone: they were the compile-checked *string* form, and the vocabulary
+// supersedes them by making the name a path instead of a literal.
 
 /// Flattened canonical intent color token names (`intent-<intent>-<slot>`),
 /// intents in [`INTENT_NAMES`] order, each expanded through [`INTENT_SLOTS`]
 /// order. The materialized companion to [`INTENT_NAMES`]/[`INTENT_SLOTS`],
-/// so [`is_canonical_color_token`] and the `theme_token!` compile check can
-/// scan a single list.
+/// so [`is_canonical_color_token`] can scan a single list.
 pub const CANONICAL_INTENT_TOKENS: [&str; 42] = {
     macro_rules! intent_tokens {
         ($($i:literal),+ $(,)?) => {
@@ -439,7 +439,7 @@ pub const CANONICAL_INTENT_TOKENS: [&str; 42] = {
 
 /// Canonical length token names — spacing, radius, and typography size
 /// tokens, in [`ThemeTokens::tokens`] emission order. Backs
-/// [`is_canonical_length_token`] and the `theme_length!` compile check.
+/// [`is_canonical_length_token`].
 pub const CANONICAL_LENGTH_TOKENS: [&str; 20] = [
     "spacing-xs", "spacing-sm", "spacing-md", "spacing-lg", "spacing-xl", "spacing-xxl",
     "radius-sm", "radius-md", "radius-lg", "radius-pill",
@@ -467,8 +467,9 @@ const fn const_str_eq(a: &str, b: &str) -> bool {
 
 /// Compile-time predicate: is `name` a canonical **color** token — a
 /// neutral ([`CANONICAL_NEUTRAL_TOKENS`]) or an intent slot
-/// ([`CANONICAL_INTENT_TOKENS`])? Backs the [`theme_token!`] compile-time
-/// name check, so it must be `const`.
+/// ([`CANONICAL_INTENT_TOKENS`])? Backs the string-driven [`theme_color`]
+/// and the tooling that validates a name it only has as a string; `const`
+/// so a caller can check a name at compile time.
 pub const fn is_canonical_color_token(name: &str) -> bool {
     let mut i = 0;
     while i < CANONICAL_NEUTRAL_TOKENS.len() {
@@ -488,8 +489,8 @@ pub const fn is_canonical_color_token(name: &str) -> bool {
 }
 
 /// Compile-time predicate: is `name` a canonical **length** token (spacing
-/// / radius / typography size, [`CANONICAL_LENGTH_TOKENS`])? Backs the
-/// [`theme_length!`] compile-time name check, so it must be `const`.
+/// / radius / typography size, [`CANONICAL_LENGTH_TOKENS`])? Length peer of
+/// [`is_canonical_color_token`].
 pub const fn is_canonical_length_token(name: &str) -> bool {
     let mut i = 0;
     while i < CANONICAL_LENGTH_TOKENS.len() {
@@ -541,10 +542,12 @@ pub fn canonical_length(name: &str) -> Option<Tokenized<Length>> {
         })
 }
 
-/// Reference a canonical theme **color** by name, resolving its fallback
-/// from idea-theme's base palette — the string-driven peer of
-/// [`theme_token!`]. Prefer the macro (which checks the name at compile
-/// time) unless the name is computed at runtime.
+/// Reference a canonical theme **color** by a name computed at runtime.
+///
+/// Prefer the typed path — [`crate::tokens`], `t.color.surface()` inside a
+/// `stylesheet!` — which checks the name at compile time. Reach for this
+/// only when the name genuinely isn't known until runtime (author-supplied
+/// token, a name read from data).
 ///
 /// On an unknown name it returns `Tokenized::token(name, transparent)` (and
 /// warns in debug builds): the reference still resolves from the registry
@@ -556,7 +559,7 @@ pub fn theme_color(name: &'static str) -> Tokenized<Color> {
         eprintln!(
             "idea_theme::theme_color: '{name}' is not a canonical color token; using a \
              transparent fallback. Use a CANONICAL_NEUTRAL_TOKENS entry or an \
-             intent-<intent>-<slot> name — or the theme_token! macro to catch this at \
+             intent-<intent>-<slot> name — or a `tokens()` accessor to catch this at \
              compile time."
         );
         Tokenized::token(name, Color("transparent".into()))
@@ -564,96 +567,19 @@ pub fn theme_color(name: &'static str) -> Tokenized<Color> {
 }
 
 /// Reference a canonical theme **length** (spacing / radius / typography
-/// size) by name. String-driven peer of [`theme_length!`]; prefer the
-/// macro. On an unknown name returns `Tokenized::token(name, 0px)` and
-/// warns in debug builds.
+/// size) by a name computed at runtime — length peer of [`theme_color`];
+/// see it for when to prefer the typed path. On an unknown name returns
+/// `Tokenized::token(name, 0px)` and warns in debug builds.
 pub fn theme_length(name: &'static str) -> Tokenized<Length> {
     canonical_length(name).unwrap_or_else(|| {
         #[cfg(debug_assertions)]
         eprintln!(
             "idea_theme::theme_length: '{name}' is not a canonical length token; using a \
-             0px fallback. Use a spacing-*, radius-*, or typography-*-size name — or the \
-             theme_length! macro to catch this at compile time."
+             0px fallback. Use a spacing-*, radius-*, or typography-*-size name — or a \
+             `tokens()` accessor to catch this at compile time."
         );
         Tokenized::token(name, Length::Px(0.0))
     })
-}
-
-/// Reference a canonical theme color from a `stylesheet!` (or anywhere a
-/// `Tokenized<Color>` is expected) **by name only** — the concrete default
-/// is pulled from idea-theme's base palette, so no hex is restated and the
-/// installed theme stays the single source of truth.
-///
-/// ```ignore
-/// stylesheet! {
-///     Sidebar {
-///         base(_t) {
-///             background: theme_token!("color-surface"),
-///             border_color: theme_token!("color-border"),
-///             color: theme_token!("intent-primary-fg"),
-///         }
-///     }
-/// }
-/// ```
-///
-/// The name is validated **at compile time** against the canonical color
-/// token set — a typo (`"color-surfaze"`) fails the build instead of
-/// silently rendering a transparent fallback. Length tokens go through
-/// [`theme_length!`]; a computed (runtime) name goes through the
-/// [`theme_color`] function.
-///
-/// ```
-/// use idea_theme::theme_token;
-/// let surface = theme_token!("color-surface");
-/// assert_eq!(surface.name(), Some("color-surface"));
-/// ```
-///
-/// A non-canonical name is a compile error:
-///
-/// ```compile_fail
-/// use idea_theme::theme_token;
-/// let _ = theme_token!("color-surfaze"); // typo → does not compile
-/// ```
-#[macro_export]
-macro_rules! theme_token {
-    ($name:literal) => {{
-        const _: () = ::core::assert!(
-            $crate::is_canonical_color_token($name),
-            concat!(
-                "theme_token!: \"",
-                $name,
-                "\" is not a canonical idea-theme color token (expected a \
-                 CANONICAL_NEUTRAL_TOKENS entry or an intent-<intent>-<slot> name; \
-                 length tokens use theme_length!)",
-            ),
-        );
-        $crate::theme_color($name)
-    }};
-}
-
-/// Length peer of [`theme_token!`] — reference a canonical spacing / radius
-/// / typography-size token by name, fallback pulled from idea-theme's base
-/// scale. Name validated at compile time.
-///
-/// ```
-/// use idea_theme::theme_length;
-/// let gap = theme_length!("spacing-md");
-/// assert_eq!(gap.name(), Some("spacing-md"));
-/// ```
-#[macro_export]
-macro_rules! theme_length {
-    ($name:literal) => {{
-        const _: () = ::core::assert!(
-            $crate::is_canonical_length_token($name),
-            concat!(
-                "theme_length!: \"",
-                $name,
-                "\" is not a canonical idea-theme length token (expected a spacing-*, \
-                 radius-*, or typography-*-size name; color tokens use theme_token!)",
-            ),
-        );
-        $crate::theme_length($name)
-    }};
 }
 
 impl ThemeTokens for IdeaThemeRef {
@@ -1478,14 +1404,15 @@ mod tests {
         }
     }
 
-    // ---- Canonical token references (theme_token! / theme_length!) --------
+    // ---- Canonical token names + the string-driven reference path --------
 
     /// The compile-time color/length predicates must partition exactly the
     /// tokens the theme actually emits — a color token passes the color
     /// predicate and fails the length one, and vice versa. This is what the
-    /// `theme_token!` / `theme_length!` compile checks rely on, and it locks
-    /// the flattened `CANONICAL_INTENT_TOKENS` / `CANONICAL_LENGTH_TOKENS`
-    /// arrays to the real emit set so they can't drift apart.
+    /// tooling relies on when all it has is a string, and it locks the
+    /// flattened `CANONICAL_INTENT_TOKENS` / `CANONICAL_LENGTH_TOKENS`
+    /// arrays to the real emit set so they can't drift apart. (`tokens.rs`
+    /// pins the same arrays to the typed accessors from the other side.)
     #[test]
     fn canonical_color_length_predicates_partition_emitted_tokens() {
         for entry in IdeaThemeRef::new(light_theme()).tokens() {
@@ -1544,12 +1471,14 @@ mod tests {
         assert_eq!(gap.name(), Some("spacing-md"));
         assert_eq!(gap.value(), find_length(&base, "spacing-md"));
 
-        // The macro forms produce the same thing (name checked at compile time).
-        let intent = theme_token!("intent-primary-soft-bg");
+        // The typed path produces exactly the same reference — same name,
+        // same base-palette fallback — so an author can move between the two
+        // without a behavior change.
+        let t = crate::tokens();
+        let intent = t.intent.primary.soft_bg();
         assert_eq!(intent.name(), Some("intent-primary-soft-bg"));
         assert_eq!(intent.value().0, find_color(&base, "intent-primary-soft-bg").0);
-        let radius = theme_length!("radius-md");
-        assert_eq!(radius.value(), find_length(&base, "radius-md"));
+        assert_eq!(t.radius.md().value(), find_length(&base, "radius-md"));
     }
 
     /// The reskin guarantee: after a custom theme installs, resolving a

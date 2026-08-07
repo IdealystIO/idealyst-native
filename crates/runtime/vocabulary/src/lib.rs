@@ -225,6 +225,56 @@ pub use style_attach::{
     attach_style, on_teardown, signal_class, IntoStyleProp, StyleProp, StyleServices,
 };
 
+/// Register one theme token into the MCP catalog.
+///
+/// A design system calls this from the same declaration that generates
+/// the token's accessor, so tooling gets the vocabulary as data — the
+/// editor completion behind `t.spacing.│`, and `list_tokens` over MCP.
+///
+/// ```ignore
+/// register_style_token!("spacing-md", "spacing.md", "spacing", "Length", "IdeaThemeRef", {
+///     format!("{}px", SpacingTokens.md().value())
+/// });
+/// ```
+///
+/// The `default_value` block is a closure body evaluated by the catalog
+/// consumer, not at registration — point it at the accessor so the
+/// displayed default IS the accessor's fallback.
+///
+/// **Why the gate lives here, not at the call site.** A `#[cfg(feature =
+/// "catalog")]` written in the *calling* crate sees only THAT crate's
+/// features, so a design system would have to declare and propagate its
+/// own `catalog` feature — and the catalog wrapper only turns on
+/// `runtime-core/catalog`, so those registrations would silently never
+/// appear (they didn't). Gating here follows the same feature the
+/// `__mcp` re-export does, which is what `recipe!` effectively does from
+/// inside the proc macro.
+#[cfg(feature = "catalog")]
+#[macro_export]
+macro_rules! register_style_token {
+    ($name:expr, $path:expr, $ns:expr, $ty:expr, $vocab:expr, $default:block) => {
+        $crate::glue::__mcp::inventory::submit! {
+            $crate::glue::__mcp::StyleTokenEntry {
+                name: $name,
+                path: $path,
+                namespace: $ns,
+                value_type: $ty,
+                default_value: $crate::glue::__mcp::TokenDefault::Resolver(|| $default),
+                vocabulary: $vocab,
+            }
+        }
+    };
+}
+
+/// No-op form when the catalog is off — see the gated definition above.
+/// Expands to nothing so a design system's token declarations cost
+/// exactly zero in shipped apps.
+#[cfg(not(feature = "catalog"))]
+#[macro_export]
+macro_rules! register_style_token {
+    ($name:expr, $path:expr, $ns:expr, $ty:expr, $vocab:expr, $default:block) => {};
+}
+
 /// New-core mirror of `runtime_shared::rx!` — wraps an expression as a
 /// reactive prop value ([`glue::Reactive::derive`]). Defined here (not in
 /// `runtime-core`) so the `$crate::…` expansion resolves against the

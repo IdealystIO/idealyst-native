@@ -22,7 +22,8 @@ use serde_json::{json, Value};
 
 use crate::{
     AnimationEntry, ComponentEntry, GuideEntry, IconSetEntry, MacroEntry, MethodEntry,
-    PrimitiveEntry, RecipeEntry, ScopeEntry, SdkEntry, StateEntry, ToolEntry, TypeEntry, TypeShape,
+    PrimitiveEntry, RecipeEntry, ScopeEntry, SdkEntry, StateEntry, StyleTokenEntry, ToolEntry,
+    TypeEntry, TypeShape,
     UtilityEntry,
 };
 
@@ -241,6 +242,34 @@ impl CatalogSlice for StateEntry {
             "name": self.name,
             "docs": self.docs,
             "backends": self.backends,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------
+// Style token
+// ---------------------------------------------------------------------
+
+impl CatalogSlice for StyleTokenEntry {
+    const KEY: &'static str = "style_tokens";
+
+    fn collect_sorted() -> Vec<&'static Self> {
+        let mut v: Vec<&'static StyleTokenEntry> = crate::style_tokens().collect();
+        // By path, not name: consumers (editor completion) walk these in
+        // the order an author types them.
+        v.sort_by_key(|t| (t.vocabulary, t.namespace, t.path));
+        v
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "name": self.name,
+            "path": self.path,
+            "namespace": self.namespace,
+            "value_type": self.value_type,
+            // Resolved, not copied — see `TokenDefault`.
+            "default_value": self.default_value.get(),
+            "vocabulary": self.vocabulary,
         })
     }
 }

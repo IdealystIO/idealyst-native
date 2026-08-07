@@ -27,12 +27,16 @@
 //!   [`extensible::Shape`], [`extensible::TypographyKind`] traits, plus
 //!   built-in ZSTs and [`extensible::ResolutionCtx`] for composing
 //!   variants against modifiers.
+//! - **Token vocabulary** — [`tokens::IdeaTokens`] is the theme's token
+//!   set as a *type*. A `stylesheet!` names a token through the binding in
+//!   its block header (`base(t) { padding: t.spacing.md() }`); code
+//!   outside one uses [`tokens()`]. Either way the name is a path the
+//!   compiler checks and the fallback comes from the base palette, so a
+//!   stylesheet tracks the installed theme without restating any hex and
+//!   a name nothing installs won't compile.
 //! - **Macros** — [`tone!`], [`variant!`], [`theme!`], [`color_token!`]
 //!   make defining custom modifiers and app themes a one-block
-//!   declaration each. [`theme_token!`] / [`theme_length!`] reference a
-//!   canonical theme token from a `stylesheet!` by name only (fallback
-//!   pulled from the base palette, name checked at compile time) — so a
-//!   stylesheet tracks the installed theme without restating any hex.
+//!   declaration each.
 //! - **Theme runtime** — [`install_theme`], [`set_theme`],
 //!   [`install_themes`], plus [`ThemeTokens`] / [`TokenEntry`] /
 //!   [`TokenValue`] for theme installation and live swap.
@@ -99,6 +103,15 @@ pub mod testing {
 pub mod recipes;
 
 pub mod theme;
+
+// The token vocabulary — how a `stylesheet!` names a theme token
+// (`t.spacing.md()`) instead of spelling a string literal nothing checks.
+pub mod tokens;
+
+pub use tokens::{
+    tokens, ColorTokens, DangerTokens, IdeaTokens, InfoTokens, IntentTokens, NeutralTokens, PrimaryTokens,
+    RadiusTokens, SecondaryTokens, SpacingTokens, SuccessTokens, TypographyTokens, WarningTokens,
+};
 
 // Generic theme-as-struct runtime. Re-exported at the crate root so
 // callers can reach `install_theme`, `set_theme`, `ThemeTokens`, and

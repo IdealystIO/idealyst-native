@@ -15,6 +15,9 @@ crate-type = ["rlib"]
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The platform surface, used by `src/main.rs` only — it carries whatever
+# the target needs so this manifest names no backend directly.
+idealyst = { workspace = true }
 # `runtime-core` is aliased to `runtime_core` at the crate root (see
 # src/lib.rs); `runtime-vocabulary` because the `ui!` emission spells
 # absolute `::runtime_vocabulary::glue::…` paths; `runtime-scene`

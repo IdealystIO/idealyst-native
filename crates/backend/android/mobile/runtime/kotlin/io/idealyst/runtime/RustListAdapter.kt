@@ -147,6 +147,40 @@ class RustListAdapter(private val nativePtr: Long) :
 }
 
 /**
+ * Forwards `RecyclerView` scroll offsets to the framework's author
+ * `on_scroll` callback.
+ *
+ * Offsets are reported in **device pixels converted to dp**, because
+ * every other offset the framework exposes (web CSS px, UIKit points,
+ * AppKit points) is density-independent — reporting raw Android pixels
+ * here would make the same gesture produce a 3× larger number on a
+ * phone than on the web, which is exactly the per-platform divergence
+ * the backend seam exists to absorb.
+ *
+ * `computeHorizontalScrollOffset` / `computeVerticalScrollOffset` are
+ * used rather than accumulating `dx`/`dy`: the accumulator drifts on
+ * programmatic `scrollToPosition` (which reports no delta) and resets
+ * wrongly across data changes, whereas the computed offset is
+ * RecyclerView's own authoritative answer.
+ *
+ * Attached only when the author supplied a handler; a virtualizer
+ * without `on_scroll` installs no listener at all.
+ */
+class RustScrollListener(private val nativePtr: Long) : RecyclerView.OnScrollListener() {
+    override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+        val density = recyclerView.resources.displayMetrics.density
+        if (density <= 0f) return
+        nativeOnScroll(
+            nativePtr,
+            recyclerView.computeHorizontalScrollOffset() / density,
+            recyclerView.computeVerticalScrollOffset() / density,
+        )
+    }
+
+    private external fun nativeOnScroll(ptr: Long, x: Float, y: Float)
+}
+
+/**
  * `LinearLayoutManager` that pre-lays-out extra pixels off-screen so
  * scrolling has work to do before the next bind cycle. The framework
  * passes `overscan` as a fraction-of-viewport multiplier; we compute

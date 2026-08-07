@@ -222,6 +222,13 @@ where
         mount_item,
         release_item,
         set_measured_size,
+        // Passed through untouched: unlike mount/release this is an
+        // ordinary author callback (no `World::enter` requirement, no
+        // per-row scope to bridge), so the handler has nothing to add.
+        // Staying `None` when unset is load-bearing — backends skip
+        // installing scroll observation entirely rather than paying a
+        // no-op call per scroll frame.
+        on_scroll: prim.on_scroll,
     };
 
     let node = backend

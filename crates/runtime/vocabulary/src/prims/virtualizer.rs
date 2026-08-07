@@ -52,4 +52,8 @@ pub struct VirtualizerPrim {
     pub style: Option<StyleProp>,
     pub a11y: AccessibilityProps,
     pub ref_fill: Option<Box<dyn FnOnce(VirtualizerHandle)>>,
+    /// Scroll observer for the virtualizer's own scroller. Forwarded
+    /// verbatim into `VirtualizerCallbacks::on_scroll`; see there for
+    /// the contract.
+    pub on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
 }

@@ -53,17 +53,19 @@ The `#[component]` macro:
 
 ```rust
 stylesheet! {
-    pub button_style<MyTheme> {
-        base(theme) {
-            padding: 8,
-            background_color: theme.colors.primary,
+    pub MyButton<IdeaThemeRef> {
+        base(t) {
+            padding: t.spacing.sm(),
+            background: t.intent.primary.solid_bg(),
         }
-        state pressed(theme) {
-            background_color: "#0a53be", // a darker primary for the pressed state
+        state pressed(t) {
+            background: t.intent.primary.fg(),
         }
     }
 }
 ```
+
+The `<…>` slot names the sheet's **token vocabulary** and the block binding (`base(t)`) *is* that vocabulary, so a theme token is a path the compiler checks — `t.spacing.sm()` references the `spacing-sm` token. The binding carries token *names*, not the theme's values: values arrive at resolve time from the token registry, which is what makes a theme swap one write per token instead of a re-mint. So there is no `theme.colors.primary` to read. A sheet with no vocabulary declares `<()>` and names tokens with `Tokenized::token("name", fallback)` — the right form for app-defined names. (The color field is `background` / `color`; there is no `background_color`.)
 
 The four valid state names are [[hovered]], [[pressed]], [[focused]], and [[disabled]] (see `list_states`). Authors cannot add new state names — the cross-platform contract is fixed.
 

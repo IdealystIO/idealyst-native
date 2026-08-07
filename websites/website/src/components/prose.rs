@@ -30,6 +30,7 @@ use runtime_core::{styled_text, TextRun, TextRunStyle};
 use idea_ui::{
     installed_typography_sheet, Typography, TypographyKindRef, TypographyProps,
 };
+use idea_ui::tokens;
 
 /// One run of a parsed paragraph: either plain prose or the inside of
 /// a backtick pair.
@@ -79,10 +80,7 @@ fn code_run_style() -> TextRunStyle {
         font_family: Some(FontFamily::System(
             "ui-monospace, SFMono-Regular, Menlo, monospace".into(),
         )),
-        background: Some(Tokenized::token(
-            "color-surface-alt",
-            Color("#f4eedb".into()),
-        )),
+        background: Some(tokens().color.surface_alt()),
         ..Default::default()
     }
 }

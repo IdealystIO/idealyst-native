@@ -1875,6 +1875,68 @@ impl CatalogService {
         )]))
     }
 
+    #[tool(description = "List the theme tokens a `stylesheet!` can name through its block binding — the token vocabulary as data. Returns { name, path, namespace, value_type, default_value, vocabulary } where `path` is what you type (`spacing.md` → `t.spacing.md()`) and `name` is the registry key it resolves under (`spacing-md`). Use this instead of guessing a token string: a name that isn't here does not exist, and referencing one that doesn't exist is a compile error.")]
+    async fn list_tokens(&self) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let json: Vec<serde_json::Value> = cat
+            .style_tokens()
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "path": t.path,
+                    "accessor": format!("t.{}()", t.path),
+                    "namespace": t.namespace,
+                    "value_type": t.value_type,
+                    "default_value": t.default_value.get(),
+                    "vocabulary": t.vocabulary,
+                })
+            })
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "Describe one theme token by its registry name (`spacing-md`) or accessor path (`spacing.md`). Returns the accessor to write inside a `stylesheet!`, the registry name it resolves under, its value type, and the vocabulary's base value.")]
+    async fn describe_token(
+        &self,
+        Parameters(req): Parameters<NameRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let needle = req.name.trim();
+        let entry = cat
+            .style_tokens()
+            .iter()
+            .find(|t| t.name == needle || t.path == needle)
+            .ok_or_else(|| {
+                McpError::invalid_params(
+                    format!(
+                        "no theme token `{needle}` — call list_tokens for the vocabulary. \
+                         Tokens are named by registry key (`spacing-md`) or accessor path \
+                         (`spacing.md`)."
+                    ),
+                    None,
+                )
+            })?;
+        let json = serde_json::json!({
+            "name": entry.name,
+            "path": entry.path,
+            "accessor": format!("t.{}()", entry.path),
+            "namespace": entry.namespace,
+            "value_type": entry.value_type,
+            "default_value": entry.default_value.get(),
+            "vocabulary": entry.vocabulary,
+            "usage": format!(
+                "stylesheet! {{ pub S<{}> {{ base(t) {{ /* … */: t.{}() }} }} }}",
+                entry.vocabulary, entry.path
+            ),
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
     #[tool(description = "List bundled framework usage guides — markdown documents covering getting started, concepts, reactivity, styling, navigation, backends. Returns { slug, title, order, tags } sorted by order.")]
     async fn list_guides(&self) -> Result<CallToolResult, McpError> {
         let cat = self.catalog.read().await;
@@ -2538,6 +2600,24 @@ impl CatalogService {
         }
         for s in cat.states() {
             consider("state", s.name.to_string(), s.name.to_string(), &[s.name], s.docs, &mut hits);
+        }
+        for t in cat.style_tokens() {
+            // Searchable by BOTH spellings: an author migrating from the
+            // string form knows `spacing-md`, one writing new code knows
+            // `spacing.md`. The docs line carries the accessor to write.
+            let accessor = format!("t.{}()", t.path);
+            let docs = format!(
+                "Theme token `{}` — write `{}` inside a stylesheet! ({} base {})",
+                t.name, accessor, t.value_type, t.default_value.get()
+            );
+            consider(
+                "style_token",
+                t.path.to_string(),
+                t.name.to_string(),
+                &[t.name, t.path],
+                Box::leak(docs.into_boxed_str()),
+                &mut hits,
+            );
         }
         for a in cat.animations() {
             let fqn = format!("{}::{}.{}", a.parent_module_path, a.parent_name, a.binding);
@@ -3244,6 +3324,8 @@ impl ServerHandler for CatalogService {
                  find_dependencies, list_methods, list_animations. \
                  Framework tools: list_primitives, describe_primitive, \
                  list_utilities, describe_utility, list_states. \
+                 Theme tokens (what a stylesheet! names via its block binding): \
+                 list_tokens, describe_token. \
                  Types: list_types, describe_type. \
                  Tools (#[idealyst_tool]): list_tools, describe_tool. \
                  SDK crates (net, storage, credentials, server, …): list_sdks, describe_sdk. \

@@ -177,25 +177,8 @@ mod web_model {
 /// `microphone`/`denoise`/`media-writer`/`files` are plain capability
 /// crates with nothing to register.
 ///
-/// wasm32 takes the concrete arm because `video::register` is
-/// `Registry<WebBackend>`-typed there (the real `<video>` element);
-/// `canvas_native::register` is generic on every target and
-/// type-dispatches at registration time.
-#[cfg(target_arch = "wasm32")]
-pub fn register_scene_extensions(
-    registry: &mut runtime_scene::Registry<backend_web::WebBackend>,
-) {
-    canvas_native::register(registry);
-    // Registered AFTER canvas-native: the vello GPU painter self-gates and
-    // wins where a GPU surface is available, falling back to the CPU
-    // painter otherwise. Order is the fallback order.
-    canvas_vello::register(registry);
-    video::register(registry);
-}
-
-/// Native arm — both `register`s are generic and dispatch on the registry
-/// TYPE once, at registration time.
-#[cfg(not(target_arch = "wasm32"))]
+/// One registry-GENERIC seam for every target: all three `register`s
+/// dispatch on the registry TYPE once, at registration time.
 pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
 where
     H: runtime_vocabulary::caps::ExternalOps
@@ -204,9 +187,19 @@ where
         + 'static,
 {
     canvas_native::register(registry);
-    // Only the platforms whose Cargo.toml target block pulls canvas-vello
-    // (macOS/iOS/Android). Linux/Windows keep the CPU painter alone.
-    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+    // Registered AFTER canvas-native: the vello GPU painter self-gates and
+    // wins where a GPU surface is available, falling back to the CPU painter
+    // otherwise. Order is the fallback order.
+    //
+    // The `cfg` mirrors the Cargo.toml target block that pulls canvas-vello
+    // in — web, macOS, iOS, Android. Desktop Linux/Windows keep the CPU
+    // painter alone and have no `canvas_vello` to name.
+    #[cfg(any(
+        target_arch = "wasm32",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android"
+    ))]
     canvas_vello::register(registry);
     video::register(registry);
 }

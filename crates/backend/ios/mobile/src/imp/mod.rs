@@ -230,7 +230,8 @@ pub struct IosBackend {
     /// here and complete the registration in `insert` once the
     /// view is actually in a parent chain. The map empties as
     /// each pending entry is promoted to the live registry.
-    pub(crate) pending_sticky: std::collections::HashMap<usize, f32>,
+    pub(crate) pending_sticky:
+        std::collections::HashMap<usize, runtime_shared::sticky::StickyInsets>,
     /// Content-view pointers of "detached window roots" — views that
     /// live in their OWN `UIWindow` (the `screen_recorder` private
     /// layer's ReplayKit-excluded overlay) rather than in the host's
@@ -516,13 +517,13 @@ pub fn schedule_layout_pass() {
 fn promote_pending_sticky_recursive(
     mtm: MainThreadMarker,
     view: &UIView,
-    pending: &mut std::collections::HashMap<usize, f32>,
+    pending: &mut std::collections::HashMap<usize, runtime_shared::sticky::StickyInsets>,
     registry: &mut sticky::StickyRegistry,
     to_remove: &mut Vec<usize>,
 ) {
     let key = view as *const UIView as usize;
-    if let Some(&threshold) = pending.get(&key) {
-        if sticky::register(mtm, registry, view, threshold) {
+    if let Some(&insets) = pending.get(&key) {
+        if sticky::register(mtm, registry, view, insets) {
             to_remove.push(key);
         }
         // If register returned false, the view STILL has no
@@ -2969,7 +2970,10 @@ impl IosBackend {
         fn walk_and_deregister(
             view: &UIView,
             registry: &mut sticky::StickyRegistry,
-            pending: &mut std::collections::HashMap<usize, f32>,
+            pending: &mut std::collections::HashMap<
+                usize,
+                runtime_shared::sticky::StickyInsets,
+            >,
             scroll_class: &objc2::runtime::AnyClass,
         ) {
             sticky::deregister(registry, view);
@@ -3058,28 +3062,38 @@ impl IosBackend {
         // recording in `pending_sticky` for the first-mount case.
         // `insert` consults `pending_sticky` after attaching the
         // subtree and promotes any entries it can now resolve.
+        // `overscroll-behavior` → `UIScrollView.bounces`. UIKit
+        // scroll views don't chain a gesture to an ancestor scroller,
+        // so `Contain` and `Auto` coincide and only `None` is
+        // observable: it removes the rubber-band at the content edges.
+        // Applied on every style pass (not at construction) so a
+        // reactive flip back to `Auto` restores the bounce instead of
+        // latching off.
+        {
+            let is_scroll: bool =
+                unsafe { msg_send![view, isKindOfClass: objc2::class!(UIScrollView)] };
+            if is_scroll {
+                let bounces = !matches!(
+                    style.overscroll_behavior,
+                    Some(runtime_shared::OverscrollBehavior::None)
+                );
+                let _: () = unsafe { msg_send![view, setBounces: bounces] };
+            }
+        }
+
         let view_key = view as *const UIView as usize;
         match style.position {
             Some(runtime_shared::Position::Sticky) => {
-                let threshold_top = style
-                    .top
-                    .as_ref()
-                    .map(|t| match t.resolve() {
-                        runtime_shared::Length::Px(v) => v,
-                        // Percent / Auto for sticky's pin offset
-                        // isn't meaningful (the spec resolves
-                        // percent against the scroll container's
-                        // padding box on web, but there's no
-                        // common "the threshold is half the
-                        // container" use case). Treat as 0.
-                        _ => 0.0,
-                    })
-                    .unwrap_or(0.0);
+                // Per-axis thresholds (`top` → vertical off
+                // `contentOffset.y`, `left` → horizontal off
+                // `contentOffset.x`), resolved by the shared helper so
+                // every backend reads the same sides the same way.
+                let insets = runtime_shared::sticky::StickyInsets::from_style(style);
                 let registered = sticky::register(
                     self.mtm,
                     &mut self.sticky_registry,
                     view,
-                    threshold_top,
+                    insets,
                 );
                 if !registered {
                     // No enclosing scroll view *yet*. Could be a
@@ -3087,7 +3101,7 @@ impl IosBackend {
                     // genuinely-not-in-a-scroll-view view.
                     // Record either way; `insert` retries and
                     // `release_*` clears the entry.
-                    self.pending_sticky.insert(view_key, threshold_top);
+                    self.pending_sticky.insert(view_key, insets);
                 }
             }
             _ => {
@@ -3753,6 +3767,16 @@ impl IosBackend {
         runtime_shared::primitives::scroll_view::ScrollViewHandle::new(
             Rc::new(node.clone()),
             &handles::IOS_SCROLL_OPS,
+        )
+    }
+
+    pub(crate) fn make_virtualizer_handle_impl(
+        &self,
+        node: &IosNode,
+    ) -> runtime_shared::primitives::virtualizer::VirtualizerHandle {
+        runtime_shared::primitives::virtualizer::VirtualizerHandle::new(
+            Rc::new(node.clone()),
+            &handles::IOS_VIRTUALIZER_OPS,
         )
     }
 

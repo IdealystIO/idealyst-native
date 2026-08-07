@@ -40,7 +40,7 @@ use runtime_core::stylesheet;
 use runtime_core::{
     component, effect, icon, pressable, signal, text, ui, view, when, Color, Element, FillRule,
     IconData, IdealystSchema, IntoElement, Length, Position, PressableHandle, Reactive, Ref,
-    Signal, StyleApplication, StyleSheet, Tokenized, VariantEnum,
+    Signal, StyleApplication, StyleSheet, VariantEnum,
 };
 
 use crate::components::calendar::{Calendar, RangeCalendar};
@@ -50,6 +50,7 @@ use crate::date::{
     format_date, CivilDate, CivilDateTime, CivilTime, DateLabels, Weekday,
 };
 use crate::stylesheets::{SelectMenu, SelectOption as SelectOptionStyle, SelectTrigger};
+use idea_theme::tokens;
 
 /// Trailing trigger glyph — a calendar. Inline `IconData` like the
 /// `Select` chevron: no icon-pack dependency for built-in affordances.
@@ -96,7 +97,7 @@ pub(crate) fn picker_trigger(
     let label_child = text(label_source).into_element();
     let glyph = icon(CALENDAR_GLYPH)
         .size(16.0)
-        .color(|| Tokenized::token("color-text-muted", Color("#6b7280".into())).resolve())
+        .color(|| tokens().color.text_muted().resolve())
         .into_element();
 
     let trigger_style = move || {

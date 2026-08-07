@@ -10,12 +10,13 @@ use runtime_core::{
     AlignItems, Color, Cursor, FlexDirection, FontWeight, JustifyContent, Length, Overflow,
     Position, TextAlign, TextTransform, Tokenized,
 };
+use idea_ui::IdeaThemeRef;
 
 // ---- Page-level scroll surface --------------------------------------------
 
 stylesheet! {
-    pub ScreenScroll<()> {
-        base(_t) {
+    pub ScreenScroll<IdeaThemeRef> {
+        base(t) {
             flex_direction: FlexDirection::Column,
             width: Length::pct(100.0),
             // Fill the remaining height under the (conditional) top bar
@@ -23,8 +24,8 @@ stylesheet! {
             flex_grow: 1.0,
             flex_shrink: 1.0,
             flex_basis: 0.0,
-            background: Tokenized::token("color-background", Color("#f7f8fb".into())),
-            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            background: t.color.background(),
+            color: t.color.text(),
         }
         transitions {
             background: 250ms EaseInOut,
@@ -96,12 +97,12 @@ stylesheet! {
 // stacked over the scrolling page body. Fills the navigator's body
 // outlet so the scroll view can take the leftover height.
 stylesheet! {
-    pub PageColumn<()> {
-        base(_t) {
+    pub PageColumn<IdeaThemeRef> {
+        base(t) {
             flex_direction: FlexDirection::Column,
             width: Length::pct(100.0),
             height: Length::pct(100.0),
-            background: Tokenized::token("color-background", Color("#f7f8fb".into())),
+            background: t.color.background(),
         }
         transitions {
             background: 250ms EaseInOut,
@@ -174,10 +175,10 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub TocPanel<()> {
-        base(_t) {
+    pub TocPanel<IdeaThemeRef> {
+        base(t) {
             flex_direction: FlexDirection::Column,
-            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            gap: t.spacing.xs(),
             width: 200.0,
             min_width: 200.0,
             flex_shrink: 0.0,
@@ -197,9 +198,9 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub TocHeader<()> {
-        base(_t) {
-            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+    pub TocHeader<IdeaThemeRef> {
+        base(t) {
+            color: t.color.text_muted(),
             font_size: 11.0,
             font_weight: FontWeight::SemiBold,
             letter_spacing: 0.8,
@@ -210,13 +211,13 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub TocLink<()> {
-        base(_t) {
+    pub TocLink<IdeaThemeRef> {
+        base(t) {
             padding_vertical: 6.0,
             padding_left: 12.0,
             border_left_width: 2.0,
-            border_left_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
-            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            border_left_color: t.color.border(),
+            color: t.color.text_muted(),
             font_size: 13.0,
             line_height: 18.0,
             text_align: TextAlign::Left,
@@ -225,14 +226,14 @@ stylesheet! {
         variant active {
             #[default]
             off(_t) {}
-            on(_t) {
-                border_left_color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
-                color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+            on(t) {
+                border_left_color: t.intent.primary.fg(),
+                color: t.intent.primary.fg(),
                 font_weight: FontWeight::SemiBold,
             }
         }
-        state hovered(_t) {
-            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+        state hovered(t) {
+            color: t.color.text(),
         }
         transitions {
             color: 180ms EaseOut,
@@ -247,15 +248,15 @@ stylesheet! {
 // Only rendered when the drawer is collapsed (below the pin width), so
 // it never shows on wide layouts where the sidebar is pinned.
 stylesheet! {
-    pub TopBar<()> {
-        base(_t) {
+    pub TopBar<IdeaThemeRef> {
+        base(t) {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
-            padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
-            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            padding_horizontal: t.spacing.md(),
+            padding_vertical: t.spacing.sm(),
+            background: t.color.surface(),
             border_bottom_width: 1.0,
-            border_bottom_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_bottom_color: t.color.border(),
         }
         transitions {
             background: 250ms EaseInOut,
@@ -269,12 +270,12 @@ stylesheet! {
 // (web only) when the sidebar collapses below the pin width; a soft
 // hover fill gives it the same affordance as the sidebar nav items.
 stylesheet! {
-    pub MenuButton<()> {
-        base(_t) {
+    pub MenuButton<IdeaThemeRef> {
+        base(t) {
             cursor: Cursor::Pointer,
             width: Length::Px(34.0),
             height: Length::Px(34.0),
-            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            border_radius: t.radius.md(),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
             // Pull the icon toward the header's leading edge so it lines
@@ -282,8 +283,8 @@ stylesheet! {
             margin_left: -6.0,
             background: Color("transparent".into()),
         }
-        state hovered(_t) {
-            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
+        state hovered(t) {
+            background: t.color.surface_alt(),
         }
         transitions { background: 150ms EaseOut, }
     }
@@ -291,11 +292,11 @@ stylesheet! {
 
 // The ☰ glyph inside `MenuButton`, tinted with the theme's text color.
 stylesheet! {
-    pub MenuGlyph<()> {
-        base(_t) {
+    pub MenuGlyph<IdeaThemeRef> {
+        base(t) {
             font_size: 19.0,
             text_align: TextAlign::Center,
-            color: Tokenized::token("color-text", Color("#0f172a".into())),
+            color: t.color.text(),
         }
         transitions { color: 250ms EaseInOut, }
     }
@@ -310,11 +311,11 @@ stylesheet! {
     // inset its content (its documentView isn't Taffy-positioned on macOS), so
     // a `width: 100%` child resolves against the full panel width and the
     // search field reads as too wide. Keep padding on a plain inner view.
-    pub SidebarScroll<()> {
-        base(_t) {
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+    pub SidebarScroll<IdeaThemeRef> {
+        base(t) {
+            background: t.color.surface(),
             border_right_width: 1.0,
-            border_right_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_right_color: t.color.border(),
             flex_direction: FlexDirection::Column,
             width: Length::pct(100.0),
             // Fill the AppShell panel's height: a short nav list still
@@ -336,10 +337,10 @@ stylesheet! {
     // Inner content column: a PLAIN view (not the scroll view) so its padding
     // correctly insets the children — the search field + nav then sit inside
     // the panel padding on every side.
-    pub SidebarBody<()> {
-        base(_t) {
-            padding: Tokenized::token("spacing-lg", Length::Px(16.0)),
-            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+    pub SidebarBody<IdeaThemeRef> {
+        base(t) {
+            padding: t.spacing.lg(),
+            gap: t.spacing.xs(),
             flex_direction: FlexDirection::Column,
             width: Length::pct(100.0),
         }
@@ -347,25 +348,25 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub SidebarHeader<()> {
-        base(_t) {
-            padding_bottom: Tokenized::token("spacing-md", Length::Px(12.0)),
+    pub SidebarHeader<IdeaThemeRef> {
+        base(t) {
+            padding_bottom: t.spacing.md(),
             border_bottom_width: 1.0,
-            border_bottom_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
-            margin_bottom: Tokenized::token("spacing-sm", Length::Px(8.0)),
-            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            border_bottom_color: t.color.border(),
+            margin_bottom: t.spacing.sm(),
+            gap: t.spacing.xs(),
             flex_direction: FlexDirection::Column,
         }
     }
 }
 
 stylesheet! {
-    pub SidebarSection<()> {
-        base(_t) {
-            padding_top: Tokenized::token("spacing-md", Length::Px(12.0)),
-            padding_bottom: Tokenized::token("spacing-xs", Length::Px(4.0)),
-            padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
-            color: Tokenized::token("color-text-muted", Color("#8a8270".into())),
+    pub SidebarSection<IdeaThemeRef> {
+        base(t) {
+            padding_top: t.spacing.md(),
+            padding_bottom: t.spacing.xs(),
+            padding_horizontal: t.spacing.md(),
+            color: t.color.text_muted(),
             font_size: 11.0,
             font_weight: runtime_core::FontWeight::SemiBold,
             letter_spacing: 0.8,
@@ -376,13 +377,13 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub SidebarFooter<()> {
-        base(_t) {
-            padding_top: Tokenized::token("spacing-md", Length::Px(12.0)),
+    pub SidebarFooter<IdeaThemeRef> {
+        base(t) {
+            padding_top: t.spacing.md(),
             border_top_width: 1.0,
-            border_top_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_top_color: t.color.border(),
             flex_direction: FlexDirection::Column,
-            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            gap: t.spacing.sm(),
         }
     }
 }
@@ -400,22 +401,19 @@ stylesheet! {
 // Both stylesheets share the same `active` variant axis so the SDK
 // can flip both with a single signal read at the call site.
 stylesheet! {
-    pub NavLink<()> {
-        base(_t) {
-            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
-            padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
-            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+    pub NavLink<IdeaThemeRef> {
+        base(t) {
+            padding_vertical: t.spacing.sm(),
+            padding_horizontal: t.spacing.md(),
+            border_radius: t.radius.md(),
             background: Color("transparent".into()),
             flex_direction: FlexDirection::Column,
         }
         variant active {
             #[default]
             off(_t) {}
-            on(_t) {
-                background: Tokenized::token(
-                    "intent-primary-soft-bg",
-                    Color("rgba(91, 108, 255, 0.12)".into()),
-                ),
+            on(t) {
+                background: t.intent.primary.soft_bg(),
             }
         }
         transitions {
@@ -425,21 +423,21 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub NavLinkText<()> {
-        base(_t) {
-            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+    pub NavLinkText<IdeaThemeRef> {
+        base(t) {
+            color: t.color.text_muted(),
             font_size: 14.0,
             text_align: TextAlign::Left,
         }
         variant active {
             #[default]
             off(_t) {}
-            on(_t) {
-                color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+            on(t) {
+                color: t.intent.primary.fg(),
             }
         }
-        state hovered(_t) {
-            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+        state hovered(t) {
+            color: t.color.text(),
         }
         transitions {
             color: 180ms EaseOut,
@@ -450,12 +448,12 @@ stylesheet! {
 // ---- Code panel ------------------------------------------------------------
 
 stylesheet! {
-    pub CodePanel<()> {
-        base(_t) {
-            background: Tokenized::token("color-surface-alt", Color("#f4eedb".into())),
+    pub CodePanel<IdeaThemeRef> {
+        base(t) {
+            background: t.color.surface_alt(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
-            border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            border_color: t.color.border(),
+            border_radius: t.radius.lg(),
             // Padding lives INSIDE the codeblock (on its inner column,
             // inside the horizontal scroll view) so it scrolls with
             // content — keeping it here would clip the rightmost
@@ -467,12 +465,12 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub CodeText<()> {
-        base(_t) {
+    pub CodeText<IdeaThemeRef> {
+        base(t) {
             font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
             font_size: 13.0,
             line_height: 20.0,
-            color: Tokenized::token("color-text", Color("#1f2328".into())),
+            color: t.color.text(),
         }
         transitions {
             color: 250ms EaseInOut,
@@ -483,14 +481,14 @@ stylesheet! {
 // ---- Demo surface — boxed live-preview area on a component page ----------
 
 stylesheet! {
-    pub DemoSurface<()> {
-        base(_t) {
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+    pub DemoSurface<IdeaThemeRef> {
+        base(t) {
+            background: t.color.surface(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
-            border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
-            padding: Tokenized::token("spacing-xl", Length::Px(24.0)),
-            gap: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            border_color: t.color.border(),
+            border_radius: t.radius.lg(),
+            padding: t.spacing.xl(),
+            gap: t.spacing.lg(),
             flex_direction: FlexDirection::Column,
             min_height: 120.0,
             align_items: AlignItems::Center,
@@ -509,11 +507,11 @@ stylesheet! {
 // whole card. `align_items: center` keeps content-sized previews (Button, Badge)
 // centered; a Field's own `align_self: stretch` fills this capped column.
 stylesheet! {
-    pub DemoSurfaceContent<()> {
-        base(_t) {
+    pub DemoSurfaceContent<IdeaThemeRef> {
+        base(t) {
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
-            gap: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            gap: t.spacing.lg(),
             width: Length::pct(100.0),
             max_width: 480.0,
         }
@@ -522,10 +520,10 @@ stylesheet! {
 
 // Side-by-side wrapping row: preview on the left, controls on the right.
 stylesheet! {
-    pub DemoRow<()> {
-        base(_t) {
+    pub DemoRow<IdeaThemeRef> {
+        base(t) {
             flex_direction: FlexDirection::Row,
-            gap: Tokenized::token("spacing-xl", Length::Px(24.0)),
+            gap: t.spacing.xl(),
             align_items: AlignItems::FlexStart,
             flex_wrap: runtime_core::FlexWrap::Wrap,
         }
@@ -533,16 +531,16 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub PreviewBox<()> {
-        base(_t) {
+    pub PreviewBox<IdeaThemeRef> {
+        base(t) {
             // Same surface as `DemoSurface` but designed to share a row
             // with the controls panel.
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            background: t.color.surface(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
-            border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
-            padding: Tokenized::token("spacing-xl", Length::Px(24.0)),
-            gap: Tokenized::token("spacing-md", Length::Px(12.0)),
+            border_color: t.color.border(),
+            border_radius: t.radius.lg(),
+            padding: t.spacing.xl(),
+            gap: t.spacing.md(),
             flex_direction: FlexDirection::Column,
             flex_basis: 0.0,
             flex_grow: 2.0,
@@ -560,13 +558,13 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub ControlsBox<()> {
-        base(_t) {
+    pub ControlsBox<IdeaThemeRef> {
+        base(t) {
             flex_basis: 0.0,
             flex_grow: 1.0,
             min_width: 240.0,
             max_width: 360.0,
-            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            gap: t.spacing.sm(),
             flex_direction: FlexDirection::Column,
         }
     }
@@ -577,13 +575,13 @@ stylesheet! {
 // preview's real width rather than a `display: block` collapsed
 // placeholder. See the historical layout-fix commit message.
 stylesheet! {
-    pub PreviewSlot<()> {
-        base(_t) {
+    pub PreviewSlot<IdeaThemeRef> {
+        base(t) {
             width: Length::pct(100.0),
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
-            gap: Tokenized::token("spacing-md", Length::Px(12.0)),
+            gap: t.spacing.md(),
         }
     }
 }
@@ -595,15 +593,12 @@ stylesheet! {
 // ---- Callout (tips / notes / cross-links) ---------------------------------
 
 stylesheet! {
-    pub Callout<()> {
-        base(_t) {
-            background: Tokenized::token(
-                "intent-primary-soft-bg",
-                Color("#eef2ff".into()),
-            ),
+    pub Callout<IdeaThemeRef> {
+        base(t) {
+            background: t.intent.primary.soft_bg(),
             border_left_width: 3.0,
-            border_left_color: Tokenized::token("intent-primary-fg", Color("#4f46e5".into())),
-            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            border_left_color: t.intent.primary.fg(),
+            border_radius: t.radius.md(),
             padding: 16.0,
             gap: 6.0,
             flex_direction: FlexDirection::Column,
@@ -620,16 +615,16 @@ stylesheet! {
 // ---- Header bar (top slot) -------------------------------------------------
 
 stylesheet! {
-    pub DocHeader<()> {
-        base(_t) {
+    pub DocHeader<IdeaThemeRef> {
+        base(t) {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
             height: Length::Px(58.0),
             padding_horizontal: 22.0,
             gap: 16.0,
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            background: t.color.surface(),
             border_bottom_width: 1.0,
-            border_bottom_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_bottom_color: t.color.border(),
         }
         transitions {
             background: 250ms EaseInOut,
@@ -649,12 +644,12 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub LogoBox<()> {
-        base(_t) {
+    pub LogoBox<IdeaThemeRef> {
+        base(t) {
             width: Length::Px(27.0),
             height: Length::Px(27.0),
             border_radius: 8.0,
-            background: Tokenized::token("intent-primary-solid-bg", Color("#4f46e5".into())),
+            background: t.intent.primary.solid_bg(),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
         }
@@ -662,9 +657,9 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub LogoGlyph<()> {
-        base(_t) {
-            color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
+    pub LogoGlyph<IdeaThemeRef> {
+        base(t) {
+            color: t.intent.primary.solid_text(),
             font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
             font_size: 14.0,
             font_weight: FontWeight::Bold,
@@ -673,9 +668,9 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub BrandName<()> {
-        base(_t) {
-            color: Tokenized::token("color-text", Color("#0f172a".into())),
+    pub BrandName<IdeaThemeRef> {
+        base(t) {
+            color: t.color.text(),
             font_size: 15.0,
             font_weight: FontWeight::Bold,
         }
@@ -684,15 +679,15 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub VersionPill<()> {
-        base(_t) {
+    pub VersionPill<IdeaThemeRef> {
+        base(t) {
             font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
             font_size: 11.0,
             font_weight: FontWeight::Medium,
-            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
-            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
+            color: t.color.text_muted(),
+            background: t.color.surface_alt(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_color: t.color.border(),
             padding_horizontal: 8.0,
             padding_vertical: 2.0,
             border_radius: 999.0,
@@ -701,12 +696,12 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub HeaderMono<()> {
-        base(_t) {
+    pub HeaderMono<IdeaThemeRef> {
+        base(t) {
             font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
             font_size: 12.0,
             font_weight: FontWeight::Medium,
-            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+            color: t.color.text_muted(),
         }
     }
 }
@@ -724,13 +719,13 @@ stylesheet! {
 // ---- Segmented Light/Dark toggle ------------------------------------------
 
 stylesheet! {
-    pub SegToggle<()> {
-        base(_t) {
+    pub SegToggle<IdeaThemeRef> {
+        base(t) {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
-            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
+            background: t.color.surface_alt(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_color: t.color.border(),
             border_radius: 999.0,
             padding: 3.0,
             gap: 2.0,
@@ -740,7 +735,7 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub SegBtn<()> {
+    pub SegBtn<IdeaThemeRef> {
         base(_t) {
             padding_horizontal: 14.0,
             padding_vertical: 5.0,
@@ -751,8 +746,8 @@ stylesheet! {
         variant active {
             #[default]
             off(_t) {}
-            on(_t) {
-                background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            on(t) {
+                background: t.color.surface(),
             }
         }
         transitions { background: 150ms EaseOut, }
@@ -760,17 +755,17 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub SegBtnText<()> {
-        base(_t) {
+    pub SegBtnText<IdeaThemeRef> {
+        base(t) {
             font_size: 13.0,
             text_align: TextAlign::Center,
-            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+            color: t.color.text_muted(),
         }
         variant active {
             #[default]
             off(_t) {}
-            on(_t) {
-                color: Tokenized::token("color-text", Color("#0f172a".into())),
+            on(t) {
+                color: t.color.text(),
                 font_weight: FontWeight::SemiBold,
             }
         }
@@ -781,25 +776,25 @@ stylesheet! {
 // ---- Sidebar search --------------------------------------------------------
 
 stylesheet! {
-    pub SearchInput<()> {
-        base(_t) {
+    pub SearchInput<IdeaThemeRef> {
+        base(t) {
             width: Length::pct(100.0),
             padding_horizontal: 12.0,
             padding_vertical: 8.0,
             font_size: 13.0,
-            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
+            background: t.color.surface_alt(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_color: t.color.border(),
             border_radius: 8.0,
-            color: Tokenized::token("color-text", Color("#0f172a".into())),
+            color: t.color.text(),
             margin_bottom: 12.0,
         }
         // Focus ring: recolor the existing 1px border to the theme accent —
         // thin + themed, not a heavy native ring. Web gets this from CSS
         // `:focus`; macOS drives it off StateBits::FOCUSED (NSTextField
         // begin/end editing). Same observable result on both (§7).
-        state focused(_t) {
-            border_color: Tokenized::token("color-focus-ring", Color("#5b6cff".into())),
+        state focused(t) {
+            border_color: t.color.focus_ring(),
         }
         transitions { background: 250ms EaseInOut, border_color: 150ms EaseOut, }
     }
@@ -808,32 +803,32 @@ stylesheet! {
 // Search TRIGGER — a button styled like the old search field that opens the
 // search dialog. The actual text input now lives inside the modal.
 stylesheet! {
-    pub SearchTrigger<()> {
-        base(_t) {
+    pub SearchTrigger<IdeaThemeRef> {
+        base(t) {
             cursor: Cursor::Pointer,
             width: Length::pct(100.0),
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
             padding_horizontal: 12.0,
             padding_vertical: 9.0,
-            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
+            background: t.color.surface_alt(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_color: t.color.border(),
             border_radius: 8.0,
             margin_bottom: 12.0,
         }
-        state hovered(_t) {
-            border_color: Tokenized::token("color-focus-ring", Color("#5b6cff".into())),
+        state hovered(t) {
+            border_color: t.color.focus_ring(),
         }
         transitions { border_color: 150ms EaseOut, }
     }
 }
 
 stylesheet! {
-    pub SearchTriggerText<()> {
-        base(_t) {
+    pub SearchTriggerText<IdeaThemeRef> {
+        base(t) {
             font_size: 13.0,
-            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+            color: t.color.text_muted(),
         }
     }
 }
@@ -873,17 +868,17 @@ stylesheet! {
 // radius + padding); the icon sits left and the input fills the rest
 // borderless. The input can't host a leading slot itself, so we compose.
 stylesheet! {
-    pub SearchFieldRow<()> {
-        base(_t) {
+    pub SearchFieldRow<IdeaThemeRef> {
+        base(t) {
             width: Length::pct(100.0),
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
             gap: 8.0,
             padding_horizontal: 12.0,
             padding_vertical: 8.0,
-            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
+            background: t.color.surface_alt(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_color: t.color.border(),
             border_radius: 8.0,
         }
     }
@@ -892,11 +887,11 @@ stylesheet! {
 // The borderless input inside `SearchFieldRow` — fills the remaining width;
 // the row draws the visible chrome, so this is transparent with no border.
 stylesheet! {
-    pub SearchInputBare<()> {
-        base(_t) {
+    pub SearchInputBare<IdeaThemeRef> {
+        base(t) {
             flex_grow: 1.0,
             font_size: 13.0,
-            color: Tokenized::token("color-text", Color("#0f172a".into())),
+            color: t.color.text(),
             background: Color("transparent".into()),
             border_width: 0.0,
         }
@@ -906,7 +901,7 @@ stylesheet! {
 // ---- Sidebar nav item (row: label + status dot) ---------------------------
 
 stylesheet! {
-    pub NavItem<()> {
+    pub NavItem<IdeaThemeRef> {
         base(_t) {
             // Span the sidebar width so `space-between` pushes the status dot
             // to the right edge; vertically center the label + dot.
@@ -928,8 +923,8 @@ stylesheet! {
         variant active {
             #[default]
             off(_t) {}
-            on(_t) {
-                background: Tokenized::token("intent-primary-soft-bg", Color("#eef2ff".into())),
+            on(t) {
+                background: t.intent.primary.soft_bg(),
             }
         }
         transitions { background: 150ms EaseOut, }
@@ -937,19 +932,19 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub NavDot<()> {
-        base(_t) {
+    pub NavDot<IdeaThemeRef> {
+        base(t) {
             width: Length::Px(6.0),
             height: Length::Px(6.0),
             border_radius: 999.0,
-            background: Tokenized::token("color-border-strong", Color("#94a3b8".into())),
+            background: t.color.border_strong(),
         }
         // "ready"/Detailed entries get a green dot; Preview keep the base grey.
         variant ready {
             #[default]
             off(_t) {}
-            on(_t) {
-                background: Tokenized::token("intent-success-fg", Color("#16a34a".into())),
+            on(t) {
+                background: t.intent.success.fg(),
             }
         }
     }
@@ -958,14 +953,14 @@ stylesheet! {
 // ---- Page frame: group overline, status badge, Usage label ----------------
 
 stylesheet! {
-    pub GroupOverline<()> {
-        base(_t) {
+    pub GroupOverline<IdeaThemeRef> {
+        base(t) {
             font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
             font_size: 11.0,
             font_weight: FontWeight::SemiBold,
             letter_spacing: 1.3,
             text_transform: TextTransform::Uppercase,
-            color: Tokenized::token("intent-primary-fg", Color("#4f46e5".into())),
+            color: t.intent.primary.fg(),
         }
     }
 }
@@ -982,39 +977,39 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub StatusBadge<()> {
-        base(_t) {
+    pub StatusBadge<IdeaThemeRef> {
+        base(t) {
             padding_horizontal: 10.0,
             padding_vertical: 4.0,
             border_radius: 999.0,
             border_width: 1.0,
-            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
-            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            background: t.color.surface_alt(),
+            border_color: t.color.border(),
         }
         variant detailed {
             #[default]
             off(_t) {}
-            on(_t) {
-                background: Tokenized::token("intent-success-soft-bg", Color("#f0fdf4".into())),
-                border_color: Tokenized::token("intent-success-border", Color("#bbf7d0".into())),
+            on(t) {
+                background: t.intent.success.soft_bg(),
+                border_color: t.intent.success.border(),
             }
         }
     }
 }
 
 stylesheet! {
-    pub StatusBadgeText<()> {
-        base(_t) {
+    pub StatusBadgeText<IdeaThemeRef> {
+        base(t) {
             font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
             font_size: 11.0,
             font_weight: FontWeight::SemiBold,
-            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+            color: t.color.text_muted(),
         }
         variant detailed {
             #[default]
             off(_t) {}
-            on(_t) {
-                color: Tokenized::token("intent-success-soft-text", Color("#15803d".into())),
+            on(t) {
+                color: t.intent.success.soft_text(),
             }
         }
     }
@@ -1039,60 +1034,60 @@ stylesheet! {
 // A color swatch block. The actual fill is applied per-token via
 // `override_background(Tokenized::token(...))` so it re-tints on theme swap.
 stylesheet! {
-    pub SwatchBlock<()> {
-        base(_t) {
+    pub SwatchBlock<IdeaThemeRef> {
+        base(t) {
             height: Length::Px(64.0),
             width: Length::pct(100.0),
-            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            border_radius: t.radius.md(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_color: t.color.border(),
         }
     }
 }
 
 // One box per radius token, picked by the `r` variant.
 stylesheet! {
-    pub RadiusBox<()> {
-        base(_t) {
+    pub RadiusBox<IdeaThemeRef> {
+        base(t) {
             width: Length::Px(76.0),
             height: Length::Px(76.0),
-            background: Tokenized::token("intent-primary-soft-bg", Color("#eef2ff".into())),
+            background: t.intent.primary.soft_bg(),
             border_width: 1.5,
-            border_color: Tokenized::token("intent-primary-fg", Color("#4f46e5".into())),
+            border_color: t.intent.primary.fg(),
         }
         variant r {
             #[default]
-            sm(_t) { border_radius: Tokenized::token("radius-sm", Length::Px(4.0)), }
-            md(_t) { border_radius: Tokenized::token("radius-md", Length::Px(8.0)), }
-            lg(_t) { border_radius: Tokenized::token("radius-lg", Length::Px(12.0)), }
-            pill(_t) { border_radius: Tokenized::token("radius-pill", Length::Px(999.0)), }
+            sm(t) { border_radius: t.radius.sm(), }
+            md(t) { border_radius: t.radius.md(), }
+            lg(t) { border_radius: t.radius.lg(), }
+            pill(t) { border_radius: t.radius.pill(), }
         }
     }
 }
 
 // Two small blocks used to demonstrate a Stack gap visually.
 stylesheet! {
-    pub GapBlock<()> {
-        base(_t) {
+    pub GapBlock<IdeaThemeRef> {
+        base(t) {
             width: Length::Px(40.0),
             height: Length::Px(28.0),
-            border_radius: Tokenized::token("radius-sm", Length::Px(4.0)),
-            background: Tokenized::token("intent-primary-soft-bg", Color("#eef2ff".into())),
+            border_radius: t.radius.sm(),
+            background: t.intent.primary.soft_bg(),
             border_width: 1.0,
-            border_color: Tokenized::token("intent-primary-border", Color("#c7d2fe".into())),
+            border_color: t.intent.primary.border(),
         }
     }
 }
 
 stylesheet! {
-    pub UsageLabel<()> {
-        base(_t) {
+    pub UsageLabel<IdeaThemeRef> {
+        base(t) {
             font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
             font_size: 11.0,
             font_weight: FontWeight::SemiBold,
             letter_spacing: 0.9,
             text_transform: TextTransform::Uppercase,
-            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+            color: t.color.text_muted(),
             margin_bottom: 11.0,
         }
     }
@@ -1127,13 +1122,13 @@ stylesheet! {
 // ---- Hero --------------------------------------------------------------
 
 stylesheet! {
-    pub HeroCard<()> {
-        base(_t) {
+    pub HeroCard<IdeaThemeRef> {
+        base(t) {
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::FlexStart,
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            background: t.color.surface(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_color: t.color.border(),
             border_radius: 20.0,
             padding: 32.0,
             gap: 18.0,
@@ -1148,41 +1143,41 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub HeroBadge<()> {
-        base(_t) {
+    pub HeroBadge<IdeaThemeRef> {
+        base(t) {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
             gap: 8.0,
             padding_horizontal: 13.0,
             padding_vertical: 5.0,
             border_radius: 999.0,
-            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
+            background: t.color.surface_alt(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_color: t.color.border(),
         }
         transitions { background: 250ms EaseInOut, }
     }
 }
 
 stylesheet! {
-    pub HeroDot<()> {
-        base(_t) {
+    pub HeroDot<IdeaThemeRef> {
+        base(t) {
             width: Length::Px(7.0),
             height: Length::Px(7.0),
             border_radius: 999.0,
-            background: Tokenized::token("intent-success-solid-bg", Color("#15803d".into())),
+            background: t.intent.success.solid_bg(),
         }
     }
 }
 
 stylesheet! {
-    pub HeroBadgeText<()> {
-        base(_t) {
+    pub HeroBadgeText<IdeaThemeRef> {
+        base(t) {
             font_family: MONO,
             font_size: 11.5,
             font_weight: FontWeight::SemiBold,
             letter_spacing: 0.4,
-            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+            color: t.color.text_muted(),
         }
     }
 }
@@ -1203,60 +1198,60 @@ stylesheet! {
 // the whole CTA is a navigation `link`, so its content is a plain view) --
 
 stylesheet! {
-    pub CtaPrimary<()> {
-        base(_t) {
+    pub CtaPrimary<IdeaThemeRef> {
+        base(t) {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
             gap: 9.0,
             padding_horizontal: 22.0,
             padding_vertical: 11.0,
-            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
-            background: Tokenized::token("intent-primary-solid-bg", Color("#4f46e5".into())),
+            border_radius: t.radius.md(),
+            background: t.intent.primary.solid_bg(),
         }
         transitions { background: 150ms EaseOut, }
     }
 }
 
 stylesheet! {
-    pub CtaPrimaryText<()> {
-        base(_t) {
+    pub CtaPrimaryText<IdeaThemeRef> {
+        base(t) {
             font_size: 16.0,
             font_weight: FontWeight::SemiBold,
             text_align: TextAlign::Center,
-            color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
+            color: t.intent.primary.solid_text(),
         }
     }
 }
 
 stylesheet! {
-    pub CtaOutline<()> {
-        base(_t) {
+    pub CtaOutline<IdeaThemeRef> {
+        base(t) {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
             gap: 9.0,
             padding_horizontal: 22.0,
             padding_vertical: 11.0,
-            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            border_radius: t.radius.md(),
             border_width: 1.0,
-            border_color: Tokenized::token("intent-neutral-border", Color("#e2e8f0".into())),
+            border_color: t.intent.neutral.border(),
             background: Color("transparent".into()),
         }
-        state hovered(_t) {
-            border_color: Tokenized::token("color-border-strong", Color("#94a3b8".into())),
+        state hovered(t) {
+            border_color: t.color.border_strong(),
         }
         transitions { border_color: 150ms EaseOut, }
     }
 }
 
 stylesheet! {
-    pub CtaOutlineText<()> {
-        base(_t) {
+    pub CtaOutlineText<IdeaThemeRef> {
+        base(t) {
             font_size: 16.0,
             font_weight: FontWeight::SemiBold,
             text_align: TextAlign::Center,
-            color: Tokenized::token("intent-neutral-fg", Color("#475569".into())),
+            color: t.intent.neutral.fg(),
         }
     }
 }
@@ -1264,13 +1259,13 @@ stylesheet! {
 // ---- Stat cards --------------------------------------------------------
 
 stylesheet! {
-    pub StatCard<()> {
-        base(_t) {
+    pub StatCard<IdeaThemeRef> {
+        base(t) {
             flex_direction: FlexDirection::Column,
             gap: 4.0,
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            background: t.color.surface(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_color: t.color.border(),
             border_radius: 14.0,
             padding_horizontal: 22.0,
             padding_vertical: 20.0,
@@ -1282,7 +1277,7 @@ stylesheet! {
 // The big stat number, tinted per-intent. Tone is the variant axis so the
 // color re-binds on theme swap (vs. a baked-in hex).
 stylesheet! {
-    pub StatNumber<()> {
+    pub StatNumber<IdeaThemeRef> {
         base(_t) {
             font_size: 34.0,
             font_weight: FontWeight::Bold,
@@ -1290,20 +1285,20 @@ stylesheet! {
         }
         variant tone {
             #[default]
-            primary(_t) { color: Tokenized::token("intent-primary-fg", Color("#4f46e5".into())), }
-            success(_t) { color: Tokenized::token("intent-success-fg", Color("#16a34a".into())), }
-            info(_t) { color: Tokenized::token("intent-info-fg", Color("#0891b2".into())), }
-            warning(_t) { color: Tokenized::token("intent-warning-fg", Color("#b45309".into())), }
+            primary(t) { color: t.intent.primary.fg(), }
+            success(t) { color: t.intent.success.fg(), }
+            info(t) { color: t.intent.info.fg(), }
+            warning(t) { color: t.intent.warning.fg(), }
         }
     }
 }
 
 stylesheet! {
-    pub StatLabel<()> {
-        base(_t) {
+    pub StatLabel<IdeaThemeRef> {
+        base(t) {
             font_size: 13.5,
             font_weight: FontWeight::Medium,
-            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+            color: t.color.text_muted(),
         }
     }
 }
@@ -1311,14 +1306,14 @@ stylesheet! {
 // ---- Section label (the uppercase rules between landing sections) ------
 
 stylesheet! {
-    pub SectionLabel<()> {
-        base(_t) {
+    pub SectionLabel<IdeaThemeRef> {
+        base(t) {
             font_family: MONO,
             font_size: 11.0,
             font_weight: FontWeight::SemiBold,
             letter_spacing: 1.3,
             text_transform: TextTransform::Uppercase,
-            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+            color: t.color.text_muted(),
             margin_top: 26.0,
         }
     }
@@ -1327,14 +1322,14 @@ stylesheet! {
 // ---- Principle feature cards -------------------------------------------
 
 stylesheet! {
-    pub FeatureCard<()> {
-        base(_t) {
+    pub FeatureCard<IdeaThemeRef> {
+        base(t) {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::FlexStart,
             gap: 14.0,
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            background: t.color.surface(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_color: t.color.border(),
             border_radius: 14.0,
             padding_horizontal: 22.0,
             padding_vertical: 20.0,
@@ -1346,7 +1341,7 @@ stylesheet! {
 // The 38px tinted glyph chip. Soft-bg + border per intent; the Icon inside
 // carries the matching `fg` tint via its own `tone` prop.
 stylesheet! {
-    pub FeatureIconBox<()> {
+    pub FeatureIconBox<IdeaThemeRef> {
         base(_t) {
             width: Length::Px(38.0),
             height: Length::Px(38.0),
@@ -1357,21 +1352,21 @@ stylesheet! {
         }
         variant tone {
             #[default]
-            primary(_t) {
-                background: Tokenized::token("intent-primary-soft-bg", Color("#eef2ff".into())),
-                border_color: Tokenized::token("intent-primary-border", Color("#c7d2fe".into())),
+            primary(t) {
+                background: t.intent.primary.soft_bg(),
+                border_color: t.intent.primary.border(),
             }
-            info(_t) {
-                background: Tokenized::token("intent-info-soft-bg", Color("#ecfeff".into())),
-                border_color: Tokenized::token("intent-info-border", Color("#a5f3fc".into())),
+            info(t) {
+                background: t.intent.info.soft_bg(),
+                border_color: t.intent.info.border(),
             }
-            success(_t) {
-                background: Tokenized::token("intent-success-soft-bg", Color("#f0fdf4".into())),
-                border_color: Tokenized::token("intent-success-border", Color("#bbf7d0".into())),
+            success(t) {
+                background: t.intent.success.soft_bg(),
+                border_color: t.intent.success.border(),
             }
-            warning(_t) {
-                background: Tokenized::token("intent-warning-soft-bg", Color("#fffbeb".into())),
-                border_color: Tokenized::token("intent-warning-border", Color("#fde68a".into())),
+            warning(t) {
+                background: t.intent.warning.soft_bg(),
+                border_color: t.intent.warning.border(),
             }
         }
     }
@@ -1390,22 +1385,22 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub FeatureTitle<()> {
-        base(_t) {
+    pub FeatureTitle<IdeaThemeRef> {
+        base(t) {
             font_size: 15.0,
             font_weight: FontWeight::SemiBold,
-            color: Tokenized::token("color-text", Color("#0f172a".into())),
+            color: t.color.text(),
             text_align: TextAlign::Left,
         }
     }
 }
 
 stylesheet! {
-    pub FeatureBody<()> {
-        base(_t) {
+    pub FeatureBody<IdeaThemeRef> {
+        base(t) {
             font_size: 13.5,
             line_height: 21.0,
-            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+            color: t.color.text_muted(),
             text_align: TextAlign::Left,
         }
     }
@@ -1421,7 +1416,10 @@ stylesheet! {
             align_items: AlignItems::Center,
             justify_content: JustifyContent::SpaceBetween,
             gap: 30.0,
-            background: Tokenized::token("code-bg", Color("#0f172a".into())),
+            // Literal: `code-bg` was a token name nothing installs, so this
+            // slate has always been what rendered. The code surface is
+            // deliberately fixed-dark in both color schemes.
+            background: Color("#0f172a".into()),
             border_radius: 16.0,
             padding_horizontal: 28.0,
             padding_vertical: 26.0,
@@ -1459,7 +1457,8 @@ stylesheet! {
             font_family: MONO,
             font_size: 13.5,
             line_height: 23.0,
-            color: Tokenized::token("code-fg", Color("#cbd5e1".into())),
+            // Literal — peer of the `code-bg` note above.
+            color: Color("#cbd5e1".into()),
         }
     }
 }
@@ -1478,19 +1477,19 @@ stylesheet! {
 // ---- Catalog grid (one card per component group) -----------------------
 
 stylesheet! {
-    pub CatCard<()> {
-        base(_t) {
+    pub CatCard<IdeaThemeRef> {
+        base(t) {
             flex_direction: FlexDirection::Column,
             gap: 11.0,
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            background: t.color.surface(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_color: t.color.border(),
             border_radius: 14.0,
             padding_horizontal: 20.0,
             padding_vertical: 18.0,
         }
-        state hovered(_t) {
-            border_color: Tokenized::token("intent-primary-fg", Color("#4f46e5".into())),
+        state hovered(t) {
+            border_color: t.intent.primary.fg(),
         }
         transitions { background: 250ms EaseInOut, border_color: 150ms EaseOut, }
     }
@@ -1507,26 +1506,26 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub CatGroupLabel<()> {
-        base(_t) {
+    pub CatGroupLabel<IdeaThemeRef> {
+        base(t) {
             font_family: MONO,
             font_size: 11.0,
             font_weight: FontWeight::SemiBold,
             letter_spacing: 1.1,
             text_transform: TextTransform::Uppercase,
-            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+            color: t.color.text_muted(),
             text_align: TextAlign::Left,
         }
     }
 }
 
 stylesheet! {
-    pub CatCount<()> {
-        base(_t) {
+    pub CatCount<IdeaThemeRef> {
+        base(t) {
             font_family: MONO,
             font_size: 12.0,
             font_weight: FontWeight::SemiBold,
-            color: Tokenized::token("intent-primary-fg", Color("#4f46e5".into())),
+            color: t.intent.primary.fg(),
         }
     }
 }
@@ -1542,14 +1541,14 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub CatChip<()> {
-        base(_t) {
+    pub CatChip<IdeaThemeRef> {
+        base(t) {
             font_size: 12.0,
             font_weight: FontWeight::Medium,
-            color: Tokenized::token("color-text", Color("#0f172a".into())),
-            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
+            color: t.color.text(),
+            background: t.color.surface_alt(),
             border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_color: t.color.border(),
             border_radius: 6.0,
             padding_horizontal: 8.0,
             padding_vertical: 3.0,

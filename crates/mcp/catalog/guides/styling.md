@@ -54,7 +54,22 @@ Key parts:
 - `state <name>(_theme)` — overlay for one of the four interaction states: [[hovered]], [[pressed]], [[focused]], [[disabled]]. Other names are rejected at compile time.
 - Property names are `StyleRules` fields (see the appendix) plus shorthands the macro fans out: `padding` / `padding_horizontal` / `padding_vertical` (same for `margin`), `border_radius`, `border_width`, `border_color`. Note the color field is `background` / `color` — there is no `background_color`.
 
-**The `<Theme>` type parameter and the `(theme)` arm binding are legacy syntax, parsed but ignored.** Rule bodies must NOT reference the binding — `background: theme.colors.primary` is a **compile error** ("theme.* references are no longer supported in stylesheet bodies"). Theme-dependent values are written as token references instead: `Tokenized::token("name", fallback)`. Write the binding as `_theme` / `_t`.
+**The `<…>` type parameter names the sheet's token vocabulary, and the arm binding hands it to the block.** With a design system installed, declare its theme type and reference tokens through the binding — the name is a path the compiler checks, not a string:
+
+```rust
+stylesheet! {
+    pub Panel<IdeaThemeRef> {
+        base(t) {
+            background: t.color.surface(),
+            padding: t.spacing.md(),
+        }
+    }
+}
+```
+
+The binding is *not* the theme's values — a theme swap still flows through the token registry at resolve time, which is what keeps it one write per token rather than a re-mint. So `background: theme.colors.primary` does not compile: there are no value fields to read.
+
+`<()>` declares no vocabulary. Such a sheet still references tokens by name with `Tokenized::token("name", fallback)` — the right form for app-defined tokens that no vocabulary describes (see the light/dark app below) — and conventionally writes its binding `_theme` / `_t`.
 
 ## Applying styles
 
@@ -134,7 +149,7 @@ This exact pattern is available as a compile-checked recipe: `describe_recipe("d
 
 For a fully signal-driven variant selection (no explicit `set_theme` calls), `idea_theme::install_themes(active, &[("light", LIGHT), ("dark", DARK)])` takes a `Signal<String>` naming the active variant and swaps automatically whenever the signal changes.
 
-> **Anti-pattern — do NOT hand-roll per-node theme switching.** Don't define a palette struct and branch per node with `if dark.get() { palette.dark_bg } else { palette.light_bg }` inside style closures, and don't rebuild `StyleRules` per node per theme. Declare colors as token references in `stylesheet!` (or idea-theme's `theme_token!`) and swap the whole theme with `set_theme` / `install_themes` — one call re-flows every styled primitive, stays cache-friendly (theme swap changes token values, not class identities), and keeps the theme a single source of truth. For idea-ui apps the equivalents are `install_idea_theme` / `set_idea_theme` / `install_idea_theme_reactive` — see [[theming]].
+> **Anti-pattern — do NOT hand-roll per-node theme switching.** Don't define a palette struct and branch per node with `if dark.get() { palette.dark_bg } else { palette.light_bg }` inside style closures, and don't rebuild `StyleRules` per node per theme. Declare colors as token references in `stylesheet!` (typed via the block binding when a design system is installed, `Tokenized::token` for app-defined names) and swap the whole theme with `set_theme` / `install_themes` — one call re-flows every styled primitive, stays cache-friendly (theme swap changes token values, not class identities), and keeps the theme a single source of truth. For idea-ui apps the equivalents are `install_idea_theme` / `set_idea_theme` / `install_idea_theme_reactive` — see [[theming]].
 
 **When is `install_theme` required?** For bare `stylesheet!` usage it's required only when styles reference tokens you expect a theme to supply (otherwise fallbacks apply). idea-ui **components** require `install_idea_theme(...)` before the first render — they read the active theme and panic without one (see [[theming]]).
 
@@ -185,9 +200,13 @@ Every `stylesheet!` rule body sets fields of `runtime_core::StyleRules`. All fie
 
 **Position**: `position` (`Position::{Relative, Absolute, Sticky}`), `top`, `right`, `bottom`, `left`.
 
+`Position::Sticky` pins per axis: `top` pins vertically, `left` pins horizontally, and they are independent — a frozen table column is `position: Sticky, left: Px(0.0)` and still scrolls vertically with its row. Sticky pins to the *nearest* enclosing scroll container, so an intervening `overflow: Hidden` becomes that container. Trailing edges (`bottom` / `right`) work on web only; native backends log a one-time `[unsupported]` warning in debug builds instead of failing silently.
+
 **Typography**: `font_family` (`FontFamily::System(String)` or a registered `Typeface`; `"system-ui, sans-serif"` coerces), `font_weight`, `font_style`, `line_height`, `letter_spacing`, `text_align`, `underline` (bool), `strikethrough` (bool), `text_transform`.
 
-**Visual**: `opacity`, `overflow`, `object_fit`, `shadow`, `background_gradient`, `transform` (`Vec<Transform>`), `transform_origin`.
+**Visual**: `opacity`, `overflow`, `overscroll_behavior`, `object_fit`, `shadow`, `background_gradient`, `transform` (`Vec<Transform>`), `transform_origin`.
+
+`overscroll_behavior` (`OverscrollBehavior::{Auto, Contain, None}`) governs what a scroll gesture does when it runs out of content, and only means anything on a scrolling surface. `Contain` stops the gesture chaining outward — the declarative fix for a horizontal scroller whose left-edge swipe becomes the browser's "back". `None` also suppresses the platform's edge effect (web: no chaining; iOS: `bounces = false`; macOS: no elasticity; Android: `OVER_SCROLL_NEVER`).
 
 **Interaction** (desktop/web; touch backends no-op): `cursor`, `user_select`, `pointer_events`.
 

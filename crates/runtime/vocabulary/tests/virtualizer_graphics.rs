@@ -431,3 +431,137 @@ fn graphics_ref_fill_receives_handle() {
     });
     assert_eq!(filled.get(), 1);
 }
+
+// ===========================================================================
+// Virtualizer: the scroll surface (`.on_scroll(..)` + `VirtualizerHandle`)
+// ===========================================================================
+//
+// A virtualizer OWNS its scroller, so without a scroll surface no
+// sibling can align to it — a sticky header, an edge-triggered fetch,
+// or a second pane synced to the same offset all become impossible and
+// force the app to hand-roll virtualization over a `scroll_view` purely
+// to get the offset back. These tests pin the plumbing that closes
+// that gap (CLAUDE.md §8: named after the bug, not the function).
+
+/// The author's `on_scroll` must actually reach the backend's callback
+/// bundle. Before the surface existed there was nowhere to put it: the
+/// builder had no `on_scroll` and `VirtualizerCallbacks` had no field,
+/// so a virtualizer's scroll position was unobservable by construction.
+#[test]
+fn regression_virtualizer_scroll_position_is_unobservable() {
+    let h = harness();
+    let seen: Rc<RefCell<Vec<(f32, f32)>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = seen.clone();
+
+    let _realized = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            virtualizer(
+                || 3,
+                |i| i as u64,
+                ItemSize::Known(Rc::new(|_| 40.0)),
+                |idx| text().content(format!("row {idx}")).build(),
+            )
+            .on_scroll(move |x, y| sink.borrow_mut().push((x, y)))
+            .build(),
+        )
+    });
+
+    // The backend drives it, exactly as a real scroll event would.
+    let cbs = h.virtualizer(0);
+    let on_scroll = cbs
+        .on_scroll
+        .as_ref()
+        .expect("`.on_scroll(..)` must reach VirtualizerCallbacks");
+    on_scroll(0.0, 120.0);
+    on_scroll(0.0, 240.0);
+
+    assert_eq!(*seen.borrow(), vec![(0.0, 120.0), (0.0, 240.0)]);
+}
+
+/// Absent `.on_scroll(..)`, the field stays `None` rather than becoming
+/// a no-op closure. Backends branch on this to skip installing scroll
+/// observation entirely (a JS listener that crosses the wasm boundary,
+/// an AppKit notification observer, a RecyclerView listener firing every
+/// fling frame) — a no-op closure would silently reinstate that cost on
+/// every list in the app.
+#[test]
+fn virtualizer_without_on_scroll_installs_no_observer() {
+    let h = harness();
+    let _realized = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            virtualizer(
+                || 1,
+                |i| i as u64,
+                ItemSize::Known(Rc::new(|_| 40.0)),
+                |_| text().content("row").build(),
+            )
+            .build(),
+        )
+    });
+    assert!(
+        h.virtualizer(0).on_scroll.is_none(),
+        "no handler must mean no observer, not an observer calling a no-op"
+    );
+}
+
+/// `on_scroll` must not disturb the mount sequence or the row-supply
+/// callbacks it travels beside — it is passed through the handler
+/// untouched, unlike `mount_item`/`release_item` which the handler
+/// wraps in per-row ownership scopes.
+#[test]
+fn virtualizer_on_scroll_leaves_row_supply_intact() {
+    let h = harness();
+    let _realized = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            virtualizer(
+                || 2,
+                |i| (i as u64) + 100,
+                ItemSize::Known(Rc::new(|_| 40.0)),
+                |idx| text().content(format!("row {idx}")).build(),
+            )
+            .on_scroll(|_, _| {})
+            .build(),
+        )
+    });
+    let cbs = h.virtualizer(0);
+    assert_eq!((cbs.item_count)(), 2);
+    assert_eq!((cbs.item_key)(1), 101);
+    assert_eq!((cbs.item_size)(0), 40.0);
+}
+
+/// `on_handle` must hand back a handle whose reads are safe on a
+/// backend that hasn't implemented the ops. The mock is exactly that
+/// backend, so this pins the defaulted contract every non-adopting
+/// backend relies on: `(0.0, 0.0)` and silent no-ops, never a panic.
+#[test]
+fn virtualizer_handle_is_inert_but_safe_on_a_backend_without_ops() {
+    let h = harness();
+    let handle: Rc<RefCell<Option<runtime_shared::primitives::virtualizer::VirtualizerHandle>>> =
+        Rc::new(RefCell::new(None));
+    let sink = handle.clone();
+    let _realized = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            virtualizer(
+                || 1,
+                |i| i as u64,
+                ItemSize::Known(Rc::new(|_| 40.0)),
+                |_| text().content("row").build(),
+            )
+            .on_handle(move |hd| *sink.borrow_mut() = Some(hd))
+            .build(),
+        )
+    });
+    let handle = handle.borrow();
+    let handle = handle.as_ref().expect("on_handle must fire at mount");
+    assert_eq!(handle.scroll_offset(), (0.0, 0.0));
+    handle.scroll_to(10.0, 20.0);
+    handle.scroll_to_index(3);
+}
