@@ -932,3 +932,89 @@ fn nav_handle_identity_survives_navigation() {
         );
     });
 }
+
+// ===========================================================================
+// Nested navigator base composition
+// ===========================================================================
+
+#[derive(Debug, Clone, PartialEq)]
+struct IdParams {
+    id: String,
+}
+
+impl runtime_shared::primitives::navigator::RouteParams for IdParams {
+    fn to_path(&self, pattern: &str) -> String {
+        pattern.replace(":id", &self.id)
+    }
+    fn from_segments(
+        segments: &std::collections::HashMap<String, String>,
+    ) -> Option<Self> {
+        segments.get("id").map(|id| IdParams { id: id.clone() })
+    }
+}
+
+const LIST: Route<()> = Route::new("list", "");
+const ITEM: Route<IdParams> = Route::new("item", "/:id");
+const INNER_INDEX: Route<()> = Route::new("inner-index", "");
+const INNER_LEAF: Route<()> = Route::new("inner-leaf", "/leaf");
+
+/// A navigator nested inside a `:param` screen composes its URLs onto
+/// the parent screen's CONCRETE path, never the registered pattern.
+/// Publishing the pattern as the nav base made the inner navigator emit
+/// `/:id/leaf` — a literal placeholder in the address bar, which on
+/// reload resolves back to an entity whose id is the string ":id".
+#[test]
+fn nested_navigator_base_is_the_concrete_parent_path() {
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let outer_slot: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let inner_slot: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let inner_ctx: Rc<RefCell<Option<StackNav>>> = Rc::new(RefCell::new(None));
+
+        let element = {
+            let outer_slot = outer_slot.clone();
+            let inner_slot = inner_slot.clone();
+            let inner_ctx = inner_ctx.clone();
+            stack_navigator(&LIST)
+                .screen(LIST, |_| text().content("list").build())
+                .screen(ITEM, move |_p: IdParams| {
+                    let inner_slot = inner_slot.clone();
+                    let inner_ctx = inner_ctx.clone();
+                    stack_navigator(&INNER_INDEX)
+                        .screen(INNER_INDEX, |_| text().content("index").build())
+                        .screen(INNER_LEAF, |_| text().content("leaf").build())
+                        .layout(move || {
+                            *inner_ctx.borrow_mut() = inject::<StackNav>();
+                            view().child(navigator_outlet()).build()
+                        })
+                        .on_handle(move |handle| *inner_slot.borrow_mut() = Some(handle))
+                        .build()
+                })
+                .on_handle(move |handle| *outer_slot.borrow_mut() = Some(handle))
+                .build()
+        };
+        let _realized = realize(&h.backend, &h.registry, element);
+
+        let outer = outer_slot.borrow_mut().take().expect("outer handle");
+        outer.push(&ITEM, IdParams { id: "p1".to_string() });
+        world.flush();
+
+        let ctx = inner_ctx.borrow_mut().take().expect("inner StackNav");
+        assert_eq!(
+            ctx.active_path.get(),
+            "/p1",
+            "the nested navigator's index sits at the parent's concrete path"
+        );
+
+        let inner = inner_slot.borrow_mut().take().expect("inner handle");
+        inner.push(&INNER_LEAF, ());
+        world.flush();
+
+        assert_eq!(
+            ctx.active_path.get(),
+            "/p1/leaf",
+            "a nested push composes onto the concrete parent path, not the pattern"
+        );
+    });
+}

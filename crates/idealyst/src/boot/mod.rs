@@ -112,43 +112,31 @@ impl Default for AppConfig {
 // ---------------------------------------------------------------------
 // No shell selected.
 //
-// A native target with no shell feature has no `run` to offer. Rather
-// than omit it (leaving "cannot find function `run`", which says nothing
-// about the actual mistake) this arm defines `run` with an unsatisfiable
-// bound. The error then fires *at the call site*, with a message naming
-// the fix — and `cargo check -p idealyst` on a bare native build stays
-// green, because the bound is only checked when someone calls it.
+// A native target with no shell feature has no `run` to offer. This
+// arm still COMPILES and fails at run time, deliberately.
+//
+// The compile-time version (an unsatisfiable trait bound with
+// `#[diagnostic::on_unimplemented]`) was strictly worse in practice:
+// building the app's binary for the host is completely routine —
+// `cargo test`, `cargo check`, and every rust-analyzer save do it — so
+// a hard error there breaks the app's own test suite and reddens the
+// IDE for a web app that is configured perfectly correctly. Failing at
+// run time costs nothing (a native binary of a web app was never going
+// to do anything useful) and the message is just as actionable.
 // ---------------------------------------------------------------------
 
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "terminal")))]
-mod no_shell {
-    /// Never implemented for anything. See the module comment.
-    #[diagnostic::on_unimplemented(
-        message = "no idealyst shell is selected for this target",
-        label = "needs a shell",
-        note = "this is a NATIVE build (no `--target wasm32-unknown-unknown`).",
-        note = "For a web app, set the target in .cargo/config.toml:",
-        note = "    [build]",
-        note = "    target = \"wasm32-unknown-unknown\"",
-        note = "For a terminal app, enable the shell feature in Cargo.toml:",
-        note = "    idealyst = { version = \"1.2\", features = [\"terminal\"] }"
-    )]
-    pub trait ShellSelected {}
-
-    /// The type that never satisfies [`ShellSelected`].
-    pub struct NoShell;
-}
-
-// The bound sits on the GENERIC parameter, not on a concrete type.
-// `where NoShell: ShellSelected` would be a "trivial bound" — rustc
-// evaluates predicates over concrete types eagerly and rejects the
-// definition itself (E0277), so the error would fire for anyone merely
-// compiling this crate. Hanging it on `E` defers the check to the call
-// site, which is where the mistake actually is.
-#[cfg(all(not(target_arch = "wasm32"), not(feature = "terminal")))]
-pub fn run<E, S: runtime_vocabulary::BuiltinSet>(_app: impl FnOnce() -> Element, _config: AppConfig)
-where
-    E: SceneExtensions + no_shell::ShellSelected,
-{
-    unreachable!("unsatisfiable bound — this body is never reachable")
+pub fn run<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
+    _app: impl FnOnce() -> Element,
+    _config: AppConfig,
+) {
+    panic!(
+        "no idealyst shell is selected for this target.\n\n\
+         This binary was built for the HOST, not for a shell that can \
+         display anything.\n\n\
+         For a web app, set the target in .cargo/config.toml:\n    \
+         [build]\n    target = \"wasm32-unknown-unknown\"\n\n\
+         For a terminal app, enable the shell feature in Cargo.toml:\n    \
+         idealyst = {{ version = \"1.2\", features = [\"terminal\"] }}"
+    )
 }

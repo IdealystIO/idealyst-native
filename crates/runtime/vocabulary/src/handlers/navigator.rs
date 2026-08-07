@@ -349,7 +349,7 @@ fn realize_screen<H: NavCaps + 'static>(
     backend: &Rc<RefCell<H>>,
     registry: &Rc<Registry<H>>,
     screens: &Rc<HashMap<&'static str, NavScreenEntry>>,
-    base: &str,
+    screen_path: &str,
     active_route: Signal<&'static str>,
     link_activator: &LinkActivator,
     name: &'static str,
@@ -362,7 +362,15 @@ fn realize_screen<H: NavCaps + 'static>(
         .unwrap_or_else(|| panic!("navigator: route '{name}' is not registered"));
     // Publish the base prefix for any navigator nested in THIS screen
     // (`current_nav_base()` reads it) — hierarchy port, old `NavBaseGuard`.
-    let _base_guard = NavBaseGuard::push(join_path(base, entry.path));
+    //
+    // This is the screen's CONCRETE path (`/projects/p1`), not
+    // `join_path(base, entry.path)`: the registered pattern still holds
+    // `:placeholder` segments, and a nested navigator composes its base
+    // into every URL it emits (`compose_url`). Publishing the pattern
+    // made a navigator nested under `/:id` push `/projects/:id/schedule`
+    // — a literal `:id` in the address bar, which then resolves back to
+    // a project whose id is the string ":id" on reload.
+    let _base_guard = NavBaseGuard::push(screen_path.to_string());
     let _state_guard = ScreenStateGuard::push(state);
     let _route_guard = ScreenRouteGuard::push(name);
     // Both provisions are collected into a scope this screen OWNS (it
@@ -738,7 +746,6 @@ struct SwapShared<H: NavCaps + 'static> {
     backend: Rc<RefCell<H>>,
     registry: Rc<Registry<H>>,
     screens: Rc<HashMap<&'static str, NavScreenEntry>>,
-    base: String,
     outlet: RefCell<Option<H::Node>>,
     /// Mounted screens keyed by normalized URL — NOT route name: a
     /// parameterized route funnels many screens through one name;
@@ -827,7 +834,7 @@ impl<H: NavCaps + 'static> SwapShared<H> {
                 &self.backend,
                 &self.registry,
                 &self.screens,
-                &self.base,
+                &key,
                 self.active_route,
                 &self.activator(),
                 name,
@@ -908,7 +915,6 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         backend: backend.clone(),
         registry,
         screens: Rc::new(prim.config.screens),
-        base: base.clone(),
         outlet: RefCell::new(None),
         mounted: RefCell::new(HashMap::new()),
         active: RefCell::new(None),
@@ -1025,7 +1031,7 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         &shared.backend,
         &shared.registry,
         &shared.screens,
-        &base,
+        &initial_path,
         active_route,
         &link_activator,
         initial_route,
@@ -1197,12 +1203,16 @@ impl<H: NavCaps + 'static> StackShared<H> {
             .expect("navigator: link activator installed before any screen mounts")
     }
 
-    fn mount(&self, name: &'static str, params: Box<dyn Any>, state: Option<Rc<dyn Any>>) -> LiveScreen<H::Node> {
+    /// `path` is the entry's CONCRETE full path — it becomes the nav
+    /// base for any navigator nested in this screen (see
+    /// `realize_screen`), so it must be the URL the entry actually
+    /// carries, never the registered pattern.
+    fn mount(&self, name: &'static str, path: &str, params: Box<dyn Any>, state: Option<Rc<dyn Any>>) -> LiveScreen<H::Node> {
         realize_screen(
             &self.backend,
             &self.registry,
             &self.screens,
-            &self.base,
+            path,
             self.active_route,
             &self.activator(),
             name,
@@ -1266,7 +1276,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
         let params = match_path(&self.screens, &self.base, &path)
             .map(|(_, p)| p)
             .unwrap_or_else(|| Box::new(()));
-        let live = self.mount(route, params, state);
+        let live = self.mount(route, &path, params, state);
         if let Some(top) = self.stack.borrow_mut().last_mut() {
             top.live = Some(live);
         }
@@ -1293,7 +1303,12 @@ impl<H: NavCaps + 'static> StackShared<H> {
         if route != self.initial_route {
             let under = match self.retention {
                 StackRetention::Rebuild => None,
-                _ => Some(self.mount(self.initial_route, Box::new(()), None)),
+                _ => Some(self.mount(
+                    self.initial_route,
+                    &self.initial_path.clone(),
+                    Box::new(()),
+                    None,
+                )),
             };
             self.stack.borrow_mut().push(StackEntry {
                 route: self.initial_route,
@@ -1314,7 +1329,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
     }
 
     fn push(&self, name: &'static str, params: Box<dyn Any>, state: Option<Rc<dyn Any>>, url: String) {
-        let live = self.mount(name, params, state.clone());
+        let live = self.mount(name, &url, params, state.clone());
         self.dispose_covered_top();
         self.stack.borrow_mut().push(StackEntry { route: name, path: url, state, live: Some(live) });
         self.show_top();
@@ -1347,7 +1362,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
     }
 
     fn replace(&self, name: &'static str, params: Box<dyn Any>, state: Option<Rc<dyn Any>>, url: String) {
-        let live = self.mount(name, params, state.clone());
+        let live = self.mount(name, &url, params, state.clone());
         let old = self.stack.borrow_mut().pop();
         drop(old);
         self.stack.borrow_mut().push(StackEntry { route: name, path: url, state, live: Some(live) });
@@ -1360,7 +1375,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
         // Release the whole stack, then seat the new single screen.
         let old: Vec<_> = self.stack.borrow_mut().drain(..).collect();
         drop(old);
-        let live = self.mount(name, params, state.clone());
+        let live = self.mount(name, &url, params, state.clone());
         self.stack.borrow_mut().push(StackEntry { route: name, path: url, state, live: Some(live) });
         self.show_top();
         self.publish_depth();
@@ -1539,7 +1554,7 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
     }
 
     // Initial screen before chrome (old walker order).
-    let initial = shared.mount(initial_route, initial_params, None);
+    let initial = shared.mount(initial_route, &initial_path, initial_params, None);
     if base.is_empty() {
         set_initial_path(None);
     }
