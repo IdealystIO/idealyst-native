@@ -129,14 +129,24 @@ pub struct TableProps {
 /// the same way on every platform. Pass `TableRow`s as children.
 #[component(children)]
 pub fn Table(props: TableProps) -> Element {
-    let style = TableStyle();
+    // Scroll-x selects the sheet's `scrolling` axis (the overflow
+    // clip): in that mode the style lands on the surface WRAPPER
+    // around the scroller, which must clip the scrolling columns to
+    // its rounded frame. A plain table keeps the axis off — its style
+    // lands on the `<table>` itself, where a clip would shave the
+    // outer half of the collapsed border (see the sheet).
+    let style = if props.scroll_x {
+        TableStyle().into_style_application().with("scrolling", "on")
+    } else {
+        TableStyle().into_style_application()
+    };
     let mut children: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
         ChildList::append_to(c, &mut children);
     }
     // SDK's `table()` returns a `Bound<TableHandle>`; chain
     // `.with_style(...)` to land the themed style on the `<table>`
-    // itself, then convert to Element.
+    // itself (or the scroll surface), then convert to Element.
     sdk_table(SdkTableProps { children, scroll_x: props.scroll_x })
         .with_style(style)
         .into_element()
@@ -761,6 +771,49 @@ mod tests {
                 other => return other,
             }
         }
+    }
+
+    /// Regression: a PLAIN table's surface style must NOT carry the
+    /// overflow clip. The style lands on the `<table>` element itself,
+    /// whose `border-collapse: collapse` outer border straddles the
+    /// box edge — `overflow: hidden` there clips the border's outer
+    /// half and the frame renders visibly thinned. The clip belongs
+    /// only to the scroll-x surface wrapper (the `scrolling` axis),
+    /// which is a plain view the quirk can't touch.
+    #[test]
+    fn regression_plain_table_surface_does_not_clip_its_collapsed_border() {
+        with_test_world(|| {
+            let t = Table(TableProps {
+                children: vec![TableRow(TableRowProps {
+                    children: vec![body_cell("a")],
+                    ..Default::default()
+                })],
+                ..Default::default()
+            });
+            let el = peel_owned_keepalive(t);
+            let style = match el {
+                Element::Item { data, .. } => data
+                    .downcast_ref::<runtime_vocabulary::prims::PrimCell<
+                        runtime_vocabulary::prims::ViewPrim,
+                    >>()
+                    .expect("plain table outer is a view")
+                    .take()
+                    .style
+                    .expect("outer carries the themed Table sheet"),
+                _ => panic!("plain table lowers to the outer view"),
+            };
+            let app = match style {
+                runtime_vocabulary::StyleProp::Sheet(app) => *app,
+                _ => panic!("Table sheet is a static application"),
+            };
+            let rules = runtime_core::resolve_style(&app);
+            assert_eq!(
+                rules.overflow, None,
+                "plain table must not clip — overflow: hidden shaves the \
+                 collapsed border's outer half"
+            );
+            assert!(rules.border_top_width.is_some(), "surface keeps its border");
+        });
     }
 
     /// A plain row (no `on_row_click`) leaves its cells untouched: no

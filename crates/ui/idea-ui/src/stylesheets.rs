@@ -2048,12 +2048,6 @@ stylesheet! {
     pub Table<IdeaThemeRef> {
         base(t) {
             background: t.color.surface(),
-            // Clip children to the rounded frame. Load-bearing for
-            // `scroll_x` tables, where this sheet lands on the surface
-            // WRAPPER around the scroller: without the clip the
-            // scrolling columns paint square over the rounded corners.
-            // Harmless on plain tables (nothing overflows them).
-            overflow: Overflow::Hidden,
             border_top_width: 1.0,
             border_right_width: 1.0,
             border_bottom_width: 1.0,
@@ -2066,6 +2060,19 @@ stylesheet! {
             border_top_right_radius: t.radius.lg(),
             border_bottom_left_radius: t.radius.lg(),
             border_bottom_right_radius: t.radius.lg(),
+        }
+        // Scroll-x axis: clip children to the rounded frame. Load-
+        // bearing there — the sheet lands on the surface WRAPPER (a
+        // plain view) around the scroller, and without the clip the
+        // scrolling columns paint square over the rounded corners.
+        // NOT in `base`: on a plain table this sheet lands on the
+        // `<table>` itself, whose `border-collapse: collapse` outer
+        // border straddles the box edge — `overflow: hidden` there
+        // clips the border's outer half (visibly thinned edges).
+        variant scrolling {
+            #[default]
+            off(_t) {}
+            on(_t) { overflow: Overflow::Hidden }
         }
         transitions {
             background: 250ms EaseInOut,
