@@ -1971,6 +1971,265 @@ fn regression_web_preserves_focus_cancels_pointerdown_through_pressable_swallow(
     );
 }
 
+// ---------------------------------------------------------------------------
+// Secondary-press delivery via `contextmenu` — FRAMEWORK-NOTES #95.
+// ---------------------------------------------------------------------------
+
+/// Dispatch a bubbling `pointerdown` with `button == 2` — the shape Safari
+/// (macOS Ctrl-click remap) and every browser's two-finger / right-button
+/// press produce.
+fn dispatch_bubbling_secondary_pointerdown(target: &web_sys::Element) {
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_button(2);
+    let ev = web_sys::PointerEvent::new_with_event_init_dict("pointerdown", &init)
+        .expect("construct secondary pointerdown");
+    target.dispatch_event(&ev).expect("dispatch pointerdown");
+}
+
+/// Dispatch a bubbling `contextmenu` as a plain `MouseEvent` — the shape
+/// Firefox delivers, and (modulo the PointerEvent subclass) what Chrome on
+/// macOS delivers for a Ctrl-click after suppressing the `pointerdown`.
+/// Returns the event so callers can assert `default_prevented`.
+fn dispatch_bubbling_contextmenu(target: &web_sys::Element, ctrl: bool) -> web_sys::MouseEvent {
+    let init = web_sys::MouseEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_ctrl_key(ctrl);
+    let ev = web_sys::MouseEvent::new_with_mouse_event_init_dict("contextmenu", &init)
+        .expect("construct contextmenu");
+    target.dispatch_event(&ev).expect("dispatch contextmenu");
+    ev
+}
+
+/// REGRESSION TEST (FRAMEWORK-NOTES #95).
+///
+/// Chrome on macOS delivers Ctrl-click as ONLY a `contextmenu` event — the
+/// `pointerdown` is suppressed entirely (Safari remaps it to `button == 2`
+/// at pointerdown; Firefox sends a primary pointerdown AND contextmenu).
+/// Before the fix the web backend's `contextmenu` listener was a bare
+/// `preventDefault()`, so a Ctrl-click reached app code as nothing at all:
+/// no Secondary `Began`, no primary-with-ctrl, and no native menu either.
+/// The listener must synthesize the Secondary `Began` when no pointerdown
+/// preceded it.
+#[wasm_bindgen_test]
+fn regression_web_chrome_ctrl_click_contextmenu_only_delivers_secondary_began() {
+    use runtime_shared::{PointerButton, TouchPhase, TouchResponse};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let el = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&el).unwrap();
+
+    let fired = Rc::new(Cell::new(0u32));
+    let saw = Rc::new(Cell::new(None::<(TouchPhase, PointerButton, bool)>));
+    let (f, s) = (fired.clone(), saw.clone());
+    backend.install_touch_handler_impl(
+        &el.clone().unchecked_into(),
+        Rc::new(move |te| {
+            f.set(f.get() + 1);
+            s.set(Some((
+                te.phase,
+                runtime_shared::pointer_button(),
+                runtime_shared::pointer_modifiers().ctrl,
+            )));
+            TouchResponse::CONSUMED
+        }),
+    );
+
+    // The Chrome/macOS Ctrl-click shape: contextmenu with NO pointerdown.
+    let ev = dispatch_bubbling_contextmenu(&el, true);
+
+    assert_eq!(fired.get(), 1, "the Ctrl-click must reach the on_touch handler");
+    let (phase, button, ctrl) = saw.get().expect("handler recorded the event");
+    assert_eq!(phase, TouchPhase::Began, "a secondary press is a complete click: Began only");
+    assert_eq!(button, PointerButton::Secondary, "Ctrl-click must surface as Secondary");
+    assert!(ctrl, "the modifier state must come from the contextmenu event");
+    assert!(ev.default_prevented(), "the native menu must still be suppressed");
+}
+
+/// COMPANION. When `pointerdown` DID deliver the secondary press (Safari
+/// Ctrl-click, any browser's right-button press), the `contextmenu` that
+/// follows must NOT re-deliver it — one press, one `Began`. The
+/// check-and-clear must not leave the flag stale either: a subsequent
+/// pointerdown-less `contextmenu` (same element, Chrome shape) must
+/// synthesize again.
+#[wasm_bindgen_test]
+fn web_contextmenu_after_secondary_pointerdown_is_not_redelivered() {
+    use runtime_shared::TouchResponse;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let el = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&el).unwrap();
+
+    let fired = Rc::new(Cell::new(0u32));
+    let f = fired.clone();
+    backend.install_touch_handler_impl(
+        &el.clone().unchecked_into(),
+        Rc::new(move |_| {
+            f.set(f.get() + 1);
+            TouchResponse::CONSUMED
+        }),
+    );
+
+    // Safari / two-finger shape: pointerdown(button=2) then contextmenu.
+    dispatch_bubbling_secondary_pointerdown(&el);
+    let ev = dispatch_bubbling_contextmenu(&el, false);
+    assert_eq!(fired.get(), 1, "one press must deliver exactly one Began");
+    assert!(ev.default_prevented(), "the native menu must still be suppressed");
+
+    // Flag was consumed above — the next pointerdown-less contextmenu is a
+    // fresh press and must synthesize.
+    dispatch_bubbling_contextmenu(&el, true);
+    assert_eq!(fired.get(), 2, "a later Chrome-shape Ctrl-click must still be delivered");
+}
+
+/// COMPANION. The synthesis must honor the responder model across nesting:
+/// when a child's handler CONSUMED the secondary `pointerdown` (which
+/// `stop_propagation`s, so the ancestor's pointerdown listener never marks
+/// its own flag), the independently-bubbling `contextmenu` must not reach
+/// the ancestor and synthesize a press the child already consumed. The
+/// flag therefore records the consumed outcome, and `contextmenu` mirrors
+/// it: consumed → stop propagation.
+#[wasm_bindgen_test]
+fn web_contextmenu_consumed_secondary_does_not_leak_to_ancestor() {
+    use runtime_shared::TouchResponse;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let parent = doc.create_element("div").unwrap();
+    let child = doc.create_element("div").unwrap();
+    parent.append_child(&child).unwrap();
+    doc.body().unwrap().append_child(&parent).unwrap();
+
+    let parent_fired = Rc::new(Cell::new(0u32));
+    let child_fired = Rc::new(Cell::new(0u32));
+    let pf = parent_fired.clone();
+    backend.install_touch_handler_impl(
+        &parent.clone().unchecked_into(),
+        Rc::new(move |_| {
+            pf.set(pf.get() + 1);
+            TouchResponse::CONSUMED
+        }),
+    );
+    let cf = child_fired.clone();
+    backend.install_touch_handler_impl(
+        &child.clone().unchecked_into(),
+        Rc::new(move |_| {
+            cf.set(cf.get() + 1);
+            TouchResponse::CONSUMED
+        }),
+    );
+
+    dispatch_bubbling_secondary_pointerdown(&child);
+    dispatch_bubbling_contextmenu(&child, false);
+
+    assert_eq!(child_fired.get(), 1, "the child gets the one Began");
+    assert_eq!(
+        parent_fired.get(),
+        0,
+        "a secondary press the child consumed must not be re-synthesized on the ancestor \
+         from the independently-bubbling contextmenu",
+    );
+}
+
+/// COMPANION. An interactive leaf's ancestor-touch swallow must extend to
+/// `contextmenu`: right-clicking a Pressable inside an `on_touch` row stops
+/// the `pointerdown` at the control, which leaves the row's flag unset —
+/// exactly the state that triggers synthesis. Without the swallow covering
+/// `contextmenu`, the row would receive a secondary press its control
+/// swallowed.
+#[wasm_bindgen_test]
+fn web_contextmenu_synthesis_respects_pressable_swallow() {
+    use runtime_shared::TouchResponse;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+
+    let row = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&row).unwrap();
+    let row_fired = Rc::new(Cell::new(0u32));
+    let rf = row_fired.clone();
+    backend.install_touch_handler_impl(
+        &row.clone().unchecked_into(),
+        Rc::new(move |_| {
+            rf.set(rf.get() + 1);
+            TouchResponse::CONSUMED
+        }),
+    );
+
+    let pressable: web_sys::Node =
+        backend.create_pressable_impl(Rc::new(|| {}), &Default::default());
+    row.append_child(&pressable).unwrap();
+    let pressable_el: web_sys::Element = pressable.unchecked_into();
+
+    // Chrome-shape right-press on the control: contextmenu with no
+    // pointerdown reaching the row.
+    let ev = dispatch_bubbling_contextmenu(&pressable_el, false);
+
+    assert_eq!(
+        row_fired.get(),
+        0,
+        "a right-press on a Pressable must not synthesize a Secondary Began on the ancestor row",
+    );
+    assert!(
+        ev.default_prevented(),
+        "the native menu over the control must stay suppressed (pre-#95 behavior)",
+    );
+}
+
+/// COMPANION. Touchscreen long-press also raises `contextmenu` (Chrome ships
+/// it as a PointerEvent with pointerType "touch") — but that press already
+/// reached app code as a *primary* gesture that may still be in flight, so
+/// no Secondary must be injected; suppress-only is preserved for touch.
+#[wasm_bindgen_test]
+fn web_touch_longpress_contextmenu_does_not_synthesize_secondary() {
+    use runtime_shared::TouchResponse;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let el = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&el).unwrap();
+
+    let fired = Rc::new(Cell::new(0u32));
+    let f = fired.clone();
+    backend.install_touch_handler_impl(
+        &el.clone().unchecked_into(),
+        Rc::new(move |_| {
+            f.set(f.get() + 1);
+            TouchResponse::CONSUMED
+        }),
+    );
+
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_pointer_type("touch");
+    let ev = web_sys::PointerEvent::new_with_event_init_dict("contextmenu", &init)
+        .expect("construct touch contextmenu");
+    el.dispatch_event(&ev).expect("dispatch contextmenu");
+
+    assert_eq!(fired.get(), 0, "touch long-press contextmenu must not inject a Secondary");
+    assert!(ev.default_prevented(), "the native menu must still be suppressed");
+}
+
 /// Build a `keydown` for `key` that bubbles and is cancelable, dispatch it on
 /// `target`, and return whether its default action ended up prevented.
 fn dispatch_bubbling_keydown(target: &web_sys::Element, key: &str) -> bool {

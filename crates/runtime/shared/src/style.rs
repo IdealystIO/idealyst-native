@@ -449,34 +449,63 @@ pub enum TrackSize {
     Minmax(Box<TrackSize>, Box<TrackSize>),
 }
 
+/// Explicit grid placement for one axis of a grid ITEM —
+/// `grid-row` / `grid-column`. Lines are 1-based CSS grid lines;
+/// negative indices count from the container's end (`-1` is the last
+/// line), so [`GridPlacement::SPAN_ALL`] (`1 / -1`) covers every
+/// track. `None` on the [`StyleRules`] field keeps the item in
+/// auto-flow.
+///
+/// Two items may occupy the same cells — explicit placement permits
+/// overlap, exactly like CSS. That is what makes a row-spanning
+/// backdrop expressible: the `table` SDK places a proxy node at
+/// `grid_row: Line(r)`, `grid_column: SPAN_ALL` *under* the row's
+/// cells (paint order = document order) to give a dissolved table row
+/// a real, bindable surface without disturbing column alignment.
+///
+/// Mixing auto-flow items with explicitly-placed ones is a trap:
+/// auto-flow skips cells an explicit item occupies, so a spanning
+/// backdrop would push every auto cell out of its row. When any item
+/// in a grid is explicitly placed, place ALL of them (the table SDK
+/// does exactly this the moment a row proxy exists).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GridPlacement {
+    /// Place the item's leading edge at this grid line; it spans one
+    /// track (`grid-row: 3`).
+    Line(i16),
+    /// Explicit `start / end` line pair (`grid-column: 1 / -1`).
+    Lines(i16, i16),
+}
+
+impl GridPlacement {
+    /// `1 / -1` — span every track on this axis.
+    pub const SPAN_ALL: Self = Self::Lines(1, -1);
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Position {
     #[default]
     Relative,
     Absolute,
     /// Acts like `Relative` until the element would scroll past a
-    /// leading edge of its enclosing scroll container, at which point
-    /// it pins to that edge. The pin threshold comes from the matching
-    /// side field on [`StyleRules`]: `top` pins vertically, `left`
-    /// pins horizontally, and the two are independent — a frozen
-    /// column sets `left` only and keeps scrolling vertically with the
-    /// content. With no side set, pins to the top edge.
+    /// pinned edge of its enclosing scroll container, at which point
+    /// it pins there. The pin threshold comes from the matching side
+    /// field on [`StyleRules`]: `top` / `bottom` pin vertically,
+    /// `left` / `right` pin horizontally, and the axes are independent
+    /// — a frozen column sets `left` (or `right`) only and keeps
+    /// scrolling vertically with the content; a pinned footer sets
+    /// `bottom` only. With no side set, pins to the top edge.
     ///
-    /// The per-axis thresholds are resolved once, for every backend,
+    /// The per-edge thresholds are resolved once, for every backend,
     /// by [`sticky::StickyInsets::from_style`](crate::sticky::StickyInsets::from_style),
     /// and the pin arithmetic lives in
-    /// [`sticky::translate`](crate::sticky::translate). Backends
-    /// supply only the mechanism — where the natural position comes
-    /// from and how the pin is written — so their observable behavior
-    /// cannot drift (CLAUDE.md §7).
-    ///
-    /// **Trailing edges (`bottom` / `right`) are web-only.** They pin
-    /// correctly on web (the browser owns it) and are ignored by every
-    /// native backend, which would need the scrollport extent and the
-    /// element's own extent threaded into their per-scroll tick. A
-    /// native backend asked to pin on a trailing edge emits a one-time
-    /// `[unsupported]` warning in debug builds rather than degrading in
-    /// silence (see [`crate::unsupported`]).
+    /// [`sticky::translate`](crate::sticky::translate) — including the
+    /// trailing-edge (`bottom` / `right`) formula, which measures the
+    /// element's far edge against the scrollport's extent. Backends
+    /// supply only the mechanism — where the natural position, element
+    /// extent and scrollport extent come from, and how the pin is
+    /// written — so their observable behavior cannot drift
+    /// (CLAUDE.md §7).
     ///
     /// **Per-backend coverage**:
     /// - **Web** — emits CSS `position: sticky` plus the inset
@@ -498,13 +527,15 @@ pub enum Position {
     ///   origin + translate) rather than a layer transform — AppKit
     ///   culls/purges scroll-view drawing by frame, so a
     ///   transform-pinned view's drawn text goes blank once its frame
-    ///   scrolls out of the prepared content rect. Both axes; falls
-    ///   back to `Relative` with no enclosing `NSScrollView`. See
-    ///   `backend-macos/src/imp/sticky.rs`.
+    ///   scrolls out of the prepared content rect. All four edges
+    ///   (trailing pins measure against the clip view's bounds size);
+    ///   falls back to `Relative` with no enclosing `NSScrollView`.
+    ///   See `backend-macos/src/imp/sticky.rs`.
     /// - **wgpu** — walks up to the enclosing `ScrollView` at
     ///   `apply_style` time, registers the node in a per-backend
     ///   sticky registry, and the render walker adds the pin translate
-    ///   to the draw origin on both axes.
+    ///   to the draw origin — all four edges (the walk's scroll
+    ///   context carries the scrollport extent for trailing pins).
     ///   `refresh_layout_positions` refreshes cached natural positions
     ///   after each Taffy compute. Falls back to `Relative` when
     ///   there's no enclosing `ScrollView`.
@@ -517,14 +548,19 @@ pub enum Position {
     ///   `View.setTranslationX` / `setTranslationY` (device pixels,
     ///   dp→px via the view's display density). Because those are two
     ///   independent setters, each axis is epsilon-gated separately.
+    ///   All four edges (trailing pins measure against the scroll
+    ///   view's `getWidth()`/`getHeight()` in dp).
     ///   Walks up to the enclosing `ScrollView`/`HorizontalScrollView`
     ///   at `apply_style` time; deferred to `insert` for first-mount
     ///   children whose parent chain isn't yet wired up. Falls back to
     ///   `Relative` when no enclosing scroll-view ancestor exists.
-    /// - **Linux (GTK)** — vertical (`top`) only. The one backend
-    ///   without horizontal pinning; a `left` inset falls back to
-    ///   relative on that axis, so a frozen column does not work here.
-    ///   See `backend-linux/src/sticky.rs`.
+    /// - **Linux (GTK)** — vertical leading (`top`) only. The one
+    ///   backend without horizontal or trailing-edge pinning; `left`,
+    ///   `right` and `bottom` insets fall back to relative on their
+    ///   axis, so frozen columns and pinned footers do not work here.
+    ///   Deliberately unextended until it can be verified against a
+    ///   real GTK toolchain (see the scope note in
+    ///   `backend-linux/src/sticky.rs`).
     /// - **Terminal / Roku / CPU** — treated as `Relative`. Scrolling
     ///   on these targets is either inapplicable (terminal) or driven
     ///   by a different model (Roku SceneGraph, ESP32 displays). They
@@ -1097,6 +1133,14 @@ pub struct StyleRules {
     /// is how the `table` SDK aligns every column to one width across
     /// all rows. Ignored under flex.
     pub grid_template_columns: Option<Vec<TrackSize>>,
+    /// Explicit `grid-row` placement for this node as a grid ITEM
+    /// (its parent must be `display: Grid`). `None` ⇒ auto-flow. See
+    /// [`GridPlacement`] for the overlap and auto-flow-mixing rules.
+    pub grid_row: Option<GridPlacement>,
+    /// Explicit `grid-column` placement for this node as a grid ITEM.
+    /// `None` ⇒ auto-flow. `GridPlacement::SPAN_ALL` spans every
+    /// column — the row-backdrop shape.
+    pub grid_column: Option<GridPlacement>,
 
     // --- Flex container (applies when this node has children) ---
     pub flex_direction: Option<FlexDirection>,
@@ -1292,6 +1336,8 @@ impl Clone for StyleRules {
             font_size: self.font_size.clone(),
             display: self.display.clone(),
             grid_template_columns: self.grid_template_columns.clone(),
+            grid_row: self.grid_row.clone(),
+            grid_column: self.grid_column.clone(),
             flex_direction: self.flex_direction.clone(),
             flex_wrap: self.flex_wrap.clone(),
             justify_content: self.justify_content.clone(),
@@ -1411,7 +1457,7 @@ impl StyleRules {
         }
         overlay!(
             background, color, caret_color, font_size,
-            display, grid_template_columns,
+            display, grid_template_columns, grid_row, grid_column,
             flex_direction, flex_wrap, justify_content, align_items, align_content,
             gap, row_gap, column_gap,
             flex_grow, flex_shrink, flex_basis, align_self,
@@ -1475,6 +1521,26 @@ impl StyleRules {
             }
             s.push(';');
         }
+
+        let write_placement = |s: &mut String, tag: &str, p: &Option<GridPlacement>| {
+            if let Some(p) = p {
+                s.push_str(tag);
+                s.push('=');
+                match p {
+                    GridPlacement::Line(l) => {
+                        s.push_str(&l.to_string());
+                    }
+                    GridPlacement::Lines(a, b) => {
+                        s.push_str(&a.to_string());
+                        s.push('/');
+                        s.push_str(&b.to_string());
+                    }
+                }
+                s.push(';');
+            }
+        };
+        write_placement(&mut s, "gr", &self.grid_row);
+        write_placement(&mut s, "gc", &self.grid_column);
 
         write_enum(&mut s, "fd", self.flex_direction.map(|x| x as u8));
         write_enum(&mut s, "fw", self.flex_wrap.map(|x| x as u8));

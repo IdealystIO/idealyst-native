@@ -47,10 +47,14 @@
 //!
 //! ## Axis coverage
 //!
-//! Leading-edge pinning on both axes — `top` against the enclosing
-//! scroll's `offset_y`, `left` against its `offset_x`. Trailing-edge
-//! (`bottom` / `right`) is not implemented; see
-//! `runtime_shared::sticky` for why.
+//! All four edges. Leading — `top` against the enclosing scroll's
+//! `offset_y`, `left` against its `offset_x`. Trailing — `bottom` /
+//! `right` pin the child's far edge inside the scrollport's trailing
+//! edge; [`EnclosingScroll`] carries the scroll view's layout-frame
+//! extent and the registry caches each child's own frame extent, both
+//! in layout space (the same space `natural` and the offsets live in —
+//! the walker scales the result by the accumulated ancestor scale
+//! exactly as it does the leading translate).
 
 use std::collections::HashMap;
 
@@ -84,6 +88,10 @@ pub(crate) struct StickyChild {
     /// Initialized to the origin; the first layout pass replaces it
     /// with real values before any render walk reads it.
     pub(crate) natural: (f32, f32),
+    /// The child's `(width, height)` from its Taffy frame, in layout
+    /// px — trailing-edge pins measure the far edge against the
+    /// scrollport. Refreshed alongside `natural`.
+    pub(crate) size: (f32, f32),
 }
 
 /// Map from sticky-node pointer (`Rc::as_ptr` cast to `usize`) →
@@ -139,6 +147,7 @@ pub(crate) fn register(
             child_layout,
             scroll_layout,
             natural: (0.0, 0.0),
+            size: (0.0, 0.0),
         },
     );
     scroll_layout.is_some()
@@ -247,6 +256,10 @@ pub(crate) fn refresh_layout_positions(registry: &mut StickyRegistry, layout: &L
             continue;
         };
         child.natural = natural;
+        // The child's own extent for trailing-edge pins — same
+        // Taffy source as `natural`.
+        let frame = layout.frame_of(child.child_layout);
+        child.size = (frame.width, frame.height);
     }
 }
 
@@ -295,6 +308,11 @@ pub(crate) struct EnclosingScroll {
     /// at walk time so a sticky child sees the same scroll position
     /// as the surrounding rect generation.
     pub(crate) scroll_offset: (f32, f32),
+    /// The scroll view's own layout-frame `(width, height)` — the
+    /// scrollport extent trailing-edge pins measure against. Layout
+    /// space, like `scroll_offset` (the walker applies ancestor
+    /// scale to the pin result, not to its inputs).
+    pub(crate) scroll_extent: (f32, f32),
 }
 
 // =========================================================================
@@ -335,16 +353,18 @@ mod tests {
     fn regression_sticky_compute_translate_pins_past_threshold() {
         // Child sits at y=100 in the scroll view's content; pin
         // threshold (top) is 20px from the scroll view's top edge.
-        let vertical = StickyInsets { top: Some(20.0), left: None };
+        let vertical = StickyInsets { top: Some(20.0), ..Default::default() };
         let natural = (7.0_f32, 100.0_f32);
+        let size = (80.0_f32, 40.0_f32);
+        let viewport = (800.0_f32, 600.0_f32);
 
         // Far above the pin point — no translate on either axis.
-        assert_eq!(translate(vertical, natural, (0.0, 0.0)), (0.0, 0.0));
+        assert_eq!(translate(vertical, natural, size, (0.0, 0.0), viewport), (0.0, 0.0));
 
         // Way past the pin point: y compensates fully so the child
         // renders at scroll_y + threshold = 300, and x stays 0 so
         // `base_x` keeps its laid-out value.
-        let (dx, dy) = translate(vertical, natural, (0.0, 280.0));
+        let (dx, dy) = translate(vertical, natural, size, (0.0, 280.0), viewport);
         assert_eq!(dx, 0.0, "a vertical-only pin must not shift base_x");
         assert!(
             ((natural.1 + dy) - 300.0).abs() < 1e-5,
@@ -359,13 +379,33 @@ mod tests {
     /// only carried `offset_y`, so this was unreachable.
     #[test]
     fn regression_sticky_left_never_pins_horizontally() {
-        let horizontal = StickyInsets { top: None, left: Some(0.0) };
-        let (dx, dy) = translate(horizontal, (160.0, 40.0), (600.0, 250.0));
+        let horizontal = StickyInsets { left: Some(0.0), ..Default::default() };
+        let (dx, dy) = translate(horizontal, (160.0, 40.0), (80.0, 24.0), (600.0, 250.0), (800.0, 600.0));
         assert!(
             ((160.0 + dx) - 600.0).abs() < 1e-5,
             "pinned rendered x should equal scroll_x + threshold",
         );
         assert_eq!(dy, 0.0, "a horizontal-only pin must not shift base_y");
+    }
+
+    /// A RIGHT-frozen column on the GPU backend: `right` pulls
+    /// `base_x` back so the child's far edge parks at the
+    /// scrollport's trailing edge (`EnclosingScroll::scroll_extent`),
+    /// and releases once the content scrolls it into natural view.
+    /// Before trailing-edge support `EnclosingScroll` carried no
+    /// extent and the registry no child size, so `right` produced no
+    /// pin here or on any native backend.
+    #[test]
+    fn regression_sticky_right_pins_at_scrollport_trailing_edge() {
+        let horizontal = StickyInsets { right: Some(0.0), ..Default::default() };
+        // Column at x=900, 100 wide, 800-wide scrollport, unscrolled:
+        // parks at 800 - 100 = 700.
+        let (dx, dy) = translate(horizontal, (900.0, 40.0), (100.0, 24.0), (0.0, 0.0), (800.0, 600.0));
+        assert!(((900.0 + dx) - 700.0).abs() < 1e-5);
+        assert_eq!(dy, 0.0, "a horizontal-only pin must not shift base_y");
+        // Scrolled far enough right — rides the content again.
+        let (dx, _) = translate(horizontal, (900.0, 40.0), (100.0, 24.0), (200.0, 0.0), (800.0, 600.0));
+        assert_eq!(dx, 0.0);
     }
 
     /// Registry must shrink back to empty after a register +
@@ -408,19 +448,21 @@ mod tests {
         registry.insert(
             key_a,
             StickyChild {
-                insets: StickyInsets { top: Some(12.0), left: None },
+                insets: StickyInsets { top: Some(12.0), ..Default::default() },
                 child_layout: dummy_a,
                 scroll_layout: None,
                 natural: (0.0, 0.0),
+                size: (0.0, 0.0),
             },
         );
         registry.insert(
             key_b,
             StickyChild {
-                insets: StickyInsets { top: Some(16.0), left: None },
+                insets: StickyInsets { top: Some(16.0), ..Default::default() },
                 child_layout: dummy_b,
                 scroll_layout: None,
                 natural: (0.0, 0.0),
+                size: (0.0, 0.0),
             },
         );
         assert_eq!(registry.len(), 2);
@@ -470,10 +512,11 @@ mod tests {
         registry.insert(
             key,
             StickyChild {
-                insets: StickyInsets { top: Some(20.0), left: None },
+                insets: StickyInsets { top: Some(20.0), ..Default::default() },
                 child_layout: dummy,
                 scroll_layout: None,
                 natural: (0.0, 0.0),
+                size: (0.0, 0.0),
             },
         );
 
@@ -497,9 +540,11 @@ mod tests {
         // this is the structural fall-back-to-relative property.)
         assert_eq!(
             translate(
-                StickyInsets { top: Some(20.0), left: Some(20.0) },
+                StickyInsets { top: Some(20.0), left: Some(20.0), ..Default::default() },
                 (100.0, 100.0),
+                (80.0, 40.0),
                 (0.0, 0.0),
+                (800.0, 600.0),
             ),
             (0.0, 0.0),
             "zero scroll implies no pin on either axis, regardless of threshold",

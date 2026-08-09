@@ -17,7 +17,7 @@
 //! warning would emit thousands of identical lines and bury itself.
 //! Each message is emitted at most once per key per thread. The key is
 //! a `&'static str` so the dedup set never allocates and the call site
-//! is forced to name a *stable* condition (`"sticky.bottom"`) rather
+//! is forced to name a *stable* condition (`"position.sticky"`) rather
 //! than a per-node string.
 //!
 //! Key naming: `<feature>.<property>`, matching the phase-name
@@ -77,9 +77,9 @@ pub use imp::{mark_first_sighting, reset_for_test};
 ///
 /// ```ignore
 /// warn_once(
-///     "sticky.bottom",
-///     "position: Sticky with `bottom` — native backends pin only to \
-///      leading edges (`top` / `left`), so this element will not pin.",
+///     "position.sticky",
+///     "position: Sticky — this backend treats it as Relative, so the \
+///      element scrolls away with the content instead of pinning.",
 /// );
 /// ```
 #[inline]

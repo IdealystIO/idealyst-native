@@ -537,6 +537,14 @@ impl LayoutTree {
             Some(cols) => cols.iter().map(track_sizing_function).collect(),
             None => Default::default(),
         };
+        // Explicit grid-item placement (`grid-row` / `grid-column`).
+        // Always written so a node whose placement is removed on a
+        // reactive re-apply reverts to auto-flow instead of keeping a
+        // stale explicit position — same revert policy as the track
+        // list above. Meaningful only when the PARENT is a grid;
+        // harmless otherwise (the flex algorithm ignores it).
+        style.grid_row = grid_placement_line(rules.grid_row);
+        style.grid_column = grid_placement_line(rules.grid_column);
 
         // Position — always set (Relative/Absolute is binary, no
         // "unset" form in our rules).
@@ -1123,7 +1131,49 @@ impl LayoutTree {
                 // min/max formula collapses short columns. max-content alone
                 // is reliable and drives the water-fill below.
                 let mut max_cw = vec![0.0_f32; n];
-                for (i, c) in children.iter().enumerate() {
+                // Column attribution. Auto-flow children map to columns
+                // in document order (`auto_idx % n` — one grid row per
+                // table row). An EXPLICITLY placed child (`grid_column:
+                // Line(l)`) belongs to the column its start line names —
+                // the table SDK places every cell explicitly the moment
+                // a row carries a proxy backdrop, and index-order
+                // attribution would smear those cells across the wrong
+                // columns (the backdrops occupy child slots too). A
+                // child spanning multiple tracks (the `1 / -1` row
+                // backdrop) belongs to no single column: it's skipped —
+                // both from attribution and from the isolation measure,
+                // which would be wasted work on an empty proxy.
+                let mut auto_idx = 0usize;
+                for c in children.iter() {
+                    use taffy::style::GridPlacement as Gp;
+                    let col: Option<usize> = match self.tree.style(*c).map(|s| s.grid_column) {
+                        Ok(gc) => match (gc.start, gc.end) {
+                            (Gp::Line(l), Gp::Auto) => {
+                                // 1-based CSS line → 0-based column;
+                                // negative lines count from the end
+                                // (line -1 is line n+1).
+                                let line = l.as_i16();
+                                let positive = if line > 0 {
+                                    line as i32
+                                } else {
+                                    n as i32 + 2 + line as i32
+                                };
+                                usize::try_from(positive - 1).ok().filter(|i| *i < n)
+                            }
+                            (Gp::Auto, Gp::Auto) => {
+                                let k = auto_idx % n;
+                                auto_idx += 1;
+                                Some(k)
+                            }
+                            // Any explicit end line or span: the item
+                            // covers more than one column (or an
+                            // unsupported shape) — never drives a
+                            // single column's width.
+                            _ => None,
+                        },
+                        Err(_) => None,
+                    };
+                    let Some(col) = col else { continue };
                     let _ = self.tree.compute_layout_with_measure(
                         *c,
                         Size {
@@ -1135,8 +1185,8 @@ impl LayoutTree {
                             None => Size::ZERO,
                         },
                     );
-                    max_cw[i % n] =
-                        max_cw[i % n].max(self.tree.layout(*c).map(|l| l.size.width).unwrap_or(0.0));
+                    max_cw[col] =
+                        max_cw[col].max(self.tree.layout(*c).map(|l| l.size.width).unwrap_or(0.0));
                 }
                 let sum_max: f32 = max_cw.iter().sum();
                 let widths: Vec<f32> = if sum_max <= w {
@@ -1503,6 +1553,31 @@ fn track_sizing_function(t: &FwTrackSize) -> TrackSizingFunction {
         min: track_min(t),
         max: track_max(t),
     })
+}
+
+/// Lower a framework [`GridPlacement`](FwGridPlacement) to Taffy's
+/// per-axis start/end line pair. `None` (auto-flow) maps to
+/// `Auto / Auto`; a single line places the leading edge there and
+/// spans one track (Taffy's `Auto` end after an explicit start —
+/// CSS `grid-row: 3`); a line pair maps both edges, with negative
+/// indices counting from the container's end exactly as CSS does
+/// (`from_line_index` handles the sign).
+fn grid_placement_line(
+    p: Option<runtime_shared::GridPlacement>,
+) -> taffy::geometry::Line<taffy::style::GridPlacement> {
+    use runtime_shared::GridPlacement as FwGp;
+    use taffy::style::GridPlacement as Gp;
+    match p {
+        None => taffy::geometry::Line { start: Gp::Auto, end: Gp::Auto },
+        Some(FwGp::Line(l)) => taffy::geometry::Line {
+            start: Gp::from_line_index(l),
+            end: Gp::Auto,
+        },
+        Some(FwGp::Lines(a, b)) => taffy::geometry::Line {
+            start: Gp::from_line_index(a),
+            end: Gp::from_line_index(b),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -2074,6 +2149,193 @@ mod tests {
         assert!(
             total >= 400.0 - 1.0,
             "columns still fill the 400px container, got total {total}",
+        );
+    }
+
+    /// Regression: a table grid whose cells are EXPLICITLY placed
+    /// (`grid_row`/`grid_column`) with a `1 / -1` spanning backdrop per
+    /// row must produce the same column sizing as the plain auto-flow
+    /// grid, and the backdrop must cover its whole row.
+    ///
+    /// This is the row-proxy shape the `table` SDK emits for
+    /// interactive rows (drag & drop, row-level drop targets): the
+    /// backdrop is a sibling of the cells occupying the same grid row.
+    /// Two bugs this pins down:
+    /// - the `table-layout: auto` water-fill attributed cells to
+    ///   columns by CHILD INDEX (`i % n`), which the extra backdrop
+    ///   children and explicit placement both scramble — column widths
+    ///   came out wrong the moment a row had a proxy;
+    /// - a spanning backdrop must not drive any single column's width
+    ///   (nor be measured at all — it's an empty proxy).
+    #[test]
+    fn regression_table_grid_with_row_backdrops_keeps_column_sizing() {
+        use runtime_shared::GridPlacement as Gp;
+
+        // Two rows × three columns with distinct content widths.
+        let widths = [[180.0_f32, 20.0, 40.0], [30.0, 160.0, 20.0]];
+
+        // Reference: plain auto-flow grid (what a non-interactive
+        // table lowers to).
+        let mut auto_t = LayoutTree::new();
+        let auto_root = auto_t.new_node();
+        let auto_grid = auto_t.new_node();
+        let mut gr = StyleRules::default();
+        gr.display = Some(runtime_shared::DisplayKind::Grid);
+        gr.grid_template_columns = Some(vec![runtime_shared::TrackSize::Auto; 3]);
+        auto_t.set_style(auto_grid, &gr);
+        auto_t.add_child(auto_root, auto_grid);
+        let mut auto_cells = Vec::new();
+        for row in &widths {
+            for w in row {
+                let cell = auto_t.new_node();
+                auto_t.set_intrinsic_size(cell, *w, 12.0);
+                auto_t.add_child(auto_grid, cell);
+                auto_cells.push(cell);
+            }
+        }
+        auto_t.compute(auto_root, 500.0, 0.0);
+
+        // Proxy shape: same cells explicitly placed, plus one
+        // backdrop per row spanning every column.
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+        let grid = t.new_node();
+        t.set_style(grid, &gr);
+        t.add_child(root, grid);
+        let mut cells = Vec::new();
+        let mut backdrops = Vec::new();
+        for (r, row) in widths.iter().enumerate() {
+            let backdrop = t.new_node();
+            let mut br = StyleRules::default();
+            br.grid_row = Some(Gp::Line(r as i16 + 1));
+            br.grid_column = Some(Gp::SPAN_ALL);
+            t.set_style(backdrop, &br);
+            t.add_child(grid, backdrop);
+            backdrops.push(backdrop);
+            for (c, w) in row.iter().enumerate() {
+                let cell = t.new_node();
+                let mut cr = StyleRules::default();
+                cr.grid_row = Some(Gp::Line(r as i16 + 1));
+                cr.grid_column = Some(Gp::Line(c as i16 + 1));
+                t.set_style(cell, &cr);
+                t.set_intrinsic_size(cell, *w, 12.0);
+                t.add_child(grid, cell);
+                cells.push(cell);
+            }
+        }
+        t.compute(root, 500.0, 0.0);
+
+        // Column widths must match the auto-flow reference exactly.
+        for i in 0..auto_cells.len() {
+            let reference = auto_t.frame_of(auto_cells[i]).width;
+            let placed = t.frame_of(cells[i]).width;
+            assert!(
+                (reference - placed).abs() < 1.0,
+                "cell {i}: explicit placement + backdrops changed the column \
+                 width (auto-flow {reference}, placed {placed})",
+            );
+        }
+        // Cells land in their rows (row 1 below row 0).
+        let row0_y = t.frame_of(cells[0]).y;
+        let row1_y = t.frame_of(cells[3]).y;
+        assert!(row1_y > row0_y, "second row must sit below the first");
+
+        // Each backdrop covers its full row: full grid width, same y
+        // as its row's cells.
+        let grid_w = t.frame_of(grid).width;
+        for (r, b) in backdrops.iter().enumerate() {
+            let bf = t.frame_of(*b);
+            assert!(
+                bf.width >= grid_w - 1.0,
+                "row {r} backdrop must span every column (got {} of {grid_w})",
+                bf.width,
+            );
+            let row_y = t.frame_of(cells[r * 3]).y;
+            assert!(
+                (bf.y - row_y).abs() < 1.0,
+                "row {r} backdrop must sit at its row's y (backdrop {} vs row {row_y})",
+                bf.y,
+            );
+        }
+    }
+
+    /// The table SDK's scroll-x width strategy at the layout level: a
+    /// table surface inside a HORIZONTAL scroll container, floored at
+    /// `min_width: 100%`, must fill the scroller when its columns are
+    /// narrow and overflow it (content width, scrollable) when they are
+    /// wide. If the percent floor failed to resolve against the scroll
+    /// container, a narrow table would hug its content and leave a gap
+    /// at the trailing edge; if the scroll containment failed, a wide
+    /// table would squeeze instead of overflowing.
+    #[test]
+    fn regression_scroll_x_table_floors_at_scroller_width_and_overflows_past_it() {
+        fn build(cell_w: f32) -> (LayoutTree, LayoutNode, LayoutNode) {
+            let mut t = LayoutTree::new();
+            let root = t.new_node();
+            // The scroller: definite width from the root constraint.
+            let scroller = t.new_node();
+            // A horizontal scroller lays its content on the X MAIN
+            // axis: with the default Column direction the content is a
+            // CROSS-axis child — stretch-clamped to the scroller's
+            // width, never able to overflow it. The SDK's scroll-x
+            // wrapper sets Row for exactly this reason.
+            let mut scr = StyleRules::default();
+            scr.flex_direction = Some(runtime_shared::FlexDirection::Row);
+            t.set_style(scroller, &scr);
+            t.set_overflow_scroll(scroller, true);
+            t.add_child(root, scroller);
+            // The table surface: floored at the scroller's width.
+            let surface = t.new_node();
+            let mut sr = StyleRules::default();
+            sr.min_width = Some(Tokenized::Literal(FwLength::Percent(100.0)));
+            // Without shrink 0 the flex line squeezes the surface back
+            // to the scroller's width and nothing ever overflows —
+            // the same trap as [[project_min_height_pct_scroll_shrink]]
+            // on the vertical axis.
+            sr.flex_shrink = Some(Tokenized::Literal(0.0));
+            t.set_style(surface, &sr);
+            t.add_child(scroller, surface);
+            // The grid: three auto columns, one row of cells.
+            let grid = t.new_node();
+            let mut gr = StyleRules::default();
+            gr.display = Some(runtime_shared::DisplayKind::Grid);
+            gr.grid_template_columns = Some(vec![runtime_shared::TrackSize::Auto; 3]);
+            t.set_style(grid, &gr);
+            t.add_child(surface, grid);
+            for _ in 0..3 {
+                let cell = t.new_node();
+                t.set_intrinsic_size(cell, cell_w, 12.0);
+                t.add_child(grid, cell);
+            }
+            t.compute(root, 400.0, 300.0);
+            (t, scroller, surface)
+        }
+
+        // Narrow columns (3 × 40 = 120 < 400): the floor wins — the
+        // surface fills the scroller exactly.
+        let (t, scroller, surface) = build(40.0);
+        assert!(
+            (t.frame_of(scroller).width - 400.0).abs() < 1.0,
+            "scroller takes the constraint width"
+        );
+        assert!(
+            t.frame_of(surface).width >= 400.0 - 1.0,
+            "narrow table fills the scroller (min-width floor), got {}",
+            t.frame_of(surface).width,
+        );
+
+        // Wide columns (3 × 200 = 600 > 400): content wins — the
+        // surface overflows the scroller sideways (scroll range), and
+        // the scroller itself stays at its constraint width.
+        let (t, scroller, surface) = build(200.0);
+        assert!(
+            (t.frame_of(scroller).width - 400.0).abs() < 1.0,
+            "scroller must NOT grow to its content"
+        );
+        assert!(
+            t.frame_of(surface).width >= 600.0 - 1.0,
+            "wide table overflows to its content width (got {})",
+            t.frame_of(surface).width,
         );
     }
 

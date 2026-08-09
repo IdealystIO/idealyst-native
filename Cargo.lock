@@ -6074,6 +6074,7 @@ dependencies = [
 name = "idea-ui"
 version = "1.2.2"
 dependencies = [
+ "dnd",
  "host-mock",
  "idea-theme",
  "idea-ui-docs-derive",

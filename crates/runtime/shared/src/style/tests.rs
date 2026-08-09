@@ -1686,6 +1686,10 @@ fn clone_round_trips_a_fully_populated_struct() {
         border_left_color_transition: Some(Transition::new(840, Easing::EaseOut)),
         display: Some(DisplayKind::Grid),
         grid_template_columns: Some(vec![TrackSize::Fr(2.0), TrackSize::Px(40.0)]),
+        // Distinct variants per axis so a crossed grid_row/grid_column
+        // clone fails the equality check.
+        grid_row: Some(GridPlacement::Line(3)),
+        grid_column: Some(GridPlacement::Lines(1, -1)),
         flex_direction: Some(FlexDirection::RowReverse),
         flex_wrap: Some(FlexWrap::Wrap),
         justify_content: Some(JustifyContent::SpaceEvenly),

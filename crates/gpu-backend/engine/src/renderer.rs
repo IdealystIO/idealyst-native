@@ -1350,7 +1350,9 @@ fn walk<'a>(
                     let (dx, dy) = runtime_shared::sticky::translate(
                         child.insets,
                         child.natural,
+                        child.size,
                         scroll.scroll_offset,
+                        scroll.scroll_extent,
                     );
                     // Each axis pre-multiplied by ITS OWN accumulated
                     // scale, matching how `frame.x` / `frame.y` were
@@ -1925,6 +1927,9 @@ fn walk<'a>(
             Some(crate::sticky::EnclosingScroll {
                 scroll_layout: data.layout,
                 scroll_offset: (*offset_x, *offset_y),
+                // Layout-frame extent = the scrollport trailing-edge
+                // pins measure against (layout space, like the offset).
+                scroll_extent: (frame.width, frame.height),
             })
         }
         _ => enclosing_scroll,
@@ -2063,20 +2068,34 @@ fn walk<'a>(
     // `setTranslationZ` semantics. The compare touches each
     // child's `RefCell` once for read; safe because children are
     // distinct nodes (no aliasing with `data`, still borrowed).
+    //
+    // A sticky-registered sibling gets an implicit z of 1.0 — CSS
+    // paints positioned elements above static siblings, and a pinned
+    // element (frozen table column, pinned header) must draw over the
+    // content that slides beneath it. Without this, a pinned first
+    // cell is drawn before its later siblings and disappears under
+    // them the moment the pin engages. An explicit animated z still
+    // wins (`unwrap_or` the sticky default). The other native
+    // backends raise the same way at register time (`layer.zPosition`
+    // on iOS/macOS, `setTranslationZ` on Android).
     if visible_children.len() > 1 {
+        let sticky_z = |n: &WgpuNode| -> f32 {
+            let key = std::rc::Rc::as_ptr(n) as usize;
+            if backend.sticky_registry.contains_key(&key) { 1.0 } else { 0.0 }
+        };
         visible_children.sort_by(|a, b| {
             let za =
                 a.0.borrow()
                     .animated
                     .as_ref()
                     .and_then(|av| av.z_index)
-                    .unwrap_or(0.0);
+                    .unwrap_or_else(|| sticky_z(&a.0));
             let zb =
                 b.0.borrow()
                     .animated
                     .as_ref()
                     .and_then(|av| av.z_index)
-                    .unwrap_or(0.0);
+                    .unwrap_or_else(|| sticky_z(&b.0));
             za.partial_cmp(&zb).unwrap_or(std::cmp::Ordering::Equal)
         });
     }

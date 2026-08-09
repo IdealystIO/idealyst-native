@@ -66,16 +66,18 @@ mod tests {
     fn regression_sticky_registry_pins_when_scrolled_past_threshold() {
         // Child sits at y=100 dp in the scroll view's content; pin
         // threshold (top) is 20 dp from the scroll view's top edge.
-        let vertical = StickyInsets { top: Some(20.0), left: None };
+        let vertical = StickyInsets { top: Some(20.0), ..Default::default() };
         let natural = (12.0_f32, 100.0_f32);
+        let size = (80.0_f32, 40.0_f32);
+        let viewport = (411.0_f32, 731.0_f32);
 
         // Far above the pin point — no translate on either axis.
-        assert_eq!(translate(vertical, natural, (0.0, 0.0)), (0.0, 0.0));
+        assert_eq!(translate(vertical, natural, size, (0.0, 0.0), viewport), (0.0, 0.0));
 
         // Way past the pin point: y compensates fully so the child
         // renders at scroll_y + threshold = 300 dp, and x stays 0 so
         // `setTranslationX` is never written.
-        let (dx, dy) = translate(vertical, natural, (0.0, 280.0));
+        let (dx, dy) = translate(vertical, natural, size, (0.0, 280.0), viewport);
         assert_eq!(dx, 0.0, "a vertical-only pin must not write translationX");
         assert!(
             ((natural.1 + dy) - 300.0).abs() < 1e-5,
@@ -89,13 +91,32 @@ mod tests {
     /// `left` wrote nothing at all.
     #[test]
     fn regression_sticky_left_never_pins_horizontally() {
-        let horizontal = StickyInsets { top: None, left: Some(0.0) };
-        let (dx, dy) = translate(horizontal, (160.0, 40.0), (600.0, 250.0));
+        let horizontal = StickyInsets { left: Some(0.0), ..Default::default() };
+        let (dx, dy) = translate(horizontal, (160.0, 40.0), (80.0, 24.0), (600.0, 250.0), (411.0, 731.0));
         assert!(
             ((160.0 + dx) - 600.0).abs() < 1e-5,
             "pinned rendered x should equal scroll_x + threshold",
         );
         assert_eq!(dy, 0.0, "a horizontal-only pin must not write translationY");
+    }
+
+    /// A RIGHT-frozen column on Android: `right` pulls the child back
+    /// so its far edge parks at the scrollport's trailing edge —
+    /// written through `setTranslationX` only, so the free vertical
+    /// axis must come back exactly 0 or `write_translate` would leave
+    /// a stale `translationY` behind. Before trailing-edge support
+    /// `right` wrote nothing on any native backend.
+    #[test]
+    fn regression_sticky_right_pins_at_scrollport_trailing_edge() {
+        let horizontal = StickyInsets { right: Some(0.0), ..Default::default() };
+        // Column at x=900 dp, 100 dp wide, 411 dp scrollport,
+        // unscrolled: parks at 411 - 100 = 311.
+        let (dx, dy) = translate(horizontal, (900.0, 40.0), (100.0, 24.0), (0.0, 0.0), (411.0, 731.0));
+        assert!(((900.0 + dx) - 311.0).abs() < 1e-5);
+        assert_eq!(dy, 0.0, "a horizontal-only pin must not write translationY");
+        // Scrolled far enough right — rides the content again.
+        let (dx, _) = translate(horizontal, (900.0, 40.0), (100.0, 24.0), (589.0, 0.0), (411.0, 731.0));
+        assert_eq!(dx, 0.0);
     }
 
     /// Registry must shrink back to empty when its last child
@@ -171,9 +192,9 @@ mod tests {
         // same on both axes: the child sits at its natural layout
         // position with translation = 0, identical to what a
         // `Relative`-positioned view would render.
-        let insets = StickyInsets { top: Some(20.0), left: Some(20.0) };
+        let insets = StickyInsets { top: Some(20.0), left: Some(20.0), ..Default::default() };
         assert_eq!(
-            translate(insets, (100.0, 100.0), (0.0, 0.0)),
+            translate(insets, (100.0, 100.0), (80.0, 40.0), (0.0, 0.0), (411.0, 731.0)),
             (0.0, 0.0),
             "no scroll ancestor → no scroll → no pin",
         );

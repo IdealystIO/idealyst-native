@@ -395,7 +395,7 @@ pub use style::{
     PREMINT_FONT_INHERIT_CLASS,
     set_default_text_font, set_scrollbar_theme, take_pending_token_updates, update_tokens,
     AlignContent, AlignItems, AlignSelf, Color, Cursor, Derive, DisplayKind, Easing, FlexDirection, FlexWrap,
-    FontFamily, FontStyle, FontWeight, Gradient, GradientKind, GradientStop, TrackSize,
+    FontFamily, FontStyle, FontWeight, Gradient, GradientKind, GradientStop, GridPlacement, TrackSize,
     IntoOverrideSource, IntoVariantSource, JustifyContent, Length, ObjectFit, RadialExtent, Overflow,
     OverscrollBehavior,
     PointerEvents, Position, Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign,

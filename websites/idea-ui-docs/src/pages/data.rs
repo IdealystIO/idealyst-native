@@ -8,7 +8,7 @@ use idea_ui::{
     tone, typography_kind, variant, Button, Card, IconButton, Stack, StackAxis, StackGap, Tag,
     Typography,
 };
-use idea_ui::{Table, TableCell, TableRow};
+use idea_ui::{ColumnPin, Table, TableCell, TableRow};
 
 use crate::shell::{Callout, CodePanel, DemoSurface, Prop, PropsTable, Section, P};
 use idea_ui::components::card::variant as card_variant;
@@ -164,12 +164,102 @@ TableCell {
             }
         },
         ui! {
+            Section(title = "Horizontal scroll + frozen columns".to_string()) {
+                P(content = "Set `scroll_x = true` and columns lay out at their natural width \
+                    inside a horizontal scroller — wide tables overflow sideways instead of \
+                    squeezing and wrapping, and narrow ones still fill. Freeze a column against \
+                    either edge with `pinned` on its cells (pin the SAME cell in every row, header \
+                    included): the frozen column stays put while the rest scrolls beneath it, on \
+                    every backend.".to_string())
+                wide_table()
+                CodePanel(src = r##"Table(scroll_x = true) {
+    TableRow {
+        TableCell(header = true, text = Some("Service".to_string()), pinned = Some(ColumnPin::Left))
+        TableCell(header = true, text = Some("Region".to_string()))
+        // …more columns…
+        TableCell(header = true, text = Some("Status".to_string()), pinned = Some(ColumnPin::Right))
+    }
+    TableRow {
+        TableCell(text = Some("auth".to_string()), pinned = Some(ColumnPin::Left))
+        TableCell(text = Some("eu-west-1".to_string()))
+        // …
+        TableCell(pinned = Some(ColumnPin::Right)) {
+            Tag(label = "Healthy".into(), tone = tone::Success, variant = variant::Soft)
+        }
+    }
+}"##.to_string())
+            }
+        },
+        ui! {
+            Section(title = "Reorderable rows (drag & drop)".to_string()) {
+                P(content = "Give the table `on_reorder` and mark data rows `draggable = true`: \
+                    long-press (or press-and-drag with a pointer) picks a row up, it follows the \
+                    finger and dims, the row under it highlights as the drop slot, and dropping \
+                    calls `on_reorder(from, to)` with ordinals counted over the draggable rows \
+                    only (the header doesn't count). The callback owns the data — reorder your \
+                    source of truth and the table rebuilds from it. Keep `key` on the row loop so \
+                    reconciliation follows the moved rows.".to_string())
+                reorder_table()
+                CodePanel(src = r##"let items = signal(vec!["Alpha", "Bravo", "Charlie", "Delta"]);
+let on_reorder: Rc<dyn Fn(usize, usize)> = Rc::new(move |from, to| {
+    let mut v = items.get();
+    let moved = v.remove(from);
+    v.insert(to, moved);
+    items.set(v);
+});
+
+ui! {
+    Table(on_reorder = Some(on_reorder)) {
+        TableRow {
+            TableCell(header = true, text = Some("Task".to_string()))
+        }
+        for name in items, key = name {
+            TableRow(draggable = true) {
+                TableCell(text = Some(name.to_string()))
+            }
+        }
+    }
+}"##.to_string())
+            }
+        },
+        ui! {
             Section(title = "Table props".to_string()) {
                 PropsTable(rows = vec![
                     Prop {
                         name: "children",
                         ty: "Vec<Element>",
                         desc: "TableRows. Flattened via ChildList::append_to so `for` loops splat cleanly.",
+                    },
+                    Prop {
+                        name: "scroll_x",
+                        ty: "bool",
+                        desc: "Horizontal-scroll mode: columns at natural width inside a horizontal scroller. Required for pinned columns. Default false.",
+                    },
+                    Prop {
+                        name: "on_reorder",
+                        ty: "Option<Rc<dyn Fn(usize, usize)>>",
+                        desc: "Row drag-and-drop. Receives (from, to) ordinals over the draggable rows; reorder your data source in the callback. Default None.",
+                    },
+                ])
+            }
+        },
+        ui! {
+            Section(title = "TableRow props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop {
+                        name: "children",
+                        ty: "Vec<Element>",
+                        desc: "TableCells for this row.",
+                    },
+                    Prop {
+                        name: "on_row_click",
+                        ty: "Option<Rc<dyn Fn()>>",
+                        desc: "Whole-row tap target + hover highlight. Buttons inside cells still eat their own clicks. Default None.",
+                    },
+                    Prop {
+                        name: "draggable",
+                        ty: "bool",
+                        desc: "Reorderable inside a Table(on_reorder = …). Leave false on header rows. Takes the cells' touch slot, so it wins over on_row_click. Default false.",
                     },
                 ])
             }
@@ -192,10 +282,85 @@ TableCell {
                         ty: "Vec<Element>",
                         desc: "Custom cell contents (links, badges, multiple inline pieces). Replaces the default text rendering when provided.",
                     },
+                    Prop {
+                        name: "pinned",
+                        ty: "Option<ColumnPin>",
+                        desc: "Freeze this column against the Left or Right scroller edge (requires Table(scroll_x = true)). Pin the same cell in every row. Default None.",
+                    },
                 ])
             }
         },
     ])
+}
+
+/// Horizontal-scroll demo: enough columns to overflow the demo surface,
+/// with the identifying column frozen left and the status column frozen
+/// right — the two edges stay put while the middle scrolls beneath them.
+fn wide_table() -> Element {
+    fn status_tone(status: &str) -> idea_ui::ToneRef {
+        if status == "Healthy" { tone::Success.into() } else { tone::Danger.into() }
+    }
+    let services = [
+        ("auth", "eu-west-1", "v2.14.0", "3", "12ms", "0.02%", "Healthy"),
+        ("billing", "us-east-1", "v2.13.7", "5", "48ms", "0.10%", "Healthy"),
+        ("search", "ap-south-1", "v2.14.0", "9", "220ms", "1.90%", "Degraded"),
+        ("media", "us-west-2", "v2.12.9", "4", "95ms", "0.00%", "Healthy"),
+    ];
+    ui! {
+        Table(scroll_x = true) {
+            TableRow {
+                TableCell(header = true, text = Some("Service".to_string()), pinned = Some(ColumnPin::Left))
+                TableCell(header = true, text = Some("Region".to_string()))
+                TableCell(header = true, text = Some("Version".to_string()))
+                TableCell(header = true, text = Some("Replicas".to_string()))
+                TableCell(header = true, text = Some("p99 latency".to_string()))
+                TableCell(header = true, text = Some("Error rate".to_string()))
+                TableCell(header = true, text = Some("Status".to_string()), pinned = Some(ColumnPin::Right))
+            }
+            for (name, region, version, replicas, p99, errs, status) in services {
+                TableRow {
+                    TableCell(text = Some(name.to_string()), pinned = Some(ColumnPin::Left))
+                    TableCell(text = Some(region.to_string()))
+                    TableCell(text = Some(version.to_string()))
+                    TableCell(text = Some(replicas.to_string()))
+                    TableCell(text = Some(p99.to_string()))
+                    TableCell(text = Some(errs.to_string()))
+                    TableCell(pinned = Some(ColumnPin::Right)) {
+                        Tag(label = status.to_string(), tone = status_tone(status), variant = variant::Soft)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Reorder demo: the row order lives in a signal; `on_reorder` moves the
+/// dragged entry and the keyed row loop rebuilds in the new order.
+fn reorder_table() -> Element {
+    let items: Signal<Vec<&'static str>> =
+        signal(vec!["Ship hotfix", "Review PR #412", "Update changelog", "Cut release"]);
+    let on_reorder: Rc<dyn Fn(usize, usize)> = Rc::new(move |from, to| {
+        let mut v = items.get();
+        if from < v.len() && to <= v.len() {
+            let moved = v.remove(from);
+            v.insert(to.min(v.len()), moved);
+            items.set(v);
+        }
+    });
+    ui! {
+        Table(on_reorder = Some(on_reorder)) {
+            TableRow {
+                TableCell(header = true, text = Some("".to_string()))
+                TableCell(header = true, text = Some("Task (drag to reorder)".to_string()))
+            }
+            for name in items, key = name {
+                TableRow(draggable = true) {
+                    TableCell(text = Some("⠿".to_string()))
+                    TableCell(text = Some(name.to_string()))
+                }
+            }
+        }
+    }
 }
 
 fn status_table() -> Element {

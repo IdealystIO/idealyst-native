@@ -134,6 +134,16 @@ pub(crate) fn register(
         },
     );
 
+    // Raise the pinned view above its static siblings, matching how
+    // CSS paints positioned elements above non-positioned ones — a
+    // frozen column must draw over the cells that slide beneath it.
+    // Views are layer-backed at creation (`setWantsLayer:` in
+    // `create_view`), so `zPosition` orders sibling layers; it does
+    // NOT change AppKit hit-test order (subview order), which is
+    // acceptable: the overlap region is content the pin visually
+    // covers, and interactive children keep working outside it.
+    raise_z(view, 1.0);
+
     // First child for this scroll view installs the bounds-change
     // observer (the same clipView notification channel `on_scroll`
     // uses). The observer callback reaches the backend through the
@@ -215,11 +225,22 @@ fn remove_observer(observer: Option<Retained<NSObject>>) {
     }
 }
 
+/// Set the sticky raise on a view's backing layer. `1.0` on register
+/// (paint above static siblings, CSS positioned-element order), `0.0`
+/// on deregister so a Sticky → Relative flip restores document order.
+fn raise_z(view: &NSView, z: f64) {
+    let layer: Option<Retained<NSObject>> = unsafe { msg_send_id![view, layer] };
+    if let Some(layer) = layer {
+        let _: () = unsafe { msg_send![&layer, setZPosition: z] };
+    }
+}
+
 /// Shift a deregistering child's frame back by whatever pin offset it
 /// carries, so a Sticky → Relative transition doesn't strand the view
 /// below its natural position. No layout access needed — the offset is
 /// tracked per child.
 fn remove_pin_offset(child: &StickyChild) {
+    raise_z(&child.view, 0.0);
     let (dx, dy) = child.last_translate;
     if dx == 0.0 && dy == 0.0 {
         return;
@@ -232,14 +253,19 @@ fn remove_pin_offset(child: &StickyChild) {
     let _: () = unsafe { msg_send![&*child.view, setFrameOrigin: origin] };
 }
 
-/// Current scroll offset of the scroll view's clip view, in points
-/// (the document view is flipped, so y grows downward exactly like
-/// web/iOS; x grows rightward on every backend).
-fn scroll_offset(scroll_view: &NSView) -> (f32, f32) {
+/// Current scroll offset AND scrollport extent of the scroll view's
+/// clip view, in points (the document view is flipped, so y grows
+/// downward exactly like web/iOS; x grows rightward on every backend).
+/// The extent is the clip view's bounds size — the visible scrollport,
+/// which trailing-edge (`bottom` / `right`) pins measure against.
+fn scroll_geometry(scroll_view: &NSView) -> ((f32, f32), (f32, f32)) {
     let clip: Option<Retained<NSView>> = unsafe { msg_send_id![scroll_view, contentView] };
-    let Some(clip) = clip else { return (0.0, 0.0) };
+    let Some(clip) = clip else { return ((0.0, 0.0), (0.0, 0.0)) };
     let bounds: CGRect = unsafe { msg_send![&clip, bounds] };
-    (bounds.origin.x as f32, bounds.origin.y as f32)
+    (
+        (bounds.origin.x as f32, bounds.origin.y as f32),
+        (bounds.size.width as f32, bounds.size.height as f32),
+    )
 }
 
 /// Recompute + apply the pin for one scroll view's sticky children.
@@ -251,7 +277,7 @@ pub(crate) fn tick_scroll_view(backend: &mut crate::imp::MacosBackend, scroll_ke
     let Some(entry) = backend.sticky_registry.get_mut(&scroll_key) else {
         return;
     };
-    let scroll = scroll_offset(&entry.scroll_view);
+    let (scroll, viewport) = scroll_geometry(&entry.scroll_view);
     for (child_key, child) in entry.children.iter_mut() {
         // Parent-relative Taffy frame — the same coordinates the
         // layout pass applies with `setFrame:`.
@@ -259,7 +285,10 @@ pub(crate) fn tick_scroll_view(backend: &mut crate::imp::MacosBackend, scroll_ke
             continue;
         };
         let frame = backend.layout.frame_of(*node);
-        let (dx, dy) = translate(child.insets, child.natural, scroll);
+        // The child's extent comes from the same Taffy frame the pin
+        // composes onto — trailing-edge pins measure the far edge.
+        let size = (frame.width, frame.height);
+        let (dx, dy) = translate(child.insets, child.natural, size, scroll, viewport);
         let target_x = frame.x as f64 + dx as f64;
         let target_y = frame.y as f64 + dy as f64;
         let cur: CGRect = unsafe { msg_send![&*child.view, frame] };
@@ -359,18 +388,20 @@ mod tests {
     fn regression_macos_sticky_pins_when_scrolled_past_threshold() {
         let insets = StickyInsets {
             top: Some(32.0),
-            left: None,
+            ..Default::default()
         };
         let frame = (12.0_f32, 100.0_f32);
+        let size = (80.0_f32, 40.0_f32);
+        let viewport = (600.0_f32, 800.0_f32);
 
         // Above the pin point — child stays at its natural position
         // (this was ALL macOS did before the fix, at every offset).
-        assert_eq!(translate(insets, frame, (0.0, 0.0)), (0.0, 0.0));
-        assert_eq!(translate(insets, frame, (0.0, 68.0)), (0.0, 0.0));
+        assert_eq!(translate(insets, frame, size, (0.0, 0.0), viewport), (0.0, 0.0));
+        assert_eq!(translate(insets, frame, size, (0.0, 68.0), viewport), (0.0, 0.0));
 
         // Past the pin point — the rendered y tracks the viewport and
         // x is untouched, so `setFrameOrigin:` keeps the laid-out x.
-        let (dx, dy) = translate(insets, frame, (0.0, 500.0));
+        let (dx, dy) = translate(insets, frame, size, (0.0, 500.0), viewport);
         assert_eq!(dx, 0.0, "a vertical pin must not move the frame's x");
         assert!(
             ((frame.1 + dy) - 532.0).abs() < 1e-5,
@@ -385,11 +416,33 @@ mod tests {
     #[test]
     fn regression_macos_sticky_left_never_pins_horizontally() {
         let insets = StickyInsets {
-            top: None,
             left: Some(0.0),
+            ..Default::default()
         };
-        let (dx, dy) = translate(insets, (100.0, 40.0), (400.0, 900.0));
+        let (dx, dy) = translate(insets, (100.0, 40.0), (80.0, 24.0), (400.0, 900.0), (600.0, 800.0));
         assert!(((100.0 + dx) - 400.0).abs() < 1e-5);
         assert_eq!(dy, 0.0, "a horizontal pin must not move the frame's y");
+    }
+
+    /// A RIGHT-frozen column on macOS: `right` pulls `origin.x` back so
+    /// the cell's far edge parks at the clip view's trailing edge, and
+    /// releases once the content scrolls it into natural view. Before
+    /// trailing-edge support the tick had no scrollport/child extents
+    /// to measure against, so `right` produced no pin on any native
+    /// backend.
+    #[test]
+    fn regression_macos_sticky_right_pins_at_clipview_trailing_edge() {
+        let insets = StickyInsets {
+            right: Some(0.0),
+            ..Default::default()
+        };
+        // Column at x=900, 100 wide, clip view 600 wide, unscrolled:
+        // parks at 600 - 100 = 500.
+        let (dx, dy) = translate(insets, (900.0, 0.0), (100.0, 40.0), (0.0, 0.0), (600.0, 800.0));
+        assert!(((900.0 + dx) - 500.0).abs() < 1e-5);
+        assert_eq!(dy, 0.0, "a horizontal pin must not move the frame's y");
+        // Scrolled far enough right — rides the content again.
+        let (dx, _) = translate(insets, (900.0, 0.0), (100.0, 40.0), (400.0, 0.0), (600.0, 800.0));
+        assert_eq!(dx, 0.0);
     }
 }

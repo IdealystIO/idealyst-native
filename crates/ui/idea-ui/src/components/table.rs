@@ -31,6 +31,36 @@
 //!
 //! See [Table] / [TableRow] / [TableCell] for the full prop surface.
 //!
+//! # Horizontal scrolling & frozen columns
+//!
+//! `Table(scroll_x = true)` wraps the table in a horizontal scroller
+//! (columns lay out at natural width, overflow sideways, and the table
+//! still fills the scroller when narrow). `TableCell(pinned =
+//! ColumnPin::Left)` / `Right` freezes that cell's column against the
+//! scroller edge — a `pinned` axis on the cell stylesheets
+//! (`position: Sticky` + a zero inset + an opaque background), which
+//! the browser pins natively on web and the shared sticky registry
+//! pins on native, raising the frozen cells above the content sliding
+//! beneath them. Pin the SAME cell in every row (header included) or
+//! the column freezes only partially.
+//!
+//! # Row drag & drop (`on_reorder`)
+//!
+//! `Table(on_reorder = …)` plus `TableRow(draggable = true)` makes
+//! rows reorderable: long-press (or press-and-drag on pointer
+//! devices) picks a row up, the row follows the finger vertically and
+//! dims, the row currently under it highlights as the drop slot, and
+//! dropping invokes `on_reorder(from, to)` with the draggable rows'
+//! ordinals (header rows and other non-draggable rows don't count).
+//! The callback OWNS the data mutation — reorder your source of truth
+//! and let the table rebuild. Wiring: each draggable row gets a
+//! `dnd::Draggable` whose recognizer fans out to the row's cells
+//! (same seam as `on_row_click`) and a `dnd::Droppable` bound to the
+//! row's proxy surface (the `table` SDK's row backdrop / `<tr>`).
+//! A row with BOTH `draggable` and `on_row_click` keeps only the drag
+//! recognizer — the touch slot is single-occupancy; give the row a
+//! dedicated interactive cell if it needs both.
+//!
 //! # Layering
 //!
 //! Mirrors `Spinner` → `activity_indicator` and `Switch` → `toggle`:
@@ -52,6 +82,22 @@ use crate::stylesheets::{
     Table as TableStyle, TableBodyCell, TableBodyText, TableCellInner, TableHeadCell, TableHeadText,
 };
 
+/// Which edge a [`TableCell`] freezes against in a
+/// `Table(scroll_x = true)` — see the module docs. (Named `ColumnPin`
+/// rather than `Pin` to stay clear of `std::pin::Pin`.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, IdealystSchema)]
+pub enum ColumnPin {
+    /// Freeze against the scroller's left edge.
+    Left,
+    /// Freeze against the scroller's right edge.
+    Right,
+}
+
+/// Row metadata tag `TableRow(draggable = true)` leaves on the built
+/// row for [`Table`]'s reorder wiring to find (`table::set_row_meta` /
+/// `take_row_meta`).
+struct DraggableRowTag;
+
 // =============================================================================
 // Table
 // =============================================================================
@@ -67,6 +113,20 @@ use crate::stylesheets::{
 pub struct TableProps {
     /// Table rows. Pass `TableRow`s (a header row plus body rows).
     pub children: Vec<Element>,
+    /// Horizontal-scroll mode: columns lay out at natural width and
+    /// overflow sideways inside a horizontal scroller instead of
+    /// squeezing and wrapping. Required for `TableCell(pinned = …)`
+    /// frozen columns (they pin against this scroller).
+    // STRUCTURAL — selects the SDK's scroller wrapper at build time.
+    #[prop(static)]
+    pub scroll_x: bool,
+    /// Row reordering by drag & drop. When `Some`, rows marked
+    /// `TableRow(draggable = true)` can be picked up (long-press, or
+    /// press-and-drag on pointer devices) and dropped on another
+    /// draggable row; the callback receives `(from, to)` ordinals
+    /// counted over the draggable rows only. Reorder your data source
+    /// in the callback — the table rebuilds from it.
+    pub on_reorder: Option<Rc<dyn Fn(usize, usize)>>,
 }
 
 /// A themed data table — a header row plus body rows. Wraps the
@@ -80,12 +140,98 @@ pub fn Table(props: TableProps) -> Element {
     for c in props.children {
         ChildList::append_to(c, &mut children);
     }
+    if let Some(on_reorder) = props.on_reorder {
+        wire_reorder(&children, on_reorder);
+    }
     // SDK's `table()` returns a `Bound<TableHandle>`; chain
     // `.with_style(...)` to land the themed style on the `<table>`
     // itself, then convert to Element.
-    sdk_table(SdkTableProps { children })
+    sdk_table(SdkTableProps { children, scroll_x: props.scroll_x })
         .with_style(style)
         .into_element()
+}
+
+/// Wire drag-and-drop reordering across the table's built rows.
+///
+/// Runs in the `Table` component body, so every signal/effect the dnd
+/// objects create is owned by the table's scope. Per draggable row
+/// (ordinal `i` over `TableRow(draggable = true)` rows only):
+///
+/// - a `Draggable<usize>` carrying `i`. Its recognizer is created ONCE
+///   and fanned out to every cell (`table::set_cell_touch`) — the same
+///   per-cell seam as `on_row_click`, and for the same reason: a
+///   row-level surface can't receive touches that land on cell
+///   content. Long-press activation so the pickup doesn't fight page
+///   scrolling (vertical drag IS the scroll direction, which rules out
+///   the scroll-aware hybrid).
+/// - the drag's vertical offset bound to each cell's node
+///   (`AnimProp::TranslateY`) so the whole row follows the finger and
+///   springs back on a miss. The horizontal offset stays unbound —
+///   rows only reorder vertically.
+/// - a `Droppable<usize>` bound to the row's proxy surface
+///   (`table::bind_row` — the SDK's row backdrop on native, the
+///   `<tr>` on web), accepting any payload but its own ordinal, and
+///   invoking `on_reorder(from, i)` on drop.
+/// - reactive cell-style axes for feedback: `dragging` dims the
+///   in-flight row, `drop_target` highlights the slot under it. Both
+///   select build-time stylesheet arms (premint-compatible class
+///   swaps, like `row_hovered`).
+fn wire_reorder(rows: &[Element], on_reorder: Rc<dyn Fn(usize, usize)>) {
+    use dnd::{Activation, DragContext, Draggable, Droppable};
+    use runtime_core::animation::AnimProp;
+    use runtime_core::{Ref, ViewHandle};
+
+    /// How long a finger must hold still to pick a row up. Long enough
+    /// that a scroll fling never picks up a row, short enough to feel
+    /// immediate — the plain-list reorder convention.
+    const PICKUP_MS: u64 = 250;
+    /// Movement tolerance (px) while the pickup timer runs.
+    const PICKUP_SLOP_PX: f32 = 8.0;
+
+    let ctx: DragContext<usize> = DragContext::new();
+    let mut ordinal = 0usize;
+    for row in rows {
+        let Some(meta) = table::take_row_meta(row) else { continue };
+        if meta.downcast_ref::<DraggableRowTag>().is_none() {
+            continue;
+        }
+        let i = ordinal;
+        ordinal += 1;
+
+        let drag = Draggable::new(&ctx, move || i).activation(Activation::LongPress {
+            threshold_ms: PICKUP_MS,
+            slop_px: PICKUP_SLOP_PX,
+        });
+        let dragging = drag.is_dragging();
+        let (_, offset_y) = drag.offset();
+        // One recognizer per row, cloned per cell — `handler()` builds
+        // fresh recognizer state each call, and the cells must feed ONE
+        // shared recognizer for the row.
+        let handler = drag.handler();
+
+        let on_reorder = on_reorder.clone();
+        let drop = Droppable::new(&ctx)
+            .accepts(move |from: &usize| *from != i)
+            .on_drop(move |from| on_reorder(from, i));
+        let over = drop.is_over();
+        let row_ref: Ref<ViewHandle> = Ref::new();
+        drop.bind(row_ref);
+        table::bind_row(row, move |h| row_ref.fill(h));
+
+        table::visit_row_cells(row, |cell| {
+            if let Some(base) = table::cell_base_application(cell) {
+                table::set_cell_style(cell, move || {
+                    base.clone()
+                        .with("dragging", if dragging.get() { "on" } else { "off" })
+                        .with("drop_target", if over.get() { "on" } else { "off" })
+                });
+            }
+            table::set_cell_touch(cell, handler.clone());
+            let cell_ref: Ref<ViewHandle> = Ref::new();
+            table::bind_cell(cell, move |h| cell_ref.fill(h));
+            offset_y.bind(cell_ref, AnimProp::TranslateY);
+        });
+    }
 }
 
 // =============================================================================
@@ -125,6 +271,14 @@ pub struct TableRowProps {
     /// pattern). Taps on plain content or empty cell space fall through to
     /// the row callback.
     pub on_row_click: Option<Rc<dyn Fn()>>,
+    /// Mark this row reorderable — meaningful inside a
+    /// `Table(on_reorder = …)`, where a long-press picks the row up
+    /// (see the module docs). Leave `false` on header rows. A row with
+    /// both `draggable` and `on_row_click` keeps only the drag
+    /// recognizer (the touch slot is single-occupancy).
+    // STRUCTURAL — tags the built row for the Table's wiring pass.
+    #[prop(static)]
+    pub draggable: bool,
 }
 
 /// A row within a [`Table`] — holds `TableCell`s. Use the first row as
@@ -143,7 +297,10 @@ pub fn TableRow(props: TableRowProps) -> Element {
     // + pointer cursor onto its themed style and attach the tap/hover
     // handlers. The signal is created in this row's scope, so it lives as
     // long as the cells that subscribe to it.
-    if let Some(cb) = props.on_row_click {
+    // Clickable + draggable both claim the cells' one touch slot; the
+    // Table's reorder wiring overwrites the tap recognizer, so skip the
+    // click wiring up front and keep the precedence visible here.
+    if let (Some(cb), false) = (props.on_row_click, props.draggable) {
         let hovered = signal(false);
         let cells: Vec<Element> = children
             .into_iter()
@@ -152,7 +309,11 @@ pub fn TableRow(props: TableRowProps) -> Element {
         return sdk_row(SdkTableRowProps { children: cells }).into_element();
     }
 
-    sdk_row(SdkTableRowProps { children }).into_element()
+    let el = sdk_row(SdkTableRowProps { children }).into_element();
+    if props.draggable {
+        table::set_row_meta(&el, Box::new(DraggableRowTag));
+    }
+    el
 }
 
 /// Attach whole-row click + hover to a single cell.
@@ -242,6 +403,12 @@ pub struct TableCellProps {
     /// ignored and these children render inside the `<td>` / `<th>`
     /// directly — cell-level padding still applies.
     pub children: Vec<Element>,
+    /// Freeze this cell's column against a scroller edge — meaningful
+    /// inside a `Table(scroll_x = true)`. Pin the same cell in EVERY
+    /// row (header included) or the column freezes only partially.
+    // STRUCTURAL — selects the `pinned` stylesheet arm at build time.
+    #[prop(static)]
+    pub pinned: Option<ColumnPin>,
 }
 
 impl Default for TableCellProps {
@@ -250,6 +417,7 @@ impl Default for TableCellProps {
             header: false,
             text: Reactive::Static(None),
             children: Vec::new(),
+            pinned: None,
         }
     }
 }
@@ -306,14 +474,29 @@ pub fn TableCell(props: TableCellProps) -> Element {
     //
     // Branching here (rather than boxing) keeps each style concrete so
     // `IntoStyleSource` resolves on the call, which the trait requires.
+    // A pinned cell selects the sheet's `pinned` AXIS on top of the
+    // same explicit-`Sheet` hand-off (the axis arms carry build-time
+    // CSS, so this premints as a class like every other axis — and the
+    // application stays introspectable for the clickable-row overlay,
+    // which re-derives it and re-selects axes on top).
+    let pin_arm = props.pinned.map(|p| match p {
+        ColumnPin::Left => "left",
+        ColumnPin::Right => "right",
+    });
     if header {
-        bound
-            .with_style(StyleProp::Sheet(Box::new(TableHeadCell().into_style_application())))
-            .into_element()
+        let app = TableHeadCell().into_style_application();
+        let app = match pin_arm {
+            Some(arm) => app.with("pinned", arm),
+            None => app,
+        };
+        bound.with_style(StyleProp::Sheet(Box::new(app))).into_element()
     } else {
-        bound
-            .with_style(StyleProp::Sheet(Box::new(TableBodyCell().into_style_application())))
-            .into_element()
+        let app = TableBodyCell().into_style_application();
+        let app = match pin_arm {
+            Some(arm) => app.with("pinned", arm),
+            None => app,
+        };
+        bound.with_style(StyleProp::Sheet(Box::new(app))).into_element()
     }
 }
 
@@ -359,10 +542,28 @@ mod tests {
         })
     }
 
-    fn row_cells(row: Element) -> Vec<Element> {
-        match classify(row) {
-            P::Fragment { children } => children,
-            _ => panic!("TableRow must lower to a fragment of cells"),
+    thread_local! {
+        /// Peeled row scopes, retained for the test's lifetime — a
+        /// clickable row's marker arrives `Owned`-wrapped around the
+        /// shared hover signal, and dropping the scope here would
+        /// stale-handle the signal the cells' reactive styles read
+        /// (same rationale as `test_support::classify`'s keepalive).
+        static ROW_SCOPES: std::cell::RefCell<Vec<runtime_core::Owned>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn row_cells(mut row: Element) -> Vec<Element> {
+        // Rows lower to the SDK's `TableRowPrim` marker item (the row
+        // proxy work); its children are the cells.
+        loop {
+            match row {
+                Element::Owned { element, owned } => {
+                    ROW_SCOPES.with(|k| k.borrow_mut().push(owned));
+                    row = *element;
+                }
+                Element::Item { children, .. } => return children,
+                _ => panic!("TableRow must lower to the SDK row marker item"),
+            }
         }
     }
 
@@ -423,16 +624,23 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/components/table.rs"),
         )
         .expect("read table.rs");
+        // The application is built explicitly per role (so the `pinned`
+        // axis can select on it)…
         for sheet in ["TableHeadCell", "TableBodyCell"] {
-            let needle =
-                format!("StyleProp::Sheet(Box::new({sheet}().into_style_application()))");
+            let needle = format!("let app = {sheet}().into_style_application();");
             assert!(
                 src.contains(&needle),
-                "the {sheet} cell style must be handed over as an explicit \
-                 `StyleProp::Sheet` — a bare application premints, and the \
-                 clickable-row overlay is then dropped without a word"
+                "the {sheet} cell application must be derived explicitly \
+                 before hand-off"
             );
         }
+        // …and handed over as an explicit `StyleProp::Sheet` — a bare
+        // application premints, and the clickable-row overlay is then
+        // dropped without a word.
+        assert!(
+            src.contains("bound.with_style(StyleProp::Sheet(Box::new(app))).into_element()"),
+            "cell styles must be handed over as an explicit `StyleProp::Sheet`"
+        );
     }
 
     /// The clickable-row overlay must PREMINT: it selects the cell
@@ -450,6 +658,7 @@ mod tests {
             let row = TableRow(TableRowProps {
                 children: vec![body_cell("x")],
                 on_row_click: Some(Rc::new(|| {})),
+                draggable: false,
             });
             let mut cells = row_cells(row);
             let style = match classify(cells.remove(0)) {
@@ -502,6 +711,7 @@ mod tests {
             let row = TableRow(TableRowProps {
                 children: vec![body_cell("a"), body_cell("b")],
                 on_row_click: Some(Rc::new(|| {})),
+                draggable: false,
             });
             let cells = row_cells(row);
             assert_eq!(cells.len(), 2, "both cells survive post-processing");
@@ -529,6 +739,198 @@ mod tests {
         });
     }
 
+    /// A pinned cell selects the sheet's `pinned` AXIS: `position:
+    /// Sticky` plus the matching zero inset, an opaque background
+    /// (content slides beneath a frozen column), and a preminting
+    /// application (the axis arms carry build-time CSS — a frozen
+    /// column must not knock the cell off the premint path). This is
+    /// the whole frozen-column feature at the component layer; the pin
+    /// itself is the sticky substrate's job.
+    #[test]
+    fn pinned_cell_selects_sticky_axis_and_premints() {
+        with_test_world(|| {
+            let left = TableCell(TableCellProps {
+                text: Reactive::Static(Some("x".into())),
+                pinned: Some(ColumnPin::Left),
+                ..Default::default()
+            });
+            let app = table::cell_base_application(&left)
+                .expect("pinned cell keeps an introspectable application");
+            assert!(
+                app.preminted_class_list().is_some(),
+                "the pinned axis must premint (build-time CSS arms)"
+            );
+            let rules = runtime_core::resolve_style(&app);
+            assert_eq!(
+                rules.position,
+                Some(runtime_core::Position::Sticky),
+                "pinned arm carries position: Sticky"
+            );
+            assert!(
+                matches!(
+                    rules.left.as_ref().map(|t| t.resolve()),
+                    Some(runtime_core::Length::Px(v)) if v == 0.0
+                ),
+                "left-pinned arm pins at left: 0"
+            );
+            assert!(rules.right.is_none(), "left pin must not also set right");
+            assert!(
+                rules.background.is_some(),
+                "pinned body cell must be opaque — content slides beneath it"
+            );
+
+            let right = TableCell(TableCellProps {
+                text: Reactive::Static(Some("x".into())),
+                pinned: Some(ColumnPin::Right),
+                ..Default::default()
+            });
+            let rules = runtime_core::resolve_style(
+                &table::cell_base_application(&right).expect("application"),
+            );
+            assert_eq!(rules.position, Some(runtime_core::Position::Sticky));
+            assert!(
+                matches!(
+                    rules.right.as_ref().map(|t| t.resolve()),
+                    Some(runtime_core::Length::Px(v)) if v == 0.0
+                ),
+                "right-pinned arm pins at right: 0"
+            );
+            assert!(rules.left.is_none(), "right pin must not also set left");
+        });
+    }
+
+    /// `Table(scroll_x = true)` lowers to the SDK's horizontal
+    /// scroller wrapper — without it there is nothing for a pinned
+    /// column to pin against.
+    #[test]
+    fn scroll_x_table_lowers_to_horizontal_scroller() {
+        with_test_world(|| {
+            let t = Table(TableProps {
+                children: vec![TableRow(TableRowProps {
+                    children: vec![body_cell("a")],
+                    ..Default::default()
+                })],
+                scroll_x: true,
+                ..Default::default()
+            });
+            let el = peel_owned_keepalive(t);
+            match &el {
+                Element::Item { data, .. } => {
+                    assert!(
+                        data.downcast_ref::<runtime_vocabulary::prims::PrimCell<
+                            runtime_vocabulary::prims::ScrollViewPrim,
+                        >>()
+                        .is_some_and(|c| c.take().horizontal),
+                        "scroll_x table must be wrapped in a HORIZONTAL scroll_view"
+                    );
+                }
+                _ => panic!("scroll_x table must lower to a scroll_view item"),
+            }
+        });
+    }
+
+    /// The whole reorder feature at the wiring layer: with
+    /// `Table(on_reorder = …)`, a `TableRow(draggable = true)` row gets
+    /// — per cell — the shared drag recognizer, a bound node handle
+    /// (the vertical drag offset attaches there), and a reactive style
+    /// (the `dragging` / `drop_target` feedback axes); the table's
+    /// grid gains the row's proxy backdrop (drop targeting reads row
+    /// geometry through it). A non-draggable header row in the same
+    /// table stays untouched. If any leg regresses, rows either stop
+    /// being pickable, stop following the finger, lose their feedback,
+    /// or lose drop targeting — silently.
+    #[test]
+    fn reorderable_table_wires_drag_across_draggable_rows() {
+        with_test_world(|| {
+            let header = TableRow(TableRowProps {
+                children: vec![TableCell(TableCellProps {
+                    header: true,
+                    text: Reactive::Static(Some("h".into())),
+                    ..Default::default()
+                })],
+                ..Default::default()
+            });
+            let row = TableRow(TableRowProps {
+                children: vec![body_cell("a"), body_cell("b")],
+                draggable: true,
+                ..Default::default()
+            });
+            let t = Table(TableProps {
+                children: vec![header, row],
+                on_reorder: Some(Rc::new(|_from, _to| {})),
+                ..Default::default()
+            });
+
+            // Table → outer view → inner grid; the grid's children are
+            // [header cell, backdrop, row cells…] (backdrop precedes
+            // its row's cells so they paint above it).
+            let outer = peel_owned_keepalive(t);
+            let mut outer_children = match outer {
+                Element::Item { children, .. } => children,
+                _ => panic!("table outer must be a view item"),
+            };
+            let grid = outer_children.pop().expect("outer wraps the grid");
+            let grid_children = match grid {
+                Element::Item { children, .. } => children,
+                _ => panic!("grid must be a view item"),
+            };
+            assert_eq!(
+                grid_children.len(),
+                4,
+                "1 header cell + 1 backdrop + 2 draggable-row cells"
+            );
+            let mut grid_children = grid_children.into_iter();
+
+            // Header cell: untouched (no drag handler, static style).
+            match classify(grid_children.next().expect("header cell")) {
+                P::View { on_touch, ref_fill, .. } => {
+                    assert!(!on_touch, "header cell must not carry the drag recognizer");
+                    assert!(!ref_fill, "header cell needs no offset anchor");
+                }
+                _ => panic!("header cell classifies as a View"),
+            }
+
+            // Backdrop: bound (Droppable geometry).
+            match classify(grid_children.next().expect("backdrop")) {
+                P::View { ref_fill, children, .. } => {
+                    assert!(ref_fill, "row backdrop carries the droppable binding");
+                    assert!(children.is_empty(), "backdrop is an empty proxy surface");
+                }
+                _ => panic!("backdrop classifies as a View"),
+            }
+
+            // Draggable row's cells: recognizer + offset anchor +
+            // reactive feedback style.
+            for (n, cell) in grid_children.enumerate() {
+                match classify(cell) {
+                    P::View { on_touch, ref_fill, style, .. } => {
+                        assert!(on_touch, "cell {n} carries the shared drag recognizer");
+                        assert!(ref_fill, "cell {n} anchors the vertical drag offset");
+                        assert!(
+                            style.expect("cell keeps a style").is_reactive(),
+                            "cell {n} style is reactive (dragging / drop_target axes)"
+                        );
+                    }
+                    _ => panic!("draggable cell classifies as a View"),
+                }
+            }
+        });
+    }
+
+    /// Peel `Owned` wrappers, retaining the scopes (reactive styles
+    /// inside read signals those scopes own).
+    fn peel_owned_keepalive(mut el: Element) -> Element {
+        loop {
+            match el {
+                Element::Owned { element, owned } => {
+                    ROW_SCOPES.with(|k| k.borrow_mut().push(owned));
+                    el = *element;
+                }
+                other => return other,
+            }
+        }
+    }
+
     /// A plain row (no `on_row_click`) leaves its cells untouched: no
     /// handlers, and the static themed style is preserved. Guards against
     /// accidentally making every table row interactive / reactive.
@@ -538,6 +940,7 @@ mod tests {
             let row = TableRow(TableRowProps {
                 children: vec![body_cell("a")],
                 on_row_click: None,
+                draggable: false,
             });
             let mut cells = row_cells(row);
             match classify(cells.remove(0)) {

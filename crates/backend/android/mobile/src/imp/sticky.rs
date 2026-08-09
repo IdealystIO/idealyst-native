@@ -53,11 +53,14 @@
 //!
 //! ## Axis coverage
 //!
-//! Leading-edge pinning on both axes — `top` off `getScrollY()`,
-//! `left` off `getScrollX()`. Unlike UIKit's single `setTransform:`,
-//! Android has two independent setters, so `write_translate`
-//! epsilon-gates each axis separately. Trailing-edge (`bottom` /
-//! `right`) is not implemented; see `runtime_shared::sticky`.
+//! All four edges. Leading — `top` off `getScrollY()`, `left` off
+//! `getScrollX()`. Trailing — `bottom` / `right` pin the child's far
+//! edge inside the scrollport's trailing edge; the recompute reads the
+//! scroll view's `getWidth()`/`getHeight()` (px → dp) for the
+//! scrollport extent and the cached Taffy frame size for the child
+//! extent. Unlike UIKit's single `setTransform:`, Android has two
+//! independent setters, so `write_translate` epsilon-gates each axis
+//! separately.
 
 use std::collections::HashMap;
 
@@ -69,6 +72,13 @@ use jni::JNIEnv;
 /// `setTranslationX/Y` churn when the scroll position isn't actually
 /// changing the translation. Matches iOS's `STICKY_EPSILON`.
 const STICKY_EPSILON: f32 = 0.5;
+
+/// The paint-order raise applied to registered sticky views, in
+/// device px. Any positive value reorders (ViewGroup's Z comparison
+/// is strict); this small it keeps the Z-derived material shadow
+/// imperceptible. Mirrors `layer.zPosition = 1` on iOS/macOS and the
+/// walker's implicit sticky z on wgpu.
+const STICKY_RAISE_Z_PX: f32 = 0.01;
 
 /// One sticky child registered against a scroll view.
 pub(crate) struct StickyChild {
@@ -86,6 +96,13 @@ pub(crate) struct StickyChild {
     /// by [`refresh_layout_positions`]. Initialized to the origin;
     /// the first layout pass replaces it with real values.
     pub(crate) layout: (f32, f32),
+    /// The child's `(width, height)` from its Taffy frame, in dp —
+    /// trailing-edge pins measure the far edge against the
+    /// scrollport. Refreshed alongside `layout` (the live view's
+    /// geometry is never read; translations don't move it anyway,
+    /// but Taffy is the one source the leading-edge path already
+    /// trusts).
+    pub(crate) size: (f32, f32),
     /// Last applied translation, in dp, per axis. Used to
     /// epsilon-skip redundant `setTranslationX/Y` writes — matches
     /// the iOS implementation's `current_translate` read.
@@ -233,11 +250,26 @@ pub(crate) fn register(
             view: view.clone(),
             insets,
             layout: (0.0, 0.0),
+            size: (0.0, 0.0),
             last_translate: (0.0, 0.0),
         },
     );
 
     ensure_scroll_listener(env, scroll_listeners, &scroll_view, scroll_key);
+
+    // Raise the pinned view above its static siblings, matching how
+    // CSS paints positioned elements above non-positioned ones — a
+    // frozen column must draw over the cells that slide beneath it.
+    // ViewGroup orders sibling drawing (and touch dispatch) by
+    // `getZ()` with a strict comparison, so any positive value wins;
+    // 0.01 px keeps the Z-derived material shadow imperceptible while
+    // still reordering. Cleared by `reset_translation` on deregister.
+    let _ = env.call_method(
+        view.as_obj(),
+        "setTranslationZ",
+        "(F)V",
+        &[JValue::Float(STICKY_RAISE_Z_PX)],
+    );
 
     true
 }
@@ -318,9 +350,10 @@ pub(crate) fn deregister_scroll_view(
     );
 }
 
-/// Clear both translation axes on a view leaving the sticky registry.
+/// Clear all three translation axes on a view leaving the sticky
+/// registry — X/Y undo the pin, Z undoes the paint-order raise.
 fn reset_translation(env: &mut JNIEnv, view: &GlobalRef) {
-    for setter in ["setTranslationX", "setTranslationY"] {
+    for setter in ["setTranslationX", "setTranslationY", "setTranslationZ"] {
         let _ = env.call_method(view.as_obj(), setter, "(F)V", &[JValue::Float(0.0)]);
     }
 }
@@ -450,11 +483,28 @@ pub(crate) fn on_scroll_event(
     let density = super::density_of(env, &entry.scroll_view.as_obj()).unwrap_or(1.0);
     let density = if density <= 0.0 { 1.0 } else { density };
     let scroll_dp = (scroll_x_px / density, scroll_y_px / density);
+    let viewport_dp = viewport_dp(env, &entry.scroll_view, density);
 
     for (_, child) in entry.children.iter_mut() {
-        let t_dp = translate(child.insets, child.layout, scroll_dp);
+        let t_dp = translate(child.insets, child.layout, child.size, scroll_dp, viewport_dp);
         write_translate(env, child, t_dp, density);
     }
+}
+
+/// The scroll view's visible extent in dp — the scrollport trailing-
+/// edge pins measure against. `getWidth()`/`getHeight()` report the
+/// view's laid-out size in device pixels (the clip region for its
+/// scrolled content); failure paths report 0, which simply keeps the
+/// trailing pin disengaged for that frame.
+fn viewport_dp(env: &mut JNIEnv, scroll_view: &GlobalRef, density: f32) -> (f32, f32) {
+    let read = |env: &mut JNIEnv, method: &str| {
+        env.call_method(scroll_view.as_obj(), method, "()I", &[])
+            .and_then(|v| v.i())
+            .unwrap_or(0) as f32
+    };
+    let w_px = read(env, "getWidth");
+    let h_px = read(env, "getHeight");
+    (w_px / density, h_px / density)
 }
 
 /// Apply a per-axis translate to a sticky child, epsilon-skipping the
@@ -542,6 +592,8 @@ pub(crate) fn refresh_layout_positions(
         let scroll_x_px = read_scroll(env, "getScrollX");
         let scroll_y_px = read_scroll(env, "getScrollY");
         let scroll_dp = (scroll_x_px / density, scroll_y_px / density);
+        let scroll_view = entry.scroll_view.clone();
+        let viewport = viewport_dp(env, &scroll_view, density);
 
         for (child_key, child) in entry.children.iter_mut() {
             if let Some(natural) = compute_layout_in_scroll(
@@ -552,11 +604,17 @@ pub(crate) fn refresh_layout_positions(
             ) {
                 child.layout = natural;
             }
+            // The child's own extent for trailing-edge pins — same
+            // Taffy source as `layout`.
+            if let Some((_, node)) = view_to_layout.get(child_key) {
+                let frame = layout.frame_of(*node);
+                child.size = (frame.width, frame.height);
+            }
             // Recompute against the live scroll position so a
             // tree-rebuild-without-scroll picks up the corrected
             // natural position immediately. Skips the JNI write when
             // unchanged (epsilon-gated, per axis).
-            let t_dp = translate(child.insets, child.layout, scroll_dp);
+            let t_dp = translate(child.insets, child.layout, child.size, scroll_dp, viewport);
             write_translate(env, child, t_dp, density);
         }
     }

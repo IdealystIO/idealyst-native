@@ -2,9 +2,12 @@
 //!
 //! Implements [`runtime_shared::Backend::install_touch_handler`] and
 //! [`runtime_shared::Backend::claim_touch`] using the Pointer Events
-//! API. One DOM element receives four listeners — `pointerdown`,
-//! `pointermove`, `pointerup`, `pointercancel` — and translates each
-//! into a [`TouchEvent`] for the framework's handler.
+//! API. One DOM element receives five listeners — `pointerdown`,
+//! `pointermove`, `pointerup`, `pointercancel`, plus `contextmenu`,
+//! which both suppresses the browser's native menu and stands in for
+//! the `pointerdown` that some browsers withhold for a secondary
+//! press (Chrome/macOS Ctrl-click) — and translates each into a
+//! [`TouchEvent`] for the framework's handler.
 //!
 //! Pointer Events unify mouse, touch, and pen on the web; the
 //! `pointerType` distinction is not surfaced through the framework
@@ -22,12 +25,12 @@ use runtime_shared::{
     set_pointer_button, set_pointer_modifiers, PointerButton, PointerModifiers, TouchEvent,
     TouchHandler, TouchId, TouchPhase, TouchPoint,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use runtime_shared::collections::{SmallIdMap, SmallIdSet};
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
-use web_sys::{Element, Node, PointerEvent};
+use web_sys::{Element, MouseEvent, Node, PointerEvent};
 
 /// Install the four pointer listeners on `node`. Storage of the
 /// resulting [`Closure`]s is shared with the existing event-listener
@@ -76,17 +79,29 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
     // dropped on up/cancel.
     let origins: Rc<RefCell<SmallIdMap<i32, (f64, f64)>>> = Rc::new(RefCell::new(SmallIdMap::new()));
 
+    // Whether `pointerdown` delivered a Secondary `Began` for the press whose
+    // `contextmenu` is about to fire, and whether the handler consumed it.
+    // Browsers disagree on how a secondary press surfaces (see the
+    // `contextmenu` listener below), so the two listeners share this note:
+    // `pointerdown` writes it, `contextmenu` takes it. `None` means the press
+    // never reached app code through `pointerdown` and `contextmenu` must
+    // deliver it itself. Written on EVERY pointerdown (cleared for
+    // non-secondary buttons) so one anomalous unpaired secondary press can't
+    // leave a stale entry that eats the next Ctrl-click.
+    let secondary_delivered: Rc<Cell<Option<bool>>> = Rc::new(Cell::new(None));
+
     // pointerdown — Began.
     {
         let handler = handler.clone();
         let active = active.clone();
         let captured = captured.clone();
         let origins = origins.clone();
+        let secondary_delivered = secondary_delivered.clone();
         let element_for_capture = element.clone();
         let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
             // `button` is 0 for touch + pen contact + primary mouse; 2 is the
-            // secondary press (including macOS Ctrl-click, which the OS folds
-            // into a right-click).
+            // secondary press (which Safari — alone among browsers — also
+            // reports for macOS Ctrl-click; see the `contextmenu` listener).
             let button = match ev.button() {
                 0 => PointerButton::Primary,
                 1 => PointerButton::Middle,
@@ -121,6 +136,15 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
             // (composite-at-origin) frame, so a pan appears frozen until the next
             // bake. Centralized in core so every backend gets it uniformly.
             let response = (handler)(&te);
+            // Leave the note for the `contextmenu` listener, which fires next
+            // for a secondary press: the `Began` already reached app code, so
+            // it must only suppress the native menu, not re-deliver. Cleared
+            // (not skipped) for other buttons so it can never go stale.
+            secondary_delivered.set(if button == PointerButton::Secondary {
+                Some(response.consumed)
+            } else {
+                None
+            });
             if response.consumed {
                 // Honor the responder model: whichever ancestor consumes
                 // the Began keeps every subsequent event for this TouchId.
@@ -155,15 +179,83 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
             .push(closure.into_js_value().unchecked_into());
     }
 
-    // A node that handles touch owns its secondary press (it received the
-    // `Began` above), so the browser's own menu must not open on top of
-    // whatever the app puts there. Suppressed here rather than by the author:
-    // `preventDefault` has to run on the DOM event, which never reaches app
-    // code. Bubble-phase and element-scoped, so the rest of the page keeps its
-    // native menu.
+    // contextmenu — native-menu suppression AND, in some browsers, the only
+    // delivery of a secondary press.
+    //
+    // A node that handles touch owns its secondary press, so the browser's own
+    // menu must not open on top of whatever the app puts there; `preventDefault`
+    // has to run on the DOM event, which never reaches app code, so it lives
+    // here (bubble-phase and element-scoped — the rest of the page keeps its
+    // native menu). But browsers disagree on how the press itself surfaces:
+    //
+    //   - Safari remaps macOS Ctrl-click to `button == 2` at `pointerdown`
+    //     (the listener above folds it into `PointerButton::Secondary`).
+    //   - Chrome on macOS suppresses the `pointerdown` for a Ctrl-click
+    //     ENTIRELY and fires only this `contextmenu` (FRAMEWORK-NOTES #95 —
+    //     with a suppress-only listener here, a Ctrl-click reached app code
+    //     as nothing at all).
+    //   - Firefox sends a *primary* `pointerdown` plus this `contextmenu`.
+    //
+    // So `pointerdown` records whether it already delivered the Secondary
+    // `Began` (and whether the handler consumed it) and this listener takes
+    // that note. Present → only the menu needs suppressing; propagation
+    // mirrors the pointerdown outcome (consumed → stop), so an ancestor's own
+    // `contextmenu` listener neither re-delivers a press its descendant
+    // consumed nor misses one it ignored. Absent → the press never surfaced
+    // as a pointer event; synthesize the Secondary `Began` and dispatch it
+    // exactly as `pointerdown` would. A secondary press is contractually "a
+    // complete click — `Began` only" (see the pointerdown listener), so the
+    // synthetic event needs no active/capture/up bookkeeping.
     {
-        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
+        let handler = handler.clone();
+        let secondary_delivered = secondary_delivered.clone();
+        let closure = Closure::<dyn FnMut(MouseEvent)>::new(move |ev: MouseEvent| {
             ev.prevent_default();
+            if let Some(consumed) = secondary_delivered.take() {
+                if consumed {
+                    ev.stop_propagation();
+                }
+                return;
+            }
+            // Long-press on a touchscreen also raises `contextmenu` (Chrome
+            // ships it as a PointerEvent with pointerType "touch"). That
+            // press already reached app code as a *primary* gesture that may
+            // still be in flight — injecting a Secondary `Began` mid-gesture
+            // would corrupt it, so touch keeps suppress-only behavior.
+            if let Some(pe) = ev.dyn_ref::<PointerEvent>() {
+                if pe.pointer_type() == "touch" {
+                    return;
+                }
+            }
+            set_pointer_button(PointerButton::Secondary);
+            set_pointer_modifiers(PointerModifiers {
+                shift: ev.shift_key(),
+                ctrl: ev.ctrl_key(),
+                alt: ev.alt_key(),
+                meta: ev.meta_key(),
+            });
+            let origin = element_origin(&ev);
+            let local = local_from(&ev, origin);
+            // Chrome delivers `contextmenu` as a PointerEvent (real pointer
+            // id); Firefox as a plain MouseEvent. The id is never matched
+            // against a later up/cancel — a secondary press is `Began`-only —
+            // so falling back to 0 (Firefox's mouse pointerId) is safe.
+            let pid = ev
+                .dyn_ref::<PointerEvent>()
+                .map(|pe| pe.pointer_id())
+                .unwrap_or(0);
+            let te = TouchEvent {
+                id: TouchId(pid as u64),
+                phase: TouchPhase::Began,
+                position: TouchPoint::new(local.0, local.1),
+                window_position: TouchPoint::new(ev.client_x() as f32, ev.client_y() as f32),
+                timestamp_ns: timestamp_ns(&ev),
+                force: None,
+            };
+            // Born batched via the core `on_touch` cycle wrapper.
+            if (handler)(&te).consumed {
+                ev.stop_propagation();
+            }
         });
         let _ = element
             .add_event_listener_with_callback("contextmenu", closure.as_ref().unchecked_ref());
@@ -393,6 +485,24 @@ pub(crate) fn swallow_ancestor_touch(b: &mut WebBackend, el: &web_sys::Element) 
     let _ = el.add_event_listener_with_callback("pointerdown", closure.as_ref().unchecked_ref());
     b._touch_closures
         .push(closure.into_js_value().unchecked_into());
+
+    // The swallow must extend to `contextmenu`: an ancestor `on_touch`
+    // element's contextmenu listener SYNTHESIZES a Secondary `Began` when no
+    // pointerdown preceded it (see `install`) — and stopping the control's
+    // `pointerdown` above guarantees exactly that "no pointerdown" state at
+    // the ancestor. Without this, right-clicking a Button inside an
+    // `on_touch` row would deliver the row a secondary press its control
+    // swallowed. `preventDefault` preserves the pre-#95 observable behavior:
+    // the ancestor's listener used to suppress the native menu over the
+    // control via the bubbled event, and stopping propagation here would
+    // otherwise re-enable it.
+    let closure = Closure::<dyn FnMut(MouseEvent)>::new(move |ev: MouseEvent| {
+        ev.prevent_default();
+        ev.stop_propagation();
+    });
+    let _ = el.add_event_listener_with_callback("contextmenu", closure.as_ref().unchecked_ref());
+    b._touch_closures
+        .push(closure.into_js_value().unchecked_into());
 }
 
 /// Implementation of [`runtime_shared::Backend::claim_touch`] —
@@ -416,7 +526,11 @@ pub(crate) fn claim(_b: &mut WebBackend, _node: &Node, _touch_id: TouchId) {
 /// result is cached for the gesture's moves. Returns `(0, 0)` if the target
 /// isn't an element, which makes [`local_from`] hand back raw client
 /// coordinates — a same-frame approximation, better than nothing.
-fn element_origin(ev: &PointerEvent) -> (f64, f64) {
+///
+/// Takes `&MouseEvent` (not `&PointerEvent`) so the `contextmenu` path —
+/// a plain MouseEvent in Firefox — can share it; `PointerEvent` call sites
+/// deref-coerce. Same for [`local_from`] / [`timestamp_ns`].
+fn element_origin(ev: &MouseEvent) -> (f64, f64) {
     let Some(target) = ev.current_target() else {
         return (0.0, 0.0);
     };
@@ -430,18 +544,18 @@ fn element_origin(ev: &PointerEvent) -> (f64, f64) {
 
 /// Element-local position = client position − element origin. Pure arithmetic,
 /// no layout read.
-fn local_from(ev: &PointerEvent, origin: (f64, f64)) -> (f32, f32) {
+fn local_from(ev: &MouseEvent, origin: (f64, f64)) -> (f32, f32) {
     (
         ev.client_x() as f32 - origin.0 as f32,
         ev.client_y() as f32 - origin.1 as f32,
     )
 }
 
-/// Convert `PointerEvent.timeStamp` (DOMHighResTimeStamp, ms with
+/// Convert the event's `timeStamp` (DOMHighResTimeStamp, ms with
 /// fractional precision) to nanoseconds. Web exposes only ms-with-
 /// fractions; the conversion preserves the fractional part by
 /// multiplying before casting.
-fn timestamp_ns(ev: &PointerEvent) -> u64 {
+fn timestamp_ns(ev: &web_sys::Event) -> u64 {
     (ev.time_stamp() * 1_000_000.0) as u64
 }
 

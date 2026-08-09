@@ -787,6 +787,16 @@ pub fn track_size_css(t: &runtime_shared::TrackSize) -> String {
     }
 }
 
+/// Lower a [`runtime_shared::GridPlacement`] to its `grid-row` /
+/// `grid-column` CSS value: `Line(3)` → `3`, `Lines(1, -1)` → `1 / -1`.
+pub fn grid_placement_css(p: runtime_shared::GridPlacement) -> String {
+    use runtime_shared::GridPlacement;
+    match p {
+        GridPlacement::Line(l) => l.to_string(),
+        GridPlacement::Lines(a, b) => format!("{a} / {b}"),
+    }
+}
+
 pub fn overscroll_behavior_css(v: runtime_shared::OverscrollBehavior) -> &'static str {
     use runtime_shared::OverscrollBehavior;
     match v {
@@ -1138,6 +1148,8 @@ fn rules_to_css_impl(rules: &StyleRules, pin_flex_direction: bool, promote_flex:
     // often carry a comma-separated stack).
     let decls = [
         ("grid-template-columns", V::Owned(rules.grid_template_columns.as_deref().map(track_list_css))),
+        ("grid-row", V::Owned(rules.grid_row.map(grid_placement_css))),
+        ("grid-column", V::Owned(rules.grid_column.map(grid_placement_css))),
         ("background", V::Col(&rules.background)),
         ("background-image", V::Owned(rules.background_gradient.as_ref().map(gradient_css))),
         ("color", V::Col(&rules.color)),

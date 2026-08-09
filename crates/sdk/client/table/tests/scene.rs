@@ -19,8 +19,8 @@ use runtime_vocabulary::prims::{PrimCell, ViewPrim};
 use runtime_vocabulary::style_attach::StyleProp;
 use runtime_world::World;
 use table::{
-    cell_base_application, item_lowering, set_cell_interaction, set_cell_style, table, table_cell,
-    table_row, TableCellPrim, TableCellProps, TableProps, TableRowProps,
+    bind_row, cell_base_application, item_lowering, set_cell_interaction, set_cell_style, table,
+    table_cell, table_row, TableCellPrim, TableCellProps, TableProps, TableRowPrim, TableRowProps,
 };
 
 // ===========================================================================
@@ -59,14 +59,22 @@ fn item_children(el: Element) -> Vec<Element> {
 // Native grid lowering
 // ===========================================================================
 
-/// A row produces no layout box of its own — it lowers to a scene
-/// `Fragment` whose children are the cells, so the parent table can
-/// flatten them into a single grid.
+/// A row produces no layout box of its own — it lowers to a
+/// `TableRowPrim` MARKER item whose children are the cells; the parent
+/// table consumes the marker and flattens the cells into a single
+/// grid. (Until the row-proxy work this was a bare `Fragment`, which
+/// could carry no row-level slots.)
 #[test]
-fn table_row_lowers_to_fragment_of_cells() {
+fn table_row_lowers_to_row_marker_of_cells() {
     match row(3) {
-        Element::Fragment(children) => assert_eq!(children.len(), 3),
-        _ => panic!("table_row must lower to a Fragment of its cells"),
+        Element::Item { data, children } => {
+            assert!(
+                data.downcast_ref::<PrimCell<TableRowPrim>>().is_some(),
+                "native row payload is the TableRowPrim marker"
+            );
+            assert_eq!(children.len(), 3);
+        }
+        _ => panic!("table_row must lower to a TableRowPrim marker item"),
     }
 }
 
@@ -79,6 +87,7 @@ fn table_row_lowers_to_fragment_of_cells() {
 fn table_lowers_to_grid_with_flattened_cells() {
     let t = table(TableProps {
         children: vec![row(3), row(3), row(3)],
+        ..Default::default()
     })
     .into_element();
 
@@ -117,6 +126,7 @@ fn table_lowers_to_grid_with_flattened_cells() {
 fn table_column_count_is_widest_row() {
     let t = table(TableProps {
         children: vec![row(2), row(4), row(3)],
+        ..Default::default()
     })
     .into_element();
     let inner = item_children(t).pop().expect("outer wraps the grid");
@@ -159,6 +169,7 @@ fn owned_row_scope_survives_grid_flattening() {
 
         let t = table(TableProps {
             children: vec![owned_row, row(2)],
+            ..Default::default()
         })
         .into_element();
 
@@ -298,6 +309,7 @@ fn web_handlers_emit_real_table_markup() {
                 ),
             ],
             None,
+            false,
         )
     });
 
@@ -338,7 +350,7 @@ fn interactive_cell_mounts_through_the_registry() {
             }),
             Rc::new(|_| {}),
         );
-        item_lowering::table_item(vec![item_lowering::row_item(vec![cell], None)], None)
+        item_lowering::table_item(vec![item_lowering::row_item(vec![cell], None)], None, false)
     });
     assert!(page.html.contains("<td"), "interactive cell still renders");
     assert!(!fired.get(), "handler install must not invoke the callback");
@@ -354,6 +366,7 @@ fn native_grid_lowering_emits_grid_css_through_scene_realization() {
     let page = backend_ssr::newcore::render_path_with("/", |_| {}, || {
         table(TableProps {
             children: vec![row(3), row(3)],
+            ..Default::default()
         })
         .into_element()
     });
@@ -398,6 +411,7 @@ fn defer_registers_eagerly_off_web() {
                 None,
             )],
             None,
+            false,
         )
     });
 
@@ -440,8 +454,206 @@ fn register_from_chunk_is_inert_off_web() {
                 None,
             )],
             None,
+            false,
         )
     });
     assert!(page.html.contains("<table"), "{}", page.html);
     assert!(page.html.contains("cell"), "{}", page.html);
+}
+
+// ===========================================================================
+// scroll-x mode + row proxies
+// ===========================================================================
+
+/// `scroll_x` wraps the native lowering in a HORIZONTAL scroll_view and
+/// floors the author-surface's width at 100% of the scroller — the
+/// "natural column widths, at least the scroller's width" strategy.
+/// Sticky-pinned cells (idea-ui's `pinned` axis) register against this
+/// scroll view; without it a frozen column has nothing to pin to.
+#[test]
+fn scroll_x_wraps_native_table_in_horizontal_scroller() {
+    use runtime_vocabulary::prims::ScrollViewPrim;
+    let t = table(TableProps {
+        children: vec![row(2)],
+        scroll_x: true,
+    })
+    .into_element();
+    match &t {
+        Element::Item { data, children } => {
+            let prim = data
+                .downcast_ref::<PrimCell<ScrollViewPrim>>()
+                .expect("scroll_x table lowers to a scroll_view wrapper")
+                .take();
+            assert!(prim.horizontal, "the scroller must be horizontal");
+            assert_eq!(children.len(), 1, "scroller wraps exactly the table surface");
+            // The wrapped surface picked up the min-width floor.
+            let outer = &children[0];
+            match outer {
+                Element::Item { data, .. } => {
+                    let vp = data
+                        .downcast_ref::<PrimCell<ViewPrim>>()
+                        .expect("outer surface is a view")
+                        .take();
+                    let rules = match vp.style {
+                        Some(StyleProp::Static(r)) => r,
+                        other => panic!("floor composes onto the bare outer as Static, got {:?}", other.is_some()),
+                    };
+                    assert!(
+                        matches!(
+                            rules.min_width.as_ref().map(|t| t.resolve()),
+                            Some(glue::Length::Percent(p)) if (p - 100.0).abs() < f32::EPSILON
+                        ),
+                        "outer surface floors at min-width: 100%"
+                    );
+                }
+                _ => panic!("outer surface must be a view item"),
+            }
+        }
+        _ => panic!("scroll_x table must lower to a scroll_view item"),
+    }
+}
+
+/// Binding a row (the drag-and-drop geometry seam) turns the native
+/// lowering into the PROXY shape: a row-spanning backdrop view is
+/// inserted before the bound row's cells (carrying the ref_fill), and
+/// EVERY cell in the table gains an explicit `(grid_row, grid_column)`
+/// — auto-flow and a spanning item cannot mix (auto placement would
+/// skip the occupied row and push every cell down).
+#[test]
+fn bound_row_emits_backdrop_and_places_every_cell() {
+    use runtime_shared::GridPlacement;
+
+    let r0 = row(2);
+    bind_row(&r0, |_handle| {});
+    let t = table(TableProps {
+        children: vec![r0, row(2)],
+        ..Default::default()
+    })
+    .into_element();
+
+    let inner = item_children(t).pop().expect("outer wraps the grid");
+    let grid_children = item_children(inner);
+    // 1 backdrop + 4 cells.
+    assert_eq!(
+        grid_children.len(),
+        5,
+        "one backdrop (bound row) + four cells"
+    );
+
+    // Backdrop first: spans all columns of row 1 and carries the
+    // ref_fill so the mount hands out its handle.
+    let backdrop = take_view_prim(&grid_children[0]);
+    assert!(backdrop.ref_fill.is_some(), "backdrop carries the row binding");
+    let backdrop_rules = match backdrop.style {
+        Some(StyleProp::Static(r)) => r,
+        _ => panic!("slotless backdrop style is Static rules"),
+    };
+    assert_eq!(backdrop_rules.grid_row, Some(GridPlacement::Line(1)));
+    assert_eq!(backdrop_rules.grid_column, Some(GridPlacement::SPAN_ALL));
+
+    // Every cell is explicitly placed; cells of row 1 come after the
+    // backdrop (paint above it), row 2's cells land on line 2.
+    let expect = [(1, 1), (1, 2), (2, 1), (2, 2)];
+    for (i, (row_line, col_line)) in expect.iter().enumerate() {
+        let prim = take_view_prim(&grid_children[i + 1]);
+        let app = match prim.style {
+            Some(StyleProp::Sheet(app)) => app,
+            _ => panic!("cell {i} keeps its sheet (placement rides overrides)"),
+        };
+        let rules = resolve_style(&app);
+        assert_eq!(
+            rules.grid_row,
+            Some(GridPlacement::Line(*row_line)),
+            "cell {i} grid_row"
+        );
+        assert_eq!(
+            rules.grid_column,
+            Some(GridPlacement::Line(*col_line)),
+            "cell {i} grid_column"
+        );
+    }
+}
+
+/// A table with NO bound/styled rows keeps the pre-proxy fast path:
+/// plain auto-flow, no backdrops, no per-cell placement.
+#[test]
+fn unbound_rows_keep_the_auto_flow_fast_path() {
+    let t = table(TableProps {
+        children: vec![row(2), row(2)],
+        ..Default::default()
+    })
+    .into_element();
+    let inner = item_children(t).pop().expect("outer wraps the grid");
+    let grid_children = item_children(inner);
+    assert_eq!(grid_children.len(), 4, "no backdrops for slotless rows");
+    let prim = take_view_prim(&grid_children[0]);
+    let app = match prim.style {
+        Some(StyleProp::Sheet(app)) => app,
+        _ => panic!("Sheet"),
+    };
+    assert_eq!(
+        resolve_style(&app).grid_row,
+        None,
+        "auto-flow cells carry no explicit placement"
+    );
+}
+
+/// Web: `scroll_x` flips the `<table>`'s inline width strategy to
+/// `min-width: 100%; width: max-content` and wraps it in the scroller
+/// element, so columns overflow sideways instead of squeezing.
+#[test]
+fn scroll_x_web_width_strategy_and_wrapper() {
+    let page = backend_ssr::newcore::render_path_with("/", table::register, || {
+        item_lowering::table_item(
+            vec![item_lowering::row_item(
+                vec![item_lowering::cell_item(
+                    false,
+                    vec![glue::text("wide").into_element()],
+                    None,
+                )],
+                None,
+            )],
+            None,
+            true,
+        )
+    });
+    let html = &page.html;
+    assert!(
+        html.contains("min-width: 100%") || html.contains("min-width:100%"),
+        "scroll-x table floors at the scroller's width: {html}"
+    );
+    assert!(
+        html.contains("max-content"),
+        "scroll-x table lays columns at natural width: {html}"
+    );
+    assert!(
+        !html.contains("width: 100%;") || html.contains("min-width: 100%"),
+        "the fill-and-wrap width strategy must be replaced, not stacked: {html}"
+    );
+}
+
+/// Web: a bound row hands out the `<tr>`'s handle at mount — the
+/// row-proxy geometry seam on the `<table>` lowering.
+#[test]
+fn bound_row_fills_handle_on_web_mount() {
+    let filled = Rc::new(Cell::new(false));
+    let filled_in = filled.clone();
+    let page = backend_ssr::newcore::render_path_with("/", table::register, move || {
+        let r = item_lowering::row_item(
+            vec![item_lowering::cell_item(
+                false,
+                vec![glue::text("x").into_element()],
+                None,
+            )],
+            None,
+        );
+        let filled = filled_in.clone();
+        bind_row(&r, move |_handle| filled.set(true));
+        item_lowering::table_item(vec![r], None, false)
+    });
+    assert!(page.html.contains("<tr"), "{}", page.html);
+    assert!(
+        filled.get(),
+        "mount must hand the <tr> handle to the row binding"
+    );
 }

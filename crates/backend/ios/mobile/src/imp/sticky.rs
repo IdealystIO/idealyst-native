@@ -46,18 +46,17 @@
 //!
 //! ## Axis coverage
 //!
-//! Leading-edge pinning on BOTH axes: `top` drives the vertical pin
-//! off `contentOffset.y`, `left` the horizontal pin off
-//! `contentOffset.x`. An axis with no inset scrolls normally, so a
-//! frozen column (`left` only) still scrolls vertically with the
-//! content — which is the whole point of having the thresholds be
-//! per-axis `Option`s rather than one number.
-//!
-//! Trailing-edge pinning (`bottom` / `right`) is NOT implemented: it
-//! needs the scrollport extent and the child's own extent threaded
-//! into the tick, neither of which this registry carries. Those sides
-//! are ignored here and honored on web, where the browser owns
-//! pinning.
+//! All four edges. Leading: `top` drives the vertical pin off
+//! `contentOffset.y`, `left` the horizontal pin off
+//! `contentOffset.x`. Trailing: `bottom` / `right` pin the child's far
+//! edge inside the scrollport's trailing edge — the tick reads the
+//! scroll view's `bounds.size` for the scrollport extent and the
+//! cached Taffy frame size for the child extent (both refreshed per
+//! layout pass, same discipline as `natural`). An axis with no inset
+//! scrolls normally, so a frozen column (`left` or `right` only)
+//! still scrolls vertically with the content — which is the whole
+//! point of having the thresholds be per-edge `Option`s rather than
+//! one number.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -93,6 +92,11 @@ pub(crate) struct StickyChild {
     /// pass by `refresh_layout_positions`. Initialized to the
     /// origin; the first layout pass replaces it with real values.
     pub(crate) natural: (f32, f32),
+    /// The child's `(width, height)` from its Taffy frame — trailing
+    /// -edge pins measure the far edge against the scrollport.
+    /// Refreshed alongside `natural` (a UIView's own frame is
+    /// undefined under a transform, so the live view is never read).
+    pub(crate) size: (f32, f32),
 }
 
 /// Per-scroll-view sticky state. Owns the CADisplayLink that drives
@@ -184,8 +188,18 @@ pub(crate) fn register(
             view: child_retained,
             insets,
             natural: (0.0, 0.0),
+            size: (0.0, 0.0),
         },
     );
+
+    // Raise the pinned view above its static siblings, matching how
+    // CSS paints positioned elements above non-positioned ones — a
+    // frozen column must draw over the cells that slide beneath it.
+    // `layer.zPosition` orders sibling layers without touching the
+    // subview order UIKit's index-based insert bookkeeping relies on;
+    // hit-testing still follows subview order, which is acceptable
+    // (the overlap region is content the pin visually covers).
+    raise_z(view, 1.0);
 
     // First child for this scroll view triggers the display-link
     // start. Subsequent children attach to the existing link.
@@ -289,6 +303,17 @@ impl CGAffineTransform {
 /// Reset `view.transform` to the identity.
 fn reset_view_transform(view: &UIView) {
     let _: () = unsafe { msg_send![view, setTransform: CGAffineTransform::IDENTITY] };
+    raise_z(view, 0.0);
+}
+
+/// Set the sticky raise on the view's layer. `1.0` on register (paint
+/// above static siblings, CSS positioned-element order), `0.0` on
+/// deregister so a Sticky → Relative flip restores document order.
+fn raise_z(view: &UIView, z: f64) {
+    let layer: Option<Retained<NSObject>> = unsafe { msg_send_id![view, layer] };
+    if let Some(layer) = layer {
+        let _: () = unsafe { msg_send![&layer, setZPosition: z] };
+    }
 }
 
 /// Apply `(translate_x, translate_y)` translation to `view.transform`.
@@ -362,8 +387,15 @@ fn tick(backend: &mut crate::imp::IosBackend, scroll_key: usize) {
         };
         (offset.x as f32, offset.y as f32)
     };
+    // Scrollport extent for trailing-edge pins. `bounds.size` is the
+    // visible extent regardless of the current transform/offset (UIKit
+    // moves `bounds.origin` when scrolling, not the size).
+    let viewport: (f32, f32) = {
+        let bounds: objc2_foundation::CGRect = unsafe { msg_send![&*entry.scroll_view, bounds] };
+        (bounds.size.width as f32, bounds.size.height as f32)
+    };
     for (_, child) in entry.children.iter() {
-        let (tx, ty) = translate(child.insets, child.natural, scroll);
+        let (tx, ty) = translate(child.insets, child.natural, child.size, scroll, viewport);
         let (cur_x, cur_y) = current_translate(&child.view);
         // One combined write: `setTransform:` replaces the whole
         // matrix, so writing the axes separately would have the second
@@ -407,6 +439,13 @@ pub(crate) fn refresh_layout_positions(
                 continue;
             };
             child.natural = natural;
+            // The child's own extent, for trailing-edge pins — from
+            // the Taffy frame, same source as `natural` (the UIView
+            // frame is undefined under the pin transform).
+            if let Some((_, node)) = view_to_layout.get(child_key) {
+                let frame = layout.frame_of(*node);
+                child.size = (frame.width, frame.height);
+            }
         }
     }
 }
@@ -484,16 +523,18 @@ mod tests {
     fn regression_sticky_registry_pins_when_scrolled_past_threshold() {
         // Child sits at y=100 in the scroll view's content; pin
         // threshold (top) is 20pt from the scroll view's top edge.
-        let vertical = StickyInsets { top: Some(20.0), left: None };
+        let vertical = StickyInsets { top: Some(20.0), ..Default::default() };
         let natural = (33.0_f32, 100.0_f32);
+        let size = (80.0_f32, 40.0_f32);
+        let viewport = (390.0_f32, 844.0_f32);
 
         // Far above the pin point — no translate on either axis.
-        assert_eq!(translate(vertical, natural, (0.0, 0.0)), (0.0, 0.0));
+        assert_eq!(translate(vertical, natural, size, (0.0, 0.0), viewport), (0.0, 0.0));
 
         // Way past the pin point — ty compensates fully so the child
         // renders at scroll_y + threshold, and tx stays 0 so the
         // combined write preserves the laid-out x.
-        let (tx, ty) = translate(vertical, natural, (0.0, 280.0));
+        let (tx, ty) = translate(vertical, natural, size, (0.0, 280.0), viewport);
         assert_eq!(tx, 0.0, "a vertical-only pin must leave transform.tx at 0");
         assert!(
             ((natural.1 + ty) - 300.0).abs() < 1e-5,
@@ -508,13 +549,33 @@ mod tests {
     /// a frozen column was inexpressible on every backend.
     #[test]
     fn regression_sticky_left_never_pins_horizontally() {
-        let horizontal = StickyInsets { top: None, left: Some(0.0) };
-        let (tx, ty) = translate(horizontal, (160.0, 40.0), (600.0, 250.0));
+        let horizontal = StickyInsets { left: Some(0.0), ..Default::default() };
+        let (tx, ty) = translate(horizontal, (160.0, 40.0), (80.0, 24.0), (600.0, 250.0), (390.0, 844.0));
         assert!(
             ((160.0 + tx) - 600.0).abs() < 1e-5,
             "pinned rendered x should equal scroll_x + threshold",
         );
         assert_eq!(ty, 0.0, "a horizontal-only pin must leave transform.ty at 0");
+    }
+
+    /// A RIGHT-frozen column on iOS: `right` pulls the child back so
+    /// its far edge parks at the scroll view's trailing bounds edge,
+    /// composed into the same single `setTransform:` write — so the
+    /// unpinned vertical axis must still come back exactly 0. Before
+    /// trailing-edge support the registry carried no scrollport or
+    /// child extent, and `right` produced no pin on any native backend.
+    #[test]
+    fn regression_sticky_right_pins_at_scrollport_trailing_edge() {
+        let horizontal = StickyInsets { right: Some(0.0), ..Default::default() };
+        // Column at x=900, 100 wide, scrollport 390 wide, unscrolled:
+        // parks at 390 - 100 = 290.
+        let (tx, ty) = translate(horizontal, (900.0, 40.0), (100.0, 24.0), (0.0, 0.0), (390.0, 844.0));
+        assert!(((900.0 + tx) - 290.0).abs() < 1e-5);
+        assert_eq!(ty, 0.0, "a horizontal-only pin must leave transform.ty at 0");
+        // Scrolled far enough right that it's naturally visible —
+        // rides the content, no transform.
+        let (tx, _) = translate(horizontal, (900.0, 40.0), (100.0, 24.0), (610.0, 0.0), (390.0, 844.0));
+        assert_eq!(tx, 0.0);
     }
 
     /// Registry must be empty after a register + deregister
@@ -579,8 +640,9 @@ mod tests {
                                 std::ptr::NonNull::<UIView>::dangling().as_ptr(),
                             )
                         },
-                        insets: StickyInsets { top: Some(0.0), left: None },
+                        insets: StickyInsets { top: Some(0.0), ..Default::default() },
                         natural: (0.0, 0.0),
+                        size: (0.0, 0.0),
                     },
                 );
                 m
@@ -640,9 +702,9 @@ mod tests {
         // (scroll == 0 and threshold > 0). This is the same numeric
         // result the registry-less path would yield — i.e.
         // "rendered position == natural position" → no transform.
-        let insets = StickyInsets { top: Some(20.0), left: Some(20.0) };
+        let insets = StickyInsets { top: Some(20.0), left: Some(20.0), ..Default::default() };
         assert_eq!(
-            translate(insets, (100.0, 100.0), (0.0, 0.0)),
+            translate(insets, (100.0, 100.0), (80.0, 40.0), (0.0, 0.0), (390.0, 844.0)),
             (0.0, 0.0),
             "no scroll ancestor implies no scroll → no pin",
         );

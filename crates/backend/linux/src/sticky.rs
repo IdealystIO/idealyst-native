@@ -24,16 +24,20 @@
 //!
 //! ## Scope
 //!
-//! Vertical (`top`) only. This is now the ONLY backend without
-//! horizontal pinning: iOS, macOS, wgpu and Android all read per-axis
-//! thresholds via `runtime_shared::sticky::StickyInsets` and pin on
-//! `left` as well, and web has always had both from the browser. A
-//! `left`-inset element here silently falls back to relative on the
-//! horizontal axis — so a frozen COLUMN does not work on GTK.
+//! Vertical leading (`top`) only. This is now the ONLY backend without
+//! horizontal or trailing-edge pinning: iOS, macOS, wgpu and Android
+//! all read per-edge thresholds via
+//! `runtime_shared::sticky::StickyInsets` and pin on `left`, `right`
+//! and `bottom` as well, and web has always had all four from the
+//! browser. A `left`- or `right`-inset element here silently falls
+//! back to relative on the horizontal axis — so a frozen COLUMN does
+//! not work on GTK.
 //!
 //! Bringing this backend in line means widening the registry to
 //! `StickyInsets`, summing frame origins on both axes in the
-//! natural-position walk, and driving the pin from the scrolled
+//! natural-position walk, threading the scrolled window's viewport
+//! extent + each child's frame extent into the tick (trailing edges
+//! measure the far edge), and driving the pin from the scrolled
 //! window's `hadjustment` alongside its `vadjustment` — the same
 //! change the other four already took. It is deliberately NOT done
 //! blind: the GTK toolchain isn't available in the environment this

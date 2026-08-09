@@ -243,7 +243,7 @@ pub use components::stack::{
 pub use components::surface::{Surface, SurfaceColor, SurfaceProps};
 pub use components::switch::{Switch, SwitchProps};
 #[cfg(feature = "table")]
-pub use components::table::{Table, TableCell, TableCellProps, TableProps, TableRow, TableRowProps};
+pub use components::table::{ColumnPin, Table, TableCell, TableCellProps, TableProps, TableRow, TableRowProps};
 pub use components::tabs::{Tab, TabIndicator, Tabs, TabsProps};
 pub use components::tag::{Tag, TagProps};
 pub use components::textarea::{Textarea, TextareaProps};

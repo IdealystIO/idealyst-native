@@ -2095,9 +2095,48 @@ stylesheet! {
             off(_t) {}
             on(t) { background: t.color.surface_alt() }
         }
+        // Frozen-column axis (`TableCell(pinned = …)` in a
+        // `Table(scroll_x = true)`). `position: Sticky` + the zero
+        // inset pins the cell inside the table's horizontal scroller
+        // on every backend — the browser natively on web, the shared
+        // sticky registry (which also raises pinned cells above the
+        // content sliding beneath them) on native. The head cell's own
+        // `surface_alt` background already makes it opaque; the inner-
+        // edge hairline marks where content slides underneath.
+        variant pinned {
+            #[default]
+            none(_t) {}
+            left(t) {
+                position: Position::Sticky,
+                left: 0,
+                border_right_width: 1.0,
+                border_right_color: t.color.border(),
+            }
+            right(t) {
+                position: Position::Sticky,
+                right: 0,
+                border_left_width: 1.0,
+                border_left_color: t.color.border(),
+            }
+        }
+        // Drag-and-drop feedback (`Table(on_reorder = …)`): the source
+        // row dims while in flight; the row under the dragged payload
+        // highlights as the drop slot. Shared-signal axes like
+        // `row_hovered`, flipped per row by the Table's drag wiring.
+        variant dragging {
+            #[default]
+            off(_t) {}
+            on(_t) { opacity: 0.4 }
+        }
+        variant drop_target {
+            #[default]
+            off(_t) {}
+            on(t) { background: t.color.surface_alt() }
+        }
         transitions {
             background: 250ms EaseInOut,
             border_bottom_color: 250ms EaseInOut,
+            opacity: 150ms EaseInOut,
         }
     }
 }
@@ -2132,11 +2171,45 @@ stylesheet! {
             off(_t) {}
             on(t) { background: t.color.surface_alt() }
         }
+        // Frozen-column axis — see `TableHeadCell`. A body cell has no
+        // background of its own, so the pinned arms pin an OPAQUE
+        // surface background too: without it the cells sliding
+        // underneath would show straight through the frozen column.
+        variant pinned {
+            #[default]
+            none(_t) {}
+            left(t) {
+                position: Position::Sticky,
+                left: 0,
+                background: t.color.surface(),
+                border_right_width: 1.0,
+                border_right_color: t.color.border(),
+            }
+            right(t) {
+                position: Position::Sticky,
+                right: 0,
+                background: t.color.surface(),
+                border_left_width: 1.0,
+                border_left_color: t.color.border(),
+            }
+        }
+        // Drag-and-drop feedback — see `TableHeadCell`.
+        variant dragging {
+            #[default]
+            off(_t) {}
+            on(_t) { opacity: 0.4 }
+        }
+        variant drop_target {
+            #[default]
+            off(_t) {}
+            on(t) { background: t.color.surface_alt() }
+        }
         transitions {
             border_bottom_color: 250ms EaseInOut,
             // Fade the whole-row hover highlight the `row_hovered` axis
             // flips on/off.
             background: 150ms EaseInOut,
+            opacity: 150ms EaseInOut,
         }
     }
 }

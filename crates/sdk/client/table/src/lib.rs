@@ -18,6 +18,33 @@
 //! pluggable: web wires up a real `<table>` through the scene registry,
 //! native composes a grid out of the framework's own layout primitives.
 //!
+//! # Scroll-x mode & pinned columns
+//!
+//! `TableProps::scroll_x` wraps the table in a horizontal scroller and
+//! flips the width strategy to "natural column widths, floored at the
+//! scroller's width" (web: `min-width: 100%; width: max-content`;
+//! native: a `min_width: 100%` floor on the author surface inside a
+//! horizontal `scroll_view`). Frozen columns are pure STYLING on top:
+//! a cell with `position: Sticky` + `left: 0` / `right: 0` pins inside
+//! that scroller on every backend — the browser natively, native
+//! through `runtime_shared::sticky` (which also raises pinned cells
+//! above the content sliding beneath them). The SDK has no pin API of
+//! its own; idea-ui's `TableCell(pinned = …)` axis is the author
+//! surface.
+//!
+//! # Row proxies (drag & drop geometry)
+//!
+//! A dissolved row has no node of its own, which made row-level
+//! geometry (drop targeting, row frames) inexpressible. [`bind_row`]
+//! fixes that: on web it hands out the real `<tr>`'s handle; on native
+//! the table emits a row-spanning BACKDROP view (explicit grid
+//! placement, painted beneath the row's cells) and hands out that.
+//! When any row is bound (or styled), every cell is explicitly placed
+//! — see [`build_table`]'s doc for why auto-flow and spanning items
+//! cannot mix. Row TOUCH stays on the per-cell fan-out
+//! ([`set_cell_interaction`]): a sibling backdrop can never receive
+//! touches landing on cell content on native.
+//!
 //! # The two lowerings
 //!
 //! - **Web (wasm32)**: each primitive lowers to a scene
@@ -29,13 +56,17 @@
 //!   — the runtime's unified primitive==external contract. The
 //!   handlers are generic over the caps traits, so the SSR backend
 //!   reuses them for static rendering.
-//! - **Native (non-wasm)**: rows flatten to cells parented directly
-//!   under one `display: grid` node with `N` `auto` column tracks,
-//!   built with the vocabulary glue's `view` builder. Because the
-//!   column tracks are shared, column `i` is one width across every
-//!   row — the same cross-row alignment the browser gives a real
-//!   `<table>`. No handler registration is needed; the grid is plain
-//!   views, handled by the vocabulary built-ins.
+//! - **Native (non-wasm)**: each row lowers to a [`TableRowPrim`]
+//!   MARKER item that [`table`] consumes at build time, flattening the
+//!   row's cells so they are parented directly under one
+//!   `display: grid` node with `N` `auto` column tracks, built with
+//!   the vocabulary glue's `view` builder. Because the column tracks
+//!   are shared, column `i` is one width across every row — the same
+//!   cross-row alignment the browser gives a real `<table>`. No
+//!   handler registration is needed; the built grid is plain views,
+//!   handled by the vocabulary built-ins. (A `table_row` used OUTSIDE
+//!   a `table` panics at realize as an unregistered payload — the
+//!   loud failure the registry promises.)
 //!
 //! The columns are `auto`, which `runtime-layout` treats as the
 //! `table-layout: auto` signal: it measures each column's content, then
@@ -79,7 +110,7 @@
 use std::rc::Rc;
 
 use runtime_shared::{HoverHandler, TouchHandler};
-use runtime_scene::{fragment, item, Element, Host, MountCx, Registry};
+use runtime_scene::{item, Element, Host, MountCx, Registry};
 use runtime_vocabulary::caps::InputOps;
 use runtime_vocabulary::glue::{
     self, BuildElement, ChildList, DisplayKind, IntoElement, StyleApplication, StyleRules,
@@ -102,6 +133,20 @@ use runtime_vocabulary::style_attach::{attach_style, IntoStyleProp, StyleProp, S
 pub struct TableProps {
     /// The table's rows. Populated by the `ui!` children block.
     pub children: Vec<Element>,
+    /// Horizontal-scroll mode. When `true` the table is wrapped in a
+    /// horizontal scroller (a DOM `overflow-x` container on web, the
+    /// `scroll_view` primitive on native) and its width strategy flips
+    /// from "fill and wrap" to "natural column widths, at least the
+    /// scroller's width": columns lay out at their content width, the
+    /// table overflows sideways when they don't fit, and still fills
+    /// the scroller when they do. Pinned (frozen) columns are styled by
+    /// the CALLER, not the SDK — give a cell `position: Sticky` with
+    /// `left: 0` / `right: 0` (idea-ui's `TableCell(pinned = …)` axis
+    /// does exactly this) and both lowerings pin it: the browser
+    /// natively, the native backends through the shared sticky
+    /// registry, which also raises pinned cells above the content
+    /// sliding beneath them.
+    pub scroll_x: bool,
 }
 
 /// Props for a single row (`<tr>`).
@@ -141,13 +186,43 @@ pub struct TablePrim {
     /// Author style, attached to the `<table>` node after children
     /// mount (the standard handler ordering).
     pub style: Option<StyleProp>,
+    /// Horizontal-scroll mode — flips the mount-time width strategy
+    /// from `width: 100%` (fill, wrap) to `min-width: 100%; width:
+    /// max-content` (natural column widths, overflow sideways). The
+    /// scroller wrapper itself is added by [`table`] at the element
+    /// level, outside this payload.
+    pub scroll_x: bool,
 }
 
-/// Scene payload for a `<tr>` (web lowering).
+/// Scene payload for a table row — the `<tr>` on web, and (since the
+/// row-proxy work) the pre-flatten row MARKER on native: native
+/// `table_row` lowers to this item so row-level slots survive until
+/// [`table`] dissolves the row into the grid. [`table`] consumes the
+/// marker at build time; it never reaches realize on native.
+///
+/// The `ref_fill` slot is what gives a dissolved row a real, bindable
+/// surface (the "row proxy"): on web it hands out the `<tr>`'s own
+/// handle; on native, [`table`] emits a row-spanning BACKDROP view
+/// (explicit grid placement `grid_row: r`, `grid_column: 1 / -1`,
+/// inserted before the row's cells so it paints beneath them) and the
+/// handle is the backdrop's. Row geometry (drag-and-drop drop
+/// targeting, row frames) reads through that handle. Row-level TOUCH
+/// does NOT live here — a sibling backdrop can never receive touches
+/// that land on cell content on native, so interaction stays on the
+/// per-cell fan-out ([`set_cell_interaction`]), which is also how the
+/// clickable-row feature already works.
 pub struct TableRowPrim {
-    /// Author style for the row node (unused by idea-ui, kept because
-    /// `.with_style(…)` works on every wrapper).
+    /// Author style for the row node — the `<tr>` on web, the backdrop
+    /// view on native (a native row previously dropped its style
+    /// silently; with the proxy it lands on the backdrop, so row-level
+    /// visuals behave uniformly).
     pub style: Option<StyleProp>,
+    /// Filled with the row surface's handle at mount ([`bind_row`]).
+    pub ref_fill: Option<Box<dyn FnOnce(runtime_shared::ViewHandle)>>,
+    /// Opaque row metadata for the component layer above (idea-ui's
+    /// draggable-row tag rides here). Set with [`set_row_meta`], read
+    /// with [`take_row_meta`]; the SDK itself never looks inside.
+    pub meta: Option<Box<dyn std::any::Any>>,
 }
 
 /// Scene payload for a `<td>` / `<th>` (web lowering). The interaction
@@ -162,6 +237,9 @@ pub struct TableCellPrim {
     pub on_touch: Option<TouchHandler>,
     /// Hover handler installed on the cell node (row hover highlight).
     pub on_hover: Option<HoverHandler>,
+    /// Filled with the `<td>`/`<th>`'s handle at mount ([`bind_cell`]) —
+    /// the anchor animated drag offsets attach to.
+    pub ref_fill: Option<Box<dyn FnOnce(runtime_shared::ViewHandle)>>,
 }
 
 // ============================================================================
@@ -201,12 +279,13 @@ macro_rules! table_wrapper_common {
 pub struct TableBound {
     children: Vec<Element>,
     style: Option<StyleProp>,
+    scroll_x: bool,
 }
 table_wrapper_common!(TableBound);
 
 impl IntoElement for TableBound {
     fn into_element(self) -> Element {
-        build_table(self.children, self.style)
+        build_table(self.children, self.style, self.scroll_x)
     }
 }
 
@@ -248,6 +327,7 @@ pub fn table(mut props: TableProps) -> TableBound {
     TableBound {
         children: std::mem::take(&mut props.children),
         style: None,
+        scroll_x: props.scroll_x,
     }
 }
 
@@ -288,13 +368,13 @@ pub mod item_lowering {
     use super::*;
 
     /// `<table>` item.
-    pub fn table_item(children: Vec<Element>, style: Option<StyleProp>) -> Element {
-        item(PrimCell::new(TablePrim { style }), children)
+    pub fn table_item(children: Vec<Element>, style: Option<StyleProp>, scroll_x: bool) -> Element {
+        item(PrimCell::new(TablePrim { style, scroll_x }), children)
     }
 
     /// `<tr>` item.
     pub fn row_item(children: Vec<Element>, style: Option<StyleProp>) -> Element {
-        item(PrimCell::new(TableRowPrim { style }), children)
+        item(PrimCell::new(TableRowPrim { style, ref_fill: None, meta: None }), children)
     }
 
     /// `<td>` / `<th>` item.
@@ -305,6 +385,7 @@ pub mod item_lowering {
                 style,
                 on_touch: None,
                 on_hover: None,
+                ref_fill: None,
             }),
             children,
         )
@@ -312,8 +393,18 @@ pub mod item_lowering {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn build_table(children: Vec<Element>, style: Option<StyleProp>) -> Element {
-    item_lowering::table_item(children, style)
+fn build_table(children: Vec<Element>, style: Option<StyleProp>, scroll_x: bool) -> Element {
+    let table = item_lowering::table_item(children, style, scroll_x);
+    if scroll_x {
+        // The scroller is OUTSIDE the `<table>` (the author-style
+        // surface scrolls with the content — a wider-than-viewport
+        // table carries its border/radius along). `position: sticky`
+        // cells pin against this wrapper: it is the nearest ancestor
+        // scroll container.
+        glue::scroll_view(vec![table]).horizontal(true).into_element()
+    } else {
+        table
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -334,20 +425,57 @@ fn build_cell(header: bool, children: Vec<Element>, style: Option<StyleProp>) ->
 /// wrapping the inner grid whose direct children are ALL cells from ALL
 /// rows. Peeled row scopes re-attach around the finished element (see
 /// the module docs).
+///
+/// Rows with proxy slots (a bound handle or a row style — see
+/// [`TableRowPrim`]) additionally get a row-spanning BACKDROP view.
+/// Because a spanning grid item and auto-flow cells cannot mix (auto
+/// placement skips occupied cells, which would push every cell out of
+/// its row — see [`runtime_shared::GridPlacement`]), the moment ANY row
+/// carries a proxy, EVERY cell is placed explicitly at its
+/// `(grid_row, grid_column)`. The `table-layout: auto` water-fill in
+/// `runtime-layout` attributes explicitly-placed cells to their named
+/// column and skips spanning backdrops, so column sizing is identical
+/// either way (`regression_table_grid_with_row_backdrops_keeps_column_sizing`
+/// pins this).
 #[cfg(not(target_arch = "wasm32"))]
-fn build_table(rows: Vec<Element>, style: Option<StyleProp>) -> Element {
-    let mut cells: Vec<Element> = Vec::new();
+fn build_table(rows: Vec<Element>, style: Option<StyleProp>, scroll_x: bool) -> Element {
     let mut owneds: Vec<glue::Owned> = Vec::new();
+    let mut extracted: Vec<NativeRow> = Vec::new();
     let mut columns = 0usize;
     for row in rows {
-        let row_cells = extract_row_cells(row, &mut owneds);
-        columns = columns.max(row_cells.len());
-        cells.extend(row_cells);
+        let row_data = extract_row(row, &mut owneds);
+        columns = columns.max(row_data.cells.len());
+        extracted.push(row_data);
     }
+    let any_proxy = extracted
+        .iter()
+        .any(|r| r.slots.as_ref().is_some_and(|s| s.style.is_some() || s.ref_fill.is_some()));
+
+    let mut grid_children: Vec<Element> = Vec::new();
+    if !any_proxy {
+        // Fast path — auto-flow, exactly the pre-proxy lowering.
+        for row in extracted {
+            grid_children.extend(row.cells);
+        }
+    } else {
+        for (r, row) in extracted.into_iter().enumerate() {
+            let row_line = (r + 1) as i16;
+            if let Some(slots) = row.slots {
+                if slots.style.is_some() || slots.ref_fill.is_some() {
+                    grid_children.push(build_row_backdrop(row_line, slots));
+                }
+            }
+            for (c, cell) in row.cells.into_iter().enumerate() {
+                place_cell(&cell, row_line, (c + 1) as i16);
+                grid_children.push(cell);
+            }
+        }
+    }
+
     // Inner node: the actual grid. Its sheet (display:grid + N tracks)
     // is one level below the author-style target so it survives a
     // `.with_style(...)` on the outer node.
-    let inner = glue::view(cells)
+    let inner = glue::view(grid_children)
         .with_style(native_styles::grid_sheet(columns))
         .into_element();
     // Outer node: the author-style target. The framework's default
@@ -357,6 +485,21 @@ fn build_table(rows: Vec<Element>, style: Option<StyleProp>) -> Element {
         Some(style) => outer.with_style(style).into_element(),
         None => outer.into_element(),
     };
+    if scroll_x {
+        // Mirror of the web lowering: the scroller wraps the whole
+        // author-style surface, and the outer node picks up the
+        // "at least the scroller's width" floor so a narrow table
+        // still fills while a wide one overflows and scrolls.
+        // Sticky-pinned cells register against this scroll view.
+        set_view_style(
+            &el,
+            |prop| Some(compose_rules(prop, native_styles::scroll_floor_rules())),
+        );
+        el = glue::scroll_view(vec![el])
+            .horizontal(true)
+            .with_style(StyleProp::Static(Rc::new(native_styles::scroll_wrapper_rules())))
+            .into_element();
+    }
     // Re-attach every peeled row scope: the cells' reactive props (the
     // clickable-row hover style) read signals those scopes own, so they
     // must live exactly as long as the flattened subtree.
@@ -366,12 +509,43 @@ fn build_table(rows: Vec<Element>, style: Option<StyleProp>) -> Element {
     el
 }
 
-/// Native `TableRow`: a fragment of cells (no layout box). The author
-/// style is dropped — a fragment has no node to style (row visuals live
-/// per-cell).
+/// One native row, mid-flatten: its cells plus the row marker's slots
+/// (if the row lowered to a [`TableRowPrim`] marker).
 #[cfg(not(target_arch = "wasm32"))]
-fn build_row(children: Vec<Element>, _style: Option<StyleProp>) -> Element {
-    fragment(children)
+struct NativeRow {
+    cells: Vec<Element>,
+    slots: Option<TableRowPrim>,
+}
+
+/// Build the row-proxy backdrop: an empty view spanning every column of
+/// its grid row, inserted BEFORE the row's cells so it paints beneath
+/// them. Carries the row's style and hands its handle to `ref_fill` at
+/// mount — the geometry surface for drop targeting / row frames.
+#[cfg(not(target_arch = "wasm32"))]
+fn build_row_backdrop(row_line: i16, slots: TableRowPrim) -> Element {
+    use runtime_shared::GridPlacement;
+    let placement = StyleRules {
+        grid_row: Some(GridPlacement::Line(row_line)),
+        grid_column: Some(GridPlacement::SPAN_ALL),
+        ..Default::default()
+    };
+    let style = compose_rules(slots.style, placement);
+    let mut b = runtime_vocabulary::builders::view().style(style);
+    if let Some(fill) = slots.ref_fill {
+        b = b.on_handle(move |h| fill(h));
+    }
+    b.build()
+}
+
+/// Native `TableRow`: lowers to a [`TableRowPrim`] marker item wrapping
+/// the cells. [`table`] consumes the marker at build time (flattening
+/// the cells into the grid and turning the slots into the row
+/// backdrop); it must not escape into realize — a `table_row` used
+/// outside a `table` panics there as an unregistered payload, which is
+/// the loud failure the scene registry promises.
+#[cfg(not(target_arch = "wasm32"))]
+fn build_row(children: Vec<Element>, style: Option<StyleProp>) -> Element {
+    item(PrimCell::new(TableRowPrim { style, ref_fill: None, meta: None }), children)
 }
 
 /// Native `TableCell`: a plain view that becomes a grid item; the
@@ -386,23 +560,125 @@ fn build_cell(_header: bool, children: Vec<Element>, style: Option<StyleProp>) -
     styled.into_element()
 }
 
-/// Pull a row's cells out so they can be parented directly under the
-/// grid. `table_row` lowers a row to a [`Element::Fragment`] of its
-/// cells (the hot path); a `#[component]` row body that created
-/// reactive state arrives `Owned`-wrapped — peel it and KEEP the scope
-/// (pushed into `owneds`, re-attached by the caller). Any other stray
-/// element is treated as a single one-cell row so nothing silently
-/// vanishes.
+/// Pull a row's cells + marker slots out so the cells can be parented
+/// directly under the grid. `table_row` lowers a row to a
+/// [`TableRowPrim`] marker item (whose children are the cells); a
+/// `#[component]` row body that created reactive state arrives
+/// `Owned`-wrapped — peel it and KEEP the scope (pushed into `owneds`,
+/// re-attached by the caller). A bare fragment (legacy shape) is a
+/// slotless row; any other stray element is treated as a single
+/// one-cell row so nothing silently vanishes.
 #[cfg(not(target_arch = "wasm32"))]
-fn extract_row_cells(row: Element, owneds: &mut Vec<glue::Owned>) -> Vec<Element> {
+fn extract_row(row: Element, owneds: &mut Vec<glue::Owned>) -> NativeRow {
     match row {
-        Element::Fragment(children) => children,
+        Element::Item { data, children } => {
+            if let Some(cell) = data.downcast_ref::<PrimCell<TableRowPrim>>() {
+                NativeRow { cells: children, slots: Some(cell.take()) }
+            } else {
+                NativeRow { cells: vec![Element::Item { data, children }], slots: None }
+            }
+        }
+        Element::Fragment(children) => NativeRow { cells: children, slots: None },
         Element::Owned { element, owned } => {
             owneds.push(owned);
-            extract_row_cells(*element, owneds)
+            extract_row(*element, owneds)
         }
-        other => vec![other],
+        other => NativeRow { cells: vec![other], slots: None },
     }
+}
+
+/// Layer `overlay` rules onto whatever [`StyleProp`] shape a node
+/// already carries, returning the composed prop. Native-only plumbing
+/// (the web lowering never rewrites styles — placement is a grid
+/// concept), so premint qualification is unaffected.
+#[cfg(not(target_arch = "wasm32"))]
+fn compose_rules(prop: Option<StyleProp>, overlay: StyleRules) -> StyleProp {
+    match prop {
+        None => StyleProp::Static(Rc::new(overlay)),
+        Some(StyleProp::Static(rules)) => {
+            StyleProp::Static(Rc::new((*rules).clone().merge(&overlay)))
+        }
+        Some(StyleProp::Dynamic(f)) => {
+            let overlay = Rc::new(overlay);
+            StyleProp::Dynamic(Box::new(move || {
+                Rc::new((*f()).clone().merge(&overlay))
+            }))
+        }
+        Some(StyleProp::Sheet(app)) => {
+            StyleProp::Sheet(Box::new(app.with_overrides(overlay)))
+        }
+        Some(StyleProp::SheetDynamic(f)) => {
+            let overlay_cell = std::cell::RefCell::new(overlay);
+            StyleProp::SheetDynamic(Box::new(move || {
+                f().with_overrides(overlay_cell.borrow().clone())
+            }))
+        }
+        Some(other) => {
+            // Remaining shapes (signal-class selection) can't carry an
+            // overlay; keep them and say so once rather than silently
+            // dropping the placement.
+            runtime_shared::unsupported::warn_once(
+                "table.style_compose",
+                "table SDK: a cell/backdrop style shape that cannot carry \
+                 grid placement or width-floor overlays (signal-class \
+                 selection) — the overlay was skipped; the table's layout \
+                 may be wrong",
+            );
+            other
+        }
+    }
+}
+
+/// Post-process a built native cell with its explicit grid position.
+/// Reaches through the payload cell like [`set_cell_style`]; sound for
+/// the same reason (pre-mount, taken exactly once by realize).
+#[cfg(not(target_arch = "wasm32"))]
+fn place_cell(cell: &Element, row_line: i16, col_line: i16) {
+    use runtime_shared::GridPlacement;
+    let placement = StyleRules {
+        grid_row: Some(GridPlacement::Line(row_line)),
+        grid_column: Some(GridPlacement::Line(col_line)),
+        ..Default::default()
+    };
+    let mut placement = Some(placement);
+    visit_cell(cell, &mut |view, table_cell| {
+        if let Some(p) = view {
+            if let Some(rules) = placement.take() {
+                p.style = Some(compose_rules(p.style.take(), rules));
+            }
+        } else if let Some(_p) = table_cell {
+            // Web cells never take native grid placement.
+            placement.take();
+        }
+    });
+}
+
+/// Rewrite a built native VIEW element's style in place (Owned-peeled).
+/// Used by the scroll-x path to give the outer table surface its
+/// width floor without disturbing the author's style.
+#[cfg(not(target_arch = "wasm32"))]
+fn set_view_style(
+    el: &Element,
+    f: impl FnOnce(Option<StyleProp>) -> Option<StyleProp> + 'static,
+) {
+    fn walk(el: &Element, f: &mut Option<Box<dyn FnOnce(Option<StyleProp>) -> Option<StyleProp>>>) {
+        match el {
+            Element::Owned { element, .. } => walk(element, f),
+            Element::Item { data, .. } => {
+                if let Some(c) = data.downcast_ref::<PrimCell<prims::ViewPrim>>() {
+                    c.with_mut(|p| {
+                        if let Some(f) = f.take() {
+                            p.style = f(p.style.take());
+                        }
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut boxed: Option<Box<dyn FnOnce(Option<StyleProp>) -> Option<StyleProp>>> =
+        Some(Box::new(f));
+    walk(el, &mut boxed);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -452,6 +728,36 @@ mod native_styles {
                 })
                 .clone()
         })
+    }
+
+    /// Width floor for the scroll-x outer surface: at least the
+    /// scroller's width (percent resolves against the enclosing scroll
+    /// view), free to grow past it — the native mirror of the web
+    /// `min-width: 100%; width: max-content` strategy. `flex_shrink: 0`
+    /// is load-bearing: without it the scroller's flex line squeezes
+    /// the surface back to the viewport width and nothing ever
+    /// overflows (the horizontal twin of
+    /// [[project_min_height_pct_scroll_shrink]]). Pinned by
+    /// `regression_scroll_x_table_floors_at_scroller_width_and_overflows_past_it`
+    /// in `runtime-layout`.
+    pub(super) fn scroll_floor_rules() -> StyleRules {
+        StyleRules {
+            min_width: Some(glue::Tokenized::Literal(glue::Length::Percent(100.0))),
+            flex_shrink: Some(glue::Tokenized::Literal(0.0)),
+            ..Default::default()
+        }
+    }
+
+    /// Style for the scroll-x wrapper itself: content on the X MAIN
+    /// axis. With the default Column direction the table surface would
+    /// be a CROSS-axis child — stretch-clamped to the scroller's
+    /// width, never able to overflow it, so there would be nothing to
+    /// scroll.
+    pub(super) fn scroll_wrapper_rules() -> StyleRules {
+        StyleRules {
+            flex_direction: Some(glue::FlexDirection::Row),
+            ..Default::default()
+        }
     }
 
     pub(super) fn cell_sheet() -> Rc<StyleSheet> {
@@ -544,6 +850,137 @@ pub fn set_cell_interaction(cell: &Element, on_touch: TouchHandler, on_hover: Ho
     });
 }
 
+/// Bind a built row's proxy surface: `fill` receives the row's
+/// [`ViewHandle`](runtime_shared::ViewHandle) at mount — the `<tr>`'s
+/// on web, the row-spanning backdrop view's on native (emitting the
+/// backdrop is what setting this slot opts the table into; see
+/// [`TableRowPrim`]). Row GEOMETRY flows through this handle — drag &
+/// drop's `Droppable::bind`, row frame reads. Row TOUCH does not:
+/// install touch/hover per cell via [`set_cell_interaction`] (a
+/// native backdrop is a sibling of the cells and never receives
+/// touches landing on cell content).
+///
+/// No-op for non-row elements. Sound for the same reason the cell
+/// helpers are: the payload is pre-mount, taken exactly once by the
+/// consumer ([`table`] natively, realize on web).
+pub fn bind_row(row: &Element, fill: impl FnOnce(runtime_shared::ViewHandle) + 'static) {
+    fn walk(el: &Element, fill: &mut Option<Box<dyn FnOnce(runtime_shared::ViewHandle)>>) {
+        match el {
+            Element::Owned { element, .. } => walk(element, fill),
+            Element::Item { data, .. } => {
+                if let Some(c) = data.downcast_ref::<PrimCell<TableRowPrim>>() {
+                    c.with_mut(|p| {
+                        if let Some(f) = fill.take() {
+                            p.ref_fill = Some(f);
+                        }
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut slot: Option<Box<dyn FnOnce(runtime_shared::ViewHandle)>> = Some(Box::new(fill));
+    walk(row, &mut slot);
+}
+
+/// Attach opaque metadata to a built row for the component layer above
+/// (see [`TableRowPrim::meta`]). No-op for non-rows.
+pub fn set_row_meta(row: &Element, meta: Box<dyn std::any::Any>) {
+    let mut slot = Some(meta);
+    visit_row(row, &mut |p| {
+        if let Some(m) = slot.take() {
+            p.meta = Some(m);
+        }
+    });
+}
+
+/// Take a built row's metadata back out (single consumer — typically
+/// the `Table` component wiring drag & drop). `None` for non-rows and
+/// rows without metadata.
+pub fn take_row_meta(row: &Element) -> Option<Box<dyn std::any::Any>> {
+    let mut out = None;
+    visit_row(row, &mut |p| out = p.meta.take());
+    out
+}
+
+/// Visit a built row's cells in order (Owned-peeled). The visitor gets
+/// each cell ELEMENT — combine with [`set_cell_touch`] /
+/// [`set_cell_style`] / [`bind_cell`] for per-cell fan-out of row-level
+/// behavior (the pattern row interaction uses on every lowering).
+pub fn visit_row_cells(row: &Element, mut f: impl FnMut(&Element)) {
+    fn walk(el: &Element, f: &mut dyn FnMut(&Element)) {
+        match el {
+            Element::Owned { element, .. } => walk(element, f),
+            Element::Item { data, children } => {
+                if data.downcast_ref::<PrimCell<TableRowPrim>>().is_some() {
+                    for c in children {
+                        f(c);
+                    }
+                }
+            }
+            // Legacy fragment shape (a stray non-marker row).
+            Element::Fragment(children) => {
+                for c in children {
+                    f(c);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(row, &mut f);
+}
+
+/// Install ONLY a touch handler on a built cell — [`set_cell_interaction`]
+/// without the hover half, for behaviors that have no hover component
+/// (a drag recognizer). Installing a no-op hover handler instead would
+/// be the silent-no-op shape idea-ui's rule 9.6 forbids.
+pub fn set_cell_touch(cell: &Element, on_touch: TouchHandler) {
+    let mut handler = Some(on_touch);
+    visit_cell(cell, &mut |view, table_cell| {
+        if let Some(p) = view {
+            if let Some(t) = handler.take() {
+                p.on_touch = Some(t);
+            }
+        } else if let Some(p) = table_cell {
+            if let Some(t) = handler.take() {
+                p.on_touch = Some(t);
+            }
+        }
+    });
+}
+
+/// Bind a built cell's node handle: `fill` receives the cell's
+/// [`ViewHandle`](runtime_shared::ViewHandle) at mount — the native
+/// grid item's or the web `<td>`/`<th>`'s. Animated drag offsets
+/// anchor here (`AnimatedValue::bind` on a `Ref` filled by this).
+pub fn bind_cell(cell: &Element, fill: impl FnOnce(runtime_shared::ViewHandle) + 'static) {
+    let mut slot: Option<Box<dyn FnOnce(runtime_shared::ViewHandle)>> = Some(Box::new(fill));
+    visit_cell(cell, &mut |view, table_cell| {
+        if let Some(p) = view {
+            if let Some(f) = slot.take() {
+                p.ref_fill = Some(f);
+            }
+        } else if let Some(p) = table_cell {
+            if let Some(f) = slot.take() {
+                p.ref_fill = Some(f);
+            }
+        }
+    });
+}
+
+/// Shared Owned-peeling walk over a row marker's payload.
+fn visit_row(row: &Element, f: &mut dyn FnMut(&mut TableRowPrim)) {
+    match row {
+        Element::Owned { element, .. } => visit_row(element, f),
+        Element::Item { data, .. } => {
+            if let Some(c) = data.downcast_ref::<PrimCell<TableRowPrim>>() {
+                c.with_mut(|p| f(p));
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Shared Owned-peeling walk for the post-processing helpers: calls `f`
 /// with whichever cell payload shape the element carries (exactly one
 /// of the two arguments is `Some`).
@@ -592,7 +1029,17 @@ where
         // wins where the author sets the same property.
         let b = backend.borrow();
         b.attach_html_style(&node, "border-collapse", "collapse");
-        b.attach_html_style(&node, "width", "100%");
+        if data.scroll_x {
+            // Scroll-x width strategy: natural column widths (a table
+            // at `width: max-content` never wraps its cells), floored
+            // at the scroller's width so a narrow table still fills.
+            // `width: 100%` would instead squeeze and wrap the columns
+            // — no overflow, nothing to scroll.
+            b.attach_html_style(&node, "min-width", "100%");
+            b.attach_html_style(&node, "width", "max-content");
+        } else {
+            b.attach_html_style(&node, "width", "100%");
+        }
         b.attach_html_style(&node, "table-layout", "auto");
     }
     cx.realize_children_into(&mut node, children);
@@ -617,6 +1064,13 @@ where
     cx.realize_children_into(&mut node, children);
     if let Some(style) = data.style {
         attach_style(&backend, &node, style);
+    }
+    // Row proxy: hand the `<tr>`'s own handle to the binder — row
+    // geometry (drop targeting, row frames) reads through it. The
+    // native lowering's equivalent surface is the row backdrop.
+    if let Some(fill) = data.ref_fill {
+        let handle = backend.borrow().make_view_handle(&node);
+        fill(handle);
     }
     node
 }
@@ -646,6 +1100,10 @@ where
     }
     if let Some(h) = data.on_hover {
         backend.borrow_mut().install_hover_handler(&node, h);
+    }
+    if let Some(fill) = data.ref_fill {
+        let handle = backend.borrow().make_view_handle(&node);
+        fill(handle);
     }
     node
 }

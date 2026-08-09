@@ -162,6 +162,9 @@ features = [
     "MediaQueryList",
     "MessageEvent",
     "MouseEvent",
+    # `MouseEventInit` is test-only today: the Ctrl-click regression tests
+    # fabricate the plain-MouseEvent `contextmenu` Firefox delivers.
+    "MouseEventInit",
     "Node",
     # `NodeList` + `Node::child_nodes` resolve the reference node for
     # `insert_at` (keyed `Each` reconciliation splicing).
