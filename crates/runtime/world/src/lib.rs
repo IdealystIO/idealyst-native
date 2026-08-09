@@ -1663,7 +1663,12 @@ pub fn on_cleanup(f: impl FnOnce() + 'static) {
 ///
 /// - **Inside an effect run** — defers to [`on_cleanup`], so the teardown
 ///   also fires before the effect's next re-run. A resource acquired during
-///   a run belongs to that run.
+///   a run belongs to that run. "Inside an effect run" means inside an
+///   effect BODY: building a subtree is not one, even when a driver effect
+///   is what triggered the build, because component bodies and the mount
+///   walk run [`unanchored`]. Before that was true, a screen mounted by a
+///   navigator's driver anchored its teardown to that driver and fired it
+///   on the next navigation.
 /// - **Outside one, inside a world** — anchors to a dependency-free
 ///   keepalive effect. It reads nothing, so it never re-runs; it is owned by
 ///   the enclosing collector (component subtree → mount → world root), and
@@ -1705,10 +1710,16 @@ pub fn on_scope_drop(f: impl FnOnce() + 'static) {
 /// A keyed list's structural driver is one effect that re-runs on every
 /// edit to the list, while keyed reconcile deliberately PRESERVES the
 /// surviving rows' subtrees. Teardown registered from inside a row's mount
-/// via `on_scope_drop` would therefore fire on the first unrelated edit —
-/// tearing down state for a row that is still on screen. Anchoring to the
-/// ownership scope instead ties the teardown to the row's own `Owned`,
-/// which keyed reconcile drops if and only if that row really goes away.
+/// via `on_scope_drop` used to fire on the first unrelated edit — tearing
+/// down state for a row that is still on screen. Anchoring to the ownership
+/// scope instead ties the teardown to the row's own `Owned`, which keyed
+/// reconcile drops if and only if that row really goes away.
+///
+/// That MOUNT-TIME case is no longer a live hazard: a row renders
+/// [`unanchored`], so `on_scope_drop` there sees no running effect and lands
+/// on the row's `Owned` by itself. What remains — and what this fn is still
+/// the only way to express — is registering from inside a genuine effect
+/// body while wanting the SUBTREE's lifetime rather than the run's.
 ///
 /// Outside any world this is inert, exactly like [`on_scope_drop`]: nothing
 /// owns the scope, so there is no moment at which it could fire.
@@ -2137,13 +2148,82 @@ pub fn collect_owned<R>(f: impl FnOnce() -> R) -> (R, Owned) {
     (result, Owned { items, _not_send: PhantomData })
 }
 
+/// Run `f` with the running-effect stack SUSPENDED, so [`in_effect`]
+/// reports false and every teardown anchored on it — [`on_cleanup`],
+/// [`on_scope_drop`], `runtime_vocabulary`'s `*_scoped` timers, a
+/// resource's private scope — falls to the ambient ownership collector
+/// instead of to whatever effect happens to be running.
+///
+/// The third member of the [`untrack`] / [`unscoped`] family, and the one
+/// that makes "this code is BUILDING a subtree" a real state rather than an
+/// accident of who called it. A structural driver (a `Dyn` hole, a keyed
+/// list, a navigator's command effect) realizes subtrees from inside its own
+/// effect body. Without suspension the code it builds sees that effect as
+/// "the current scope", and its teardowns fire on that effect's next re-run
+/// — which is neither where the author registered them nor when the thing
+/// they belong to actually goes away:
+///
+/// - a swap navigator mounted inside an auth gate's `when` seated its
+///   landing screen inside the gate's driver, which never re-runs, so the
+///   screen's registrations outlived every navigation (the leak this was
+///   added for — `regression_swap_seated_screen_under_a_reactive_region_fires_its_teardown`);
+/// - a screen mounted by the navigator's own driver had its teardown fire
+///   on the NEXT navigation instead of at its eviction — right by accident
+///   under `LazyDisposing`, and plainly wrong under `LazyPersistent`, where
+///   it retracted a still-mounted screen's registration.
+///
+/// Suspending is only ever safe where tracking is already suspended: a
+/// tracked read records against `effect_stack.last()`, so hiding the stack
+/// from a region that is *meant* to collect dependencies (a plain `Dyn`
+/// closure, an effect body) would silently drop every subscription. Both
+/// call sites honor that — [`component_scope`] untracks, and
+/// `runtime_scene`'s mount walk is untracked by contract.
+///
+/// The stack is swapped whole (with its parallel pending-dependency frames,
+/// which the tracked-read path expects to stay in lockstep) and restored on
+/// the way out, panic included. `enter_stack` is deliberately NOT touched:
+/// the world must stay ambient, or the body could not create signals at all.
+pub fn unanchored<R>(f: impl FnOnce() -> R) -> R {
+    let saved = with_tls(|t| {
+        (
+            std::mem::take(&mut t.effect_stack),
+            std::mem::take(&mut t.pending_deps),
+        )
+    });
+    struct Guard {
+        saved: (Vec<(WorldId, u32, u32)>, Vec<Vec<(u32, u32)>>),
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let (effects, pending) = std::mem::take(&mut self.saved);
+            let _ = TLS.try_with(|t| {
+                let mut t = t.borrow_mut();
+                // Anything the suspended region pushed is popped by the
+                // same `run_effect` that pushed it; the outer stacks are
+                // restored verbatim.
+                debug_assert!(
+                    t.effect_stack.is_empty() && t.pending_deps.is_empty(),
+                    "unanchored: effect stack not empty on exit — a nested \
+                     effect run failed to pop"
+                );
+                t.effect_stack = effects;
+                t.pending_deps = pending;
+            });
+        }
+    }
+    let _guard = Guard { saved };
+    f()
+}
+
 /// Run a component body: untracked (a run-once body's reads are snapshots by
 /// definition — they must not subscribe whatever structural effect happens
-/// to be mounting the component), with every signal/effect it creates
-/// collected into the returned [`Owned`]. This is what `#[component]` will
-/// wrap function bodies in (P1/P6); the Owned rides in the `Realized`.
+/// to be mounting the component), [`unanchored`] (for the same reason, its
+/// teardowns belong to the body's own scope and not to that effect's next
+/// re-run), with every signal/effect it creates collected into the returned
+/// [`Owned`]. This is what `#[component]` will wrap function bodies in
+/// (P1/P6); the Owned rides in the `Realized`.
 pub fn component_scope<R>(f: impl FnOnce() -> R) -> (R, Owned) {
-    collect_owned(|| untrack(f))
+    collect_owned(|| untrack(|| unanchored(f)))
 }
 
 // ============================================================================

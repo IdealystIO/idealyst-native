@@ -159,6 +159,7 @@ mark the component for `idealyst export` (Web Component generation).
 **Primitives are lowercase, components are PascalCase — strictly.** The leaf
 primitives (`view`, `text`, `button`, `image`, `icon`, `text_input`,
 `scroll_view`, `slider`, `toggle`, `link`, `overlay`, `presence`, `flat_list`,
+`virtual_grid`,
 `graphics`, …) are snake_case *only*. A PascalCase tag *always* routes to
 `#[component]` dispatch — which is what lets a library define a component
 named `Image`/`Link`/`Toggle` without the primitive shadowing it. Mirrors

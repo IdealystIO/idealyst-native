@@ -55,13 +55,16 @@ use runtime_vocabulary::prims::{
     ActivityIndicatorPrim, ButtonPrim, GraphicsPrim, IconPrim, ImagePrim, LazyPrim, LinkPrim,
     NavigatorOutletPrim, PortalPrim, PresencePrim, PressablePrim, PrimCell, RepeatPrim,
     ScrollViewPrim, SliderPrim, StackNavigatorPrim, SwapNavigatorPrim, TextAreaPrim, TextInputPrim,
-    TextPrim, TogglePrim, ViewPrim, VirtualizerPrim,
+    TextPrim, TogglePrim, ViewPrim, VirtualGridPrim, VirtualizerPrim,
 };
 use runtime_vocabulary::register_builtins;
 
 /// Single-node handlers installed by `register_builtins`. Every entry is a
 /// symbol the boot entry statically reaches in EVERY app.
-const EXPECTED_SINGLE_HANDLERS: usize = 21;
+///
+/// Bumped 21 → 22 when `virtual_grid` (the two-axis virtualized grid)
+/// joined the builtin set as a sibling of `virtualizer`.
+const EXPECTED_SINGLE_HANDLERS: usize = 22;
 
 /// Multi-node (`Element::Many`) handlers — currently only `repeat`.
 const EXPECTED_MANY_HANDLERS: usize = 1;
@@ -126,6 +129,7 @@ fn regression_builtin_handler_identities_are_pinned() {
 
     // The P3 set + the navigator prims + the lazy chunk boundary.
     assert!(registry.has::<PrimCell<VirtualizerPrim>>(), "virtualizer");
+    assert!(registry.has::<PrimCell<VirtualGridPrim>>(), "virtual_grid");
     assert!(registry.has::<PrimCell<GraphicsPrim>>(), "graphics");
     assert!(registry.has::<PrimCell<PortalPrim>>(), "portal");
     assert!(registry.has::<PrimCell<PresencePrim>>(), "presence");
@@ -264,6 +268,7 @@ fn builtin_set_keeps_exactly_what_it_lists() {
     assert!(!registry.has::<PrimCell<SwapNavigatorPrim>>());
     assert!(!registry.has::<PrimCell<NavigatorOutletPrim>>());
     assert!(!registry.has::<PrimCell<VirtualizerPrim>>());
+    assert!(!registry.has::<PrimCell<VirtualGridPrim>>());
     assert!(!registry.has::<PrimCell<GraphicsPrim>>());
     assert!(!registry.has::<PrimCell<PortalPrim>>());
     assert!(!registry.has::<PrimCell<ButtonPrim>>());
@@ -277,7 +282,7 @@ fn dropping_nav_removes_exactly_the_three_navigator_prims() {
     builtin_set!(NoNav:
         view, text, button, pressable, image, icon, link, toggle, slider,
         activity_indicator, text_input, text_area, scroll_view, repeat, lazy,
-        virtualizer, graphics, portal, presence,
+        virtualizer, virtual_grid, graphics, portal, presence,
     );
 
     let mut registry: Registry<host_mock::HostMock> = Registry::new();
@@ -296,6 +301,7 @@ fn dropping_nav_removes_exactly_the_three_navigator_prims() {
     assert!(registry.has::<PrimCell<ViewPrim>>());
     assert!(registry.has::<PrimCell<PortalPrim>>());
     assert!(registry.has::<PrimCell<VirtualizerPrim>>());
+    assert!(registry.has::<PrimCell<VirtualGridPrim>>());
     assert_eq!(registry.many_handler_count(), EXPECTED_MANY_HANDLERS);
 }
 

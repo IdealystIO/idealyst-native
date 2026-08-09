@@ -42,6 +42,23 @@
 //! re-framed on every apply-frames pass cannot recur from this layer,
 //! because a cached screen simply isn't reachable from any live root.
 //!
+//! "Cleanups fire" covers the author's too, and that is a guarantee the
+//! kernel provides rather than something this module arranges. A screen
+//! is realized from two different places — the initial one inline in the
+//! mount handler, every later one from the driver effect — and neither
+//! context may become the screen's cleanup anchor. `component_scope` and
+//! the mount walk run `runtime_world::unanchored`, so an author's
+//! `on_scope_drop` / scoped timer / resource in a screen body belongs to
+//! the screen's own `Owned` in both. Without that the seated screen
+//! anchored to whatever effect mounted the navigator (a `when` gate's
+//! driver, which never re-runs ⇒ its registrations leaked for the
+//! navigator's whole life) and a selected screen anchored to the driver
+//! effect (⇒ fired on the NEXT navigation, retracting a retained
+//! screen's registration while it was still mounted). Regressions:
+//! `regression_swap_seated_screen_under_a_reactive_region_fires_its_teardown`,
+//! `regression_swap_cached_screen_keeps_its_claim_across_navigation`,
+//! `regression_stack_screen_claims_track_the_stack_not_the_driver`.
+//!
 //! # URL sync (conformance wave)
 //!
 //! Platform-URL synchronization is a SEAM here, not an implementation:
@@ -95,8 +112,8 @@ use std::rc::Rc;
 use runtime_shared::primitives::navigator::{
     consumed_prefix, current_nav_base, join_path, match_pattern, match_prefix,
     navigator_fill_rules, outlet_fill_rules, peek_initial_path, record_route_paths,
-    screen_flow_fill_rules, set_initial_path, NavBaseGuard, NavCommand, ScreenRouteGuard,
-    ScreenStateGuard,
+    screen_flow_fill_rules, set_initial_path, split_query, NavBaseGuard, NavCommand, QueryParams,
+    ScreenRouteGuard, ScreenStateGuard,
 };
 use runtime_shared::StyleRules;
 use runtime_scene::{component_scope, realize, Element, MountCx, Realized, Registry};
@@ -354,7 +371,7 @@ fn realize_screen<H: NavCaps + 'static>(
     link_activator: &LinkActivator,
     name: &'static str,
     params: Box<dyn Any>,
-    state: Option<Rc<dyn Any>>,
+    query: QueryParams,
     overlay: Option<&Rc<StyleRules>>,
 ) -> LiveScreen<H::Node> {
     let entry = screens
@@ -371,7 +388,7 @@ fn realize_screen<H: NavCaps + 'static>(
     // — a literal `:id` in the address bar, which then resolves back to
     // a project whose id is the string ":id" on reload.
     let _base_guard = NavBaseGuard::push(screen_path.to_string());
-    let _state_guard = ScreenStateGuard::push(state);
+    let _state_guard = ScreenStateGuard::push(query);
     let _route_guard = ScreenRouteGuard::push(name);
     // Both provisions are collected into a scope this screen OWNS (it
     // rides in the returned `LiveScreen`), so they die exactly when the
@@ -665,17 +682,17 @@ impl CommandChannel {
 /// (navigator-relative) url — old `NavigatorControl::compose_url`.
 fn compose_url(base: &str, cmd: NavCommand) -> NavCommand {
     match cmd {
-        NavCommand::Push { name, url, params, state } => {
-            NavCommand::Push { name, url: join_path(base, &url), params, state }
+        NavCommand::Push { name, url, params, query } => {
+            NavCommand::Push { name, url: join_path(base, &url), params, query }
         }
-        NavCommand::Replace { name, url, params, state } => {
-            NavCommand::Replace { name, url: join_path(base, &url), params, state }
+        NavCommand::Replace { name, url, params, query } => {
+            NavCommand::Replace { name, url: join_path(base, &url), params, query }
         }
-        NavCommand::Reset { name, url, params, state } => {
-            NavCommand::Reset { name, url: join_path(base, &url), params, state }
+        NavCommand::Reset { name, url, params, query } => {
+            NavCommand::Reset { name, url: join_path(base, &url), params, query }
         }
-        NavCommand::Select { name, url, params, state } => {
-            NavCommand::Select { name, url: join_path(base, &url), params, state }
+        NavCommand::Select { name, url, params, query } => {
+            NavCommand::Select { name, url: join_path(base, &url), params, query }
         }
         other => other,
     }
@@ -686,14 +703,27 @@ fn compose_url(base: &str, cmd: NavCommand) -> NavCommand {
 /// chrome effects and the structural swap land in the same flush.
 /// `Pop` carries no route; the driver writes the revealed entry after
 /// committing (old `active_changed` contract).
-fn mirror_command(cmd: &NavCommand, route: Signal<&'static str>, path: Signal<String>) {
+fn mirror_command(
+    cmd: &NavCommand,
+    route: Signal<&'static str>,
+    path: Signal<String>,
+    query: Signal<QueryParams>,
+) {
     match cmd {
-        NavCommand::Push { name, url, .. }
-        | NavCommand::Replace { name, url, .. }
-        | NavCommand::Reset { name, url, .. }
-        | NavCommand::Select { name, url, .. } => {
+        NavCommand::Push { name, url, query: q, .. }
+        | NavCommand::Replace { name, url, query: q, .. }
+        | NavCommand::Reset { name, url, query: q, .. }
+        | NavCommand::Select { name, url, query: q, .. } => {
             route.set(name);
             path.set(url.clone());
+            // Published here rather than inside the handlers' commit paths
+            // because a navigation to the SAME path with a DIFFERENT query
+            // is deliberately not a remount — the swap's `select` and the
+            // stack's dedupe both short-circuit on the path key, so this is
+            // the only point that observes every navigation. Screens
+            // reacting to their state through `SwapNav::query` /
+            // `StackNav::query` update; nothing rebuilds.
+            query.set(q.clone());
         }
         NavCommand::Pop | NavCommand::Custom(_) => {}
     }
@@ -705,20 +735,27 @@ fn mirror_command(cmd: &NavCommand, route: Signal<&'static str>, path: Signal<St
 /// the slot after its subtree mounted), falling back to the configured
 /// initial. Port of the walker's non-deferred initial-mount resolution,
 /// including the concrete-path (not pattern) mirror fix.
+/// The launch URL's query rides out alongside the route so a cold load —
+/// a pasted link, a reload, a restored tab, an OS deep link — seeds the
+/// screen with exactly the state an in-app navigation would have handed
+/// it. This is the second half of the [`ScreenState`] contract: without
+/// it, state passing would work only for screens reached by navigating.
+///
+/// [`ScreenState`]: runtime_shared::primitives::navigator::ScreenState
 fn resolve_initial(
     config: &NavConfig,
     base: &str,
-) -> (&'static str, Box<dyn Any>, String) {
-    if let Some(path) = peek_initial_path() {
-        if let Some((name, params, rem)) = resolve_entry(&config.screens, base, &path) {
-            return (name, params, consumed_prefix(&path, &rem));
+) -> (&'static str, Box<dyn Any>, String, QueryParams) {
+    if let Some(raw) = peek_initial_path() {
+        let (path, query) = split_query(&raw);
+        if let Some((name, params, rem)) = resolve_entry(&config.screens, base, path) {
+            return (name, params, consumed_prefix(path, &rem), query);
         }
     }
-    (
-        config.initial,
-        Box::new(()),
-        join_path(base, config.initial_path),
-    )
+    // The configured initial path may itself carry defaults
+    // (`initial_path: "/inbox?filter=unread"`).
+    let (path, query) = split_query(config.initial_path);
+    (config.initial, Box::new(()), join_path(base, path), query)
 }
 
 /// Trailing-slash-tolerant URL key (`/docs` == `/docs/`) — the swap
@@ -796,7 +833,7 @@ impl<H: NavCaps + 'static> SwapShared<H> {
         name: &'static str,
         url: &str,
         params: Box<dyn Any>,
-        state: Option<Rc<dyn Any>>,
+        query: QueryParams,
     ) {
         let key = url_key(url);
         // Already showing this exact URL — no-op. URL (not route-name)
@@ -839,7 +876,7 @@ impl<H: NavCaps + 'static> SwapShared<H> {
                 &self.activator(),
                 name,
                 params,
-                state,
+                query,
                 None,
             );
             let node = live.node.clone();
@@ -898,10 +935,11 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     // cold-start deep link is their *committed* initial value (the new
     // core stages writes; creating-then-setting would leave chrome's
     // first build reading the configured initial).
-    let (initial_route, initial_params, initial_path) = resolve_initial(&prim.config, &base);
+    let (initial_route, initial_params, initial_path, initial_query) =
+        resolve_initial(&prim.config, &base);
     // The CONFIGURED initial's full path (vs the resolved, possibly
     // deep-linked `initial_path`) — the URL-sync registration needs both.
-    let initial_cfg_full = join_path(&base, prim.config.initial_path);
+    let initial_cfg_full = join_path(&base, split_query(prim.config.initial_path).0);
 
     // Nav-state mirror. Created inside the handler ⇒ collected into the
     // navigator's Realized ⇒ freed exactly at navigator teardown. This
@@ -910,6 +948,7 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     // ownership is now structural.
     let active_route = signal(initial_route);
     let active_path = signal(initial_path.clone());
+    let active_query = signal(initial_query.clone());
 
     let shared = Rc::new(SwapShared {
         backend: backend.clone(),
@@ -975,7 +1014,7 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
             #[cfg(feature = "robot")]
             crate::robot::mark_active_navigator(nav_id);
             let cmd = compose_url(&base, cmd);
-            mirror_command(&cmd, active_route, active_path);
+            mirror_command(&cmd, active_route, active_path, active_query);
             let suppress = sync.before(&cmd);
             channel.dispatch(cmd, suppress);
         })
@@ -988,7 +1027,10 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     let link_activator = {
         let dispatch = dispatch.clone();
         LinkActivator::new(move |name, url, params| {
-            dispatch(NavCommand::Select { name, url, params, state: None });
+            // A link may target a route whose pattern carries default query
+            // params; split them out so routing never sees the `?`.
+            let (path, query) = split_query(&url);
+            dispatch(NavCommand::Select { name, url: path.to_string(), params, query });
         })
     };
     *shared.link_activator.borrow_mut() = Some(link_activator.clone());
@@ -1007,8 +1049,8 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
                 let Some((cmd, suppress_sync)) = next else { break };
                 let kind = CommittedKind::of(&cmd);
                 match cmd {
-                    NavCommand::Select { name, url, params, state } => {
-                        shared.select(name, &url, params, state);
+                    NavCommand::Select { name, url, params, query } => {
+                        shared.select(name, &url, params, query);
                     }
                     // Swap navigators have no stack; stray stack verbs
                     // are ignored, never a panic (the old tab-handler
@@ -1036,7 +1078,7 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         &link_activator,
         initial_route,
         initial_params,
-        None,
+        initial_query,
         None,
     );
     // Root navigator: the nested subtree mounted synchronously above, so
@@ -1072,7 +1114,8 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
             let Some((url, params)) = select_args.get(name).and_then(|build| build()) else {
                 return;
             };
-            dispatch(NavCommand::Select { name, url, params, state: None });
+            let (path, query) = split_query(&url);
+            dispatch(NavCommand::Select { name, url: path.to_string(), params, query });
         })
     };
     // Owned by the navigator's own mount scope — this handler runs inside
@@ -1083,15 +1126,21 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     // rebuilds reactively after mount. The old save/restore-`prev` idiom
     // left it published FOREVER at the top level, which is how a
     // destroyed navigator's signals stayed reachable through `inject`.
-    provide(SwapNav { active_route, active_path, on_select });
+    provide(SwapNav { active_route, active_path, query: active_query, on_select });
     // Chrome links target this navigator too (a nav bar of
     // `link(route = …)`s) — same ownership.
     provide(link_activator.clone());
     let guard = OutletCaptureGuard::<H::Node>::push();
-    let layout_element = match &prim.layout {
+    // `unanchored` for the same reason `realize_screen`'s body build is
+    // (module docs): the author's chrome closure is a BUILD, and its
+    // teardowns belong to this handler's collector — the navigator's
+    // `Realized` — not to whichever effect mounted the navigator. It runs
+    // here rather than inside `realize_detached`'s producer because the
+    // outlet-capture guard has to bracket the element construction.
+    let layout_element = runtime_world::unanchored(|| match &prim.layout {
         Some(f) => f(),
         None => crate::builders::navigator_outlet().build(),
-    };
+    });
     let (layout_root, chrome) = cx.realize_detached(layout_element);
     let outlet = guard.take();
     debug_assert!(
@@ -1158,9 +1207,9 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
 struct StackEntry<N> {
     route: &'static str,
     path: String,
-    /// Opaque command state, kept so a cold re-mount sees the same
-    /// screen-state a live mount did.
-    state: Option<Rc<dyn Any>>,
+    /// The navigation's query params, kept so a cold re-mount seeds the
+    /// screen with the same state a live mount did.
+    query: QueryParams,
     live: Option<LiveScreen<N>>,
 }
 
@@ -1174,6 +1223,10 @@ struct StackShared<H: NavCaps + 'static> {
     retention: StackRetention,
     initial_route: &'static str,
     initial_path: String,
+    /// The configured initial route's own query defaults (from a
+    /// `initial_path: "/inbox?filter=unread"`), used whenever the stack
+    /// seats or re-seats that screen.
+    initial_query: QueryParams,
     /// Every mounted stack screen gets these rules layered onto its
     /// root's style override layer — the ported
     /// `set_screen_style_overlay(screen_flow_fill_rules())` (without it
@@ -1181,6 +1234,7 @@ struct StackShared<H: NavCaps + 'static> {
     screen_overlay: Rc<StyleRules>,
     active_route: Signal<&'static str>,
     active_path: Signal<String>,
+    active_query: Signal<QueryParams>,
     depth: Signal<usize>,
     can_go_back: Signal<bool>,
     /// The active screen's chrome slot (see [`StackNav::screen_chrome`])
@@ -1207,7 +1261,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
     /// base for any navigator nested in this screen (see
     /// `realize_screen`), so it must be the URL the entry actually
     /// carries, never the registered pattern.
-    fn mount(&self, name: &'static str, path: &str, params: Box<dyn Any>, state: Option<Rc<dyn Any>>) -> LiveScreen<H::Node> {
+    fn mount(&self, name: &'static str, path: &str, params: Box<dyn Any>, query: QueryParams) -> LiveScreen<H::Node> {
         realize_screen(
             &self.backend,
             &self.registry,
@@ -1217,7 +1271,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
             &self.activator(),
             name,
             params,
-            state,
+            query,
             Some(&self.screen_overlay),
         )
     }
@@ -1268,15 +1322,15 @@ impl<H: NavCaps + 'static> StackShared<H> {
         let cold = {
             let s = self.stack.borrow();
             match s.last() {
-                Some(e) if e.live.is_none() => Some((e.route, e.path.clone(), e.state.clone())),
+                Some(e) if e.live.is_none() => Some((e.route, e.path.clone(), e.query.clone())),
                 _ => None,
             }
         };
-        let Some((route, path, state)) = cold else { return };
+        let Some((route, path, query)) = cold else { return };
         let params = match_path(&self.screens, &self.base, &path)
             .map(|(_, p)| p)
             .unwrap_or_else(|| Box::new(()));
-        let live = self.mount(route, &path, params, state);
+        let live = self.mount(route, &path, params, query);
         if let Some(top) = self.stack.borrow_mut().last_mut() {
             top.live = Some(live);
         }
@@ -1299,28 +1353,39 @@ impl<H: NavCaps + 'static> StackShared<H> {
     /// or cold (`Rebuild`: the parent was never visited; it must not run
     /// effects until a pop reveals it). Old `seat_initial`, invariant
     /// for invariant.
-    fn seat_initial(&self, route: &'static str, path: String, live: LiveScreen<H::Node>) {
+    fn seat_initial(
+        &self,
+        route: &'static str,
+        path: String,
+        query: QueryParams,
+        live: LiveScreen<H::Node>,
+    ) {
         if route != self.initial_route {
+            // The screen seated UNDERNEATH gets the CONFIGURED initial's
+            // own query, not the deep link's: the link's state describes
+            // the screen it addressed, and leaking it onto the index below
+            // would make Back land on an index filtered by the detail
+            // screen's parameters.
             let under = match self.retention {
                 StackRetention::Rebuild => None,
                 _ => Some(self.mount(
                     self.initial_route,
                     &self.initial_path.clone(),
                     Box::new(()),
-                    None,
+                    self.initial_query.clone(),
                 )),
             };
             self.stack.borrow_mut().push(StackEntry {
                 route: self.initial_route,
                 path: self.initial_path.clone(),
-                state: None,
+                query: self.initial_query.clone(),
                 live: under,
             });
         }
         self.stack.borrow_mut().push(StackEntry {
             route,
             path,
-            state: None,
+            query,
             live: Some(live),
         });
         self.show_top();
@@ -1328,10 +1393,10 @@ impl<H: NavCaps + 'static> StackShared<H> {
         self.sync_chrome();
     }
 
-    fn push(&self, name: &'static str, params: Box<dyn Any>, state: Option<Rc<dyn Any>>, url: String) {
-        let live = self.mount(name, &url, params, state.clone());
+    fn push(&self, name: &'static str, params: Box<dyn Any>, query: QueryParams, url: String) {
+        let live = self.mount(name, &url, params, query.clone());
         self.dispose_covered_top();
-        self.stack.borrow_mut().push(StackEntry { route: name, path: url, state, live: Some(live) });
+        self.stack.borrow_mut().push(StackEntry { route: name, path: url, query, live: Some(live) });
         self.show_top();
         self.publish_depth();
         self.sync_chrome();
@@ -1353,30 +1418,57 @@ impl<H: NavCaps + 'static> StackShared<H> {
         // Pop carries no route through the command — mirror the revealed
         // entry ourselves (old `active_changed`). Copied out so no stack
         // borrow is held across the signal writes.
-        let revealed = self.stack.borrow().last().map(|top| (top.route, top.path.clone()));
-        if let Some((route, path)) = revealed {
+        // The revealed entry's query goes back up with it, so a screen
+        // reading `StackNav::query` sees the state it was pushed with —
+        // not the state of the screen that just went away.
+        let revealed = self
+            .stack
+            .borrow()
+            .last()
+            .map(|top| (top.route, top.path.clone(), top.query.clone()));
+        if let Some((route, path, query)) = revealed {
             self.active_route.set(route);
             self.active_path.set(path);
+            self.active_query.set(query);
         }
         self.sync_chrome();
     }
 
-    fn replace(&self, name: &'static str, params: Box<dyn Any>, state: Option<Rc<dyn Any>>, url: String) {
-        let live = self.mount(name, &url, params, state.clone());
+    fn replace(&self, name: &'static str, params: Box<dyn Any>, query: QueryParams, url: String) {
+        // Replacing the top screen with the SAME path is a state change, not
+        // a navigation: only the query differs. Update the entry in place
+        // and let the reactive `query` signal carry the change into the live
+        // screen — remounting here would defeat the entire point of
+        // `replace_with_state` as the filter-change verb, tearing down and
+        // rebuilding the list on every keystroke (and resetting its scroll
+        // and focus with it). The swap navigator gets this for free from its
+        // url-key dedupe in `select`; the stack needs it stated.
+        let same_screen = self
+            .stack
+            .borrow()
+            .last()
+            .is_some_and(|top| top.route == name && top.path == url && top.live.is_some());
+        if same_screen {
+            if let Some(top) = self.stack.borrow_mut().last_mut() {
+                top.query = query;
+            }
+            return;
+        }
+        let live = self.mount(name, &url, params, query.clone());
         let old = self.stack.borrow_mut().pop();
         drop(old);
-        self.stack.borrow_mut().push(StackEntry { route: name, path: url, state, live: Some(live) });
+        self.stack.borrow_mut().push(StackEntry { route: name, path: url, query, live: Some(live) });
         self.show_top();
         self.publish_depth();
         self.sync_chrome();
     }
 
-    fn reset(&self, name: &'static str, params: Box<dyn Any>, state: Option<Rc<dyn Any>>, url: String) {
+    fn reset(&self, name: &'static str, params: Box<dyn Any>, query: QueryParams, url: String) {
         // Release the whole stack, then seat the new single screen.
         let old: Vec<_> = self.stack.borrow_mut().drain(..).collect();
         drop(old);
-        let live = self.mount(name, &url, params, state.clone());
-        self.stack.borrow_mut().push(StackEntry { route: name, path: url, state, live: Some(live) });
+        let live = self.mount(name, &url, params, query.clone());
+        self.stack.borrow_mut().push(StackEntry { route: name, path: url, query, live: Some(live) });
         self.show_top();
         self.publish_depth();
         self.sync_chrome();
@@ -1424,10 +1516,13 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
     // SSG route discovery — see the swap mount's note (`record_route_paths`).
     record_route_paths(prim.config.screens.values().map(|e| e.path));
 
-    let (initial_route, initial_params, initial_path) = resolve_initial(&prim.config, &base);
+    let (initial_route, initial_params, initial_path, initial_query) =
+        resolve_initial(&prim.config, &base);
+    let (cfg_initial_path, cfg_initial_query) = split_query(prim.config.initial_path);
 
     let active_route = signal(initial_route);
     let active_path = signal(initial_path.clone());
+    let active_query = signal(initial_query.clone());
     let depth = signal(1usize);
     let can_go_back = signal(false);
     let screen_chrome = signal(ScreenChrome { rev: 0, options: None });
@@ -1441,10 +1536,12 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         stack: RefCell::new(Vec::new()),
         retention,
         initial_route: prim.config.initial,
-        initial_path: join_path(&base, prim.config.initial_path),
+        initial_path: join_path(&base, cfg_initial_path),
+        initial_query: cfg_initial_query,
         screen_overlay: screen_flow_fill_rules(),
         active_route,
         active_path,
+        active_query,
         depth,
         can_go_back,
         screen_chrome,
@@ -1501,7 +1598,7 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
             #[cfg(feature = "robot")]
             crate::robot::mark_active_navigator(nav_id);
             let cmd = compose_url(&base, cmd);
-            mirror_command(&cmd, active_route, active_path);
+            mirror_command(&cmd, active_route, active_path, active_query);
             let suppress = sync.before(&cmd);
             channel.dispatch(cmd, suppress);
         })
@@ -1514,7 +1611,10 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
     let link_activator = {
         let dispatch = dispatch.clone();
         LinkActivator::new(move |name, url, params| {
-            dispatch(NavCommand::Push { name, url, params, state: None });
+            // A link may target a route whose pattern carries default query
+            // params; split them out so routing never sees the `?`.
+            let (path, query) = split_query(&url);
+            dispatch(NavCommand::Push { name, url: path.to_string(), params, query });
         })
     };
     *shared.link_activator.borrow_mut() = Some(link_activator.clone());
@@ -1531,15 +1631,15 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
                 let Some((cmd, suppress_sync)) = next else { break };
                 let kind = CommittedKind::of(&cmd);
                 match cmd {
-                    NavCommand::Push { name, params, state, url } => {
-                        shared.push(name, params, state, url)
+                    NavCommand::Push { name, params, query, url } => {
+                        shared.push(name, params, query, url)
                     }
                     NavCommand::Pop => shared.pop(),
-                    NavCommand::Replace { name, params, state, url } => {
-                        shared.replace(name, params, state, url)
+                    NavCommand::Replace { name, params, query, url } => {
+                        shared.replace(name, params, query, url)
                     }
-                    NavCommand::Reset { name, params, state, url } => {
-                        shared.reset(name, params, state, url)
+                    NavCommand::Reset { name, params, query, url } => {
+                        shared.reset(name, params, query, url)
                     }
                     // A stack never receives Select; ignore (old
                     // dispatcher contract).
@@ -1554,7 +1654,7 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
     }
 
     // Initial screen before chrome (old walker order).
-    let initial = shared.mount(initial_route, &initial_path, initial_params, None);
+    let initial = shared.mount(initial_route, &initial_path, initial_params, initial_query.clone());
     if base.is_empty() {
         set_initial_path(None);
     }
@@ -1575,6 +1675,7 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
     provide(StackNav {
         active_route,
         active_path,
+        query: active_query,
         depth,
         can_go_back,
         pop,
@@ -1583,10 +1684,13 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
     // Chrome links target this navigator too — same ownership.
     provide(link_activator.clone());
     let guard = OutletCaptureGuard::<H::Node>::push();
-    let layout_element = match &prim.layout {
+    // `unanchored` — the chrome closure is a build, so its teardowns
+    // belong to the navigator's `Realized`, not to whatever effect mounted
+    // the navigator. See the swap handler's twin for the full note.
+    let layout_element = runtime_world::unanchored(|| match &prim.layout {
         Some(f) => f(),
         None => crate::builders::navigator_outlet().build(),
-    };
+    });
     let (layout_root, chrome) = cx.realize_detached(layout_element);
     let outlet = guard.take();
     debug_assert!(
@@ -1599,7 +1703,7 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         backend.borrow_mut().insert(&mut parent, layout_root);
     }
     *shared.outlet.borrow_mut() = outlet;
-    shared.seat_initial(initial_route, initial_path.clone(), initial);
+    shared.seat_initial(initial_route, initial_path.clone(), initial_query, initial);
 
     // URL sync registration — after seat, so `depth` reflects any
     // synthesized deep-link back-stack (the service's history seed).

@@ -938,6 +938,11 @@ impl caps::ScrollOps for TerminalBackend {
 
 impl caps::SafeAreaOps for TerminalBackend {}
 
+// No two-axis grid engine on this backend yet; every `GridOps`
+// method defaults, so `virtual_grid` reports itself as an
+// unsupported primitive instead of silently rendering nothing.
+impl caps::GridOps for TerminalBackend {}
+
 impl caps::VirtualizerOps for TerminalBackend {}
 
 // ---------------------------------------------------------------------------

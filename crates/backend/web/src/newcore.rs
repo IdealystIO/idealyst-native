@@ -1234,6 +1234,79 @@ impl caps::ScrollOps for WebBackend {
 impl caps::SafeAreaOps for WebBackend {
 }
 
+impl caps::GridOps for WebBackend {
+    fn create_virtual_grid(
+        &mut self,
+        callbacks: primitives::virtual_grid::GridCallbacks<Self::Node>,
+        overscan: f32,
+        a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        // Dispatch-site glue, same shape as `create_virtualizer`:
+        // mount/release run author render closures and scope cleanups
+        // (which may stage writes) from the backend's own scroll
+        // handling, and additionally run WORLD-ENTERED — `mount_cell`
+        // realizes, which is creation-side work that aborts outside
+        // `World::enter`. The size/count/key closures are pure reads
+        // and stay unwrapped.
+        let primitives::virtual_grid::GridCallbacks {
+            col_count,
+            row_count,
+            col_width,
+            row_height,
+            cell_key,
+            mount_cell,
+            release_cell,
+            on_scroll,
+        } = callbacks;
+        let callbacks = primitives::virtual_grid::GridCallbacks {
+            col_count,
+            row_count,
+            col_width,
+            row_height,
+            cell_key,
+            mount_cell: {
+                let f = mount_cell;
+                Rc::new(move |c, r| {
+                    let mounted = enter_mounted_world(|| f(c, r));
+                    schedule_flush();
+                    mounted
+                })
+            },
+            release_cell: {
+                let f = release_cell;
+                Rc::new(move |scope_id| {
+                    enter_mounted_world(|| f(scope_id));
+                    schedule_flush();
+                })
+            },
+            on_scroll: on_scroll.map(|f| -> Rc<dyn Fn(f32, f32)> {
+                Rc::new(move |x, y| {
+                    f(x, y);
+                    schedule_flush();
+                })
+            }),
+        };
+        let node = crate::primitives::virtual_grid::create(self, callbacks, overscan);
+        crate::a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::List));
+        node
+    }
+
+    fn virtual_grid_data_changed(&mut self, node: &Self::Node) {
+        crate::primitives::virtual_grid::data_changed(self, node)
+    }
+
+    fn release_virtual_grid(&mut self, node: &Self::Node) {
+        crate::primitives::virtual_grid::release(self, node)
+    }
+
+    fn make_virtual_grid_handle(
+        &self,
+        node: &Self::Node,
+    ) -> primitives::virtual_grid::VirtualGridHandle {
+        crate::primitives::virtual_grid::make_handle(node)
+    }
+}
+
 impl caps::VirtualizerOps for WebBackend {
     fn create_virtualizer(
         &mut self,

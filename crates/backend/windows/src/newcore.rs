@@ -834,6 +834,11 @@ impl caps::ScrollOps for WindowsBackend {
 
 impl caps::SafeAreaOps for WindowsBackend {}
 
+// No two-axis grid engine on this backend yet; every `GridOps`
+// method defaults, so `virtual_grid` reports itself as an
+// unsupported primitive instead of silently rendering nothing.
+impl caps::GridOps for WindowsBackend {}
+
 impl caps::VirtualizerOps for WindowsBackend {
     fn create_virtualizer(
         &mut self,

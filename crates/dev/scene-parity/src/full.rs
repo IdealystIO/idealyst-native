@@ -1419,6 +1419,11 @@ impl caps::SafeAreaOps for FullRecorder {
     }
 }
 
+// No two-axis grid engine on this backend yet; every `GridOps`
+// method defaults, so `virtual_grid` reports itself as an
+// unsupported primitive instead of silently rendering nothing.
+impl caps::GridOps for FullRecorder {}
+
 impl caps::VirtualizerOps for FullRecorder {
     fn create_virtualizer(
         &mut self,

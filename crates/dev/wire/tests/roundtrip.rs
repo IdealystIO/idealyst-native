@@ -226,6 +226,7 @@ impl caps::SliderOps for TraceBackend {}
 impl caps::TextInputOps for TraceBackend {}
 impl caps::ToggleOps for TraceBackend {}
 impl caps::VirtualizerOps for TraceBackend {}
+impl caps::GridOps for TraceBackend {}
 impl caps::WireBindingOps for TraceBackend {}
 
 // ---------------------------------------------------------------------------

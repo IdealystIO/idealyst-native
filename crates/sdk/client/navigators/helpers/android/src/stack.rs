@@ -226,7 +226,7 @@ pub(crate) fn create(
         let depth_for_dispatch = depth_changed.clone();
         let _release_for_dispatch = release_screen.clone();
         control.install(Box::new(move |cmd| match cmd {
-            NavCommand::Push { name, params, url: _, state: _ } => {
+            NavCommand::Push { name, params, url: _, query: _ } => {
                 let result = mount_for_dispatch(name, params);
                 let back_locked = back_locked_of(&*result.options);
                 let fullscreen = fullscreen_of(&*result.options);
@@ -259,7 +259,7 @@ pub(crate) fn create(
                 });
                 depth_for_dispatch(new_depth as usize);
             }
-            NavCommand::Replace { name, params, url: _, state: _ } => {
+            NavCommand::Replace { name, params, url: _, query: _ } => {
                 let result = mount_for_dispatch(name, params);
                 let back_locked = back_locked_of(&*result.options);
                 let fullscreen = fullscreen_of(&*result.options);
@@ -283,7 +283,7 @@ pub(crate) fn create(
                 });
                 depth_for_dispatch(new_depth as usize);
             }
-            NavCommand::Reset { name, params, url: _, state: _ } => {
+            NavCommand::Reset { name, params, url: _, query: _ } => {
                 let result = mount_for_dispatch(name, params);
                 let back_locked = back_locked_of(&*result.options);
                 let fullscreen = fullscreen_of(&*result.options);

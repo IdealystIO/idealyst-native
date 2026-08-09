@@ -181,6 +181,7 @@ impl caps::SliderOps for RecordingBackend {}
 impl caps::TextInputOps for RecordingBackend {}
 impl caps::ToggleOps for RecordingBackend {}
 impl caps::VirtualizerOps for RecordingBackend {}
+impl caps::GridOps for RecordingBackend {}
 impl caps::WireBindingOps for RecordingBackend {}
 
 // ---------------------------------------------------------------------------

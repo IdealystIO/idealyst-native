@@ -27,4 +27,5 @@ pub mod slider;
 pub mod text_area;
 pub mod text_input;
 pub mod toggle;
+pub mod virtual_grid;
 pub mod virtualizer;

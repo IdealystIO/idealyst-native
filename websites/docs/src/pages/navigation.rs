@@ -322,6 +322,9 @@ docs! {
             [code("nav.reset(&route, params)"),
              " — clear the stack, mount the new route as the root. Useful \
               for post-login redirects."],
+            [code("nav.push_with_state(&route, params, state)"),
+             " — push, carrying state for the screen to start from. Each \
+              verb has a ", code("_with_state"), " twin. See below."],
         ),
 
         p("The ", code(".layout(|nav| …)"), " closure receives a ",
@@ -374,6 +377,83 @@ docs! {
            stack keeps covered screens alive so back reveals them with \
            state intact, while a browser treats every navigation as \
            URL-driven."),
+    },
+
+    section(heading = "Screen state — pre-populating a screen") {
+        p("Route params answer which screen you are on (", code("/items/5"),
+          "). Screen state answers how that screen is configured — which \
+           tab is open, what the list is filtered to, what the user \
+           searched for. State travels as query params, so it survives a \
+           reload, a shared link, and the back button."),
+
+        p("Implement ", code("ScreenState"), " on the struct your screen \
+           wants to start from:"),
+
+        code(rust, r##"
+            use runtime_core::{screen_state, QueryParams, ScreenState};
+
+            #[derive(Clone, Debug, Default, PartialEq)]
+            struct Filters { tab: String, page: u32 }
+
+            impl ScreenState for Filters {
+                fn to_query(&self) -> QueryParams {
+                    QueryParams::new()
+                        .with("tab", self.tab.clone())
+                        .with("page", self.page.to_string())
+                }
+                fn from_query(q: &QueryParams) -> Option<Self> {
+                    // Give every field a fallback so a truncated or
+                    // hand-edited URL degrades instead of failing to route.
+                    Some(Filters {
+                        tab: q.get("tab").unwrap_or("all").to_string(),
+                        page: q.get_as("page").unwrap_or(1),
+                    })
+                }
+            }
+
+            // Navigating writes /inbox?tab=starred&page=2
+            nav.push_with_state(&INBOX, (), Filters { tab: "starred".into(), page: 2 });
+
+            // Reading, inside the screen builder:
+            .screen(INBOX, |_| {
+                let filters = signal(screen_state::<Filters>().unwrap_or_default());
+                // …
+            })
+        "##),
+
+        p(code("screen_state"),
+          " hands back the same value whether the user tapped through the \
+           app or pasted the URL. That equivalence is why state is encoded \
+           as query params instead of an opaque payload: an opaque payload \
+           evaporates on reload, so every screen would need a second \
+           \"arrived by link\" code path."),
+
+        p("Three things worth knowing:"),
+
+        list(
+            ["Query params never change route identity. ",
+             code("/inbox?tab=a"), " and ", code("/inbox?tab=b"),
+             " are the same screen, so changing the query updates state \
+              without remounting — a filter change won't reset scroll \
+              position or focus. To react to those changes, read the \
+              reactive ", code("query"), " signal on the navigator context \
+              rather than the build-time ", code("screen_state()"),
+             " snapshot."],
+            ["Use ", code("replace_with_state"), " for filter changes, not ",
+             code("push_with_state"),
+             ". Replace rewrites the current entry, so back leaves the \
+              screen instead of stepping through every intermediate filter \
+              value."],
+            ["A route pattern can carry defaults: ",
+             code("Route::new(\"inbox\", \"/inbox?tab=unread\")"),
+             ". Explicit state overrides a pattern default key by key."],
+        ),
+
+        p("On backends with no address bar — iOS, Android, desktop, \
+           terminal — there is nowhere durable to store the query, so the \
+           URL round-trip is a no-op there. The in-memory path is \
+           identical, and a screen reads its state the same way on every \
+           backend."),
     },
 
     section(heading = "Chrome is author layout — idea-ui-nav") {

@@ -1144,6 +1144,11 @@ mod native {
         }
     }
 
+    // No two-axis grid engine on this backend yet; every `GridOps`
+    // method defaults, so `virtual_grid` reports itself as an
+    // unsupported primitive instead of silently rendering nothing.
+    impl caps::GridOps for AndroidBackend {}
+
     impl caps::VirtualizerOps for AndroidBackend {
         fn create_virtualizer(
             &mut self,

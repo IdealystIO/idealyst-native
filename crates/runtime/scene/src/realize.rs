@@ -30,7 +30,7 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_world::{collect_owned, effect, untrack, Owned};
+use runtime_world::{collect_owned, effect, unanchored, untrack, Owned};
 
 use crate::element::{DynKind, DynSpec, Element, Key};
 use crate::host::Host;
@@ -847,6 +847,14 @@ pub fn realize<H: Host>(
 ///   exactly like the old walker's `with_scope(|| ...builder()...)`.
 ///   An effect a builder creates (probe cleanup, component effect) must
 ///   die with the subtree, not with the world.
+/// - The walk (and an untracked producer) runs
+///   [`unanchored`](runtime_world::unanchored): a mount is not an effect
+///   run, even when a driver effect is what triggered it. Otherwise every
+///   teardown a handler or builder registers through the effect-anchored
+///   hooks (`on_cleanup`, `on_scope_drop`, the `*_scoped` timers, a
+///   resource's private scope) would bind to that driver and fire on its
+///   next re-run — for a subtree the driver does not own and may not be
+///   tearing down at all (a navigator screen, a surviving keyed row).
 ///
 /// `produce_tracked` selects the old walker's tracking split: a Plain Dyn
 /// closure runs tracked (its reads ARE the deps — `dynamic.rs`), while
@@ -876,17 +884,25 @@ fn build_realized<'a, H: Host>(
         let element = if produce_tracked {
             produce()
         } else {
-            untrack(produce)
+            // An untracked producer is a build, not an effect body: its
+            // teardowns belong to this collector, not to whichever driver
+            // effect is running (`unanchored`). A TRACKED producer is the
+            // opposite case by definition — a plain `Dyn` closure's reads
+            // ARE the driver's dependency set, and `unanchored` would hide
+            // the effect the tracked-read path records against.
+            untrack(|| unanchored(produce))
         };
         untrack(|| {
-            let mut cx = MountCx {
-                backend,
-                registry,
-                frames: Vec::new(),
-                absorbed: Vec::new(),
-            };
-            let root = mount(&mut cx, element);
-            (root, cx.absorbed)
+            unanchored(|| {
+                let mut cx = MountCx {
+                    backend,
+                    registry,
+                    frames: Vec::new(),
+                    absorbed: Vec::new(),
+                };
+                let root = mount(&mut cx, element);
+                (root, cx.absorbed)
+            })
         })
     });
     for scope in absorbed {

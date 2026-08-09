@@ -28,8 +28,10 @@
 //!   `can_go_back` signals layout/chrome subscribes to.
 //! - `AmbientNavGuard` / `ambient_navigator()` — thread-local stack
 //!   `Link` reads at build time.
-//! - `ScreenStateGuard` / `current_screen_state` — per-screen opaque
-//!   state stack the screen render closure reads via downcast.
+//! - `ScreenStateGuard` / `screen_state` / `screen_query` — the
+//!   per-screen navigation state (query params) the screen render
+//!   closure reads to seed its signals. See the `query` module for the
+//!   `ScreenState` trait and why state is encoded as query params.
 //! - `NavigatorConfig` — the framework-owned routing config (initial
 //!   route, screen registry, defer flag). Kind-specific config lives
 //!   on the SDK's presentation payload.
@@ -40,6 +42,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::rc::Rc;
+
+use super::query::{QueryParams, ScreenState};
 
 // ---------------------------------------------------------------------------
 // Ambient navigator stack — Link primitives find their navigator here
@@ -524,9 +528,10 @@ pub fn join_path(base: &str, rel: &str) -> String {
 #[derive(Clone, Default)]
 pub struct AmbientNavContext {
     nav: Option<std::rc::Weak<NavigatorControl>>,
-    // Outer Option = "was a screen-state guard present"; inner = the
-    // state value (itself optional — `()`-param screens push `None`).
-    state: Option<Option<Rc<dyn Any>>>,
+    // `Option` = "was a screen-state guard present at capture". An empty
+    // `QueryParams` is a real value (a navigation with no state), so it
+    // must stay distinguishable from "no guard, don't re-push one".
+    state: Option<QueryParams>,
     route: Option<&'static str>,
 }
 
@@ -671,7 +676,15 @@ pub struct MountResult<N> {
 /// navigator nested in that screen (which prefix-matches in turn). A
 /// full URL is resolved by peeling one prefix per level down the active
 /// navigator tree. Trailing slashes are tolerated; empty path = `/`.
+///
+/// Any query string on `path` is stripped before matching. Routing runs on
+/// the path axis only — the query configures a screen, it never selects
+/// one. Callers are expected to have split the URL already
+/// ([`split_query`](super::query::split_query)); stripping here too is
+/// defense in depth, because a `?` that reaches the segment splitter does
+/// not fail loudly, it silently binds `id` to `5?tab=a`.
 pub fn match_prefix(path: &str, pattern: &str) -> Option<(HashMap<String, String>, String)> {
+    let path = super::query::strip_query(path);
     let path_segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let pat_segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
     if path_segs.len() < pat_segs.len() {
@@ -703,6 +716,7 @@ pub fn match_prefix(path: &str, pattern: &str) -> Option<(HashMap<String, String
 /// so reconstructing from it leaks a literal `:id` into the path mirror
 /// on parameterized deep links.
 pub fn consumed_prefix(path: &str, remainder: &str) -> String {
+    let path = super::query::strip_query(path);
     let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let rem_count = remainder.split('/').filter(|s| !s.is_empty()).count();
     let consumed = &segs[..segs.len().saturating_sub(rem_count)];
@@ -1093,7 +1107,11 @@ impl NavigatorControl {
         if let Some(f) = self.link_activator.borrow().as_ref() {
             f(name, url, params)
         } else {
-            NavCommand::Push { name, url, params, state: None }
+            // A route pattern may itself carry a query (`/search?sort=new`);
+            // split it into the command's own slot so the substrate never
+            // routes on it. See `NavCommand`'s doc on the url/query split.
+            let (path, query) = super::query::split_query(&url);
+            NavCommand::Push { name, url: path.to_string(), params, query }
         }
     }
 
@@ -1243,17 +1261,17 @@ impl NavigatorControl {
     /// Rebuild a command with `base + url` as its full hierarchical path.
     fn compose_url(&self, base: &str, cmd: NavCommand) -> NavCommand {
         match cmd {
-            NavCommand::Push { name, url, params, state } => {
-                NavCommand::Push { name, url: join_path(base, &url), params, state }
+            NavCommand::Push { name, url, params, query } => {
+                NavCommand::Push { name, url: join_path(base, &url), params, query }
             }
-            NavCommand::Replace { name, url, params, state } => {
-                NavCommand::Replace { name, url: join_path(base, &url), params, state }
+            NavCommand::Replace { name, url, params, query } => {
+                NavCommand::Replace { name, url: join_path(base, &url), params, query }
             }
-            NavCommand::Reset { name, url, params, state } => {
-                NavCommand::Reset { name, url: join_path(base, &url), params, state }
+            NavCommand::Reset { name, url, params, query } => {
+                NavCommand::Reset { name, url: join_path(base, &url), params, query }
             }
-            NavCommand::Select { name, url, params, state } => {
-                NavCommand::Select { name, url: join_path(base, &url), params, state }
+            NavCommand::Select { name, url, params, query } => {
+                NavCommand::Select { name, url: join_path(base, &url), params, query }
             }
             other => other,
         }
@@ -1288,9 +1306,15 @@ impl Drop for NavigatorControl {
 /// verbs cover the common navigation shapes; SDKs with novel verbs
 /// (drawer open/close, multi-pane focus, etc.) use `Custom`.
 ///
-/// The `state` field on stack-shaped variants is an SDK/author-opaque
-/// payload riding alongside the typed `params`. The screen builder can
-/// read it via [`current_screen_state`].
+/// The `query` field on route-carrying variants is the screen's durable
+/// state (see [`ScreenState`](super::query::ScreenState)) riding alongside
+/// the typed path `params`. The screen builder reads it back via
+/// [`screen_state`] / [`screen_query`].
+///
+/// `url` is the PATH ONLY — never `path?query`. The two are kept apart all
+/// the way through the substrate so routing, nav-base publication, and
+/// screen cache keys can never see a query string; only the URL-bearing
+/// backends recompose them when writing to browser history.
 ///
 /// SDK handlers receive every dispatched command via their installed
 /// dispatcher closure. Handlers that don't understand a variant
@@ -1300,20 +1324,20 @@ pub enum NavCommand {
         name: &'static str,
         url: String,
         params: Box<dyn Any>,
-        state: Option<Rc<dyn Any>>,
+        query: QueryParams,
     },
     Pop,
     Replace {
         name: &'static str,
         url: String,
         params: Box<dyn Any>,
-        state: Option<Rc<dyn Any>>,
+        query: QueryParams,
     },
     Reset {
         name: &'static str,
         url: String,
         params: Box<dyn Any>,
-        state: Option<Rc<dyn Any>>,
+        query: QueryParams,
     },
     /// Switch the active screen by name without changing stack depth.
     /// Used by tab- and drawer-style SDKs.
@@ -1321,7 +1345,7 @@ pub enum NavCommand {
         name: &'static str,
         url: String,
         params: Box<dyn Any>,
-        state: Option<Rc<dyn Any>>,
+        query: QueryParams,
     },
     /// SDK-specific command. The payload is downcast by the SDK
     /// handler's dispatcher to its expected type. Used for verbs the
@@ -1333,24 +1357,24 @@ pub enum NavCommand {
 }
 
 // ---------------------------------------------------------------------------
-// Per-screen state stack — author-opaque payload pushed at
-// dispatch time, readable inside the screen's render via
-// `current_screen_state::<T>()`.
+// Per-screen state stack — the query params that arrived with the
+// navigation, readable inside the screen's render via
+// `screen_state::<S>()` / `screen_query()`.
 // ---------------------------------------------------------------------------
 
 thread_local! {
-    static SCREEN_STATE: RefCell<Vec<Option<Rc<dyn Any>>>> =
+    static SCREEN_STATE: RefCell<Vec<QueryParams>> =
         const { RefCell::new(Vec::new()) };
 }
 
 /// RAII guard the framework pushes around each screen build. SDK
-/// handlers don't construct these directly — `host.mount_screen`
+/// handlers don't construct these directly — the navigator handler
 /// pushes one for the duration of the build.
 pub struct ScreenStateGuard;
 
 impl ScreenStateGuard {
-    pub fn push(state: Option<Rc<dyn Any>>) -> Self {
-        SCREEN_STATE.with(|s| s.borrow_mut().push(state));
+    pub fn push(query: QueryParams) -> Self {
+        SCREEN_STATE.with(|s| s.borrow_mut().push(query));
         ScreenStateGuard
     }
 }
@@ -1363,16 +1387,34 @@ impl Drop for ScreenStateGuard {
     }
 }
 
-/// Read the current screen's opaque `state` payload, downcast to `T`.
-/// `None` when called outside a screen build, when no state was
-/// passed at navigation time, or when the stored type isn't `T`.
-pub fn current_screen_state<T: Any>() -> Option<Rc<T>> {
-    SCREEN_STATE.with(|s| {
-        s.borrow()
-            .last()
-            .and_then(|opt| opt.clone())
-            .and_then(|rc| Rc::downcast::<T>(rc).ok())
-    })
+/// The raw query params this screen was navigated with. Empty outside a
+/// screen build, and empty for a navigation that carried no state.
+///
+/// This is a SNAPSHOT taken at build time — the value used to seed a
+/// screen's signals. To react to later query changes (browser Back that
+/// only alters the query, or an in-place `replace_with_state`), read the
+/// `query` signal on the navigator context instead.
+pub fn screen_query() -> QueryParams {
+    SCREEN_STATE.with(|s| s.borrow().last().cloned().unwrap_or_default())
+}
+
+/// Decode the current screen's navigation state as `S`.
+///
+/// Returns `None` outside a screen build or when `S::from_query` rejects
+/// the query. Note that a screen reached with NO state still calls
+/// `from_query` with an empty [`QueryParams`] — an impl that fills missing
+/// fields with defaults (the recommended shape) therefore yields `Some`
+/// there, which is what makes one code path serve both an in-app
+/// navigation and a cold URL load.
+///
+/// ```ignore
+/// .screen(INBOX, |_| {
+///     let filters = signal(screen_state::<Filters>().unwrap_or_default());
+///     ui! { /* … */ }
+/// })
+/// ```
+pub fn screen_state<S: ScreenState>() -> Option<S> {
+    S::from_query(&screen_query())
 }
 
 // ---------------------------------------------------------------------------
@@ -1941,26 +1983,26 @@ mod layout_pass_contract_tests {
             name: "a",
             url: "/a".into(),
             params: Box::new(()),
-            state: None,
+            query: QueryParams::new(),
         });
         control.dispatch(NavCommand::Pop);
         control.dispatch(NavCommand::Replace {
             name: "b",
             url: "/b".into(),
             params: Box::new(()),
-            state: None,
+            query: QueryParams::new(),
         });
         control.dispatch(NavCommand::Reset {
             name: "c",
             url: "/c".into(),
             params: Box::new(()),
-            state: None,
+            query: QueryParams::new(),
         });
         control.dispatch(NavCommand::Select {
             name: "d",
             url: "/d".into(),
             params: Box::new(()),
-            state: None,
+            query: QueryParams::new(),
         });
         control.dispatch(NavCommand::Custom(Rc::new(())));
 
@@ -2033,7 +2075,7 @@ mod navigation_batch_tests {
             name: "detail",
             url: "/detail".into(),
             params: Box::new(()),
-            state: None,
+            query: QueryParams::new(),
         });
 
         // Pre-fix (unbatched): the pre-dispatch write AND the handler's

@@ -11,10 +11,14 @@
 //! `runtime-core`, whose `primitives::navigator` module re-exports this
 //! one.
 
+pub mod query;
 pub mod scroll;
 pub mod shared;
 pub mod url_sync;
 
+pub use query::{
+    split_query, strip_query, with_query, QueryParams, ScreenState,
+};
 pub use scroll::{ambient_scroll_context, ScrollContext};
 pub use url_sync::{
     handle_popstate, install_url_provider, reset_url_sync_for_tests, url_provider_installed,
@@ -22,8 +26,8 @@ pub use url_sync::{
 };
 pub use shared::{
     ambient_navigator, capture_ambient_nav_context, current_nav_base, current_screen_route,
-    consumed_prefix, current_screen_state, enable_route_collector, join_path, match_pattern,
-    match_prefix,
+    consumed_prefix, enable_route_collector, join_path, match_pattern,
+    match_prefix, screen_query, screen_state,
     navigator_fill_rules, outlet_fill_rules, peek_initial_path,
     record_route_paths,
     screen_flow_fill_rules, set_initial_path, stack_container_rules, stack_screen_fill_rules,

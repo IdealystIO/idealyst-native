@@ -160,9 +160,40 @@ Two mechanisms render a list of items; pick by size and volatility:
   }
   ```
 
-- **`flat_list` primitive** — for long or unbounded collections. It windows
-  rendering to the visible range (virtualization), so 10 000 rows cost what
-  ~20 do. Use it whenever the item count is user-driven and can grow.
+- **`flat_list` primitive** — for long or unbounded collections that scroll
+  on ONE axis. It windows rendering to the visible range (virtualization), so
+  10 000 rows cost what ~20 do. Use it whenever the item count is user-driven
+  and can grow.
+
+- **`virtual_grid` primitive** — for collections that scroll on **both** axes:
+  a spreadsheet, a schedule grid, a pivot table. Columns have author-chosen
+  widths whose sum exceeds the viewport, rows likewise, and only the cells
+  overlapping the viewport are mounted — so a 364-column × 30-row schedule
+  (10 920 cells) mounts a few dozen.
+
+  Do NOT reach for `flat_list(...).lanes(Lanes::Fixed(n))` for this. Lanes
+  *divide* the viewport's cross extent (they're a wrap model, like CSS
+  `auto-fill`), so 364 lanes means 364 one-pixel columns, not a scrollable
+  second axis. Lanes are for a responsive photo grid; `virtual_grid` is for a
+  table.
+
+  ```rust
+  virtual_grid(
+      move || days.get().len(),      // columns
+      move || crew.get().len(),      // rows
+      |_col| 120.0,                  // column width
+      |_row| 44.0,                   // row height
+      move |c, r| cell_id(c, r),     // stable identity
+      move |c, r| ui! { ScheduleCell(day = c, crew = r) },
+  )
+  .on_scroll(move |x, _y| header_offset.set(x))
+  ```
+
+  Sizes are per-column and per-row (a cell's box is their intersection), and
+  author-supplied — there is no measure-on-mount mode, because a measured cell
+  height would have to agree with its whole row. Pair with
+  `position: Sticky, top: 0` for a frozen header and `position: Sticky,
+  left: 0` for a frozen column.
 
 Never assemble rows by pushing into a `Vec<Element>` outside the macro — that
 defeats keyed reconciliation and hides the children from reactive-scope

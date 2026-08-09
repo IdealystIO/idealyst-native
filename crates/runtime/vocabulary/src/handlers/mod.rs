@@ -32,6 +32,7 @@ mod presence;
 mod repeat;
 mod text;
 mod view;
+mod virtual_grid;
 mod virtualizer;
 mod widgets;
 
@@ -48,6 +49,7 @@ pub use navigator::url_sync as nav_url_sync;
 pub use portal::{mount_portal, register_portal};
 pub use presence::{mount_presence, register_presence};
 pub use repeat::{mount_repeat, register_repeat};
+pub use virtual_grid::{mount_virtual_grid, register_virtual_grid};
 pub use virtualizer::{mount_virtualizer, register_virtualizer};
 pub use text::{mount_button, mount_text};
 pub use view::{mount_pressable, mount_scroll_view, mount_view};
@@ -216,6 +218,8 @@ pub trait BuiltinSet {
     fn lazy<H: AllCaps + 'static>(_registry: &mut Registry<H>) {}
     /// `flat_list` / `virtualizer`.
     fn virtualizer<H: AllCaps + 'static>(_registry: &mut Registry<H>) {}
+    /// `virtual_grid` — the two-axis virtualized grid.
+    fn virtual_grid<H: AllCaps + 'static>(_registry: &mut Registry<H>) {}
     /// `graphics` / canvas.
     fn graphics<H: AllCaps + 'static>(_registry: &mut Registry<H>) {}
     /// `portal`, which also serves `overlay` / `anchored_overlay`.
@@ -386,6 +390,13 @@ macro_rules! builtin_set_keep {
             $crate::handlers::register_virtualizer(registry)
         }
     };
+    (@keep virtual_grid) => {
+        fn virtual_grid<H: $crate::caps::AllCaps + 'static>(
+            registry: &mut $crate::__scene::Registry<H>,
+        ) {
+            $crate::handlers::register_virtual_grid(registry)
+        }
+    };
     (@keep graphics) => {
         fn graphics<H: $crate::caps::AllCaps + 'static>(
             registry: &mut $crate::__scene::Registry<H>,
@@ -424,7 +435,7 @@ builtin_set!(
     /// Every builtin installed — the historical behavior of
     /// [`register_builtins`], and what every backend boots with unless the
     /// app opts down.
-    pub AllBuiltins: view, text, button, pressable, image, icon, link, toggle, slider, activity_indicator, text_input, text_area, scroll_view, repeat, lazy, virtualizer, graphics, portal, presence, nav
+    pub AllBuiltins: view, text, button, pressable, image, icon, link, toggle, slider, activity_indicator, text_input, text_area, scroll_view, repeat, lazy, virtualizer, virtual_grid, graphics, portal, presence, nav
 );
 
 builtin_set!(
@@ -458,6 +469,7 @@ pub fn register_builtins_with<H: AllCaps + 'static, S: BuiltinSet>(registry: &mu
     S::repeat(registry);
     S::lazy(registry);
     S::virtualizer(registry);
+    S::virtual_grid(registry);
     S::graphics(registry);
     S::portal(registry);
     S::presence(registry);

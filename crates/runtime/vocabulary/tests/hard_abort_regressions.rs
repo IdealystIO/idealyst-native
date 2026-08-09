@@ -305,6 +305,7 @@ mod reentrant_host {
         ActivityIndicatorOps,
         SafeAreaOps,
         VirtualizerOps,
+        GridOps,
         GraphicsOps,
         PortalOps,
         PresenceOps,

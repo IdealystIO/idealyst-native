@@ -1642,13 +1642,18 @@ where
             // `pending_mount`) hands it back; any handler-side reaction
             // to the Select (chrome updates etc.) runs on its own — no
             // kind-specific wire command needed for navigation.
-            use runtime_shared::primitives::navigator::{MountResult, NavCommand};
+            use runtime_shared::primitives::navigator::{split_query, MountResult, NavCommand};
             let screen_node = self.lookup_node(screen)?;
             // The server rebuilds + ships a fresh node per select and owns
             // screen lifecycle, so the client must not reuse a cached view.
             // The interned URL is a stable route key for active-route
             // bookkeeping.
-            let name: &'static str = Box::leak(url.clone().into_boxed_str());
+            // Interned from the PATH, not the full URL: the query is screen
+            // state, so `/inbox?filter=unread` and `/inbox?filter=all` are
+            // one route. Interning the query too would mint a fresh route
+            // name per filter value and desync active-route bookkeeping.
+            let (url_path, url_query) = split_query(&url);
+            let name: &'static str = Box::leak(url_path.to_string().into_boxed_str());
             *state.pending_mount.borrow_mut() = Some(MountResult {
                 node: screen_node,
                 scope_id: scope.0,
@@ -1664,25 +1669,25 @@ where
                     name,
                     url: url.clone(),
                     params: Box::new(()),
-                    state: None,
+                        query: url_query.clone(),
                 },
                 NavOp::Replace => NavCommand::Replace {
                     name,
                     url: url.clone(),
                     params: Box::new(()),
-                    state: None,
+                        query: url_query.clone(),
                 },
                 NavOp::Reset => NavCommand::Reset {
                     name,
                     url: url.clone(),
                     params: Box::new(()),
-                    state: None,
+                        query: url_query.clone(),
                 },
                 NavOp::Select => NavCommand::Select {
                     name,
                     url: url.clone(),
                     params: Box::new(()),
-                    state: None,
+                        query: url_query.clone(),
                 },
             };
             state.control.dispatch(cmd);

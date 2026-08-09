@@ -54,6 +54,11 @@ pub(crate) struct NoopVirtualizerOps;
 // never overrode `make_virtualizer_handle`.
 impl primitives::virtualizer::VirtualizerOps for NoopVirtualizerOps {}
 
+pub(crate) struct NoopVirtualGridOps;
+// Same "backend never overrode the factory" contract as
+// `NoopVirtualizerOps` — every method already defaults.
+impl primitives::virtual_grid::VirtualGridOps for NoopVirtualGridOps {}
+
 pub(crate) struct NoopGraphicsOps;
 impl primitives::graphics::GraphicsOps for NoopGraphicsOps {}
 

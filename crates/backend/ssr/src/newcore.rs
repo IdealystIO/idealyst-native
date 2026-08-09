@@ -787,6 +787,11 @@ impl caps::ScrollOps for SsrBackend {
 
 impl caps::SafeAreaOps for SsrBackend {}
 
+// No two-axis grid engine on this backend yet; every `GridOps`
+// method defaults, so `virtual_grid` reports itself as an
+// unsupported primitive instead of silently rendering nothing.
+impl caps::GridOps for SsrBackend {}
+
 impl caps::VirtualizerOps for SsrBackend {
     fn create_virtualizer(
         &mut self,

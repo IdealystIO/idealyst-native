@@ -37,7 +37,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use runtime_shared::accessibility::AccessibilityProps;
-use runtime_shared::primitives::navigator::{NavCommand, Route, RouteParams};
+use runtime_shared::primitives::navigator::{
+    split_query, NavCommand, QueryParams, Route, RouteParams, ScreenState,
+};
 use runtime_scene::Element;
 use runtime_world::Signal;
 
@@ -244,8 +246,16 @@ pub type SelectArgs = Rc<dyn Fn() -> Option<(String, Box<dyn Any>)>>;
 pub struct SwapNav {
     /// Currently active route key — highlight the live tab/nav item.
     pub active_route: Signal<&'static str>,
-    /// Full resolved path of the active screen.
+    /// Full resolved path of the active screen. Path only — the query
+    /// lives in [`query`](Self::query).
     pub active_path: Signal<String>,
+    /// The active screen's query params, republished on every navigation.
+    ///
+    /// Read this (rather than the build-time `screen_state()` snapshot)
+    /// when a screen must react to its state changing WITHOUT remounting —
+    /// browser Back onto an entry that differs only in its query, or an
+    /// in-place `replace_with_state`.
+    pub query: Signal<QueryParams>,
     /// Switch to a sibling screen by route name (`Select`). Handler-safe:
     /// stages a command + tick, the driver effect commits on flush.
     pub on_select: Rc<dyn Fn(&'static str)>,
@@ -256,8 +266,11 @@ pub struct SwapNav {
 pub struct StackNav {
     /// The active (top) screen's route name.
     pub active_route: Signal<&'static str>,
-    /// The active screen's full path.
+    /// The active screen's full path. Path only — the query lives in
+    /// [`query`](Self::query).
     pub active_path: Signal<String>,
+    /// The active screen's query params — see [`SwapNav::query`].
+    pub query: Signal<QueryParams>,
     /// Stack depth (1 at the root).
     pub depth: Signal<usize>,
     /// Whether a pop is possible (depth > 1).
@@ -320,26 +333,69 @@ impl NavHandle {
         (self.dispatch)(cmd)
     }
 
+    /// Build the `(path, query)` pair for a navigation. The route pattern
+    /// may itself carry a query (`Route::new("search", "/search?sort=new")`
+    /// — defaults expressed in the route); the author's state is layered on
+    /// top of it, so explicit state wins over a pattern default key-by-key.
+    fn route_url<P: RouteParams, S: ScreenState>(
+        route: &Route<P>,
+        params: &P,
+        state: &S,
+    ) -> (String, QueryParams) {
+        let full = params.to_path(route.path());
+        let (path, mut query) = split_query(&full);
+        let path = path.to_string();
+        for (k, v) in state.to_query().iter() {
+            query.set(k, v);
+        }
+        (path, query)
+    }
+
     /// Switch to `route` (swap navigators). Selecting the already-active
     /// URL is a no-op at the driver.
     pub fn select<P: RouteParams>(&self, route: &Route<P>, params: P) {
-        let url = params.to_path(route.path());
+        self.select_with_state(route, params, ())
+    }
+
+    /// [`select`](Self::select), carrying `state` as the screen's query
+    /// params. See [`ScreenState`].
+    pub fn select_with_state<P: RouteParams, S: ScreenState>(
+        &self,
+        route: &Route<P>,
+        params: P,
+        state: S,
+    ) {
+        let (url, query) = Self::route_url(route, &params, &state);
         self.dispatch(NavCommand::Select {
             name: route.name(),
             url,
             params: Box::new(params),
-            state: None,
+            query,
         });
     }
 
     /// Push `route` onto the stack.
     pub fn push<P: RouteParams>(&self, route: &Route<P>, params: P) {
-        let url = params.to_path(route.path());
+        self.push_with_state(route, params, ())
+    }
+
+    /// [`push`](Self::push), carrying `state` as the screen's query params.
+    ///
+    /// The screen reads it back with `screen_state::<S>()`, and on a
+    /// URL-bearing backend the state lands in the address bar — so a reload
+    /// or a shared link reconstructs the same screen. See [`ScreenState`].
+    pub fn push_with_state<P: RouteParams, S: ScreenState>(
+        &self,
+        route: &Route<P>,
+        params: P,
+        state: S,
+    ) {
+        let (url, query) = Self::route_url(route, &params, &state);
         self.dispatch(NavCommand::Push {
             name: route.name(),
             url,
             params: Box::new(params),
-            state: None,
+            query,
         });
     }
 
@@ -350,23 +406,50 @@ impl NavHandle {
 
     /// Replace the top screen with `route`.
     pub fn replace<P: RouteParams>(&self, route: &Route<P>, params: P) {
-        let url = params.to_path(route.path());
+        self.replace_with_state(route, params, ())
+    }
+
+    /// [`replace`](Self::replace), carrying `state` as the screen's query
+    /// params.
+    ///
+    /// This is the verb for "the user changed a filter": it rewrites the
+    /// current entry's query in place rather than growing the back stack,
+    /// so Back still leaves the screen instead of stepping through every
+    /// intermediate filter value.
+    pub fn replace_with_state<P: RouteParams, S: ScreenState>(
+        &self,
+        route: &Route<P>,
+        params: P,
+        state: S,
+    ) {
+        let (url, query) = Self::route_url(route, &params, &state);
         self.dispatch(NavCommand::Replace {
             name: route.name(),
             url,
             params: Box::new(params),
-            state: None,
+            query,
         });
     }
 
     /// Reset the whole stack to a single `route`.
     pub fn reset<P: RouteParams>(&self, route: &Route<P>, params: P) {
-        let url = params.to_path(route.path());
+        self.reset_with_state(route, params, ())
+    }
+
+    /// [`reset`](Self::reset), carrying `state` as the screen's query
+    /// params.
+    pub fn reset_with_state<P: RouteParams, S: ScreenState>(
+        &self,
+        route: &Route<P>,
+        params: P,
+        state: S,
+    ) {
+        let (url, query) = Self::route_url(route, &params, &state);
         self.dispatch(NavCommand::Reset {
             name: route.name(),
             url,
             params: Box::new(params),
-            state: None,
+            query,
         });
     }
 }

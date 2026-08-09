@@ -573,6 +573,11 @@ impl caps::SafeAreaOps for WireRecordingBackend {
     }
 }
 
+// No two-axis grid engine on this backend yet; every `GridOps`
+// method defaults, so `virtual_grid` reports itself as an
+// unsupported primitive instead of silently rendering nothing.
+impl caps::GridOps for WireRecordingBackend {}
+
 impl caps::VirtualizerOps for WireRecordingBackend {
     fn create_virtualizer(
         &mut self,

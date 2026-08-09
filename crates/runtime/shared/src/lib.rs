@@ -300,9 +300,12 @@ pub use touch::recognizers::{
     Swipe, SwipeDirection, SwipeDirs, SwipeRecognizer, Tap, TapRecognizer,
 };
 pub use primitives::navigator::shared::{
-    current_screen_state, join_path, match_pattern, match_prefix, peek_initial_path,
+    join_path, match_pattern, match_prefix, peek_initial_path, screen_query, screen_state,
     set_initial_path, take_initial_path, NavCommand, NavState, NavigatorControl, NavigatorHandle,
     NavigatorOps, Route, RouteParams, ScreenStateGuard,
+};
+pub use primitives::navigator::query::{
+    split_query, strip_query, with_query, QueryParams, ScreenState,
 };
 pub use primitives::icon::{FillRule, IconData, IconHandle, IconOps, StrokeAnimation};
 pub use primitives::image::{

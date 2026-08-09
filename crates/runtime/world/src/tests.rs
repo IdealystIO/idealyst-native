@@ -2115,6 +2115,89 @@ fn in_effect_tracks_effect_bodies_only() {
     assert!(!in_effect());
 }
 
+/// `unanchored` hides the running effect from the code it wraps, so a
+/// teardown registered while BUILDING a subtree anchors to that subtree's
+/// collector instead of to whichever driver effect triggered the build.
+#[test]
+fn unanchored_hides_the_running_effect_from_a_nested_build() {
+    let world = World::new();
+    world.enter(|| {
+        let fired = Rc::new(Cell::new(0u32));
+        let src = signal(0u32);
+        let owned_slot: Rc<RefCell<Option<Owned>>> = Rc::new(RefCell::new(None));
+
+        let (f, slot) = (fired.clone(), owned_slot.clone());
+        let _driver = effect(move || {
+            // Re-runs on every `src` write; the subtree it builds does not
+            // belong to it.
+            let _ = src.get();
+            if slot.borrow().is_some() {
+                return;
+            }
+            let f = f.clone();
+            let ((), owned) = collect_owned(|| {
+                unanchored(|| {
+                    assert!(!in_effect(), "the build must not see the driver");
+                    on_scope_drop(move || f.set(f.get() + 1));
+                })
+            });
+            *slot.borrow_mut() = Some(owned);
+        });
+
+        // The driver re-runs — repeatedly — and the subtree's teardown must
+        // NOT fire: nothing dropped it.
+        src.set(1);
+        world.flush();
+        src.set(2);
+        world.flush();
+        assert_eq!(fired.get(), 0, "teardown anchored to the driver would fire here");
+
+        // Dropping the subtree's own scope is what fires it.
+        drop(owned_slot.borrow_mut().take());
+        assert_eq!(fired.get(), 1, "the collector owns the teardown");
+    });
+}
+
+/// The suspension is exact: an effect CREATED inside `unanchored` still
+/// collects its own dependencies (it pushes itself onto the emptied stack),
+/// and the outer effect's identity is restored on the way out — including
+/// through a panic.
+#[test]
+fn unanchored_restores_the_stack_and_keeps_nested_effects_tracking() {
+    let world = World::new();
+    world.enter(|| {
+        let src = signal(0u32);
+        let runs = Rc::new(Cell::new(0u32));
+        let r = runs.clone();
+        let _nested = unanchored(|| {
+            effect(move || {
+                let _ = src.get();
+                r.set(r.get() + 1);
+            })
+        });
+        src.set(1);
+        world.flush();
+        assert_eq!(runs.get(), 2, "an effect made inside `unanchored` still subscribes");
+
+        // A panicking body restores the outer stack, so the enclosing
+        // effect keeps tracking afterwards.
+        let seen = Rc::new(Cell::new(0u32));
+        let s = seen.clone();
+        let _outer = effect(move || {
+            let _ = src.get();
+            s.set(s.get() + 1);
+            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                unanchored(|| panic!("build failed"));
+            }));
+            assert!(panicked.is_err());
+            assert!(in_effect(), "the outer effect is running again");
+        });
+        src.set(2);
+        world.flush();
+        assert_eq!(seen.get(), 2, "the outer effect still re-fires on its dep");
+    });
+}
+
 // ============================================================================
 // Staged-read diagnostic — the dev-build warning for the one 0.5 → 1.0 break
 // that is neither a compile error nor a panic (`set(v)` then `get()` in one

@@ -840,6 +840,11 @@ impl caps::ScrollOps for RokuBackend {
 
 impl caps::SafeAreaOps for RokuBackend {}
 
+// No two-axis grid engine on this backend yet; every `GridOps`
+// method defaults, so `virtual_grid` reports itself as an
+// unsupported primitive instead of silently rendering nothing.
+impl caps::GridOps for RokuBackend {}
+
 impl caps::VirtualizerOps for RokuBackend {}
 
 // ---------------------------------------------------------------------------

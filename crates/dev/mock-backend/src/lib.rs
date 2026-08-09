@@ -828,6 +828,11 @@ impl caps::InputOps for MockBackend {}
 impl caps::IntrospectionOps for MockBackend {}
 impl caps::NavigatorOps for MockBackend {}
 impl caps::PresenceOps for MockBackend {}
+// No two-axis grid engine on this backend yet; every `GridOps`
+// method defaults, so `virtual_grid` reports itself as an
+// unsupported primitive instead of silently rendering nothing.
+impl caps::GridOps for MockBackend {}
+
 impl caps::VirtualizerOps for MockBackend {}
 impl caps::WireBindingOps for MockBackend {}
 

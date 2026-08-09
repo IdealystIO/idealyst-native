@@ -37,6 +37,7 @@ mod portal;
 mod presence;
 mod text;
 mod view;
+mod virtual_grid;
 mod virtualizer;
 mod widgets;
 
@@ -50,6 +51,7 @@ pub use portal::{
     anchored_overlay, overlay, portal, AnchoredOverlayBuilder, OverlayBuilder, PortalBuilder,
 };
 pub use presence::{presence, PresenceBuilder};
+pub use virtual_grid::{virtual_grid, VirtualGridBuilder};
 pub use virtualizer::{virtualizer, VirtualizerBuilder};
 pub use text::{button, text, ButtonBuilder, TextBuilder};
 pub use view::{

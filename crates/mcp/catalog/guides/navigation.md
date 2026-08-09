@@ -64,6 +64,54 @@ nav.get().map(|h| h.push(&DETAIL, ())).unwrap_or_default(); // pushes /detail
 
 The compile-checked **`stack_two_screens` recipe** (visible in `list_recipes` once `stack-navigator = { workspace = true }` is in your `Cargo.toml`) is the full list + detail skeleton with a typed param and a layout shell — copy-paste it as a starting point.
 
+## Passing state to a screen
+
+Route params answer *which* screen (`/items/5`). **Screen state** answers *how it is configured* — which tab is open, what the list is filtered to, what the user searched for. State is carried as **query params**, so it survives a reload, a shared link, and the Back button.
+
+Implement `ScreenState` on the struct the screen wants pre-populated, then use the `_with_state` verbs:
+
+```rust
+use runtime_core::{QueryParams, ScreenState, screen_state};
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Filters { tab: String, page: u32 }
+
+impl ScreenState for Filters {
+    fn to_query(&self) -> QueryParams {
+        QueryParams::new()
+            .with("tab", self.tab.clone())
+            .with("page", self.page.to_string())
+    }
+    fn from_query(q: &QueryParams) -> Option<Self> {
+        // Fill every missing field with a default so a truncated or
+        // hand-edited URL degrades instead of failing to route.
+        Some(Filters {
+            tab: q.get("tab").unwrap_or("all").to_string(),
+            page: q.get_as("page").unwrap_or(1),
+        })
+    }
+}
+
+// Navigating: writes `/inbox?tab=starred&page=2`.
+nav.push_with_state(&INBOX, (), Filters { tab: "starred".into(), page: 2 });
+
+// Reading, inside the screen builder:
+.screen(INBOX, |_| {
+    let filters = signal(screen_state::<Filters>().unwrap_or_default());
+    // …
+})
+```
+
+`screen_state` returns the same value whether the user got here by tapping through the app or by pasting the URL. That equivalence is the reason state is encoded as query params rather than as an opaque payload — an opaque payload evaporates on reload, which forces every screen to grow a second "but what if there's no state" path.
+
+Three rules worth knowing:
+
+- **Query params never change route identity.** `/inbox?tab=a` and `/inbox?tab=b` are the same screen: changing the query updates state *without remounting*, so a filter change doesn't reset scroll position or focus. To react to those changes, read the reactive `query` signal on the navigator context (`inject::<StackNav>().query` / `SwapNav::query`) rather than the build-time `screen_state()` snapshot.
+- **Use `replace_with_state` for filter changes**, not `push_with_state`. Replace rewrites the current entry, so Back leaves the screen instead of stepping through every intermediate filter value.
+- **A route pattern can carry defaults**: `Route::new("inbox", "/inbox?tab=unread")`. Explicit state overrides a pattern default key by key.
+
+On backends with no address bar (iOS, Android, desktop, terminal) there is nowhere durable to store the query, so the URL round-trip is a no-op there — but the in-memory path is identical, and a screen reads its state exactly the same way on every backend.
+
 ## Building a swap (tab) navigator
 
 **Tabs and drawers are the swap navigator**, not a separate crate. A `swap-navigator` is a flat set of co-equal screens — selecting one swaps the single visible screen (no back stack). The tab bar (or drawer) is *author layout* wrapped around the navigator's outlet: idea-ui-nav ships a ready-made `TabBar` you wire to the navigator's reactive `active_route` / `on_select`.

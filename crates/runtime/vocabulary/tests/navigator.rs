@@ -420,6 +420,308 @@ fn stack_screen_root_gets_the_flow_fill_overlay() {
 }
 
 // ===========================================================================
+// Screen-scope teardown: `on_scope_drop` from a screen body
+// ===========================================================================
+
+/// A registry of live claims, keyed by a monotonic id so a re-mounted
+/// screen is distinguishable from the one it replaced (an id that never
+/// leaves proves a leak; a fresh id proves a real re-build).
+#[derive(Clone, Default)]
+struct Claims {
+    next: Rc<Cell<u32>>,
+    live: Rc<RefCell<Vec<String>>>,
+}
+
+impl Claims {
+    fn claim(&self, label: &'static str) {
+        let id = self.next.get() + 1;
+        self.next.set(id);
+        let entry = format!("{id}:{label}");
+        self.live.borrow_mut().push(entry.clone());
+        let live = self.live.clone();
+        runtime_world::on_scope_drop(move || live.borrow_mut().retain(|e| *e != entry));
+    }
+
+    fn live(&self) -> Vec<String> {
+        self.live.borrow().clone()
+    }
+}
+
+/// A screen body that registers a claim with `on_scope_drop` — the
+/// author-facing "release this at unmount" hook (a registry entry, a
+/// subscription, a listener). Deliberately NOT `probe_screen`'s
+/// `on_teardown`: that parks an effect in the ambient collector, so it
+/// cannot see whether the screen body's registrations anchored to the
+/// screen's own scope or to whatever effect happened to be running.
+fn claim_screen(
+    label: &'static str,
+    claims: Claims,
+) -> impl Fn(()) -> runtime_scene::Element + 'static {
+    move |_| {
+        claims.claim(label);
+        view().child(text().content(label)).build()
+    }
+}
+
+/// The baseline every other test in this section is measured against: a
+/// screen's `on_scope_drop` fires when THAT screen goes away, seated or
+/// selected, and the navigator's own teardown releases whatever is still
+/// mounted. Passes against the pre-`unanchored` code too — under
+/// `LazyDisposing` from a root-mounted navigator, driver-anchored
+/// teardown happened to coincide with eviction. The two regressions it
+/// masks are the tests below.
+#[test]
+fn swap_screen_claims_follow_the_screen_lifecycle() {
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let claims = Claims::default();
+        let element = swap_navigator(&HOME)
+            .screen(HOME, claim_screen("home", claims.clone()))
+            .screen(ABOUT, claim_screen("about", claims.clone()))
+            .mount_policy(MountPolicy::LazyDisposing)
+            .layout(|| view().child(navigator_outlet()).build())
+            .on_handle(|_| {})
+            .build();
+        let realized = realize(&h.backend, &h.registry, element);
+        let ctx = world.enter(|| inject::<SwapNav>()).expect("SwapNav provided");
+        assert_eq!(claims.live(), vec!["1:home"], "seated screen claimed");
+
+        (ctx.on_select)("about");
+        world.flush();
+        assert_eq!(
+            claims.live(),
+            vec!["2:about"],
+            "the seated screen's claim must be released when it is evicted"
+        );
+
+        (ctx.on_select)("home");
+        world.flush();
+        assert_eq!(
+            claims.live(),
+            vec!["3:home"],
+            "the re-mounted screen claims fresh; the evicted one released"
+        );
+
+        drop(realized);
+        assert!(
+            claims.live().is_empty(),
+            "navigator teardown releases the active screen's claim: {:?}",
+            claims.live()
+        );
+    });
+}
+
+/// A CACHED screen's claim must survive navigation. Under
+/// `LazyPersistent` the screen is never torn down, so its
+/// `on_scope_drop` must not fire — anchoring it to the navigator's
+/// driver effect made it fire on the next navigation, retracting a
+/// registration whose screen is still mounted (and still reachable when
+/// the user comes back).
+#[test]
+fn regression_swap_cached_screen_keeps_its_claim_across_navigation() {
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let claims = Claims::default();
+        let element = swap_navigator(&HOME)
+            .screen(HOME, claim_screen("home", claims.clone()))
+            .screen(ABOUT, claim_screen("about", claims.clone()))
+            .screen(DETAIL, claim_screen("detail", claims.clone()))
+            .mount_policy(MountPolicy::LazyPersistent)
+            .layout(|| view().child(navigator_outlet()).build())
+            .on_handle(|_| {})
+            .build();
+        let realized = realize(&h.backend, &h.registry, element);
+        let ctx = world.enter(|| inject::<SwapNav>()).expect("SwapNav provided");
+
+        (ctx.on_select)("about");
+        world.flush();
+        (ctx.on_select)("detail");
+        world.flush();
+        assert_eq!(
+            claims.live(),
+            vec!["1:home", "2:about", "3:detail"],
+            "persistent screens stay mounted, so every claim stays live"
+        );
+
+        drop(realized);
+        assert!(
+            claims.live().is_empty(),
+            "navigator teardown releases every cached screen's claim: {:?}",
+            claims.live()
+        );
+    });
+}
+
+/// The same leak, in the shape a real app hits it: the navigator sits
+/// inside a reactive region (an auth gate, a shell `when`), so its mount
+/// handler — and with it the inline realize of the seated screen — runs
+/// inside the region's DRIVER effect. That effect never re-runs while
+/// the guard holds, so a claim anchored to it never releases: the
+/// landing screen's registration outlives every navigation.
+#[test]
+fn regression_swap_seated_screen_under_a_reactive_region_fires_its_teardown() {
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let claims = Claims::default();
+        let element = runtime_vocabulary::glue::when(
+            || true,
+            {
+                let claims = claims.clone();
+                move || {
+                    swap_navigator(&HOME)
+                        .screen(HOME, claim_screen("home", claims.clone()))
+                        .screen(ABOUT, claim_screen("about", claims.clone()))
+                        .mount_policy(MountPolicy::LazyDisposing)
+                        .layout(|| view().child(navigator_outlet()).build())
+                        .build()
+                }
+            },
+            || view().build(),
+        );
+        let _realized = realize(&h.backend, &h.registry, view().child(element).build());
+        let ctx = world.enter(|| inject::<SwapNav>()).expect("SwapNav provided");
+        assert_eq!(claims.live(), vec!["1:home"], "seated screen claimed");
+
+        (ctx.on_select)("about");
+        world.flush();
+        assert_eq!(
+            claims.live(),
+            vec!["2:about"],
+            "the seated screen's claim must not outlive its screen just because \
+             the navigator mounted inside someone else's effect"
+        );
+    });
+}
+
+/// A driver effect can re-run WITHOUT rebuilding what it mounted —
+/// that is `when`'s guard dedup (a predicate reading an extra signal
+/// re-fires the driver; an unchanged boolean keeps the mounted branch).
+/// Everything the navigator built under that driver — chrome and seated
+/// screen alike — must be untouched by such a re-run, which it is only
+/// because neither anchored its teardown to the driver.
+#[test]
+fn regression_navigator_survives_a_deduped_re_run_of_the_effect_that_mounted_it() {
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let claims = Claims::default();
+        let tick = runtime_world::signal(0u32);
+        let element = runtime_vocabulary::glue::when(
+            move || {
+                // Reads more than its boolean: the driver re-fires on every
+                // tick, the guard value never moves, the branch stays.
+                let _ = tick.get();
+                true
+            },
+            {
+                let claims = claims.clone();
+                move || {
+                    let chrome_claims = claims.clone();
+                    swap_navigator(&HOME)
+                        .screen(HOME, claim_screen("home", claims.clone()))
+                        .screen(ABOUT, claim_screen("about", claims.clone()))
+                        .mount_policy(MountPolicy::LazyPersistent)
+                        .layout(move || {
+                            chrome_claims.claim("chrome");
+                            view().child(navigator_outlet()).build()
+                        })
+                        .build()
+                }
+            },
+            || view().build(),
+        );
+        let realized = realize(&h.backend, &h.registry, view().child(element).build());
+        let ctx = world.enter(|| inject::<SwapNav>()).expect("SwapNav provided");
+        assert_eq!(claims.live(), vec!["1:home", "2:chrome"]);
+
+        tick.set(1);
+        world.flush();
+        assert_eq!(
+            claims.live(),
+            vec!["1:home", "2:chrome"],
+            "a deduped driver re-run must not retract what it mounted"
+        );
+
+        (ctx.on_select)("about");
+        world.flush();
+        tick.set(2);
+        world.flush();
+        assert_eq!(
+            claims.live(),
+            vec!["1:home", "2:chrome", "3:about"],
+            "still no retraction, with a persistent screen cached behind"
+        );
+
+        drop(realized);
+        assert!(claims.live().is_empty(), "everything releases at teardown");
+    });
+}
+
+/// The stack navigator seats its root screen the same way the swap one
+/// does (`seat_initial` after the inline realize), and pushes from its
+/// driver effect — so both halves of the anchor bug reach it too. A
+/// pushed screen's claim must survive the pop that reveals it again, and
+/// the root's must live until the navigator does.
+#[test]
+fn regression_stack_screen_claims_track_the_stack_not_the_driver() {
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let claims = Claims::default();
+        let handle_slot: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let element = {
+            let handle_slot = handle_slot.clone();
+            stack_navigator(&HOME)
+                .screen(HOME, claim_screen("home", claims.clone()))
+                .screen(DETAIL, claim_screen("detail", claims.clone()))
+                .screen(ABOUT, claim_screen("about", claims.clone()))
+                .retention(StackRetention::Retain)
+                .layout(|| view().child(navigator_outlet()).build())
+                .on_handle(move |handle| *handle_slot.borrow_mut() = Some(handle))
+                .build()
+        };
+        let realized = realize(&h.backend, &h.registry, element);
+        let handle = handle_slot.borrow_mut().take().expect("on_handle filled");
+
+        // Two pushes: the SECOND one re-runs the driver effect while the
+        // first pushed screen is still on the stack. That is the case a
+        // driver-anchored teardown gets wrong — it retracts a screen the
+        // user can still pop back to.
+        handle.push(&DETAIL, ());
+        world.flush();
+        handle.push(&ABOUT, ());
+        world.flush();
+        assert_eq!(
+            claims.live(),
+            vec!["1:home", "2:detail", "3:about"],
+            "every screen on a retaining stack keeps its claim"
+        );
+
+        handle.pop();
+        world.flush();
+        assert_eq!(
+            claims.live(),
+            vec!["1:home", "2:detail"],
+            "pop releases exactly the popped screen's claim"
+        );
+
+        handle.pop();
+        world.flush();
+        assert_eq!(claims.live(), vec!["1:home"], "back at the root screen");
+
+        drop(realized);
+        assert!(
+            claims.live().is_empty(),
+            "navigator teardown releases the root screen's claim: {:?}",
+            claims.live()
+        );
+    });
+}
+
+// ===========================================================================
 // Teardown: the whole navigator
 // ===========================================================================
 

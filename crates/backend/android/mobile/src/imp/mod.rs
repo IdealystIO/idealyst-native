@@ -385,6 +385,8 @@ pub struct AndroidBackend {
     /// view is actually in a parent chain. Mirrors iOS's
     /// `pending_sticky`.
     pub(crate) pending_sticky: HashMap<usize, runtime_shared::sticky::StickyInsets>,
+    /// `virtual_grid` instances, keyed by their view's JObject pointer.
+    pub(crate) virtual_grid_registry: primitives::virtual_grid::GridRegistry,
     /// Portal overlays awaiting their first laid-out frame. Each is the
     /// overlay `FrameLayout`'s `GlobalRef`, set `View.INVISIBLE` at
     /// `create_overlay_portal` time and flipped back to `View.VISIBLE`
@@ -863,6 +865,7 @@ impl AndroidBackend {
             scroll_observers: HashMap::new(),
             scroll_listeners: HashMap::new(),
             pending_sticky: HashMap::new(),
+            virtual_grid_registry: HashMap::new(),
             pending_reveal: Vec::new(),
             detached_window_roots: HashMap::new(),
             app_key_ptr: None,
@@ -1880,6 +1883,39 @@ impl runtime_shared::primitives::virtualizer::VirtualizerOps for AndroidVirtuali
 }
 pub(crate) static ANDROID_VIRTUALIZER_OPS: AndroidVirtualizerOps = AndroidVirtualizerOps;
 
+/// `VirtualGridOps` for Android. The node is the `RustVirtualGrid`
+/// ViewGroup, so offsets are its own scroll position — dp on both the
+/// read and the write side, matching every other primitive.
+pub(crate) struct AndroidVirtualGridOps;
+impl runtime_shared::primitives::virtual_grid::VirtualGridOps for AndroidVirtualGridOps {
+    fn scroll_to_cell(&self, node: &dyn std::any::Any, col: usize, row: usize) {
+        let Some(n) = node.downcast_ref::<GlobalRef>() else { return };
+        // The cell origin lives in the registry's metrics, so this one
+        // method needs the backend; a handle call is a user gesture,
+        // not a per-frame path, so the global-self borrow is safe.
+        ANDROID_BACKEND_SELF.with(|s| {
+            let weak = s.borrow().clone();
+            let Some(rc) = weak.and_then(|w| w.upgrade()) else { return };
+            let Ok(b) = rc.try_borrow() else { return };
+            primitives::virtual_grid::scroll_to_cell(&b, n, col, row);
+        });
+    }
+
+    fn scroll_offset(&self, node: &dyn std::any::Any) -> (f32, f32) {
+        match node.downcast_ref::<GlobalRef>() {
+            Some(n) => primitives::virtual_grid::scroll_offset(n),
+            None => (0.0, 0.0),
+        }
+    }
+
+    fn scroll_to(&self, node: &dyn std::any::Any, x: f32, y: f32) {
+        if let Some(n) = node.downcast_ref::<GlobalRef>() {
+            primitives::virtual_grid::scroll_to(n, x, y);
+        }
+    }
+}
+pub(crate) static ANDROID_VIRTUAL_GRID_OPS: AndroidVirtualGridOps = AndroidVirtualGridOps;
+
 // ---------------------------------------------------------------------------
 // Global self-handle. Mirrors `IOS_BACKEND_SELF` — host code installs
 // a `Weak<RefCell<AndroidBackend>>` once at `attach` so the
@@ -2149,6 +2185,22 @@ impl AndroidBackend {
     /// here).
     pub(crate) fn host_root(&self) -> &GlobalRef {
         &self.root
+    }
+}
+
+/// Run `f` against the live backend, if one is installed and not
+/// already borrowed. Mirrors iOS/macOS's `with_backend`; used by the
+/// `virtual_grid` JNI trampolines, which are called from Kotlin with
+/// no backend handle in hand.
+pub(crate) fn with_backend_mut(f: impl FnOnce(&mut AndroidBackend)) {
+    let weak = ANDROID_BACKEND_SELF.with(|s| s.borrow().clone());
+    let Some(rc) = weak.and_then(|w| w.upgrade()) else { return };
+    // Bind the borrow to a named local so `rc` outlives it — the
+    // `if let` temporary would otherwise drop `rc` at the end of the
+    // condition expression.
+    let borrow = rc.try_borrow_mut();
+    if let Ok(mut b) = borrow {
+        f(&mut b);
     }
 }
 
@@ -3065,6 +3117,40 @@ impl AndroidBackend {
         runtime_shared::primitives::scroll_view::ScrollViewHandle::new(
             Rc::new(node.clone()),
             &ANDROID_SCROLL_VIEW_OPS,
+        )
+    }
+
+    pub(crate) fn create_virtual_grid_impl(
+        &mut self,
+        callbacks: runtime_shared::primitives::virtual_grid::GridCallbacks<GlobalRef>,
+        overscan: f32,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> GlobalRef {
+        // Split-borrow: `create` needs `&self` for the context and
+        // `&mut` the registry, so the registry is taken out and put
+        // back rather than borrowed through `self` twice.
+        let mut registry = std::mem::take(&mut self.virtual_grid_registry);
+        let node = primitives::virtual_grid::create(self, &mut registry, callbacks, overscan);
+        self.virtual_grid_registry = registry;
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::List));
+        node
+    }
+
+    pub(crate) fn virtual_grid_data_changed_impl(&mut self, node: &GlobalRef) {
+        primitives::virtual_grid::data_changed(self, node)
+    }
+
+    pub(crate) fn release_virtual_grid_impl(&mut self, node: &GlobalRef) {
+        primitives::virtual_grid::release(self, node)
+    }
+
+    pub(crate) fn make_virtual_grid_handle_impl(
+        &self,
+        node: &GlobalRef,
+    ) -> runtime_shared::primitives::virtual_grid::VirtualGridHandle {
+        runtime_shared::primitives::virtual_grid::VirtualGridHandle::new(
+            Rc::new(node.clone()),
+            &ANDROID_VIRTUAL_GRID_OPS,
         )
     }
 

@@ -925,6 +925,10 @@ pub use primitives::link::{external_link, link};
 // runtime-core type; `Screen` is the new-core carrier (scene `Element`
 // + opaque options) at the same name.
 pub use primitives::navigator::{Route, RouteParams, Screen};
+// Screen state ⇄ query params: `screen_state::<S>()` is what a route
+// builder calls to seed its signals, and it must resolve at the same
+// root path authors already import `Route` from.
+pub use primitives::navigator::{screen_query, screen_state, QueryParams, ScreenState};
 pub use primitives::overlay::{anchored_overlay, overlay};
 pub use primitives::presence::presence;
 pub use primitives::scroll_view::scroll_view;
@@ -2394,6 +2398,22 @@ pub mod primitives {
         glue_wrapper_common!(GlueFlatList, test_id_ignored);
     }
 
+    /// `virtual_grid` — the two-axis virtualized grid.
+    ///
+    /// Unlike [`flat_list`](super::flat_list), there is no typed
+    /// `Signal<Vec<T>>` wrapper: a grid's data is two-dimensional and
+    /// the shapes authors actually have (a `Vec<Vec<T>>`, a
+    /// `HashMap<(usize, usize), T>`, a sparse fetch keyed by day) don't
+    /// reduce to one container. The closure form takes whatever the app
+    /// already has, so the wrapper would only ever be a lossy special
+    /// case of it.
+    pub mod virtual_grid {
+        pub use crate::builders::{virtual_grid, VirtualGridBuilder};
+        pub use runtime_shared::primitives::virtual_grid::{
+            CellKey, GridMetrics, GridWindow, VirtualGridHandle,
+        };
+    }
+
     /// Mirror of `runtime_shared::primitives::portal` (data types; the
     /// overlay/anchored_overlay COMPOSITIONS live in
     /// [`overlay`](super::primitives::overlay), same as the old split).
@@ -2421,7 +2441,8 @@ pub mod primitives {
     pub mod navigator {
         pub use crate::prims::{Screen, ScreenChrome};
         pub use runtime_shared::primitives::navigator::{
-            HeaderButton, Route, RouteParams, StackHeaderState,
+            screen_query, screen_state, split_query, with_query, HeaderButton, QueryParams, Route,
+            RouteParams, ScreenState, StackHeaderState,
         };
     }
 

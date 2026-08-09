@@ -235,6 +235,7 @@ impl caps::ActivityIndicatorOps for RecordingBackend {}
 impl caps::ScrollOps for RecordingBackend {}
 impl caps::SafeAreaOps for RecordingBackend {}
 impl caps::VirtualizerOps for RecordingBackend {}
+impl caps::GridOps for RecordingBackend {}
 impl caps::PortalOps for RecordingBackend {}
 impl caps::PresenceOps for RecordingBackend {}
 impl caps::NavigatorOps for RecordingBackend {}

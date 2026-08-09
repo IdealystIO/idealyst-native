@@ -52,6 +52,7 @@ fn graphics_and_scroll_seam<H>(_registry: &mut Registry<H>)
 where
     H: runtime_vocabulary::caps::GraphicsOps
         + runtime_vocabulary::caps::VirtualizerOps
+        + runtime_vocabulary::caps::GridOps
         + runtime_vocabulary::caps::ScrollOps
         + 'static,
 {

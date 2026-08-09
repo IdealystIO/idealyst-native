@@ -101,3 +101,49 @@ pub trait VirtualizerOps: ExternalOps {
         primitives::virtualizer::VirtualizerHandle::new(Rc::new(()), &noop::NoopVirtualizerOps)
     }
 }
+
+/// The `virtual_grid` primitive — backend-owned windowed rendering
+/// over a TWO-axis grid. Serves `handlers/virtual_grid.rs`.
+///
+/// Separate from [`VirtualizerOps`] rather than an extra method on it:
+/// a backend can have a real 1-D engine (a flow-layout collection
+/// view) and no 2-D engine at all, and the split lets it say so by
+/// simply not overriding these. Every method defaults, so an existing
+/// backend keeps compiling untouched and reports the grid as an
+/// unsupported primitive until it opts in.
+pub trait GridOps: ExternalOps {
+    /// Create a two-axis virtualized grid. The backend owns the
+    /// visible-window math — via `runtime_shared::primitives::
+    /// virtual_grid::GridMetrics`, which is shared precisely so the
+    /// arithmetic doesn't get re-derived per backend — and calls the
+    /// bundle to mount/release cells.
+    #[allow(unused_variables)]
+    fn create_virtual_grid(
+        &mut self,
+        callbacks: primitives::virtual_grid::GridCallbacks<Self::Node>,
+        overscan: f32,
+        a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.missing_primitive_placeholder(
+            "virtual_grid (this backend has no two-axis grid engine)",
+        )
+    }
+
+    /// Counts or sizes changed: rebuild metrics and re-diff.
+    #[allow(unused_variables)]
+    fn virtual_grid_data_changed(&mut self, node: &Self::Node) {}
+
+    /// Tear down backend-side state (listeners, closure handles) so
+    /// queued platform events can't call into freed per-cell scopes.
+    #[allow(unused_variables)]
+    fn release_virtual_grid(&mut self, node: &Self::Node) {}
+
+    /// Imperative-ref handle for a grid. Default: no-op.
+    #[allow(unused_variables)]
+    fn make_virtual_grid_handle(
+        &self,
+        node: &Self::Node,
+    ) -> primitives::virtual_grid::VirtualGridHandle {
+        primitives::virtual_grid::VirtualGridHandle::new(Rc::new(()), &noop::NoopVirtualGridOps)
+    }
+}

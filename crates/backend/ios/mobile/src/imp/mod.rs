@@ -14,7 +14,8 @@ pub(crate) mod sticky;
 pub(crate) mod styled_text;
 pub(crate) mod text_inset;
 pub(crate) mod touch;
-pub(crate) mod virtualizer;
+pub(crate) mod virtual_grid;
+mod virtualizer;
 
 /// Platform log with format. Forwards to `backend_ios_core::ios_log`
 /// which wraps NSLog.
@@ -232,6 +233,8 @@ pub struct IosBackend {
     /// each pending entry is promoted to the live registry.
     pub(crate) pending_sticky:
         std::collections::HashMap<usize, runtime_shared::sticky::StickyInsets>,
+    /// `virtual_grid` instances, keyed by their scroller's pointer.
+    pub(crate) virtual_grid_registry: virtual_grid::GridRegistry,
     /// Content-view pointers of "detached window roots" — views that
     /// live in their OWN `UIWindow` (the `screen_recorder` private
     /// layer's ReplayKit-excluded overlay) rather than in the host's
@@ -568,6 +571,7 @@ impl IosBackend {
             collection_views: std::collections::HashSet::new(),
             sticky_registry: HashMap::new(),
             pending_sticky: HashMap::new(),
+            virtual_grid_registry: HashMap::new(),
             detached_window_roots: HashMap::new(),
         };
         backend
@@ -3770,6 +3774,43 @@ impl IosBackend {
         )
     }
 
+    pub(crate) fn create_virtual_grid_impl(
+        &mut self,
+        callbacks: runtime_shared::primitives::virtual_grid::GridCallbacks<IosNode>,
+        overscan: f32,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> IosNode {
+        let view = virtual_grid::create(
+            self.mtm,
+            &mut self.virtual_grid_registry,
+            callbacks,
+            overscan,
+        );
+        // Taffy gives the scroller its OUTER frame; cell frames are
+        // owned by the grid engine (content space), so cells are
+        // deliberately not Taffy nodes — same split the virtualizer
+        // uses for its collection-view cells.
+        let _ = self.layout_for_view(&view);
+        let node = IosNode::View(view);
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::List));
+        node
+    }
+
+    pub(crate) fn virtual_grid_data_changed_impl(&mut self, node: &IosNode) {
+        virtual_grid::data_changed(self, node)
+    }
+
+    pub(crate) fn release_virtual_grid_impl(&mut self, node: &IosNode) {
+        virtual_grid::release(self, node)
+    }
+
+    pub(crate) fn make_virtual_grid_handle_impl(
+        &self,
+        node: &IosNode,
+    ) -> runtime_shared::primitives::virtual_grid::VirtualGridHandle {
+        virtual_grid::make_handle(node)
+    }
+
     pub(crate) fn make_virtualizer_handle_impl(
         &self,
         node: &IosNode,
@@ -4222,6 +4263,12 @@ impl IosBackend {
                 &self.view_to_layout,
             );
         }
+        // Re-window every `virtual_grid` now that Taffy has sized its
+        // scroller. This is where a grid learns its viewport for the
+        // FIRST time — `create_virtual_grid` runs before layout, so
+        // without this pass a freshly-mounted grid would sit empty
+        // until the user happened to scroll it.
+        virtual_grid::sync_all(self);
         // Make sure the scroll-content sync timer drops before we
         // dump — without this the timer scope would still hold the
         // duration when `take_and_dump` runs and the value would

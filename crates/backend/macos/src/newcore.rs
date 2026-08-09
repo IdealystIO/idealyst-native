@@ -1051,6 +1051,73 @@ impl caps::ScrollOps for MacosBackend {
 impl caps::SafeAreaOps for MacosBackend {
 }
 
+impl caps::GridOps for MacosBackend {
+    fn create_virtual_grid(
+        &mut self,
+        callbacks: primitives::virtual_grid::GridCallbacks<Self::Node>,
+        overscan: f32,
+        a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        // Dispatch-site glue, same shape as `create_virtualizer`:
+        // mount/release run WORLD-ENTERED (they realize / drop
+        // scopes), then flush.
+        let primitives::virtual_grid::GridCallbacks {
+            col_count,
+            row_count,
+            col_width,
+            row_height,
+            cell_key,
+            mount_cell,
+            release_cell,
+            on_scroll,
+        } = callbacks;
+        let callbacks = primitives::virtual_grid::GridCallbacks {
+            col_count,
+            row_count,
+            col_width,
+            row_height,
+            cell_key,
+            mount_cell: {
+                let f = mount_cell;
+                Rc::new(move |c, r| {
+                    let mounted = enter_mounted_world(|| f(c, r));
+                    schedule_flush();
+                    mounted
+                })
+            },
+            release_cell: {
+                let f = release_cell;
+                Rc::new(move |scope_id| {
+                    enter_mounted_world(|| f(scope_id));
+                    schedule_flush();
+                })
+            },
+            on_scroll: on_scroll.map(|f| -> Rc<dyn Fn(f32, f32)> {
+                Rc::new(move |x, y| {
+                    f(x, y);
+                    schedule_flush();
+                })
+            }),
+        };
+        MacosBackend::create_virtual_grid_impl(self, callbacks, overscan, a11y)
+    }
+
+    fn virtual_grid_data_changed(&mut self, node: &Self::Node) {
+        MacosBackend::virtual_grid_data_changed_impl(self, node)
+    }
+
+    fn release_virtual_grid(&mut self, node: &Self::Node) {
+        MacosBackend::release_virtual_grid_impl(self, node)
+    }
+
+    fn make_virtual_grid_handle(
+        &self,
+        node: &Self::Node,
+    ) -> primitives::virtual_grid::VirtualGridHandle {
+        MacosBackend::make_virtual_grid_handle_impl(self, node)
+    }
+}
+
 impl caps::VirtualizerOps for MacosBackend {
     fn create_virtualizer(
         &mut self,

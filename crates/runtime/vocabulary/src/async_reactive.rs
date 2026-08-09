@@ -23,11 +23,17 @@
 //! - **Lifetime = the registering scope.** Inside a component build the
 //!   ambient collector (`component_scope` / boot `collect_owned`) owns
 //!   the slots — the resource dies when the subtree unrealizes, the old
-//!   "active scope adopts the effect" contract. Inside an effect run
-//!   (`runtime_world::in_effect()`) the slots are collected into a
-//!   private `Owned` dropped by that effect's `on_cleanup` — the old
-//!   "disposed on the surrounding effect's re-run" contract (the
-//!   `scoped_scheduling` anchoring precedent). With no collector the
+//!   "active scope adopts the effect" contract. That holds even when a
+//!   driver effect is what triggered the build: a build runs
+//!   `runtime_world::unanchored`, so a resource created by a navigator
+//!   screen's body belongs to the screen, not to the navigator's command
+//!   effect (which would have freed its slots on the next navigation and
+//!   left the still-mounted screen writing through stale handles).
+//!   Inside an effect BODY (`runtime_world::in_effect()`) the slots are
+//!   collected into a private `Owned` dropped by that effect's
+//!   `on_cleanup` — the old "disposed on the surrounding effect's
+//!   re-run" contract (the `scoped_scheduling` anchoring precedent).
+//!   With no collector the
 //!   slots are world-root-owned: they persist for the world's lifetime,
 //!   the closest analogue of the old `persist()`-outside-a-scope.
 //! - **Async completion is event-boundary work.** The spawned future's

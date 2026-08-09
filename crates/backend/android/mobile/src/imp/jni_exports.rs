@@ -794,6 +794,51 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustListAdapter_nativeSet
     let _ = with_callbacks(ptr, |cbs| (cbs.set_measured_size)(scope_id as u64, size));
 }
 
+// ---------------------------------------------------------------------------
+// RustVirtualGrid (two-axis virtual_grid)
+// ---------------------------------------------------------------------------
+//
+// Both exports take the grid's REGISTRY KEY, not a raw pointer: a
+// stale callback after teardown then looks up a missing entry and
+// no-ops, where a raw pointer would be a use-after-free.
+
+/// Kotlin reports a scroll (drag, fling, or programmatic). Rust
+/// re-windows and forwards the author's `on_scroll`.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustVirtualGrid_nativeOnScroll(
+    _env: JNIEnv,
+    _this: JObject,
+    ptr: jlong,
+    x: f32,
+    y: f32,
+) {
+    crate::imp::with_backend_mut(|b| {
+        crate::imp::primitives::virtual_grid::on_scroll(b, ptr as usize, x, y)
+    });
+}
+
+/// Kotlin reports a new viewport (first layout, rotation, resize).
+/// This is where a grid learns its viewport for the FIRST time —
+/// `create_virtual_grid` runs before layout, so without it a freshly
+/// mounted grid would sit empty until the user scrolled.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustVirtualGrid_nativeViewportChanged(
+    _env: JNIEnv,
+    _this: JObject,
+    ptr: jlong,
+    width_px: jint,
+    height_px: jint,
+) {
+    crate::imp::with_backend_mut(|b| {
+        crate::imp::primitives::virtual_grid::viewport_changed(
+            b,
+            ptr as usize,
+            width_px,
+            height_px,
+        )
+    });
+}
+
 /// Forward a `RecyclerView` scroll to the author's `on_scroll`.
 ///
 /// Note the class name: this export belongs to `RustScrollListener`,

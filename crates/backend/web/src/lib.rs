@@ -395,6 +395,7 @@ pub struct WebBackend {
     /// creation injects `runtime/js/virtualizer.js` into a
     /// `<script>` tag in the document head.
     pub(crate) virtualizer_shim_injected: bool,
+    pub(crate) virtual_grid_shim_injected: bool,
     /// Has the local-render batch executor (`runtime/js/batch.js`)
     /// been injected? First batched `Element::Repeat` triggers
     /// injection, subsequent calls reuse the cached
@@ -509,6 +510,7 @@ pub struct WebBackend {
     /// freed-Signal arena slot after the surrounding scope has
     /// dropped.
     pub(crate) virtualizer_instances: FxHashMap<u32, primitives::virtualizer::VirtualizerInstance>,
+    pub(crate) virtual_grid_instances: FxHashMap<u32, primitives::virtual_grid::VirtualGridInstance>,
     /// Monotonic id counter for virtualizer containers, written as
     /// `data-virtualizer-id` on the container `<div>`. Same trick as
     /// `data-graphics-id`: lets `release_virtualizer` look up the
@@ -517,6 +519,7 @@ pub struct WebBackend {
     /// hook runs (style effects drop before the virtualizer cleanup
     /// effect within a single `Scope::drop` batch).
     pub(crate) next_virtualizer_id: u32,
+    pub(crate) next_virtual_grid_id: u32,
     /// Per-Graphics-canvas runtime state — wgpu device, user closures,
     /// pending-paint flag, etc. Keyed by node id so `make_handle` can
     /// look up the matching instance after `create`. The `Rc` is the
@@ -1183,6 +1186,7 @@ impl WebBackend {
             inline_props: FxHashMap::default(),
             spinner_keyframes_injected: false,
             virtualizer_shim_injected: false,
+            virtual_grid_shim_injected: false,
             batch_shim_injected: false,
             batch_fn: None,
             text_batch_shim_injected: false,
@@ -1216,7 +1220,9 @@ impl WebBackend {
             ),
             next_class_binding_id: 0,
             virtualizer_instances: FxHashMap::default(),
+            virtual_grid_instances: FxHashMap::default(),
             next_virtualizer_id: 0,
+            next_virtual_grid_id: 0,
             graphics_instances: FxHashMap::default(),
             next_graphics_id: 0,
             style_element: None,

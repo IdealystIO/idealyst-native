@@ -71,7 +71,7 @@ use std::rc::Rc;
 
 use host_mock::Harness;
 use runtime_shared::primitives::navigator::{
-    peek_initial_path, set_initial_path, NavCommand, Route, RouteParams,
+    peek_initial_path, set_initial_path, NavCommand, QueryParams, Route, RouteParams,
 };
 use runtime_shared::{
     Color, Length, StyleApplication, StyleRules, StyleSheet, TokenEntry, TokenValue, Tokenized,
@@ -1465,7 +1465,7 @@ fn port_nested_navigator_url_sync_registers_composed_base_and_resolver() {
         name: "ndetail",
         url: "/detail".to_string(),
         params: Box::new(()),
-        state: None,
+        query: QueryParams::new(),
     });
     h.flush();
     assert!(

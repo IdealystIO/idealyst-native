@@ -42,7 +42,9 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use runtime_shared::primitives::navigator::NavCommand;
+use runtime_shared::primitives::navigator::{
+    split_query, with_query, NavCommand, QueryParams,
+};
 use runtime_vocabulary::handlers::nav_url_sync::{
     CommittedKind, NavSyncKind, NavSyncRegistration, UrlSyncService,
 };
@@ -89,12 +91,25 @@ pub(crate) fn install_history_port(port: HistoryPort) {
     HISTORY_PORT.with(|p| *p.borrow_mut() = Some(port));
 }
 
+/// The current platform URL, path AND query.
+///
+/// The query is included because it carries the screen's navigation state
+/// (see `ScreenState`): reading `location.pathname()` alone made a cold
+/// load of `/items/5?tab=notes` silently drop `tab`, so a shared or
+/// reloaded link rebuilt the screen without the state it encoded. Routing
+/// still runs on the path — every consumer splits with `split_query`.
 fn pathname() -> String {
     if let Some(p) = HISTORY_PORT.with(|p| p.borrow().as_ref().map(|p| (p.current_path)())) {
         return p;
     }
     web_sys::window()
-        .and_then(|w| w.location().pathname().ok())
+        .and_then(|w| {
+            let loc = w.location();
+            let path = loc.pathname().ok()?;
+            // `search` includes its own leading `?` and is `""` when absent.
+            let search = loc.search().unwrap_or_default();
+            Some(format!("{path}{search}"))
+        })
         .unwrap_or_else(|| "/".to_string())
 }
 
@@ -139,6 +154,9 @@ fn history_back() {
 /// forward navigation covered, plus the outlet scroll at that moment.
 struct HistoryEntry {
     owned_url: String,
+    /// The query that entry carried, restored alongside the path when a
+    /// browser Back lands here.
+    query: QueryParams,
     scroll: (f32, f32),
 }
 
@@ -151,8 +169,15 @@ struct NavEntry {
     /// The outlet as a DOM element, when the registration's type-erased
     /// node downcast (foreign node types → `None`, scroll is a no-op).
     outlet: Option<web_sys::Element>,
-    /// The slice of the platform URL this navigator currently owns.
+    /// The slice of the platform URL this navigator currently owns. PATH
+    /// only — this is hierarchy math (which navigator owns which segments),
+    /// and a query string in it would break the prefix/suffix arithmetic
+    /// against the resolver's remainder.
     active_owned: RefCell<String>,
+    /// The query currently in the address bar for this navigator's slice,
+    /// tracked separately from `active_owned` so a navigation that changes
+    /// ONLY the query is still recognized as a real navigation.
+    active_query: RefCell<QueryParams>,
     history: RefCell<Vec<HistoryEntry>>,
 }
 
@@ -265,6 +290,7 @@ impl UrlSyncService for WebUrlSync {
             dispatch: reg.dispatch,
             outlet,
             active_owned: RefCell::new(String::new()),
+            active_query: RefCell::new(split_query(&reg.active_path).1),
             history: RefCell::new(Vec::new()),
         });
         *entry.active_owned.borrow_mut() = entry.owned_of(&reg.active_path);
@@ -289,6 +315,9 @@ impl UrlSyncService for WebUrlSync {
                 push_state(&full);
                 entry.history.borrow_mut().push(HistoryEntry {
                     owned_url: entry.owned_of(&reg.initial_full_path),
+                    // The synthesized index entry carries the configured
+                    // initial path's own query, not the deep link's.
+                    query: split_query(&reg.initial_full_path).1,
                     scroll: (0.0, 0.0),
                 });
             } else {
@@ -311,34 +340,45 @@ impl UrlSyncService for WebUrlSync {
         }
         let Some(entry) = entry_by_id(id) else { return false };
         match cmd {
-            NavCommand::Push { url, .. } | NavCommand::Select { url, .. } => {
+            NavCommand::Push { url, query, .. } | NavCommand::Select { url, query, .. } => {
                 // Re-selecting the already-active URL is a handler no-op
                 // (the swap ignores it) — don't push a duplicate history
                 // entry. Pushing the same URL onto a STACK is legitimate
                 // depth growth, so Push is exempted.
+                //
+                // The query participates in the comparison: selecting the
+                // same route with different state IS a navigation (the
+                // screen re-reads its state without remounting), and it
+                // deserves its own history entry so Back undoes it.
                 let owned = entry.owned_of(url);
                 if matches!(cmd, NavCommand::Select { .. })
                     && owned == *entry.active_owned.borrow()
+                    && *query == *entry.active_query.borrow()
                 {
                     return false;
                 }
                 let covered = entry.active_owned.borrow().clone();
+                let covered_query = entry.active_query.borrow().clone();
                 let scroll = entry.current_scroll();
-                entry
-                    .history
-                    .borrow_mut()
-                    .push(HistoryEntry { owned_url: covered, scroll });
+                entry.history.borrow_mut().push(HistoryEntry {
+                    owned_url: covered,
+                    query: covered_query,
+                    scroll,
+                });
                 *entry.active_owned.borrow_mut() = owned;
-                push_state(url);
+                *entry.active_query.borrow_mut() = query.clone();
+                push_state(&with_query(url, query));
             }
-            NavCommand::Replace { url, .. } => {
+            NavCommand::Replace { url, query, .. } => {
                 *entry.active_owned.borrow_mut() = entry.owned_of(url);
-                replace_state(url);
+                *entry.active_query.borrow_mut() = query.clone();
+                replace_state(&with_query(url, query));
             }
-            NavCommand::Reset { url, .. } => {
+            NavCommand::Reset { url, query, .. } => {
                 entry.history.borrow_mut().clear();
                 *entry.active_owned.borrow_mut() = entry.owned_of(url);
-                replace_state(url);
+                *entry.active_query.borrow_mut() = query.clone();
+                replace_state(&with_query(url, query));
             }
             NavCommand::Pop => {
                 // The handler commits the pop on the flush; we move the
@@ -402,6 +442,10 @@ pub(crate) fn handle_popstate(new_path: &str) {
         return;
     }
 
+    // The browser hands us path+query; routing runs on the path half and
+    // the query half becomes the restored screen state.
+    let (new_path, new_query) = split_query(new_path);
+
     let entries: Vec<Rc<NavEntry>> = REGISTRY.with(|r| r.borrow().iter().cloned().collect());
     let mut dispatched = false;
 
@@ -411,10 +455,15 @@ pub(crate) fn handle_popstate(new_path: &str) {
             continue;
         };
         let owned = entry.owned_of(new_path);
-        // Our slice is unchanged → the change belongs to a NESTED
-        // navigator; touching our screen would tear its subtree down
-        // mid-transition (the legacy teardown race). Skip.
-        if owned == *entry.active_owned.borrow() {
+        // Our slice is unchanged AND the state is unchanged → the change
+        // belongs to a NESTED navigator; touching our screen would tear its
+        // subtree down mid-transition (the legacy teardown race). Skip.
+        //
+        // The query is part of the check: a Back that only alters the query
+        // is a real change to THIS navigator's screen state, and skipping it
+        // would leave the screen showing state the address bar disagrees
+        // with.
+        if owned == *entry.active_owned.borrow() && new_query == *entry.active_query.borrow() {
             continue;
         }
 
@@ -439,7 +488,7 @@ pub(crate) fn handle_popstate(new_path: &str) {
                     name,
                     url: relative,
                     params,
-                    state: None,
+                    query: new_query.clone(),
                 }),
                 NavSyncKind::Stack => {
                     let pops = entry.history.borrow().len() - idx;
@@ -459,6 +508,7 @@ pub(crate) fn handle_popstate(new_path: &str) {
                 landed
             };
             *entry.active_owned.borrow_mut() = owned;
+            *entry.active_query.borrow_mut() = new_query.clone();
             if let Some((x, y)) = landed {
                 entry.set_scroll(x, y);
             }
@@ -466,30 +516,33 @@ pub(crate) fn handle_popstate(new_path: &str) {
             // Forward (or unknown) navigation: the verb matches the
             // navigator kind (`Select` for swap, `Push` for stacks).
             let covered = entry.active_owned.borrow().clone();
+            let covered_query = entry.active_query.borrow().clone();
             let scroll = entry.current_scroll();
             let cmd = match entry.kind {
                 NavSyncKind::Swap => NavCommand::Select {
                     name,
                     url: relative,
                     params,
-                    state: None,
+                    query: new_query.clone(),
                 },
                 NavSyncKind::Stack => NavCommand::Push {
                     name,
                     url: relative,
                     params,
-                    state: None,
+                    query: new_query.clone(),
                 },
             };
             RECONCILING.with(|c| c.set(true));
             (entry.dispatch)(cmd);
             RECONCILING.with(|c| c.set(false));
             dispatched = true;
-            entry
-                .history
-                .borrow_mut()
-                .push(HistoryEntry { owned_url: covered, scroll });
+            entry.history.borrow_mut().push(HistoryEntry {
+                owned_url: covered,
+                query: covered_query,
+                scroll,
+            });
             *entry.active_owned.borrow_mut() = owned;
+            *entry.active_query.borrow_mut() = new_query.clone();
             entry.set_scroll(0.0, 0.0);
         }
     }
@@ -838,6 +891,107 @@ mod tests {
             sim.borrow().log
         );
         stop();
+    }
+
+    // -----------------------------------------------------------------
+    // Screen state ⇄ query params (the URL half of the `ScreenState`
+    // contract; the framework half lives in
+    // `runtime-vocabulary/tests/navigator_screen_state.rs`).
+    // -----------------------------------------------------------------
+
+    /// A navigation carrying state writes the query to the address bar.
+    ///
+    /// `regression`: `push_state` used to receive the command's `url`,
+    /// which is path-only — so the state a navigation carried never
+    /// reached the URL, and reloading or sharing the link lost it. Worse,
+    /// the write actively ERASED any query the user had arrived with.
+    #[wasm_bindgen_test]
+    fn regression_navigation_state_is_written_to_the_url() {
+        let (mount, sim) = setup_sim("/");
+        let nav = boot_swap_app();
+
+        nav.select_with_state(&SETTINGS, (), QueryParams::new().with("tab", "audio"));
+        crate::newcore::flush_sync();
+
+        assert!(text_of(&mount).contains("SETTINGS CONTENT"));
+        assert_eq!(
+            sim.borrow().current(),
+            "/settings?tab=audio",
+            "the screen's state must reach the address bar, log: {:?}",
+            sim.borrow().log
+        );
+        stop();
+    }
+
+    /// An empty state writes NO `?` — two equivalent URLs must compare
+    /// equal in history, and a bare trailing `?` would break that.
+    #[wasm_bindgen_test]
+    fn stateless_navigation_writes_a_bare_path() {
+        let (_mount, sim) = setup_sim("/");
+        let nav = boot_swap_app();
+        nav.select(&SETTINGS, ());
+        crate::newcore::flush_sync();
+        assert_eq!(sim.borrow().current(), "/settings");
+        stop();
+    }
+
+    /// Changing ONLY the query is a real navigation: it earns a history
+    /// entry, and Back returns to the previous state.
+    ///
+    /// `regression`: the swap's "already-active URL" dedupe compared paths
+    /// alone, so a filter change was mistaken for a no-op — the address bar
+    /// silently disagreed with the screen.
+    #[wasm_bindgen_test]
+    fn regression_query_only_change_is_a_navigation_not_a_noop() {
+        let (_mount, sim) = setup_sim("/");
+        let nav = boot_swap_app();
+
+        nav.select_with_state(&SETTINGS, (), QueryParams::new().with("tab", "audio"));
+        crate::newcore::flush_sync();
+        nav.select_with_state(&SETTINGS, (), QueryParams::new().with("tab", "video"));
+        crate::newcore::flush_sync();
+        assert_eq!(
+            sim.borrow().current(),
+            "/settings?tab=video",
+            "the second state change moved the URL, log: {:?}",
+            sim.borrow().log
+        );
+
+        browser_back(&sim);
+        assert_eq!(
+            sim.borrow().current(),
+            "/settings?tab=audio",
+            "Back undoes a state change, log: {:?}",
+            sim.borrow().log
+        );
+
+        // Re-selecting the SAME path with the SAME state is still a no-op.
+        let before = sim.borrow().log.len();
+        nav.select_with_state(&SETTINGS, (), QueryParams::new().with("tab", "audio"));
+        crate::newcore::flush_sync();
+        assert_eq!(
+            sim.borrow().log.len(),
+            before,
+            "identical state must not push a duplicate entry, log: {:?}",
+            sim.borrow().log
+        );
+        stop();
+    }
+
+    /// `pathname()` is what a cold boot resolves its initial screen from,
+    /// so it must report the query the user arrived with.
+    ///
+    /// `regression`: it read `location.pathname()`, which excludes the
+    /// search string — a deep link's state was invisible to the app.
+    #[wasm_bindgen_test]
+    fn regression_pathname_reports_the_query() {
+        let (_mount, _sim) = setup_sim("/items/5?tab=notes&page=3");
+        assert_eq!(pathname(), "/items/5?tab=notes&page=3");
+        let current = pathname();
+        let (path, query) = split_query(&current);
+        assert_eq!(path, "/items/5", "routing sees the path only");
+        assert_eq!(query.get("tab"), Some("notes"));
+        assert_eq!(query.get_as::<u32>("page"), Some(3));
     }
 
     /// Browser Forward after Back re-selects the forward route.

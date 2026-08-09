@@ -23,6 +23,7 @@ pub(crate) mod portal;
 pub(crate) mod presence;
 pub(crate) mod screenshot;
 pub(crate) mod sticky;
+pub(crate) mod virtual_grid;
 pub(crate) mod styled_text;
 pub(crate) mod text_style;
 pub(crate) mod transitions;
@@ -135,6 +136,8 @@ pub struct MacosBackend {
     /// value = the per-axis pin thresholds. Mirrors iOS
     /// `pending_sticky`.
     pub(crate) pending_sticky: HashMap<usize, runtime_shared::sticky::StickyInsets>,
+    /// `virtual_grid` instances, keyed by their scroller's pointer.
+    pub(crate) virtual_grid_registry: virtual_grid::GridRegistry,
     /// Per-view cached gradient state. Keyed by view pointer; holds
     /// the gradient `CAGradientLayer` retained handle plus the
     /// current sRGB stop colors so `AnimProp::GradientStopColor(idx)`
@@ -583,6 +586,7 @@ impl MacosBackend {
             animated_states: HashMap::new(),
             sticky_registry: HashMap::new(),
             pending_sticky: HashMap::new(),
+            virtual_grid_registry: HashMap::new(),
             gradient_states: HashMap::new(),
             styled_texts: HashMap::new(),
             external_content_measures: HashMap::new(),
@@ -2689,6 +2693,12 @@ impl MacosBackend {
             &self.view_to_layout,
         );
         sticky::tick_all(self);
+        // Re-window every `virtual_grid` now that Taffy has sized its
+        // scroller. This is where a grid learns its viewport for the
+        // FIRST time — `create_virtual_grid` runs before layout, so
+        // without this pass a freshly-mounted grid sits empty until
+        // the user happens to scroll it.
+        virtual_grid::sync_all(self);
     }
 
     /// The host window's current content rect in SCREEN coordinates, or `None`
@@ -5232,6 +5242,42 @@ impl MacosBackend {
 
     pub(crate) fn make_pressable_handle_impl(&self, node: &MacosNode) -> runtime_shared::PressableHandle {
         handles::make_pressable_handle(node)
+    }
+
+    pub(crate) fn create_virtual_grid_impl(
+        &mut self,
+        callbacks: runtime_shared::primitives::virtual_grid::GridCallbacks<MacosNode>,
+        overscan: f32,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
+        let view = virtual_grid::create(
+            self.mtm,
+            &mut self.virtual_grid_registry,
+            callbacks,
+            overscan,
+        );
+        // Taffy owns the scroller's OUTER frame; cell frames live in
+        // content space and are the grid engine's, so cells are
+        // deliberately not Taffy nodes.
+        let _ = self.layout_for_view(&view);
+        let node = MacosNode::View(view);
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::List));
+        node
+    }
+
+    pub(crate) fn virtual_grid_data_changed_impl(&mut self, node: &MacosNode) {
+        virtual_grid::data_changed(self, node)
+    }
+
+    pub(crate) fn release_virtual_grid_impl(&mut self, node: &MacosNode) {
+        virtual_grid::release(self, node)
+    }
+
+    pub(crate) fn make_virtual_grid_handle_impl(
+        &self,
+        node: &MacosNode,
+    ) -> runtime_shared::primitives::virtual_grid::VirtualGridHandle {
+        virtual_grid::make_handle(node)
     }
 
     pub(crate) fn make_scroll_view_handle_impl(

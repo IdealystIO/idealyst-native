@@ -37,7 +37,7 @@ pub use external::{DocumentOps, ExternalOps};
 pub use input::{InputOps, PressableOps, ViewOps};
 pub use media::{IconOps, ImageOps, LinkOps};
 pub use nav_overlay::{GraphicsOps, NavigatorOps, PortalOps, PresenceOps};
-pub use scroll::{SafeAreaOps, ScrollOps, VirtualizerOps};
+pub use scroll::{GridOps, SafeAreaOps, ScrollOps, VirtualizerOps};
 pub use style::{AssetOps, StyleOps};
 pub use text::{ButtonOps, TextOps};
 pub use widgets::{ActivityIndicatorOps, SliderOps, TextInputOps, ToggleOps};
@@ -65,6 +65,7 @@ pub trait AllCaps:
     + ScrollOps
     + SafeAreaOps
     + VirtualizerOps
+    + GridOps
     + GraphicsOps
     + PortalOps
     + PresenceOps
@@ -99,6 +100,8 @@ impl<T> AllCaps for T where
         + ScrollOps
         + SafeAreaOps
         + VirtualizerOps
+        + GridOps
+    + GridOps
         + GraphicsOps
         + PortalOps
         + PresenceOps

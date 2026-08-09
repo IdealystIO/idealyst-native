@@ -921,6 +921,11 @@ impl caps::ScrollOps for LinuxBackend {
 
 impl caps::SafeAreaOps for LinuxBackend {}
 
+// No two-axis grid engine on this backend yet; every `GridOps`
+// method defaults, so `virtual_grid` reports itself as an
+// unsupported primitive instead of silently rendering nothing.
+impl caps::GridOps for LinuxBackend {}
+
 impl caps::VirtualizerOps for LinuxBackend {
     fn virtualizer_data_changed(&mut self, node: &Self::Node) {
         // Real GTK body; the caps default here is a silent no-op.

@@ -48,6 +48,20 @@ impl WebBackend {
         self.virtualizer_shim_injected = true;
     }
 
+    /// Inject the two-axis grid shim (`window.__idealystVirtualGrid`)
+    /// on first use. Same evaluation strategy and same laziness as
+    /// [`ensure_virtualizer_shim`]: an app that never mounts a
+    /// `virtual_grid` never pays the injection.
+    pub(crate) fn ensure_virtual_grid_shim(&mut self) {
+        if self.virtual_grid_shim_injected {
+            return;
+        }
+        let src = include_str!(concat!(env!("OUT_DIR"), "/js-min/virtual_grid.js"));
+        let f = js_sys::Function::new_no_args(src);
+        let _ = f.call0(&JsValue::NULL);
+        self.virtual_grid_shim_injected = true;
+    }
+
     /// Inject the local-render batch executor (`__idealystExecuteBatch`)
     /// into the document on first use. Same evaluation strategy as
     /// [`ensure_virtualizer_shim`] — bundle the JS via

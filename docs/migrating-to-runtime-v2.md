@@ -614,13 +614,20 @@ BUILT belongs to the component (`on_scope_drop`); one re-acquired on
 every run of an effect belongs to that effect (`on_cleanup`).
 
 There is a third case, and it is the sharp one. `on_scope_drop` defers
-to `on_cleanup` *whenever an effect happens to be running*, so a
-teardown registered from a mount that runs inside a structural driver's
-effect also fires on that driver's next re-run. For a keyed list this is
-wrong: the driver re-runs on every edit to the list, while reconcile
-deliberately PRESERVES the surviving rows — so the teardown fires for a
-row that is still on screen. When the lifetime you mean is the mounted
-node's, not the enclosing run's, use `on_owned_drop`:
+to `on_cleanup` whenever an effect is running — but "running" means
+running its BODY. Building a subtree is not that, even when a driver
+effect is what triggered the build: component bodies and the mount walk
+run with the effect stack suspended (`runtime_world::unanchored`), so a
+teardown registered while a navigator screen or a keyed row is being
+built anchors to that subtree and fires when the subtree goes away.
+Before that was true it anchored to the driver, which is how a swap
+navigator's landing screen leaked its registrations for the navigator's
+whole life (`regression_swap_seated_screen_under_a_reactive_region_fires_its_teardown`)
+and a retained screen lost its own on the next navigation.
+
+What remains is registering from inside a real effect body while meaning
+the subtree's lifetime rather than the run's. That is what `on_owned_drop`
+is for:
 
 ```rust
 // Fires ONLY when the owning scope's `Owned` drops — never on an
@@ -629,9 +636,8 @@ on_owned_drop(move || token.set_dead());
 ```
 
 This is what the backend-seam callback guard
-(`runtime_vocabulary::callback_guard::ScopeAlive`) anchors to. Under
-`on_scope_drop` the first unrelated list edit silently made every live
-row's buttons inert; regression `callbacks_survive_a_keyed_reconcile`.
+(`runtime_vocabulary::callback_guard::ScopeAlive`) anchors to; regression
+`callbacks_survive_a_keyed_reconcile`.
 
 Either shape fixes a real bug class: a cleanup owned by the scope
 cancels its timers when the component unmounts, so detached callbacks

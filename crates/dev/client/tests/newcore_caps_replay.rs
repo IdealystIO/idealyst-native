@@ -149,6 +149,7 @@ impl caps::ActivityIndicatorOps for CapsOnly {}
 impl caps::ScrollOps for CapsOnly {}
 impl caps::SafeAreaOps for CapsOnly {}
 impl caps::VirtualizerOps for CapsOnly {}
+impl caps::GridOps for CapsOnly {}
 impl caps::GraphicsOps for CapsOnly {}
 impl caps::PortalOps for CapsOnly {}
 impl caps::PresenceOps for CapsOnly {}

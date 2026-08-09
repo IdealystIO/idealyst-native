@@ -159,6 +159,8 @@ pub struct Shared {
     pub scroll_handlers: RefCell<Vec<Option<Rc<dyn Fn(f32, f32)>>>>,
     /// Virtualizer callback bundles.
     pub virtualizers: RefCell<Vec<VirtualizerCallbacks<Node>>>,
+    /// `virtual_grid` callback bundles (two-axis).
+    pub virtual_grids: RefCell<Vec<primitives::virtual_grid::GridCallbacks<Node>>>,
     /// Graphics lifecycle closures.
     pub graphics: RefCell<Vec<GraphicsCapture>>,
     /// Portal `on_dismiss` (None when absent).
@@ -226,6 +228,7 @@ impl Default for Shared {
             link_activations: RefCell::new(Vec::new()),
             scroll_handlers: RefCell::new(Vec::new()),
             virtualizers: RefCell::new(Vec::new()),
+            virtual_grids: RefCell::new(Vec::new()),
             graphics: RefCell::new(Vec::new()),
             portal_dismissals: RefCell::new(Vec::new()),
             file_drop_handlers: RefCell::new(Vec::new()),
@@ -869,6 +872,38 @@ impl caps::SafeAreaOps for HostMock {
     // conformance battery pins.
 }
 
+impl caps::GridOps for HostMock {
+    fn create_virtual_grid(
+        &mut self,
+        callbacks: primitives::virtual_grid::GridCallbacks<Node>,
+        overscan: f32,
+        _a11y: &AccessibilityProps,
+    ) -> Node {
+        // Do NOT call callbacks here: the mock is mutably borrowed
+        // during create — same constraint as every real backend.
+        let cols = (callbacks.col_count)();
+        let rows = (callbacks.row_count)();
+        self.s.virtual_grids.borrow_mut().push(callbacks);
+        self.mint(format!(
+            "virtual_grid cols={cols} rows={rows} overscan={overscan}"
+        ))
+    }
+
+    fn virtual_grid_data_changed(&mut self, node: &Node) {
+        self.s.rec(
+            "virtual_grid_data_changed",
+            format!("virtual_grid_data_changed n{node}"),
+        );
+    }
+
+    fn release_virtual_grid(&mut self, node: &Node) {
+        self.s.rec(
+            "release_virtual_grid",
+            format!("release_virtual_grid n{node}"),
+        );
+    }
+}
+
 impl caps::VirtualizerOps for HostMock {
     fn create_virtualizer(
         &mut self,
@@ -1439,6 +1474,24 @@ impl Harness {
     }
 
     /// Shallow clone (all fields `Rc` + one bool) of a captured
+    /// `virtual_grid` callback bundle — clone-by-field, same reason
+    /// as [`Harness::virtualizer`] (the bundle isn't `Clone` because
+    /// its `N` needn't be).
+    pub fn virtual_grid(&self, i: usize) -> primitives::virtual_grid::GridCallbacks<Node> {
+        let cbs = self.shared.virtual_grids.borrow();
+        let v = &cbs[i];
+        primitives::virtual_grid::GridCallbacks {
+            col_count: v.col_count.clone(),
+            row_count: v.row_count.clone(),
+            col_width: v.col_width.clone(),
+            row_height: v.row_height.clone(),
+            cell_key: v.cell_key.clone(),
+            mount_cell: v.mount_cell.clone(),
+            release_cell: v.release_cell.clone(),
+            on_scroll: v.on_scroll.clone(),
+        }
+    }
+
     /// virtualizer callback bundle.
     pub fn virtualizer(&self, i: usize) -> VirtualizerCallbacks<Node> {
         let cbs = self.shared.virtualizers.borrow();

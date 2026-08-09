@@ -255,12 +255,15 @@ fn regression_scroll_toggle_and_input_callbacks_go_inert_after_unmount() {
 ///
 /// A keyed list's structural driver is ONE effect that re-runs on every
 /// edit to the list, while keyed reconcile deliberately preserves the
-/// surviving rows' subtrees. The token therefore cannot be anchored with
-/// `on_scope_drop`: inside an effect that defers to `on_cleanup`, which
-/// fires before the effect's next re-run as well as at teardown, so the
-/// first unrelated edit silently made every live row's buttons inert.
-/// `runtime_world::on_owned_drop` anchors to the row's own `Owned`
-/// instead, which reconcile drops if and only if the row really goes.
+/// surviving rows' subtrees. The token is anchored with
+/// `runtime_world::on_owned_drop`, which binds to the row's own `Owned` —
+/// dropped by reconcile if and only if the row really goes. It was written
+/// that way because `on_scope_drop` used to see the driver effect from
+/// inside a row's mount and defer to `on_cleanup`, so the first unrelated
+/// edit silently made every live row's buttons inert. A row now renders
+/// `unanchored` (no effect visible during a build), so both hooks would
+/// behave here; `on_owned_drop` states the intent without depending on
+/// that.
 ///
 /// Both directions are asserted on purpose — deleting the guard outright
 /// would satisfy the survival half while breaking the inert half.

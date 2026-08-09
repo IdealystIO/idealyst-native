@@ -30,4 +30,5 @@ pub(crate) mod touch;
 pub(crate) mod toggle;
 pub(crate) mod wheel;
 pub(crate) mod view;
+pub(crate) mod virtual_grid;
 pub(crate) mod virtualizer;

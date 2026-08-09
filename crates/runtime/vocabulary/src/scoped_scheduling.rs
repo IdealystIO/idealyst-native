@@ -34,7 +34,13 @@
 //!   running): killed by a dependency-free keepalive effect owned by
 //!   the ambient collector (`component_scope` / the boot's
 //!   `collect_owned`) — dies when the component subtree unrealizes,
-//!   the same idiom as `glue::animation::scope_keepalive`.
+//!   the same idiom as `glue::animation::scope_keepalive`. A build is
+//!   ALWAYS this case, never the one above: component bodies and the
+//!   mount walk run `runtime_world::unanchored`, so a subtree realized
+//!   from inside a driver effect (a navigator screen, a keyed row) does
+//!   not inherit that driver as its cancellation lifetime — its timers
+//!   would otherwise be killed by the driver's next re-run while the
+//!   subtree was still mounted.
 //! - **Inside a deferred body registered here** (a nested
 //!   `raf_loop_scoped` inside a `session::after_ms` callback — the
 //!   welcome app's exact shape): the firing callback re-pushes its
@@ -128,15 +134,18 @@ fn current_anchor() -> Option<Anchor> {
         let guard = KillOnDrop(anchor.clone());
         runtime_world::on_cleanup(move || drop(guard));
         // ALSO die with the enclosing build collector, when there is
-        // one: an effect body may be BUILDING a component subtree (a
-        // navigator's swap effect realizing a screen whose lazy-loading
-        // fallback schedules timers). The subtree can be torn down
-        // WITHOUT the effect ever re-running — the chunk lands, the
-        // fallback's `Realized` (and its signals) drop, the swap effect
-        // lives on — and the pending shot then fired into a freed slot
-        // (the docs route-loader's stale-signal-handle panic). `kill`
-        // is idempotent, so whichever lifetime ends first wins and the
+        // one. A subtree can be torn down WITHOUT the effect that
+        // scheduled the shot ever re-running (a lazy chunk lands, the
+        // fallback's `Realized` and its signals drop, the driver effect
+        // lives on), and the pending shot then fires into a freed slot
+        // — the docs route-loader's stale-signal-handle panic. `kill` is
+        // idempotent, so whichever lifetime ends first wins and the
         // other guard's later drop is a no-op.
+        //
+        // Builds no longer reach this branch at all (they run
+        // `unanchored`, so they take the collector-only case below);
+        // this stays as the correct answer for effect-body code that
+        // creates a collector by hand.
         if runtime_world::in_collector() {
             own_kill_guard_in_collector(&anchor);
         }

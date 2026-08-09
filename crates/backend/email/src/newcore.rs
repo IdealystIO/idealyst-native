@@ -502,6 +502,11 @@ impl caps::ScrollOps for EmailBackend {
 
 impl caps::SafeAreaOps for EmailBackend {}
 
+// No two-axis grid engine on this backend yet; every `GridOps`
+// method defaults, so `virtual_grid` reports itself as an
+// unsupported primitive instead of silently rendering nothing.
+impl caps::GridOps for EmailBackend {}
+
 impl caps::VirtualizerOps for EmailBackend {
     fn create_virtualizer(
         &mut self,
