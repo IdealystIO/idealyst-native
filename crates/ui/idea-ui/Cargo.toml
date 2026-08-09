@@ -28,7 +28,7 @@ robot = ["runtime-core/robot"]
 # The themed `Table` component + its `table` SDK dep (ON by default).
 # The only feature on this crate that still removes linked code: without
 # it the `table` crate never enters the graph.
-table = ["dep:table", "dep:dnd"]
+table = ["dep:table"]
 
 # ---------------------------------------------------------------------------
 # WHY THERE IS NO PER-COMPONENT `prim-*` GATING ANY MORE
@@ -82,7 +82,6 @@ idea-ui-docs-derive = { workspace = true, optional = true }
 # and `toggle` (as `Switch`). Optional so a size-restricted build can
 # drop it (the `table` feature).
 table = { workspace = true, optional = true }
-dnd = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Integration tests that MOUNT a component (not just resolve its

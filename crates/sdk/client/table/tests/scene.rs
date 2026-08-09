@@ -465,51 +465,76 @@ fn register_from_chunk_is_inert_off_web() {
 // scroll-x mode + row proxies
 // ===========================================================================
 
-/// `scroll_x` wraps the native lowering in a HORIZONTAL scroll_view and
-/// floors the author-surface's width at 100% of the scroller — the
-/// "natural column widths, at least the scroller's width" strategy.
-/// Sticky-pinned cells (idea-ui's `pinned` axis) register against this
+/// `scroll_x` lowers to styled surface > HORIZONTAL scroll_view >
+/// width-floored content > grid. The surface stays OUTSIDE the
+/// scroller (its border/radius must not ride along with the scrolled
+/// columns — the "card border clips at the viewport edge" regression),
+/// the scroller is horizontal with content height (`flex_grow: 0` —
+/// the fill-the-parent seed collapsed it inside a content-sized
+/// surface), and the content floors at the scroller's width.
+/// Sticky-pinned cells (idea-ui's `pinned` axis) register against the
 /// scroll view; without it a frozen column has nothing to pin to.
 #[test]
-fn scroll_x_wraps_native_table_in_horizontal_scroller() {
+fn scroll_x_lowers_to_surface_wrapping_horizontal_scroller() {
     use runtime_vocabulary::prims::ScrollViewPrim;
     let t = table(TableProps {
         children: vec![row(2)],
         scroll_x: true,
     })
     .into_element();
-    match &t {
+    // Surface (the author-style target — unstyled here, no style passed).
+    let mut surface_children = match t {
+        Element::Item { data, children } => {
+            assert!(
+                data.downcast_ref::<PrimCell<ViewPrim>>().is_some(),
+                "scroll_x root is the surface view, OUTSIDE the scroller"
+            );
+            children
+        }
+        _ => panic!("scroll_x table must lower to a surface view item"),
+    };
+    assert_eq!(surface_children.len(), 1);
+    // Scroller.
+    let mut scroller_children = match surface_children.pop().expect("len checked") {
         Element::Item { data, children } => {
             let prim = data
                 .downcast_ref::<PrimCell<ScrollViewPrim>>()
-                .expect("scroll_x table lowers to a scroll_view wrapper")
+                .expect("surface wraps the scroll_view")
                 .take();
             assert!(prim.horizontal, "the scroller must be horizontal");
-            assert_eq!(children.len(), 1, "scroller wraps exactly the table surface");
-            // The wrapped surface picked up the min-width floor.
-            let outer = &children[0];
-            match outer {
-                Element::Item { data, .. } => {
-                    let vp = data
-                        .downcast_ref::<PrimCell<ViewPrim>>()
-                        .expect("outer surface is a view")
-                        .take();
-                    let rules = match vp.style {
-                        Some(StyleProp::Static(r)) => r,
-                        other => panic!("floor composes onto the bare outer as Static, got {:?}", other.is_some()),
-                    };
-                    assert!(
-                        matches!(
-                            rules.min_width.as_ref().map(|t| t.resolve()),
-                            Some(glue::Length::Percent(p)) if (p - 100.0).abs() < f32::EPSILON
-                        ),
-                        "outer surface floors at min-width: 100%"
-                    );
-                }
-                _ => panic!("outer surface must be a view item"),
-            }
+            let rules = match prim.style {
+                Some(StyleProp::Static(r)) => r,
+                _ => panic!("scroller carries the static wrapper rules"),
+            };
+            assert!(
+                matches!(rules.flex_grow.as_ref().map(|t| t.resolve()), Some(g) if g == 0.0),
+                "scroller must override the fill-the-parent seed (content height)"
+            );
+            children
         }
-        _ => panic!("scroll_x table must lower to a scroll_view item"),
+        _ => panic!("surface must wrap a scroll_view item"),
+    };
+    assert_eq!(scroller_children.len(), 1);
+    // Width-floored content.
+    match scroller_children.pop().expect("len checked") {
+        Element::Item { data, .. } => {
+            let vp = data
+                .downcast_ref::<PrimCell<ViewPrim>>()
+                .expect("scroll content is a view")
+                .take();
+            let rules = match vp.style {
+                Some(StyleProp::Static(r)) => r,
+                _ => panic!("floor lands on the content as Static rules"),
+            };
+            assert!(
+                matches!(
+                    rules.min_width.as_ref().map(|t| t.resolve()),
+                    Some(glue::Length::Percent(p)) if (p - 100.0).abs() < f32::EPSILON
+                ),
+                "scroll content floors at min-width: 100%"
+            );
+        }
+        _ => panic!("scroll content must be a view item"),
     }
 }
 
@@ -629,6 +654,18 @@ fn scroll_x_web_width_strategy_and_wrapper() {
     assert!(
         !html.contains("width: 100%;") || html.contains("min-width: 100%"),
         "the fill-and-wrap width strategy must be replaced, not stacked: {html}"
+    );
+    // The collapse border model keeps cell borders on the table's own
+    // (scrolled) paint layer, so a sticky cell's background rode the
+    // pin OVER its own hairlines — dividers vanished white-on-white.
+    // Scroll-x tables must paint borders per cell.
+    assert!(
+        html.contains("border-collapse: separate") || html.contains("border-collapse:separate"),
+        "scroll-x table must use the separate border model: {html}"
+    );
+    assert!(
+        !html.contains("border-collapse: collapse"),
+        "collapse must be replaced in scroll-x mode, not stacked: {html}"
     );
 }
 

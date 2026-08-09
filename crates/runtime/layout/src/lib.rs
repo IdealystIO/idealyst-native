@@ -2269,22 +2269,34 @@ mod tests {
     /// table would squeeze instead of overflowing.
     #[test]
     fn regression_scroll_x_table_floors_at_scroller_width_and_overflows_past_it() {
-        fn build(cell_w: f32) -> (LayoutTree, LayoutNode, LayoutNode) {
+        fn build(cell_w: f32) -> (LayoutTree, LayoutNode, LayoutNode, LayoutNode) {
             let mut t = LayoutTree::new();
             let root = t.new_node();
-            // The scroller: definite width from the root constraint.
+            // The styled table surface the SDK wraps AROUND the
+            // scroller (border/radius stay put while columns scroll).
+            // Content-sized vertically — exactly the shape that
+            // collapses a fill-the-parent scroll node to zero height.
+            let card = t.new_node();
+            t.add_child(root, card);
+            // The scroller: definite width from the constraint chain.
             let scroller = t.new_node();
             // A horizontal scroller lays its content on the X MAIN
             // axis: with the default Column direction the content is a
             // CROSS-axis child — stretch-clamped to the scroller's
             // width, never able to overflow it. The SDK's scroll-x
-            // wrapper sets Row for exactly this reason.
+            // wrapper sets Row for exactly this reason — and
+            // `flex_grow: 0` + `flex_basis: auto` so the scroller
+            // takes its CONTENT height inside the content-sized card
+            // (the fill-the-parent seed `set_overflow_scroll` writes
+            // would collapse it to zero here, the Modal trap).
             let mut scr = StyleRules::default();
             scr.flex_direction = Some(runtime_shared::FlexDirection::Row);
-            t.set_style(scroller, &scr);
+            scr.flex_grow = Some(Tokenized::Literal(0.0));
+            scr.flex_basis = Some(Tokenized::Literal(FwLength::Auto));
             t.set_overflow_scroll(scroller, true);
-            t.add_child(root, scroller);
-            // The table surface: floored at the scroller's width.
+            t.set_style(scroller, &scr);
+            t.add_child(card, scroller);
+            // The scroll content: floored at the scroller's width.
             let surface = t.new_node();
             let mut sr = StyleRules::default();
             sr.min_width = Some(Tokenized::Literal(FwLength::Percent(100.0)));
@@ -2308,12 +2320,22 @@ mod tests {
                 t.add_child(grid, cell);
             }
             t.compute(root, 400.0, 300.0);
-            (t, scroller, surface)
+            (t, scroller, surface, card)
         }
+
+        // The content-sized card must take its content's height — the
+        // scroller's fill-the-parent seed would otherwise collapse the
+        // whole table to 0 tall inside it.
+        let (t, _, _, card) = build(40.0);
+        let card_h = t.frame_of(card).height;
+        assert!(
+            (card_h - 12.0).abs() < 1.0,
+            "content-sized card must take the row's height (12), got {card_h}",
+        );
 
         // Narrow columns (3 × 40 = 120 < 400): the floor wins — the
         // surface fills the scroller exactly.
-        let (t, scroller, surface) = build(40.0);
+        let (t, scroller, surface, _) = build(40.0);
         assert!(
             (t.frame_of(scroller).width - 400.0).abs() < 1.0,
             "scroller takes the constraint width"
@@ -2327,7 +2349,7 @@ mod tests {
         // Wide columns (3 × 200 = 600 > 400): content wins — the
         // surface overflows the scroller sideways (scroll range), and
         // the scroller itself stays at its constraint width.
-        let (t, scroller, surface) = build(200.0);
+        let (t, scroller, surface, _) = build(200.0);
         assert!(
             (t.frame_of(scroller).width - 400.0).abs() < 1.0,
             "scroller must NOT grow to its content"

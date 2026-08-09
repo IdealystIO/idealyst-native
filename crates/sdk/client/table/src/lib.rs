@@ -20,11 +20,15 @@
 //!
 //! # Scroll-x mode & pinned columns
 //!
-//! `TableProps::scroll_x` wraps the table in a horizontal scroller and
-//! flips the width strategy to "natural column widths, floored at the
-//! scroller's width" (web: `min-width: 100%; width: max-content`;
-//! native: a `min_width: 100%` floor on the author surface inside a
-//! horizontal `scroll_view`). Frozen columns are pure STYLING on top:
+//! `TableProps::scroll_x` restructures the table as
+//! styled surface > horizontal scroller > columns: the author-style
+//! surface (border/radius/background) stays put while the columns
+//! scroll inside it, and the width strategy flips to "natural column
+//! widths, floored at the scroller's width" (web: `min-width: 100%;
+//! width: max-content` plus `border-collapse: separate` so cell
+//! borders travel with sticky cells; native: a `min_width: 100%`
+//! floor on the scroll content). Frozen columns are pure STYLING on
+//! top:
 //! a cell with `position: Sticky` + `left: 0` / `right: 0` pins inside
 //! that scroller on every backend — the browser natively, native
 //! through `runtime_shared::sticky` (which also raises pinned cells
@@ -219,10 +223,6 @@ pub struct TableRowPrim {
     pub style: Option<StyleProp>,
     /// Filled with the row surface's handle at mount ([`bind_row`]).
     pub ref_fill: Option<Box<dyn FnOnce(runtime_shared::ViewHandle)>>,
-    /// Opaque row metadata for the component layer above (idea-ui's
-    /// draggable-row tag rides here). Set with [`set_row_meta`], read
-    /// with [`take_row_meta`]; the SDK itself never looks inside.
-    pub meta: Option<Box<dyn std::any::Any>>,
 }
 
 /// Scene payload for a `<td>` / `<th>` (web lowering). The interaction
@@ -374,7 +374,7 @@ pub mod item_lowering {
 
     /// `<tr>` item.
     pub fn row_item(children: Vec<Element>, style: Option<StyleProp>) -> Element {
-        item(PrimCell::new(TableRowPrim { style, ref_fill: None, meta: None }), children)
+        item(PrimCell::new(TableRowPrim { style, ref_fill: None }), children)
     }
 
     /// `<td>` / `<th>` item.
@@ -394,16 +394,24 @@ pub mod item_lowering {
 
 #[cfg(target_arch = "wasm32")]
 fn build_table(children: Vec<Element>, style: Option<StyleProp>, scroll_x: bool) -> Element {
-    let table = item_lowering::table_item(children, style, scroll_x);
     if scroll_x {
-        // The scroller is OUTSIDE the `<table>` (the author-style
-        // surface scrolls with the content — a wider-than-viewport
-        // table carries its border/radius along). `position: sticky`
-        // cells pin against this wrapper: it is the nearest ancestor
-        // scroll container.
-        glue::scroll_view(vec![table]).horizontal(true).into_element()
+        // Structure: styled SURFACE > horizontal scroller > `<table>`.
+        // The author style (border/radius/background — idea-ui's
+        // themed surface) sits OUTSIDE the scroller so the frame stays
+        // put while the columns scroll inside it; a surface inside the
+        // scroller rode along with the content and clipped its own
+        // border at the viewport edge. Sticky-pinned cells still pin
+        // against the scroller (their NEAREST scroll ancestor — the
+        // surface's own overflow clip is further out).
+        let table = item_lowering::table_item(children, None, scroll_x);
+        let scroller = glue::scroll_view(vec![table]).horizontal(true).into_element();
+        let surface = glue::view(vec![scroller]);
+        match style {
+            Some(style) => surface.with_style(style).into_element(),
+            None => surface.into_element(),
+        }
     } else {
-        table
+        item_lowering::table_item(children, style, scroll_x)
     }
 }
 
@@ -478,27 +486,36 @@ fn build_table(rows: Vec<Element>, style: Option<StyleProp>, scroll_x: bool) -> 
     let inner = glue::view(grid_children)
         .with_style(native_styles::grid_sheet(columns))
         .into_element();
-    // Outer node: the author-style target. The framework's default
-    // cross-axis stretch makes the inner grid fill this node's width.
-    let outer = glue::view(vec![inner]);
-    let mut el = match style {
-        Some(style) => outer.with_style(style).into_element(),
-        None => outer.into_element(),
-    };
+    let mut el;
     if scroll_x {
-        // Mirror of the web lowering: the scroller wraps the whole
-        // author-style surface, and the outer node picks up the
-        // "at least the scroller's width" floor so a narrow table
-        // still fills while a wide one overflows and scrolls.
-        // Sticky-pinned cells register against this scroll view.
-        set_view_style(
-            &el,
-            |prop| Some(compose_rules(prop, native_styles::scroll_floor_rules())),
-        );
-        el = glue::scroll_view(vec![el])
+        // Structure: styled SURFACE > horizontal scroll_view > content
+        // (width-floored) > grid — the web lowering's mirror. The
+        // author-style surface stays OUTSIDE the scroller so its
+        // border/radius don't ride along with the scrolled columns;
+        // the content node carries the "at least the scroller's width"
+        // floor so a narrow table still fills while a wide one
+        // overflows and scrolls. Sticky-pinned cells register against
+        // this scroll view.
+        let content = glue::view(vec![inner])
+            .with_style(StyleProp::Static(Rc::new(native_styles::scroll_floor_rules())))
+            .into_element();
+        let scroller = glue::scroll_view(vec![content])
             .horizontal(true)
             .with_style(StyleProp::Static(Rc::new(native_styles::scroll_wrapper_rules())))
             .into_element();
+        let surface = glue::view(vec![scroller]);
+        el = match style {
+            Some(style) => surface.with_style(style).into_element(),
+            None => surface.into_element(),
+        };
+    } else {
+        // Outer node: the author-style target. The framework's default
+        // cross-axis stretch makes the inner grid fill this node's width.
+        let outer = glue::view(vec![inner]);
+        el = match style {
+            Some(style) => outer.with_style(style).into_element(),
+            None => outer.into_element(),
+        };
     }
     // Re-attach every peeled row scope: the cells' reactive props (the
     // clickable-row hover style) read signals those scopes own, so they
@@ -545,7 +562,7 @@ fn build_row_backdrop(row_line: i16, slots: TableRowPrim) -> Element {
 /// the loud failure the scene registry promises.
 #[cfg(not(target_arch = "wasm32"))]
 fn build_row(children: Vec<Element>, style: Option<StyleProp>) -> Element {
-    item(PrimCell::new(TableRowPrim { style, ref_fill: None, meta: None }), children)
+    item(PrimCell::new(TableRowPrim { style, ref_fill: None }), children)
 }
 
 /// Native `TableCell`: a plain view that becomes a grid item; the
@@ -749,13 +766,20 @@ mod native_styles {
     }
 
     /// Style for the scroll-x wrapper itself: content on the X MAIN
-    /// axis. With the default Column direction the table surface would
-    /// be a CROSS-axis child — stretch-clamped to the scroller's
-    /// width, never able to overflow it, so there would be nothing to
-    /// scroll.
+    /// axis, and CONTENT height. With the default Column direction the
+    /// table content would be a CROSS-axis child — stretch-clamped to
+    /// the scroller's width, never able to overflow it, so there would
+    /// be nothing to scroll. `flex_grow: 0` + `flex_basis: auto`
+    /// override the scroll primitive's fill-the-parent seed
+    /// (`flex_grow: 1` / `flex_basis: 0`): inside the content-sized
+    /// table surface that seed collapses the scroller to zero height —
+    /// the same trap the idea-ui Modal hit
+    /// (`regression_modal_scroller_content_sized_then_capped`).
     pub(super) fn scroll_wrapper_rules() -> StyleRules {
         StyleRules {
             flex_direction: Some(glue::FlexDirection::Row),
+            flex_grow: Some(glue::Tokenized::Literal(0.0)),
+            flex_basis: Some(glue::Tokenized::Literal(glue::Length::Auto)),
             ..Default::default()
         }
     }
@@ -883,26 +907,6 @@ pub fn bind_row(row: &Element, fill: impl FnOnce(runtime_shared::ViewHandle) + '
     walk(row, &mut slot);
 }
 
-/// Attach opaque metadata to a built row for the component layer above
-/// (see [`TableRowPrim::meta`]). No-op for non-rows.
-pub fn set_row_meta(row: &Element, meta: Box<dyn std::any::Any>) {
-    let mut slot = Some(meta);
-    visit_row(row, &mut |p| {
-        if let Some(m) = slot.take() {
-            p.meta = Some(m);
-        }
-    });
-}
-
-/// Take a built row's metadata back out (single consumer — typically
-/// the `Table` component wiring drag & drop). `None` for non-rows and
-/// rows without metadata.
-pub fn take_row_meta(row: &Element) -> Option<Box<dyn std::any::Any>> {
-    let mut out = None;
-    visit_row(row, &mut |p| out = p.meta.take());
-    out
-}
-
 /// Visit a built row's cells in order (Owned-peeled). The visitor gets
 /// each cell ELEMENT — combine with [`set_cell_touch`] /
 /// [`set_cell_style`] / [`bind_cell`] for per-cell fan-out of row-level
@@ -968,19 +972,6 @@ pub fn bind_cell(cell: &Element, fill: impl FnOnce(runtime_shared::ViewHandle) +
     });
 }
 
-/// Shared Owned-peeling walk over a row marker's payload.
-fn visit_row(row: &Element, f: &mut dyn FnMut(&mut TableRowPrim)) {
-    match row {
-        Element::Owned { element, .. } => visit_row(element, f),
-        Element::Item { data, .. } => {
-            if let Some(c) = data.downcast_ref::<PrimCell<TableRowPrim>>() {
-                c.with_mut(|p| f(p));
-            }
-        }
-        _ => {}
-    }
-}
-
 /// Shared Owned-peeling walk for the post-processing helpers: calls `f`
 /// with whichever cell payload shape the element carries (exactly one
 /// of the two arguments is `Some`).
@@ -1028,16 +1019,27 @@ where
         // declarations (not a class), so `attach_style` below still
         // wins where the author sets the same property.
         let b = backend.borrow();
-        b.attach_html_style(&node, "border-collapse", "collapse");
         if data.scroll_x {
-            // Scroll-x width strategy: natural column widths (a table
-            // at `width: max-content` never wraps its cells), floored
+            // Scroll-x border model: `separate` (spacing 0), NOT
+            // `collapse`. Collapsed borders belong to the table's own
+            // paint layer — the layer that scrolls — so a sticky
+            // (frozen) cell's dividers stayed behind while its opaque
+            // background rode the pin over them: hairlines vanished
+            // into white-on-white. `separate` makes every cell paint
+            // its own borders, which then travel with the pinned cell.
+            // The idea-ui cells draw only their bottom (+ pin-edge)
+            // hairlines, so nothing doubles up without collapsing.
+            b.attach_html_style(&node, "border-collapse", "separate");
+            b.attach_html_style(&node, "border-spacing", "0");
+            // Width strategy: natural column widths (a table at
+            // `width: max-content` never wraps its cells), floored
             // at the scroller's width so a narrow table still fills.
             // `width: 100%` would instead squeeze and wrap the columns
             // — no overflow, nothing to scroll.
             b.attach_html_style(&node, "min-width", "100%");
             b.attach_html_style(&node, "width", "max-content");
         } else {
+            b.attach_html_style(&node, "border-collapse", "collapse");
             b.attach_html_style(&node, "width", "100%");
         }
         b.attach_html_style(&node, "table-layout", "auto");

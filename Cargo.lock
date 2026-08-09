@@ -6074,7 +6074,6 @@ dependencies = [
 name = "idea-ui"
 version = "1.2.2"
 dependencies = [
- "dnd",
  "host-mock",
  "idea-theme",
  "idea-ui-docs-derive",
@@ -6096,6 +6095,7 @@ dependencies = [
  "codeblock",
  "console_error_panic_hook",
  "dev-server",
+ "dnd",
  "icons-lucide",
  "idea-ui",
  "idea-ui-nav",

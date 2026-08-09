@@ -14,7 +14,7 @@
 use runtime_core::stylesheet;
 use runtime_core::{
     AlignItems, Color, Cursor, DisplayKind, FlexDirection, FontWeight, JustifyContent, Length,
-    Position, TextAlign, TextTransform,
+    Overflow, Position, TextAlign, TextTransform,
 };
 
 #[allow(unused_imports)]
@@ -2048,6 +2048,12 @@ stylesheet! {
     pub Table<IdeaThemeRef> {
         base(t) {
             background: t.color.surface(),
+            // Clip children to the rounded frame. Load-bearing for
+            // `scroll_x` tables, where this sheet lands on the surface
+            // WRAPPER around the scroller: without the clip the
+            // scrolling columns paint square over the rounded corners.
+            // Harmless on plain tables (nothing overflows them).
+            overflow: Overflow::Hidden,
             border_top_width: 1.0,
             border_right_width: 1.0,
             border_bottom_width: 1.0,
@@ -2119,10 +2125,12 @@ stylesheet! {
                 border_left_color: t.color.border(),
             }
         }
-        // Drag-and-drop feedback (`Table(on_reorder = …)`): the source
-        // row dims while in flight; the row under the dragged payload
-        // highlights as the drop slot. Shared-signal axes like
-        // `row_hovered`, flipped per row by the Table's drag wiring.
+        // Drag-and-drop feedback VOCABULARY for author-wired row drag
+        // (idea-ui ships no dnd behavior — see the Table component
+        // docs): `dragging` dims an in-flight row, `drop_target`
+        // highlights the slot under it. Inert until a custom
+        // implementation selects them via `table::set_cell_style` on
+        // the base application. Shared-signal axes like `row_hovered`.
         variant dragging {
             #[default]
             off(_t) {}
@@ -2193,7 +2201,8 @@ stylesheet! {
                 border_left_color: t.color.border(),
             }
         }
-        // Drag-and-drop feedback — see `TableHeadCell`.
+        // Author-wired drag-and-drop feedback vocabulary — see
+        // `TableHeadCell`.
         variant dragging {
             #[default]
             off(_t) {}

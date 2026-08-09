@@ -100,9 +100,24 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
         let element_for_capture = element.clone();
         let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
             // `button` is 0 for touch + pen contact + primary mouse; 2 is the
-            // secondary press (which Safari — alone among browsers — also
-            // reports for macOS Ctrl-click; see the `contextmenu` listener).
+            // secondary press. On macOS, Ctrl-click IS the OS's secondary
+            // press, but only Safari does that folding for us (`button == 2`
+            // at pointerdown); Chrome and Firefox deliver `button == 0` with
+            // `ctrlKey` — which, delivered as Primary, reaches app code as a
+            // Ctrl-modified primary click (e.g. toggling a selection) right
+            // before the context-menu press it actually is. So the backend
+            // folds it here, and the press rides the normal secondary path:
+            // `Began`-only, `secondary_delivered` recorded, `contextmenu`
+            // suppress-only. The stray `button == 0` pointerup is already
+            // ignored — a secondary press never enters `active`. Mouse only:
+            // a Ctrl-held *touch* (iPad with hardware keyboard reports
+            // platform "MacIntel") is not a click at all.
+            let mac_ctrl_click = ev.button() == 0
+                && ev.ctrl_key()
+                && ev.pointer_type() == "mouse"
+                && ctrl_click_is_secondary();
             let button = match ev.button() {
+                0 if mac_ctrl_click => PointerButton::Secondary,
                 0 => PointerButton::Primary,
                 1 => PointerButton::Middle,
                 2 => PointerButton::Secondary,
@@ -186,15 +201,22 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
     // menu must not open on top of whatever the app puts there; `preventDefault`
     // has to run on the DOM event, which never reaches app code, so it lives
     // here (bubble-phase and element-scoped — the rest of the page keeps its
-    // native menu). But browsers disagree on how the press itself surfaces:
+    // native menu). But browsers disagree on how the press itself surfaces —
+    // a macOS Ctrl-click has been observed arriving in all three shapes, and
+    // the backend must be correct under each (FRAMEWORK-NOTES #95):
     //
-    //   - Safari remaps macOS Ctrl-click to `button == 2` at `pointerdown`
-    //     (the listener above folds it into `PointerButton::Secondary`).
-    //   - Chrome on macOS suppresses the `pointerdown` for a Ctrl-click
-    //     ENTIRELY and fires only this `contextmenu` (FRAMEWORK-NOTES #95 —
-    //     with a suppress-only listener here, a Ctrl-click reached app code
-    //     as nothing at all).
-    //   - Firefox sends a *primary* `pointerdown` plus this `contextmenu`.
+    //   - `pointerdown` with `button == 2` (Safari's remap; also every
+    //     browser's real right-button / two-finger press). Handled by the
+    //     pointerdown listener directly.
+    //   - `pointerdown` with `button == 0` + `ctrlKey` plus this
+    //     `contextmenu` (Chrome and Firefox). The pointerdown listener folds
+    //     that into Secondary on macOS — delivered as Primary it would reach
+    //     app code as a Ctrl-modified primary click first, corrupting
+    //     selection-style handlers right before the menu opens.
+    //   - NO `pointerdown` at all, only this `contextmenu` (also observed
+    //     from Chrome on macOS). With a suppress-only listener here, that
+    //     shape reached app code as nothing at all — hence the synthesis
+    //     below.
     //
     // So `pointerdown` records whether it already delivered the Secondary
     // `Began` (and whether the handler consumed it) and this listener takes
@@ -518,6 +540,45 @@ pub(crate) fn swallow_ancestor_touch(b: &mut WebBackend, el: &web_sys::Element) 
 #[allow(dead_code)]
 pub(crate) fn claim(_b: &mut WebBackend, _node: &Node, _touch_id: TouchId) {
     // No-op on web; see doc comment.
+}
+
+thread_local! {
+    /// Cached "is this browser running on macOS" — `None` until first sampled.
+    /// Tests override it via [`force_ctrl_click_fold`] so both branches are
+    /// exercised deterministically regardless of the test host's OS.
+    static CTRL_CLICK_FOLDS: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// Whether a `button == 0` press with Ctrl held should be classified as
+/// [`PointerButton::Secondary`] — true exactly on macOS, where Ctrl-click *is*
+/// the OS's secondary press (`PointerButton`'s docs promise this folding).
+/// Browsers disagree on doing the fold themselves (Safari does at
+/// `pointerdown`; Chrome and Firefox deliver a primary-with-ctrlKey and leave
+/// it to us), so the backend applies it uniformly. On Windows/Linux Ctrl-click
+/// is genuinely a modified primary press (add-to-selection idioms), so the
+/// fold must NOT apply there.
+///
+/// `navigator.platform` ("MacIntel", …) is sampled once and cached: it's
+/// deprecated-but-universal, and the alternatives (UA parsing,
+/// `userAgentData.platform`) are async or no more reliable.
+fn ctrl_click_is_secondary() -> bool {
+    CTRL_CLICK_FOLDS.with(|c| {
+        if let Some(v) = c.get() {
+            return v;
+        }
+        let v = web_sys::window()
+            .map(|w| w.navigator().platform().unwrap_or_default().starts_with("Mac"))
+            .unwrap_or(false);
+        c.set(Some(v));
+        v
+    })
+}
+
+/// Test hook: pin (or with `None`, un-pin) the macOS Ctrl-click fold so tests
+/// can exercise both the mac and non-mac classification on any host.
+#[cfg(test)]
+pub(crate) fn force_ctrl_click_fold(v: Option<bool>) {
+    CTRL_CLICK_FOLDS.with(|c| c.set(v));
 }
 
 /// The listener element's top-left in viewport (client) coordinates.

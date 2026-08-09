@@ -97,6 +97,7 @@ codeblock = { workspace = true }
 # PropsTable on every component page. `table::register_handlers` at boot
 # is its scene-registry seam.
 table = { workspace = true }
+dnd = { workspace = true }
 # Lucide icon pack — provides the `MENU` glyph for the mobile
 # hamburger that opens the collapsed drawer.
 icons-lucide = { workspace = true }

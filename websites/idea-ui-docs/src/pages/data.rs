@@ -191,35 +191,42 @@ TableCell {
             }
         },
         ui! {
-            Section(title = "Reorderable rows (drag & drop)".to_string()) {
-                P(content = "Give the table `on_reorder` and mark data rows `draggable = true`: \
-                    long-press (or press-and-drag with a pointer) picks a row up, it follows the \
-                    finger and dims, the row under it highlights as the drop slot, and dropping \
-                    calls `on_reorder(from, to)` with ordinals counted over the draggable rows \
-                    only (the header doesn't count). The callback owns the data — reorder your \
-                    source of truth and the table rebuilds from it. Keep `key` on the row loop so \
-                    reconciliation follows the moved rows.".to_string())
+            Section(title = "Row drag & drop — bring your own".to_string()) {
+                P(content = "idea-ui ships no drag-and-drop behavior; the `table` SDK exposes the \
+                    handles a custom implementation needs, and you own the interaction. Per row: \
+                    fan your drag recognizer across the cells with `visit_row_cells` + \
+                    `set_cell_touch` (row touch must live per-cell), bind drop-target geometry to \
+                    the row's proxy surface with `bind_row`, anchor animated drag offsets per cell \
+                    with `bind_cell`, and select the themed `dragging` / `drop_target` feedback \
+                    axes with `cell_base_application` + `set_cell_style`. The demo below wires the \
+                    `dnd` SDK through exactly those seams — long-press a row to pick it up.".to_string())
                 reorder_table()
-                CodePanel(src = r##"let items = signal(vec!["Alpha", "Bravo", "Charlie", "Delta"]);
-let on_reorder: Rc<dyn Fn(usize, usize)> = Rc::new(move |from, to| {
-    let mut v = items.get();
-    let moved = v.remove(from);
-    v.insert(to, moved);
-    items.set(v);
-});
+                CodePanel(src = r##"// Userland wiring — everything here is public `table` SDK + `dnd` SDK surface.
+let drag = Draggable::new(&ctx, move || i)
+    .activation(Activation::LongPress { threshold_ms: 250, slop_px: 8.0 });
+let handler = drag.handler();          // ONE recognizer per row, cloned per cell
+let (_, offset_y) = drag.offset();
+let dragging = drag.is_dragging();
 
-ui! {
-    Table(on_reorder = Some(on_reorder)) {
-        TableRow {
-            TableCell(header = true, text = Some("Task".to_string()))
-        }
-        for name in items, key = name {
-            TableRow(draggable = true) {
-                TableCell(text = Some(name.to_string()))
-            }
-        }
+let drop = Droppable::new(&ctx)
+    .accepts(move |from: &usize| *from != i)
+    .on_drop(move |from| reorder(from, i));
+let over = drop.is_over();
+let row_ref: Ref<ViewHandle> = Ref::new();
+drop.bind(row_ref);
+table::bind_row(&row, move |h| row_ref.fill(h));   // row proxy = drop geometry
+
+table::visit_row_cells(&row, |cell| {
+    if let Some(base) = table::cell_base_application(cell) {
+        table::set_cell_style(cell, move || base.clone()
+            .with("dragging", if dragging.get() { "on" } else { "off" })
+            .with("drop_target", if over.get() { "on" } else { "off" }));
     }
-}"##.to_string())
+    table::set_cell_touch(cell, handler.clone());
+    let cell_ref: Ref<ViewHandle> = Ref::new();
+    table::bind_cell(cell, move |h| cell_ref.fill(h));
+    offset_y.bind(cell_ref, AnimProp::TranslateY);  // row follows the finger
+});"##.to_string())
             }
         },
         ui! {
@@ -234,11 +241,6 @@ ui! {
                         name: "scroll_x",
                         ty: "bool",
                         desc: "Horizontal-scroll mode: columns at natural width inside a horizontal scroller. Required for pinned columns. Default false.",
-                    },
-                    Prop {
-                        name: "on_reorder",
-                        ty: "Option<Rc<dyn Fn(usize, usize)>>",
-                        desc: "Row drag-and-drop. Receives (from, to) ordinals over the draggable rows; reorder your data source in the callback. Default None.",
                     },
                 ])
             }
@@ -255,11 +257,6 @@ ui! {
                         name: "on_row_click",
                         ty: "Option<Rc<dyn Fn()>>",
                         desc: "Whole-row tap target + hover highlight. Buttons inside cells still eat their own clicks. Default None.",
-                    },
-                    Prop {
-                        name: "draggable",
-                        ty: "bool",
-                        desc: "Reorderable inside a Table(on_reorder = …). Leave false on header rows. Takes the cells' touch slot, so it wins over on_row_click. Default false.",
                     },
                 ])
             }
@@ -334,29 +331,91 @@ fn wide_table() -> Element {
     }
 }
 
-/// Reorder demo: the row order lives in a signal; `on_reorder` moves the
-/// dragged entry and the keyed row loop rebuilds in the new order.
+/// Reorder demo — a USERLAND drag-and-drop implementation, wired
+/// entirely through public seams: the `table` SDK's row/cell handles
+/// plus the `dnd` SDK. idea-ui contributes only the inert themed
+/// feedback axes (`dragging` / `drop_target`) on its cell sheets.
+///
+/// Shape: the row order lives in a signal; each row gets a
+/// `Draggable<usize>` (long-press pickup — vertical drag IS the page's
+/// scroll direction, so the scroll-aware activation is wrong here)
+/// whose ONE recognizer fans out to the cells, a `Droppable` bound to
+/// the row's proxy surface, and the drag's vertical offset bound to
+/// every cell so the row follows the finger. Dropping reorders the
+/// signal and the keyed loop rebuilds.
 fn reorder_table() -> Element {
+    use dnd::{Activation, DragContext, Draggable, Droppable};
+    use runtime_core::animation::AnimProp;
+    use runtime_core::{memo, Ref, ViewHandle};
+
     let items: Signal<Vec<&'static str>> =
         signal(vec!["Ship hotfix", "Review PR #412", "Update changelog", "Cut release"]);
-    let on_reorder: Rc<dyn Fn(usize, usize)> = Rc::new(move |from, to| {
-        let mut v = items.get();
-        if from < v.len() && to <= v.len() {
-            let moved = v.remove(from);
-            v.insert(to.min(v.len()), moved);
-            items.set(v);
-        }
+    let ctx: DragContext<usize> = DragContext::new();
+
+    let wire = move |ctx: &DragContext<usize>, i: usize, row: &Element| {
+        let drag = Draggable::new(ctx, move || i)
+            .activation(Activation::LongPress { threshold_ms: 250, slop_px: 8.0 });
+        let dragging = drag.is_dragging();
+        let (_, offset_y) = drag.offset();
+        // One recognizer per row, cloned per cell — `handler()` builds
+        // fresh recognizer state on every call.
+        let handler = drag.handler();
+
+        let drop = Droppable::new(ctx)
+            .accepts(move |from: &usize| *from != i)
+            .on_drop(move |from| {
+                let mut v = items.get();
+                if from < v.len() && i <= v.len() {
+                    let moved = v.remove(from);
+                    v.insert(i.min(v.len()), moved);
+                    items.set(v);
+                }
+            });
+        let over = drop.is_over();
+        let row_ref: Ref<ViewHandle> = Ref::new();
+        drop.bind(row_ref);
+        table::bind_row(row, move |h| row_ref.fill(h));
+
+        table::visit_row_cells(row, |cell| {
+            if let Some(base) = table::cell_base_application(cell) {
+                table::set_cell_style(cell, move || {
+                    base.clone()
+                        .with("dragging", if dragging.get() { "on" } else { "off" })
+                        .with("drop_target", if over.get() { "on" } else { "off" })
+                });
+            }
+            table::set_cell_touch(cell, handler.clone());
+            let cell_ref: Ref<ViewHandle> = Ref::new();
+            table::bind_cell(cell, move |h| cell_ref.fill(h));
+            offset_y.bind(cell_ref, AnimProp::TranslateY);
+        });
+    };
+
+    // Indexed view of the list so each row knows its ordinal.
+    let indexed = memo(move || {
+        items
+            .get()
+            .into_iter()
+            .enumerate()
+            .collect::<Vec<(usize, &'static str)>>()
     });
+
     ui! {
-        Table(on_reorder = Some(on_reorder)) {
+        Table {
             TableRow {
                 TableCell(header = true, text = Some("".to_string()))
-                TableCell(header = true, text = Some("Task (drag to reorder)".to_string()))
+                TableCell(header = true, text = Some("Task (long-press to reorder)".to_string()))
             }
-            for name in items, key = name {
-                TableRow(draggable = true) {
-                    TableCell(text = Some("⠿".to_string()))
-                    TableCell(text = Some(name.to_string()))
+            for (i, name) in indexed, key = name {
+                {
+                    let row = ui! {
+                        TableRow {
+                            TableCell(text = Some("\u{283f}".to_string()))
+                            TableCell(text = Some(name.to_string()))
+                        }
+                    };
+                    wire(&ctx, i, &row);
+                    row
                 }
             }
         }

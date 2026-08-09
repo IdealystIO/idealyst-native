@@ -2003,6 +2003,132 @@ fn dispatch_bubbling_contextmenu(target: &web_sys::Element, ctrl: bool) -> web_s
     ev
 }
 
+/// Dispatch a bubbling `pointerdown` with `button == 0`, `ctrlKey`, and
+/// pointerType "mouse" — the macOS Ctrl-click shape Chrome and Firefox
+/// deliver when they don't suppress the pointerdown outright.
+fn dispatch_bubbling_ctrl_primary_pointerdown(target: &web_sys::Element) {
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_button(0);
+    init.set_ctrl_key(true);
+    init.set_pointer_type("mouse");
+    let ev = web_sys::PointerEvent::new_with_event_init_dict("pointerdown", &init)
+        .expect("construct ctrl primary pointerdown");
+    target.dispatch_event(&ev).expect("dispatch pointerdown");
+}
+
+/// REGRESSION TEST (FRAMEWORK-NOTES #95, follow-up).
+///
+/// Chrome and Firefox on macOS can also deliver Ctrl-click as a *primary*
+/// `pointerdown` with `ctrlKey: true`, followed by `contextmenu`. Delivered
+/// as Primary, that Began reaches app code as a Ctrl-modified primary click —
+/// in a selection grid, the remove-block modifier — and the (synthesized or
+/// real) Secondary then acts on the corrupted state: right-clicking inside a
+/// selection deselected it. On macOS the backend must fold `button == 0 &&
+/// ctrlKey` (mouse only) into `PointerButton::Secondary` at classification,
+/// so the press rides the normal secondary path: one `Began`, Secondary, no
+/// re-delivery from the `contextmenu`, and the stray `button == 0` pointerup
+/// is ignored (the press never entered the active set).
+#[wasm_bindgen_test]
+fn regression_web_mac_ctrl_primary_pointerdown_folds_to_secondary() {
+    use runtime_shared::{PointerButton, TouchPhase, TouchResponse};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    crate::primitives::touch::force_ctrl_click_fold(Some(true)); // pin "macOS"
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let el = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&el).unwrap();
+
+    let seen: Rc<RefCell<Vec<(TouchPhase, PointerButton)>>> = Rc::new(RefCell::new(Vec::new()));
+    let s = seen.clone();
+    backend.install_touch_handler_impl(
+        &el.clone().unchecked_into(),
+        Rc::new(move |te| {
+            s.borrow_mut().push((te.phase, runtime_shared::pointer_button()));
+            TouchResponse::CONSUMED
+        }),
+    );
+
+    // The full Chrome/Firefox macOS Ctrl-click sequence: primary-with-ctrl
+    // pointerdown, contextmenu, then the stray button-0 release.
+    dispatch_bubbling_ctrl_primary_pointerdown(&el);
+    let ctx = dispatch_bubbling_contextmenu(&el, true);
+    {
+        let init = web_sys::PointerEventInit::new();
+        init.set_bubbles(true);
+        init.set_button(0);
+        let up = web_sys::PointerEvent::new_with_event_init_dict("pointerup", &init)
+            .expect("construct pointerup");
+        el.dispatch_event(&up).expect("dispatch pointerup");
+    }
+    let events = seen.borrow().clone();
+    assert_eq!(
+        events.first(),
+        Some(&(TouchPhase::Began, PointerButton::Secondary)),
+        "macOS Ctrl-click must be classified Secondary at pointerdown, not \
+         delivered as a Ctrl-modified Primary",
+    );
+    assert_eq!(
+        events.iter().filter(|(_, b)| *b == PointerButton::Secondary).count(),
+        1,
+        "the contextmenu after the folded pointerdown must not re-deliver the press",
+    );
+    assert!(ctx.default_prevented(), "the native menu must still be suppressed");
+    assert!(
+        !events.iter().any(|(p, _)| *p == TouchPhase::Ended),
+        "a secondary press is Began-only; the stray button-0 pointerup must be ignored",
+    );
+
+    crate::primitives::touch::force_ctrl_click_fold(None);
+}
+
+/// COMPANION. On Windows/Linux, Ctrl-click is a genuinely modified *primary*
+/// press (the add-to-selection idiom) — the fold is macOS-only and must not
+/// reclassify it.
+#[wasm_bindgen_test]
+fn web_non_mac_ctrl_primary_click_stays_primary() {
+    use runtime_shared::{PointerButton, TouchPhase, TouchResponse};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    crate::primitives::touch::force_ctrl_click_fold(Some(false)); // pin "not macOS"
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let el = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&el).unwrap();
+
+    let saw = Rc::new(Cell::new(None::<(TouchPhase, PointerButton, bool)>));
+    let s = saw.clone();
+    backend.install_touch_handler_impl(
+        &el.clone().unchecked_into(),
+        Rc::new(move |te| {
+            s.set(Some((
+                te.phase,
+                runtime_shared::pointer_button(),
+                runtime_shared::pointer_modifiers().ctrl,
+            )));
+            TouchResponse::CONSUMED
+        }),
+    );
+
+    dispatch_bubbling_ctrl_primary_pointerdown(&el);
+
+    assert_eq!(
+        saw.get(),
+        Some((TouchPhase::Began, PointerButton::Primary, true)),
+        "off macOS, Ctrl-click must stay a Primary Began with the ctrl modifier set",
+    );
+
+    crate::primitives::touch::force_ctrl_click_fold(None);
+}
+
 /// REGRESSION TEST (FRAMEWORK-NOTES #95).
 ///
 /// Chrome on macOS delivers Ctrl-click as ONLY a `contextmenu` event — the
