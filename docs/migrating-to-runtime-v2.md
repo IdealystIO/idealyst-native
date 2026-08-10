@@ -747,7 +747,7 @@ satisfy the name with a divergent shim.
 | `announce`, `open_url`, `set_fullscreen`, `color_scheme` | ambient-host free fns; route to the host-installed announcer / opener / setter, no-op when the host installed none |
 | `host` (module), incl. `host::color_scheme()` | the module path the old glob also exposed |
 | `color` (module: `parse_or`, `Rgba`, …) | shared color parsing/blending |
-| `set_app_key_handler` | the free installer; the caps side was always mirrored |
+| `set_app_key_handler` | the free installer; the caps side (`AppEnvOps::set_app_key_handler`) was always mirrored. Delivery rides the theme host-state flush (`runtime_vocabulary::theme::flush_pending_host_state` drains the shared pending slot on sheet attach / theme-driver runs) — the drain was initially missing, so the handler queued forever and app-level keys never fired; pinned by `glue_host_surface.rs::regression_app_key_handler_installed_through_glue_reaches_the_backend` |
 | `use_id`, `use_id_keyed`, `hash_key`, `Identity`, `current_identity`, `with_current_identity` | see the caveat under "Restored but degraded" |
 | `flat_list`, `fixed_size`, `FlatListItemSize` | at the ROOT, where the old core had them (they also live at `primitives::flat_list::…`) |
 | `FileDropEvent`, `FileDropPhase`, `DroppedFile`, `WheelEvent`, `WheelKind` | the payloads the `*Handler` aliases carry — unspellable before |

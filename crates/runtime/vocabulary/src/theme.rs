@@ -399,7 +399,8 @@ pub fn token_value(name: &str) -> Option<TokenValue> {
 }
 
 /// Drain the pending host-level state into `backend` — tokens first
-/// (install, then update batches), host-surface settings after. Shared
+/// (install, then update batches), host-surface settings (default font,
+/// app background, scrollbar, app key handler) after. Shared
 /// by every sheet attach (so the first styled mount delivers the
 /// pre-mount `install_tokens`, in the same relative position the old
 /// `ensure_registered_with` prologue produced: install_tokens BEFORE
@@ -435,6 +436,17 @@ pub(crate) fn flush_pending_host_state<H: StyleOps + crate::caps::AppEnvOps>(
     }
     if let Some((thumb, track)) = scrollbar {
         backend.borrow_mut().set_scrollbar_theme(&thumb, &track);
+    }
+    // The app-level key handler drains LAST, mirroring the old core's
+    // flush order. Unlike the slots above, its pending queue still lives
+    // in `runtime_shared` (thread-global, not per-world): the author
+    // entry point is the shared free fn `set_app_key_handler`, which
+    // `glue` re-exports verbatim. This drain is that queue's ONLY
+    // new-core consumer — without it the handler sits queued forever
+    // and app-level keys (⌘K, Ctrl-Z) never fire on any backend, while
+    // every call site keeps compiling through the re-export.
+    if let Some(handler) = runtime_shared::take_pending_app_key_handler() {
+        backend.borrow_mut().set_app_key_handler(handler);
     }
 }
 

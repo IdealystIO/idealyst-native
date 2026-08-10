@@ -152,6 +152,44 @@ fn set_app_key_handler_routes_to_backend_once() {
     assert_eq!(cleared.get(), Some(false), "clear routes through as None");
 }
 
+/// `take_pending_app_key_handler` drains the SAME slot the closure-based
+/// flush does — it is the new-core vocabulary flush's entry into this
+/// crate's one remaining pending host-state queue. Regression for the
+/// newcore break where `set_app_key_handler` kept queueing here while
+/// the vocabulary flush drained every other slot except this one, so
+/// app-level shortcuts were silently dead on every backend.
+#[test]
+fn regression_take_pending_app_key_handler_drains_the_shared_slot() {
+    // Nothing queued → no drain signal.
+    assert!(take_pending_app_key_handler().is_none());
+
+    // Queue an install → drains as outer-Some(inner-Some), exactly once.
+    let handler: crate::primitives::key::KeyDownHandler =
+        Rc::new(|_e| crate::primitives::key::KeyOutcome::Default);
+    set_app_key_handler(Some(handler));
+    assert!(matches!(take_pending_app_key_handler(), Some(Some(_))));
+    assert!(
+        take_pending_app_key_handler().is_none(),
+        "single-slot: a second take finds the queue empty"
+    );
+
+    // Queue a clear → drains as outer-Some(inner-None).
+    set_app_key_handler(None);
+    assert!(matches!(take_pending_app_key_handler(), Some(None)));
+
+    // The accessor and the closure-based flush share the slot: once the
+    // accessor drained, the flush finds nothing to deliver.
+    set_app_key_handler(None);
+    let _ = take_pending_app_key_handler();
+    let called = Rc::new(std::cell::Cell::new(false));
+    {
+        let c = called.clone();
+        let sheet = Rc::new(StyleSheet::r#static(StyleRules::default()));
+        drain_with_key_recorder(&sheet, move |_h| c.set(true));
+    }
+    assert!(!called.get(), "accessor drain empties the flush's queue too");
+}
+
 /// Helper: assert a `Tokenized<Color>` resolves to a particular
 /// fallback string. Tests express the visible color, not whether
 /// the rule used a token vs literal.

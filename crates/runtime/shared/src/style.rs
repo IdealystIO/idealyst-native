@@ -3950,6 +3950,27 @@ pub fn set_app_key_handler(handler: Option<crate::primitives::key::KeyDownHandle
     PENDING_APP_KEY_HANDLER.with(|p| *p.borrow_mut() = Some(handler));
 }
 
+/// Drain the queued app-level key handler (outer `Some` = a
+/// [`set_app_key_handler`] call happened since the last drain; inner
+/// `Some` installs, `None` clears).
+///
+/// This slot is the one pending host-state queue that still lives in
+/// this crate: the author entry point ([`set_app_key_handler`]) is a
+/// shared free fn, so its queue must live where the fn does — unlike
+/// tokens / app background / scrollbar, whose new-core entry points
+/// moved per-world into `runtime_vocabulary::theme::ThemeCtx`. The
+/// vocabulary's `flush_pending_host_state` drains here and forwards
+/// through `AppEnvOps::set_app_key_handler`; the closure-based
+/// [`flush_pending_host_state`] in this crate drains the same slot for
+/// its remaining callers. Without a drain the handler queues forever
+/// and app-level keys never fire — the failure is silent because the
+/// re-export keeps every call site compiling.
+#[doc(hidden)]
+pub fn take_pending_app_key_handler(
+) -> Option<Option<crate::primitives::key::KeyDownHandler>> {
+    PENDING_APP_KEY_HANDLER.with(|p| p.borrow_mut().take())
+}
+
 
 /// Ensures the backend has been asked to pre-generate state for this
 /// stylesheet against the active theme. Calls `register` with the

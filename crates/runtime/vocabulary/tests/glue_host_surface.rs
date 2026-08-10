@@ -144,4 +144,71 @@ fn glue_reexports_set_app_key_handler() {
 
     // Install-then-clear must not panic and must leave no handler behind.
     glue::set_app_key_handler(None);
+    let _ = runtime_shared::take_pending_app_key_handler();
+}
+
+/// The handler installed through `glue::set_app_key_handler` must reach
+/// the backend (`AppEnvOps::set_app_key_handler`) on the next host-state
+/// flush — the sheet-attach / theme-driver drain.
+///
+/// The regression: the free fn queues into `runtime_shared`'s pending
+/// slot, and under the old core `style::flush_pending_host_state`
+/// drained it. The new-core port of that flush
+/// (`runtime_vocabulary::theme::flush_pending_host_state`) drained
+/// tokens, token updates, default font, app background, and scrollbar —
+/// everything EXCEPT the key handler. The caps plumbing existed and was
+/// correct on every backend; nothing ever invoked it. Net effect: every
+/// app-level shortcut (⌘K, Ctrl-Z, …) was silently dead on every
+/// backend, with a clean console — the re-export kept call sites
+/// compiling while the queue lost its consumer.
+#[test]
+fn regression_app_key_handler_installed_through_glue_reaches_the_backend() {
+    use std::rc::Rc;
+
+    use host_mock::Harness;
+    use runtime_shared::{StyleRules, StyleSheet};
+    use runtime_vocabulary::builders::view;
+
+    fn styled() -> runtime_scene::Element {
+        let sheet = Rc::new(StyleSheet::r#static(StyleRules::default()));
+        view().style(sheet).build()
+    }
+
+    let h = Harness::new();
+    // `set_app_key_handler` records on the verbose tier.
+    h.record_all();
+
+    // Install BEFORE anything mounts — the documented "call once near
+    // app start" shape, exactly what the live bug silently dropped.
+    let handler: runtime_shared::primitives::key::KeyDownHandler =
+        Rc::new(|_e| runtime_shared::primitives::key::KeyOutcome::Default);
+    glue::set_app_key_handler(Some(handler));
+
+    // First styled mount runs the host-state flush (sheet attach).
+    let _r = h.mount(styled());
+    assert!(
+        h.ops().iter().any(|op| op == "set_app_key_handler some"),
+        "installed handler must be forwarded to AppEnvOps::set_app_key_handler \
+         by the first host-state flush; ops: {:?}",
+        h.ops()
+    );
+
+    // Single-slot: a second flush with nothing queued must not re-send.
+    h.clear_ops();
+    let _r2 = h.mount(styled());
+    assert!(
+        !h.ops().iter().any(|op| op.starts_with("set_app_key_handler")),
+        "no pending handler → no second backend call; ops: {:?}",
+        h.ops()
+    );
+
+    // Clearing (`None`) routes through the same drain.
+    glue::set_app_key_handler(None);
+    h.clear_ops();
+    let _r3 = h.mount(styled());
+    assert!(
+        h.ops().iter().any(|op| op == "set_app_key_handler none"),
+        "clearing the handler must also reach the backend; ops: {:?}",
+        h.ops()
+    );
 }
