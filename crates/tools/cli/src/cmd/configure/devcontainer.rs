@@ -46,6 +46,12 @@ pub struct Args {
     #[arg(long, value_name = "remove|reconfigure")]
     pub minio: Option<Option<String>>,
 
+    /// Playwright MCP sidecar (official image: MCP server + headless
+    /// Chromium, reachable at PLAYWRIGHT_MCP_URL from the dev container):
+    /// bare to enable, `=remove` / `=reconfigure`.
+    #[arg(long, value_name = "remove|reconfigure")]
+    pub playwright: Option<Option<String>>,
+
     /// Claude Code CLI in the container: bare to enable (default `host` —
     /// bind-mounts ~/.claude so your host login/credentials carry over),
     /// `=volume` for an isolated per-project login, `=remove` / `=reconfigure`.
@@ -82,6 +88,7 @@ pub fn run(args: Args) -> Result<()> {
     let has_flags = args.database.is_some()
         || args.redis.is_some()
         || args.minio.is_some()
+        || args.playwright.is_some()
         || args.claude.is_some()
         || args.codex.is_some()
         || args.idealyst_cli.is_some()
@@ -131,6 +138,9 @@ fn build_request(args: &Args) -> Result<ConfigureRequest> {
     }
     if let Some(v) = &args.minio {
         services.push(parse_flag("minio", v.as_deref())?);
+    }
+    if let Some(v) = &args.playwright {
+        services.push(parse_flag("playwright", v.as_deref())?);
     }
     if let Some(v) = &args.claude {
         services.push(parse_flag("claude", v.as_deref())?);

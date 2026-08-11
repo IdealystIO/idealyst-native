@@ -4,8 +4,9 @@
 project" actions. Its first subcommand, `configure devcontainer`, initializes
 (or updates) a [Dev Container](https://containers.dev/) for a project and lets
 you toggle optional add-ons: the sidecar services a real app needs — a
-database, Redis, an S3-compatible object store — and AI coding agents (Claude
-Code, Codex) installed inside the container with your host login carried over.
+database, Redis, an S3-compatible object store, a Playwright MCP browser —
+and AI coding agents (Claude Code, Codex) installed inside the container with
+your host login carried over.
 
 ```
 idealyst configure devcontainer            # interactive wizard
@@ -53,10 +54,32 @@ enabled — that's how a re-run knows what to preselect.
 | `database` | `postgres` (default), `mysql` | `DATABASE_URL` |
 | `redis` | — | `REDIS_URL` |
 | `minio` | — | `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` |
+| `playwright` | — | `PLAYWRIGHT_MCP_URL` |
 
-Each service also declares a named volume so its data survives container
-rebuilds. No host ports are published — the dev container reaches each sidecar
-by service name on the compose network.
+Each data-bearing service also declares a named volume so its data survives
+container rebuilds. No host ports are published — the dev container reaches
+each sidecar by service name on the compose network.
+
+### Playwright MCP
+
+`playwright` runs the official [Playwright MCP](https://github.com/microsoft/playwright-mcp)
+server image (`mcr.microsoft.com/playwright/mcp`) as a sidecar, with its
+bundled headless Chromium — so AI agents in the dev container can drive a
+real browser over MCP without a browser (or its ~1 GB of dependencies) ever
+entering the dev image. The server speaks streamable HTTP at
+`$PLAYWRIGHT_MCP_URL` (`http://playwright:8931/mcp`; legacy SSE clients use
+`/sse` instead). Hook it up to Claude Code inside the container with:
+
+```
+claude mcp add --transport http playwright "$PLAYWRIGHT_MCP_URL"
+```
+
+The sidecar's Chromium reaches your app by compose service name — a dev
+server listening on `0.0.0.0:3000` in the dev container is
+`http://dev:3000` to the browser (not `localhost`, which inside the sidecar
+is the sidecar itself). The service passes `--allowed-hosts playwright:8931`
+because the server rejects requests whose `Host` header isn't allowlisted (a
+DNS-rebinding guard that would otherwise 403 the compose-network name).
 
 ## AI coding agents
 
@@ -137,6 +160,7 @@ flag per service, plus a generic `--service` escape hatch:
 | `--minio=remove` | Remove the service |
 | `--minio=reconfigure` | Reset to the default variant (blank config) |
 | `--database=mysql` | Ensure the `mysql` variant (adds or switches) |
+| `--playwright` | Playwright MCP server + headless Chromium sidecar |
 | `--claude` | Claude Code in the container, sharing the host login (`host` variant) |
 | `--claude=volume` | Claude Code with an isolated per-project login |
 | `--codex` | Codex in the container, sharing the host `~/.codex` login |

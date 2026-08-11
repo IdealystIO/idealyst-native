@@ -139,9 +139,45 @@ fn service_fragments_have_expected_shape() {
 
     assert!(devcontainer::service::find("redis").is_some());
     assert!(devcontainer::service::find("minio").is_some());
+    assert!(devcontainer::service::find("playwright").is_some());
     assert!(devcontainer::service::find("claude").is_some());
     assert!(devcontainer::service::find("codex").is_some());
     assert!(devcontainer::service::find("nope").is_none());
+}
+
+#[test]
+fn playwright_sidecar_serves_mcp_on_the_compose_network() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let report = devcontainer::apply(dir, &req(vec![enable("playwright")])).unwrap();
+    assert_eq!(report.added, vec!["playwright".to_string()]);
+
+    let m = managed(dir);
+    assert!(m.contains("mcr.microsoft.com/playwright/mcp"), "official MCP image:\n{m}");
+    // The dev container dials the sidecar by service name; the server must
+    // bind beyond localhost AND allowlist that Host header, or every request
+    // is rejected 403 by its DNS-rebinding guard ("Access is only allowed at
+    // localhost:8931").
+    assert!(m.contains("0.0.0.0"), "must bind all interfaces:\n{m}");
+    assert!(m.contains("--allowed-hosts"), "host allowlist flag:\n{m}");
+    assert!(m.contains("playwright:8931"), "compose-network host allowlisted:\n{m}");
+    assert!(
+        m.contains("PLAYWRIGHT_MCP_URL") && m.contains("http://playwright:8931/mcp"),
+        "agents find the endpoint via env:\n{m}"
+    );
+    // Chromium in this image runs WITHOUT --disable-dev-shm-usage, so the
+    // default 64 MB /dev/shm crashes tabs on heavy pages — the fragment must
+    // size shm explicitly.
+    assert!(m.contains("shm_size"), "shm sizing for chromium:\n{m}");
+    // A sidecar (unlike the agent tools) gets a depends_on edge and touches
+    // nothing in devcontainer.json beyond the compose-file reference.
+    assert!(m.contains("depends_on"), "sidecar dependency edge:\n{m}");
+    let dc = devcontainer_json(dir);
+    assert!(dc.get("features").is_none(), "no features: {dc}");
+    assert!(dc.get("postCreateCommand").is_none(), "no postCreate: {dc}");
+
+    devcontainer::apply(dir, &req(vec![remove("playwright")])).unwrap();
+    assert!(!dir.join(".devcontainer/docker-compose.idealyst.yml").exists());
 }
 
 // --- AI agent CLIs (claude / codex) ---

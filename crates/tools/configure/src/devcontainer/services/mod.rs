@@ -8,6 +8,7 @@ pub mod codex;
 pub mod database;
 pub mod idealyst_cli;
 pub mod minio;
+pub mod playwright;
 pub mod redis;
 
 /// `postCreateCommand` snippet handing a root-owned mount point to the

@@ -117,6 +117,7 @@ pub fn registry() -> Vec<Box<dyn DevService>> {
         Box::new(super::services::database::Database),
         Box::new(super::services::redis::Redis),
         Box::new(super::services::minio::Minio),
+        Box::new(super::services::playwright::Playwright),
         Box::new(super::services::claude::Claude),
         Box::new(super::services::codex::Codex),
         Box::new(super::services::idealyst_cli::IdealystCli),
