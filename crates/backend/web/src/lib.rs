@@ -342,6 +342,12 @@ pub struct WebBackend {
     /// [`Self::hydrate_note_fresh`]).
     #[cfg(feature = "hydrate")]
     pub(crate) hydration_pending_fresh: bool,
+    /// The tag the walker asked for on the mismatching `hydrate_next` —
+    /// carried into [`Self::hydrate_note_fresh`]'s diagnostic so the
+    /// console warning says WHAT the client wanted, not just what the
+    /// server had.
+    #[cfg(feature = "hydrate")]
+    pub(crate) hydration_pending_tag: Option<String>,
     /// The fresh subtree root being built; when the walker `insert`s it,
     /// the remount completes (replace the stale node, resume cursor).
     #[cfg(feature = "hydrate")]
@@ -353,6 +359,19 @@ pub struct WebBackend {
     /// node's next sibling — so the remounted node's siblings adopt).
     #[cfg(feature = "hydrate")]
     pub(crate) hydration_remount_resume: Option<web_sys::Node>,
+    /// NAVIGATOR cursor steering (`hydrate_nav_screen_begin`/`_end`):
+    /// LIFO stack of saved cursors, one frame per in-flight navigator
+    /// initial-screen build. `(true, cursor)` = steering active, restore
+    /// on end; `(false, None)` = the begin ran suppressed/unmatched and
+    /// end must pop without touching the cursor.
+    #[cfg(feature = "hydrate")]
+    pub(crate) hydration_nav_saved: Vec<(bool, Option<web_sys::Node>)>,
+    /// Outlet nodes whose SSR subtree was already consumed by a steered
+    /// screen build. When the author-layout build later adopts one of
+    /// these, the cursor must skip its subtree instead of descending
+    /// into it (the children belong to the screen, already adopted).
+    #[cfg(feature = "hydrate")]
+    pub(crate) hydration_consumed_outlets: Vec<web_sys::Node>,
     pub(crate) _click_closures: Vec<Closure<dyn FnMut()>>,
     /// Keyboard handlers for `Element::Pressable` (Enter/Space →
     /// click). Held so JS doesn't drop them while the element is in
@@ -822,6 +841,69 @@ impl WebBackend {
         None
     }
 
+    /// NAVIGATOR cursor steering, part 1 (see
+    /// `runtime_vocabulary::caps::LifecycleOps::hydrate_nav_screen_begin`
+    /// for the contract): the navigator realizes its initial screen
+    /// BEFORE the layout builds the outlet, but the SSR document nests
+    /// the screen INSIDE the outlet. Save the cursor, move it to the
+    /// server-rendered screen position (first element child of the
+    /// outlet stamped `data-iy-nav-outlet="<base>"` under `root`), and
+    /// remember the outlet so its later adoption skips the consumed
+    /// subtree. When the marker is missing (document from an SSR build
+    /// predating it), the cursor is parked instead — the screen builds
+    /// fresh and `show_in_outlet`'s clear-and-insert swaps it in for the
+    /// server's copy, while the chrome around it still adopts.
+    #[cfg(feature = "hydrate")]
+    pub fn hydrate_nav_screen_begin_impl(&mut self, root: &Node, base: &str) {
+        if !self.hydrating {
+            return;
+        }
+        // Mid-remount (`suppress`): this navigator is inside a subtree
+        // already building fresh — don't disturb the parked remount
+        // cursor; push an inactive frame so `end` pops symmetrically.
+        if self.hydration_suppress {
+            self.hydration_nav_saved.push((false, None));
+            return;
+        }
+        let attr = runtime_shared::primitives::navigator::NAV_OUTLET_HYDRATION_ATTR;
+        let outlet = root
+            .dyn_ref::<web_sys::Element>()
+            .and_then(|el| el.query_selector(&format!("[{attr}=\"{base}\"]")).ok().flatten());
+        match outlet {
+            Some(outlet) => {
+                self.hydration_nav_saved.push((true, self.hydration_cursor.take()));
+                self.hydration_cursor =
+                    outlet.first_element_child().map(|e| e.unchecked_into::<web_sys::Node>());
+                self.hydration_consumed_outlets.push(outlet.unchecked_into());
+            }
+            None => {
+                // No marker — park the cursor for the screen build
+                // (fresh-build fallback), restore it for the layout.
+                self.hydration_nav_saved.push((true, self.hydration_cursor.take()));
+            }
+        }
+    }
+
+    /// NAVIGATOR cursor steering, part 2: restore the cursor saved by
+    /// the matching [`Self::hydrate_nav_screen_begin_impl`] so the
+    /// author-layout build adopts from the navigator's first layout
+    /// node. Any mismatch state armed inside the screen walk is cleared
+    /// with it — the screen subtree is done; a pending flag must not
+    /// leak into the layout build's first create.
+    #[cfg(feature = "hydrate")]
+    pub fn hydrate_nav_screen_end_impl(&mut self) {
+        if !self.hydrating {
+            return;
+        }
+        if let Some((active, saved)) = self.hydration_nav_saved.pop() {
+            if active && !self.hydration_suppress {
+                self.hydration_cursor = saved;
+                self.hydration_pending_fresh = false;
+                self.hydration_pending_tag = None;
+            }
+        }
+    }
+
     /// During hydration, suspend the cursor so the next `create_*` build
     /// fresh without adopting/arming a remount. METHOD form for the
     /// synchronous in-`borrow_mut` caller (end of the navigator frame
@@ -873,12 +955,28 @@ impl WebBackend {
         let cur = self.hydration_cursor.clone()?;
         let el: web_sys::Element = cur.dyn_into().ok()?;
         if el.tag_name().eq_ignore_ascii_case(tag) {
-            self.hydration_cursor = Self::next_preorder(&el, &self.mount);
+            // A steered screen build already consumed this outlet's
+            // subtree (`hydrate_nav_screen_begin`) — adopt the outlet
+            // itself but jump PAST its children, which belong to the
+            // screen, not to whatever the layout build creates next.
+            let consumed = {
+                let pos = self
+                    .hydration_consumed_outlets
+                    .iter()
+                    .position(|n| n.is_same_node(Some(el.as_ref())));
+                pos.map(|i| self.hydration_consumed_outlets.swap_remove(i)).is_some()
+            };
+            self.hydration_cursor = if consumed {
+                Self::next_preorder_skip_subtree(el.as_ref(), &self.mount)
+            } else {
+                Self::next_preorder(&el, &self.mount)
+            };
             Some(el)
         } else {
             // Mismatch — leave the cursor on the stale node; the next
             // fresh node the caller builds becomes the remount root.
             self.hydration_pending_fresh = true;
+            self.hydration_pending_tag = Some(tag.to_string());
             None
         }
     }
@@ -904,6 +1002,7 @@ impl WebBackend {
             Some(el)
         } else {
             self.hydration_pending_fresh = true;
+            self.hydration_pending_tag = Some(tag.to_string());
             None
         }
     }
@@ -920,6 +1019,7 @@ impl WebBackend {
             return;
         }
         self.hydration_pending_fresh = false;
+        let wanted = self.hydration_pending_tag.take();
         let Some(stale) = self.hydration_cursor.clone() else { return };
 
         // Diagnostics: which BRANCH is being remounted.
@@ -943,7 +1043,8 @@ impl WebBackend {
             web_sys::console::warn_1(
                 &format!(
                     "[hydrate] SSR/client diverge — remounting just this subtree (siblings still \
-                     adopt).\n  branch: {}\n  stale SSR node: {}",
+                     adopt).\n  client wanted: <{}>\n  branch: {}\n  stale SSR node: {}",
+                    wanted.as_deref().unwrap_or("?"),
                     chain.join(" > "),
                     here
                 )
@@ -995,6 +1096,7 @@ impl WebBackend {
             // The SSR host at the cursor was never consumed → treat the fresh
             // external node as the replacement for it.
             self.hydration_pending_fresh = true;
+            self.hydration_pending_tag = Some("external".to_string());
             self.hydrate_note_fresh(node);
         }
     }
@@ -1172,11 +1274,17 @@ impl WebBackend {
             #[cfg(feature = "hydrate")]
             hydration_pending_fresh: false,
             #[cfg(feature = "hydrate")]
+            hydration_pending_tag: None,
+            #[cfg(feature = "hydrate")]
             hydration_remount_root: None,
             #[cfg(feature = "hydrate")]
             hydration_remount_stale: None,
             #[cfg(feature = "hydrate")]
             hydration_remount_resume: None,
+            #[cfg(feature = "hydrate")]
+            hydration_nav_saved: Vec::new(),
+            #[cfg(feature = "hydrate")]
+            hydration_consumed_outlets: Vec::new(),
             _click_closures: Vec::new(),
             _pressable_key_closures: Vec::new(),
             _app_key_closure: None,
@@ -3285,6 +3393,15 @@ impl WebBackend {
             // rebuilds create fresh nodes through the normal path.
             self.hydrating = false;
             crate::scheduler::end_hydration_buffering();
+            // Navigator cursor-steering state is scoped to this pass. A
+            // steered outlet whose layout build never adopted it (its
+            // own create diverged) would otherwise sit in
+            // `consumed_outlets` forever, and a post-`finish` rebuild
+            // that happened to reuse the node would wrongly skip its
+            // subtree. Balanced begin/end pairs leave `nav_saved` empty;
+            // clearing is the belt to that suspenders.
+            self.hydration_nav_saved.clear();
+            self.hydration_consumed_outlets.clear();
             // Safety net: a remount whose fresh root was parented by a path
             // that somehow bypassed `hydrate_resync_remount` would leave its
             // stale SSR node orphaned in the DOM, rendering the diverged

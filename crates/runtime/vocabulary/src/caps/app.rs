@@ -95,4 +95,40 @@ pub trait LifecycleOps: Host {
     fn renders_lazy_chunks(&self) -> bool {
         true
     }
+
+    /// Stamp a navigator outlet with the structural hydration marker
+    /// (`runtime_shared::primitives::navigator::NAV_OUTLET_HYDRATION_ATTR`
+    /// = the navigator's base path). SSR implements this so the emitted
+    /// document lets a hydrating client locate the outlet — and thereby
+    /// the server-rendered position of the initial screen. Default no-op:
+    /// live backends have nothing to annotate.
+    ///
+    /// Called by the navigator handlers right after the author-layout
+    /// build captures the outlet node.
+    fn annotate_nav_outlet(&mut self, _outlet: &Self::Node, _base: &str) {}
+
+    /// HYDRATION cursor steering, part 1 of 2. The navigator handlers
+    /// realize the initial screen BEFORE the author layout builds the
+    /// outlet (the mount-order contract: screens must resolve the launch
+    /// URL before chrome), but the server document nests the screen
+    /// INSIDE the outlet. Adoption walks in `create_*` order, so without
+    /// intervention the screen build would consume the outlet's node and
+    /// shift the whole subtree one level (the `[hydrate] diverge` remount
+    /// cascade). A hydrating backend implements this to (a) save the
+    /// adoption cursor, (b) move it to the server-rendered screen
+    /// position — the first element child of the outlet matching
+    /// `[NAV_OUTLET_HYDRATION_ATTR = base]` under `root` — and (c) mark
+    /// that outlet so the later layout-build adoption skips its
+    /// already-consumed subtree. Default no-op (non-hydrating backends,
+    /// and any backend outside its adoption pass).
+    ///
+    /// Must be paired with [`Self::hydrate_nav_screen_end`]; calls nest
+    /// (a navigator mounted inside a screen brackets its own pair).
+    fn hydrate_nav_screen_begin(&mut self, _root: &Self::Node, _base: &str) {}
+
+    /// HYDRATION cursor steering, part 2 of 2: restore the adoption
+    /// cursor saved by the matching [`Self::hydrate_nav_screen_begin`],
+    /// so the author-layout build that follows adopts from where the
+    /// navigator's first layout node actually sits. Default no-op.
+    fn hydrate_nav_screen_end(&mut self) {}
 }

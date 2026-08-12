@@ -32,7 +32,7 @@ pub use shared::{
     record_route_paths,
     screen_flow_fill_rules, set_initial_path, stack_container_rules, stack_screen_fill_rules,
     take_initial_path,
-    NAV_ROOT_HYDRATION_CLASS,
+    NAV_OUTLET_HYDRATION_ATTR, NAV_ROOT_HYDRATION_CLASS,
     take_route_collector, use_can_go_back, use_focus, AmbientNavContext, AmbientNavContextGuard,
     AmbientNavGuard,
     HeaderButton, MountResult, NavBaseGuard, NavCommand, NavId, NavState,

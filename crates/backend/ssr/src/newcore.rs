@@ -443,6 +443,20 @@ impl caps::LifecycleOps for SsrBackend {
     fn renders_lazy_chunks(&self) -> bool {
         false
     }
+
+    /// Stamp the outlet with the structural hydration marker
+    /// (`data-iy-nav-outlet="<base>"`). The emitted document is what the
+    /// hydrating client's `hydrate_nav_screen_begin` queries to find the
+    /// server-rendered screen position — without it the client's
+    /// out-of-document-order screen build consumes the outlet's node and
+    /// the whole subtree shifts one level (remount cascade).
+    fn annotate_nav_outlet(&mut self, outlet: &Self::Node, base: &str) {
+        set_attr(
+            outlet,
+            runtime_shared::primitives::navigator::NAV_OUTLET_HYDRATION_ATTR,
+            base.to_string(),
+        );
+    }
 }
 
 // ===========================================================================

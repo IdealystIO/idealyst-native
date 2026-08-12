@@ -35,6 +35,24 @@ comparison against them is the whole gate.
 | `render_all` / `render_all__about` / `render_all__docs` | the SSG `render_all` crawl's pages (route discovery + parameterized-route skip are asserted separately, in-test) |
 | `default_font_fill` | the walker's asymmetric default-text-font fill contract: STATIC applications fold the theme default into font-less rules, DYNAMIC (reactive) ones do not. The new core briefly folded on the dynamic path too, minting class hashes old-core SSR never mints and breaking website SSG byte-parity site-wide — this pair is the regression net for that whole class of drift. **Amended 2026-08-02** (the one deliberate re-baseline in this corpus): `default_font_fill.head.css` now carries `:root { --iy-default-font: …; font-family: var(--iy-default-font); }`. The old core's frozen output pinned a live-path bug — the document-level font publication was gated on premint use, so non-preminted builds published no document font and every reactively-styled node (plus `<body>` and plain containers) fell back to the browser serif. The `.html` half is byte-identical to the old core's — no minted class hash moved, which is the point: the fix supplies the font by document-root inheritance precisely so the dynamic path keeps not folding. Pinned by `regression_reactive_styled_node_inherits_theme_font` here and `regression_live_world_publishes_the_default_text_font` in runtime-vocabulary; the fold asymmetry itself is still asserted in-test (`folds == 2`), independent of the frozen bytes. |
 
+**Amended 2026-08-11** (navigator-outlet hydration marker): the five
+navigator pages (`swap_navigator`, `swap_navigator__about`,
+`render_all`, `render_all__about`, `render_all__docs`) gained exactly
+one attribute — ` data-iy-nav-outlet=""` on the outlet `<div>` (the
+`ui-cq-container` node). The old core's frozen output pinned a
+hydration bug: the navigator handlers realize the initial screen
+BEFORE the layout builds the outlet, while the document nests the
+screen INSIDE the outlet, so a hydrating client's creation-order
+cursor consumed the outlet node and shifted the whole page one level —
+the `[hydrate] SSR/client diverge` remount cascade on every navigator
+app. The marker (`LifecycleOps::annotate_nav_outlet`, value = the
+navigator's base path) is what lets the client steer its cursor into
+the outlet for the screen build (`hydrate_nav_screen_begin`/`_end`).
+No minted class hash moved; no other byte moved. Pinned by
+`newcore_nav_outlet_marker.rs` here and
+`regression_nav_screen_cursor_steering_adopts_out_of_order_build` in
+backend-web's browser suite.
+
 Minted class hashes are content-derived and therefore process-stable, so
 they are frozen as-is (verified: a freeze run followed by a plain run is
 green).

@@ -1798,6 +1798,28 @@ pub fn screen_flow_fill_rules() -> Rc<crate::style::StyleRules> {
 /// it into fresh DOM.
 pub const NAV_ROOT_HYDRATION_CLASS: &str = "idealyst-nav-root";
 
+/// Structural marker attribute an SSR/SSG document carries on every
+/// navigator OUTLET node: `data-iy-nav-outlet="<navigator base>"`
+/// (`""` for the root navigator, `"/settings"` for one nested under
+/// that prefix). Stamped server-side via
+/// `LifecycleOps::annotate_nav_outlet`; consumed client-side by
+/// `LifecycleOps::hydrate_nav_screen_begin`.
+///
+/// Why it exists: the navigator handlers realize the initial SCREEN
+/// *before* the author layout builds the outlet (the mount-order
+/// contract — screens must peek the launch URL before chrome), but the
+/// server DOCUMENT nests the screen *inside* the outlet. Hydration
+/// adopts in `create_*` order, so without a cursor jump the screen
+/// build consumes the outlet's node and the whole subtree shifts one
+/// level — the `[hydrate] SSR/client diverge` remount cascade. The
+/// marker lets the hydrating client find where the server put the
+/// screen and steer the adoption cursor there for the screen build.
+/// The base is the value so nested navigators resolve their OWN outlet
+/// (a nested navigator's base strictly extends its parent's, and
+/// `querySelector` under the navigator's adopted root sees only its
+/// subtree).
+pub const NAV_OUTLET_HYDRATION_ATTR: &str = "data-iy-nav-outlet";
+
 
 
 /// A header-bar button: an icon or a text label plus a tap handler. Used by the

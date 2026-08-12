@@ -244,23 +244,86 @@ impl FrameworkSource {
         // when someone actually hits the case.
         let url = "https://github.com/IdealystIO/idealyst-native";
         let mut out = format!("\n[patch.\"{}\"]\n", url);
-        for (name, sub) in [
-            ("runtime-core", "crates/runtime/core"),
-            ("dev-hot", "crates/dev/hot"),
-            ("runtime-macros", "crates/runtime/macros"),
-            ("mcp-catalog", "crates/mcp/catalog"),
-            ("wire", "crates/dev/wire"),
-            ("dev-client", "crates/dev/client"),
-            ("dev-server", "crates/dev/server"),
-            ("backend-web", "crates/backend/web"),
-            ("idea-ui", "crates/ui/idea-ui"),
-        ] {
-            out.push_str(&format!(
-                "{name} = {{ path = \"{}\" }}\n",
-                root.join(sub).display(),
-            ));
+        // Patch EVERY consumable framework crate (workspace members under
+        // `crates/`), not a hand-picked subset. The wrapper is its own
+        // workspace, so the user's git-pinned deps resolve inside it —
+        // any framework crate MISSING from this block resolves from git
+        // while its siblings resolve from the local checkout, and the
+        // graph ends up with two `runtime_scene`/`runtime_shared`/…
+        // instances ("expected `Element`, found `Element`"). A hardcoded
+        // list rotted exactly that way (it predated the runtime-v2 split
+        // and listed 9 crates). Unused entries only cost a cargo warning.
+        for (name, dir) in Self::workspace_framework_crates(root) {
+            out.push_str(&format!("{name} = {{ path = \"{}\" }}\n", dir.display()));
         }
         out
+    }
+
+    /// Enumerate the framework workspace's consumable crates —
+    /// `(package name, manifest dir)` for every workspace member whose
+    /// directory sits under `<root>/crates/`. Examples, websites and
+    /// benchmarks are members too but are never git-dep'd by consumers,
+    /// so they're skipped to keep the generated patch block readable.
+    ///
+    /// Uses `cargo metadata --no-deps` (fast; no network, no resolve of
+    /// the full graph). If cargo can't be run — a broken member manifest
+    /// mid-edit, say — fall back to a minimal static list so wrapper
+    /// generation still works for the common crates.
+    fn workspace_framework_crates(root: &Path) -> Vec<(String, PathBuf)> {
+        let run = || -> Result<Vec<(String, PathBuf)>> {
+            let out = Command::new("cargo")
+                .arg("metadata")
+                .arg("--no-deps")
+                .arg("--format-version")
+                .arg("1")
+                .arg("--manifest-path")
+                .arg(root.join("Cargo.toml"))
+                .output()
+                .context("running `cargo metadata` on the framework workspace")?;
+            anyhow::ensure!(out.status.success(), "cargo metadata failed");
+            let meta: serde_json::Value = serde_json::from_slice(&out.stdout)
+                .context("parsing `cargo metadata` output")?;
+            let crates_root = root.join("crates");
+            let mut crates: Vec<(String, PathBuf)> = meta["packages"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|pkg| {
+                    let name = pkg["name"].as_str()?;
+                    let manifest = Path::new(pkg["manifest_path"].as_str()?);
+                    let dir = manifest.parent()?;
+                    dir.starts_with(&crates_root)
+                        .then(|| (name.to_string(), dir.to_path_buf()))
+                })
+                .collect();
+            crates.sort();
+            Ok(crates)
+        };
+        match run() {
+            Ok(crates) if !crates.is_empty() => crates,
+            _ => [
+                ("runtime-core", "crates/runtime/core"),
+                ("runtime-shared", "crates/runtime/shared"),
+                ("runtime-scene", "crates/runtime/scene"),
+                ("runtime-vocabulary", "crates/runtime/vocabulary"),
+                ("runtime-world", "crates/runtime/world"),
+                ("runtime-layout", "crates/runtime/layout"),
+                ("runtime-macros", "crates/runtime/macros"),
+                ("dev-hot", "crates/dev/hot"),
+                ("mcp-catalog", "crates/mcp/catalog"),
+                ("wire", "crates/dev/wire"),
+                ("dev-client", "crates/dev/client"),
+                ("dev-server", "crates/dev/server"),
+                ("backend-web", "crates/backend/web"),
+                ("backend-ssr", "crates/backend/ssr"),
+                ("css", "crates/css"),
+                ("idea-ui", "crates/ui/idea-ui"),
+                ("idea-theme", "crates/ui/idea-theme"),
+            ]
+            .into_iter()
+            .map(|(n, s)| (n.to_string(), root.join(s)))
+            .collect(),
+        }
     }
 
     /// Render a single dependency line for a framework crate.

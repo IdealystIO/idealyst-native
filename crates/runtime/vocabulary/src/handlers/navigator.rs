@@ -1069,6 +1069,10 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
 
     // Initial screen — mounted BEFORE the author layout builds, matching
     // the old walker (screen ops precede the microtask-deferred chrome).
+    // Under SSR hydration the server document nests this screen inside
+    // the outlet (built below) — the begin/end pair steers the adoption
+    // cursor there and back. See `LifecycleOps::hydrate_nav_screen_begin`.
+    backend.borrow_mut().hydrate_nav_screen_begin(&root, &base);
     let initial = realize_screen(
         &shared.backend,
         &shared.registry,
@@ -1081,6 +1085,7 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         initial_query,
         None,
     );
+    backend.borrow_mut().hydrate_nav_screen_end();
     // Root navigator: the nested subtree mounted synchronously above, so
     // every nested navigator already peeked the launch URL. Clear the
     // slot so a later rebuild isn't poisoned (old walker contract).
@@ -1148,6 +1153,11 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         "swap_navigator: the author layout must splat `navigator_outlet()` exactly once — \
          no outlet was found in the built layout"
     );
+    // SSR: stamp the outlet with the hydration marker so the client can
+    // steer its adoption cursor (see `hydrate_nav_screen_begin` above).
+    if let Some(outlet) = &outlet {
+        backend.borrow_mut().annotate_nav_outlet(outlet, &base);
+    }
 
     // Retain the chrome subtree for the navigator's lifetime. Riding on
     // `shared` (which the driver effect owns) keeps teardown one drop.
@@ -1653,8 +1663,14 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         });
     }
 
-    // Initial screen before chrome (old walker order).
+    // Initial screen before chrome (old walker order). Under SSR
+    // hydration the server document nests this screen inside the outlet
+    // (built below) — the begin/end pair steers the adoption cursor
+    // there and back so the out-of-document-order build still adopts.
+    // See `LifecycleOps::hydrate_nav_screen_begin`.
+    backend.borrow_mut().hydrate_nav_screen_begin(&root, &base);
     let initial = shared.mount(initial_route, &initial_path, initial_params, initial_query.clone());
+    backend.borrow_mut().hydrate_nav_screen_end();
     if base.is_empty() {
         set_initial_path(None);
     }
@@ -1697,6 +1713,11 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         outlet.is_some(),
         "stack_navigator: the author layout must splat `navigator_outlet()`"
     );
+    // SSR: stamp the outlet with the hydration marker so the client can
+    // steer its adoption cursor (see `hydrate_nav_screen_begin` above).
+    if let Some(outlet) = &outlet {
+        backend.borrow_mut().annotate_nav_outlet(outlet, &base);
+    }
 
     {
         let mut parent = root.clone();

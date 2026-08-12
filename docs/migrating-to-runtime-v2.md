@@ -1018,8 +1018,13 @@ the amendment is recorded in that directory's `README.md` — what moved,
 byte class by byte class, and the tests that pin the new behavior.
 Amendments so far: the website SSG corpus's copy-edit re-baseline plus
 its 2026-08-02 entry (the document-level default-font publication fix
-and the `ControlRow` focus-ring relocation), and the SSR corpus's
-matching `default_font_fill.head.css` amendment. The old core's frozen
+and the `ControlRow` focus-ring relocation), the SSR corpus's
+matching `default_font_fill.head.css` amendment, and the 2026-08-11
+navigator-outlet hydration marker (`data-iy-nav-outlet` on every
+outlet, SSR + website SSG corpora) — the frozen output pinned the
+navigator remount cascade: without the marker a hydrating client's
+creation-order cursor consumed the outlet node and every screen
+subtree remounted instead of adopting. The old core's frozen
 output rendered reactively-styled nodes in the browser serif — parity
 with a bug is not a goal, but every departure is enumerated, reviewed
 rule-by-rule, and pinned by its own regression tests before the freeze

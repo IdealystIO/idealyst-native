@@ -1313,6 +1313,144 @@ fn insert_at_removes_stale_ssr_node_on_divergence_remount() {
     crate::scheduler::end_hydration_buffering();
 }
 
+/// REGRESSION TEST — the SSG navigator remount cascade (every screen
+/// subtree of a navigator app logged `[hydrate] SSR/client diverge` and
+/// remounted instead of adopting).
+///
+/// The navigator handlers realize the initial SCREEN before the author
+/// layout builds the outlet, but the SSR document nests the screen
+/// INSIDE the outlet. Without cursor steering the screen build consumed
+/// the outlet's node and every later view adopted its parent's node —
+/// a whole-page one-level shift that cascaded into remounts at every
+/// span-vs-div boundary.
+///
+/// This test replays the navigator's exact create order against an
+/// SSR-shaped document and asserts every node adopts its true
+/// counterpart: begin() steers the cursor to the marked outlet's first
+/// child for the screen build, end() restores it, the layout build
+/// adopts the outlet WITHOUT descending into its consumed subtree, and
+/// post-outlet chrome still adopts.
+#[cfg(feature = "hydrate")]
+#[wasm_bindgen_test]
+fn regression_nav_screen_cursor_steering_adopts_out_of_order_build() {
+    install_mount();
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let app = doc.get_element_by_id("app").unwrap();
+
+    // SSR document for a stack navigator whose layout is
+    // [outlet, chrome-after]: the screen (with a text span) nests
+    // inside the marked outlet.
+    app.set_inner_html(
+        r#"<div class="navroot"><div data-iy-nav-outlet=""><div class="screen"><span>hi</span></div></div><div class="chrome"></div></div>"#,
+    );
+    let ssr_screen = doc.query_selector("#app .screen").unwrap().unwrap();
+    let ssr_outlet = doc.query_selector("#app [data-iy-nav-outlet]").unwrap().unwrap();
+    let ssr_chrome = doc.query_selector("#app .chrome").unwrap().unwrap();
+
+    let mut backend = WebBackend::hydrate("#app");
+
+    // Navigator mount order: root → (steered) screen → layout.
+    let root = backend.create_view_impl(&Default::default());
+    backend.hydrate_nav_screen_begin_impl(&root, "");
+
+    // Screen build. Pre-fix this create adopted the OUTLET node (the
+    // one-level shift); it must adopt the screen root.
+    let screen = backend.create_view_impl(&Default::default());
+    assert!(
+        screen
+            .dyn_ref::<web_sys::Element>()
+            .unwrap()
+            .is_same_node(Some(ssr_screen.as_ref())),
+        "the steered screen build must adopt the server's screen root, \
+         not the outlet (the one-level-shift bug)",
+    );
+    // The screen's text leaf adopts the span inside it.
+    let txt = crate::primitives::text::create(&mut backend, "hi");
+    assert_eq!(
+        txt.unchecked_ref::<web_sys::Element>().tag_name().to_lowercase(),
+        "span",
+        "screen text adopts the SSR span",
+    );
+
+    backend.hydrate_nav_screen_end_impl();
+
+    // Layout build: the outlet adopts its own node…
+    let outlet = backend.create_view_impl(&Default::default());
+    assert!(
+        outlet
+            .dyn_ref::<web_sys::Element>()
+            .unwrap()
+            .is_same_node(Some(ssr_outlet.as_ref())),
+        "the layout build must adopt the outlet node after the restore",
+    );
+    // …and the cursor SKIPS the outlet's consumed subtree, so the
+    // chrome sibling adopts its own node instead of the screen's.
+    let chrome = backend.create_view_impl(&Default::default());
+    assert!(
+        chrome
+            .dyn_ref::<web_sys::Element>()
+            .unwrap()
+            .is_same_node(Some(ssr_chrome.as_ref())),
+        "post-outlet chrome must adopt its own node — descending into the \
+         consumed outlet subtree would re-shift everything after it",
+    );
+
+    // Clean adoption throughout: no remount armed anywhere.
+    assert!(
+        !backend.hydration_pending_fresh,
+        "a fully-adopting navigator mount must not arm any remount",
+    );
+
+    // TEST HYGIENE: disarm the hydration microtask buffer (see the
+    // note in `text_input_create_adopts_ssr_input_during_hydration`).
+    crate::scheduler::end_hydration_buffering();
+}
+
+/// Degraded-mode companion: a document WITHOUT the outlet marker (an
+/// SSR build predating it) must not shift-adopt. `begin` parks the
+/// cursor so the screen builds fresh, `end` restores it, and the layout
+/// build still adopts the outlet node — the screen is swapped in by the
+/// navigator's `show_in_outlet` (clear + insert), chrome still adopts.
+#[cfg(feature = "hydrate")]
+#[wasm_bindgen_test]
+fn nav_screen_steering_without_marker_builds_screen_fresh_and_layout_adopts() {
+    install_mount();
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let app = doc.get_element_by_id("app").unwrap();
+
+    app.set_inner_html(
+        r#"<div class="navroot"><div class="outlet"><div class="screen"></div></div></div>"#,
+    );
+    let ssr_outlet = doc.query_selector("#app .outlet").unwrap().unwrap();
+
+    let mut backend = WebBackend::hydrate("#app");
+
+    let root = backend.create_view_impl(&Default::default());
+    backend.hydrate_nav_screen_begin_impl(&root, "");
+    // No marker → parked cursor → fresh build (NOT an adoption of the
+    // outlet, which is the shift this whole fix removes).
+    let screen = backend.create_view_impl(&Default::default());
+    assert!(
+        !screen
+            .dyn_ref::<web_sys::Element>()
+            .unwrap()
+            .is_same_node(Some(ssr_outlet.as_ref())),
+        "without the marker the screen must build fresh, never consume the outlet",
+    );
+    backend.hydrate_nav_screen_end_impl();
+
+    let outlet = backend.create_view_impl(&Default::default());
+    assert!(
+        outlet
+            .dyn_ref::<web_sys::Element>()
+            .unwrap()
+            .is_same_node(Some(ssr_outlet.as_ref())),
+        "the layout build adopts the outlet after the restore",
+    );
+
+    crate::scheduler::end_hydration_buffering();
+}
+
 /// Count element children of `el` via the sibling chain (`.children()` /
 /// `child_element_count()` aren't in this crate's enabled web-sys feature
 /// set; `first_element_child` / `next_element_sibling` are).

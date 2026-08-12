@@ -760,6 +760,18 @@ impl caps::LifecycleOps for WebBackend {
     fn is_hydrating(&self) -> bool {
         WebBackend::is_hydrating_impl(self)
     }
+
+    fn hydrate_nav_screen_begin(&mut self, root: &Self::Node, base: &str) {
+        #[cfg(feature = "hydrate")]
+        WebBackend::hydrate_nav_screen_begin_impl(self, root, base);
+        #[cfg(not(feature = "hydrate"))]
+        let _ = (root, base);
+    }
+
+    fn hydrate_nav_screen_end(&mut self) {
+        #[cfg(feature = "hydrate")]
+        WebBackend::hydrate_nav_screen_end_impl(self);
+    }
 }
 
 // ---------------------------------------------------------------------------

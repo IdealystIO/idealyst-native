@@ -35,6 +35,15 @@ fn so the navigator walker's `|| B::schedule_layout_pass()` hook shape is
 preserved), `is_hydrating` ⏳ (web hydration policy — expected to fold into the
 P3 web driver; assigned here so the bridge stays total), `renders_lazy_chunks`
 
+Since grown by three no-op-default methods that are NOT part of the 159-method
+mapping above (new surface, no old-`Backend` counterpart):
+`annotate_nav_outlet` (SSR stamps `data-iy-nav-outlet` so a hydrating client
+can find the server's outlet) and `hydrate_nav_screen_begin` /
+`hydrate_nav_screen_end` (web steers the adoption cursor across the
+navigator's screen-before-outlet build order). They live here so the navigator
+handlers stay backend-agnostic while SSR and web cooperate on hydration — see
+`backend/web/src/newcore_hydrate.rs`.
+
 ## `caps::ViewOps` (2)
 
 `create_view`, `make_view_handle`

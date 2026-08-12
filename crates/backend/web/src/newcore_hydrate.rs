@@ -86,17 +86,33 @@
 //!   `WebBackend::new`, so this boot degrades to clear-and-rebuild (same
 //!   flicker as a fresh boot, nothing broken).
 //!
+//! # Navigator adoption (cursor steering)
+//!
+//! The vocabulary navigator handlers realize the initial SCREEN before
+//! the author layout builds the outlet (screens must resolve the launch
+//! URL before chrome), while the server document nests the screen
+//! INSIDE the outlet — an out-of-document-order build that would shift
+//! the adoption cursor one level for the whole page (every view adopts
+//! its parent's node until the first tag break, then the remount
+//! cascade). Closed by cursor steering: SSR stamps every outlet with
+//! `data-iy-nav-outlet="<base>"`
+//! (`LifecycleOps::annotate_nav_outlet`), and the handlers bracket the
+//! initial-screen realize with `hydrate_nav_screen_begin`/`_end` — the
+//! web impls jump the cursor to the marked outlet's first child for the
+//! screen build, restore it for the layout build, and skip the
+//! outlet's consumed subtree when the layout adopts it. Pinned by
+//! `tests.rs::regression_nav_screen_cursor_steering_adopts_out_of_order_build`
+//! and backend-ssr's `newcore_nav_outlet_marker` suite. A document
+//! without the marker (from an SSR build predating it) degrades
+//! gracefully: the screen builds fresh (`show_in_outlet`'s
+//! clear-and-insert swaps it in), the chrome around it still adopts.
+//!
 //! # Known gaps (deliberate, documented)
 //!
-//! - **Navigator / portal hydration**: the old SDK navigator handlers'
-//!   adopt helpers (`hydrate_adopt_container`, `hydrate_enter_region`,
-//!   the `idealyst-nav-root` marker walk) are reachable through the
-//!   delegated `create_navigator`, but the new-core vocabulary navigator
-//!   handler defers screen/chrome builds through `runtime_world`
-//!   microtasks that are NOT hydration-aware; navigator screens will take
-//!   the mismatch-remount path rather than adopting. Same for portal
-//!   content (never server-rendered in place). Covered when the
-//!   vocabulary navigator handler grows adoption support.
+//! - **Portal hydration**: portal content is never server-rendered in
+//!   place, so it always builds fresh. Deferred (microtask) screen
+//!   builds — lazy chunks resolving after `finish` — still take the
+//!   mismatch-remount path rather than adopting.
 //! - ~~Viewport reconciliation~~ CLOSED: the boot now creates the
 //!   per-world viewport ctx (`runtime_vocabulary::viewport`) seeded from
 //!   the SSR viewport, then — post-`finish` — installs the new-core
