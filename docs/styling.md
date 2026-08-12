@@ -260,6 +260,66 @@ token is exactly the set that needs to re-apply, by construction.
 > token entries; the framework core only knows about the flat
 > `(name → TokenValue)` table.
 
+### Declaring every palette (static rendering)
+
+`install_tokens` publishes the palette that is active *right now*, which
+is all a live app needs — it re-publishes on every swap. A statically
+rendered page is different: its HTML is written at build time, before
+the reader's system preference or stored choice exists. Ship only the
+active palette and a dark-preferring reader gets the light one painted
+first, corrected to dark only once the wasm bundle boots. That is the
+white flash on nearly every SSG site.
+
+`install_theme_palettes` fixes it by declaring the palettes the app can
+switch between, so a static render can serialize them all:
+
+```rust
+install_theme_palettes(&[
+    ThemePalette { name: "light", scheme: Some(ColorScheme::Light), tokens: light_tokens() },
+    ThemePalette { name: "dark",  scheme: Some(ColorScheme::Dark),  tokens: dark_tokens() },
+]);
+```
+
+SSR turns that into, after the active `:root` block:
+
+```css
+:root{color-scheme:light dark;}
+@media (prefers-color-scheme: dark){:root{--color-background:#171512;/* …deltas… */}}
+:root:where([data-theme="dark"]){--color-background:#171512;/* …deltas… */}
+```
+
+so the **first paint already matches the reader, with no JavaScript**.
+Only tokens that differ from the active palette are repeated, and
+`color-scheme` is declared so the browser paints its own canvas, form
+controls and scrollbars to match — without it a dark page still flashes
+a white canvas behind perfectly correct tokens.
+
+`idea-ui` wraps the common case in one call:
+`install_idea_theme_schemes(light_theme(), dark_theme())` installs
+whichever matches `color_scheme()` and declares both. Apps driving the
+theme from their own signal keep their existing install and call
+`install_theme_palettes` alongside it (`idea_theme_palette(name, scheme,
+theme)` converts a typed theme into a palette).
+
+**Persisting a user's choice is the app's job**, deliberately. CSS
+cannot read `localStorage`, so a stored override that must survive the
+first paint needs a small blocking inline `<head>` script that stamps
+`data-theme="dark"` on the document element; the emitted CSS already
+answers to it. The framework does not inject that script, and an app
+that stamps the attribute owns keeping it in sync when the user toggles.
+
+The attribute rules are wrapped in `:where()` so they add no
+specificity. That is load-bearing: it keeps them at `(0,1,0)`, the same
+as the plain `:root` the web backend writes at boot, so the attribute
+wins before boot (later in the sheet) and the running app's own theme
+wins after (its sheet is appended later). The bare `[data-theme]` form
+would be `(0,2,0)` and would permanently pin whatever the attribute
+said, overriding every subsequent theme swap.
+
+Backends that render live ignore all of this; they keep receiving the
+active palette through `install_tokens` exactly as before, and an app
+that declares no palettes emits byte-identical CSS.
+
 ---
 
 ## How styles reach the backend

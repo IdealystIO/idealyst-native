@@ -956,6 +956,72 @@ pub fn set_idea_theme<T: IdeaTheme>(theme: T) {
     set_theme(theme);
 }
 
+/// Describe one switchable palette to the framework WITHOUT installing
+/// it — its token set plus the name and system preference it answers to.
+///
+/// Only static rendering consumes these. A live app re-publishes tokens
+/// on every swap, so it never needs the inactive palettes; a
+/// server-rendered page is written before the reader's preference is
+/// knowable, so it must carry them all or it paints the render-time
+/// theme and corrects only once the bundle boots — the white flash
+/// before a dark page settles.
+///
+/// Pair with [`install_theme_palettes`](runtime_core::install_theme_palettes):
+///
+/// ```ignore
+/// // Any install style — reactive here — still drives the LIVE app:
+/// install_idea_theme_reactive(move || themed(dark_mode().get()));
+/// // …and this tells a static render what the other palettes look like:
+/// install_theme_palettes(&[
+///     idea_theme_palette("light", Some(ColorScheme::Light), themed(false)),
+///     idea_theme_palette("dark", Some(ColorScheme::Dark), themed(true)),
+/// ]);
+/// ```
+///
+/// `scheme` is what earns a `prefers-color-scheme` block (no JavaScript,
+/// no flash). `None` makes the palette reachable only through
+/// `[data-theme="<name>"]` — right for a brand or high-contrast variant
+/// that no system preference implies.
+pub fn idea_theme_palette<T: IdeaTheme>(
+    name: &'static str,
+    scheme: Option<runtime_core::ColorScheme>,
+    theme: T,
+) -> runtime_core::ThemePalette {
+    runtime_core::ThemePalette {
+        name,
+        scheme,
+        tokens: IdeaThemeRef::new(theme).tokens(),
+    }
+}
+
+/// Install a light/dark pair: the one matching the platform's reported
+/// [`color_scheme`](runtime_core::color_scheme) becomes active, and BOTH
+/// are declared so a static render can serialize them
+/// ([`idea_theme_palette`] explains why that matters).
+///
+/// The one-call form of the common case. It gives a statically rendered
+/// site a correct first paint for light and dark readers alike with no
+/// script at all. Apps that also want a manual toggle should drive the
+/// live theme themselves — `install_idea_theme_reactive` on their own
+/// signal — and call
+/// [`install_theme_palettes`](runtime_core::install_theme_palettes)
+/// directly, since this function's active choice is a one-shot read of
+/// the platform preference rather than a subscription.
+///
+/// To let a stored choice survive the first paint, stamp
+/// `data-theme="light"|"dark"` on the document element from a small
+/// inline `<head>` script; the emitted CSS already answers to it. Keeping
+/// that attribute in sync with later toggles is the app's job.
+pub fn install_idea_theme_schemes<T: IdeaTheme + Clone>(light: T, dark: T) {
+    let prefers_dark = matches!(runtime_core::color_scheme(), runtime_core::ColorScheme::Dark);
+    let active = if prefers_dark { dark.clone() } else { light.clone() };
+    install_idea_theme(active);
+    runtime_core::install_theme_palettes(&[
+        idea_theme_palette("light", Some(runtime_core::ColorScheme::Light), light),
+        idea_theme_palette("dark", Some(runtime_core::ColorScheme::Dark), dark),
+    ]);
+}
+
 /// Install an idea theme whose choice is **reactive**: `select` re-runs whenever
 /// a signal it reads changes, swapping the active theme — so a dark-mode toggle
 /// (or any signal-driven theme) needs no hand-rolled `effect!` that calls

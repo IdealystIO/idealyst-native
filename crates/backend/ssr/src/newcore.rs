@@ -412,6 +412,25 @@ impl caps::AppEnvOps for SsrBackend {
         runtime_shared::Platform::Web
     }
 
+    /// A server has no reader to ask, so it renders the LIGHT palette and
+    /// says so. The alternate palettes ride the emitted
+    /// `prefers-color-scheme` rules
+    /// (`caps::StyleOps::install_theme_palettes`), which is what makes the
+    /// first paint match a dark-preferring reader — the render itself
+    /// stays deterministic, which SSG requires (one HTML file serves
+    /// everyone).
+    ///
+    /// Reporting `Light` rather than inheriting the trait's `Auto`
+    /// default is deliberate. Every app spells the check
+    /// `matches!(color_scheme(), ColorScheme::Dark)`, so `Auto` already
+    /// produced the light branch — but silently, while claiming no
+    /// preference was known. Naming it makes the emitted `:root` block
+    /// and the reported scheme agree, which is the invariant the palette
+    /// deltas are computed against.
+    fn color_scheme(&self) -> runtime_shared::ColorScheme {
+        runtime_shared::ColorScheme::Light
+    }
+
     fn set_page_metadata(&mut self, meta: &runtime_shared::PageMetadata) {
         self.metadata = meta.clone();
     }
@@ -1093,6 +1112,13 @@ impl caps::StyleOps for SsrBackend {
 
     fn install_tokens(&mut self, tokens: &[runtime_shared::TokenEntry]) {
         self.tokens = tokens.to_vec();
+    }
+
+    /// Capture every declared palette; `head_css` turns them into the
+    /// `prefers-color-scheme` / `[data-theme]` rules that make the first
+    /// paint match the reader instead of the render.
+    fn install_theme_palettes(&mut self, palettes: &[runtime_shared::ThemePalette]) {
+        self.palettes = palettes.to_vec();
     }
 
     fn update_tokens(&mut self, tokens: &[runtime_shared::TokenEntry]) {

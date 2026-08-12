@@ -129,6 +129,25 @@ pub trait StyleOps: Host {
         // default: no-op
     }
 
+    /// Declare EVERY palette the app can switch between, not just the
+    /// active one ([`install_tokens`](Self::install_tokens) keeps that
+    /// role and is unaffected).
+    ///
+    /// Only static rendering uses this. A live backend re-publishes
+    /// tokens whenever the app swaps theme, so it never needs the
+    /// inactive palettes; a server-rendered document is written once,
+    /// before the reader's system preference or stored choice is
+    /// knowable, so it must carry them all to paint correctly on the
+    /// first frame. SSR turns them into `prefers-color-scheme` and
+    /// `[data-theme]` rules (`css::theme_palettes_css`).
+    ///
+    /// Default no-op: a backend that does not statically serialize its
+    /// styles has nothing to do here.
+    #[allow(unused_variables)]
+    fn install_theme_palettes(&mut self, palettes: &[runtime_shared::ThemePalette]) {
+        // default: no-op
+    }
+
     /// A styled node is being torn down; free per-node style state.
     #[allow(unused_variables)]
     fn on_node_unstyled(&mut self, node: &Self::Node) {

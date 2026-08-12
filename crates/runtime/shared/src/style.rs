@@ -3374,6 +3374,40 @@ pub struct TokenEntry {
     pub value: TokenValue,
 }
 
+/// One complete, NAMED token palette an app can switch between —
+/// declared alongside the active theme so a backend can publish every
+/// palette, not just the one that happens to be active.
+///
+/// This exists for static rendering. `install_tokens` publishes exactly
+/// one palette (whichever the app resolved at render time), which is all
+/// a live app needs: it re-publishes on swap. A server-rendered document
+/// has no such luxury — the HTML is written once, and the reader's
+/// system preference (or stored choice) is unknown at that moment. Given
+/// the full set, SSR can emit every palette up front —
+/// `@media (prefers-color-scheme: …)` for the system default plus
+/// `[data-theme="<name>"]` for an app-supplied override — so the first
+/// paint is already correct and never flashes the wrong theme.
+///
+/// Backends that render live (web, UIKit, …) ignore these: they receive
+/// the active palette through `install_tokens` as before.
+#[derive(Clone, Debug)]
+pub struct ThemePalette {
+    /// Stable identifier, used as the `[data-theme="<name>"]` value.
+    /// Conventionally `"light"` / `"dark"`, but any app-defined variant
+    /// name works — it just has to match what the app writes onto the
+    /// document element.
+    pub name: &'static str,
+    /// The system preference this palette serves, when it serves one.
+    /// `Some(Light)` / `Some(Dark)` gets a `prefers-color-scheme` block
+    /// so the palette applies with no JavaScript; `None` means the
+    /// palette is reachable only by explicit `[data-theme]` selection
+    /// (a high-contrast or brand variant, say).
+    pub scheme: Option<crate::host::ColorScheme>,
+    /// The palette's complete token set — same shape `install_tokens`
+    /// takes.
+    pub tokens: Vec<TokenEntry>,
+}
+
 /// The concrete value carried by a token. The variant determines how
 /// the backend formats it (color string, pixel length, raw number).
 ///

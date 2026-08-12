@@ -94,6 +94,10 @@ struct ThemeState {
     /// Latest full token install, pending backend delivery. Single slot
     /// (latest wins) — same contract as the old `PENDING_TOKENS`.
     pending_install: Option<Vec<TokenEntry>>,
+    /// Latest full palette declaration, pending backend delivery. Single
+    /// slot, latest wins — the set is a complete description of what the
+    /// app can switch between, so an older one is never interesting.
+    pending_palettes: Option<Vec<runtime_shared::ThemePalette>>,
     /// Token-update batches pending backend delivery. Accumulate — every
     /// batch reaches the backend (old `PENDING_TOKEN_UPDATES`).
     pending_updates: Vec<Vec<TokenEntry>>,
@@ -151,6 +155,7 @@ impl Default for ThemeState {
     fn default() -> Self {
         ThemeState {
             pending_install: None,
+            pending_palettes: None,
             pending_updates: Vec::new(),
             values: HashMap::new(),
             default_text_font: None,
@@ -271,6 +276,13 @@ impl ThemeCtx {
         self.version.update(|v| v + 1);
     }
 
+    /// See [`install_theme_palettes`]. Handler-safe (no ambient world
+    /// needed).
+    pub fn install_theme_palettes(&self, palettes: &[runtime_shared::ThemePalette]) {
+        self.state.borrow_mut().pending_palettes = Some(palettes.to_vec());
+        self.version.update(|v| v + 1);
+    }
+
     /// See [`update_tokens`]. Handler-safe (no ambient world needed).
     pub fn update_tokens(&self, tokens: &[TokenEntry]) {
         {
@@ -364,6 +376,24 @@ pub fn update_tokens(tokens: &[TokenEntry]) {
     theme_ctx_handler_safe().update_tokens(tokens);
 }
 
+/// Declare every palette the app can switch between, so a STATIC render
+/// can serialize them all. Complements [`install_tokens`], which still
+/// carries the one active palette and drives every live backend.
+///
+/// A live app never needs this: it re-publishes tokens on each swap. A
+/// server-rendered page does, because its HTML is written before the
+/// reader's system preference (or stored choice) exists. Given the full
+/// set, SSR emits `prefers-color-scheme` rules for the system default
+/// plus `[data-theme="<name>"]` rules an app-supplied script can select
+/// — so the first paint is right and never flashes the wrong theme.
+///
+/// Call it once, alongside the install of the active theme, and pass the
+/// SAME token sets the app would install for each variant. Backends that
+/// don't statically serialize (web, UIKit, …) ignore it.
+pub fn install_theme_palettes(palettes: &[runtime_shared::ThemePalette]) {
+    theme_ctx_handler_safe().install_theme_palettes(palettes);
+}
+
 /// Install the theme's default text [`FontFamily`] for the ambient
 /// world (`None` clears). Filled into a resolved rule's absent
 /// `font_family` at apply time — the cross-platform theme-font default
@@ -412,10 +442,11 @@ pub(crate) fn flush_pending_host_state<H: StyleOps + crate::caps::AppEnvOps>(
     let ctx = theme_ctx();
     // Take everything out of the borrow first — backend calls may
     // re-enter theme state (e.g. a recorder that styles something).
-    let (install, updates, app_bg, scrollbar, default_font) = {
+    let (install, palettes, updates, app_bg, scrollbar, default_font) = {
         let mut s = ctx.state.borrow_mut();
         (
             s.pending_install.take(),
+            s.pending_palettes.take(),
             std::mem::take(&mut s.pending_updates),
             s.pending_app_background.take(),
             s.pending_scrollbar.take(),
@@ -424,6 +455,12 @@ pub(crate) fn flush_pending_host_state<H: StyleOps + crate::caps::AppEnvOps>(
     };
     if let Some(tokens) = install {
         backend.borrow_mut().install_tokens(&tokens);
+    }
+    // After `install_tokens`: the palettes are serialized RELATIVE to the
+    // active token set (only the deltas are emitted), so the backend must
+    // already hold it.
+    if let Some(palettes) = palettes {
+        backend.borrow_mut().install_theme_palettes(&palettes);
     }
     for batch in &updates {
         backend.borrow_mut().update_tokens(batch);

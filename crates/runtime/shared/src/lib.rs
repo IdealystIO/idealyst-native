@@ -400,7 +400,8 @@ pub use style::{
     OverscrollBehavior,
     PointerEvents, Position, Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign,
     TextTransform, UserSelect,
-    NoTokens, TokenEntry, TokenValue, TokenVocabulary, Tokenized, Transform, Transition,
+    NoTokens, ThemePalette, TokenEntry, TokenValue, TokenVocabulary, Tokenized, Transform,
+    Transition,
     VariantAxis, VariantEnum, VariantSet, VariantValue,
 };
 

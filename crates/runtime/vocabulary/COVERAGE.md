@@ -158,6 +158,13 @@ supertrait target for every `prim-*` placeholder default)
 `apply_default_text_font`, `supports_js_class_bindings`,
 `register_reactive_class_binding`, `release_reactive_class_binding`
 
+Since grown by one no-op-default method outside the 159-method mapping
+(new surface, no old-`Backend` counterpart): `install_theme_palettes` —
+declares every switchable palette, not just the active one, so a STATIC
+render can emit `prefers-color-scheme` / `[data-theme]` rules and paint
+the reader's theme on the first frame. Live backends ignore it; they
+keep receiving the active palette through `install_tokens`.
+
 ## `caps::AssetOps` (4)
 
 `register_asset`, `unregister_asset`, `register_typeface`, `unregister_typeface`

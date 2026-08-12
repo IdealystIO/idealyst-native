@@ -166,8 +166,8 @@ pub use crate::callback_guard::ScopeAlive;
 pub use crate::theme;
 pub use runtime_shared::{
     cached_stylesheet, derived, Breakpoint, IntoOverrideSource, IntoVariantSource, Length,
-    NoTokens, StateBits, StyleApplication, StyleRules, StyleSheet, TokenEntry, TokenValue,
-    TokenVocabulary, Tokenized, Transition, VariantEnum, VariantSet,
+    NoTokens, StateBits, StyleApplication, StyleRules, StyleSheet, ThemePalette, TokenEntry,
+    TokenValue, TokenVocabulary, Tokenized, Transition, VariantEnum, VariantSet,
 };
 
 // Anchor plumbing for `anchored_overlay(target = …)`: `AnchorTarget`
@@ -588,6 +588,16 @@ pub fn install_tokens(tokens: &[runtime_shared::TokenEntry]) {
 pub fn update_tokens(tokens: &[runtime_shared::TokenEntry]) {
     theme::update_tokens(tokens);
     seed_shared_token_registry(tokens, true);
+}
+
+/// Declare every switchable palette so a STATIC render can serialize
+/// them all — see [`crate::theme::install_theme_palettes`]. Unlike
+/// [`install_tokens`] this seeds no shared registry: the inactive
+/// palettes must not participate in token RESOLUTION, only in the CSS a
+/// static document emits for the reader's system preference or stored
+/// `[data-theme]` choice.
+pub fn install_theme_palettes(palettes: &[runtime_shared::ThemePalette]) {
+    theme::install_theme_palettes(palettes);
 }
 
 /// See [`crate::theme::set_app_background`].

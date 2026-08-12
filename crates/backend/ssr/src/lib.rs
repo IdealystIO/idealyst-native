@@ -370,6 +370,15 @@ pub struct SsrBackend {
     /// `var(--token, fallback)` to the real theme value (matching the
     /// live web build, which installs the same variables at runtime).
     tokens: Vec<runtime_shared::TokenEntry>,
+    /// Every palette the app declared via
+    /// `caps::StyleOps::install_theme_palettes` — the inactive ones
+    /// included. Emitted after the active `:root` block as
+    /// `prefers-color-scheme` + `[data-theme]` rules so the served page
+    /// paints the reader's theme on the FIRST frame instead of flashing
+    /// the render-time one and correcting after the bundle boots. Empty
+    /// for apps that declare nothing, in which case the emitted CSS is
+    /// byte-identical to before.
+    palettes: Vec<runtime_shared::ThemePalette>,
     /// The theme's default text font, captured from
     /// [`Backend::apply_default_text_font`] (premint host driver).
     /// Emitted as `--iy-default-font` on `:root` so preminted rule
@@ -487,8 +496,14 @@ impl SsrBackend {
     /// 2. `@font-face` rules (real fonts on first paint);
     /// 3. the theme's `:root` token variables (so `var(--token, …)`
     ///    resolves to the real theme value, matching web);
-    /// 4. host-surface theming (body background, scrollbar) — emitted
-    ///    AFTER the `:root` block so any `var(--…)` references resolve;
+    /// 3b. every OTHER declared palette
+    ///    (`caps::StyleOps::install_theme_palettes`) as
+    ///    `prefers-color-scheme` + `:root:where([data-theme=…])` blocks
+    ///    carrying only the tokens that differ from (3). This is what
+    ///    makes the first paint match the reader rather than the render
+    ///    — without it a dark-preferring visitor sees the light palette
+    ///    until the bundle boots. Empty unless the app declares
+    ///    palettes, so single-theme output is byte-unchanged;
     /// 5. registered stylesheets (navigator layout, etc.);
     /// 6. the content-keyed per-node style classes (`apply_style`);
     /// 7. responsive `@media (min-width: …)` breakpoint overlays — LAST,
@@ -497,6 +512,11 @@ impl SsrBackend {
         let mut out = css::base_reset_css();
         out.push_str(&self.font_faces.concat());
         out.push_str(&css::tokens_to_root_css(&self.tokens));
+        // Directly after the active `:root` block, and before anything
+        // that reads the variables: the alternate palettes, as
+        // `prefers-color-scheme` + `[data-theme]` overrides. Deltas are
+        // computed against `self.tokens`, hence the ordering.
+        out.push_str(&css::theme_palettes_css(&self.tokens, &self.palettes));
         if let Some(ff) = &self.default_text_font {
             // BOTH the variable and a real, INHERITABLE `font-family`.
             //

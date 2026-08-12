@@ -475,6 +475,143 @@ pub fn tokens_to_root_css(tokens: &[runtime_shared::TokenEntry]) -> String {
     out
 }
 
+/// Attribute a statically-rendered document reads to force a specific
+/// palette, overriding the reader's system preference:
+/// `<html data-theme="dark">`. Written by app-supplied code (typically a
+/// tiny inline `<head>` script restoring a stored choice); the framework
+/// only emits the CSS that responds to it.
+pub const THEME_ATTR: &str = "data-theme";
+
+/// Serialize every declared [`ThemePalette`] into the extra rules a
+/// static document needs to paint the RIGHT theme before any script
+/// runs. Returns `""` when there is nothing to add, so the caller can
+/// skip it entirely.
+///
+/// [`tokens_to_root_css`] emits the ACTIVE palette as a plain `:root`
+/// block; this appends, in order:
+///
+/// 1. `:root{color-scheme:…}` naming every system scheme covered, so the
+///    browser paints its own surfaces — canvas, form controls,
+///    scrollbars — to match. Without it a dark page still flashes a
+///    white canvas before the first paint, no matter how correct the
+///    tokens are.
+/// 2. `@media (prefers-color-scheme: light|dark){:root{…}}` for each
+///    palette that declares a scheme — the zero-JavaScript default.
+/// 3. `:root:where([data-theme="<name>"]){…}` for every palette,
+///    including ones with no scheme, so an app that restores a stored
+///    choice can force any variant.
+///
+/// # Two deliberate details
+///
+/// **Deltas, not whole palettes.** Each block carries only the tokens
+/// whose value differs from `base`. A theme pair typically shares most
+/// of its scale (spacing, radii, type) and differs in colour, so this is
+/// a large size win on a block that ships inline in every page.
+///
+/// **`:where()` around the attribute selector.** It contributes zero
+/// specificity, so the override blocks stay at `(0,1,0)` — the same as
+/// the plain `:root` the live web backend writes into its own stylesheet
+/// at boot. Order then decides: pre-boot the attribute block wins (it is
+/// later in this sheet than the media blocks), and post-boot the app's
+/// runtime theme wins (its sheet is appended after this one). Without
+/// `:where()` the attribute block would be `(0,2,0)` and would outrank —
+/// and permanently pin — every theme the running app installs.
+///
+/// The app owns the attribute: if it stamps `data-theme` it must keep it
+/// in sync when the user toggles, exactly as it must with the equivalent
+/// machinery in any other framework.
+pub fn theme_palettes_css(
+    base: &[runtime_shared::TokenEntry],
+    palettes: &[runtime_shared::ThemePalette],
+) -> String {
+    use runtime_shared::ColorScheme;
+
+    if palettes.is_empty() {
+        return String::new();
+    }
+
+    // `color-scheme` lists the system schemes actually covered. Claiming
+    // `dark` when no dark palette exists would darken the browser's own
+    // surfaces under a light-only page — worse than saying nothing.
+    let has_light = palettes.iter().any(|p| p.scheme == Some(ColorScheme::Light));
+    let has_dark = palettes.iter().any(|p| p.scheme == Some(ColorScheme::Dark));
+
+    let mut out = String::new();
+    match (has_light, has_dark) {
+        (true, true) => out.push_str(":root{color-scheme:light dark;}"),
+        (false, true) => out.push_str(":root{color-scheme:dark;}"),
+        (true, false) => out.push_str(":root{color-scheme:light;}"),
+        (false, false) => {}
+    }
+
+    for palette in palettes {
+        let delta = palette_delta_css(base, &palette.tokens);
+        if delta.is_empty() {
+            continue;
+        }
+        match palette.scheme {
+            Some(ColorScheme::Light) => {
+                out.push_str("@media (prefers-color-scheme: light){:root{");
+                out.push_str(&delta);
+                out.push_str("}}");
+            }
+            Some(ColorScheme::Dark) => {
+                out.push_str("@media (prefers-color-scheme: dark){:root{");
+                out.push_str(&delta);
+                out.push_str("}}");
+            }
+            // `Auto` is "no preference reported" — not a thing a media
+            // query can match, so such a palette is attribute-only.
+            Some(ColorScheme::Auto) | None => {}
+        }
+    }
+
+    // Attribute overrides last, so they beat the media blocks at equal
+    // specificity. Emitted for EVERY palette (schemed or not) — that is
+    // what makes a stored user choice expressible.
+    for palette in palettes {
+        let delta = palette_delta_css(base, &palette.tokens);
+        if delta.is_empty() {
+            continue;
+        }
+        out.push_str(":root:where([");
+        out.push_str(THEME_ATTR);
+        out.push_str("=\"");
+        out.push_str(palette.name);
+        out.push_str("\"]){");
+        out.push_str(&delta);
+        out.push('}');
+    }
+
+    out
+}
+
+/// `--name:value;` declarations for each token in `tokens` whose value
+/// differs from `base` (or that `base` lacks entirely). Empty when the
+/// palette is identical to the base — the caller skips the block.
+fn palette_delta_css(
+    base: &[runtime_shared::TokenEntry],
+    tokens: &[runtime_shared::TokenEntry],
+) -> String {
+    let mut out = String::new();
+    for entry in tokens {
+        let value = token_value_css(&entry.value);
+        let same_as_base = base
+            .iter()
+            .find(|b| b.name == entry.name)
+            .is_some_and(|b| token_value_css(&b.value) == value);
+        if same_as_base {
+            continue;
+        }
+        out.push_str("--");
+        out.push_str(entry.name);
+        out.push(':');
+        out.push_str(&value);
+        out.push(';');
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Assets + @font-face — single source of truth shared by web + SSR
 // ---------------------------------------------------------------------------
@@ -1520,6 +1657,124 @@ mod tests {
     #[test]
     fn tokens_to_root_css_empty_is_blank() {
         assert_eq!(tokens_to_root_css(&[]), "");
+    }
+
+    // -----------------------------------------------------------------
+    // Scheme-aware palette emission — the static-render anti-flash path.
+    // -----------------------------------------------------------------
+
+    fn color(name: &'static str, v: &str) -> TokenEntry {
+        TokenEntry { name, value: TokenValue::Color(Color(v.into())) }
+    }
+
+    fn light_dark_palettes() -> (Vec<TokenEntry>, Vec<runtime_shared::ThemePalette>) {
+        use runtime_shared::{ColorScheme, ThemePalette};
+        // `spacing-md` is shared; only `color-bg` differs.
+        let light = vec![
+            color("color-bg", "#ffffff"),
+            TokenEntry { name: "spacing-md", value: TokenValue::Length(Length::Px(16.0)) },
+        ];
+        let dark = vec![
+            color("color-bg", "#171512"),
+            TokenEntry { name: "spacing-md", value: TokenValue::Length(Length::Px(16.0)) },
+        ];
+        let palettes = vec![
+            ThemePalette {
+                name: "light",
+                scheme: Some(ColorScheme::Light),
+                tokens: light.clone(),
+            },
+            ThemePalette { name: "dark", scheme: Some(ColorScheme::Dark), tokens: dark },
+        ];
+        (light, palettes)
+    }
+
+    /// The whole point: a dark-preferring reader must get dark colours
+    /// from the static document, with no script and no flash. That means
+    /// a `prefers-color-scheme: dark` block carrying the dark values, and
+    /// a `color-scheme` declaration so the browser's own canvas/controls
+    /// match rather than flashing white behind correct tokens.
+    #[test]
+    fn theme_palettes_css_emits_system_default_without_script() {
+        let (base, palettes) = light_dark_palettes();
+        let css = theme_palettes_css(&base, &palettes);
+
+        assert!(
+            css.contains(":root{color-scheme:light dark;}"),
+            "both schemes covered ⇒ browser surfaces follow the system; got {css}"
+        );
+        assert!(
+            css.contains("@media (prefers-color-scheme: dark){:root{--color-bg:#171512;}}"),
+            "dark palette must ride a prefers-color-scheme block; got {css}"
+        );
+    }
+
+    /// Deltas only. Shared scale tokens must not be duplicated into every
+    /// block — this CSS is inlined in every statically rendered page.
+    #[test]
+    fn theme_palettes_css_emits_only_tokens_that_differ_from_base() {
+        let (base, palettes) = light_dark_palettes();
+        let css = theme_palettes_css(&base, &palettes);
+
+        assert!(
+            !css.contains("spacing-md"),
+            "a token identical to the base must not be repeated; got {css}"
+        );
+        // The light palette IS the base here, so it contributes no block
+        // at all — only its `color-scheme` participation.
+        assert!(
+            !css.contains("prefers-color-scheme: light"),
+            "a palette equal to the base emits no rules; got {css}"
+        );
+    }
+
+    /// The override hook the localStorage case needs: every palette is
+    /// reachable by attribute, and `:where()` keeps it at `(0,1,0)` so a
+    /// running app's own `:root` theme still wins after boot.
+    #[test]
+    fn theme_palettes_css_attribute_overrides_are_specificity_neutral() {
+        let (base, palettes) = light_dark_palettes();
+        let css = theme_palettes_css(&base, &palettes);
+
+        assert!(
+            css.contains(":root:where([data-theme=\"dark\"]){--color-bg:#171512;}"),
+            "attribute override must exist for a stored choice; got {css}"
+        );
+        assert!(
+            !css.contains(":root[data-theme"),
+            "the bare attribute form is (0,2,0) and would outrank — and permanently \
+             pin — the theme a running app installs; got {css}"
+        );
+        // Order: the attribute block must come AFTER the media block, or
+        // it loses to it at equal specificity.
+        let media_at = css.find("@media (prefers-color-scheme: dark)").expect("media block");
+        let attr_at = css.find(":root:where([data-theme=\"dark\"])").expect("attr block");
+        assert!(attr_at > media_at, "attribute override must follow the media block; got {css}");
+    }
+
+    /// A palette with no scheme (a brand or high-contrast variant) is
+    /// selectable by attribute but must never hijack a media query.
+    #[test]
+    fn theme_palettes_css_schemeless_palette_is_attribute_only() {
+        use runtime_shared::ThemePalette;
+        let base = vec![color("color-bg", "#ffffff")];
+        let palettes = vec![ThemePalette {
+            name: "high-contrast",
+            scheme: None,
+            tokens: vec![color("color-bg", "#000000")],
+        }];
+        let css = theme_palettes_css(&base, &palettes);
+
+        assert!(css.contains(":root:where([data-theme=\"high-contrast\"]){--color-bg:#000000;}"));
+        assert!(!css.contains("prefers-color-scheme"), "no scheme ⇒ no media block; got {css}");
+        assert!(!css.contains("color-scheme:"), "no scheme ⇒ no color-scheme claim; got {css}");
+    }
+
+    /// Single-theme apps must be byte-unaffected: no palettes declared ⇒
+    /// nothing appended, so their emitted CSS is exactly what it was.
+    #[test]
+    fn theme_palettes_css_no_palettes_emits_nothing() {
+        assert_eq!(theme_palettes_css(&[color("color-bg", "#fff")], &[]), "");
     }
 
     // A `shadow` on a box element lowers to `box-shadow`; the SAME shadow on
