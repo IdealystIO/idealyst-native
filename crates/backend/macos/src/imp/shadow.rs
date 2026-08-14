@@ -37,8 +37,8 @@
 use std::ffi::c_void;
 
 use objc2::encode::{Encoding, RefEncode};
-use objc2::msg_send;
 use objc2::runtime::NSObject;
+use objc2::msg_send;
 use objc2_app_kit::NSView;
 use objc2_foundation::{CGFloat, CGRect, CGSize, NSString};
 use runtime_shared::StyleRules;
@@ -73,6 +73,23 @@ extern "C" {
         transform: *const c_void,
     ) -> *mut CGPathRef;
     fn CGPathRelease(path: *mut CGPathRef);
+}
+
+/// True when this style wants BOTH a drop shadow and its children clipped to
+/// the (possibly rounded) box — the combination a single CALayer cannot express
+/// with `masksToBounds`.
+///
+/// `masksToBounds` clips everything to the layer's bounds, and an outer drop
+/// shadow is by definition painted OUTSIDE those bounds, so it gets clipped
+/// away: the author asked for a shadow and gets none. Web has no such
+/// conflict — CSS `overflow: hidden` clips descendants but does NOT clip the
+/// element's own `box-shadow` — so the same author tree renders a shadow on
+/// web and a flat box on both Apple backends. That divergence is what this
+/// path exists to close (Rule #7), replacing the "iOS caveat" that idea-ui's
+/// `Card` docs currently tell authors to work around by nesting views.
+pub(crate) fn wants_shadow_with_clip(style: &StyleRules) -> bool {
+    style.shadow.is_some()
+        && backend_apple_core::clip::clips_to_bounds(style) == Some(true)
 }
 
 /// Translate a `Shadow`'s `(x, y)` (web semantics: `+x` right, `+y` DOWN) into

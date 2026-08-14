@@ -163,6 +163,13 @@ pub use crate::style_attach::{signal_class, IntoStyleProp, StyleProp};
 ///
 /// Acquire one token in the mount handler and wrap each callback with it.
 pub use crate::callback_guard::ScopeAlive;
+
+// Slots — a descendant publishing content into a region an ancestor
+// renders, keyed by a marker type. Authoring composition over the kernel
+// (signal + context + keyed list), the same tier as `reducer` / `watch` /
+// `each_keyed`: no primitive, no payload, no backend method. Generic over
+// the slot type, so an app that names none codegens none of it.
+pub use crate::slots::{fill_slot, fill_slot_at, slot_is_filled, slot_outlet, Slot};
 pub use crate::theme;
 pub use runtime_shared::{
     cached_stylesheet, derived, Breakpoint, IntoOverrideSource, IntoVariantSource, Length,

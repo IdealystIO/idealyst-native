@@ -1682,6 +1682,18 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     if let Some(clip) = backend_apple_core::clip::clips_to_bounds(style) {
         let _: () = unsafe { msg_send![&layer, setMasksToBounds: clip] };
     }
+    // KNOWN LIMITATION — shadow + `overflow: hidden` on the SAME view: the
+    // shadow does not render. `masksToBounds` clips the layer's whole
+    // composite, and an outer drop shadow is painted outside the bounds.
+    // Swapping in `layer.mask` does NOT help — a mask layer defines the
+    // visible part of the layer and clips the shadow too. CoreAnimation has no
+    // single-layer expression of "clip content, keep shadow"; the fix is a
+    // shadow layer that is NOT a descendant of the masked layer (see
+    // `shadow::wants_shadow_with_clip`). Web has no such conflict (CSS
+    // `overflow` never clips the element's own `box-shadow`), so this is a
+    // live Rule #7 divergence, currently papered over by the "iOS caveat" in
+    // idea-ui `Card`'s docs. Pinned by the conformance `shadow-clipped`
+    // fixture.
 
     // Interaction (desktop affordances; touch backends no-op these). Mirrors
     // the web `cursor` / `user-select` CSS so the backends converge (Rule #7).

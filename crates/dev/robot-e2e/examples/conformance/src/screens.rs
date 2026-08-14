@@ -398,6 +398,58 @@ pub(crate) fn components_page(nav: NavCell) -> Element {
         ui! { Button(label = "Tap me".to_string(), on_click = on_btn, test_id = Some("ui-button")) },
         btn_status,
         ui! { Button(label = "Back".to_string(), on_click = on_back, test_id = Some("comp-back")) },
+        shadow_parity_row(),
     ];
     view(children).into_element()
+}
+
+/// Cross-backend **box-shadow parity** fixture.
+///
+/// Three swatches that pin the shadow contract every backend has to meet:
+///
+/// - `shadow-plain`   — shadow, square corners.
+/// - `shadow-rounded` — shadow + `border-radius`; the shadow must hug the curve.
+/// - `shadow-clipped` — shadow + `border-radius` + `overflow: hidden`. **This is
+///   the interesting one.** CSS clips descendants but does NOT clip the
+///   element's own `box-shadow`, so web renders a shadow here. A single
+///   CALayer can't do both — `masksToBounds` clips the shadow away — which is
+///   why the Apple backends historically dropped it and idea-ui's `Card` docs
+///   carry an "iOS caveat" telling authors to nest views by hand. Rule #7 says
+///   one author tree renders the same everywhere, so this fixture exists to
+///   hold the backends to that.
+///
+/// Shadows are deliberately heavy (opaque, wide blur) so the difference is
+/// unambiguous in a screenshot rather than a subtle gradient.
+fn shadow_parity_row() -> Element {
+    use runtime_vocabulary::glue::{Color, Length, Overflow, Shadow, StyleRules, StyleSheet, Tokenized};
+
+    fn swatch(radius: f32, clip: bool) -> Rc<StyleSheet> {
+        let r = |v: f32| Some(Tokenized::Literal(Length::Px(v)));
+        Rc::new(StyleSheet::r#static(StyleRules {
+            background: Some(Tokenized::Literal(Color("#ffffff".into()))),
+            width: r(120.0),
+            height: r(60.0),
+            border_top_left_radius: r(radius),
+            border_top_right_radius: r(radius),
+            border_bottom_left_radius: r(radius),
+            border_bottom_right_radius: r(radius),
+            overflow: clip.then_some(Overflow::Hidden),
+            shadow: Some(Shadow {
+                x: 0.0,
+                y: 10.0,
+                blur: 24.0,
+                color: Color("rgba(0, 0, 0, 0.85)".into()),
+            }),
+            ..Default::default()
+        }))
+    }
+
+    ui! {
+        view {
+            text { "shadow parity" }
+            view(style = swatch(0.0, false), test_id = "shadow-plain") {}
+            view(style = swatch(16.0, false), test_id = "shadow-rounded") {}
+            view(style = swatch(16.0, true), test_id = "shadow-clipped") {}
+        }
+    }
 }

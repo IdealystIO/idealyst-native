@@ -89,3 +89,11 @@ runtime-vocabulary = { path = ".", features = ["async-driver", "robot"] }
 # permits dev-dependency cycles, and it keeps the suites off the old
 # `Backend` trait ahead of the deletion wave.
 host-mock = { workspace = true }
+# `ui!` / `#[component]`, for the tests that must pin the AUTHOR-FACING
+# spelling of a feature this crate owns rather than its builder form
+# (`tests/slots.rs`). Safe as a dev-dep here: the macros always emit
+# `::runtime_vocabulary::glue::…` absolute paths, which resolve inside
+# this crate's own test targets, and the `new-core` lowering switch that
+# used to make a proc-macro feature a cross-crate unification hazard is
+# gone (see runtime-macros/Cargo.toml).
+runtime-macros = { workspace = true }

@@ -202,6 +202,7 @@ pub mod robot_methods;
 #[doc(hidden)]
 pub mod robot_watch;
 pub mod scoped_scheduling;
+pub mod slots;
 pub mod style_attach;
 pub mod theme;
 pub mod viewport;

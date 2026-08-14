@@ -450,7 +450,107 @@ Context is keyed by type in a per-type *stack*, not a scope tree:
 the provision deliberately rather than relying on the reader's position
 in the tree.
 
-## 8. A worked example: search-filtered list
+## 8. Slots: filling a region an ancestor owns
+
+Sometimes a component needs to contribute UI to a region it doesn't
+render — a page adding buttons to the app shell's header, a screen adding
+breadcrumbs to a toolbar. Reach for a slot only when props genuinely
+can't get there.
+
+**First check whether a prop works.** If the region's owner is at the call
+site, pass the content directly. `Alert`'s `action` takes an `Option<Element>`;
+`Autocomplete`'s `header`/`footer` take builders that receive live state.
+Direct, no shared key, no constraint on how many hosts exist. Most "slot"
+problems are this one.
+
+Slots are for when the owner is several levels up and the components in
+between know nothing about the content:
+
+```rust
+use runtime_core::{fill_slot, slot_outlet, Slot};
+
+// A slot is identified by a marker TYPE — same disambiguation rule as
+// `provide`/`inject`. Two crates can both ship `HeaderActions`.
+pub struct HeaderActions;
+impl Slot for HeaderActions {}
+
+// The owner renders the outlet.
+#[component]
+fn AppShell(children: Vec<Element>) -> Element {
+    ui! {
+        view(style = shell) {
+            view(style = header) {
+                Typography(content = "My App".to_string())
+                slot_outlet::<HeaderActions>()
+            }
+            view(style = body) { children }
+        }
+    }
+}
+
+// Any descendant fills it, from its body. Withdrawn on unmount.
+#[component]
+fn SettingsPage() -> Element {
+    let dirty = signal(false);
+    fill_slot::<HeaderActions>(move || ui! {
+        Button(label = "Save", disabled = !dirty.get(), on_click = save)
+    });
+    ui! { view() { /* …page body… */ } }
+}
+```
+
+This is not a portal. A `portal` escapes to the *host root* through a
+backend window-level mount; a slot renders inside the ordinary layout
+tree, wherever the outlet sits, and is pure scene composition — a signal,
+a context entry, and a keyed list. It lives in the framework rather than a
+component library because a slot is an **interop protocol**: a page built
+on one component library has to be able to fill a region rendered by
+another, which a library-local copy could never do.
+
+**Store builders, never elements.** A fill holds `Rc<dyn Fn() -> Element>`.
+An `Element` is a single-use blueprint that `realize` consumes; it isn't
+`Clone` and can't be parked in a signal and re-rendered. Because the fill
+is a closure, reactivity works normally — capture the filler's signals and
+the content re-renders on its own. Conditional content goes *inside* the
+builder (`ui!`'s `if`), not around the `fill_slot` call, which runs once.
+
+**The lifetime rule.** Content is realized in the *outlet's* scope while
+the builder captures the *filler's* signals — and the filler is usually
+the shorter-lived of the two. `fill_slot` anchors withdrawal with
+`on_scope_drop` (§6), so the entry leaves in the same flush that tears the
+filler down. That's why filling is a call in a component *body*: the
+body's scope is the lifetime being tracked. A fill left behind by a dead
+filler would abort on its next rebuild with `stale-signal-handle`.
+
+**One outlet per slot type.** The feed is world-lifetime, created lazily by
+whichever side touches the slot first. That's what makes publish and
+render order-independent — necessary, because a `ui!` children block
+builds bottom-up, so `SettingsPage`'s body runs *before* `AppShell`'s and
+a scope-owned feed would find no provider. The cost is that a second
+outlet renders the same content (and logs a warning). Two regions that
+need different content are two slot types, one line each.
+
+A fill is a staged write, so content lands on the next flush — including
+the first mount. The boot path flushes before the first paint, so there's
+no visible frame with an empty slot.
+
+`slot_is_filled::<S>()` is a tracked read, for chrome that should collapse
+when nothing is published:
+
+```rust
+ui! {
+    view() {
+        if slot_is_filled::<HeaderActions>() {
+            view(style = header_bar) { slot_outlet::<HeaderActions>() }
+        }
+    }
+}
+```
+
+Multiple components may fill one slot; all render, ordered by
+`fill_slot_at::<S>(order, …)` with publish order breaking ties.
+
+## 9. A worked example: search-filtered list
 
 Everything above, composed — the shape most real components take:
 
