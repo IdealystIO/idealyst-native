@@ -13,16 +13,13 @@ use runtime_scene::Element;
 
 use super::{AppConfig, SceneExtensions};
 
-/// Smaller WASM allocator — a few cycles per allocation in exchange for
-/// a few KB off the bundle.
-///
-/// Lives here rather than in the app's `main.rs` because a
-/// `#[global_allocator]` may be declared anywhere in the crate graph and
-/// applies process-wide. Keeping it in the framework means `entry!`'s
-/// expansion carries no `unsafe`.
-#[global_allocator]
-static ALLOCATOR: lol_alloc::AssumeSingleThreaded<lol_alloc::FreeListAllocator> =
-    unsafe { lol_alloc::AssumeSingleThreaded::new(lol_alloc::FreeListAllocator::new()) };
+// NOTE: no `#[global_allocator]` here. It used to live in this file
+// (unconditionally, `lol_alloc`'s free list) — but a global allocator is
+// a property of the *binary*, and this crate is linked into every app in
+// a workspace alike. It is now declared in the app's own `main.rs` by
+// `entry!`, from `[package.metadata.idealyst.app].allocator`; the types
+// and the trade-off live in `crate::alloc`. Absent that key an app gets
+// `std`'s wasm32 default, `dlmalloc`.
 
 /// Boot the app in the browser.
 ///

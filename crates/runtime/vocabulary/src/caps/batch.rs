@@ -16,6 +16,15 @@ pub trait BatchOps: Host {
     /// teardown — the repeat handler's bulk teardown releases the shared
     /// cohort entry and nothing per row — so per-node allocations made
     /// here would leak.
+    ///
+    /// The same rule is why event handlers on batched rows are safe: the
+    /// repeat handler installs them AFTER the batch, on the returned
+    /// nodes, and every backend stores a handler on the node itself (a
+    /// DOM-element-owned listener, a view ivar, `NodeData::touch_handler`,
+    /// a Kotlin `OnTouchListener`) — nothing keyed by node id for
+    /// `on_node_unstyled` to release. A backend that instead parks
+    /// per-node handler state in a side table it clears from
+    /// `on_node_unstyled` must NOT opt in.
     fn supports_batched_repeat(&self) -> bool {
         false
     }

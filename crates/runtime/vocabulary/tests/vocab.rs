@@ -1124,7 +1124,20 @@ mod repeat_handler {
     //! fallback's per-row reactive behavior.
 
     use super::*;
+    use runtime_shared::{TouchEvent, TouchId, TouchPhase, TouchPoint, TouchResponse};
     use runtime_vocabulary::glue::__static_repeat;
+
+    /// A minimal `Began` for invoking an installed handler directly.
+    fn touch_began() -> TouchEvent {
+        TouchEvent {
+            id: TouchId(1),
+            phase: TouchPhase::Began,
+            position: TouchPoint::new(0.0, 0.0),
+            window_position: TouchPoint::new(0.0, 0.0),
+            timestamp_ns: 0,
+            force: None,
+        }
+    }
 
     /// One repeat of `count` styled rows (view + const text), the
     /// batchable shape. ONE shared sheet across rows (the `stylesheet!`
@@ -1285,6 +1298,116 @@ mod repeat_handler {
                 "on_node_unstyled n3".to_string(),
             ],
             "fallback teardown fires per row"
+        );
+    }
+
+    /// An interactive row (`on_touch`) must STAY on the batched path.
+    ///
+    /// The handler can't ride in the batch — a `BatchOp` stream is
+    /// serializable and a handler is a Rust closure — so it is installed
+    /// on the node `execute_batch_with_attach` hands back. Previously ANY
+    /// `on_touch` in the expansion pushed every row onto the per-call
+    /// path, which excluded exactly the case that most needs bulk
+    /// mounting (a clickable table / grid) from the one-FFI path.
+    #[test]
+    fn batched_repeat_keeps_interactive_rows_on_the_batch_path() {
+        let h = harness();
+        h.shared.batched_repeat.set(true);
+        let sheet = themed_sheet();
+        let _realized = h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                view()
+                    .children(__static_repeat(3, move |i| {
+                        view()
+                            .style(StyleApplication::new(sheet.clone()))
+                            .on_touch(std::rc::Rc::new(|_| TouchResponse::CONSUMED))
+                            .children(vec![text().content(format!("row {i}")).build()])
+                            .build()
+                    }))
+                    .build(),
+            )
+        });
+        let log = h.take_log();
+        assert_eq!(log[0], "create n0 view");
+        assert!(
+            log[2].starts_with("execute_batch nodes=6"),
+            "an on_touch row must not push the expansion to the per-row \
+             fallback: {log:?}"
+        );
+        assert_eq!(
+            log[3], "insert_many n0 <- [n1, n3, n5]",
+            "row tops still attach in one insert_many: {log:?}"
+        );
+        assert_eq!(
+            log.len(),
+            4,
+            "installing handlers must not add per-node create/style calls: {log:?}"
+        );
+
+        // One handler per row, on the row TOP node (not the text child).
+        let installed: Vec<u32> = h
+            .shared
+            .touch_handlers
+            .borrow()
+            .iter()
+            .map(|(node, _)| *node)
+            .collect();
+        assert_eq!(
+            installed,
+            vec![1, 3, 5],
+            "each batched row gets its handler on its own node"
+        );
+    }
+
+    /// The expansion-wide `ScopeAlive` guard must still fire: a handler
+    /// invoked after the expansion is torn down is inert. Batched rows
+    /// have no per-row scope, so the guard is taken once for the whole
+    /// expansion — this pins that it is taken at all.
+    #[test]
+    fn batched_row_handler_goes_inert_after_teardown() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let h = harness();
+        h.shared.batched_repeat.set(true);
+        let fired = Rc::new(Cell::new(0u32));
+        let f = fired.clone();
+        let sheet = themed_sheet();
+        let realized = h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                view()
+                    .children(__static_repeat(1, move |_i| {
+                        let f = f.clone();
+                        view()
+                            .style(StyleApplication::new(sheet.clone()))
+                            .on_touch(Rc::new(move |_| {
+                                f.set(f.get() + 1);
+                                TouchResponse::CONSUMED
+                            }))
+                            .children(vec![text().content("row").build()])
+                            .build()
+                    }))
+                    .build(),
+            )
+        });
+
+        let handler = h.shared.touch_handlers.borrow()[0].1.clone();
+        handler(&touch_began());
+        assert_eq!(fired.get(), 1, "a live row's handler reaches author code");
+
+        // The toolkit can dispatch into a handler after the node is gone
+        // (a gesture recognizer outliving its view); the guard makes that
+        // a no-op instead of a write into a dead scope.
+        drop(realized);
+        handler(&touch_began());
+        assert_eq!(
+            fired.get(),
+            1,
+            "a torn-down expansion's handler must not reach author code"
         );
     }
 

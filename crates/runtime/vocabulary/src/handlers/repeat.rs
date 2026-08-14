@@ -18,20 +18,51 @@
 //!   attach with one `Host::insert_many` — the old walker's fallback,
 //!   op-for-op.
 //!
-//! ## Batchable shape (V1 — the old walker's exact condition set)
+//! ## Batchable shape
 //!
-//! - Row is a `view` with no `safe_area`, no `on_touch`/`on_wheel`/
-//!   `on_hover`/`on_file_drop`, no `preserves_focus`, no `is_container`,
-//!   no `ref_fill`, and style `None` or a static sheet application
-//!   (`StyleProp::Sheet`) with NO state overlays.
+//! - Row is a `view` with no `safe_area`, no `preserves_focus`, no
+//!   `is_container`, no `ref_fill`, and style `None` or a static sheet
+//!   application (`StyleProp::Sheet`) with NO state overlays.
 //! - Children are exclusively `text` with `Value::Const` content, no
 //!   style, no `ref_fill` — or nested batchable views.
+//! - `on_touch` / `on_wheel` / `on_hover` / `on_file_drop` ARE allowed:
+//!   see "Event handlers on batched rows" below.
 //!
 //! Anything else fails the check and the WHOLE expansion takes the
 //! fallback ("no mixed batched/per-call within one expansion" — the old
-//! rule). Matching the old conditions exactly is deliberate: the
-//! scene-parity goldens stay shared because both cores make the same
-//! batching decision for the same tree (see that crate's README).
+//! rule).
+//!
+//! The rest of the condition set matches the old walker's exactly, and
+//! deliberately: it is what the scene-parity goldens were frozen against.
+//! Note that the goldens never reach this path at all — both recorders
+//! leave `BatchOps::supports_batched_repeat` at its `false` default — so
+//! the batching decision itself is not what those goldens pin.
+//!
+//! ## Event handlers on batched rows
+//!
+//! A handler cannot ride in the batch: `BatchOp` is a serializable op
+//! stream (the web backend executes it inside JS), and a handler is a Rust
+//! closure. But `execute_batch_with_attach` hands back the real node
+//! handles indexed by `local_id`, so the handler is installed on the way
+//! out — exactly how static styles already reach their nodes
+//! (`style_attachments`). The per-row `install_*_handler` call is a cost
+//! the fallback path pays too; batching still removes the per-row
+//! create/insert/style traffic around it.
+//!
+//! This is why an interactive grid can use the fast path at all. Before,
+//! ANY `on_touch` in the expansion pushed every row onto the per-call path
+//! — the one case that most needs bulk mounting was structurally excluded
+//! from it.
+//!
+//! Handlers need no per-row teardown, which is what makes them safe here
+//! (batched rows get no `on_node_unstyled` — see `BatchOps`' contract).
+//! Every backend stores the handler ON the node — a JS listener owned by
+//! the DOM element, an ivar on `IdealystTouchView` / `IdealystFlippedView`,
+//! `NodeData::touch_handler`, a Kotlin `OnTouchListener` — so it dies with
+//! the node the expansion's structural teardown removes. The `ScopeAlive`
+//! guard is taken ONCE for the expansion rather than per row, which is
+//! also the right granularity: batched rows have no individual scope, and
+//! the expansion lives and dies as a unit.
 //!
 //! Like the old core, batched rows skip robot registration and a11y
 //! props (the batch ops don't carry them) — the batchable shape is
@@ -51,18 +82,39 @@ use crate::style_attach::{resolve_state_overlays, StyleProp};
 use runtime_scene::{Element, LiveNode, MountCx, Registry};
 use runtime_world::Value;
 
-use crate::caps::BatchOps;
+use crate::callback_guard::ScopeAlive;
+use crate::caps::{BatchOps, InputOps};
 use crate::prims::{PrimCell, RepeatPrim, TextPrim, TextSourceProp, ViewPrim};
 use crate::style_attach::{
     apply_sheet, on_teardown, StyleServices,
 };
 use crate::theme;
 
+/// The event handlers one enqueued row carries, held until
+/// `execute_batch_with_attach` hands back the node to install them on.
+/// Only constructed for a row that actually has one — `None` rows cost
+/// nothing.
+struct RowHandlers {
+    touch: Option<runtime_shared::TouchHandler>,
+    wheel: Option<runtime_shared::WheelHandler>,
+    hover: Option<runtime_shared::HoverHandler>,
+    file_drop: Option<runtime_shared::FileDropHandler>,
+}
+
+impl RowHandlers {
+    fn is_empty(&self) -> bool {
+        self.touch.is_none()
+            && self.wheel.is_none()
+            && self.hover.is_none()
+            && self.file_drop.is_none()
+    }
+}
+
 /// Register the `repeat` multi-node handler (dispatched by
 /// [`runtime_scene::Element::Many`]).
 pub fn register_repeat<H>(registry: &mut Registry<H>)
 where
-    H: BatchOps + StyleServices + 'static,
+    H: BatchOps + InputOps + StyleServices + 'static,
 {
     registry.register_many::<PrimCell<RepeatPrim>, _>(|cx, cell, parent| {
         mount_repeat(cx, cell.take(), parent)
@@ -78,7 +130,7 @@ pub fn mount_repeat<H>(
     parent: &mut H::Node,
 ) -> (LiveNode<H::Node>, usize)
 where
-    H: BatchOps + StyleServices,
+    H: BatchOps + InputOps + StyleServices,
 {
     let RepeatPrim { count, row_builder } = prim;
     // Empty repeat: nothing to do, no FFI (old walker's early-out).
@@ -118,7 +170,7 @@ fn try_mount_batched<H>(
     row_builder: &dyn Fn(usize) -> Element,
 ) -> Option<(LiveNode<H::Node>, usize)>
 where
-    H: BatchOps + StyleServices,
+    H: BatchOps + InputOps + StyleServices,
 {
     let mut batch = BackendBatch::with_capacity(count * 3, 0);
     // Per-row style attachments, resolved to real nodes after the batch
@@ -129,6 +181,11 @@ where
     // unboxed `StyleApplication` is ~2.3 KB, and moving it into this
     // vec / the members vec re-copies it per styled row.
     let mut style_attachments: Vec<(u32, Box<StyleApplication>)> = Vec::with_capacity(count);
+    // Per-row event handlers, installed on the real nodes after the batch
+    // returns (see the module docs' "Event handlers on batched rows"). Not
+    // pre-sized: most expansions carry none, and the ones that do are
+    // typically all-rows-or-nothing, so the first push sizes it correctly.
+    let mut handler_attachments: Vec<(u32, RowHandlers)> = Vec::new();
     let mut row_top_ids: Vec<u32> = Vec::with_capacity(count);
 
     // ThemeCtx captured ONCE for the whole expansion (the per-node
@@ -159,6 +216,7 @@ where
             &mut batch,
             row,
             &mut style_attachments,
+            &mut handler_attachments,
             &ctx,
             &mut minted,
         )?;
@@ -199,6 +257,32 @@ where
         runtime_shared::debug::now_micros().saturating_sub(_t_cohort),
     );
 
+    // Event handlers last, mirroring `mount_view`'s order (children,
+    // style, then input). ONE `ScopeAlive` for the whole expansion — see
+    // the module docs; taking it per row would register `count` cleanup
+    // hooks on the owner scope for a set of nodes that lives and dies as a
+    // unit. Skipped entirely when no row carried a handler, so the
+    // static-rows case pays nothing for this.
+    if !handler_attachments.is_empty() {
+        let alive = ScopeAlive::current();
+        for (local_id, handlers) in handler_attachments {
+            let node = &nodes[local_id as usize];
+            let mut b = backend.borrow_mut();
+            if let Some(h) = handlers.touch {
+                b.install_touch_handler(node, alive.wrap_touch(h));
+            }
+            if let Some(h) = handlers.wheel {
+                b.install_wheel_handler(node, alive.wrap_wheel(h));
+            }
+            if let Some(h) = handlers.hover {
+                b.install_hover_handler(node, alive.wrap_hover(h));
+            }
+            if let Some(h) = handlers.file_drop {
+                b.install_file_drop_handler(node, alive.wrap_file_drop(h));
+            }
+        }
+    }
+
     // The live tree is an EMPTY fragment on purpose: batched rows carry
     // no per-node live structure, and retaining a per-row
     // `LiveNode::Item` would cost 10k `Node` handle clones at mount +
@@ -220,11 +304,12 @@ fn enqueue_element<H>(
     batch: &mut BackendBatch,
     element: Element,
     style_attachments: &mut Vec<(u32, Box<StyleApplication>)>,
+    handler_attachments: &mut Vec<(u32, RowHandlers)>,
     ctx: &theme::ThemeCtx,
     minted: &mut Vec<(*const runtime_shared::StyleRules, String)>,
 ) -> Option<u32>
 where
-    H: BatchOps + StyleServices,
+    H: BatchOps + InputOps + StyleServices,
 {
     let Element::Item { data, children } = element else {
         // Fragments, holes, keyed lists, nested repeats, component
@@ -256,18 +341,25 @@ where
     let Ok(cell) = data.downcast::<PrimCell<ViewPrim>>() else {
         return None;
     };
-    let prim = cell.take();
+    let mut prim = cell.take();
     if prim.ref_fill.is_some()
-        || prim.on_touch.is_some()
-        || prim.on_wheel.is_some()
-        || prim.on_hover.is_some()
-        || prim.on_file_drop.is_some()
         || prim.preserves_focus
         || prim.is_container
         || !prim.safe_area.is_empty()
     {
         return None;
     }
+    // Handlers come out of the prim here but are installed only once the
+    // batch has run and produced a real node (module docs). Held locally
+    // until `view_id` is minted below; if a later child in this row fails
+    // the shape check the whole attempt is discarded, and the fallback
+    // rebuilds the row — and its handlers — from `row_builder`.
+    let handlers = RowHandlers {
+        touch: prim.on_touch.take(),
+        wheel: prim.on_wheel.take(),
+        hover: prim.on_hover.take(),
+        file_drop: prim.on_file_drop.take(),
+    };
 
     // For a styled view, resolve & mint the class up front so the batch
     // ships a class-name string. Only the static-sheet arm batches; the
@@ -321,7 +413,15 @@ where
     batch.ops.push(BatchOp::CreateView { local_id: view_id });
 
     for child in children {
-        let child_id = enqueue_element(backend, batch, child, style_attachments, ctx, minted)?;
+        let child_id = enqueue_element(
+            backend,
+            batch,
+            child,
+            style_attachments,
+            handler_attachments,
+            ctx,
+            minted,
+        )?;
         batch.ops.push(BatchOp::Insert {
             parent: view_id,
             child: child_id,
@@ -335,6 +435,9 @@ where
             rules,
         });
         style_attachments.push((view_id, app));
+    }
+    if !handlers.is_empty() {
+        handler_attachments.push((view_id, handlers));
     }
     Some(view_id)
 }

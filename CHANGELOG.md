@@ -127,6 +127,60 @@ each entry links to its migration guide.
   them unchanged in name and shape — most call sites just drop the
   `scheduling::` path segment.
 
+### Changed
+
+- **The wasm global allocator is now selectable per app, and defaults to
+  `dlmalloc` instead of a free list.** Web apps got `lol_alloc`'s
+  `FreeListAllocator` unconditionally, on the reasoning that it cost "a
+  few cycles per allocation in exchange for a few KB off the bundle".
+  The second half was true and the first was not: a free list is a
+  LINEAR SCAN, so its cost grows with fragmentation — precisely what a
+  UI runtime produces as it mounts a subtree, tears it down, and mounts
+  a differently-shaped one. Measured in a real app (a schedule grid
+  re-slicing ~1400 cells per scroll step, debug wasm) it was **62% of a
+  scroll frame**, and still 44% after two rounds of cutting the app's
+  own hot path. `std`'s wasm32 default, `dlmalloc`, is size-binned and
+  roughly O(1) for the common case, and is what an app now gets unless
+  it asks otherwise:
+
+  ```toml
+  [package.metadata.idealyst.app]
+  allocator = "small"      # "default" (dlmalloc) | "small" (free list)
+  ```
+
+  `entry!` reads the key and emits the matching `#[global_allocator]`
+  into the app's `main.rs` (`cfg`'d to wasm32 — native shells use the
+  system allocator and ignore it); `idealyst::alloc` holds the types for
+  a hand-written `main`. Keeping the free list costs one line and buys
+  ~8.7 KB of pre-`wasm-opt` wasm back, which is the right trade for a
+  size-bound, mostly-static bundle and the wrong one for anything that
+  allocates on a frame. **Not a cargo feature** on purpose: a
+  `#[global_allocator]` is process-wide and features unify across a
+  workspace, so a feature would let one crate silently pick the
+  allocator for every app built alongside it — manifest metadata is read
+  from the crate that owns `main`, which is the granularity the
+  allocator actually has. Carrying `lol_alloc` unselected costs nothing
+  (`examples/baseline` release wasm is byte-identical with the dep
+  present-and-unused and with it deleted). See the `lazy-loading` guide.
+
+- **Interactive repeat rows now use the one-FFI batched path.** A row
+  carrying `on_touch` / `on_wheel` / `on_hover` / `on_file_drop` used to
+  fail the batchable-shape check, and because the decision is
+  all-or-nothing per expansion, a single handler pushed EVERY row onto
+  the per-call path — so a clickable table or grid, the case that most
+  needs bulk mounting, was structurally excluded from it. Handlers can't
+  ride in the batch (a `BatchOp` stream is serializable; a handler is a
+  Rust closure), so they are installed on the nodes
+  `execute_batch_with_attach` hands back, the same way static styles
+  already reach theirs. The per-row install is a cost the fallback pays
+  too; batching still removes the per-row create/insert/style traffic
+  around it. Safe with the `BatchOps` no-`on_node_unstyled` contract
+  because every backend stores a handler on the node itself, so it dies
+  with the node; the `ScopeAlive` guard is taken once for the expansion,
+  which is also the right granularity for rows that live and die as a
+  unit. Reactive/non-static-sheet styles still take the fallback — those
+  DO need per-node teardown.
+
 ### Fixed
 
 - **Web: mounting `on_touch` elements dynamically no longer grows

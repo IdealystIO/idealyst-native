@@ -46,6 +46,26 @@ robot = ["backend-web/robot"]
 # needs the machinery compiled in.
 hydrate = ["backend-web/hydrate"]
 
+# --- Allocator --------------------------------------------------------
+#
+# There is deliberately NO allocator feature here. The wasm global
+# allocator is selected per app, in the app's own manifest:
+#
+#     [package.metadata.idealyst.app]
+#     allocator = "small"     # "default" (dlmalloc) | "small" (free list)
+#
+# `entry!` reads that key and emits the matching `#[global_allocator]`
+# into the app's `main.rs`; `src/alloc.rs` holds the types and the
+# rationale.
+#
+# Why not a feature: a `#[global_allocator]` is process-wide, and cargo
+# features are additive and unify across a workspace — so ONE crate
+# asking for the small allocator would silently hand it to every app in
+# that workspace, with nothing able to reject it at compile time the way
+# `boot::run` rejects two shells. Manifest metadata is read from the
+# crate that owns `main`, which is the granularity a global allocator
+# actually has.
+
 [dependencies]
 idealyst-macros = { path = "../idealyst-macros" }
 # `async-driver` here is the other half: it forwards to the
@@ -63,8 +83,14 @@ runtime-scene = { path = "../runtime/scene" }
 # — i.e. the first server-fn call or resource fetch.
 backend-web = { path = "../backend/web", features = ["async-driver"] }
 console_error_panic_hook = "0.1"
-# Smaller WASM allocator — a few cycles per allocation for a few KB off
-# the bundle.
+# Backs `alloc::Small`, the opt-in small-bundle allocator. NOT optional
+# and NOT the default: the type is only instantiated by the
+# `#[global_allocator]` `entry!` emits for `allocator = "small"`, so an
+# app that doesn't ask for it never reaches this code and nothing is
+# emitted. Measured on `examples/baseline` (release wasm, pre-wasm-opt):
+# 1,584,604 bytes with this dep present and unused, and 1,584,604 with
+# the dep deleted outright — byte-identical. Selecting it drops that to
+# 1,575,878 (dlmalloc out, free list in).
 lol_alloc = "0.4"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["Window", "Navigator", "console"] }

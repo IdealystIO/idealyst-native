@@ -1,7 +1,7 @@
 +++
 title = "Lazy loading a heavy component or SDK"
 order = 87
-tags = ["performance", "bundle-size", "lazy", "code-splitting", "external", "wasm", "chunks"]
+tags = ["performance", "bundle-size", "lazy", "code-splitting", "external", "wasm", "chunks", "allocator", "memory"]
 +++
 
 # Lazy loading a heavy component or SDK
@@ -222,6 +222,56 @@ builds — is safe inside a lazy chunk. The chunk's construction runs under the
 chunk's own reactive scope, so that state is owned and torn down with the chunk
 (it does **not** leak). You don't need to defer eager-state widgets to
 walk-time; build them where they read best.
+
+## Choosing the wasm allocator
+
+Splitting moves code out of the main bundle. The **allocator** is a smaller,
+blunter lever on the same number, and it is chosen in the app's own manifest:
+
+```toml
+[package.metadata.idealyst.app]
+allocator = "small"      # "default" (the default) | "small"
+```
+
+`entry!` reads the key and emits the matching `#[global_allocator]` into your
+`main.rs`. The two values:
+
+| value | allocator | what you get |
+| --- | --- | --- |
+| `"default"` — or leaving the key out | `std`'s wasm32 default, `dlmalloc` | size-binned, roughly O(1) per allocation |
+| `"small"` | `lol_alloc`'s free list, via `idealyst::alloc::Small` | ~8.7 KB less wasm (measured on the `baseline` example, pre-`wasm-opt`), but **every allocation walks a free list** |
+
+**Default is right for almost every app.** `"small"` was unconditional up to
+1.3.7, on the reasoning that a free list costs "a few cycles per allocation".
+It doesn't: a free list is a linear scan, so its cost grows with fragmentation
+— which is exactly what a UI runtime produces as it mounts a subtree, tears it
+down, and mounts a differently-shaped one. In a real app (a schedule grid
+re-slicing ~1400 cells per scroll step, debug wasm) it was **62% of a scroll
+frame**, and still 44% after two rounds of cutting the app's own hot path.
+
+So reach for `"small"` when the bundle is genuinely size-bound and the app is
+mostly static — a landing page, a docs site, an embedded widget — and never for
+anything that allocates on a frame (lists, grids, animation, virtualized
+scrolling). Profile before and after; ~8.7 KB is a poor trade for a dropped
+frame.
+
+Two things worth knowing:
+
+- The key is **web-only**. The emitted static is `cfg`'d to `wasm32`, so an app
+  that also builds for iOS/Android/macOS is unaffected there — native shells
+  use the system allocator.
+- It is manifest metadata rather than a cargo feature **on purpose**. A
+  `#[global_allocator]` is process-wide, and cargo features unify across a
+  workspace, so a feature would let one crate silently pick the allocator for
+  every app built alongside it. Metadata is read from the crate that owns
+  `main`, which is the granularity the allocator actually has.
+
+An app with a hand-written `main` (no `entry!`) declares the static itself:
+
+```rust
+#[global_allocator]
+static ALLOCATOR: idealyst::alloc::Small = idealyst::alloc::small();
+```
 
 ## See also
 

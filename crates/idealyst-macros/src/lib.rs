@@ -24,6 +24,11 @@
 //! be written by hand:
 //!
 //! ```ignore
+//! // A wasm app that wants the small allocator declares it itself —
+//! // the macro has no privileged access, it just reads the manifest.
+//! #[global_allocator]
+//! static ALLOCATOR: idealyst::alloc::Small = idealyst::alloc::small();
+//!
 //! fn main() {
 //!     idealyst::boot::run::<MyExtensions>(
 //!         || my_app::app(),
@@ -68,7 +73,8 @@ pub fn entry(input: TokenStream) -> TokenStream {
                 .into()
         }
     };
-    let AppConfigTokens { name, bundle_id, mount_selector, cell_size, primitives } = config;
+    let AppConfigTokens { name, bundle_id, mount_selector, cell_size, primitives, allocator } =
+        config;
 
     // The builtin-primitive set. A declared list becomes a local
     // `builtin_set!` type; the default is the full vocabulary. This
@@ -102,6 +108,8 @@ pub fn entry(input: TokenStream) -> TokenStream {
         #manifest_dep
 
         #builtin_decl
+
+        #allocator
 
         /// The app's scene-registry seam, lifted to a type so it can
         /// cross a generic boundary.
@@ -161,6 +169,7 @@ impl Parse for EntryInput {
 }
 
 /// The manifest-derived values, already as tokens.
+#[derive(Debug)]
 struct AppConfigTokens {
     name: proc_macro2::TokenStream,
     bundle_id: proc_macro2::TokenStream,
@@ -169,6 +178,11 @@ struct AppConfigTokens {
     /// The `primitives` keep-list as a comma-separated ident sequence,
     /// ready to paste into `builtin_set!`. `None` means "everything".
     primitives: Option<proc_macro2::TokenStream>,
+    /// The `#[global_allocator]` item, or empty for the platform
+    /// default. A whole item rather than a type name because the
+    /// default case emits *nothing* — there is no "the std allocator"
+    /// type to name.
+    allocator: proc_macro2::TokenStream,
 }
 
 /// Read `[package.metadata.idealyst.app]` from the consuming crate.
@@ -185,8 +199,21 @@ fn read_app_config() -> Result<AppConfigTokens, String> {
     let path = std::path::Path::new(&dir).join("Cargo.toml");
     let raw = std::fs::read_to_string(&path)
         .map_err(|e| format!("could not read {}: {e}", path.display()))?;
-    let manifest: toml::Value = toml::from_str(&raw)
-        .map_err(|e| format!("could not parse {}: {e}", path.display()))?;
+    // Every message from here names the manifest it came from — the
+    // author is reading it in `main.rs`, one file removed from the file
+    // that actually holds the mistake.
+    parse_app_config(&raw).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Parse manifest source into the tokens `entry!` bakes in.
+///
+/// Split from [`read_app_config`] so the metadata rules are testable
+/// against a string instead of a fixture crate on disk — the validation
+/// (allocator names, primitive idents, `cell_size` arity) is the part
+/// that can be wrong, and it has nothing to do with file IO.
+fn parse_app_config(raw: &str) -> Result<AppConfigTokens, String> {
+    let manifest: toml::Value =
+        toml::from_str(raw).map_err(|e| format!("could not parse manifest: {e}"))?;
 
     let package_name = manifest
         .get("package")
@@ -267,13 +294,66 @@ fn read_app_config() -> Result<AppConfigTokens, String> {
         }
     };
 
+    let allocator = parse_allocator(app.and_then(|a| a.get("allocator")))?;
+
     Ok(AppConfigTokens {
         name: quote! { #name },
         bundle_id: quote! { #bundle_id },
         mount_selector: quote! { #mount_selector },
         cell_size,
         primitives,
+        allocator,
     })
+}
+
+/// `allocator = "small"` — the app's wasm global allocator.
+///
+/// Emits the `#[global_allocator]` item, or nothing for the default.
+///
+/// This is per-app metadata rather than a cargo feature on `idealyst`
+/// because a `#[global_allocator]` is a property of the *binary*: there
+/// is one per process and no per-app override. Features are additive and
+/// unify across a workspace, so a feature would let one crate pick the
+/// allocator for every app built alongside it, silently. Metadata is
+/// read from the crate that owns `main`, which is the same granularity
+/// the allocator itself has.
+///
+/// The item is `cfg`'d to wasm32: the choice only exists for the web
+/// bundle (`std`'s wasm32 default is `dlmalloc`, and `Small` is a wasm
+/// allocator), while native shells use the system allocator. Declaring
+/// it in a manifest whose app also builds natively is therefore fine —
+/// the native builds ignore it rather than failing to compile.
+fn parse_allocator(value: Option<&toml::Value>) -> Result<proc_macro2::TokenStream, String> {
+    let Some(value) = value else {
+        return Ok(proc_macro2::TokenStream::new());
+    };
+    let name = value.as_str().ok_or_else(|| {
+        "package.metadata.idealyst.app.allocator must be a string — \
+         \"default\" or \"small\""
+            .to_string()
+    })?;
+    match name {
+        // Spelling the default explicitly is allowed, and means the same
+        // as leaving the key out: no `#[global_allocator]`, so `std`'s
+        // wasm32 default (`dlmalloc`) stands.
+        "default" => Ok(proc_macro2::TokenStream::new()),
+        "small" => Ok(quote! {
+            /// The app's global allocator, from
+            /// `[package.metadata.idealyst.app].allocator`.
+            ///
+            /// A free list: ~10KB less code than `dlmalloc` in exchange
+            /// for a linear scan per allocation. See
+            /// `idealyst::alloc` for when that trade is the right one.
+            #[cfg(target_arch = "wasm32")]
+            #[global_allocator]
+            static __IDEALYST_ALLOCATOR: ::idealyst::alloc::Small = ::idealyst::alloc::small();
+        }),
+        other => Err(format!(
+            "package.metadata.idealyst.app.allocator = {other:?} is not a known allocator — \
+             valid values are \"default\" (std's wasm32 default, dlmalloc) and \"small\" \
+             (a free list: smaller bundle, linear scan per allocation)"
+        )),
+    }
 }
 
 /// TOML numbers arrive as integer OR float depending on how they were
@@ -283,5 +363,95 @@ fn as_f32(value: &toml::Value) -> Option<f32> {
         toml::Value::Float(f) => Some(*f as f32),
         toml::Value::Integer(i) => Some(*i as f32),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A manifest with `[package.metadata.idealyst.app]` carrying
+    /// `body`, which is where each test puts the key under test.
+    fn manifest(body: &str) -> String {
+        format!(
+            "[package]\nname = \"my-app\"\n\n[package.metadata.idealyst.app]\n{body}\n"
+        )
+    }
+
+    fn config(body: &str) -> AppConfigTokens {
+        parse_app_config(&manifest(body)).expect("manifest should parse")
+    }
+
+    #[test]
+    fn no_allocator_key_emits_no_global_allocator() {
+        // The default has to stay *absent*, not "explicitly dlmalloc":
+        // std already installs its wasm32 default, and emitting an item
+        // here is what would make the choice unavoidable.
+        assert!(config("").allocator.is_empty());
+    }
+
+    #[test]
+    fn allocator_default_emits_no_global_allocator() {
+        assert!(config(r#"allocator = "default""#).allocator.is_empty());
+    }
+
+    #[test]
+    fn allocator_small_emits_wasm_gated_global_allocator() {
+        let emitted = config(r#"allocator = "small""#).allocator.to_string();
+        assert!(emitted.contains("# [global_allocator]"), "emitted: {emitted}");
+        assert!(
+            emitted.contains(":: idealyst :: alloc :: small ()"),
+            "emitted: {emitted}"
+        );
+        // Without the cfg the static would break every native build of
+        // an app whose manifest names an allocator — `alloc` is a
+        // wasm-only module.
+        assert!(
+            emitted.contains("target_arch = \"wasm32\""),
+            "emitted: {emitted}"
+        );
+    }
+
+    #[test]
+    fn unknown_allocator_names_the_valid_values() {
+        let err = parse_app_config(&manifest(r#"allocator = "mimalloc""#))
+            .expect_err("unknown allocator should be rejected");
+        assert!(err.contains("mimalloc"), "err: {err}");
+        assert!(err.contains("\"default\""), "err: {err}");
+        assert!(err.contains("\"small\""), "err: {err}");
+    }
+
+    #[test]
+    fn non_string_allocator_is_rejected() {
+        let err = parse_app_config(&manifest("allocator = true"))
+            .expect_err("non-string allocator should be rejected");
+        assert!(err.contains("must be a string"), "err: {err}");
+    }
+
+    /// The allocator key is optional and independent — adding it must
+    /// not disturb the fields that were already there.
+    #[test]
+    fn allocator_coexists_with_the_other_app_metadata() {
+        let cfg = config(
+            "name = \"My App\"\nmount_selector = \"#root\"\n\
+             primitives = [\"view\", \"text\"]\nallocator = \"small\"\n",
+        );
+        assert_eq!(cfg.name.to_string(), "\"My App\"");
+        assert_eq!(cfg.mount_selector.to_string(), "\"#root\"");
+        assert_eq!(
+            cfg.primitives.expect("keep-list").to_string(),
+            "view , text"
+        );
+        assert!(!cfg.allocator.is_empty());
+    }
+
+    #[test]
+    fn defaults_come_from_the_package_name() {
+        let cfg = config("");
+        assert_eq!(cfg.name.to_string(), "\"my-app\"");
+        assert_eq!(cfg.bundle_id.to_string(), "\"ai.idealyst.my.app\"");
+        assert_eq!(cfg.mount_selector.to_string(), "\"#app\"");
+        assert_eq!(cfg.cell_size.to_string(), "None");
+        assert!(cfg.primitives.is_none());
     }
 }

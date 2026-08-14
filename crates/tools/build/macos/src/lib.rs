@@ -259,7 +259,7 @@ edition = "2021"
 
 [dependencies]
 {deps_block}
-{features_block}"#,
+{features_block}{patch_block}"#,
         mode = if opts.mode.is_runtime_server() { "runtime-server" } else { "local" },
         mode_desc = if opts.mode.is_runtime_server() {
             "Connects to the dev-server and renders commands from the sidecar; \
@@ -270,6 +270,16 @@ edition = "2021"
         bin_name = bin_name,
         deps_block = deps_block,
         features_block = features_block,
+        // Redirect the USER crate's git-pinned framework deps onto the same
+        // local checkout this wrapper uses. The wrapper is its own
+        // `[workspace]`, so a `[patch]` in the user's workspace root is INERT
+        // here — cargo only honours the patch table of the workspace being
+        // built. Without it, an out-of-tree project whose framework source
+        // resolved to `Workspace` gets the wrapper on path deps and the app
+        // crate on git deps: two `runtime_scene` instances and "expected
+        // `Element`, found `Element`" at the wrapper→app boundary. Empty in
+        // `Git` mode. Same fix as the iOS/SSR/runtime-server wrappers.
+        patch_block = opts.source.patch_block(),
     );
 
     write_shared_target_config(wrapper_dir, cargo_target_dir)?;
@@ -584,6 +594,46 @@ mod regression_tests {
         generate_wrapper(&wrapper_dir, &cargo_target, &project_dir, &manifest, &opts)
             .expect("generate wrapper");
         (wrapper_dir, tmp)
+    }
+
+    /// Regression: an out-of-tree project whose framework source resolved to a
+    /// local `Workspace` checkout could not build for macOS — it died with
+    /// "expected `Element`, found `Element`" naming two `runtime_scene`
+    /// versions. The wrapper is its own `[workspace]`, so the user's own
+    /// `[patch]` table is inert inside it: the wrapper linked framework crates
+    /// by PATH while the app crate kept resolving its git-pinned deps. The
+    /// generator simply never emitted the `[patch."<git-url>"]` block that
+    /// `FrameworkSource::patch_block` already knew how to render. Identical
+    /// bug and fix to the iOS wrapper (`build_ios`), found because nicho-ca
+    /// failed to build for macOS right after the iOS one was fixed.
+    #[test]
+    fn regression_macos_wrapper_patches_git_deps_onto_workspace_checkout() {
+        for mode in [BuildMode::Local, BuildMode::RuntimeServer] {
+            let (wrapper_dir, _tmp) = run_generator(mode);
+            let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml"))
+                .expect("read Cargo.toml");
+            let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
+            let patch = parsed
+                .get("patch")
+                .and_then(|p| p.get("https://github.com/IdealystIO/idealyst-native"))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "macOS wrapper ({mode:?}) must emit a `[patch.\"<git-url>\"]` \
+                         block in Workspace mode, or the user crate's git-pinned \
+                         framework deps stay on git while the wrapper uses path \
+                         deps — two instances of every runtime crate. Got:\n{cargo}"
+                    )
+                });
+            for krate in ["runtime-core", "runtime-scene", "runtime-shared"] {
+                let entry = patch
+                    .get(krate)
+                    .unwrap_or_else(|| panic!("patch block missing `{krate}`:\n{cargo}"));
+                assert!(
+                    entry.get("path").is_some(),
+                    "`{krate}` must be redirected to a path dep; got {entry:?}",
+                );
+            }
+        }
     }
 
     /// The local wrapper boots through `host_appkit::run_with`,

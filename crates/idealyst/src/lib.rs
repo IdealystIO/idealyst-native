@@ -61,6 +61,20 @@
 //! desktop-window app are both `target_os = "macos"`) are picked by a
 //! feature on this crate — `features = ["terminal"]`.
 //!
+//! # Choosing an allocator
+//!
+//! Also by config. A web bundle that is size-bound rather than
+//! allocation-bound can trade throughput for ~10KB:
+//!
+//! ```toml
+//! [package.metadata.idealyst.app]
+//! allocator = "small"   # "default" (dlmalloc) | "small" (free list)
+//! ```
+//!
+//! `entry!` emits the matching `#[global_allocator]`. See the `alloc`
+//! module (wasm builds only) for what each one costs and why this is
+//! metadata rather than a feature.
+//!
 //! # What still needs a tool
 //!
 //! `cargo build` produces the artifact for every platform. It does not
@@ -73,6 +87,11 @@
 //! difference.
 
 pub mod boot;
+
+// Web-only: a native shell uses the system allocator, and the crates
+// behind these types are wasm deps.
+#[cfg(target_arch = "wasm32")]
+pub mod alloc;
 
 /// The entry-point macro. See [`macro@entry`].
 pub use idealyst_macros::entry;
