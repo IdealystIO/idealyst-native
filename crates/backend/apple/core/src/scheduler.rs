@@ -61,6 +61,9 @@ mod raf_link {
         unsafe impl RafTarget {
             #[method(tick:)]
             fn tick(&self, _sender: &NSObject) {
+                // Count this animation frame for the frame-pacing trace (debug).
+                #[cfg(debug_assertions)]
+                crate::perf_trace::on_raf_tick();
                 (self.ivars().state.borrow_mut())();
             }
         }
@@ -146,6 +149,12 @@ pub fn install_scheduler() {
     // into scope); without it there is no `spawn_async` to host.
     #[cfg(feature = "async-driver")]
     crate::async_executor::install_async_executor();
+
+    // Frame-pacing trace (debug iOS/tvOS/macOS) — a display link that logs
+    // dropped frames + raf-tick starvation during gestures/scroll. Stripped
+    // from release. Self-silencing (only logs while animating).
+    #[cfg(all(any(target_os = "ios", target_os = "tvos", target_os = "macos"), debug_assertions))]
+    crate::perf_trace::install();
 }
 
 struct AppleScheduler;
@@ -218,7 +227,7 @@ impl Scheduler for AppleScheduler {
         // is NOT enough here: measured live, an `addTimer:forMode:CommonModes`
         // 60 Hz timer still collapses to ~3/60 fires while a finger tracks a
         // UIScrollView (`UITrackingRunLoopMode`), even though the display link
-        // beside it held a clean 60/60 when measured. The run loop services
+        // beside it holds a clean 60/60 (see `perf_trace`). The run loop services
         // the display-synced source promptly during tracking but starves the
         // wall-clock timer. CADisplayLink is the reliable per-frame source — the
         // original "would be more accurate but needs a target class" caveat, now
@@ -281,6 +290,12 @@ impl Scheduler for AppleScheduler {
         {
             let state_for_block = state.clone();
             let block = StackBlock::new(move |_t: *const NSObject| {
+                // Count this animation frame for the frame-pacing trace (debug).
+                // If `frames` (display link) holds 60 but `anim` collapses during
+                // a scroll, the common-mode NSTimer is being starved by AppKit
+                // event tracking — the macOS analogue of the iOS finding.
+                #[cfg(debug_assertions)]
+                crate::perf_trace::on_raf_tick();
                 (state_for_block.borrow_mut())();
             });
             let block = block.copy();

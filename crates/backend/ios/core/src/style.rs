@@ -8,15 +8,13 @@ use std::rc::Rc;
 use block2::ConcreteBlock;
 use crate::phase_record;
 
-/// Opaque wrapper for CoreGraphics' `CGColorRef` so `msg_send!`'s
-/// debug-mode encoding check sees `^{CGColor=}` instead of `^v`.
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct CGColorRef(pub *const std::ffi::c_void);
-
-unsafe impl Encode for CGColorRef {
-    const ENCODING: Encoding = Encoding::Pointer(&Encoding::Struct("CGColor", &[]));
-}
+// Typed CoreGraphics pointer newtypes. Defined in `backend-apple-core` (NOT
+// here) so their encoding guards run on the HOST: this module is
+// `cfg(target_os = "ios")`, so a test living in it would never execute during
+// a normal `cargo test` and would guard nothing. Re-exported so the
+// `backend_ios_core::style::CGColorRef` path downstream code already uses
+// keeps resolving. See `backend_apple_core::cg` for why the encodings matter.
+pub use backend_apple_core::cg::{CGColorRef, CGPathRef};
 
 // `parse_color` lives in `backend_apple_core::color` now — same
 // signature, same semantics. Re-exported here so the iOS-core
@@ -400,6 +398,67 @@ pub fn sync_corner_radius(view: &UIView) {
     }
 }
 
+/// Key for the flag marking a layer as carrying a BOX shadow (`style.shadow`),
+/// as opposed to the glyph shadow `apply_text_style` installs for
+/// `text_shadow`. Only box shadows get a rectangular [`sync_shadow_path`];
+/// a glyph shadow must keep deriving its silhouette from the rendered text.
+const BOX_SHADOW_FLAG_KEY: &str = "idealyst_has_box_shadow";
+
+/// Give the layer's drop shadow an explicit `shadowPath` matching its current
+/// rounded-rect bounds.
+///
+/// **Why this matters for frame rate.** With `shadowOpacity > 0` and NO
+/// `shadowPath`, CoreAnimation has to derive the shadow's shape from the
+/// layer's own alpha channel: it renders the layer subtree into an offscreen
+/// buffer, blurs it to build the silhouette, then composites. That pass is
+/// redone whenever the layer is recomposited, so a screenful of shadowed cards
+/// costs a screenful of offscreen passes every scroll frame (visible as yellow
+/// under Simulator ▸ Debug ▸ Color Offscreen-Rendered Yellow). Handing
+/// CoreAnimation the path outright skips the derivation entirely — it's the
+/// single highest-value shadow optimization on both Apple backends.
+///
+/// No-op unless the layer carries a BOX shadow ([`BOX_SHADOW_FLAG_KEY`]): a
+/// `text_shadow` on a label deliberately takes the GLYPH silhouette, and
+/// forcing a rectangular path there would paint a solid block behind the text.
+/// Also no-ops on a 0×0 view — the path would be empty and would have to be
+/// rebuilt after layout anyway; the layout pass calls this again.
+///
+/// Must be re-run on every bounds change, since the path is in layer
+/// coordinates and does not track a resize. The layout pass does that right
+/// after it writes the new bounds, alongside [`sync_corner_radius`].
+pub fn sync_shadow_path(view: &UIView) {
+    unsafe {
+        let layer: Retained<NSObject> = msg_send_id![view, layer];
+        // Box-shadow marker: absent → either no shadow, or a glyph shadow we
+        // must not overwrite.
+        let key = NSString::from_str(BOX_SHADOW_FLAG_KEY);
+        let flag_ptr: *mut NSObject = msg_send![&layer, valueForKey: &*key];
+        if flag_ptr.is_null() {
+            return;
+        }
+        let opacity: f32 = msg_send![&layer, shadowOpacity];
+        if opacity <= 0.0 {
+            return;
+        }
+        let bounds: CGRect = msg_send![view, bounds];
+        if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+            return;
+        }
+        // Trace the SAME rounded rect the layer paints, so the shadow hugs the
+        // corner curve instead of the square bounds.
+        let radius: CGFloat = msg_send![&layer, cornerRadius];
+        let path: Retained<NSObject> = msg_send_id![
+            objc2::class!(UIBezierPath),
+            bezierPathWithRoundedRect: bounds,
+            cornerRadius: radius
+        ];
+        let cg: CGPathRef = msg_send![&*path, CGPath];
+        if !cg.0.is_null() {
+            let _: () = msg_send![&layer, setShadowPath: cg];
+        }
+    }
+}
+
 /// Sync a view's `idealyst_gradient` CAGradientLayer (if present) to
 /// the view's current bounds. Called from the iOS backend's layout
 /// pass — every view has its bounds rewritten by Taffy after build,
@@ -605,7 +664,15 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
             }
             crate::style_diff::CornerRadiusDecision::None => {}
         }
-        unsafe { view.setClipsToBounds(true) };
+        // NOTE: we deliberately do NOT force `clipsToBounds` here.
+        // `cornerRadius` alone already rounds the layer's background AND its
+        // CALayer border stroke — the mask is only needed to clip CHILD
+        // content, which CSS ties to `overflow`, not to `border-radius`. The
+        // `Overflow` block below owns that decision, matching web (which emits
+        // a bare `border-radius` and never pairs it with `overflow: hidden`)
+        // and idea-ui's `Card`, which documents + tests the same default.
+        // Forcing the mask here also cost a full OFFSCREEN RENDER PASS on
+        // every rounded view with children. See `backend_apple_core::clip`.
     }
 
     // Border. The framework exposes a CSS-style per-side API
@@ -698,6 +765,35 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
         let _: () = unsafe { msg_send![&layer, setShadowRadius: (shadow.blur as CGFloat / 2.0)] };
         let _: () = unsafe { msg_send![&layer, setShadowOpacity: 1.0_f32] };
         unsafe { view.setClipsToBounds(false) };
+        // Mark this as a BOX shadow and hand CoreAnimation an explicit
+        // shadowPath, so it never has to derive the silhouette from the
+        // layer's alpha channel via an offscreen pass. `sync_shadow_path`
+        // re-runs from the layout pass once bounds are known.
+        unsafe {
+            let key = NSString::from_str(BOX_SHADOW_FLAG_KEY);
+            let flag: *mut NSObject =
+                msg_send![objc2::class!(NSNumber), numberWithBool: true];
+            let _: () = msg_send![&layer, setValue: flag, forKey: &*key];
+        }
+        sync_shadow_path(view);
+    } else {
+        // No box shadow requested — clear any a previous apply left behind,
+        // including its cached path. Without this a reactively-removed shadow
+        // keeps painting AND keeps costing its composite. (The `text_shadow`
+        // branch in `apply_text_style` owns glyph shadows and is untouched
+        // here: it never sets the box-shadow marker, so a label whose only
+        // shadow is a glyph shadow is unaffected.)
+        unsafe {
+            let key = NSString::from_str(BOX_SHADOW_FLAG_KEY);
+            let flag_ptr: *mut NSObject = msg_send![&layer, valueForKey: &*key];
+            if !flag_ptr.is_null() {
+                let null: *mut NSObject = std::ptr::null_mut();
+                let _: () = msg_send![&layer, setValue: null, forKey: &*key];
+                let _: () = msg_send![&layer, setShadowOpacity: 0.0_f32];
+                let null_path = CGPathRef(std::ptr::null());
+                let _: () = msg_send![&layer, setShadowPath: null_path];
+            }
+        }
     }
 
     // Padding is handled entirely by Taffy for container views
@@ -716,12 +812,13 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     // this `core` crate doesn't need to depend on the mobile crate.
     apply_text_insets_if_label(view, style);
 
-    // Overflow
-    if let Some(overflow) = &style.overflow {
-        match overflow {
-            runtime_shared::Overflow::Hidden => unsafe { view.setClipsToBounds(true) },
-            runtime_shared::Overflow::Visible => unsafe { view.setClipsToBounds(false) },
-        }
+    // Overflow → `clipsToBounds`. Routed through the shared
+    // `backend_apple_core::clip` decision so iOS and macOS can't drift apart
+    // again (Rule #7); see that module for why `border_radius` must NOT
+    // promote this to "clip" (CSS semantics + an offscreen render pass per
+    // rounded view).
+    if let Some(clip) = backend_apple_core::clip::clips_to_bounds(style) {
+        unsafe { view.setClipsToBounds(clip) };
     }
 
     // Width / height: owned entirely by Taffy. Authors' explicit
@@ -1256,3 +1353,4 @@ fn install_border_side(
         }
     }
 }
+

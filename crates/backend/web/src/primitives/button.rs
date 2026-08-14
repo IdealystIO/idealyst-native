@@ -30,7 +30,7 @@ pub(crate) fn create(
         button.set_onclick(Some(closure.as_ref().unchecked_ref()));
         b._click_closures.push(closure);
         // See the fresh-create path below.
-        super::touch::swallow_ancestor_touch(b, button.as_ref());
+        super::touch::swallow_ancestor_touch(button.as_ref());
         return button.unchecked_into::<Node>();
     }
     let button = b
@@ -70,7 +70,7 @@ pub(crate) fn create(
     // inside a clickable row / tappable card doesn't ALSO trigger the
     // ancestor — matching native's single-view touch delivery. See
     // `touch::swallow_ancestor_touch`.
-    super::touch::swallow_ancestor_touch(b, button.as_ref());
+    super::touch::swallow_ancestor_touch(button.as_ref());
     let node: Node = button.unchecked_into();
     b.hydrate_note_fresh(&node);
     node

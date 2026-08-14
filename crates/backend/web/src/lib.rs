@@ -386,14 +386,6 @@ pub struct WebBackend {
     /// Held so JS doesn't drop them while the anchor is still in
     /// the layout tree. Same posture as `_click_closures`.
     pub(crate) _link_click_closures: Vec<Closure<dyn FnMut(web_sys::MouseEvent)>>,
-    /// Pointer Events closures installed by
-    /// [`primitives::touch::install`] — one per (node × pointer
-    /// event type) attachment. Type-erased to `JsValue` so the four
-    /// `pointer{down,move,up,cancel}` listeners and any future
-    /// pointer event types share storage. Held so JS doesn't free
-    /// them while the element is still in the layout tree;
-    /// freed wholesale on backend drop.
-    pub(crate) _touch_closures: Vec<wasm_bindgen::JsValue>,
     /// Per-node interaction-event closures. Keyed by node-id so we
     /// can drop them when `on_node_unstyled` fires. Each entry holds
     /// the listeners for one node (pointerenter, pointerleave,
@@ -1289,7 +1281,6 @@ impl WebBackend {
             _pressable_key_closures: Vec::new(),
             _app_key_closure: None,
             _link_click_closures: Vec::new(),
-            _touch_closures: Vec::new(),
             state_listeners: FxHashMap::default(),
             inline_props: FxHashMap::default(),
             spinner_keyframes_injected: false,
@@ -2430,7 +2421,7 @@ impl WebBackend {
         node: &Node,
         handler: runtime_shared::TouchHandler,
     ) {
-        primitives::touch::install(self, node, handler);
+        primitives::touch::install(node, handler);
     }
 
     pub(crate) fn install_wheel_handler_impl(
@@ -2438,7 +2429,7 @@ impl WebBackend {
         node: &Node,
         handler: runtime_shared::WheelHandler,
     ) {
-        primitives::wheel::install(self, node, handler);
+        primitives::wheel::install(node, handler);
     }
 
     pub(crate) fn install_hover_handler_impl(
@@ -2446,7 +2437,7 @@ impl WebBackend {
         node: &Node,
         handler: runtime_shared::HoverHandler,
     ) {
-        primitives::hover::install(self, node, handler);
+        primitives::hover::install(node, handler);
     }
 
     pub(crate) fn install_file_drop_handler_impl(
@@ -2454,7 +2445,7 @@ impl WebBackend {
         node: &Node,
         handler: runtime_shared::FileDropHandler,
     ) {
-        primitives::file_drop::install(self, node, handler);
+        primitives::file_drop::install(node, handler);
     }
 
     pub(crate) fn mark_preserves_focus_impl(&mut self, node: &Node) {
@@ -2720,7 +2711,7 @@ impl WebBackend {
         node: &Node,
         handler: runtime_shared::ImageLoadHandler,
     ) {
-        primitives::image::install_load(self, node, handler);
+        primitives::image::install_load(node, handler);
     }
 
     pub(crate) fn install_image_error_handler_impl(
@@ -2728,7 +2719,7 @@ impl WebBackend {
         node: &Node,
         handler: runtime_shared::ImageErrorHandler,
     ) {
-        primitives::image::install_error(self, node, handler);
+        primitives::image::install_error(node, handler);
     }
 
     pub(crate) fn create_icon_impl(

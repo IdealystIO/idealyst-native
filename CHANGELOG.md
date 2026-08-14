@@ -129,6 +129,29 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **Web: mounting `on_touch` elements dynamically no longer grows
+  `window`'s listener list forever.** The web backend's release safety
+  net — the `pointerup` / `pointercancel` pair on `window` that
+  finishes a gesture whose release never reaches its element — was
+  installed *per subscribed element*. An element's own listeners are
+  collected with the element, but `window`'s are not, and nothing on
+  the touch path removed them, so any app that mounts `on_touch`
+  elements dynamically (virtualized list, table, grid re-slicing as it
+  scrolls) added two permanent `window` listeners per cell per slice
+  and dispatched every later `pointerup` anywhere on the page into all
+  of them — monotonically slower the longer the user scrolled. There is
+  now ONE shared pair for the page, dispatching through a registry
+  keyed by live pointer id (bounded by fingers on the glass, not by
+  elements ever mounted). Off-element release, capture-didn't-hold, and
+  no-double-delivery behavior are unchanged and covered by tests.
+- **Web: element listener closures are no longer pinned for the
+  process lifetime.** Touch, hover, wheel, file-drop and image
+  `load`/`error` closures were parked in a backend-owned `Vec`
+  (`_touch_closures`) that was never cleared, which kept the JS
+  function — and the Rust closure box behind it — alive long after the
+  element was detached. `add_event_listener` already makes the element
+  the keepalive, so the closures are now handed to it (`own_listener`)
+  and become collectable with the element.
 - **Typed inputs no longer sit taller than a plain `Field`.** The typed
   date/time inputs route a LIVE parse-error channel into `Field`, and
   the shared optional-text helper's dynamic arm always mounted the

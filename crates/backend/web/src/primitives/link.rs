@@ -61,7 +61,7 @@ pub(crate) fn create(b: &mut WebBackend, config: LinkConfig) -> Node {
     // ancestor — matching native's single-view touch delivery. Applies to
     // external links too (a native navigation still shouldn't also fire the
     // row). See `touch::swallow_ancestor_touch`.
-    super::touch::swallow_ancestor_touch(b, anchor.as_ref());
+    super::touch::swallow_ancestor_touch(anchor.as_ref());
 
     // External links navigate natively — no JS click interception.
     if config.external {

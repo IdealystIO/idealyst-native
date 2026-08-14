@@ -12,11 +12,9 @@
 //! is over the view — exactly the semantics a hover tooltip wants. The
 //! over/out pair would spuriously toggle on every child boundary.
 //!
-//! Closures are parked in the backend's shared keepalive vec
-//! (`_touch_closures`) so the JS side keeps them alive for the element's
-//! lifetime — same pattern as touch/wheel.
+//! The element owns its listener closures (see [`super::own_listener`]) —
+//! same pattern as touch/wheel.
 
-use crate::WebBackend;
 use runtime_shared::HoverHandler;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -24,7 +22,7 @@ use web_sys::{Element, Node, PointerEvent};
 
 /// Install `pointerenter` (→ `true`) and `pointerleave` (→ `false`)
 /// listeners on `node`.
-pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: HoverHandler) {
+pub(crate) fn install(node: &Node, handler: HoverHandler) {
     // Hover is only meaningful on real DOM elements; bail silently on text
     // nodes / fragments (mirrors `touch::install`).
     let element: Element = match node.clone().dyn_into::<Element>() {
@@ -51,7 +49,7 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: HoverHandler) {
         });
         let _ = element
             .add_event_listener_with_callback("pointerenter", closure.as_ref().unchecked_ref());
-        b._touch_closures.push(closure.into_js_value().unchecked_into());
+        super::own_listener(closure);
     }
 
     // pointerleave → entering = false
@@ -64,6 +62,6 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: HoverHandler) {
         });
         let _ = element
             .add_event_listener_with_callback("pointerleave", closure.as_ref().unchecked_ref());
-        b._touch_closures.push(closure.into_js_value().unchecked_into());
+        super::own_listener(closure);
     }
 }

@@ -19,6 +19,11 @@
 //! call `setPointerCapture` so subsequent events stay locked to this
 //! element even if the finger / cursor leaves its bounds — that's
 //! the web-side implementation of the claim protocol.
+//!
+//! A release that lands off the element still has to finish the
+//! gesture, so there is also a safety net on `window` — but exactly
+//! ONE for the whole page, shared by every subscribed element via
+//! [`WINDOW_NET`]. See that item for why it must not be per-element.
 
 use crate::WebBackend;
 use runtime_shared::{
@@ -32,10 +37,9 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{Element, MouseEvent, Node, PointerEvent};
 
-/// Install the four pointer listeners on `node`. Storage of the
-/// resulting [`Closure`]s is shared with the existing event-listener
-/// vec so the JS side keeps them alive for the element's lifetime.
-pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
+/// Install the pointer listeners on `node`. The element owns the resulting
+/// [`Closure`]s (see [`super::own_listener`]), so they are released with it.
+pub(crate) fn install(node: &Node, handler: TouchHandler) {
     // The framework only installs a touch handler on primitives that
     // map to real DOM elements; if the downcast fails we'd be
     // looking at a text node or a fragment, which shouldn't carry
@@ -90,12 +94,52 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
     // leave a stale entry that eats the next Ctrl-click.
     let secondary_delivered: Rc<Cell<Option<bool>>> = Rc::new(Cell::new(None));
 
+    // Ending a gesture — `Ended` / `Cancelled` — is reachable by two routes:
+    // this element's own `pointerup` / `pointercancel` listener, and the shared
+    // window safety net (see [`WINDOW_NET`]) for a release that never reaches
+    // the element. Both go through this one closure so the bookkeeping (leave
+    // `active`, drop the cached origin, unregister from the net) happens
+    // exactly once: whichever route runs second finds the pointer already out
+    // of `active` and returns without re-delivering.
+    let finish: Rc<GestureFinish> = {
+        let handler = handler.clone();
+        let active = active.clone();
+        let captured = captured.clone();
+        let origins = origins.clone();
+        Rc::new(move |ev: &PointerEvent, phase: TouchPhase| {
+            let pid = ev.pointer_id();
+            if !active.borrow_mut().remove(&pid) {
+                return;
+            }
+            captured.borrow_mut().remove(&pid);
+            unregister_gesture(pid);
+            let origin = origins
+                .borrow_mut()
+                .remove(&pid)
+                .unwrap_or_else(|| element_origin(ev));
+            let local = local_from(ev, origin);
+            let te = TouchEvent {
+                id: TouchId(pid as u64),
+                phase,
+                position: TouchPoint::new(local.0, local.1),
+                window_position: TouchPoint::new(ev.client_x() as f32, ev.client_y() as f32),
+                timestamp_ns: timestamp_ns(ev),
+                force: pressure_to_force(ev.pressure()),
+            };
+            // Born batched via the core `on_touch` cycle wrapper.
+            if (handler)(&te).consumed {
+                ev.stop_propagation();
+            }
+        })
+    };
+
     // pointerdown — Began.
     {
         let handler = handler.clone();
         let active = active.clone();
         let captured = captured.clone();
         let origins = origins.clone();
+        let finish = finish.clone();
         let secondary_delivered = secondary_delivered.clone();
         let element_for_capture = element.clone();
         let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
@@ -180,6 +224,10 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
                     // Cache the origin for this gesture's moves (mirrors
                     // `active`, so it's cleaned up by the same up/cancel path).
                     origins.borrow_mut().insert(ev.pointer_id(), origin);
+                    // Arm the shared window safety net for THIS pointer only,
+                    // for as long as the gesture is live (mirrors `active` /
+                    // `origins`, cleared by the same `finish`).
+                    register_gesture(ev.pointer_id(), &finish);
                     if response.claim {
                         capture_pointer(&element_for_capture, ev.pointer_id(), &captured);
                     }
@@ -190,8 +238,7 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
             "pointerdown",
             closure.as_ref().unchecked_ref(),
         );
-        b._touch_closures
-            .push(closure.into_js_value().unchecked_into());
+        super::own_listener(closure);
     }
 
     // contextmenu — native-menu suppression AND, in some browsers, the only
@@ -281,8 +328,7 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
         });
         let _ = element
             .add_event_listener_with_callback("contextmenu", closure.as_ref().unchecked_ref());
-        b._touch_closures
-            .push(closure.into_js_value().unchecked_into());
+        super::own_listener(closure);
     }
 
     // pointermove — Moved for pointers in `active`; `Hovered` for unpressed
@@ -373,111 +419,151 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
             "pointermove",
             closure.as_ref().unchecked_ref(),
         );
-        b._touch_closures
-            .push(closure.into_js_value().unchecked_into());
+        super::own_listener(closure);
     }
 
-    // pointerup — Ended.
-    {
-        let handler = handler.clone();
-        let active = active.clone();
-        let captured = captured.clone();
-        let origins = origins.clone();
+    // pointerup — Ended. pointercancel — Cancelled. Both are pure delegations
+    // to `finish`; the window safety net calls the same closure for a release
+    // that never reaches this element.
+    for (event, phase) in [
+        ("pointerup", TouchPhase::Ended),
+        ("pointercancel", TouchPhase::Cancelled),
+    ] {
+        let finish = finish.clone();
         let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
-            let pid = ev.pointer_id();
-            if !active.borrow_mut().remove(&pid) {
-                return;
-            }
-            captured.borrow_mut().remove(&pid);
-            let origin = origins
-                .borrow_mut()
-                .remove(&pid)
-                .unwrap_or_else(|| element_origin(&ev));
-            let local = local_from(&ev, origin);
-            let touch_id = TouchId(pid as u64);
-            let te = TouchEvent {
-                id: touch_id,
-                phase: TouchPhase::Ended,
-                position: TouchPoint::new(local.0, local.1),
-                window_position: TouchPoint::new(ev.client_x() as f32, ev.client_y() as f32),
-                timestamp_ns: timestamp_ns(&ev),
-                force: pressure_to_force(ev.pressure()),
-            };
-            // Born batched via the core `on_touch` cycle wrapper.
-            if (handler)(&te).consumed {
-                ev.stop_propagation();
-            }
+            finish(&ev, phase);
         });
-        let _ = element.add_event_listener_with_callback(
-            "pointerup",
-            closure.as_ref().unchecked_ref(),
-        );
-        // Safety net: also listen on the window. If `setPointerCapture` didn't
-        // hold, or the release landed off this element (over another element —
-        // the now-`pointer-events:none` drag ghost lets the release fall to
-        // whatever's beneath) or outside the window entirely, the element-level
-        // `pointerup` never fires and the gesture would be stuck "active"
-        // forever (the dragged element never gets its `Ended`). This catches the
-        // release for THIS element's still-active pointers. When capture DID
-        // hold, the element handler runs first, removes the pointer from
-        // `active`, and `stop_propagation`s — so this fires as a no-op (the
-        // `active` check returns early) and never double-delivers.
-        if let Some(win) = web_sys::window() {
-            let _ = win.add_event_listener_with_callback(
-                "pointerup",
-                closure.as_ref().unchecked_ref(),
-            );
-        }
-        b._touch_closures
-            .push(closure.into_js_value().unchecked_into());
+        let _ = element.add_event_listener_with_callback(event, closure.as_ref().unchecked_ref());
+        super::own_listener(closure);
     }
+}
 
-    // pointercancel — Cancelled.
-    {
-        let handler = handler.clone();
-        let active = active.clone();
-        let captured = captured.clone();
-        let origins = origins.clone();
+/// Finishes one live gesture: `(event, phase)` → deliver `Ended` / `Cancelled`
+/// to the element that owns the pointer. Boxed so the element's own listeners
+/// and the shared window net can call the identical code path.
+type GestureFinish = dyn Fn(&PointerEvent, TouchPhase);
+
+/// Page-level state for the off-element release safety net.
+struct WindowNet {
+    /// Have the two shared listeners been attached to `window`? Set even when
+    /// there is no `window` to attach to — the condition can't change, so
+    /// retrying per gesture would only cost a lookup per press.
+    installed: bool,
+    /// How many listeners actually landed on `window`. Read by the regression
+    /// test; the invariant is that it never exceeds 2 no matter how many
+    /// elements subscribe.
+    listener_count: usize,
+    /// Pointers currently mid-gesture → the finisher of the element that owns
+    /// them. At most one entry per pointer id: a `Began` only enters an
+    /// element's `active` set when that element's handler CONSUMED it, and a
+    /// consumed `Began` stops propagating, so two elements can never both own
+    /// the same pointer. Entries are added at `pointerdown` and removed by
+    /// `finish`, so the map is bounded by the number of fingers on the glass —
+    /// not by the number of subscribed elements. A gesture abandoned mid-press
+    /// (element destroyed under the finger) holds its one entry until the next
+    /// release for that pointer id replaces or clears it; the framework's
+    /// `ScopeAlive` guard around the handler makes that late call inert.
+    gestures: SmallIdMap<i32, Rc<GestureFinish>>,
+}
+
+impl WindowNet {
+    const fn new() -> Self {
+        Self {
+            installed: false,
+            listener_count: 0,
+            gestures: SmallIdMap::new(),
+        }
+    }
+}
+
+thread_local! {
+    /// The ONE `pointerup` / `pointercancel` pair on `window` that finishes a
+    /// gesture whose release never reached its element — because
+    /// `setPointerCapture` didn't hold, because the release landed over
+    /// something else (a `pointer-events: none` drag ghost lets it fall
+    /// through to whatever is beneath), or because it happened outside the
+    /// window entirely. Without it a dragged element never gets its `Ended`
+    /// and follows the cursor forever.
+    ///
+    /// Shared, and registered per live pointer rather than per element,
+    /// because `window` outlives every element on the page: listeners added
+    /// there for an element's benefit are never removed when the element is
+    /// detached (a DOM node's own listeners die with it; `window`'s do not).
+    /// Installing a pair per subscribed element therefore grew `window`'s
+    /// listener list without bound in any app that mounts `on_touch` elements
+    /// dynamically — a virtualized grid re-slicing on scroll added two per
+    /// cell per slice, and every subsequent `pointerup` anywhere on the page
+    /// was dispatched into all of them, getting monotonically slower the
+    /// longer the user scrolled.
+    static WINDOW_NET: RefCell<WindowNet> = RefCell::new(WindowNet::new());
+}
+
+/// Arm the window safety net for `pid`, attaching the shared listeners on
+/// first use.
+fn register_gesture(pid: i32, finish: &Rc<GestureFinish>) {
+    ensure_window_net();
+    WINDOW_NET.with(|net| {
+        net.borrow_mut().gestures.insert(pid, finish.clone());
+    });
+}
+
+/// Disarm the net for `pid`. Called from `finish` — i.e. from BOTH completion
+/// routes — so a gesture is unregistered exactly once, whichever route ends it.
+fn unregister_gesture(pid: i32) {
+    WINDOW_NET.with(|net| {
+        net.borrow_mut().gestures.remove(&pid);
+    });
+}
+
+/// Attach the shared `pointerup` / `pointercancel` listeners to `window`, once
+/// per thread (i.e. once per page).
+fn ensure_window_net() {
+    let first = WINDOW_NET.with(|net| {
+        let mut net = net.borrow_mut();
+        let first = !net.installed;
+        net.installed = true;
+        first
+    });
+    if !first {
+        return;
+    }
+    let Some(win) = web_sys::window() else {
+        return;
+    };
+    for (event, phase) in [
+        ("pointerup", TouchPhase::Ended),
+        ("pointercancel", TouchPhase::Cancelled),
+    ] {
         let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
-            let pid = ev.pointer_id();
-            if !active.borrow_mut().remove(&pid) {
-                return;
-            }
-            captured.borrow_mut().remove(&pid);
-            let origin = origins
-                .borrow_mut()
-                .remove(&pid)
-                .unwrap_or_else(|| element_origin(&ev));
-            let local = local_from(&ev, origin);
-            let touch_id = TouchId(pid as u64);
-            let te = TouchEvent {
-                id: touch_id,
-                phase: TouchPhase::Cancelled,
-                position: TouchPoint::new(local.0, local.1),
-                window_position: TouchPoint::new(ev.client_x() as f32, ev.client_y() as f32),
-                timestamp_ns: timestamp_ns(&ev),
-                force: pressure_to_force(ev.pressure()),
-            };
-            // Born batched via the core `on_touch` cycle wrapper.
-            if (handler)(&te).consumed {
-                ev.stop_propagation();
+            // Clone the finisher OUT of the map before calling it: `finish`
+            // re-enters `unregister_gesture`, which needs the same `RefCell`
+            // mutably, so the read borrow must be released first.
+            let finish = WINDOW_NET
+                .with(|net| net.borrow().gestures.get(&ev.pointer_id()).cloned());
+            if let Some(finish) = finish {
+                finish(&ev, phase);
             }
         });
-        let _ = element.add_event_listener_with_callback(
-            "pointercancel",
-            closure.as_ref().unchecked_ref(),
-        );
-        // Window safety net — same rationale as `pointerup` above: never miss a
-        // cancel for an active pointer, even if it's delivered off this element.
-        if let Some(win) = web_sys::window() {
-            let _ = win.add_event_listener_with_callback(
-                "pointercancel",
-                closure.as_ref().unchecked_ref(),
-            );
+        if win
+            .add_event_listener_with_callback(event, closure.as_ref().unchecked_ref())
+            .is_ok()
+        {
+            WINDOW_NET.with(|net| net.borrow_mut().listener_count += 1);
         }
-        b._touch_closures
-            .push(closure.into_js_value().unchecked_into());
+        // Deliberately permanent, and the one place in this module where that
+        // is correct: two listeners for the lifetime of the page, sized by
+        // nothing. `window` roots the JS function.
+        closure.forget();
     }
+}
+
+/// Test hook: `(window listeners installed, gestures currently armed)`.
+#[cfg(test)]
+pub(crate) fn window_net_stats() -> (usize, usize) {
+    WINDOW_NET.with(|net| {
+        let net = net.borrow();
+        (net.listener_count, net.gestures.len())
+    })
 }
 
 /// Make `el` "swallow" a press from any ancestor `on_touch` gesture
@@ -500,13 +586,12 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
 /// listeners all early-return (see `install`) and no ancestor tap is
 /// recognized. The control's OWN `click` is untouched — `stop_propagation`
 /// halts bubbling, not the browser's click synthesis.
-pub(crate) fn swallow_ancestor_touch(b: &mut WebBackend, el: &web_sys::Element) {
+pub(crate) fn swallow_ancestor_touch(el: &web_sys::Element) {
     let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
         ev.stop_propagation();
     });
     let _ = el.add_event_listener_with_callback("pointerdown", closure.as_ref().unchecked_ref());
-    b._touch_closures
-        .push(closure.into_js_value().unchecked_into());
+    super::own_listener(closure);
 
     // The swallow must extend to `contextmenu`: an ancestor `on_touch`
     // element's contextmenu listener SYNTHESIZES a Secondary `Began` when no
@@ -523,8 +608,7 @@ pub(crate) fn swallow_ancestor_touch(b: &mut WebBackend, el: &web_sys::Element) 
         ev.stop_propagation();
     });
     let _ = el.add_event_listener_with_callback("contextmenu", closure.as_ref().unchecked_ref());
-    b._touch_closures
-        .push(closure.into_js_value().unchecked_into());
+    super::own_listener(closure);
 }
 
 /// Implementation of [`runtime_shared::Backend::claim_touch`] —

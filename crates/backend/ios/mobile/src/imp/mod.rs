@@ -4099,6 +4099,14 @@ impl IosBackend {
             // when the view's size is percent-based; this call reads
             // it back and writes a properly-clamped value.
             backend_ios_core::style::sync_corner_radius(view);
+            // Retrace the box shadow's `shadowPath` against the new bounds
+            // (and the radius just re-clamped above). MUST run after
+            // `sync_corner_radius` so the path follows the final corner
+            // curve. Without an explicit path CoreAnimation derives the
+            // shadow from the layer's alpha channel through an offscreen
+            // render pass on every composite — the dominant GPU cost when
+            // scrolling a page of shadowed cards.
+            backend_ios_core::style::sync_shadow_path(view);
             // Resolve any percent-valued static `transform: translate`
             // requests now that the box has real pixel dimensions.
             // CSS spec: translate-% is BOX-relative, so the shift

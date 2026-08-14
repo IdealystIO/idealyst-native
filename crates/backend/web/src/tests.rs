@@ -2494,6 +2494,187 @@ fn web_touch_longpress_contextmenu_does_not_synthesize_secondary() {
     assert!(ev.default_prevented(), "the native menu must still be suppressed");
 }
 
+// ---------------------------------------------------------------------------
+// The window-level release safety net — regression for it being installed
+// PER SUBSCRIBED ELEMENT.
+//
+// `install` needs a `pointerup` / `pointercancel` net on `window` so a release
+// that never reaches the element still finishes the gesture. It used to add
+// that pair inside `install`, i.e. element-lifetime state on a page-lifetime
+// target: an element's own listeners are collected with the element, but
+// `window`'s are not, and nothing on the touch path ever removed them. Any app
+// that mounts `on_touch` elements dynamically — a virtualized list, a table, a
+// grid re-slicing as the user scrolls — therefore added two permanent `window`
+// listeners per cell per slice, and every later `pointerup` anywhere on the
+// page was dispatched into all of them (plus the closures leaked). One shared
+// pair keyed by live pointer id is O(1) in elements ever mounted.
+// ---------------------------------------------------------------------------
+
+/// Build a bubbling, cancelable pointer event of `kind` carrying `pointer_id`.
+fn pointer_event_with_id(kind: &str, pointer_id: i32) -> web_sys::PointerEvent {
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_pointer_id(pointer_id);
+    web_sys::PointerEvent::new_with_event_init_dict(kind, &init)
+        .expect("construct bubbling pointer event")
+}
+
+/// REGRESSION TEST.
+///
+/// Subscribing many elements must not grow `window`'s listener list. Before the
+/// fix this was `2 * elements`; now it is exactly 2 for the whole page, however
+/// many elements subscribe and however many gestures run.
+#[wasm_bindgen_test]
+fn regression_web_touch_window_net_is_shared_not_per_element() {
+    use runtime_shared::TouchResponse;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+
+    // 25 independently subscribed elements, each with a live gesture (the net
+    // is armed at `pointerdown`, so this is the state that used to have 50
+    // window listeners attached).
+    const N: i32 = 25;
+    // Deltas, not absolutes: the registry is thread-local and shared with the
+    // other tests in this module, some of which press without ever releasing.
+    let (_, before) = crate::primitives::touch::window_net_stats();
+    let mut elements = Vec::new();
+    for i in 0..N {
+        let el = doc.create_element("div").unwrap();
+        doc.body().unwrap().append_child(&el).unwrap();
+        backend.install_touch_handler_impl(
+            &el.clone().unchecked_into(),
+            Rc::new(move |_| TouchResponse::CONSUMED),
+        );
+        el.dispatch_event(&pointer_event_with_id("pointerdown", 500 + i))
+            .expect("dispatch pointerdown");
+        elements.push(el);
+    }
+
+    let (listeners, armed) = crate::primitives::touch::window_net_stats();
+    assert_eq!(
+        listeners, 2,
+        "the window safety net must be ONE shared pointerup/pointercancel pair \
+         for the page, not a pair per subscribed element",
+    );
+    assert_eq!(
+        armed,
+        before + N as usize,
+        "each live gesture arms the shared net exactly once",
+    );
+
+    // Release every gesture and detach, so the shared registry is empty again
+    // for other tests (and to prove the registry itself doesn't accumulate).
+    for (i, el) in elements.iter().enumerate() {
+        el.dispatch_event(&pointer_event_with_id("pointerup", 500 + i as i32))
+            .expect("dispatch pointerup");
+        el.remove();
+    }
+    let (_, remaining) = crate::primitives::touch::window_net_stats();
+    assert_eq!(
+        remaining, before,
+        "every released gesture must be unregistered from the shared net",
+    );
+}
+
+/// COMPANION. The net still does its job: a release that lands off the element
+/// (capture didn't hold, the pointer went up over something else) must finish
+/// the gesture, exactly once.
+#[wasm_bindgen_test]
+fn web_touch_off_element_release_ends_gesture_via_shared_net() {
+    use runtime_shared::{TouchPhase, TouchResponse};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let el = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&el).unwrap();
+
+    let ended = Rc::new(Cell::new(0u32));
+    let e = ended.clone();
+    backend.install_touch_handler_impl(
+        &el.clone().unchecked_into(),
+        Rc::new(move |ev| {
+            if ev.phase == TouchPhase::Ended {
+                e.set(e.get() + 1);
+            }
+            TouchResponse::CONSUMED
+        }),
+    );
+
+    // Deltas, not absolutes: other tests share the thread-local registry.
+    let (_, before) = crate::primitives::touch::window_net_stats();
+    el.dispatch_event(&pointer_event_with_id("pointerdown", 601))
+        .expect("dispatch pointerdown");
+    let (_, armed) = crate::primitives::touch::window_net_stats();
+    assert_eq!(armed, before + 1, "a live gesture arms the shared net");
+
+    // The release never touches the element — it goes straight to `window`.
+    let win = web_sys::window().unwrap();
+    win.dispatch_event(&pointer_event_with_id("pointerup", 601))
+        .expect("dispatch pointerup on window");
+
+    assert_eq!(
+        ended.get(),
+        1,
+        "an off-element release must still deliver Ended through the shared net",
+    );
+    let (_, after) = crate::primitives::touch::window_net_stats();
+    assert_eq!(after, before, "finishing the gesture must disarm the net");
+
+    // A second release for the same pointer must not re-deliver.
+    win.dispatch_event(&pointer_event_with_id("pointerup", 601))
+        .expect("dispatch second pointerup");
+    assert_eq!(ended.get(), 1, "a disarmed pointer must not deliver Ended twice");
+    el.remove();
+}
+
+/// COMPANION. When the release DOES reach the element, the element's own
+/// listener finishes the gesture and the shared net must not double-deliver —
+/// both routes run the same `finish`, whose `active` check makes the second a
+/// no-op.
+#[wasm_bindgen_test]
+fn web_touch_on_element_release_disarms_shared_net() {
+    use runtime_shared::{TouchPhase, TouchResponse};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let el = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&el).unwrap();
+
+    let ended = Rc::new(Cell::new(0u32));
+    let e = ended.clone();
+    backend.install_touch_handler_impl(
+        &el.clone().unchecked_into(),
+        Rc::new(move |ev| {
+            if ev.phase == TouchPhase::Ended {
+                e.set(e.get() + 1);
+            }
+            TouchResponse::CONSUMED
+        }),
+    );
+
+    let (_, before) = crate::primitives::touch::window_net_stats();
+    el.dispatch_event(&pointer_event_with_id("pointerdown", 602))
+        .expect("dispatch pointerdown");
+    // Bubbles element → … → window, so both routes see this one release.
+    el.dispatch_event(&pointer_event_with_id("pointerup", 602))
+        .expect("dispatch pointerup");
+
+    assert_eq!(ended.get(), 1, "the release must deliver exactly one Ended");
+    let (_, after) = crate::primitives::touch::window_net_stats();
+    assert_eq!(after, before, "the element route must disarm the shared net too");
+    el.remove();
+}
+
 /// Build a `keydown` for `key` that bubbles and is cancelable, dispatch it on
 /// `target`, and return whether its default action ended up prevented.
 fn dispatch_bubbling_keydown(target: &web_sys::Element, key: &str) -> bool {

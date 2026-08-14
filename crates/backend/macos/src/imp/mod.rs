@@ -22,6 +22,12 @@ pub(crate) mod node;
 pub(crate) mod portal;
 pub(crate) mod presence;
 pub(crate) mod screenshot;
+/// Box shadow (`StyleRules.shadow`). Mirrors the iOS shadow path so an
+/// `Elevated` Card casts the same shadow on both Apple backends (Rule #7);
+/// macOS previously dropped the field entirely. Owns the flipped-vs-not Y-sign
+/// convention and the explicit `shadowPath` that keeps shadows off
+/// CoreAnimation's offscreen-derivation path.
+pub(crate) mod shadow;
 pub(crate) mod sticky;
 pub(crate) mod virtual_grid;
 pub(crate) mod styled_text;
@@ -1505,9 +1511,13 @@ pub(crate) fn theme_text_color() -> Color {
 }
 
 /// Apply the framework's `StyleRules` to an NSView's CALayer-backed
-/// presentation. Minimum viable set: background color, opacity,
-/// corner radius. More properties (gradients, shadows, borders) will
-/// follow the iOS shape.
+/// presentation: background color, opacity, corner radius, gradients, borders,
+/// box shadow, overflow clipping, and the desktop interaction affordances
+/// (`cursor` / `user-select`). Mirrors `backend_ios_core::style::apply_style`
+/// property for property so the two Apple backends produce the same output
+/// from one author tree (Rule #7); the decisions that could drift — uniform-vs-
+/// per-side borders, clip-vs-no-clip — live in `backend_apple_core` and are
+/// shared outright rather than reimplemented here.
 fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     // Force CALayer backing so `backgroundColor`, `cornerRadius`,
     // etc. work. NSView is layer-optional by default; we want the
@@ -1626,11 +1636,18 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
                 let _: () = unsafe { msg_send![&layer, setCornerRadius: effective] };
             }
         }
-        // AppKit's NSView has no `setMasksToBounds:` (that's UIView).
-        // Equivalent is `layer.masksToBounds = true` on the CALayer
-        // directly. Required so cornerRadius clips child content,
-        // matching the UIView `clipsToBounds` behavior.
-        let _: () = unsafe { msg_send![&layer, setMasksToBounds: true] };
+        // NOTE: we deliberately do NOT force `masksToBounds = true` here.
+        // `cornerRadius` alone already rounds the layer's background AND the
+        // CALayer border stroke; the mask is only needed to clip CHILD content,
+        // which CSS ties to `overflow`, not to `border-radius`. Web emits a bare
+        // `border-radius` and never pairs it with `overflow: hidden`, and
+        // idea-ui's `Card` documents + tests the same contract ("the default
+        // doesn't clip — content may extend past the radius"). Forcing the mask
+        // made the Apple backends the odd ones out (Rule #7) AND cost a full
+        // OFFSCREEN RENDER PASS on every rounded view with children — the
+        // dominant scroll cost measured on nicho-ca. The `Overflow` block below
+        // owns the clip decision. See the iOS twin in
+        // `backend-ios-core::style::apply_style`.
     }
 
     // Border. Routes uniform→CALayer stroke (follows cornerRadius) /
@@ -1643,16 +1660,26 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     // swatch ring) rendered borderless on macOS while iOS/web showed it.
     border::apply_border(view, &layer, style);
 
+    // Box shadow (`StyleRules.shadow`) — the drop shadow behind an `Elevated`
+    // card. Runs AFTER the border so `cornerRadius` is settled and the traced
+    // `shadowPath` follows the same curve the border strokes. macOS used to
+    // drop this field entirely while iOS and web rendered it (Rule #7); see
+    // `shadow` for the flipped-view Y-sign convention and why the explicit
+    // path matters for frame rate.
+    shadow::apply_box_shadow(view, style);
+
     // Overflow → CALayer `masksToBounds` (AppKit's equivalent of UIView's
     // `clipsToBounds`). Mirrors iOS `style.rs` so the backends converge (Rule
     // #7): a plain `overflow: Hidden` view clips its children on macOS too. The
     // macOS backend previously honored overflow ONLY on scroll views, so a
     // styled non-scroll view silently never clipped (iOS/Android/web did). When
-    // overflow is unset we leave `masksToBounds` as the cornerRadius branch above
-    // decided. Clipping is a layer mask — it does NOT detach a child's hosted
+    // overflow is unset we leave `masksToBounds` at the layer default (false) —
+    // the cornerRadius branch above no longer forces it on, so a rounded view
+    // that never asked to clip doesn't pay for an offscreen mask pass.
+    // Clipping is a layer mask — it does NOT detach a child's hosted
     // `CAMetalLayer`; the view is already layer-backed (`setWantsLayer` above) and
     // the GPU surface keeps presenting, clipped to bounds.
-    if let Some(clip) = overflow_masks_to_bounds(style) {
+    if let Some(clip) = backend_apple_core::clip::clips_to_bounds(style) {
         let _: () = unsafe { msg_send![&layer, setMasksToBounds: clip] };
     }
 
@@ -1716,18 +1743,6 @@ fn as_flipped_view(view: &NSView) -> Option<&FlippedView> {
     } else {
         None
     }
-}
-
-/// The `masksToBounds` value an explicit `overflow` requests: `Hidden` clips,
-/// `Visible` doesn't, and an unset overflow returns `None` so the caller leaves
-/// whatever the cornerRadius branch decided. Pure so it's host-testable — a full
-/// NSView mount needs a main thread + live layer (see `imp::icon` tests), so the
-/// clip *decision* is the closest reachable guard for this branch.
-fn overflow_masks_to_bounds(style: &StyleRules) -> Option<bool> {
-    style
-        .overflow
-        .as_ref()
-        .map(|o| matches!(o, runtime_shared::Overflow::Hidden))
 }
 
 /// Pure half of [`MacosBackend::sync_external_scroller_padding`]: resolve the
@@ -1866,7 +1881,7 @@ mod text_area_autosize_tests {
 
 #[cfg(test)]
 mod overflow_tests {
-    use super::overflow_masks_to_bounds;
+    use backend_apple_core::clip::clips_to_bounds;
     use runtime_shared::{Overflow, StyleRules};
 
     // Regression: macOS used to ignore `overflow` on non-scroll views entirely,
@@ -1875,19 +1890,20 @@ mod overflow_tests {
     #[test]
     fn overflow_decides_masks_to_bounds() {
         assert_eq!(
-            overflow_masks_to_bounds(&StyleRules { overflow: Some(Overflow::Hidden), ..Default::default() }),
+            clips_to_bounds(&StyleRules { overflow: Some(Overflow::Hidden), ..Default::default() }),
             Some(true),
             "overflow: Hidden must clip (masksToBounds = true)",
         );
         assert_eq!(
-            overflow_masks_to_bounds(&StyleRules { overflow: Some(Overflow::Visible), ..Default::default() }),
+            clips_to_bounds(&StyleRules { overflow: Some(Overflow::Visible), ..Default::default() }),
             Some(false),
             "overflow: Visible must not clip",
         );
         assert_eq!(
-            overflow_masks_to_bounds(&StyleRules::default()),
+            clips_to_bounds(&StyleRules::default()),
             None,
-            "unset overflow leaves the cornerRadius decision untouched",
+            "unset overflow leaves the layer default (unclipped) alone — a \
+             border_radius must NOT promote this to a clip",
         );
     }
 }
@@ -2419,6 +2435,14 @@ impl MacosBackend {
         icon::sync_icon_sublayer(view, w as f64, h as f64);
         // Re-apply a deferred cornerRadius, clamped to half the smaller bound.
         sync_corner_radius(view);
+        // Re-trace the box shadow's `shadowPath` against the new bounds. MUST
+        // run after `sync_corner_radius` so the path follows the final clamped
+        // curve. The path is in layer coordinates and does not track a resize,
+        // so without this a shadow keeps the shape it had at its first layout —
+        // and a view whose bounds were 0×0 at apply-style time (the deferred
+        // case above) would never get a path at all, silently falling back to
+        // CoreAnimation's offscreen alpha-channel derivation.
+        shadow::sync_shadow_path(view);
         // Re-resolve percent transforms against the real bounds.
         animated::sync_transform_after_layout(view, &self.animated_states);
         // Feed `.container()` inline-size subscribers (container queries).

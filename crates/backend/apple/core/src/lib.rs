@@ -29,6 +29,14 @@ pub mod log;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
 pub mod scheduler;
 
+/// Debug-only frame-pacing trace for diagnosing animation stutter. iOS/tvOS
+/// use `CADisplayLink.displayLinkWithTarget:selector:` (UIKit); macOS uses
+/// `NSScreen.displayLinkWithTarget:selector:` (AppKit, macOS 14+). Both give a
+/// main-thread, common-mode vsync clock for measuring scroll-tracking stalls.
+/// Self-installs from `install_scheduler`; compiled out of release builds.
+#[cfg(all(any(target_os = "ios", target_os = "tvos", target_os = "macos"), debug_assertions))]
+pub mod perf_trace;
+
 /// Cooperative main-thread async executor — drives `spawn_async` futures
 /// on the main run loop instead of `runtime-core`'s blocking `pollster`
 /// fallback, so long-running futures (SSE / WebSocket `recv` loops) don't
@@ -70,7 +78,23 @@ pub mod text_control_style;
 /// The uniform-vs-per-side border routing decision shared by the iOS and
 /// macOS backends. NOT OS-gated — pure `runtime_shared` logic, host-testable,
 /// so both backends collapse the four CSS sides identically (Rule #7).
+/// Typed CoreGraphics pointer newtypes (`CGColorRef`, `CGPathRef`) whose
+/// Objective-C type encodings are pinned by host-run tests. A bare
+/// `*const c_void` encodes as `^v` and makes objc2 abort the process at calls
+/// like `setShadowPath:` / `setShadowColor:`. NOT OS-gated on purpose — the
+/// backends' UIKit/AppKit modules are, so a guard living inside one of them
+/// would never run on the host.
+pub mod cg;
+
 pub mod border;
+
+/// Child-clipping decision (`clipsToBounds` / `masksToBounds`) shared by the
+/// iOS and macOS backends. Clipping follows `overflow` — NEVER `border_radius`,
+/// which rounds the background + border on its own and needs no mask. Owning
+/// the rule here keeps the two backends converged (Rule #7) and keeps the
+/// offscreen-render pass off every rounded view. NOT OS-gated: pure
+/// `runtime_shared` logic, unit-tested on the host.
+pub mod clip;
 
 /// CSS `pointer-events` hit-test verdict shared by the UIKit + AppKit
 /// hit-test overrides. NOT OS-gated — pure `runtime_shared` logic,

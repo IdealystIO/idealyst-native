@@ -99,7 +99,7 @@ pub(crate) fn create(b: &mut WebBackend, on_click: Rc<dyn Fn()>) -> Node {
     // inside a clickable row / tappable card doesn't ALSO trigger the
     // ancestor — matching native's single-view touch delivery. See
     // `touch::swallow_ancestor_touch`.
-    super::touch::swallow_ancestor_touch(b, el.as_ref());
+    super::touch::swallow_ancestor_touch(el.as_ref());
 
     el.unchecked_into::<Node>()
 }

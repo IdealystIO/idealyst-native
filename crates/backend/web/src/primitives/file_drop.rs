@@ -19,17 +19,15 @@
 //! `"Files"` — dragging selected text or a link also fires these events, and
 //! those must not be swallowed.
 
-use crate::WebBackend;
 use runtime_shared::{DroppedFile, FileDropEvent, FileDropPhase, FileDropHandler, TouchPoint};
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{DragEvent, Element, Node};
 
-/// Install the drag-and-drop listeners on `node`. The closures are kept alive
-/// by pushing them onto the backend's shared listener keep-alive vec (the same
-/// one the touch / wheel listeners use).
-pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: FileDropHandler) {
+/// Install the drag-and-drop listeners on `node`. The element owns the
+/// closures (see [`super::own_listener`]), so they are released with it.
+pub(crate) fn install(node: &Node, handler: FileDropHandler) {
     let element: Element = match node.clone().dyn_into::<Element>() {
         Ok(e) => e,
         Err(_) => return,
@@ -57,8 +55,7 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: FileDropHandler)
         });
         let _ =
             element.add_event_listener_with_callback(event_name, closure.as_ref().unchecked_ref());
-        b._touch_closures
-            .push(closure.into_js_value().unchecked_into());
+        super::own_listener(closure);
     }
 
     // `dragleave` → Exited.
@@ -76,8 +73,7 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: FileDropHandler)
         });
         let _ =
             element.add_event_listener_with_callback("dragleave", closure.as_ref().unchecked_ref());
-        b._touch_closures
-            .push(closure.into_js_value().unchecked_into());
+        super::own_listener(closure);
     }
 
     // `drop` → Dropped(files).
@@ -97,8 +93,7 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: FileDropHandler)
             let _ = (h)(&ev_out);
         });
         let _ = element.add_event_listener_with_callback("drop", closure.as_ref().unchecked_ref());
-        b._touch_closures
-            .push(closure.into_js_value().unchecked_into());
+        super::own_listener(closure);
     }
 }
 

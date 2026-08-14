@@ -64,9 +64,8 @@ pub(crate) fn update_src(b: &WebBackend, node: &Node, src: &str) {
 /// after `create`), so we check `HtmlImageElement::complete()` up front
 /// and fire — otherwise the `load` event already fired and we would drop
 /// it. `complete && naturalWidth > 0` distinguishes a decoded image from
-/// a still-loading or errored one. Closures are parked in the backend
-/// keepalive vec (`_touch_closures`) so JS keeps them alive for the
-/// element's lifetime — same pattern as touch/hover.
+/// a still-loading or errored one. The `<img>` owns the closure (see
+/// [`super::own_listener`]) — same pattern as touch/hover.
 ///
 /// The already-decoded fire is **deferred to a microtask** rather than
 /// invoked inline. This install runs from inside `walker::image::build`
@@ -75,7 +74,7 @@ pub(crate) fn update_src(b: &WebBackend, node: &Node, src: &str) {
 /// borrow through the style effect and panic ("RefCell already borrowed",
 /// see `walker/style.rs`). Deferring also matches the browser: a cached
 /// `<img>`'s real `load` event dispatches as a queued task, never inline.
-pub(crate) fn install_load(b: &mut WebBackend, node: &Node, handler: ImageLoadHandler) {
+pub(crate) fn install_load(node: &Node, handler: ImageLoadHandler) {
     let Ok(img) = node.clone().dyn_into::<HtmlImageElement>() else {
         return;
     };
@@ -99,7 +98,7 @@ pub(crate) fn install_load(b: &mut WebBackend, node: &Node, handler: ImageLoadHa
         });
     });
     let _ = img.add_event_listener_with_callback("load", closure.as_ref().unchecked_ref());
-    b._touch_closures.push(closure.into_js_value().unchecked_into());
+    super::own_listener(closure);
 }
 
 /// Install an `on_error` handler: fire the framework's
@@ -109,7 +108,7 @@ pub(crate) fn install_load(b: &mut WebBackend, node: &Node, handler: ImageLoadHa
 /// already-errored fire is deferred to a microtask for the same reason
 /// as `install_load`: this runs inside the backend `borrow_mut`, and a
 /// user `on_error` writing a style-affecting signal would re-enter it.
-pub(crate) fn install_error(b: &mut WebBackend, node: &Node, handler: ImageErrorHandler) {
+pub(crate) fn install_error(node: &Node, handler: ImageErrorHandler) {
     let Ok(img) = node.clone().dyn_into::<HtmlImageElement>() else {
         return;
     };
@@ -122,7 +121,7 @@ pub(crate) fn install_error(b: &mut WebBackend, node: &Node, handler: ImageError
         handler();
     });
     let _ = img.add_event_listener_with_callback("error", closure.as_ref().unchecked_ref());
-    b._touch_closures.push(closure.into_js_value().unchecked_into());
+    super::own_listener(closure);
 }
 
 /// Swap the `<img alt>` in place when a reactive `alt` source fires.

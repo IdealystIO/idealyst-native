@@ -17,7 +17,6 @@
 //! When the handler consumes the event we `preventDefault()` so the page
 //! doesn't also scroll or trigger the browser's own pinch-zoom.
 
-use crate::WebBackend;
 use runtime_shared::{TouchPoint, WheelEvent as FwWheelEvent, WheelHandler, WheelKind};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -42,10 +41,9 @@ const ZOOM_PER_WHEEL_UNIT: f32 = 0.01;
 /// untouched, so zooming feels continuous on both input devices.
 const MAX_ZOOM_WHEEL_DELTA: f32 = 12.0;
 
-/// Install the `wheel` listener on `node`. The closure is kept alive by
-/// pushing it onto the backend's shared listener keep-alive vec (same one the
-/// touch listeners use).
-pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: WheelHandler) {
+/// Install the `wheel` listener on `node`. The element owns the closure (see
+/// [`super::own_listener`]), so it is released with the element.
+pub(crate) fn install(node: &Node, handler: WheelHandler) {
     let element: Element = match node.clone().dyn_into::<Element>() {
         Ok(e) => e,
         Err(_) => return,
@@ -116,8 +114,7 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: WheelHandler) {
         }
     });
     let _ = element.add_event_listener_with_callback("wheel", closure.as_ref().unchecked_ref());
-    b._touch_closures
-        .push(closure.into_js_value().unchecked_into());
+    super::own_listener(closure);
 }
 
 /// Element-local cursor coordinates: `client` minus the element's rect.
