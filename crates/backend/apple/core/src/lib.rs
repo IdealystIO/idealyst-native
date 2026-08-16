@@ -96,6 +96,20 @@ pub mod border;
 /// `runtime_shared` logic, unit-tested on the host.
 pub mod clip;
 
+/// Where a view's box shadow gets painted — its own layer, or a synthesized
+/// sibling layer in the parent when the view's own layer is bounds-masked and
+/// would clip the shadow away. NOT OS-gated: pure `runtime_shared` logic,
+/// unit-tested on the host, shared so iOS and macOS branch identically
+/// (Rule #7).
+pub mod shadow;
+
+/// The CALayer half of [`shadow`] — writing/clearing shadow properties, tracing
+/// the `shadowPath`, and the whole lifecycle of the synthesized sibling layer.
+/// CALayer is the same class under UIKit and AppKit, so both backends share
+/// this file verbatim and contribute only the view→layer lookup.
+#[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
+pub mod shadow_layer;
+
 /// CSS `pointer-events` hit-test verdict shared by the UIKit + AppKit
 /// hit-test overrides. NOT OS-gated — pure `runtime_shared` logic,
 /// host-testable, so both backends decline/allow hits identically

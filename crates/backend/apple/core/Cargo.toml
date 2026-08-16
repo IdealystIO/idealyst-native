@@ -25,6 +25,15 @@ default = []
 # backends' own `async-driver` feature turns this on (ios-core → apple-core).
 async-driver = ["runtime-shared/async-driver"]
 
+# Live-CALayer coverage for the sibling shadow layer. `harness = false` because
+# libtest runs `#[test]`s on spawned worker threads and Core Animation wants the
+# main thread — with no harness, the test's `main` IS the main thread. It also
+# only means anything on an Apple host, which is where it compiles to a real
+# body (the file is `cfg`-gated to an empty `main` elsewhere).
+[[test]]
+name = "shadow_layer_calayer"
+harness = false
+
 [dependencies]
 # `embed-font-bytes`: CoreText registers fonts from their raw bytes
 # (`CTFontManagerRegisterGraphicsFont`), so iOS/macOS builds need the

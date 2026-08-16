@@ -2777,6 +2777,19 @@ impl IosBackend {
             self.layout.remove_child(parent_layout, child_layout);
         }
         self.layout.mark_dirty(parent_layout);
+        // A clipped view's drop shadow lives on a sibling layer in the PARENT's
+        // layer (see `backend_apple_core::shadow`), so `removeFromSuperview`
+        // alone would leave it painting where the card used to be.
+        backend_ios_core::style::detach_shadow_sibling(child_view);
+        // Evict the cached applied frame so the next layout pass re-runs
+        // `sync_view_after_frame` for this view unconditionally. The pass skips
+        // views whose frame is unchanged, and `sync_shadow_path` is the one step
+        // that is not purely size-dependent: it re-parents the sibling shadow
+        // layer the line above just detached. Without this, re-inserting the
+        // view at a bit-identical frame would leave it permanently shadowless.
+        // (The end-of-pass `retain` sweep can't cover it — the view stays
+        // registered in `view_to_layout` across a reparent.)
+        self.applied_frames.remove(&child_key);
         unsafe { child_view.removeFromSuperview() };
 
         // Reflow after the removal — SYMMETRIC with `insert_at`. Marking the
@@ -3012,6 +3025,12 @@ impl IosBackend {
         // freezes it against in-loop removals.
         let subviews = parent.subviews();
         for sub in subviews.iter() {
+            // Mirror `remove_child`: unparent the sibling shadow layer, which
+            // lives in THIS view's layer rather than the child's and would
+            // otherwise outlive the child it belongs to, and evict the cached
+            // frame so a re-insert at the same geometry still re-attaches it.
+            backend_ios_core::style::detach_shadow_sibling(&sub);
+            self.applied_frames.remove(&(&*sub as *const UIView as usize));
             unsafe { sub.removeFromSuperview() };
         }
     }
@@ -3604,6 +3623,9 @@ impl IosBackend {
         // (if any) so a final vsync can't fire into the half-torn subtree,
         // then removes the container from its window on the next runloop
         // turn.
+        // Mirror `remove_child`: the portal container's own sibling shadow
+        // layer belongs to the window's layer, not to the container.
+        backend_ios_core::style::detach_shadow_sibling(&entry.container);
         portal::release_portal(entry);
     }
 

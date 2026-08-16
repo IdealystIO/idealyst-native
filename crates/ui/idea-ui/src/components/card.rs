@@ -254,9 +254,12 @@ pub struct CardProps {
     /// default for overhanging popovers/menus), so pass an override that sets
     /// `overflow: Overflow::Hidden` for an edge-to-edge image or coloured header
     /// that should follow the corner curve. It clips on every backend (the same
-    /// mechanism Modal uses for its rounded frame). iOS caveat: a clipping layer
-    /// can't also cast the Elevated variant's drop shadow — pair the clip with
-    /// `Flat`, or nest a clipped inner card in an unclipped elevated one.
+    /// mechanism Modal uses for its rounded frame), and `Elevated` still casts
+    /// its drop shadow when clipped — the Apple backends synthesize a separate
+    /// shadow layer for that combination, since one CALayer can't both clip and
+    /// cast. That works for a card with an opaque surface, which every built-in
+    /// variant has; a *translucent* surface override plus `Overflow::Hidden`
+    /// still renders without a shadow on iOS/macOS.
     #[prop(static)]
     pub style: Option<Rc<StyleSheet>>,
     /// Card contents. Incoming fragments are flattened via

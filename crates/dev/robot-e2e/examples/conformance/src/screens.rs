@@ -433,6 +433,10 @@ fn shadow_parity_row() -> Element {
             border_top_right_radius: r(radius),
             border_bottom_left_radius: r(radius),
             border_bottom_right_radius: r(radius),
+            // Space the swatches apart by more than the blur, or each shadow
+            // lands under the next swatch's opaque white box and the fixture
+            // proves nothing.
+            margin_bottom: r(40.0),
             overflow: clip.then_some(Overflow::Hidden),
             shadow: Some(Shadow {
                 x: 0.0,

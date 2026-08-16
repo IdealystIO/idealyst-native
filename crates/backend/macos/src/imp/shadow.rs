@@ -1,96 +1,41 @@
 //! Box shadow (`StyleRules.shadow`) for the macOS backend.
 //!
-//! Mirrors `backend_ios_core::style`'s shadow path so the two Apple backends
-//! converge (Rule #7). Before this module macOS honored only `text_shadow`
-//! (the GLYPH shadow on labels, see [`super::text_style`]) and dropped
-//! `shadow` on the floor — so an idea-ui `Elevated` Card rendered with a drop
-//! shadow on iOS and web, and perfectly flat on macOS, from the same author
-//! tree.
+//! Thin AppKit adapter over [`backend_apple_core::shadow_layer`]: this file
+//! resolves `NSView → CALayer`, converts the color through `NSColor`, and
+//! settles the one genuinely AppKit-shaped question (the Y sign, below). Every
+//! layer-level decision — where the shadow gets painted, the `shadowPath`, the
+//! sibling layer's whole lifecycle — is shared with iOS so the two backends
+//! cannot drift (Rule #7).
 //!
-//! ## Two non-obvious invariants
+//! Before this module macOS honored only `text_shadow` (the GLYPH shadow on
+//! labels, see [`super::text_style`]) and dropped `shadow` on the floor — so an
+//! idea-ui `Elevated` Card rendered with a drop shadow on iOS and web, and
+//! perfectly flat on macOS, from the same author tree.
 //!
-//! **1. The Y sign depends on the view's `isFlipped`, not on the platform.**
+//! ## The one non-obvious invariant: the Y sign follows `isFlipped`
+//!
 //! `Shadow`'s `(x, y)` is web semantics: `+y` casts DOWNWARD. A CALayer's
 //! `shadowOffset` is expressed in the layer's own coordinate space, and for a
-//! layer-backed `NSView` AppKit flips the backing layer's geometry to match
-//! the view. The framework's container views (`view` / `pressable` / `link`)
-//! are `IdealystFlippedView` — `isFlipped == true`, y-down, exactly like
-//! UIKit — so they take `+y` directly, the same value iOS passes. A
-//! *non-flipped* view (`NSTextField` and the other native controls) is y-up
-//! and must negate, which is why [`super::text_style::text_shadow_offset`]
-//! negates unconditionally: it only ever runs on labels. Getting this wrong
-//! flips the shadow to the wrong side of the box on macOS only — precisely
-//! the per-platform divergence Rule #7 bans. [`box_shadow_offset`] is pure so
-//! the sign convention is unit-tested off the main thread.
-//!
-//! **2. Always hand CoreAnimation an explicit `shadowPath`.**
-//! With `shadowOpacity > 0` and no path, CoreAnimation derives the shadow's
-//! shape from the layer's alpha channel: it renders the subtree into an
-//! offscreen buffer, blurs it to build the silhouette, then composites — and
-//! redoes that on every recomposite. A screenful of shadowed cards then costs
-//! a screenful of offscreen passes per scrolled frame. Tracing the rounded
-//! rect ourselves skips the derivation entirely. The path is in layer
-//! coordinates and does NOT follow a resize, so [`sync_shadow_path`] re-traces
-//! it from the post-layout hook, after `sync_corner_radius` has settled the
-//! final curve.
+//! layer-backed `NSView` AppKit flips the backing layer's geometry to match the
+//! view. The framework's container views (`view` / `pressable` / `link`) are
+//! `IdealystFlippedView` — `isFlipped == true`, y-down, exactly like UIKit — so
+//! they take `+y` directly, the same value iOS passes. A *non-flipped* view
+//! (`NSTextField` and the other native controls) is y-up and must negate, which
+//! is why [`super::text_style::text_shadow_offset`] negates unconditionally: it
+//! only ever runs on labels. Getting this wrong flips the shadow to the wrong
+//! side of the box on macOS only — precisely the per-platform divergence Rule
+//! #7 bans. [`box_shadow_offset`] is pure so the sign convention is unit-tested
+//! off the main thread.
 
-use std::ffi::c_void;
-
-use objc2::encode::{Encoding, RefEncode};
-use objc2::runtime::NSObject;
+use backend_apple_core::shadow::{shadow_placement, ShadowPlacement};
+use backend_apple_core::shadow_layer;
 use objc2::msg_send;
+use objc2::runtime::NSObject;
 use objc2_app_kit::NSView;
-use objc2_foundation::{CGFloat, CGRect, CGSize, NSString};
+use objc2_foundation::{CGFloat, CGSize};
 use runtime_shared::StyleRules;
 
 use super::color_to_nscolor;
-
-/// Marks a layer as carrying a BOX shadow, so [`sync_shadow_path`] knows it
-/// may trace a rectangular path over it. A label's `text_shadow` deliberately
-/// takes the GLYPH silhouette — stamping a rect path there would paint a solid
-/// slab behind the text — and never sets this flag.
-const BOX_SHADOW_FLAG_KEY: &str = "idealyst_has_box_shadow";
-
-#[repr(C)]
-struct CGPathRef(c_void);
-
-// `-[CALayer setShadowPath:]` wants a typed `CGPathRef` (`^{CGPath=}`).
-// Passing a bare `*const c_void` (`^v`) trips objc2's debug-mode encoding
-// verifier and SIGABRTs — the same trap `icon.rs` documents, and the one that
-// crashed the iOS twin mid-layout during development.
-unsafe impl RefEncode for CGPathRef {
-    const ENCODING_REF: Encoding = Encoding::Pointer(&Encoding::Struct("CGPath", &[]));
-}
-
-#[link(name = "CoreGraphics", kind = "framework")]
-extern "C" {
-    /// Rounded-rect path in one call. `NSBezierPath.cgPath` would be simpler
-    /// but is macOS 14+, and the framework's floor is 11.0.
-    fn CGPathCreateWithRoundedRect(
-        rect: CGRect,
-        corner_width: CGFloat,
-        corner_height: CGFloat,
-        transform: *const c_void,
-    ) -> *mut CGPathRef;
-    fn CGPathRelease(path: *mut CGPathRef);
-}
-
-/// True when this style wants BOTH a drop shadow and its children clipped to
-/// the (possibly rounded) box — the combination a single CALayer cannot express
-/// with `masksToBounds`.
-///
-/// `masksToBounds` clips everything to the layer's bounds, and an outer drop
-/// shadow is by definition painted OUTSIDE those bounds, so it gets clipped
-/// away: the author asked for a shadow and gets none. Web has no such
-/// conflict — CSS `overflow: hidden` clips descendants but does NOT clip the
-/// element's own `box-shadow` — so the same author tree renders a shadow on
-/// web and a flat box on both Apple backends. That divergence is what this
-/// path exists to close (Rule #7), replacing the "iOS caveat" that idea-ui's
-/// `Card` docs currently tell authors to work around by nesting views.
-pub(crate) fn wants_shadow_with_clip(style: &StyleRules) -> bool {
-    style.shadow.is_some()
-        && backend_apple_core::clip::clips_to_bounds(style) == Some(true)
-}
 
 /// Translate a `Shadow`'s `(x, y)` (web semantics: `+x` right, `+y` DOWN) into
 /// a CALayer `shadowOffset` for a view with the given flipped-ness.
@@ -102,100 +47,83 @@ pub(crate) fn box_shadow_offset(x: f32, y: f32, is_flipped: bool) -> (CGFloat, C
     (x as CGFloat, h)
 }
 
+/// The view's backing layer, or `None`.
+///
+/// `NSView` is layer-*optional* (unlike `UIView`, which is layer-mandatory), so
+/// `[view layer]` is nil until something set `wantsLayer`. A view with no layer
+/// carries no shadow, which makes every routine here a no-op for it — hence the
+/// raw `msg_send!` + null check rather than `msg_send_id!`, which asserts
+/// non-nil and would panic when the layout pass reaches an unstyled NSView.
+fn layer_of(view: &NSView) -> Option<&NSObject> {
+    let ptr: *mut NSObject = unsafe { msg_send![view, layer] };
+    (!ptr.is_null()).then(|| unsafe { &*ptr })
+}
+
 /// Apply — or clear — the view's box shadow. Call from `apply_style_to_view`
 /// after the border, on a view that is already layer-backed.
 pub(crate) fn apply_box_shadow(view: &NSView, style: &StyleRules) {
-    let layer_ptr: *mut NSObject = unsafe { msg_send![view, layer] };
-    if layer_ptr.is_null() {
-        return;
-    }
-    let layer: &NSObject = unsafe { &*layer_ptr };
-    let key = NSString::from_str(BOX_SHADOW_FLAG_KEY);
+    let Some(layer) = layer_of(view) else { return };
 
-    let Some(shadow) = &style.shadow else {
-        // No shadow in THIS restyle → clear whatever a previous apply left,
-        // including the cached path, so a reactively-removed shadow actually
-        // stops painting (the set-then-never-unset hazard the background and
-        // text-shadow paths both guard). Only touch layers WE marked: a label
-        // carrying a glyph shadow must be left alone.
-        let flag_ptr: *mut NSObject = unsafe { msg_send![layer, valueForKey: &*key] };
-        if !flag_ptr.is_null() {
-            let null_obj: *mut NSObject = std::ptr::null_mut();
-            let null_path: *mut CGPathRef = std::ptr::null_mut();
-            unsafe {
-                let _: () = msg_send![layer, setValue: null_obj, forKey: &*key];
-                let _: () = msg_send![layer, setShadowOpacity: 0.0f32];
-                let _: () = msg_send![layer, setShadowPath: null_path];
-            }
+    match shadow_placement(style) {
+        ShadowPlacement::None => {
+            // Clear whatever a previous apply left, so a reactively removed
+            // shadow actually stops painting.
+            shadow_layer::clear_own_shadow(layer);
+            shadow_layer::drop_sibling(layer);
         }
-        return;
-    };
-
-    // `shadowColor` carries the alpha and `shadowOpacity` is a plain enable
-    // multiplier at 1.0 — CALayer multiplies the two, so the effective
-    // strength is exactly the author's color alpha. Same split iOS uses.
-    let ns_color = color_to_nscolor(&shadow.color);
-    let cg: super::CGColorRef = unsafe { msg_send![&*ns_color, CGColor] };
-    if !cg.0.is_null() {
-        let _: () = unsafe { msg_send![layer, setShadowColor: cg] };
+        ShadowPlacement::OwnLayer => {
+            // A style may have flipped from clipped to unclipped; the sibling
+            // would otherwise double the shadow.
+            shadow_layer::drop_sibling(layer);
+            write(view, layer, style);
+            shadow_layer::sync_own_shadow_path(layer);
+        }
+        ShadowPlacement::Sibling => {
+            // The view's own layer is about to be bounds-masked, which would
+            // clip its shadow away — paint on the peer instead.
+            shadow_layer::clear_own_shadow(layer);
+            let sib = shadow_layer::ensure_sibling(layer);
+            write(view, &sib, style);
+            // Parents it if the view is already in the hierarchy; the layout
+            // pass calls `sync_shadow_path` again once it has a real frame.
+            shadow_layer::sync_sibling(layer);
+        }
     }
-
-    let is_flipped: bool = unsafe { msg_send![view, isFlipped] };
-    let (w, h) = box_shadow_offset(shadow.x, shadow.y, is_flipped);
-    let offset = CGSize { width: w, height: h };
-    unsafe {
-        let _: () = msg_send![layer, setShadowOffset: offset];
-        // CSS `blur` is the full blur diameter; CALayer's `shadowRadius` is
-        // the standard-deviation-ish half. iOS halves it identically, so the
-        // two backends produce the same spread for one authored value.
-        let _: () = msg_send![layer, setShadowRadius: (shadow.blur as CGFloat / 2.0)];
-        let _: () = msg_send![layer, setShadowOpacity: 1.0f32];
-        // Mark it as a box shadow so `sync_shadow_path` will trace it.
-        let flag: *mut NSObject = msg_send![objc2::class!(NSNumber), numberWithBool: true];
-        let _: () = msg_send![layer, setValue: flag, forKey: &*key];
-    }
-    // Trace the path now; the layout pass re-traces once bounds are real.
-    sync_shadow_path(view);
 }
 
-/// Re-trace the box shadow's `shadowPath` against the view's current bounds
-/// and corner radius. Call from the post-frame hook AFTER `sync_corner_radius`
-/// so the path follows the final clamped curve.
+/// Push the authored shadow's appearance onto `target`, converting the color
+/// through `NSColor` and the offset through the flipped-ness rule.
+fn write(view: &NSView, target: &NSObject, style: &StyleRules) {
+    let Some(shadow) = &style.shadow else { return };
+    let ns_color = color_to_nscolor(&shadow.color);
+    let cg: super::CGColorRef = unsafe { msg_send![&*ns_color, CGColor] };
+    let is_flipped: bool = unsafe { msg_send![view, isFlipped] };
+    let (width, height) = box_shadow_offset(shadow.x, shadow.y, is_flipped);
+    shadow_layer::write_shadow_props(target, cg, CGSize { width, height }, shadow.blur);
+}
+
+/// Re-trace the box shadow against the view's current bounds and corner radius,
+/// and keep any sibling shadow layer parented, positioned and pathed.
 ///
-/// No-op unless the layer was marked by [`apply_box_shadow`], and on a 0×0
-/// view (the path would be empty; the layout pass calls this again once Taffy
-/// has assigned a frame).
+/// Call from the post-frame hook AFTER `sync_corner_radius` so the path follows
+/// the final clamped curve. Both halves are no-ops for a view without a shadow,
+/// so the layout pass calls this blindly.
 pub(crate) fn sync_shadow_path(view: &NSView) {
-    let layer_ptr: *mut NSObject = unsafe { msg_send![view, layer] };
-    if layer_ptr.is_null() {
-        return;
-    }
-    let layer: &NSObject = unsafe { &*layer_ptr };
+    let Some(layer) = layer_of(view) else { return };
+    shadow_layer::sync_own_shadow_path(layer);
+    shadow_layer::sync_sibling(layer);
+}
 
-    let key = NSString::from_str(BOX_SHADOW_FLAG_KEY);
-    let flag_ptr: *mut NSObject = unsafe { msg_send![layer, valueForKey: &*key] };
-    if flag_ptr.is_null() {
-        return;
-    }
-    let opacity: f32 = unsafe { msg_send![layer, shadowOpacity] };
-    if opacity <= 0.0 {
-        return;
-    }
-    let bounds: CGRect = unsafe { msg_send![view, bounds] };
-    if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
-        return;
-    }
-    let radius: CGFloat = unsafe { msg_send![layer, cornerRadius] };
-
-    // `CGPathCreateWithRoundedRect` is a Create-rule function: we own the +1.
-    // `setShadowPath:` retains it, so release our reference afterwards.
-    let path = unsafe { CGPathCreateWithRoundedRect(bounds, radius, radius, std::ptr::null()) };
-    if path.is_null() {
-        return;
-    }
-    unsafe {
-        let _: () = msg_send![layer, setShadowPath: path];
-        CGPathRelease(path);
+/// Unparent a view's sibling shadow layer as the view leaves its parent.
+///
+/// **Required on every removal path.** The sibling lives in the *parent's*
+/// layer, so `removeFromSuperview` alone leaves the shadow painting where the
+/// card used to be. Removing an *ancestor* needs no call: the sibling sits
+/// inside that ancestor's subtree and goes with it. The handle survives, so a
+/// reparent (remove + insert) re-attaches the same layer on the next layout.
+pub(crate) fn detach_shadow_sibling(view: &NSView) {
+    if let Some(layer) = layer_of(view) {
+        shadow_layer::detach_sibling(layer);
     }
 }
 
@@ -220,22 +148,6 @@ mod tests {
     fn non_flipped_view_negates_y() {
         assert_eq!(box_shadow_offset(0.0, 12.0, false), (0.0 as CGFloat, -12.0 as CGFloat));
         assert_eq!(box_shadow_offset(-3.0, 0.0, false), (-3.0 as CGFloat, 0.0 as CGFloat));
-    }
-
-    /// Regression: `-[CALayer setShadowPath:]` takes a `^{CGPath=}`. Handing
-    /// it a bare `*const c_void` (`^v`) trips objc2's debug-mode encoding
-    /// verifier and SIGABRTs the process the instant a shadowed view lays out
-    /// — which is exactly how the iOS twin of this code crashed mid-layout
-    /// during development, and the same trap `icon.rs` guards. A full mount
-    /// test needs a live AppKit layer + main thread, so pinning the encoding
-    /// constant is the closest reachable guard.
-    #[test]
-    fn cgpath_pointer_encodes_as_typed_cgpath() {
-        assert_eq!(
-            CGPathRef::ENCODING_REF,
-            Encoding::Pointer(&Encoding::Struct("CGPath", &[])),
-            "*mut CGPathRef must encode as ^{{CGPath=}} for -[CALayer setShadowPath:]",
-        );
     }
 
     /// X never depends on flipped-ness — only the vertical axis is mirrored.

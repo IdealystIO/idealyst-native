@@ -846,6 +846,29 @@ offset is positive-**down** on every backend — the coordinate flips
 (AppKit's y-up layer, UIKit's y-down) are absorbed by the backend so a
 `shadow { y: 2 }` lands below the glyphs everywhere.
 
+### `shadow` together with `overflow: hidden`
+
+CSS clips an element's descendants with `overflow` but never clips the
+element's own `box-shadow`, so on web the two compose freely. One
+CALayer can't do that: `masksToBounds` clips the layer's whole
+composite, and an outer drop shadow is painted outside the bounds.
+(`layer.mask` clips it too — a mask defines the visible part of the
+layer *and* affects the shadow it renders.)
+
+The Apple backends therefore synthesize a second CALayer for that
+combination, inserted into the **parent's** layer directly beneath the
+view's own, carrying the shadow. It isn't a descendant of the masked
+layer, so nothing clips it — and the view hierarchy is untouched, so
+child indexing, hit-testing and introspection are unaffected. See
+`backend_apple_core::shadow`.
+
+One gap worth knowing: CoreAnimation scales a shadow by the alpha of
+whatever casts it, so that second layer mirrors the view's background to
+have something to cast from. It hides exactly behind an opaque
+background. A **translucent** background plus `overflow: hidden` renders
+with no shadow on iOS/macOS rather than double-painting the background —
+a known gap, not a regression. Web is unaffected either way.
+
 
 ---
 

@@ -114,10 +114,17 @@
         }
 
         /** Counts or sizes changed — drop the cached window so the next
-         *  update re-diffs from scratch, then re-run. */
+         *  update re-diffs from scratch, and re-check the key of every
+         *  surviving cell: a data change can rewrite a cell's content
+         *  while leaving the window rectangle identical, and the slot
+         *  diff alone would keep the stale subtree mounted. Scroll
+         *  updates skip the key pass — content can only change through
+         *  `dataChanged`, so per-scroll key queries would be pure
+         *  wasm-crossing overhead. */
         refresh() {
             if (this._released) return;
             this.lastWindow = null;
+            this._revalidateKeys = true;
             this.update();
         }
 
@@ -137,8 +144,12 @@
             this.spacer.style.width = w.contentW + 'px';
             this.spacer.style.height = w.contentH + 'px';
 
+            const revalidate = this._revalidateKeys;
+            this._revalidateKeys = false;
+
             const prev = this.lastWindow;
             if (
+                !revalidate &&
                 prev &&
                 prev.colStart === w.colStart && prev.colEnd === w.colEnd &&
                 prev.rowStart === w.rowStart && prev.rowEnd === w.rowEnd
@@ -160,13 +171,21 @@
             }
 
             // Mount cells inside the window that aren't already there.
+            // On a data-changed refresh, also remount any surviving cell
+            // whose key no longer matches — same content-identity
+            // contract as the 1-D virtualizer's keyed reuse.
             // An empty window is `colStart > colEnd` (Rust's
             // `GridWindow::EMPTY`), so these loops correctly do nothing
             // rather than mounting a phantom cell at the origin.
             for (let row = w.rowStart; row <= w.rowEnd; row++) {
                 for (let col = w.colStart; col <= w.colEnd; col++) {
                     const slot = this._slot(col, row);
-                    if (this.mounted.has(slot)) continue;
+                    const existing = this.mounted.get(slot);
+                    if (existing) {
+                        if (!revalidate) continue;
+                        if (this.cb.cellKey(col, row) === existing.key) continue;
+                        this._unmount(slot);
+                    }
                     this._mount(col, row, slot);
                 }
             }

@@ -16,6 +16,12 @@ use crate::phase_record;
 // keeps resolving. See `backend_apple_core::cg` for why the encodings matter.
 pub use backend_apple_core::cg::{CGColorRef, CGPathRef};
 
+// Box shadows: the placement decision and every CALayer-level step are shared
+// with macOS so the two Apple backends can't drift (Rule #7). This file
+// contributes only the UIKit half — `view.layer` and `Color → CGColor`.
+use backend_apple_core::shadow::{shadow_placement, ShadowPlacement};
+use backend_apple_core::shadow_layer;
+
 // `parse_color` lives in `backend_apple_core::color` now — same
 // signature, same semantics. Re-exported here so the iOS-core
 // public surface stays unchanged for downstream callers.
@@ -398,65 +404,55 @@ pub fn sync_corner_radius(view: &UIView) {
     }
 }
 
-/// Key for the flag marking a layer as carrying a BOX shadow (`style.shadow`),
-/// as opposed to the glyph shadow `apply_text_style` installs for
-/// `text_shadow`. Only box shadows get a rectangular [`sync_shadow_path`];
-/// a glyph shadow must keep deriving its silhouette from the rendered text.
-const BOX_SHADOW_FLAG_KEY: &str = "idealyst_has_box_shadow";
+/// Push the authored shadow's appearance onto `target` — the view's own layer,
+/// or its sibling shadow layer. UIKit contributes only the `Color → CGColor`
+/// conversion; the property writes (and the CSS-blur → `shadowRadius` halving)
+/// are shared with macOS.
+///
+/// Note there is no flipped-ness question on iOS: `UIView` is always y-down, so
+/// `Shadow`'s web-semantics `+y` (cast DOWNWARD) passes through unchanged. The
+/// macOS twin has to branch on `isFlipped`; see `backend_macos::imp::shadow`.
+fn write_shadow(target: &NSObject, style: &StyleRules) {
+    let Some(shadow) = &style.shadow else { return };
+    let shadow_color = color_to_uicolor(&shadow.color);
+    let cg: CGColorRef = unsafe { msg_send![&shadow_color, CGColor] };
+    let offset = CGSize {
+        width: shadow.x as CGFloat,
+        height: shadow.y as CGFloat,
+    };
+    shadow_layer::write_shadow_props(target, cg, offset, shadow.blur);
+}
 
-/// Give the layer's drop shadow an explicit `shadowPath` matching its current
-/// rounded-rect bounds.
+/// Re-trace the box shadow against the view's current bounds and corner radius,
+/// and keep any sibling shadow layer parented, positioned and pathed.
 ///
-/// **Why this matters for frame rate.** With `shadowOpacity > 0` and NO
-/// `shadowPath`, CoreAnimation has to derive the shadow's shape from the
-/// layer's own alpha channel: it renders the layer subtree into an offscreen
-/// buffer, blurs it to build the silhouette, then composites. That pass is
-/// redone whenever the layer is recomposited, so a screenful of shadowed cards
-/// costs a screenful of offscreen passes every scroll frame (visible as yellow
-/// under Simulator ▸ Debug ▸ Color Offscreen-Rendered Yellow). Handing
-/// CoreAnimation the path outright skips the derivation entirely — it's the
-/// single highest-value shadow optimization on both Apple backends.
+/// Must be re-run on every bounds change: the `shadowPath` is in layer
+/// coordinates and does not track a resize, and the sibling is positioned in
+/// the parent's coordinate space. The layout pass does that right after it
+/// writes the new bounds, alongside [`sync_corner_radius`] — which must run
+/// FIRST so the path follows the final clamped curve.
 ///
-/// No-op unless the layer carries a BOX shadow ([`BOX_SHADOW_FLAG_KEY`]): a
-/// `text_shadow` on a label deliberately takes the GLYPH silhouette, and
+/// Both halves are no-ops for a view without a box shadow, so the layout pass
+/// calls this blindly. In particular a `text_shadow` on a label deliberately
+/// takes the GLYPH silhouette and is never marked, so it is left alone —
 /// forcing a rectangular path there would paint a solid block behind the text.
-/// Also no-ops on a 0×0 view — the path would be empty and would have to be
-/// rebuilt after layout anyway; the layout pass calls this again.
-///
-/// Must be re-run on every bounds change, since the path is in layer
-/// coordinates and does not track a resize. The layout pass does that right
-/// after it writes the new bounds, alongside [`sync_corner_radius`].
 pub fn sync_shadow_path(view: &UIView) {
-    unsafe {
-        let layer: Retained<NSObject> = msg_send_id![view, layer];
-        // Box-shadow marker: absent → either no shadow, or a glyph shadow we
-        // must not overwrite.
-        let key = NSString::from_str(BOX_SHADOW_FLAG_KEY);
-        let flag_ptr: *mut NSObject = msg_send![&layer, valueForKey: &*key];
-        if flag_ptr.is_null() {
-            return;
-        }
-        let opacity: f32 = msg_send![&layer, shadowOpacity];
-        if opacity <= 0.0 {
-            return;
-        }
-        let bounds: CGRect = msg_send![view, bounds];
-        if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
-            return;
-        }
-        // Trace the SAME rounded rect the layer paints, so the shadow hugs the
-        // corner curve instead of the square bounds.
-        let radius: CGFloat = msg_send![&layer, cornerRadius];
-        let path: Retained<NSObject> = msg_send_id![
-            objc2::class!(UIBezierPath),
-            bezierPathWithRoundedRect: bounds,
-            cornerRadius: radius
-        ];
-        let cg: CGPathRef = msg_send![&*path, CGPath];
-        if !cg.0.is_null() {
-            let _: () = msg_send![&layer, setShadowPath: cg];
-        }
-    }
+    let layer: Retained<NSObject> = unsafe { msg_send_id![view, layer] };
+    shadow_layer::sync_own_shadow_path(&layer);
+    shadow_layer::sync_sibling(&layer);
+}
+
+/// Unparent a view's sibling shadow layer as the view leaves its parent.
+///
+/// **Required on every removal path.** A clipped view's drop shadow lives on a
+/// layer in the *parent's* layer (see [`backend_apple_core::shadow`]), so
+/// `removeFromSuperview` alone would leave it painting where the card used to
+/// be. Removing an *ancestor* needs no call: the sibling sits inside that
+/// ancestor's subtree and goes with it. The handle survives, so a reparent
+/// (remove + insert) re-attaches the same layer on the next layout.
+pub fn detach_shadow_sibling(view: &UIView) {
+    let layer: Retained<NSObject> = unsafe { msg_send_id![view, layer] };
+    shadow_layer::detach_sibling(&layer);
 }
 
 /// Sync a view's `idealyst_gradient` CAGradientLayer (if present) to
@@ -750,49 +746,41 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
         let _: () = unsafe { msg_send![&layer, setBorderWidth: 0.0_f64] };
     }
 
-    // Shadow
-    if let Some(shadow) = &style.shadow {
-        let shadow_color = color_to_uicolor(&shadow.color);
-        let cg: CGColorRef = unsafe { msg_send![&shadow_color, CGColor] };
-        if !cg.0.is_null() {
-            let _: () = unsafe { msg_send![&layer, setShadowColor: cg] };
+    // Box shadow (`StyleRules.shadow`). Where it gets painted is the shared
+    // `backend_apple_core::shadow` decision, and every layer-level step is the
+    // shared `shadow_layer` implementation, so iOS and macOS cannot drift
+    // (Rule #7).
+    match shadow_placement(style) {
+        ShadowPlacement::None => {
+            // Clear anything a previous apply left, including its cached path.
+            // Without this a reactively-removed shadow keeps painting AND keeps
+            // costing its composite. (The `text_shadow` branch in
+            // `apply_text_style` owns glyph shadows and is untouched: it never
+            // sets the box-shadow marker.)
+            shadow_layer::clear_own_shadow(&layer);
+            shadow_layer::drop_sibling(&layer);
         }
-        let offset = CGSize {
-            width: shadow.x as CGFloat,
-            height: shadow.y as CGFloat,
-        };
-        let _: () = unsafe { msg_send![&layer, setShadowOffset: offset] };
-        let _: () = unsafe { msg_send![&layer, setShadowRadius: (shadow.blur as CGFloat / 2.0)] };
-        let _: () = unsafe { msg_send![&layer, setShadowOpacity: 1.0_f32] };
-        unsafe { view.setClipsToBounds(false) };
-        // Mark this as a BOX shadow and hand CoreAnimation an explicit
-        // shadowPath, so it never has to derive the silhouette from the
-        // layer's alpha channel via an offscreen pass. `sync_shadow_path`
-        // re-runs from the layout pass once bounds are known.
-        unsafe {
-            let key = NSString::from_str(BOX_SHADOW_FLAG_KEY);
-            let flag: *mut NSObject =
-                msg_send![objc2::class!(NSNumber), numberWithBool: true];
-            let _: () = msg_send![&layer, setValue: flag, forKey: &*key];
+        ShadowPlacement::OwnLayer => {
+            // A style may have flipped from clipped to unclipped; a leftover
+            // sibling would double the shadow.
+            shadow_layer::drop_sibling(&layer);
+            write_shadow(&layer, style);
+            // `OwnLayer` means this view is NOT `overflow: hidden`, so an
+            // inherited `clipsToBounds` from an earlier apply would clip the
+            // shadow away for no reason. The overflow branch below only writes
+            // when `overflow` is set, so clear it here.
+            unsafe { view.setClipsToBounds(false) };
+            shadow_layer::sync_own_shadow_path(&layer);
         }
-        sync_shadow_path(view);
-    } else {
-        // No box shadow requested — clear any a previous apply left behind,
-        // including its cached path. Without this a reactively-removed shadow
-        // keeps painting AND keeps costing its composite. (The `text_shadow`
-        // branch in `apply_text_style` owns glyph shadows and is untouched
-        // here: it never sets the box-shadow marker, so a label whose only
-        // shadow is a glyph shadow is unaffected.)
-        unsafe {
-            let key = NSString::from_str(BOX_SHADOW_FLAG_KEY);
-            let flag_ptr: *mut NSObject = msg_send![&layer, valueForKey: &*key];
-            if !flag_ptr.is_null() {
-                let null: *mut NSObject = std::ptr::null_mut();
-                let _: () = msg_send![&layer, setValue: null, forKey: &*key];
-                let _: () = msg_send![&layer, setShadowOpacity: 0.0_f32];
-                let null_path = CGPathRef(std::ptr::null());
-                let _: () = msg_send![&layer, setShadowPath: null_path];
-            }
+        ShadowPlacement::Sibling => {
+            // `clipsToBounds` below would clip this view's own shadow away, so
+            // the shadow moves to a peer layer in the parent that nothing masks.
+            shadow_layer::clear_own_shadow(&layer);
+            let sib = shadow_layer::ensure_sibling(&layer);
+            write_shadow(&sib, style);
+            // Parents it if the view is already in the hierarchy; the layout
+            // pass calls `sync_shadow_path` again once it has a real frame.
+            shadow_layer::sync_sibling(&layer);
         }
     }
 

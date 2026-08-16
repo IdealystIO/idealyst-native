@@ -41,7 +41,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use runtime_shared::{Color, StateBits, StyleRules};
-use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id, ClassType};
 use objc2_app_kit::{NSColor, NSTextField, NSView};
@@ -105,6 +104,14 @@ pub struct MacosBackend {
     /// mount, which the first pass (empty cache → applies all) covers. Evicted
     /// on (re)registration in `layout_for_view` so a recycled NSView pointer can
     /// never inherit a freed view's cached frame.
+    ///
+    /// `shadow::sync_shadow_path` is the one step that is not purely
+    /// size-dependent — it also re-parents a clipped view's sibling shadow
+    /// layer, which `remove_child` deliberately unparents. That stays correct
+    /// because a reparent is a remove followed by an insert, and `remove_child`
+    /// / `clear_children` evict this cache for the departing view, so the next
+    /// pass re-applies unconditionally even if the frame is bit-identical in
+    /// the new parent. Don't drop those evictions.
     pub(crate) last_applied_frame: HashMap<usize, (f64, f64, f64, f64)>,
     /// Per-Label text-measure signature (font / line-height / padding — the
     /// inputs to a label's intrinsic size), keyed by view pointer. `apply_style`
@@ -1189,16 +1196,15 @@ impl MacosBackend {
 // Helpers
 // =========================================================================
 
-/// Opaque wrapper for CoreGraphics' `CGColorRef` so `msg_send!`'s
-/// debug-mode encoding check sees `^{CGColor=}` instead of `^v`.
-/// Mirrors the iOS-side wrapper in `backend-ios-core/src/style.rs`.
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub(crate) struct CGColorRef(pub *const std::ffi::c_void);
-
-unsafe impl Encode for CGColorRef {
-    const ENCODING: Encoding = Encoding::Pointer(&Encoding::Struct("CGColor", &[]));
-}
+/// Opaque wrapper for CoreGraphics' `CGColorRef` so `msg_send!`'s debug-mode
+/// encoding check sees `^{CGColor=}` instead of `^v` — passing a bare
+/// `*const c_void` does not warn, it ABORTS the process at the call site.
+///
+/// Shared with the iOS backend rather than redeclared here: two structurally
+/// identical newtypes are still distinct Rust types, so every hand-off across
+/// the seam needed a cast, and the host-run test pinning the encoding lives
+/// beside the definition where a normal `cargo test` actually reaches it.
+pub(crate) use backend_apple_core::cg::CGColorRef;
 
 /// Build an `NSColor` from a framework `Color`. Uses the shared
 /// apple-core color parser (sRGB float tuple) then routes through
@@ -1682,18 +1688,13 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     if let Some(clip) = backend_apple_core::clip::clips_to_bounds(style) {
         let _: () = unsafe { msg_send![&layer, setMasksToBounds: clip] };
     }
-    // KNOWN LIMITATION — shadow + `overflow: hidden` on the SAME view: the
-    // shadow does not render. `masksToBounds` clips the layer's whole
-    // composite, and an outer drop shadow is painted outside the bounds.
-    // Swapping in `layer.mask` does NOT help — a mask layer defines the
-    // visible part of the layer and clips the shadow too. CoreAnimation has no
-    // single-layer expression of "clip content, keep shadow"; the fix is a
-    // shadow layer that is NOT a descendant of the masked layer (see
-    // `shadow::wants_shadow_with_clip`). Web has no such conflict (CSS
-    // `overflow` never clips the element's own `box-shadow`), so this is a
-    // live Rule #7 divergence, currently papered over by the "iOS caveat" in
-    // idea-ui `Card`'s docs. Pinned by the conformance `shadow-clipped`
-    // fixture.
+    // `masksToBounds` clips the layer's WHOLE composite, and an outer drop
+    // shadow is by definition painted outside the bounds — so a view asking for
+    // both `shadow` and `overflow: hidden` would lose its shadow entirely
+    // (`layer.mask` clips it too; there is no single-layer expression of "clip
+    // content, keep shadow"). `apply_box_shadow` above has already routed that
+    // combination onto a sibling layer in the PARENT's layer, which nothing
+    // here masks. See `backend_apple_core::shadow`.
 
     // Interaction (desktop affordances; touch backends no-op these). Mirrors
     // the web `cursor` / `user-select` CSS so the backends converge (Rule #7).
@@ -4557,6 +4558,10 @@ impl MacosBackend {
         // If the removed view was a presence placeholder, forget its key so a
         // recycled NSView pointer can't be mistaken for one.
         self.presence_placeholders.remove(&child_key);
+        // A clipped view's drop shadow lives on a sibling layer in the PARENT's
+        // layer (see `shadow`), so `removeFromSuperview` alone would leave it
+        // painting where the card used to be.
+        shadow::detach_shadow_sibling(child_view);
         let _: () = unsafe { msg_send![child_view, removeFromSuperview] };
 
         // Reflow after the removal — symmetric with `insert` / `insert_at`. The
@@ -4735,6 +4740,10 @@ impl MacosBackend {
             // Same for the cached applied frame (see `last_applied_frame`).
             self.last_applied_frame.remove(&(sub_ptr as *const NSView as usize));
             self.presence_placeholders.remove(&(sub_ptr as *const NSView as usize));
+            // Unparent the sibling shadow layer (mirror `remove_child`) — it
+            // lives in THIS view's layer, not the child's, so it would outlive
+            // the child it belongs to.
+            shadow::detach_shadow_sibling(sub_ref);
             let _: () = unsafe { msg_send![sub_ptr, removeFromSuperview] };
         }
     }
@@ -5602,6 +5611,9 @@ impl MacosBackend {
         // dead view. `RafLoop`'s Drop cancels the loop.
         self.portal_instances.remove(&key);
         let view = node.as_view();
+        // Mirror `remove_child`: the portal root's own sibling shadow layer
+        // belongs to the host window's content layer, not to the portal.
+        shadow::detach_shadow_sibling(view);
         unsafe { view.removeFromSuperview() };
     }
 
