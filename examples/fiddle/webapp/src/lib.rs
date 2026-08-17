@@ -7,13 +7,12 @@
 //!   project's path → contents map; folders expand/collapse;
 //!   clicking a file sets the active path and loads its contents
 //!   into the editor buffer.
-//! - **Editor** (center, flex-grow). A `text_area` bound to the
-//!   active file's contents, with a `code_block` overlay behind
-//!   it carrying the Rust-tokenized colored runs. The textarea is
-//!   `color: transparent; background: transparent`, so the
-//!   colored layer shows through; the caret stays visible via
-//!   the user-agent default `caret-color`. Mode toggle + Run +
-//!   status pane sit below.
+//! - **Editor** (center, flex-grow). One `code_editor` bound to the
+//!   active file's contents, handed the Rust tokenizer as a
+//!   `&str -> Vec<Decoration>` function. The primitive owns both of
+//!   its layers and the metrics they share; this file only supplies
+//!   the ranges and the box styling. Mode toggle + Run + status pane
+//!   sit below.
 //! - **Preview** (right, 360×720). `WebView` URL driven by a
 //!   signal pointing at `/compiled/<hash>/`.
 //!
@@ -26,16 +25,15 @@ mod fetch;
 mod highlight;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::rc::Rc;
 
-use runtime_core::primitives::text_area::{text_area, TextAreaHandle};
+use runtime_core::primitives::text_area::TextAreaHandle;
 use runtime_core::stylesheet;
 use runtime_core::{
-    button, signal, switch, text, ui, AlignItems, Color, FlexDirection,
-    FontWeight, JustifyContent, KeyEvent, KeyOutcome, Length, Overflow, Position, Element, Ref,
+    button, signal, switch, text, ui, AlignItems, AlignSelf, Color, FlexDirection,
+    FontWeight, JustifyContent, KeyEvent, KeyOutcome, Length, Overflow, Element, Ref,
     Signal,
 };
-use codeblock::code_block;
+use codeblock::code_editor;
 use idea_ui::{install_idea_theme, light_theme};
 
 // The `stylesheet!` macro takes a `<Theme>` generic for syntactic
@@ -47,7 +45,7 @@ use idea_ui::theme::IdeaThemeRef;
 use wasm_bindgen::prelude::*;
 
 use crate::fetch::Mode;
-use crate::highlight::highlight_rust;
+use crate::highlight::highlight_rust_decorations;
 
 #[global_allocator]
 static ALLOCATOR: lol_alloc::AssumeSingleThreaded<lol_alloc::FreeListAllocator> =
@@ -70,6 +68,9 @@ const EDITOR_FONT_FAMILY: &str = "ui-monospace, SFMono-Regular, Menlo, monospace
 const EDITOR_FONT_SIZE: f32 = 13.0;
 const EDITOR_LINE_HEIGHT: f32 = 20.0;
 const EDITOR_PADDING: f32 = 12.0;
+/// Glyph color for source the tokenizer leaves undecorated — the same
+/// default ink `highlight.rs` drops rather than emitting per token.
+const EDITOR_INK: &str = "#1f2328";
 
 stylesheet! {
     pub Row<IdeaThemeRef> {
@@ -140,57 +141,28 @@ stylesheet! {
 stylesheet! {
     pub EditorStack<IdeaThemeRef> {
         base(_t) {
-            position: Position::Relative,
             flex_grow: 1.0,
             height: Length::Px(500.0),
             border_radius: Length::Px(8.0),
-            overflow: Overflow::Hidden,
             background: Color("#ffffff".into()),
         }
     }
 }
 
 stylesheet! {
-    pub Textarea<IdeaThemeRef> {
+    pub EditorSurface<IdeaThemeRef> {
         base(_t) {
-            position: Position::Absolute,
-            top: Length::Px(0.0),
-            right: Length::Px(0.0),
-            bottom: Length::Px(0.0),
-            left: Length::Px(0.0),
-            padding: Length::Px(EDITOR_PADDING),
-            font_family: EDITOR_FONT_FAMILY,
-            font_size: Length::Px(EDITOR_FONT_SIZE),
-            line_height: EDITOR_LINE_HEIGHT,
-            // Textarea's own glyphs are invisible — the colored
-            // overlay carries the visible text. The caret would also
-            // vanish here (its default `caret-color: auto` follows
-            // `color`); `caret_color` pins it to the editor fg hex
-            // so the cursor stays visible. The framework's
-            // `StyleRules::caret_color` field maps to CSS
-            // `caret-color` on web, `tintColor` on UIKit, and
-            // `setTextCursorDrawable` on Android (API 29+).
-            color: Color("transparent".into()),
-            caret_color: Color("#24292f".into()),
-            background: Color("transparent".into()),
-        }
-    }
-}
-
-stylesheet! {
-    pub CodeOverlay<IdeaThemeRef> {
-        base(_t) {
-            position: Position::Absolute,
-            top: Length::Px(0.0),
-            right: Length::Px(0.0),
-            bottom: Length::Px(0.0),
-            left: Length::Px(0.0),
-            padding: Length::Px(EDITOR_PADDING),
-            font_family: EDITOR_FONT_FAMILY,
-            font_size: Length::Px(EDITOR_FONT_SIZE),
-            line_height: EDITOR_LINE_HEIGHT,
-            overflow: Overflow::Hidden,
+            // Box styling only. Font family / size / line height /
+            // padding are METRICS, owned by the `code_editor` primitive
+            // and written to both of its layers — putting them here is
+            // exactly the drift this primitive exists to prevent.
             background: Color("#ffffff".into()),
+            // The decorated layer measures to the full file, so the
+            // surface must be allowed to exceed the scroller's box in
+            // both axes rather than being squeezed to fit it.
+            flex_shrink: 0.0,
+            align_self: AlignSelf::FlexStart,
+            min_width: Length::Percent(100.0),
         }
     }
 }
@@ -313,7 +285,6 @@ pub fn start() {
     backend_web::install_scheduler();
     backend_web::install_async_executor();
     backend_web::install_render_loop();
-    install_idea_theme(light_theme());
 
     // Registration is explicit and MANDATORY on the scene registry: an
     // unregistered payload panics at realize. `codeblock` renders the syntax
@@ -329,6 +300,12 @@ pub fn start() {
 }
 
 fn app() -> Element {
+    // Theme install belongs INSIDE `app()`, not alongside the scheduler
+    // installs above: it reads the ambient theme context, which only
+    // exists inside the mounted world (`start_in` enters it before
+    // calling this).
+    install_idea_theme(light_theme());
+
     // Root signals — owned at the app level so they survive every
     // re-render the framework triggers on signal updates.
     let files: Signal<BTreeMap<String, String>> = signal(starter_files());
@@ -521,10 +498,14 @@ fn render_tree_node(
                 label = format!("{chevron}{name}"),
                 on_click = move || {
                     let path = path_for_click.clone();
+                    // `Signal::update` is staged and value-returning
+                    // (`&T -> T`), so the toggle clones, edits, returns.
                     expanded_signal.update(|set| {
-                        if !set.insert(path.clone()) {
-                            set.remove(&path);
+                        let mut next = set.clone();
+                        if !next.insert(path.clone()) {
+                            next.remove(&path);
                         }
+                        next
                     });
                 },
                 style = header_style,
@@ -597,7 +578,9 @@ fn editor_panel(
         buffer.set(new_value.clone());
         let path = active.get();
         files.update(|map| {
-            map.insert(path.clone(), new_value);
+            let mut next = map.clone();
+            next.insert(path.clone(), new_value.clone());
+            next
         });
     };
 
@@ -619,35 +602,34 @@ fn editor_panel(
             KeyOutcome::Default
         }
     };
-    let textarea = text_area(buffer, on_change)
-        // Code-editor shape: no soft-wrap (long lines scroll
-        // horizontally, matching the `code_block` overlay), and a fixed
-        // height from the absolutely-positioned `textarea_style` rather
-        // than growing to the file length.
-        .code_mode()
+    // One `code_editor`: the primitive owns the decorated layer, the
+    // editing layer, and the metrics both of them must agree on. The
+    // tokenizer is passed in as a plain `&str -> Vec<Decoration>`
+    // function — the primitive never parses anything itself, which is
+    // why the same call works for any language (or for diagnostics that
+    // aren't a language at all).
+    //
+    // This replaces the hand-rolled version of the same idea: a
+    // transparent `text_area` absolutely positioned over a `code_block`,
+    // with the font metrics duplicated across two stylesheets and the
+    // two layers' scroll offsets silently diverging the moment a line
+    // ran past the panel's width.
+    let editor = code_editor(buffer, on_change)
+        .decorate(highlight_rust_decorations)
         .on_key_down(on_key_down)
         .bind(textarea_ref)
-        .with_style(textarea_style());
+        .font(EDITOR_FONT_FAMILY, EDITOR_FONT_SIZE)
+        .line_height(EDITOR_LINE_HEIGHT)
+        .padding(EDITOR_PADDING)
+        .text_color(EDITOR_INK)
+        .with_style(editor_surface_style());
 
-    // Highlight overlay — re-renders only when `buffer` changes.
-    // `switch`'s `PartialEq` diff on the inner `String` gates the
-    // rebuild; tokenizing 10 k chars is sub-millisecond so
-    // per-keystroke rebuilds stay cheap.
-    let dep_buffer = buffer;
-    let build_buffer = buffer;
-    let highlight_layer = switch(
-        move || dep_buffer.get(),
-        move |_| {
-            let src = build_buffer.get();
-            let spans = highlight_rust(&src);
-            code_block(spans).with_style(code_overlay_style()).into()
-        },
-    );
-
+    // The editor grows to its content; the scroller is the ancestor, so
+    // both of its layers move together and can never drift apart.
+    let editor: Element = editor.into();
     ui! {
-        view(style = editor_stack_style()) {
-            highlight_layer
-            textarea
+        scroll_view(style = editor_stack_style()) {
+            editor
         }
     }
 }
@@ -723,7 +705,7 @@ fn controls_panel(
 // =============================================================================
 
 fn preview_panel(iframe_url: Signal<String>) -> Element {
-    webview::web_view(webview::WebViewProps {
+    webview::WebView(webview::WebViewProps {
         url: webview::url(move || iframe_url.get()),
         ..Default::default()
     })

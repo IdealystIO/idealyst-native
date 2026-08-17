@@ -18,6 +18,7 @@
 //! emits one `<span>` per tuple, which is fine for thousand-token
 //! files; if it becomes a bottleneck the coalescing pass goes here.
 
+use codeblock::Decoration;
 use runtime_core::Color;
 
 /// Subdued three-accent palette. Most code reads as default-ink
@@ -402,4 +403,37 @@ fn is_keyword(word: &str) -> bool {
             | "unsized"
             | "virtual"
     )
+}
+
+/// The same tokenization expressed as `code_editor` decorations: byte
+/// ranges into `src` rather than a concatenated run list.
+///
+/// Derived from [`highlight_rust`] by accumulating span lengths, so
+/// there is exactly one tokenizer to keep correct. Default-ink runs are
+/// dropped rather than emitted as explicit decorations — undecorated
+/// text already renders in the editor's own text color, and skipping
+/// them roughly halves the decoration count on typical source.
+pub fn highlight_rust_decorations(src: &str) -> Vec<Decoration> {
+    let mut at = 0usize;
+    let mut out = Vec::new();
+    for (text, color) in highlight_rust(src) {
+        let end = at + text.len();
+        if color.0 != C_DEFAULT {
+            out.push(Decoration::color(at..end, color.0));
+        }
+        at = end;
+    }
+    // The accumulator is only correct because `highlight_rust`'s runs
+    // re-concatenate to `src` exactly (its own documented round-trip).
+    // If that ever stops holding, every range past the break point
+    // paints the wrong characters — silently, and worse the further
+    // down the file you look. This crate is wasm-only, so it has no
+    // host test binary to assert it in; the debug build is where the
+    // check can actually run.
+    debug_assert_eq!(
+        at,
+        src.len(),
+        "highlight_rust runs must re-concatenate to the source exactly"
+    );
+    out
 }

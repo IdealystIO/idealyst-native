@@ -53,7 +53,7 @@ pub struct BufferEntry {
 /// One resolved styled-run for the GPU text engine. Colors are
 /// resolved sRGB at realize time (theme swaps re-realize through
 /// `Backend::update_styled_text`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct RichSpan {
     pub text: String,
     pub family: Option<RichFamily>,
@@ -65,6 +65,13 @@ pub struct RichSpan {
     /// a rect behind the span's glyphs (cosmic-text has no background
     /// attribute).
     pub background: Option<[f32; 4]>,
+    /// Italic delta for this run.
+    pub style: Option<runtime_shared::FontStyle>,
+    /// Underline, painted by the renderer as rect(s) below the
+    /// baseline off the same glyph geometry the background chips use
+    /// — cosmic-text has no underline attribute either. `None` in the
+    /// colour means "the run's own foreground".
+    pub underline: Option<(runtime_shared::UnderlineStyle, Option<[f32; 4]>)>,
 }
 
 /// Family choice for one rich span. First classifiable entry of the
@@ -468,6 +475,14 @@ pub fn resolve_rich_spans(runs: &[runtime_shared::TextRun]) -> Vec<RichSpan> {
                     runtime_shared::Length::Px(px) if px > 0.0 => Some(px),
                     _ => None,
                 });
+            let underline = style.and_then(|s| s.underline.as_ref()).map(|u| {
+                (
+                    u.style,
+                    u.color
+                        .as_ref()
+                        .map(|t| crate::style_convert::parse_color(&t.resolve())),
+                )
+            });
             RichSpan {
                 text: run.text.clone(),
                 family,
@@ -475,6 +490,8 @@ pub fn resolve_rich_spans(runs: &[runtime_shared::TextRun]) -> Vec<RichSpan> {
                 size,
                 color,
                 background,
+                style: style.and_then(|s| s.font_style),
+                underline,
             }
         })
         .collect()
@@ -531,6 +548,9 @@ fn shape_rich(
             }
             if let Some(w) = sp.weight {
                 a = a.weight(font_weight_to_glyphon(w));
+            }
+            if let Some(s) = sp.style {
+                a = a.style(font_style_to_glyphon(s));
             }
             if let Some(px) = sp.size {
                 a = a.metrics(Metrics::new(px, px * 1.3));
@@ -688,27 +708,17 @@ mod tests {
             vec![
                 RichSpan {
                     text: "the ".into(),
-                    family: None,
-                    weight: None,
-                    size: None,
-                    color: None,
-                    background: None,
+                    ..Default::default()
                 },
                 RichSpan {
                     text: "ui!".into(),
                     family: Some(RichFamily::Monospace),
-                    weight: None,
-                    size: None,
-                    color: None,
                     background: Some([0.9, 0.9, 0.9, 1.0]),
+                    ..Default::default()
                 },
                 RichSpan {
                     text: " macro".into(),
-                    family: None,
-                    weight: None,
-                    size: None,
-                    color: None,
-                    background: None,
+                    ..Default::default()
                 },
             ],
             14.0,
@@ -742,10 +752,7 @@ mod tests {
             vec![RichSpan {
                 text: "chip".into(),
                 family: Some(RichFamily::Monospace),
-                weight: None,
-                size: None,
-                color: None,
-                background: None,
+                ..Default::default()
             }],
             14.0,
         );

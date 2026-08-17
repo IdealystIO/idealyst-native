@@ -750,7 +750,32 @@ pub fn text_run_style_css(style: &runtime_shared::TextRunStyle) -> String {
     if let Some(b) = &style.background {
         push_decl(&mut out, "background-color", &tokenized_color_css(b));
     }
+    if let Some(s) = style.font_style {
+        push_decl(&mut out, "font-style", font_style_css(s));
+    }
+    if let Some(u) = &style.underline {
+        // The three longhands, never the `text-decoration` shorthand:
+        // the shorthand resets `text-decoration-color` to `currentColor`
+        // whenever it omits a color, which would silently drop a themed
+        // underline color emitted as `var(--token)` by the declaration
+        // that follows it.
+        push_decl(&mut out, "text-decoration-line", "underline");
+        push_decl(&mut out, "text-decoration-style", underline_style_css(u.style));
+        if let Some(c) = &u.color {
+            push_decl(&mut out, "text-decoration-color", &tokenized_color_css(c));
+        }
+    }
     out
+}
+
+/// CSS `text-decoration-style` keyword for a run underline.
+pub fn underline_style_css(v: runtime_shared::UnderlineStyle) -> &'static str {
+    use runtime_shared::UnderlineStyle;
+    match v {
+        UnderlineStyle::Solid => "solid",
+        UnderlineStyle::Dotted => "dotted",
+        UnderlineStyle::Dashed => "dashed",
+    }
 }
 
 /// Render a `Gradient` as a CSS `linear-gradient(...)` / `radial-gradient(...)`
@@ -1596,6 +1621,60 @@ fn collect_transitions(rules: &StyleRules) -> Vec<String> {
 mod tests {
     use super::*;
     use runtime_shared::{Color, Length, TokenEntry, TokenValue};
+
+    /// Inline-run underlines: the three longhands, never the shorthand.
+    /// `text-decoration: underline dotted` would reset
+    /// `text-decoration-color` to `currentColor`, dropping a themed
+    /// underline color that the next declaration sets — so a code
+    /// editor's red diagnostic mark under blue syntax-colored text would
+    /// come out blue.
+    #[test]
+    fn run_underline_emits_longhands_with_its_own_color() {
+        use runtime_shared::{RunUnderline, TextRunStyle, Tokenized, UnderlineStyle};
+        let style = TextRunStyle {
+            color: Some(Tokenized::Literal(Color("#00f".into()))),
+            underline: Some(RunUnderline {
+                style: UnderlineStyle::Dotted,
+                color: Some(Tokenized::Literal(Color("#c00".into()))),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            text_run_style_css(&style),
+            "color: #00f; text-decoration-line: underline; \
+             text-decoration-style: dotted; text-decoration-color: #c00"
+        );
+    }
+
+    /// No underline color ⇒ no `text-decoration-color` declaration, so
+    /// the line follows `currentColor` (the run's own text color).
+    #[test]
+    fn run_underline_without_a_color_follows_the_text_color() {
+        use runtime_shared::{RunUnderline, TextRunStyle, UnderlineStyle};
+        let style = TextRunStyle {
+            underline: Some(RunUnderline { style: UnderlineStyle::Solid, color: None }),
+            ..Default::default()
+        };
+        assert_eq!(
+            text_run_style_css(&style),
+            "text-decoration-line: underline; text-decoration-style: solid"
+        );
+    }
+
+    #[test]
+    fn run_font_style_emits_italic() {
+        use runtime_shared::{FontStyle, TextRunStyle};
+        let style = TextRunStyle {
+            font_style: Some(FontStyle::Italic),
+            ..Default::default()
+        };
+        assert_eq!(text_run_style_css(&style), "font-style: italic");
+    }
+
+    #[test]
+    fn empty_run_style_emits_nothing() {
+        assert_eq!(text_run_style_css(&Default::default()), "");
+    }
 
     /// `css_num` must agree with what `f32: Display` produced for the values
     /// CSS actually uses — it replaced Display everywhere in this crate to

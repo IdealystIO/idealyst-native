@@ -220,6 +220,64 @@ pub(crate) fn set_styled(view: &GlobalRef, runs: &[runtime_shared::TextRun]) {
                         set_span(env, &sp, span, start, end);
                     }
                 }
+                // Italic composes with the bold span above rather than
+                // replacing it: `StyleSpan.updateDrawState` ORs its own
+                // style into the typeface's existing one, so BOLD + ITALIC
+                // on the same range resolves to the bold-italic face.
+                if style.font_style == Some(runtime_shared::FontStyle::Italic) {
+                    let cls = env.find_class("android/text/style/StyleSpan").unwrap();
+                    // Typeface.ITALIC = 2
+                    let span = env.new_object(&cls, "(I)V", &[JValue::Int(2)]).unwrap();
+                    set_span(env, &sp, span, start, end);
+                }
+                if let Some(u) = &style.underline {
+                    // `UnderlineSpan` can only draw a solid line in the
+                    // text's own colour, so anything with a pattern or a
+                    // colour of its own goes through the framework's
+                    // drawing span (see RustUnderlineSpan.kt for why
+                    // Spannable cannot express this).
+                    let pattern = match u.style {
+                        runtime_shared::UnderlineStyle::Solid => 0,
+                        runtime_shared::UnderlineStyle::Dotted => 1,
+                        runtime_shared::UnderlineStyle::Dashed => 2,
+                    };
+                    let packed = u
+                        .color
+                        .as_ref()
+                        .and_then(|c| backend_android_core::helpers::parse_color(&c.resolve().0));
+                    if pattern == 0 && packed.is_none() {
+                        let cls = env.find_class("android/text/style/UnderlineSpan").unwrap();
+                        let span = env.new_object(&cls, "()V", &[]).unwrap();
+                        set_span(env, &sp, span, start, end);
+                    } else if let Ok(cls) =
+                        env.find_class("io/idealyst/runtime/RustUnderlineSpan")
+                    {
+                        // INHERIT_COLOR = 0 (fully transparent black is
+                        // never a legible underline, so it is free to
+                        // stand in for "follow the text").
+                        let span = env.new_object(
+                            &cls,
+                            "(Landroid/widget/TextView;II)V",
+                            &[
+                                JValue::Object(view.as_obj()),
+                                JValue::Int(packed.unwrap_or(0)),
+                                JValue::Int(pattern),
+                            ],
+                        );
+                        match span {
+                            Ok(span) => set_span(env, &sp, span, start, end),
+                            Err(e) => {
+                                // Clear the pending exception before any
+                                // further JNI call — see
+                                // [[project_android_net_pending_exception_clear]].
+                                if env.exception_check().unwrap_or(false) {
+                                    let _ = env.exception_clear();
+                                }
+                                log::error!("RustUnderlineSpan construction failed: {e}");
+                            }
+                        }
+                    }
+                }
                 if let Some(runtime_shared::Length::Px(px)) =
                     style.font_size.as_ref().map(|t| t.resolve())
                 {

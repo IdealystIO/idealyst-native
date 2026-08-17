@@ -321,6 +321,54 @@ fn corpus_styled_text_runs() {
     );
 }
 
+/// Underline + italic runs — the deltas a `code_editor` decoration
+/// lowers to. Pins the LONGHAND emission: `text-decoration` as a
+/// shorthand would reset `text-decoration-color` to `currentColor` and
+/// silently drop a diagnostic's red mark under blue syntax-colored
+/// text.
+#[test]
+fn corpus_styled_text_underline_runs() {
+    fn runs() -> Vec<TextRun> {
+        use runtime_shared::{FontStyle, RunUnderline, TextRunStyle, UnderlineStyle};
+        vec![
+            TextRun::plain("let "),
+            TextRun::styled(
+                "x",
+                TextRunStyle {
+                    color: Some(Tokenized::Literal(Color("#00f".into()))),
+                    underline: Some(RunUnderline {
+                        style: UnderlineStyle::Dotted,
+                        color: Some(Tokenized::Literal(Color("#c00".into()))),
+                    }),
+                    ..Default::default()
+                },
+            ),
+            TextRun::styled(
+                " // note",
+                TextRunStyle {
+                    font_style: Some(FontStyle::Italic),
+                    ..Default::default()
+                },
+            ),
+        ]
+    }
+    let new = render_new("/", || {
+        use runtime_vocabulary::builders::{text, view};
+        view().child(text().runs(runs())).build()
+    });
+    // No frozen golden: underline/italic runs postdate the old core, so
+    // there is no byte-identity artifact to compare against (see
+    // tests/goldens/README.md — these files cannot be re-derived). The
+    // assertions below are the fence instead.
+    assert!(
+        new.html.contains("text-decoration-style: dotted")
+            && new.html.contains("text-decoration-color: #c00"),
+        "the underline's own pattern and color must survive to the span: {}",
+        new.html
+    );
+    assert!(new.html.contains("font-style: italic"), "italic run: {}", new.html);
+}
+
 // ===========================================================================
 // 6. Swap navigator with author chrome, rendered at two paths
 // ===========================================================================

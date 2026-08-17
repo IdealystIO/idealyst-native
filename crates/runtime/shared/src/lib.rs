@@ -409,7 +409,7 @@ pub use text_defaults::{
     effective_text_color, THEME_TEXT_COLOR_FALLBACK, THEME_TEXT_COLOR_TOKEN,
 };
 
-pub use styled_text::{TextRun, TextRunStyle};
+pub use styled_text::{RunUnderline, TextRun, TextRunStyle, UnderlineStyle};
 
 pub use page_meta::{set_page_metadata, take_page_metadata, PageMetadata};
 

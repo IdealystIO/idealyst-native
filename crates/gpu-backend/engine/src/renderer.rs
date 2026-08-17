@@ -1665,7 +1665,9 @@ fn walk<'a>(
                     // run), so wrapping mid-chip paints one rect per line —
                     // the same visual web's inline spans produce.
                     if let Some(rich) = &entry.rich {
-                        if rich.iter().any(|sp| sp.background.is_some()) {
+                        let any_bg = rich.iter().any(|sp| sp.background.is_some());
+                        let any_underline = rich.iter().any(|sp| sp.underline.is_some());
+                        if any_bg || any_underline {
                             for lrun in entry.buffer.layout_runs() {
                                 let glyphs = lrun.glyphs;
                                 let mut i = 0;
@@ -1678,7 +1680,8 @@ fn walk<'a>(
                                         end_gx = glyphs[j].x + glyphs[j].w;
                                         j += 1;
                                     }
-                                    if let Some(bg) = rich.get(meta).and_then(|sp| sp.background) {
+                                    let span = rich.get(meta);
+                                    if let Some(bg) = span.and_then(|sp| sp.background) {
                                         rects.push(RectInstance {
                                             rect: [
                                                 text_x + start_gx,
@@ -1699,6 +1702,69 @@ fn walk<'a>(
                                             shadow_blur: 0.0,
                                             ..no_gradient_fields()
                                         });
+                                    }
+                                    // Underline: cosmic-text has no
+                                    // underline attribute either, so the
+                                    // line is rect(s) under the baseline
+                                    // off this same glyph group — which
+                                    // is what makes it wrap correctly
+                                    // (one group per line). Dotted/dashed
+                                    // tile the run with the shared
+                                    // on/off lengths, so the pattern
+                                    // matches Android's hand-drawn one.
+                                    if let Some((style, line_color)) =
+                                        span.and_then(|sp| sp.underline.as_ref())
+                                    {
+                                        use runtime_shared::styled_text::underline_geometry as ug;
+                                        let font_px = entry.font_size;
+                                        let thickness =
+                                            (font_px * ug::THICKNESS_RATIO).max(1.0);
+                                        let y = text_y
+                                            + lrun.line_y
+                                            + (font_px * ug::BASELINE_GAP_RATIO).max(1.0);
+                                        // No dedicated color ⇒ the run's
+                                        // own foreground, falling back to
+                                        // the node color for a run that
+                                        // sets none. `color` has already
+                                        // absorbed `node_opacity`; the two
+                                        // explicit paths still have to.
+                                        let line_srgb = line_color
+                                            .map(|[r, g, b, a]| [r, g, b, a * node_opacity])
+                                            .or_else(|| {
+                                                span.and_then(|sp| sp.color).map(|[r, g, b, a]| {
+                                                    [
+                                                        r as f32 / 255.0,
+                                                        g as f32 / 255.0,
+                                                        b as f32 / 255.0,
+                                                        (a as f32 / 255.0) * node_opacity,
+                                                    ]
+                                                })
+                                            })
+                                            .unwrap_or(color);
+                                        let bg = srgb_rgba_to_linear(line_srgb);
+                                        let mut push_segment = |x: f32, w: f32| {
+                                            rects.push(RectInstance {
+                                                rect: [text_x + x, y, w, thickness],
+                                                bg,
+                                                corner_radius: [0.0; 4],
+                                                border_color: [0.0; 4],
+                                                border_width: 0.0,
+                                                rotation: local_rot,
+                                                shadow_blur: 0.0,
+                                                ..no_gradient_fields()
+                                            });
+                                        };
+                                        match ug::dash_lengths(*style, thickness) {
+                                            None => push_segment(start_gx, end_gx - start_gx),
+                                            Some((on, off)) => {
+                                                let period = on + off;
+                                                let mut x = start_gx;
+                                                while x < end_gx && period > 0.0 {
+                                                    push_segment(x, on.min(end_gx - x));
+                                                    x += period;
+                                                }
+                                            }
+                                        }
                                     }
                                     i = j;
                                 }

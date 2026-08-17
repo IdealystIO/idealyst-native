@@ -34,11 +34,15 @@ runtime-vocabulary = { workspace = true }
 # `accessibility`, plus the canonical color parser the macOS handler
 # resolves author colors through.
 runtime-shared = { workspace = true }
-
-# tests/scene.rs mounts `code_block(...)` through the scene registry
-# end-to-end on the shared host-mock recording substrate.
-[dev-dependencies]
+# `code_editor` is reactive: it holds the buffer `Signal<String>`, reads
+# it from the decorated layer's update effect, and accepts an optional
+# `ReadSignal<Vec<Decoration>>` for async decoration producers.
 runtime-world = { workspace = true }
+
+# tests/scene.rs mounts `code_block(...)` / `code_editor(...)` through
+# the scene registry end-to-end on the shared host-mock recording
+# substrate.
+[dev-dependencies]
 host-mock = { workspace = true }
 
 # No wasm32-specific dependency: the web arm IS the portable

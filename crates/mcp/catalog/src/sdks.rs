@@ -276,7 +276,7 @@ sdk!(
     "codeblock",
     SdkCategory::Ui,
     SdkKind::External,
-    "Read-only colored-text (code) panel primitive. WEB REGISTRATION REQUIRED: call `codeblock::register(&mut backend)` from your wasm32 `register_extensions` (and the SSR bootstrap, so first paint matches) or it renders an unsupported-`External` placeholder (runtime, not compile-time); native self-registers. See the `sdks` guide's \"Registering External UI SDKs\" section."
+    "Two code surfaces. `code_block(spans)` is the read-only colored-text panel. `code_editor(value_signal, on_change)` is the EDITABLE one: an editor whose syntax highlighting and underlines come from author-supplied BYTE RANGES — `.decorate(|text| Vec<Decoration>)` for a synchronous tokenizer, `.decorations(read_signal)` for async diagnostics — so the primitive never parses anything and works for any language. Decorations overlap and layer field-by-field, which is how a red `Underline` sits on a syntax-colored token without clearing its color; stale/mid-character ranges clamp rather than panic. Font/size/line-height/padding are `.font()`/`.line_height()`/`.padding()` METRICS, not `.with_style()` — styling one of its two layers and not the other is the drift it exists to prevent. It does not soft-wrap and does not scroll internally: put it in a `scroll_view`. WEB REGISTRATION REQUIRED: call `codeblock::register(&mut backend)` from your wasm32 `register_extensions` (and the SSR bootstrap, so first paint matches) or it renders an unsupported-`External` placeholder (runtime, not compile-time); native self-registers. See the `sdks` guide's \"Registering External UI SDKs\" section."
 );
 sdk!(
     "table",

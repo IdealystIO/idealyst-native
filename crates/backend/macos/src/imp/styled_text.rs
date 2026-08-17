@@ -30,7 +30,8 @@ use runtime_shared::{FontFamily, FontWeight, StyleRules, TextRun, TextRunStyle};
 
 use backend_apple_core::font::FontRegistry;
 use backend_apple_core::styled_text::{
-    build_attributed, parse_font_stack, run_font_size, run_needs_font, RunAttrs, StackEntry,
+    build_attributed, parse_font_stack, run_font_size, run_needs_font, underline_mask,
+    with_italic_trait, RunAttrs, StackEntry,
 };
 
 use super::text_style::{ns_font_with_name, resolve_nsfont, system_font};
@@ -89,10 +90,12 @@ pub(crate) fn realize(
                     font: Some(retain_as_nsobject(&base_font)),
                     foreground: Some(nscolor_as_nsobject(&base_nscolor)),
                     background: None,
+                    underline: None,
+                    underline_color: None,
                 },
                 Some(s) => RunAttrs {
                     font: Some(if run_needs_font(s) {
-                        run_font(s, base_size, base_weight, registry)
+                        run_font(s, base_size, base_weight, base_style, registry)
                     } else {
                         retain_as_nsobject(&base_font)
                     }),
@@ -104,6 +107,17 @@ pub(crate) fn realize(
                         .background
                         .as_ref()
                         .map(|b| nscolor_as_nsobject(&color_to_nscolor(&b.resolve()))),
+                    underline: s.underline.as_ref().map(|u| underline_mask(u.style)),
+                    // No explicit color ⇒ omit the attribute entirely so
+                    // AppKit draws the line in the run's own foreground
+                    // color (its documented default). Writing the base
+                    // color here instead would pin diagnostics lines to
+                    // the paragraph color on a theme swap.
+                    underline_color: s
+                        .underline
+                        .as_ref()
+                        .and_then(|u| u.color.as_ref())
+                        .map(|c| nscolor_as_nsobject(&color_to_nscolor(&c.resolve()))),
                 },
             };
             (run.text.as_str(), attrs)
@@ -125,41 +139,52 @@ fn run_font(
     s: &TextRunStyle,
     base_size: f64,
     base_weight: FontWeight,
+    base_style: runtime_shared::FontStyle,
     registry: &FontRegistry,
 ) -> Retained<NSObject> {
     let size = run_font_size(s, base_size);
     let weight = s.font_weight.unwrap_or(base_weight);
-    match &s.font_family {
-        Some(FontFamily::Typeface(_)) => resolve_nsfont(
-            registry,
-            s.font_family.as_ref(),
-            weight,
-            runtime_shared::FontStyle::Normal,
-            size,
-        )
-        .unwrap_or_else(|| system_font(weight, size)),
+    let style = s.font_style.unwrap_or(base_style);
+    let upright = match &s.font_family {
+        Some(FontFamily::Typeface(_)) => {
+            // A registered typeface resolves its own italic FACE (the
+            // registry keys on weight+style), so the descriptor pass
+            // below finds the trait already set and is a no-op.
+            resolve_nsfont(registry, s.font_family.as_ref(), weight, style, size)
+                .unwrap_or_else(|| system_font(weight, size))
+        }
         Some(FontFamily::System(stack)) => {
+            let mut resolved = None;
             for entry in parse_font_stack(stack) {
                 match entry {
                     StackEntry::Monospace => {
                         if let Some(f) = monospaced_system_font(size, weight) {
-                            return f;
-                        }
-                        if let Some(f) = ns_font_with_name("Menlo", size) {
-                            return f;
-                        }
-                    }
-                    StackEntry::SansSerif => return system_font(weight, size),
-                    StackEntry::Named(name) => {
-                        if let Some(f) = ns_font_with_name(name, size) {
-                            return f;
+                            resolved = Some(f);
+                        } else {
+                            resolved = ns_font_with_name("Menlo", size);
                         }
                     }
+                    StackEntry::SansSerif => resolved = Some(system_font(weight, size)),
+                    StackEntry::Named(name) => resolved = ns_font_with_name(name, size),
+                }
+                if resolved.is_some() {
+                    break;
                 }
             }
-            system_font(weight, size)
+            resolved.unwrap_or_else(|| system_font(weight, size))
         }
         None => system_font(weight, size),
+    };
+    match style {
+        // Italic is a derived FACE, not an attribute: ask the resolved
+        // font's descriptor for its italic variant. Families with no
+        // italic cut return `None` from the descriptor lookup, and we
+        // keep the upright face rather than rendering an oblique
+        // synthesis AppKit would refuse anyway.
+        runtime_shared::FontStyle::Italic => {
+            with_italic_trait(&upright, objc2::class!(NSFont)).unwrap_or(upright)
+        }
+        runtime_shared::FontStyle::Normal => upright,
     }
 }
 
