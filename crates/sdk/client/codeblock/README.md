@@ -1,9 +1,14 @@
 # `codeblock`
 
-A read-only colored-text panel primitive. A flat
-sequence of `(text, color)` runs rendered as a **single native node** on
-every backend — built for syntax-highlighted source display. The docs
-site renders ~140-line tokenized snippets and ships dozens per page.
+Two code-surface primitives:
+
+- **`code_block`** — read-only. A flat sequence of `(text, color)` runs
+  rendered as a **single native node** on every backend, built for
+  syntax-highlighted source display. The docs site renders ~140-line
+  tokenized snippets and ships dozens per page.
+- **`code_editor`** — editable. The same per-range styling on a live,
+  focusable, IME-capable editor, driven by **byte ranges the caller
+  supplies**. See [Editing with decorations](#editing-with-decorations).
 
 ```rust
 use codeblock::{code_block, CodeBlockProps};
@@ -46,6 +51,93 @@ block's own edge — the `<pre> { padding }` observable model. Put the
 inset in the code block's style, not on a wrapping panel; panel padding
 would shrink the native scroll viewport and clip moving text before the
 panel's edge.
+
+## Editing with decorations
+
+`code_editor` is the editable sibling. It takes the buffer as a
+`Signal<String>` (the controlled pattern every editable primitive in the
+framework uses) and the styling as **byte ranges into that buffer**:
+
+```rust
+use codeblock::{code_editor, Decoration, DecorationStyle, Underline};
+
+let src = signal(String::from("fn main() {}"));
+
+code_editor(src, move |next| src.set(next))
+    .decorate(|text| my_tokenizer(text))     // -> Vec<Decoration>
+    .font("ui-monospace, monospace", 13.0)
+    .line_height(20.0)
+    .padding(12.0)
+    .with_style(editor_panel_style())
+```
+
+**The primitive never parses anything.** It has no notion of a language,
+a keyword or a token — it is handed ranges and told how they look. A
+tree-sitter grammar, a regex sweep, a compiler's diagnostic list and a
+hand-written matcher all emit the same thing, so any of them plugs in
+without the primitive growing a notion of "syntax".
+
+### The decoration model
+
+```rust
+Decoration { range: Range<usize>, style: DecorationStyle }
+DecorationStyle { color, background, font_weight, font_style, underline }
+Underline { style: Solid | Dotted | Dashed, color: Option<Color> }
+```
+
+Ranges are **byte** offsets, because that is what Rust text tooling
+already speaks (`str::find`, `regex::Match::range`,
+`tree_sitter::Node::byte_range`, rustc `Span`). Converting to each
+backend's index space — UTF-16 on Apple and Android, DOM offsets on web
+— is the primitive's job.
+
+Decorations may **overlap freely** and apply in list order, field by
+field. That is what lets two independent producers compose: a syntax
+highlighter emits colours for the whole buffer, a diagnostics pass emits
+red underlines over some of the same ranges, and the underline lands on
+top *without* clearing the keyword's colour.
+
+Out-of-bounds and mid-character ranges are normalized, not rejected: an
+async producer is always a frame behind the buffer, and a panic there
+would take the app down for a keystroke. Stale ranges clamp; ranges that
+land inside a multi-byte character widen to whole characters.
+
+### Two ways to supply them
+
+| | When | Guarantee |
+| --- | --- | --- |
+| `.decorate(fn)` | Synchronous tokenizer | Called with the text the editor is about to display, so ranges can never describe a different buffer than the one on screen. |
+| `.decorations(signal)` | Async producer (language server, worker-side parser) | Re-read whenever the signal changes; stale ranges clamp against the current text. |
+
+### Shape, and why
+
+```
+outer  view          ← the author's box styling (`.with_style`)
+  stack view         ← position: relative
+    pre
+      styled_text    ← IN FLOW. One attributed node; its measured size IS the editor's size.
+    text_area        ← position: absolute, inset 0. Transparent glyphs, visible caret.
+```
+
+Font family, size, line height and padding are **metrics**, owned by the
+primitive and written to both layers — not author style. That is the
+whole point: styling one layer and forgetting the other is what makes
+glyphs walk away from the caret one row at a time.
+
+Neither layer scrolls internally. The decorated layer measures to the
+full text and the editor stretches to that same box, so scrolling
+happens on an ancestor and moves both layers as one — put the editor in
+a `scroll_view`. The editor is always code-mode (no soft wrap): the two
+layers would have to choose identical break points, and only `pre`
+guarantees that.
+
+One handler serves every backend. The hard part — an attributed run list
+realized as one native node that wraps through the platform's own text
+engine — is already `styled_text`'s job on all of them. The scene
+`Registry` seam is still the right home: a backend that later grows a
+genuinely single-widget decorated editor can register a concrete handler
+for this payload the way `code_block` does, with no author-visible
+change.
 
 ## Why a third-party primitive, not a framework one
 
@@ -104,3 +196,24 @@ horizontally when the content overflows.
   `NSTextField` label (`NSAttributedString` with per-run color).
 - [ ] **terminal / gpu** — no handler registered; verify the framework's `External`
   placeholder renders cleanly (no layout artifact or crash).
+
+### `code_editor`
+
+The two failure modes to look for are **drift** (glyphs sliding away
+from the caret, worst at the bottom of a long file) and **stale
+highlight** (the decorated layer not following an edit).
+
+- [x] **Web** — verified in `examples/fiddle`: both layers report identical
+  font/size/line-height/padding/tab-size and the same bounding rect;
+  `scrollHeight == clientHeight` on the textarea (neither layer scrolls
+  internally); typing re-splits the runs in place; a dotted red
+  `Underline` renders under text whose own colour is unchanged.
+- [ ] **iOS** — ⚠️ not yet device-confirmed. Caret should track the glyphs
+  down a 200-line file; check the software keyboard's IME composition
+  updates the decorated layer.
+- [ ] **Android** — ⚠️ not yet device-confirmed. Also exercises
+  `RustUnderlineSpan` (the framework's own patterned-underline drawing);
+  check a wrapped span underlines on every line it covers.
+- [ ] **macOS** — ⚠️ not yet device-confirmed. Same drift check as iOS.
+- [ ] **Tabs** — open a file with literal tab characters on each backend;
+  the highlight must not slide one tab stop right of the glyphs.

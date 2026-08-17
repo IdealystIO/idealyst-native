@@ -97,6 +97,14 @@ use runtime_vocabulary::caps::TextOps;
 use runtime_vocabulary::glue::IntoElement;
 use runtime_vocabulary::style_attach::{attach_style, IntoStyleProp, StyleProp, StyleServices};
 
+pub mod decoration;
+pub mod editor;
+
+pub use decoration::{
+    flatten, Decoration, DecoratedRun, DecorationStyle, Underline, UnderlineStyle,
+};
+pub use editor::{code_editor, CodeEditorBuilder, EditorMetrics};
+
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 mod android;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
@@ -140,6 +148,15 @@ impl CodeBlockBuilder {
     pub fn with_style(mut self, style: impl IntoStyleProp) -> Self {
         self.style = Some(style.into_style_prop());
         self
+    }
+}
+
+/// So a call site can `.into()` a builder into an `Element` the way the
+/// framework's own glue wrappers do — `ui!` child slots and any
+/// `-> Element` position take it without naming `IntoElement`.
+impl From<CodeBlockBuilder> for Element {
+    fn from(b: CodeBlockBuilder) -> Element {
+        b.into_element()
     }
 }
 
@@ -267,6 +284,10 @@ pub fn register<H>(registry: &mut Registry<H>)
 where
     H: StyleServices + TextOps + 'static,
 {
+    // Before the `code_block` dispatch below, because those arms
+    // `return` once they've claimed the registry.
+    register_editor(registry);
+
     #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
     {
         let any: &mut dyn std::any::Any = registry;
@@ -301,6 +322,18 @@ where
         }
     }
     registry.register::<CodeBlockPrim, _>(mount_code_block::<H>);
+}
+
+/// Install the `code_editor` payload handler. Called FIRST from
+/// [`register`], because the native `code_block` arms there return as
+/// soon as they claim the registry. The editor has ONE handler on every
+/// host (see `editor`'s module docs for why there is no per-backend
+/// variant), so there is nothing to type-dispatch here.
+fn register_editor<H>(registry: &mut Registry<H>)
+where
+    H: StyleServices + TextOps + 'static,
+{
+    registry.register::<editor::CodeEditorPrim, _>(editor::mount_code_editor::<H>);
 }
 
 /// Declare this SDK's payload kind **late-bound** instead of installing

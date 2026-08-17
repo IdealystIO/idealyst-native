@@ -28,15 +28,69 @@
 //! per-range fonts on UIKit).
 
 use objc2::rc::{Allocated, Retained};
+use objc2::runtime::AnyClass;
 use objc2::{msg_send, msg_send_id};
 use objc2_foundation::{
-    NSAttributedString, NSMutableAttributedString, NSMutableDictionary, NSObject, NSString,
+    NSAttributedString, NSMutableAttributedString, NSMutableDictionary, NSNumber, NSObject, NSString,
 };
 
 /// Raw attribute-key strings, identical on UIKit and AppKit.
 const KEY_FONT: &str = "NSFont";
 const KEY_FOREGROUND: &str = "NSColor";
 const KEY_BACKGROUND: &str = "NSBackgroundColor";
+const KEY_UNDERLINE: &str = "NSUnderline";
+const KEY_UNDERLINE_COLOR: &str = "NSUnderlineColor";
+
+/// `NSUnderlineStyleSingle` — the "draw one line" bit. The pattern bits
+/// below are OR'd on top; a bare `Single` is `NSUnderlineStylePatternSolid`
+/// (0x0000), i.e. a continuous line.
+const UNDERLINE_SINGLE: i64 = 0x01;
+/// `NSUnderlineStylePatternDot`.
+const UNDERLINE_PATTERN_DOT: i64 = 0x0100;
+/// `NSUnderlineStylePatternDash`.
+const UNDERLINE_PATTERN_DASH: i64 = 0x0200;
+/// `kCTFontItalicTrait` / `NSFontDescriptorTraitItalic` /
+/// `UIFontDescriptorSymbolicTraits.traitItalic` — the same bit in all
+/// three spellings, because they all bridge to CoreText's trait mask.
+const TRAIT_ITALIC: u32 = 1 << 0;
+
+/// The `NSUnderline` attribute value for a framework underline style.
+/// Shared so UIKit and AppKit can't drift on the mask (CLAUDE.md §7).
+pub fn underline_mask(style: runtime_shared::UnderlineStyle) -> i64 {
+    use runtime_shared::UnderlineStyle;
+    UNDERLINE_SINGLE
+        | match style {
+            UnderlineStyle::Solid => 0,
+            UnderlineStyle::Dotted => UNDERLINE_PATTERN_DOT,
+            UnderlineStyle::Dashed => UNDERLINE_PATTERN_DASH,
+        }
+}
+
+/// Derive the italic face of `font` through its font descriptor.
+///
+/// The descriptor route (rather than AppKit's `NSFontManager
+/// convertFont:toHaveTrait:`) is the one spelling that exists on BOTH
+/// toolkits — `+[NSFont fontWithDescriptor:size:]` and
+/// `+[UIFont fontWithDescriptor:size:]` take the same selector and the
+/// trait bit has the same value — so the two backends can share this
+/// and produce the same face. `font_class` is `NSFont`/`UIFont`; size
+/// `0.0` means "keep the descriptor's own size".
+///
+/// Returns `None` when the family has no italic face, so the caller can
+/// fall back to the upright font rather than rendering nothing.
+pub fn with_italic_trait(
+    font: &Retained<NSObject>,
+    font_class: &AnyClass,
+) -> Option<Retained<NSObject>> {
+    unsafe {
+        let descriptor: Option<Retained<NSObject>> = msg_send_id![&**font, fontDescriptor];
+        let descriptor = descriptor?;
+        let italic_descriptor: Option<Retained<NSObject>> =
+            msg_send_id![&*descriptor, fontDescriptorWithSymbolicTraits: TRAIT_ITALIC];
+        let italic_descriptor = italic_descriptor?;
+        msg_send_id![font_class, fontWithDescriptor: &*italic_descriptor, size: 0.0f64]
+    }
+}
 
 /// Platform attribute objects for one run — `None` fields inherit the
 /// label's own properties. Built by the leaf backend (it owns
@@ -45,11 +99,20 @@ pub struct RunAttrs {
     pub font: Option<Retained<NSObject>>,
     pub foreground: Option<Retained<NSObject>>,
     pub background: Option<Retained<NSObject>>,
+    /// `NSUnderline` mask — see [`underline_mask`].
+    pub underline: Option<i64>,
+    /// `NSUnderlineColor`; `None` leaves the line following the run's
+    /// foreground color, which is the toolkit default.
+    pub underline_color: Option<Retained<NSObject>>,
 }
 
 impl RunAttrs {
     pub fn is_empty(&self) -> bool {
-        self.font.is_none() && self.foreground.is_none() && self.background.is_none()
+        self.font.is_none()
+            && self.foreground.is_none()
+            && self.background.is_none()
+            && self.underline.is_none()
+            && self.underline_color.is_none()
     }
 }
 
@@ -104,6 +167,14 @@ fn attrs_dict(attrs: &RunAttrs) -> Retained<NSMutableDictionary<NSString, NSObje
     if let Some(b) = &attrs.background {
         put(KEY_BACKGROUND, b);
     }
+    if let Some(mask) = attrs.underline {
+        let number = NSNumber::new_i64(mask);
+        let value: &NSObject = unsafe { &*(&*number as *const NSNumber as *const NSObject) };
+        put(KEY_UNDERLINE, value);
+    }
+    if let Some(c) = &attrs.underline_color {
+        put(KEY_UNDERLINE_COLOR, c);
+    }
     dict
 }
 
@@ -118,9 +189,15 @@ pub fn run_font_size(style: &runtime_shared::TextRunStyle, base_size: f64) -> f6
 }
 
 /// Does this run style need a font object at all? (Any of family /
-/// weight / size set — a color-only run inherits the label font.)
+/// weight / style / size set — a color-only run inherits the label
+/// font.) `font_style` counts: italic is a different FACE, derived
+/// from the base font's descriptor, not an attribute the text engine
+/// can apply on its own.
 pub fn run_needs_font(style: &runtime_shared::TextRunStyle) -> bool {
-    style.font_family.is_some() || style.font_weight.is_some() || style.font_size.is_some()
+    style.font_family.is_some()
+        || style.font_weight.is_some()
+        || style.font_style.is_some()
+        || style.font_size.is_some()
 }
 
 /// Classify one entry of a CSS-ish font-family stack for system-font
@@ -168,15 +245,33 @@ mod tests {
         let runs = [
             (
                 "the ",
-                RunAttrs { font: None, foreground: None, background: None },
+                RunAttrs {
+                    font: None,
+                    foreground: None,
+                    background: None,
+                    underline: None,
+                    underline_color: None,
+                },
             ),
             (
                 "ui!",
-                RunAttrs { font: None, foreground: None, background: Some(marker) },
+                RunAttrs {
+                    font: None,
+                    foreground: None,
+                    background: Some(marker),
+                    underline: None,
+                    underline_color: None,
+                },
             ),
             (
                 " macro",
-                RunAttrs { font: None, foreground: None, background: None },
+                RunAttrs {
+                    font: None,
+                    foreground: None,
+                    background: None,
+                    underline: None,
+                    underline_color: None,
+                },
             ),
         ];
         let attributed = build_attributed(&runs);
@@ -214,6 +309,48 @@ mod tests {
         assert!(matches!(entries[1], StackEntry::Named("SF Mono")));
         assert!(matches!(entries[2], StackEntry::Named("Menlo")));
         assert!(matches!(entries[3], StackEntry::Monospace));
+    }
+
+    /// The pattern bits ride ON TOP of `NSUnderlineStyleSingle` — a
+    /// pattern alone (0x0100) is `NSUnderlineStyleNone` with a pattern
+    /// and draws nothing, which is the failure mode this pins.
+    #[test]
+    fn underline_mask_ors_the_pattern_onto_single() {
+        use runtime_shared::UnderlineStyle;
+        assert_eq!(underline_mask(UnderlineStyle::Solid), 0x01);
+        assert_eq!(underline_mask(UnderlineStyle::Dotted), 0x0101);
+        assert_eq!(underline_mask(UnderlineStyle::Dashed), 0x0201);
+        for style in [UnderlineStyle::Solid, UnderlineStyle::Dotted, UnderlineStyle::Dashed] {
+            assert_eq!(
+                underline_mask(style) & 0x01,
+                0x01,
+                "{style:?} must keep the Single bit or nothing is drawn"
+            );
+        }
+    }
+
+    /// An underline-only run must still produce an attribute dictionary
+    /// — `is_empty()` gating it away was how the first cut silently
+    /// dropped diagnostics marks.
+    #[test]
+    fn regression_underline_only_run_is_not_empty() {
+        let attrs = RunAttrs {
+            font: None,
+            foreground: None,
+            background: None,
+            underline: Some(underline_mask(runtime_shared::UnderlineStyle::Dotted)),
+            underline_color: None,
+        };
+        assert!(!attrs.is_empty());
+    }
+
+    #[test]
+    fn run_needs_font_counts_italic() {
+        use runtime_shared::{FontStyle, TextRunStyle};
+        let mut s = TextRunStyle::default();
+        assert!(!run_needs_font(&s));
+        s.font_style = Some(FontStyle::Italic);
+        assert!(run_needs_font(&s), "italic is a different face, not an attribute");
     }
 
     #[test]

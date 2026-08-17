@@ -268,10 +268,10 @@ pub fn styled_text(runs: Vec<TextRun>) -> StyledText
 ```
 
 A text node whose content is a list of `TextRun`s, each optionally
-carrying a `TextRunStyle` delta (font family/weight/size, foreground,
-background). This is how mixed-style text that must wrap as ONE
-paragraph is expressed — inline code chips in prose being the
-canonical case:
+carrying a `TextRunStyle` delta (font family / weight / style / size,
+foreground, background, underline). This is how mixed-style text that
+must wrap as ONE paragraph is expressed — inline code chips in prose
+being the canonical case:
 
 ```rust
 styled_text(vec![
@@ -304,6 +304,35 @@ reactive content stays on the plain `text(...)` closure path, and a
 `TextRunStyle` deliberately has no padding/radius (per-range
 box-decoration can't be expressed uniformly across attributed-text
 engines).
+
+**Underlines.** `RunUnderline` carries a line style (`Solid` /
+`Dotted` / `Dashed`) and an optional colour of its own, so a
+diagnostic's red mark can sit under otherwise normally-coloured text:
+
+```rust
+TextRun::styled("x", TextRunStyle {
+    color: Some(Tokenized::Literal(Color("#00f".into()))),
+    underline: Some(RunUnderline {
+        style: UnderlineStyle::Dotted,
+        color: Some(Tokenized::Literal(Color("#c00".into()))),
+    }),
+    ..Default::default()
+})
+```
+
+`color: None` follows the run's own text colour. Each backend draws it
+with the mechanism it has: `text-decoration-*` longhands on web/SSR,
+the `NSUnderlineStylePattern*` bits plus `NSUnderlineColor` on Apple,
+`RustUnderlineSpan` on Android (`Spannable` has no patterned or
+independently-coloured underline, so the framework draws that one
+itself), and tiled rects off the shaped glyph geometry on the GPU
+renderer. Wavy is deliberately absent — Apple's public underline enum
+has no wavy pattern, and a style that silently flattens to a straight
+line on one platform is the divergence CLAUDE.md §7 rules out.
+
+For an EDITABLE surface with the same per-range styling, see
+`codeblock::code_editor` — a scene-registry primitive built on this
+one.
 
 ### `Button` — interactive trigger
 

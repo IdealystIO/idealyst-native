@@ -55,5 +55,8 @@ objc2-foundation = { version = "0.2", features = [
     "NSDictionary",
     "NSEnumerator",
     "NSRange",
+    # `NSUnderline` is a boxed integer mask in the attribute dictionary,
+    # so run underlines need NSNumber (and NSValue, which it derives from).
+    "NSValue",
 ] }
 block2 = "0.5"
