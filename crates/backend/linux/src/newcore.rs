@@ -620,6 +620,10 @@ impl caps::AppEnvOps for LinuxBackend {
         // here did not render at full fidelity.
         LinuxBackend::platform(self)
     }
+
+    fn set_app_background(&mut self, color: &runtime_shared::Tokenized<runtime_shared::Color>) {
+        LinuxBackend::set_app_background_impl(self, color)
+    }
 }
 
 impl caps::LifecycleOps for LinuxBackend {

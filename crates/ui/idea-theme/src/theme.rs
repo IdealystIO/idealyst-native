@@ -150,7 +150,10 @@ pub struct Radius {
     pub sm: f32,
     pub md: f32,
     pub lg: f32,
-    pub pill: f32,
+    // No `pill` field: "fully round" is a property of the BOX, not a number a
+    // theme can pick. It is emitted as `Length::Full` and resolved against the
+    // element at paint. The field used to be `999.0`, which stopped being a
+    // pill on any box taller than 1998px.
 }
 
 /// Per-variant font size knobs. Each field corresponds to one
@@ -667,7 +670,11 @@ impl ThemeTokens for IdeaThemeRef {
         out.push(len("radius-sm", r.sm));
         out.push(len("radius-md", r.md));
         out.push(len("radius-lg", r.lg));
-        out.push(len("radius-pill", r.pill));
+        // Not a px value: the pill resolves against the box it paints on.
+        out.push(TokenEntry {
+            name: "radius-pill",
+            value: TokenValue::Length(Length::Full),
+        });
 
         // Typography: one length token per variant. Names match the
         // variant keys in the Typography stylesheet block.
@@ -738,7 +745,6 @@ const DEFAULT_RADIUS: Radius = Radius {
     sm: 4.0,
     md: 8.0,
     lg: 12.0,
-    pill: 999.0,
 };
 
 const DEFAULT_TYPOGRAPHY: Typography = Typography {
@@ -1257,7 +1263,10 @@ mod tests {
         assert_eq!(px(find_length(&toks, "radius-sm")), 4.0);
         assert_eq!(px(find_length(&toks, "radius-md")), 8.0);
         assert_eq!(px(find_length(&toks, "radius-lg")), 12.0);
-        assert_eq!(px(find_length(&toks, "radius-pill")), 999.0);
+        // The pill is NOT a px value: it resolves against the box it paints
+        // on. It used to be `Px(999.0)`, which stopped being round on any box
+        // taller than 1998px.
+        assert_eq!(*find_length(&toks, "radius-pill"), Length::Full);
         // Typography — one token per Typography variant.
         assert_eq!(px(find_length(&toks, "typography-display-size")), 40.0);
         assert_eq!(px(find_length(&toks, "typography-h1-size")), 32.0);

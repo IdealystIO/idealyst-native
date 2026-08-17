@@ -142,9 +142,23 @@ fn summarize(mismatches: &[parity::Mismatch], a: &str, b: &str) -> String {
     geometry.sort_by(by_magnitude_desc);
     props.sort_by(by_magnitude_desc);
     let total = mismatches.len();
-    let ordered: Vec<parity::Mismatch> =
-        geometry.iter().chain(props.iter()).cloned().collect();
-    let shown = ordered.len().min(MAX_LINES_PER_ROUTE);
+    // Split the line budget between the two groups rather than concatenating
+    // them. Geometry findings outnumber prop findings by roughly 3:1, so a
+    // single ranked list spends every line on geometry and the prop half —
+    // colours, borders, radii, the half that a theme actually moves — never
+    // reaches the report at all. Each group gets half the budget, and whatever
+    // one group does not use goes to the other.
+    let half = MAX_LINES_PER_ROUTE / 2;
+    let geo_shown = geometry
+        .len()
+        .min(half.max(MAX_LINES_PER_ROUTE.saturating_sub(props.len())));
+    let prop_shown = props.len().min(MAX_LINES_PER_ROUTE.saturating_sub(geo_shown));
+    let ordered: Vec<parity::Mismatch> = geometry[..geo_shown]
+        .iter()
+        .chain(props[..prop_shown].iter())
+        .cloned()
+        .collect();
+    let shown = ordered.len();
     let mut out = format!(
         "{total} divergence(s): {} geometry, {} prop\n{}",
         geometry.len(),
@@ -396,6 +410,51 @@ fn every_idea_ui_screen_has_layout_parity() {
                     mismatches.len() - geometry,
                     geometry,
                 );
+                // `IDEALYST_PARITY_DUMP=<path>` appends EVERY finding as TSV.
+                // The human report is truncated per route by design, which is
+                // fine for reading but useless for aggregating: a class that
+                // appears twice on forty routes never shows up in a sample of
+                // twelve. Analysis should be done over the dump, not the prose.
+                if let Ok(path) = std::env::var("IDEALYST_PARITY_DUMP") {
+                    use std::io::Write as _;
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                    {
+                        for m in &mismatches {
+                            let (kind, av, bv) = match &m.kind {
+                                parity::MismatchKind::ValueDiffers { a, b } => {
+                                    ("differs", format!("{a:?}"), format!("{b:?}"))
+                                }
+                                parity::MismatchKind::PropMissing { in_a } => (
+                                    "prop_missing",
+                                    if *in_a { "present" } else { "absent" }.to_string(),
+                                    if *in_a { "absent" } else { "present" }.to_string(),
+                                ),
+                                parity::MismatchKind::ElementMissing { in_a } => (
+                                    "element_missing",
+                                    if *in_a { "present" } else { "absent" }.to_string(),
+                                    if *in_a { "absent" } else { "present" }.to_string(),
+                                ),
+                            };
+                            let _ = writeln!(
+                                f,
+                                "{route}\t{kind}\t{}\t{}\t{av}\t{bv}",
+                                m.path, m.key
+                            );
+                        }
+                        for u in &alignment.unmatched {
+                            let _ = writeln!(
+                                f,
+                                "{route}\tunmatched\t{}\t{}\t{}\t",
+                                u.path,
+                                u.kind,
+                                if u.in_a { &name_a } else { &name_b }
+                            );
+                        }
+                    }
+                }
                 if !mismatches.is_empty() || !alignment.unmatched.is_empty() {
                     let mut report = String::new();
                     if !alignment.unmatched.is_empty() {

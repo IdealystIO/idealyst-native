@@ -237,6 +237,14 @@ struct NodeState {
     order: u64,
     /// Resolved text style (text nodes only).
     text: text::TextPaint,
+    /// Box paint for a text leaf — background / gradient / border / radius.
+    ///
+    /// Held on the node because the PARENT paints it (a `GtkLabel` is final in
+    /// GTK4 and a leaf has no `IdealystView` of its own), and `apply_style`
+    /// runs BEFORE `insert` — so at style time there is usually no parent to
+    /// push it to yet. Recorded here and pushed whenever the parent becomes
+    /// known.
+    text_box: view::PaintModel,
 }
 
 // =========================================================================
@@ -247,6 +255,21 @@ struct NodeState {
 fn len_px(t: &Option<Tokenized<Length>>) -> f32 {
     match t.as_ref().map(|x| x.resolve()) {
         Some(Length::Px(v)) => v,
+        _ => 0.0,
+    }
+}
+
+/// A corner radius for [`PaintModel`], where `Full` stays unbounded.
+///
+/// The paint model is built at style time, before the widget has a size, but
+/// `view::clamp_radius` re-clamps to half the shorter side on EVERY snapshot.
+/// Handing it infinity therefore yields a true pill at whatever size the box
+/// turns out to be, and keeps following it across resizes — which the old
+/// `999` sentinel silently stopped doing above a 1998px box.
+fn radius_px(t: &Option<Tokenized<Length>>) -> f32 {
+    match t.as_ref().map(|x| x.resolve()) {
+        Some(Length::Px(v)) => v,
+        Some(Length::Full) => f32::INFINITY,
         _ => 0.0,
     }
 }
@@ -293,31 +316,86 @@ fn build_border(s: &StyleRules) -> Option<BorderPaint> {
 /// differed, which is exactly what the framework's one-tree/every-
 /// backend thesis rules out.
 ///
-/// White matches the canvas every other backend effectively provides for
-/// an app that sets no root background: the browser's default `<body>`
-/// on web and SSR. An app wanting a different base sets a background on
-/// its own root view, exactly as it must on web — this is only the
-/// fallback beneath it.
+/// White is only the value before a theme speaks — it matches the canvas
+/// every other backend effectively provides for an app that sets no root
+/// background: the browser's default `<body>` on web and SSR. Once the
+/// app installs a theme, `idea-theme` routes the host-surface token
+/// through `AppEnvOps::set_app_background`, and
+/// [`LinuxBackend::set_app_background_impl`] re-points the provider
+/// returned here. That call is what keeps the canvas in step with a
+/// Light/Dark swap; without it a dark app rendered light-on-dark text
+/// over a white page.
 ///
 /// Deliberately NOT keyed to [`Backend::color_scheme`]: that reports the
 /// *system* preference, apps are free to ignore it (the website hard-
 /// codes its light theme), and keying the canvas to the desktop would
 /// reintroduce the very "same app, different machine" divergence this
-/// removes. Scoped to a CSS class on the window so the provider can't
-/// leak into unrelated widgets.
-fn install_canvas_background(window: &gtk4::Window) {
+/// removes. The app's own theme is the authority, not the desktop's.
+/// Scoped to a CSS class on the window so the provider can't leak into
+/// unrelated widgets.
+fn install_canvas_background(window: &gtk4::Window) -> gtk4::CssProvider {
     const CANVAS_CLASS: &str = "idealyst-canvas";
-    if window.has_css_class(CANVAS_CLASS) {
-        return;
-    }
     let provider = gtk4::CssProvider::new();
-    provider.load_from_data(".idealyst-canvas { background-color: #ffffff; }");
+    provider.load_from_data(&canvas_css(CANVAS_DEFAULT));
     gtk4::style_context_add_provider_for_display(
         &gtk4::prelude::WidgetExt::display(window),
         &provider,
         gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
-    window.add_css_class(CANVAS_CLASS);
+    if !window.has_css_class(CANVAS_CLASS) {
+        window.add_css_class(CANVAS_CLASS);
+    }
+    provider
+}
+
+impl LinuxBackend {
+    /// Re-point the app canvas at the theme's host-surface colour.
+    ///
+    /// Every other windowing backend (macOS, Windows, web, SSR) implements
+    /// `AppEnvOps::set_app_background`; GTK did not, so it silently kept the
+    /// hardcoded white [`CANVAS_DEFAULT`] forever. `idea-theme` calls this on
+    /// EVERY theme install and swap precisely so native backends repaint, and
+    /// the miss was invisible in a light theme — white canvas under a light
+    /// app looks right. Switch the app to a dark theme and every region the
+    /// author does not paint (the whole page background, the gutters) stayed
+    /// white behind light-on-dark text, which is unreadable.
+    ///
+    /// The token's resolved value is applied directly: unlike web there is no
+    /// `var(--…)` indirection to re-resolve, which is exactly why the caller
+    /// re-invokes this on each swap.
+    /// The app canvas's current stylesheet, for tests and parity tooling.
+    ///
+    /// Robot-gated with the rest of the diagnostic surface: the canvas colour
+    /// is not something a release app needs to read back.
+    #[cfg(feature = "robot")]
+    pub fn canvas_css_for_test(&self) -> Option<String> {
+        self.canvas_provider.as_ref().map(|p| p.to_str().to_string())
+    }
+
+    pub(crate) fn set_app_background_impl(
+        &mut self,
+        color: &runtime_shared::Tokenized<runtime_shared::Color>,
+    ) {
+        let rgba = color::to_srgb(&color.resolve());
+        if let Some(provider) = &self.canvas_provider {
+            provider.load_from_data(&canvas_css(rgba));
+        }
+    }
+}
+
+/// The canvas colour before any theme has spoken: white, matching the
+/// browser's default `<body>` — see [`install_canvas_background`].
+const CANVAS_DEFAULT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+
+/// The one-rule stylesheet backing the app canvas.
+pub(crate) fn canvas_css(rgba: [f32; 4]) -> String {
+    let [r, g, b, a] = rgba;
+    format!(
+        ".idealyst-canvas {{ background-color: rgba({}, {}, {}, {a}); }}",
+        (r * 255.0).round() as u8,
+        (g * 255.0).round() as u8,
+        (b * 255.0).round() as u8,
+    )
 }
 
 /// The `GtkFixed` document inside a `scroll_view`'s `GtkScrolledWindow`
@@ -419,10 +497,10 @@ fn build_paint_model(s: &StyleRules) -> PaintModel {
         gradient: s.background_gradient.as_ref().map(gradient::resolve),
         // GSK corner order: top-left, top-right, bottom-right, bottom-left.
         radius: [
-            len_px(&s.border_top_left_radius),
-            len_px(&s.border_top_right_radius),
-            len_px(&s.border_bottom_right_radius),
-            len_px(&s.border_bottom_left_radius),
+            radius_px(&s.border_top_left_radius),
+            radius_px(&s.border_top_right_radius),
+            radius_px(&s.border_bottom_right_radius),
+            radius_px(&s.border_bottom_left_radius),
         ],
         border: build_border(s),
         overflow_hidden: matches!(s.overflow, Some(Overflow::Hidden)),
@@ -451,6 +529,9 @@ struct StickyEntry {
 
 pub struct LinuxBackend {
     pub(crate) host_window: gtk4::Window,
+    /// The CSS provider backing the app canvas, kept so the theme can
+    /// re-point it. See [`install_canvas_background`] / `set_app_background`.
+    canvas_provider: Option<gtk4::CssProvider>,
     next_id: u64,
     next_order: u64,
     pub(crate) layout: LayoutTree,
@@ -540,6 +621,7 @@ impl LinuxBackend {
         // GtkFixed, which would give it only its natural size).
         Self {
             host_window,
+            canvas_provider: None,
             next_id: 1,
             next_order: 0,
             layout: LayoutTree::new(),
@@ -1082,6 +1164,7 @@ impl LinuxBackend {
                 transform: NodeTransform::default(),
                 static_opacity: 1.0,
                 anim_opacity: None,
+                text_box: view::PaintModel::default(),
                 z: 0.0,
                 order: 0,
                 text: text::TextPaint::default(),
@@ -1417,6 +1500,16 @@ impl LinuxBackend {
         // inner Fixed document.
         if let Some(iv) = parent.widget.downcast_ref::<IdealystView>() {
             iv.add_child(&child.widget);
+            // A text leaf's box is painted by this parent, and `apply_style`
+            // ran before the child had one — so hand it over now. Without
+            // this the recorded model never reaches a painter and the box
+            // silently never draws (idea-ui's Badge: 67 such nodes in the
+            // docs catalogue, every one an invisible pill).
+            if let Some(cs) = self.nodes.get(&child.id) {
+                if cs.text_box.paints() {
+                    iv.set_child_model(&child.widget, cs.text_box.clone());
+                }
+            }
         } else if let Some(scrolled) = parent.widget.downcast_ref::<gtk4::ScrolledWindow>() {
             if let Some(inner) = scroll_document(scrolled) {
                 inner.put(&child.widget, 0.0, 0.0);
@@ -1612,6 +1705,35 @@ impl LinuxBackend {
                         text::apply(label, &st.text);
                     }
                 }
+                // A text primitive's BOX — background / gradient / border /
+                // corner radius — is honoured too.
+                //
+                // This arm used to resolve typography and colour only, so
+                // anything else a stylesheet put on a `text` node was dropped
+                // on this backend while web handed the same `StyleRules` to a
+                // `<span>` and CSS painted all of it. `idea-ui`'s Badge is
+                // exactly that shape (white text on a coloured pill), so on
+                // GTK it rendered white text on the page background — nothing
+                // visible at all in the light theme.
+                //
+                // The parent does the painting: `GtkLabel` is final in GTK4 so
+                // a text leaf can't subclass its way to a box, and it has no
+                // `IdealystView` of its own. The parent already paints boxes
+                // and already tracks this child's frame and transform.
+                let pm = build_paint_model(style);
+                if let Some(st) = self.nodes.get_mut(&id) {
+                    st.text_box = pm.clone();
+                }
+                // Push it now if the parent already exists; `insert` pushes it
+                // for the (usual) case where the style landed first.
+                if let Some(st) = self.nodes.get(&id) {
+                    let widget = st.widget.clone();
+                    if let Some(parent) =
+                        widget.parent().and_then(|p| p.downcast::<IdealystView>().ok())
+                    {
+                        parent.set_child_model(&widget, pm);
+                    }
+                }
             }
             NodeKind::Other => {
                 // Image nodes are `gtk::Picture` (NodeKind::Other). Honor
@@ -1720,7 +1842,7 @@ impl LinuxBackend {
         // every resize). This is what keeps the external layout engine in
         // step with GTK allocation without fighting the frame clock.
         if root.widget.parent().is_none() {
-            install_canvas_background(&self.host_window);
+            self.canvas_provider = Some(install_canvas_background(&self.host_window));
             self.host_window.set_child(Some(&root.widget));
             if let Some(iv) = root.widget.downcast_ref::<IdealystView>() {
                 let me = self.self_ref();
@@ -2273,8 +2395,12 @@ impl LinuxBackend {
 
 #[cfg(test)]
 mod layout_tests {
-    use super::{leaf_alloc_size, scroll_document};
+    use super::{
+        install_canvas_background, leaf_alloc_size, scroll_document, IdealystView, LinuxBackend,
+        StyleRules,
+    };
     use gtk4::prelude::*;
+    use runtime_shared::{Color, Length, Tokenized};
 
     // The website's entire page was invisible: every child inserted into
     // a `scroll_view` was silently dropped from the widget tree. GTK
@@ -3101,5 +3227,173 @@ mod layout_tests {
                 );
             }
         }
+
+        // --- 14. The app canvas must follow the app's THEME.
+        //
+        // `AppEnvOps::set_app_background` was never implemented here, so the
+        // call `idea-theme` makes on every theme install and swap hit the
+        // trait's no-op default and the canvas stayed pinned to the hardcoded
+        // white `CANVAS_DEFAULT`. Invisible under a light theme; under a dark
+        // one every region the author does not paint — the whole page
+        // background and both gutters — showed white behind light-on-dark text.
+        {
+            use runtime_vocabulary::caps::AppEnvOps;
+            let window = gtk4::Window::new();
+            let mut backend = LinuxBackend::new(window.clone().upcast());
+            backend.canvas_provider = Some(install_canvas_background(&window));
+            assert!(
+                window.has_css_class("idealyst-canvas"),
+                "canvas class not applied to the window"
+            );
+            // GTK re-serializes the stylesheet, so match its normalized form.
+            assert!(
+                backend.canvas_provider.as_ref().unwrap().to_str().contains("rgb(255,255,255)"),
+                "the canvas should start white, before any theme speaks"
+            );
+            backend.set_app_background(&Tokenized::Literal(Color("#0f1625".into())));
+            let css = backend.canvas_provider.as_ref().unwrap().to_str().to_string();
+            assert!(
+                css.contains("rgb(15,22,37)"),
+                "set_app_background did not reach the canvas provider; css = {css:?}"
+            );
+        }
+
+        // --- 15. A `text` primitive's BOX — background / border / radius —
+        // must paint, INCLUDING when the style lands before the node is
+        // inserted (which is the normal order: `apply_style` then `insert`).
+        //
+        // `apply_style`'s `NodeKind::Text` arm resolved typography and colour
+        // only, so box styling on a text node was dropped here while web
+        // handed the same `StyleRules` to a `<span>` and CSS painted all of it.
+        // `idea-ui`'s Badge is exactly that shape — white text on a coloured
+        // pill — so on GTK it rendered white text on the page background:
+        // nothing visible at all in the light theme. 80 text nodes across the
+        // docs catalogue were losing box styling this way.
+        //
+        // The parent paints it: `GtkLabel` is final in GTK4, so a text leaf
+        // cannot subclass its way to a box and has no `IdealystView` of its own.
+        {
+            let mut backend = LinuxBackend::new(gtk4::Window::new());
+            let mut row = backend.create_view(&a11y);
+            let badge = backend.create_text("Danger", &a11y);
+            backend.insert(&mut row, badge.clone());
+            let style = std::rc::Rc::new(StyleRules {
+                background: Some(Tokenized::Literal(Color("#dc2626".into()))),
+                border_top_left_radius: Some(Tokenized::Literal(Length::Full)),
+                border_top_right_radius: Some(Tokenized::Literal(Length::Full)),
+                border_bottom_left_radius: Some(Tokenized::Literal(Length::Full)),
+                border_bottom_right_radius: Some(Tokenized::Literal(Length::Full)),
+                color: Some(Tokenized::Literal(Color("#ffffff".into()))),
+                ..Default::default()
+            });
+            backend.apply_style(&badge, &style);
+
+            let parent = badge
+                .widget
+                .parent()
+                .and_then(|p| p.downcast::<IdealystView>().ok())
+                .expect("text node must be parented by an IdealystView");
+            let model = parent
+                .child_model(&badge.widget)
+                .expect("parent must know this child");
+            let bg = model.background.expect(
+                "a text node's background was dropped — Badge renders white text on nothing",
+            );
+            assert!(
+                (bg[0] - 0.8627).abs() < 1e-2 && bg[1] < 0.2 && bg[2] < 0.2,
+                "background is not the authored red: {bg:?}"
+            );
+            assert!(
+                model.radius.iter().all(|r| r.is_infinite()),
+                "a `Length::Full` radius must reach the paint unbounded so the \
+                 paint-time clamp can make it a pill at any size: {:?}",
+                model.radius
+            );
+            let st = backend.nodes.get(&badge.id).expect("node");
+            assert_eq!(st.text.color, [1.0, 1.0, 1.0, 1.0], "white text colour lost");
+
+            // A restyle that removes the background must stop painting it.
+            backend.apply_style(&badge, &std::rc::Rc::new(StyleRules::default()));
+            assert!(
+                !parent.child_model(&badge.widget).unwrap().paints(),
+                "a restyle that removes the background must stop painting it"
+            );
+
+            // And unstyled text — the common case — must paint no box at all.
+            let plain = backend.create_text("plain", &a11y);
+            backend.insert(&mut row, plain.clone());
+            backend.apply_style(&plain, &std::rc::Rc::new(StyleRules::default()));
+            assert!(
+                !parent.child_model(&plain.widget).unwrap().paints(),
+                "an unstyled text node must not paint a box"
+            );
+
+            // --- 15b. STYLE BEFORE INSERT — the order the framework actually
+            // uses. The first cut of this fix only pushed the box at
+            // `apply_style`, when a freshly created node has no parent yet, so
+            // every real badge still painted nothing: 67 nodes in the docs
+            // catalogue logged "parent is not an IdealystView" and stayed
+            // invisible while the unit test (which inserted first) passed.
+            let mut row2 = backend.create_view(&a11y);
+            let late = backend.create_text("Danger", &a11y);
+            backend.apply_style(&late, &style);
+            backend.insert(&mut row2, late.clone());
+            let parent2 = late
+                .widget
+                .parent()
+                .and_then(|p| p.downcast::<IdealystView>().ok())
+                .expect("inserted text node must have an IdealystView parent");
+            assert!(
+                parent2
+                    .child_model(&late.widget)
+                    .expect("parent must know this child")
+                    .background
+                    .is_some(),
+                "a box styled BEFORE insertion never reached a painter — this is \
+                 the order the framework uses, so the box never drew at all"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod canvas_background_tests {
+    use super::*;
+
+    /// The app canvas must follow the theme, not stay pinned to white.
+    ///
+    /// Regression: `AppEnvOps::set_app_background` was never implemented on
+    /// this backend, so the call `idea-theme` makes on every theme install and
+    /// swap hit the trait's no-op default and the canvas kept the hardcoded
+    /// white [`CANVAS_DEFAULT`]. Invisible in a light theme; in a dark theme
+    /// every region the author does not paint — the entire page background and
+    /// both gutters, measured as fully transparent in a GSK capture — showed
+    /// white behind light-on-dark text.
+    ///
+    /// Asserts on the emitted stylesheet rather than a rendered pixel so it
+    /// runs without a display; `regression_canvas_css_reaches_the_window`
+    /// covers the provider actually being installed.
+    #[test]
+    fn regression_app_background_retargets_the_canvas_to_the_theme_colour() {
+        use runtime_shared::{Color, Tokenized};
+
+        let dark = Tokenized::Literal(Color("#0f1625".into()));
+        let rgba = color::to_srgb(&dark.resolve());
+        let css = canvas_css(rgba);
+
+        assert!(
+            css.contains("rgba(15, 22, 37"),
+            "canvas stylesheet did not carry the theme colour: {css}"
+        );
+        assert!(
+            !css.contains("255, 255, 255"),
+            "canvas stayed white after the theme asked for a dark surface: {css}"
+        );
+        // And the default really is white, so the bug's "looks fine in light
+        // mode" property is pinned rather than assumed.
+        assert!(
+            canvas_css(CANVAS_DEFAULT).contains("rgba(255, 255, 255"),
+            "the pre-theme canvas default is no longer white"
+        );
     }
 }

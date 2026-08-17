@@ -572,19 +572,19 @@ impl BadgeSheetBuilder {
             )),
             border_top_left_radius: Some(Tokenized::token(
                 "radius-pill",
-                runtime_core::Length::Px(999.0),
+                runtime_core::Length::Full,
             )),
             border_top_right_radius: Some(Tokenized::token(
                 "radius-pill",
-                runtime_core::Length::Px(999.0),
+                runtime_core::Length::Full,
             )),
             border_bottom_left_radius: Some(Tokenized::token(
                 "radius-pill",
-                runtime_core::Length::Px(999.0),
+                runtime_core::Length::Full,
             )),
             border_bottom_right_radius: Some(Tokenized::token(
                 "radius-pill",
-                runtime_core::Length::Px(999.0),
+                runtime_core::Length::Full,
             )),
             font_size: Some(Tokenized::token(
                 "typography-caption-size",
@@ -647,19 +647,19 @@ impl TagSheetBuilder {
             )),
             border_top_left_radius: Some(Tokenized::token(
                 "radius-pill",
-                runtime_core::Length::Px(999.0),
+                runtime_core::Length::Full,
             )),
             border_top_right_radius: Some(Tokenized::token(
                 "radius-pill",
-                runtime_core::Length::Px(999.0),
+                runtime_core::Length::Full,
             )),
             border_bottom_left_radius: Some(Tokenized::token(
                 "radius-pill",
-                runtime_core::Length::Px(999.0),
+                runtime_core::Length::Full,
             )),
             border_bottom_right_radius: Some(Tokenized::token(
                 "radius-pill",
-                runtime_core::Length::Px(999.0),
+                runtime_core::Length::Full,
             )),
             font_size: Some(Tokenized::token(
                 "typography-caption-size",
@@ -1307,7 +1307,10 @@ impl IconButtonSheetBuilder {
         }
 
         // Size arms — hardcoded square dimensions (closed enum).
-        let pill = |px: f32| Tokenized::token("radius-pill", Length::Px(px));
+        // Fully round, resolved against the box at paint (see `Length::Full`).
+        // Took a px argument while the pill was the magic `999`; the value is
+        // no longer meaningful, so the argument is gone rather than ignored.
+        let pill = || Tokenized::token("radius-pill", Length::Full);
         sheet = sheet
             .variant("size", "sm", move |_vs| StyleRules {
                 padding_top: Some(Tokenized::token("spacing-xs", Length::Px(4.0))),
@@ -1320,10 +1323,10 @@ impl IconButtonSheetBuilder {
                 )),
                 width: Some(Tokenized::Literal(Length::Px(24.0))),
                 height: Some(Tokenized::Literal(Length::Px(24.0))),
-                border_top_left_radius: Some(pill(999.0)),
-                border_top_right_radius: Some(pill(999.0)),
-                border_bottom_left_radius: Some(pill(999.0)),
-                border_bottom_right_radius: Some(pill(999.0)),
+                border_top_left_radius: Some(pill()),
+                border_top_right_radius: Some(pill()),
+                border_bottom_left_radius: Some(pill()),
+                border_bottom_right_radius: Some(pill()),
                 ..Default::default()
             })
             .variant("size", "md", move |_vs| StyleRules {
@@ -1334,10 +1337,10 @@ impl IconButtonSheetBuilder {
                 font_size: Some(Tokenized::token("typography-body-size", Length::Px(14.0))),
                 width: Some(Tokenized::Literal(Length::Px(32.0))),
                 height: Some(Tokenized::Literal(Length::Px(32.0))),
-                border_top_left_radius: Some(pill(999.0)),
-                border_top_right_radius: Some(pill(999.0)),
-                border_bottom_left_radius: Some(pill(999.0)),
-                border_bottom_right_radius: Some(pill(999.0)),
+                border_top_left_radius: Some(pill()),
+                border_top_right_radius: Some(pill()),
+                border_bottom_left_radius: Some(pill()),
+                border_bottom_right_radius: Some(pill()),
                 ..Default::default()
             })
             .variant("size", "lg", move |_vs| StyleRules {
@@ -1351,10 +1354,10 @@ impl IconButtonSheetBuilder {
                 )),
                 width: Some(Tokenized::Literal(Length::Px(48.0))),
                 height: Some(Tokenized::Literal(Length::Px(48.0))),
-                border_top_left_radius: Some(pill(999.0)),
-                border_top_right_radius: Some(pill(999.0)),
-                border_bottom_left_radius: Some(pill(999.0)),
-                border_bottom_right_radius: Some(pill(999.0)),
+                border_top_left_radius: Some(pill()),
+                border_top_right_radius: Some(pill()),
+                border_bottom_left_radius: Some(pill()),
+                border_bottom_right_radius: Some(pill()),
                 ..Default::default()
             });
 
@@ -1612,7 +1615,7 @@ impl SwitchSheetBuilder {
     }
     pub fn build(self) -> Rc<StyleSheet> {
         use runtime_core::{AlignItems, FlexDirection, Length};
-        let pill = || Tokenized::token("radius-pill", Length::Px(999.0));
+        let pill = || Tokenized::token("radius-pill", Length::Full);
         let mut sheet = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
             flex_direction: Some(FlexDirection::Row),
             align_items: Some(AlignItems::Center),
@@ -1874,7 +1877,7 @@ impl RadioSheetBuilder {
     }
     pub fn build(self) -> RadioSheets {
         use runtime_core::{AlignItems, JustifyContent, Length};
-        let pill = || Tokenized::token("radius-pill", Length::Px(999.0));
+        let pill = || Tokenized::token("radius-pill", Length::Full);
 
         // ---- outer ring ----
         let mut outer = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
@@ -2067,7 +2070,7 @@ impl ProgressSheetBuilder {
     }
     pub fn build(self) -> ProgressSheets {
         use runtime_core::{Length, Overflow};
-        let pill = || Tokenized::token("radius-pill", Length::Px(999.0));
+        let pill = || Tokenized::token("radius-pill", Length::Full);
         let pill_rules = move || StyleRules {
             border_top_left_radius: Some(pill()),
             border_top_right_radius: Some(pill()),
@@ -2233,7 +2236,7 @@ impl SliderSheetBuilder {
     }
     pub fn build(self) -> SliderSheets {
         use runtime_core::{Length, Overflow, Position};
-        let pill = || Tokenized::token("radius-pill", Length::Px(999.0));
+        let pill = || Tokenized::token("radius-pill", Length::Full);
 
         // ---- track (the muted rail) ----
         let mut track = StyleSheet::new(move |_vs: &VariantSet| {

@@ -59,7 +59,7 @@ impl Shape for Pill {
         "pill"
     }
     fn border_radius(&self) -> Tokenized<Length> {
-        Tokenized::token("radius-pill", Length::Px(999.0))
+        Tokenized::token("radius-pill", Length::Full)
     }
 }
 

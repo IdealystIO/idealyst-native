@@ -690,7 +690,7 @@ stylesheet! {
             border_color: t.color.border(),
             padding_horizontal: 8.0,
             padding_vertical: 2.0,
-            border_radius: 999.0,
+            border_radius: Length::Full,
         }
     }
 }
@@ -726,7 +726,7 @@ stylesheet! {
             background: t.color.surface_alt(),
             border_width: 1.0,
             border_color: t.color.border(),
-            border_radius: 999.0,
+            border_radius: Length::Full,
             padding: 3.0,
             gap: 2.0,
         }
@@ -739,7 +739,7 @@ stylesheet! {
         base(_t) {
             padding_horizontal: 14.0,
             padding_vertical: 5.0,
-            border_radius: 999.0,
+            border_radius: Length::Full,
             background: Color("transparent".into()),
             cursor: Cursor::Pointer,
         }
@@ -936,7 +936,7 @@ stylesheet! {
         base(t) {
             width: Length::Px(6.0),
             height: Length::Px(6.0),
-            border_radius: 999.0,
+            border_radius: Length::Full,
             background: t.color.border_strong(),
         }
         // "ready"/Detailed entries get a green dot; Preview keep the base grey.
@@ -981,7 +981,7 @@ stylesheet! {
         base(t) {
             padding_horizontal: 10.0,
             padding_vertical: 4.0,
-            border_radius: 999.0,
+            border_radius: Length::Full,
             border_width: 1.0,
             background: t.color.surface_alt(),
             border_color: t.color.border(),
@@ -1150,7 +1150,7 @@ stylesheet! {
             gap: 8.0,
             padding_horizontal: 13.0,
             padding_vertical: 5.0,
-            border_radius: 999.0,
+            border_radius: Length::Full,
             background: t.color.surface_alt(),
             border_width: 1.0,
             border_color: t.color.border(),
@@ -1164,7 +1164,7 @@ stylesheet! {
         base(t) {
             width: Length::Px(7.0),
             height: Length::Px(7.0),
-            border_radius: 999.0,
+            border_radius: Length::Full,
             background: t.intent.success.solid_bg(),
         }
     }

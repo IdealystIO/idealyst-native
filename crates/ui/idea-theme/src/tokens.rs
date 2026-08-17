@@ -83,6 +83,7 @@ fn length_display(l: Length) -> String {
         Length::Px(v) => format!("{v}px"),
         Length::Percent(v) => format!("{v}%"),
         Length::Auto => "auto".to_string(),
+        Length::Full => "full".to_string(),
     }
 }
 
@@ -299,9 +300,28 @@ length_namespace! {
         sm => "radius-sm",
         md => "radius-md",
         lg => "radius-lg",
-        pill => "radius-pill",
     }
 }
+
+impl RadiusTokens {
+    /// Theme token `radius-pill`.
+    ///
+    /// Declared by hand rather than through `length_namespace!` because it is
+    /// the one radius that is NOT a px number: "fully round" depends on the box
+    /// it paints on, so it emits [`Length::Full`] and each backend resolves it
+    /// against the element. It used to be `Px(999.0)`, which quietly stopped
+    /// being a pill on any box taller than 1998px.
+    pub const PILL: &'static str = "radius-pill";
+
+    /// Theme token `radius-pill` — fully round, resolved against the box.
+    pub fn pill(&self) -> Tokenized<Length> {
+        Tokenized::token(Self::PILL, Length::Full)
+    }
+}
+
+catalog_token!("radius-pill", "radius.pill", "radius", "Length", {
+    length_display(*RadiusTokens.pill().value())
+});
 
 length_namespace! {
     /// Per-variant font sizes. One entry per `Typography` kind — the only
@@ -483,6 +503,9 @@ mod tests {
         }
         names.extend(SpacingTokens::NAMES);
         names.extend(RadiusTokens::NAMES);
+        // `pill` is declared outside the macro (it is not a px value), so it is
+        // not in the generated NAMES.
+        names.push(RadiusTokens::PILL);
         names.extend(TypographyTokens::NAMES);
         names
     }

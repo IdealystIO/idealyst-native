@@ -67,17 +67,73 @@ impl From<String> for Color {
 /// — or just `16.0`/`16` directly, since `From<f32>` and `From<i32>`
 /// produce `Length::Px`. Percent is for "X% of parent on the relevant
 /// axis". Auto defers to layout (only meaningful on a subset of
-/// properties — `width`, `height`, `margin`).
+/// properties — `width`, `height`, `margin`). Full is the corner-radius
+/// "pill" (see below), and like Auto is only meaningful on the
+/// properties that define it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Length {
     Px(f32),
     Percent(f32),
     Auto,
+    /// Fully round: on a corner radius, half the box's shorter side —
+    /// whatever that turns out to be, resolved by the consumer at the
+    /// moment it paints.
+    ///
+    /// This exists because the pill used to be a magic number. The
+    /// `radius-pill` token was `Px(999.0)`, which works only while 999 is
+    /// still ≥ half the shorter side: a box taller than 1998px quietly
+    /// stopped being a pill and rendered as a 999px-radius rectangle
+    /// instead. Resolution-dependent, invisible in the style (999 *looks*
+    /// like "very round"), and the failure only shows on large surfaces.
+    ///
+    /// `Full` cannot go stale the way a baked number can, because there is
+    /// no number to go stale — every consumer resolves it against the box
+    /// it is painting, so it survives any resize by construction. It also
+    /// states the intent at the type level, so tooling (parity diffs,
+    /// devtools, introspection) can compare "is this a pill" directly
+    /// instead of inferring it from geometry.
+    ///
+    /// NOT `Percent(50)`: CSS's `border-radius: 50%` takes 50% of the width
+    /// horizontally and 50% of the height vertically, which yields an
+    /// ellipse on a non-square box — not a pill.
+    Full,
 }
 
 impl Length {
     /// Shorthand for `Length::Percent(value)`.
     pub fn pct(value: f32) -> Self { Length::Percent(value) }
+
+    /// The px value a backend should use for [`Length::Full`] when it has to
+    /// produce a number BEFORE it knows the box.
+    ///
+    /// Every toolkit clamps an over-large corner radius to half the shorter
+    /// side when it paints, which is exactly why the pill worked as a magic
+    /// `999` for so long. Backends that still resolve at style time keep that
+    /// behaviour by using this, so introducing `Full` regresses nothing.
+    ///
+    /// It is a floor, not the goal: a backend that has the box should call
+    /// [`Length::resolve_radius`] instead and get a true pill at ANY size,
+    /// including boxes taller than `2 * 999` where the sentinel silently stops
+    /// being round.
+    pub const FULL_RADIUS_FALLBACK_PX: f32 = 999.0;
+
+    /// Resolve a corner radius against the box it is painted on, clamped
+    /// the way every renderer clamps: never more than half the shorter
+    /// side, so the corners cannot overlap.
+    ///
+    /// The single place the pill rule lives. Backends call this rather
+    /// than re-deriving `min(w, h) / 2.0`, so "fully round" means the same
+    /// thing on GTK, UIKit, AppKit and the DOM.
+    pub fn resolve_radius(self, width: f32, height: f32) -> f32 {
+        let max = (width.min(height) / 2.0).max(0.0);
+        match self {
+            Length::Px(v) => v.clamp(0.0, max),
+            Length::Percent(p) => (width.min(height) * p / 100.0).clamp(0.0, max),
+            Length::Full => max,
+            // A radius has no layout to defer to; `Auto` means "no radius".
+            Length::Auto => 0.0,
+        }
+    }
 }
 
 impl From<f32> for Length {
@@ -95,6 +151,7 @@ fn length_bits(l: Length) -> u64 {
         Length::Px(v) => (1u64 << 32) | v.to_bits() as u64,
         Length::Percent(v) => (2u64 << 32) | v.to_bits() as u64,
         Length::Auto => 3u64 << 32,
+        Length::Full => 4u64 << 32,
     }
 }
 
@@ -4852,5 +4909,68 @@ mod premint_identity_tests {
             .map(|(a, d)| (a.as_str(), d.as_deref()))
             .collect();
         assert_eq!(axes, vec![("align", Some("left")), ("kind", Some("body"))]);
+    }
+}
+
+#[cfg(test)]
+mod full_radius_tests {
+    use super::Length;
+
+    /// `Full` is round at ANY size; the old `999` sentinel was not.
+    ///
+    /// Regression: the pill was `Length::Px(999.0)`. Every renderer clamps a
+    /// corner radius to half the shorter side, so 999 reads as "fully round"
+    /// only while 999 >= min(w, h) / 2 — i.e. up to a 1998px box. Above that
+    /// the clamp stops binding and the corner renders as a literal 999px
+    /// radius: still curved, no longer a pill. Resolution-dependent, invisible
+    /// in the style (999 *looks* like "very round"), and only reproducible on
+    /// large surfaces.
+    #[test]
+    fn regression_full_stays_round_on_a_box_the_999_sentinel_could_not_cover() {
+        // A small control: both spellings agree, which is why this went unnoticed.
+        assert_eq!(Length::Full.resolve_radius(80.0, 32.0), 16.0);
+        assert_eq!(Length::Px(999.0).resolve_radius(80.0, 32.0), 16.0);
+
+        // A tall surface — a full-height panel on a large display. `Full` is
+        // still exactly half the shorter side; the sentinel falls short.
+        let (w, h) = (1200.0, 2400.0);
+        assert_eq!(Length::Full.resolve_radius(w, h), 600.0);
+        assert_eq!(Length::Px(999.0).resolve_radius(w, h), 600.0);
+
+        // …and where the shorter side itself exceeds 1998px, the sentinel is
+        // demonstrably not a pill while `Full` is.
+        let (w, h) = (3000.0, 4000.0);
+        assert_eq!(Length::Full.resolve_radius(w, h), 1500.0);
+        assert_eq!(Length::Px(999.0).resolve_radius(w, h), 999.0);
+        assert_ne!(
+            Length::Px(999.0).resolve_radius(w, h),
+            Length::Full.resolve_radius(w, h),
+            "the sentinel stops being a pill once the box outgrows it"
+        );
+    }
+
+    /// The clamp is what keeps corners from overlapping, and it applies to
+    /// every spelling.
+    #[test]
+    fn a_radius_never_exceeds_half_the_shorter_side() {
+        assert_eq!(Length::Px(40.0).resolve_radius(100.0, 20.0), 10.0);
+        assert_eq!(Length::Full.resolve_radius(100.0, 20.0), 10.0);
+        // Degenerate boxes resolve to zero rather than a negative radius.
+        assert_eq!(Length::Full.resolve_radius(0.0, 0.0), 0.0);
+        assert_eq!(Length::Full.resolve_radius(-5.0, 10.0), 0.0);
+    }
+
+    /// `Percent` is not the pill spelling — 50% of a non-square box is an
+    /// ellipse in CSS, which is why `Full` exists as its own value.
+    #[test]
+    fn percent_resolves_against_the_shorter_side_and_is_not_full() {
+        assert_eq!(Length::Percent(50.0).resolve_radius(200.0, 40.0), 20.0);
+        assert_eq!(Length::Percent(25.0).resolve_radius(200.0, 40.0), 10.0);
+    }
+
+    /// A radius has no layout to defer to.
+    #[test]
+    fn auto_is_no_radius() {
+        assert_eq!(Length::Auto.resolve_radius(100.0, 100.0), 0.0);
     }
 }

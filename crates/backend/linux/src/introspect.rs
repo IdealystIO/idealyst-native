@@ -206,6 +206,43 @@ fn read_widget(w: &gtk4::Widget, toplevel: &gtk4::Widget) -> NativeNode {
 /// own background can be mistaken for the parent's, and a widget GTK has no
 /// cached node for reports nothing rather than guessing (the framework root is
 /// the one such case in practice — it paints no fill of its own anyway).
+/// Report a recorded [`crate::view::PaintModel`] onto `node`, resolved against
+/// the box it paints on. One place, so a container's box and a text leaf's box
+/// are always described the same way.
+fn report_paint_model(
+    node: &mut NativeNode,
+    model: &crate::view::PaintModel,
+    w: f32,
+    h: f32,
+) {
+    node.set(keys::BACKGROUND_COLOR, model.background.map(NativeValue::Color));
+    // As PAINTED: `clamp_radius` is what the snapshot applies, so an unbounded
+    // `Length::Full` reports the real pill for this box.
+    let radius = crate::view::clamp_radius(model.radius, w, h);
+    if let Some(r) = radius.iter().copied().find(|r| *r > 0.0) {
+        node.set(keys::CORNER_RADIUS, Some(NativeValue::Length(r)));
+    }
+    if let Some(b) = &model.border {
+        // The TOP side specifically, GSK order `[top, right, bottom, left]`.
+        //
+        // Not "any side that has a width": the canonical schema carries one
+        // `border_width`, and the web reader fills it from `border-top-width`.
+        // Reading any side here made every bottom-only border — dividers, table
+        // row separators, the docs' underlined tab strip — a divergence against
+        // a web side reporting nothing, 193 of them across the sweep. Two
+        // readers must answer the same question.
+        //
+        // The real limitation this exposes: a single key cannot express
+        // per-side borders, so a genuine "top on web, bottom on native" bug is
+        // invisible to BOTH readers. Fixing that needs per-side keys on the web
+        // side too.
+        if b.widths[0] > 0.0 {
+            node.set(keys::BORDER_WIDTH, Some(NativeValue::Length(b.widths[0])));
+            node.set(keys::BORDER_COLOR, Some(NativeValue::Color(b.colors[0])));
+        }
+    }
+}
+
 fn read_paint_from_gsk(w: &gtk4::Widget, node: &mut NativeNode) {
     let (wf, hf) = (w.width() as f32, w.height() as f32);
     if wf <= 0.0 || hf <= 0.0 {
@@ -213,6 +250,41 @@ fn read_paint_from_gsk(w: &gtk4::Widget, node: &mut NativeNode) {
     }
     // `snapshot_child` runs on the widget's PARENT by contract.
     let Some(parent) = w.parent() else { return };
+
+    // For OUR OWN widgets, read the recorded `PaintModel` instead of walking
+    // GSK. It is authoritative, cheaper, and — the reason it matters — immune
+    // to misattribution: the GSK walk accepts any node whose bounds match the
+    // widget's, so once a container started painting its text children's boxes
+    // (see `IdealystView::set_child_model`) a tightly-wrapped child's border
+    // was read as its PARENT's. That inflated linux-only border findings from
+    // 22 to 193 across the docs sweep. GSK walking stays for foreign widgets
+    // (`GtkEntry`, `GtkPicture`, …) whose paint we do not own.
+    if let Some(view) = w.downcast_ref::<crate::IdealystView>() {
+        let model = view.paint_model();
+        report_paint_model(node, &model, wf, hf);
+        return;
+    }
+    // A LEAF's box is painted by its parent, not by the leaf, because
+    // `GtkLabel` is final in GTK4 and a text node has no `IdealystView` of its
+    // own. A child-scoped GSK read cannot see it — `snapshot_child` renders
+    // only the child's own node — so read the recorded model directly.
+    // Reporting nothing here is what made a fixed Badge still look unstyled to
+    // the parity harness.
+    if let Some(view) = parent.downcast_ref::<crate::IdealystView>() {
+        if let Some(model) = view.child_model(w).filter(|m| m.paints()) {
+            // The radius clamps against the box the PAINTER uses — the child's
+            // Taffy frame, not `width()`/`height()`, which report the CONTENT
+            // area because a leaf carries its padding as margins. Clamping
+            // against the smaller box under-reports the pill (8.5 rather than
+            // 10.5 on a padded badge).
+            let (bw, bh) = view
+                .child_layout_size(w)
+                .map(|(cw, ch)| (cw as f32, ch as f32))
+                .unwrap_or((wf, hf));
+            report_paint_model(node, &model, bw, bh);
+            return;
+        }
+    }
     let snapshot = gtk4::Snapshot::new();
     parent.snapshot_child(w, &snapshot);
     let Some(root) = snapshot.to_node() else { return };
@@ -335,13 +407,27 @@ fn read_label(label: &gtk4::Label, node: &mut NativeNode) {
     if let Some(attr) = iter.get(pango::AttrType::Foreground) {
         if let Some(c) = attr.downcast_ref::<pango::AttrColor>() {
             let c = c.color();
+            // Pango carries text alpha in a SEPARATE `foreground_alpha`
+            // attribute, not in the `foreground` colour — and `text::apply`
+            // sets both. Reporting a hardcoded 1.0 here made this reader blind
+            // to a faded label: the parity harness compared web's opaque text
+            // against native text drawn at low alpha and called them equal,
+            // while the pixels differed completely.
+            let alpha = iter
+                .get(pango::AttrType::ForegroundAlpha)
+                .and_then(|a| a.downcast_ref::<pango::AttrInt>().map(|i| i.value()))
+                // Pango treats 0 as "unset" for this attribute, so absent and
+                // zero both mean fully opaque.
+                .filter(|v| *v > 0)
+                .map(|v| v as f32 / 65535.0)
+                .unwrap_or(1.0);
             node.set(
                 keys::TEXT_COLOR,
                 Some(NativeValue::Color([
                     c.red() as f32 / 65535.0,
                     c.green() as f32 / 65535.0,
                     c.blue() as f32 / 65535.0,
-                    1.0,
+                    alpha,
                 ])),
             );
         }

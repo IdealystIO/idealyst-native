@@ -119,10 +119,10 @@ pub fn fold_static(transforms: &[Transform]) -> StaticTransform {
         match *t {
             Transform::TranslateX(Length::Px(v)) => tx_px += v,
             Transform::TranslateX(Length::Percent(v)) => tx_pct += v,
-            Transform::TranslateX(Length::Auto) => {}
+            Transform::TranslateX(Length::Auto | Length::Full) => {}
             Transform::TranslateY(Length::Px(v)) => ty_px += v,
             Transform::TranslateY(Length::Percent(v)) => ty_pct += v,
-            Transform::TranslateY(Length::Auto) => {}
+            Transform::TranslateY(Length::Auto | Length::Full) => {}
             Transform::Scale(s) => {
                 out.scale_x *= s;
                 out.scale_y *= s;
@@ -159,7 +159,8 @@ pub fn resolve_translate(len: Length, basis: f32) -> f32 {
     match len {
         Length::Px(v) => v,
         Length::Percent(p) => basis * p / 100.0,
-        Length::Auto => 0.0,
+        // `Full` is a corner-radius shape, not a translate distance.
+        Length::Auto | Length::Full => 0.0,
     }
 }
 

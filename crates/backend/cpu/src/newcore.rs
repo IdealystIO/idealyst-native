@@ -1048,6 +1048,9 @@ impl caps::StyleOps for CpuBackend {
         let radius_px = |t: &runtime_shared::Tokenized<Length>| -> f32 {
             match t.resolve() {
                 Length::Px(v) => v,
+                // Resolved before the box is known; the rasterizer clamps.
+                // See `Length::FULL_RADIUS_FALLBACK_PX`.
+                Length::Full => Length::FULL_RADIUS_FALLBACK_PX,
                 _ => 0.0,
             }
         };

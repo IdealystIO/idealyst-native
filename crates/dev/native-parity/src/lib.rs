@@ -424,6 +424,34 @@ pub fn diff_with(a: &Capture, b: &Capture, opts: DiffOptions) -> Vec<Mismatch> {
             }
             match (na.props.get(key), nb.props.get(key)) {
                 (Some(va), Some(vb)) => {
+                    // A pill radius is authored as a huge sentinel and clamped
+                    // to half the shorter side AT PAINT TIME by both renderers,
+                    // so neither side stores a resize-stale value. But the two
+                    // captures read at different points — web's
+                    // `getComputedStyle` reports the AUTHORED value (999) while
+                    // the GSK reader reports the PAINTED one (11.5) — and the
+                    // raw numbers disagree on every pill in the tree. Clamping
+                    // both the way the renderers do makes them comparable
+                    // without inventing a "full" category, and still reports a
+                    // genuine sub-pill difference like 12 vs 9.
+                    let (ca, cb);
+                    let (va, vb) = if opts.normalize && key == "corner_radius" {
+                        let (ra, full_a) = radius_class(va, na.frame.as_ref());
+                        let (rb, full_b) = radius_class(vb, nb.frame.as_ref());
+                        // Both fully round = the same shape, whatever the pixel
+                        // numbers say. They differ here only when the BOXES
+                        // differ, and `frame.height` already reports that —
+                        // comparing the pixels too would bill one height bug
+                        // twice and misattribute half of it to the radius.
+                        if full_a && full_b {
+                            continue;
+                        }
+                        ca = ra;
+                        cb = rb;
+                        (&ca, &cb)
+                    } else {
+                        (va, vb)
+                    };
                     if !values_equivalent(key, va, vb, &opts) {
                         out.push(Mismatch { path: path.clone(), key: key.clone(),
                             kind: MismatchKind::ValueDiffers { a: va.clone(), b: vb.clone() } });
@@ -648,6 +676,32 @@ fn canonical_font(s: &str) -> String {
     s
 }
 
+/// Clamp a corner radius to what the renderer will actually paint: no more
+/// than half the box's shorter side.
+///
+/// Mirrors `backend_linux::view::clamp_radius` and the browser's own clamp.
+/// Without a frame the radius cannot be classified, so it is returned
+/// untouched and compared raw — reporting a difference we cannot explain
+/// beats silently calling two unknown values equal.
+/// The radius as painted, plus whether it is *fully* round — i.e. pinned at
+/// half the shorter side, the pill case.
+///
+/// Fullness is a property of the shape, not of the number: a 23px-tall pill
+/// reports 11.5 and a 32px-tall pill reports 16, and both are equally round.
+/// Without a frame nothing can be classified, so the value passes through
+/// untouched and is compared raw — reporting a difference we cannot explain
+/// beats silently calling two unknown values equal.
+fn radius_class(v: &PropValue, frame: Option<&NativeRect>) -> (PropValue, bool) {
+    match (v, frame) {
+        (PropValue::Length(r), Some(f)) => {
+            let max = (f.width.min(f.height) / 2.0).max(0.0);
+            let clamped = r.clamp(0.0, max);
+            (PropValue::Length(clamped), max > 0.0 && clamped >= max)
+        }
+        _ => (v.clone(), false),
+    }
+}
+
 fn values_equivalent(key: &str, a: &PropValue, b: &PropValue, opts: &DiffOptions) -> bool {
     if opts.normalize && key == "font_family" {
         if let (PropValue::Text(x), PropValue::Text(y)) = (a, b) {
@@ -717,6 +771,81 @@ mod tests {
         let mut c = Capture::new();
         c.insert(path.into(), n);
         c
+    }
+
+    /// A node with both a frame and props — the shape the radius clamp reads.
+    fn framed_with(w: f32, h: f32, props: &[(&str, PropValue)]) -> NativeNode {
+        NativeNode {
+            class: "x".into(),
+            role: None,
+            frame: Some(NativeRect { x: 0.0, y: 0.0, width: w, height: h }),
+            props: props.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(),
+            children: Vec::new(),
+        }
+    }
+
+    /// A pill is a pill on both platforms, however each reports it.
+    ///
+    /// Both renderers clamp the radius to half the shorter side at PAINT time,
+    /// so an authored pill sentinel survives resizing on both. But the captures
+    /// read at different points — web's `getComputedStyle` returns the authored
+    /// 999, the GSK reader returns the painted 11.5 — and comparing those raw
+    /// reported a divergence on every pill in the tree: 139 of 291
+    /// `corner_radius` findings across the docs sweep, drowning the ~10 real
+    /// ones.
+    #[test]
+    fn a_pill_radius_compares_equal_however_each_platform_reports_it() {
+        let web = cap("0", framed_with(80.0, 23.0, &[("corner_radius", PropValue::Length(999.0))]));
+        let linux = cap("0", framed_with(80.0, 23.0, &[("corner_radius", PropValue::Length(11.5))]));
+        assert!(
+            diff(&web, &linux, Tolerance::default()).is_empty(),
+            "authored pill sentinel and painted pill radius must compare equal"
+        );
+    }
+
+    /// Two pills on differently-sized boxes are the same SHAPE.
+    ///
+    /// Regression: clamping alone still compared 16 against 11.5 here and
+    /// reported a radius divergence — but the radii are both fully round; only
+    /// the boxes differ, which `frame.height` already reports. That billed one
+    /// height bug twice and pinned half of it on the wrong property (48 of the
+    /// docs sweep's surviving radius findings).
+    #[test]
+    fn two_pills_on_differently_sized_boxes_compare_equal() {
+        let web = cap("0", framed_with(80.0, 32.0, &[("corner_radius", PropValue::Length(16.0))]));
+        let linux = cap("0", framed_with(80.0, 23.0, &[("corner_radius", PropValue::Length(11.5))]));
+        let out = diff(&web, &linux, Tolerance::default());
+        assert!(
+            out.iter().all(|m| m.key != "corner_radius"),
+            "two pills are the same shape; the height difference is frame.height's to report: {out:?}"
+        );
+    }
+
+    /// …but a real radius difference must still report.
+    #[test]
+    fn a_sub_pill_radius_difference_still_reports() {
+        let web = cap("0", framed_with(200.0, 100.0, &[("corner_radius", PropValue::Length(12.0))]));
+        let linux = cap("0", framed_with(200.0, 100.0, &[("corner_radius", PropValue::Length(9.0))]));
+        let out = diff(&web, &linux, Tolerance::default());
+        assert_eq!(out.len(), 1, "12 vs 9 on a 100-tall box is a genuine difference");
+        assert_eq!(out[0].key, "corner_radius");
+    }
+
+    /// A pill on one side and a square corner on the other is a real bug.
+    #[test]
+    fn a_pill_against_a_square_corner_still_reports() {
+        let web = cap("0", framed_with(80.0, 24.0, &[("corner_radius", PropValue::Length(999.0))]));
+        let linux = cap("0", framed_with(80.0, 24.0, &[("corner_radius", PropValue::Length(0.0))]));
+        assert_eq!(diff(&web, &linux, Tolerance::default()).len(), 1);
+    }
+
+    /// Without a frame the radius cannot be classified, so it is compared raw
+    /// rather than silently called equal.
+    #[test]
+    fn a_radius_without_a_frame_is_compared_raw() {
+        let web = cap("0", node(&[("corner_radius", PropValue::Length(999.0))]));
+        let linux = cap("0", node(&[("corner_radius", PropValue::Length(11.5))]));
+        assert_eq!(diff(&web, &linux, Tolerance::default()).len(), 1);
     }
 
     /// The reported bug this whole geometry pass exists for: `Tag` with a

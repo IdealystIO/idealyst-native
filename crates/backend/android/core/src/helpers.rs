@@ -117,6 +117,9 @@ pub fn parse_color(input: &str) -> Option<i32> {
 pub fn px_or(value: Option<&runtime_shared::Tokenized<runtime_shared::Length>>, default: f32) -> f32 {
     match value.map(|t| t.resolve()) {
         Some(runtime_shared::Length::Px(v)) => v,
+        // Resolved before the box is known; the drawable clamps. See
+        // `Length::FULL_RADIUS_FALLBACK_PX`.
+        Some(runtime_shared::Length::Full) => runtime_shared::Length::FULL_RADIUS_FALLBACK_PX,
         // Percent/Auto don't have a well-defined value here without a
         // layout pass; treat as default.
         _ => default,

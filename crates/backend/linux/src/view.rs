@@ -74,6 +74,15 @@ pub struct PaintModel {
 }
 
 impl PaintModel {
+    /// Whether this model would put anything on screen. A radius alone
+    /// paints nothing — it only shapes a fill, a border or a clip — so it
+    /// is deliberately NOT part of this test.
+    pub fn paints(&self) -> bool {
+        self.background.is_some()
+            || self.gradient.is_some()
+            || self.border.as_ref().is_some_and(|b| b.any())
+    }
+
     fn has_radius(&self) -> bool {
         self.radius.iter().any(|r| *r > 0.0)
     }
@@ -82,9 +91,14 @@ impl PaintModel {
     }
 }
 
-/// Clamp each corner radius to half the shorter side so a CSS-style
-/// "max radius" (`999px`, used by the sun-glare disc for a perfect
-/// circle) doesn't blow past the box. GTK doesn't auto-clamp.
+/// Clamp each corner radius to half the shorter side so an "as round as
+/// possible" radius doesn't blow past the box. GTK doesn't auto-clamp.
+///
+/// Runs on every snapshot with the widget's CURRENT size, which is what lets
+/// `Length::Full` arrive here as infinity (see `radius_px` in `lib.rs`) and
+/// come out as a true pill at whatever size the box happens to be — including
+/// across resizes, and including boxes larger than the old `999px` sentinel
+/// could cover.
 pub fn clamp_radius(radius: [f32; 4], w: f32, h: f32) -> [f32; 4] {
     let max = (w.min(h) / 2.0).max(0.0);
     [
@@ -103,6 +117,58 @@ fn rounded_rect(bounds: &graphene::Rect, r: [f32; 4]) -> gsk::RoundedRect {
         graphene::Size::new(r[2], r[2]),
         graphene::Size::new(r[3], r[3]),
     )
+}
+
+/// Paint a [`PaintModel`] into `bounds`, with `content` drawn between the
+/// background and the border.
+///
+/// Shared by every widget that carries a box: [`IdealystView`] (children as
+/// content) and [`IdealystLabel`] (its text as content). One implementation is
+/// the point — a background painted one way for containers and another for text
+/// is exactly the per-platform-looking divergence the framework exists to avoid.
+pub(crate) fn paint_box(
+    snapshot: &gtk4::Snapshot,
+    model: &PaintModel,
+    bounds: &graphene::Rect,
+    content: impl FnOnce(&gtk4::Snapshot),
+) {
+    let (w, h) = (bounds.width(), bounds.height());
+    let radius = clamp_radius(model.radius, w, h);
+    let clips = model.clips();
+
+    if clips {
+        snapshot.push_rounded_clip(&rounded_rect(bounds, radius));
+    }
+    if let Some(bg) = model.background {
+        snapshot.append_color(&color::to_gdk(bg), bounds);
+    }
+    if let Some(g) = &model.gradient {
+        // `gradient::append` paints from the snapshot's current origin, so
+        // shift to the box when it isn't at (0, 0) — a padded text leaf.
+        if bounds.x() != 0.0 || bounds.y() != 0.0 {
+            snapshot.save();
+            snapshot.translate(&graphene::Point::new(bounds.x(), bounds.y()));
+            gradient::append(snapshot, w, h, g);
+            snapshot.restore();
+        } else {
+            gradient::append(snapshot, w, h, g);
+        }
+    }
+    content(snapshot);
+    if let Some(b) = &model.border {
+        if b.any() {
+            let colors = [
+                color::to_gdk(b.colors[0]),
+                color::to_gdk(b.colors[1]),
+                color::to_gdk(b.colors[2]),
+                color::to_gdk(b.colors[3]),
+            ];
+            snapshot.append_border(&rounded_rect(bounds, radius), &b.widths, &colors);
+        }
+    }
+    if clips {
+        snapshot.pop();
+    }
 }
 
 mod imp {
@@ -124,6 +190,17 @@ mod imp {
         /// old taller height. `IdealystView` children don't need this —
         /// they carry their own [`IdealystView::layout_size`].
         pub layout_size: std::cell::Cell<Option<(i32, i32)>>,
+        /// Box paint for a **leaf** child that carries one — a `text`
+        /// primitive with a background / border / radius / gradient.
+        ///
+        /// `GtkLabel` is final in GTK4, so a text leaf cannot subclass its way
+        /// to painting its own box, and it has no `IdealystView` of its own to
+        /// do it. The parent already paints boxes and already knows this
+        /// child's Taffy frame and transform, so it paints the child's box too.
+        /// Before this, background / border / radius authored on a `text`
+        /// primitive was silently dropped on this backend (idea-ui's Badge
+        /// painted no pill at all, leaving white text on the page background).
+        pub model: RefCell<PaintModel>,
     }
 
     #[derive(Default)]
@@ -241,45 +318,42 @@ mod imp {
             let obj = self.obj();
             let w = obj.width() as f32;
             let h = obj.height() as f32;
-            if w > 0.0 && h > 0.0 {
-                let model = self.model.borrow();
-                let bounds = graphene::Rect::new(0.0, 0.0, w, h);
-                let radius = clamp_radius(model.radius, w, h);
-                let clips = model.clips();
-
-                if clips {
-                    snapshot.push_rounded_clip(&rounded_rect(&bounds, radius));
-                }
-                if let Some(bg) = model.background {
-                    snapshot.append_color(&color::to_gdk(bg), &bounds);
-                }
-                if let Some(g) = &model.gradient {
-                    gradient::append(snapshot, w, h, g);
-                }
-                // Children (in z-order) over the background/gradient.
+            let paint_children = |s: &gtk4::Snapshot| {
                 for child in self.children.borrow().iter() {
-                    obj.snapshot_child(&child.widget, snapshot);
-                }
-                if let Some(b) = &model.border {
-                    if b.any() {
-                        let colors = [
-                            color::to_gdk(b.colors[0]),
-                            color::to_gdk(b.colors[1]),
-                            color::to_gdk(b.colors[2]),
-                            color::to_gdk(b.colors[3]),
-                        ];
-                        snapshot.append_border(&rounded_rect(&bounds, radius), &b.widths, &colors);
+                    // A leaf child's own box (a `text` primitive's background /
+                    // border / radius) — painted here because the child cannot:
+                    // `GtkLabel` is final in GTK4 and a leaf has no
+                    // `IdealystView` of its own. Drawn in the CHILD's space via
+                    // its stored transform, which is the same transform
+                    // `size_allocate` gave it, so the box lands exactly on the
+                    // child's allocation.
+                    let model = child.model.borrow();
+                    if model.paints() {
+                        if let Some((cw, ch)) = child.layout_size.get() {
+                            if cw > 0 && ch > 0 {
+                                s.save();
+                                if let Some(t) = child.transform.borrow().as_ref() {
+                                    s.transform(Some(t));
+                                }
+                                let b = graphene::Rect::new(0.0, 0.0, cw as f32, ch as f32);
+                                // No content: the child's own text is painted by
+                                // `snapshot_child` below, in the parent's space.
+                                super::paint_box(s, &model, &b, |_| {});
+                                s.restore();
+                            }
+                        }
                     }
+                    drop(model);
+                    obj.snapshot_child(&child.widget, s);
                 }
-                if clips {
-                    snapshot.pop();
-                }
+            };
+            if w > 0.0 && h > 0.0 {
+                let bounds = graphene::Rect::new(0.0, 0.0, w, h);
+                super::paint_box(snapshot, &self.model.borrow(), &bounds, paint_children);
             } else {
                 // No own box yet — still paint children so nothing
                 // disappears mid-allocation.
-                for child in self.children.borrow().iter() {
-                    obj.snapshot_child(&child.widget, snapshot);
-                }
+                paint_children(snapshot);
             }
         }
     }
@@ -310,7 +384,48 @@ impl IdealystView {
             widget: child,
             transform: RefCell::new(None),
             layout_size: std::cell::Cell::new(None),
+            model: RefCell::new(PaintModel::default()),
         });
+    }
+
+    /// Set (or clear) the box paint for a leaf child. Returns `false` if
+    /// `child` isn't ours, so the caller can tell a missed paint from a
+    /// no-op — a text leaf whose parent isn't an `IdealystView` would
+    /// otherwise silently render unstyled.
+    pub fn set_child_model(&self, child: &gtk4::Widget, model: PaintModel) -> bool {
+        for c in self.imp().children.borrow().iter() {
+            if c.widget == *child {
+                if *c.model.borrow() != model {
+                    *c.model.borrow_mut() = model;
+                    self.queue_draw();
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// A leaf child's recorded Taffy frame size — the box its paint covers.
+    /// Introspection needs it to clamp a radius against the same box the
+    /// painter does; the widget's own `width()`/`height()` are the CONTENT
+    /// area (padding lives in its margins), which is smaller.
+    pub fn child_layout_size(&self, child: &gtk4::Widget) -> Option<(i32, i32)> {
+        self.imp()
+            .children
+            .borrow()
+            .iter()
+            .find(|c| c.widget == *child)
+            .and_then(|c| c.layout_size.get())
+    }
+
+    /// The box paint recorded for a leaf child, if any. Test/introspection seam.
+    pub fn child_model(&self, child: &gtk4::Widget) -> Option<PaintModel> {
+        self.imp()
+            .children
+            .borrow()
+            .iter()
+            .find(|c| c.widget == *child)
+            .map(|c| c.model.borrow().clone())
     }
 
     /// Record a **leaf** child's Taffy frame size, read back by
@@ -453,6 +568,43 @@ impl IdealystView {
     /// allocates it to (see the note in `size_allocate`).
     pub fn layout_size(&self) -> (i32, i32) {
         self.imp().layout_size.get()
+    }
+}
+
+
+
+#[cfg(test)]
+mod full_radius_tests {
+    use super::clamp_radius;
+
+    /// An unbounded radius (what `Length::Full` lowers to) resolves to a true
+    /// pill at paint time, at any size.
+    ///
+    /// Regression: the pill reached this backend as `Px(999.0)`, so a box whose
+    /// shorter side exceeded 1998px painted a literal 999px radius instead of a
+    /// pill — the clamp stopped binding. `Full` lowers to infinity, so the
+    /// clamp always binds and the corner tracks the box across resizes.
+    #[test]
+    fn regression_unbounded_radius_is_a_pill_at_any_box_size() {
+        let full = [f32::INFINITY; 4];
+        assert_eq!(clamp_radius(full, 80.0, 32.0), [16.0; 4]);
+        // The size the sentinel could not cover.
+        assert_eq!(clamp_radius(full, 3000.0, 4000.0), [1500.0; 4]);
+        // A resize keeps it round rather than freezing the old value.
+        assert_eq!(clamp_radius(full, 80.0, 200.0), [40.0; 4]);
+
+        // What the sentinel did on that same large box: curved, not a pill.
+        assert_eq!(clamp_radius([999.0; 4], 3000.0, 4000.0), [999.0; 4]);
+    }
+
+    /// Infinity must not leak into the render node as a non-finite size.
+    #[test]
+    fn an_unbounded_radius_always_resolves_finite() {
+        for (w, h) in [(80.0, 32.0), (0.0, 0.0), (1.0, 4000.0)] {
+            for r in clamp_radius([f32::INFINITY; 4], w, h) {
+                assert!(r.is_finite(), "radius must be finite for {w}x{h}, got {r}");
+            }
+        }
     }
 }
 

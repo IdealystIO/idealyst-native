@@ -1525,6 +1525,9 @@ fn resolve_color(t: &Option<runtime_shared::Tokenized<Color>>) -> Option<Rgba> {
 fn resolve_radius(t: &Option<runtime_shared::Tokenized<Length>>) -> f32 {
     match t.as_ref().map(|x| x.resolve()) {
         Some(Length::Px(v)) => v,
+        // Resolved before the box is known; Direct2D clamps the rounded rect.
+        // See `Length::FULL_RADIUS_FALLBACK_PX`.
+        Some(Length::Full) => Length::FULL_RADIUS_FALLBACK_PX,
         _ => 0.0,
     }
 }

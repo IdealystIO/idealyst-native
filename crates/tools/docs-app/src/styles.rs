@@ -544,7 +544,7 @@ stylesheet! {
         base(_t) {
             padding_vertical: 4.0,
             padding_horizontal: 10.0,
-            border_radius: Tokenized::token("radius-pill", Length::Px(999.0)),
+            border_radius: Tokenized::token("radius-pill", Length::Full),
             border_width: 1.0,
             border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
             background: Color("transparent".into()),

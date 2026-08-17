@@ -2307,6 +2307,12 @@ fn sync_corner_radius(view: &NSView) {
 fn length_to_px(len: &runtime_shared::Length) -> CGFloat {
     match len {
         runtime_shared::Length::Px(v) => *v as CGFloat,
+        // AppKit does not clamp `cornerRadius`, which is why the caller
+        // re-clamps against the explicit dims (see the radius block in
+        // `apply_style`). See `Length::FULL_RADIUS_FALLBACK_PX`.
+        runtime_shared::Length::Full => {
+            runtime_shared::Length::FULL_RADIUS_FALLBACK_PX as CGFloat
+        }
         runtime_shared::Length::Percent(_) | runtime_shared::Length::Auto => 0.0,
     }
 }

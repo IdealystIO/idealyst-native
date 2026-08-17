@@ -93,6 +93,9 @@ pub(crate) fn length(l: &Length) -> WireLength {
 fn length_px(l: &Length) -> f32 {
     match l {
         Length::Px(v) => *v,
+        // Only ever authored on a corner radius, and resolved here before the
+        // box is known. See `Length::FULL_RADIUS_FALLBACK_PX`.
+        Length::Full => Length::FULL_RADIUS_FALLBACK_PX,
         Length::Percent(_) | Length::Auto => 0.0,
     }
 }

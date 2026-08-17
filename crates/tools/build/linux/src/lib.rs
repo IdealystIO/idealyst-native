@@ -55,7 +55,28 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
 
     let wrapper_root = opts.source.wrapper_root(&project_dir);
     let wrapper_dir = wrapper_root.join(&manifest.name).join("linux");
-    let cargo_target_dir = opts.source.cargo_target_dir(&project_dir);
+    // The wrapper builds into its OWN target directory, not the project's.
+    //
+    // It used to share the project's `target/` to avoid recompiling common
+    // dependencies. That is unsound here: the wrapper is a SEPARATE workspace
+    // (its own `[workspace]`, its own lockfile) that depends on the app crate
+    // by path, so it resolves the app and every framework crate under its own
+    // feature set and its own dependency resolution — then writes those
+    // artifacts next to the project workspace's. The next plain
+    // `cargo test`/`cargo build` in the project then links a MIXTURE, and
+    // rustc reports "multiple different versions of crate `runtime_scene`"
+    // against a graph that contains exactly one, pointing at the same source
+    // file as both the expected and the found type.
+    //
+    // It is a nasty failure because it is delayed and misattributed: the
+    // wrapper build succeeds, and the breakage lands on the NEXT unrelated
+    // build of the project, which looks like the app is broken. Running a
+    // parity sweep poisoned every later sweep this way, each needing a manual
+    // `cargo clean -p runtime-scene -p idealyst` to recover.
+    //
+    // A private target dir costs a one-time recompile of the shared deps and
+    // makes the two workspaces incapable of corrupting each other.
+    let cargo_target_dir = wrapper_target_dir(&wrapper_dir);
 
     generate_wrapper(&wrapper_dir, &cargo_target_dir, &project_dir, &manifest, &opts)?;
     cargo_build(&wrapper_dir, opts.release, &opts.user_features)?;
@@ -295,10 +316,24 @@ fn main() {{
     )
 }
 
+/// Where the wrapper's own build artifacts go.
+///
+/// Private to the wrapper by construction — see the rationale in [`build`].
+/// Kept as a function so the invariant ("never the project's target dir") is
+/// testable without running a real cargo build.
+fn wrapper_target_dir(wrapper_dir: &Path) -> PathBuf {
+    wrapper_dir.join("target")
+}
+
 fn write_shared_target_config(dir: &Path, target_dir: &Path) -> Result<()> {
     let config = format!(
-        "# GENERATED. Share the project's `target/` so common\n\
-         # dependencies aren't recompiled per-wrapper.\n\
+        "# GENERATED. A target dir PRIVATE to this wrapper.\n\
+         # The wrapper is a separate workspace with its own lockfile and\n\
+         # feature resolution; sharing the project's `target/` lets the two\n\
+         # write incompatible copies of the same crates into one directory,\n\
+         # and the project's next build links a mixture (\"multiple different\n\
+         # versions of crate `runtime_scene`\"). Do not point this back at\n\
+         # the project's target dir.\n\
          \n\
          [build]\n\
          target-dir = \"{}\"\n",
@@ -519,4 +554,51 @@ mod regression_tests {
              binds a socket that is never polled; got:\n{main_rs}",
         );
     }
+
+    /// The wrapper must never build into the project's `target/`.
+    ///
+    /// Regression: it did, to reuse compiled dependencies. But the wrapper is
+    /// a separate workspace with its own lockfile and feature resolution, so
+    /// the two wrote incompatible copies of the same crates into one
+    /// directory. The wrapper build still succeeded; the NEXT plain
+    /// `cargo build`/`cargo test` in the project failed with "multiple
+    /// different versions of crate `runtime_scene`" naming one source file as
+    /// both the expected and the found type. Delayed and misattributed —
+    /// it read as the app being broken, and each recovery needed a manual
+    /// `cargo clean`. A parity sweep poisoned every sweep after it.
+    #[test]
+    fn regression_wrapper_does_not_build_into_the_projects_target_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("project");
+        let workspace_root = tmp.path().join("workspace");
+        let wrapper_dir = tmp.path().join("wrapper");
+        let source = FrameworkSource::Workspace {
+            root: workspace_root,
+        };
+
+        let chosen = wrapper_target_dir(&wrapper_dir);
+        assert!(
+            chosen.starts_with(&wrapper_dir),
+            "the wrapper's target dir must live under the wrapper ({}), got {}",
+            wrapper_dir.display(),
+            chosen.display(),
+        );
+        assert_ne!(
+            chosen,
+            source.cargo_target_dir(&project_dir),
+            "the wrapper must not share the project's target dir — two workspaces \
+             writing one target dir is what produced the duplicate-crate failure"
+        );
+
+        // And the generated cargo config must actually point there, since that
+        // file is what cargo obeys.
+        std::fs::create_dir_all(&wrapper_dir).unwrap();
+        write_shared_target_config(&wrapper_dir, &chosen).expect("write config");
+        let cfg = std::fs::read_to_string(wrapper_dir.join(".cargo/config.toml")).unwrap();
+        assert!(
+            cfg.contains(&format!("target-dir = \"{}\"", chosen.display())),
+            "generated cargo config does not point at the private target dir:\n{cfg}",
+        );
+    }
+
 }

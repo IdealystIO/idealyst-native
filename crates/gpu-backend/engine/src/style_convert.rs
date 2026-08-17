@@ -313,9 +313,10 @@ impl RenderStyle {
                                 value: v / 100.0,
                                 is_percent: true,
                             },
-                            // `Length::Auto` has no meaning as a
-                            // transform offset; treat as zero.
-                            Length::Auto => TransformLength::default(),
+                            // Neither `Length::Auto` nor `Length::Full` has
+                            // meaning as a transform offset (`Full` describes
+                            // a corner radius); treat both as zero.
+                            Length::Auto | Length::Full => TransformLength::default(),
                         };
                         // Sum existing + new on the same axis.
                         if entry.is_percent == self.static_translate[0].is_percent {
@@ -340,9 +341,10 @@ impl RenderStyle {
                                 value: v / 100.0,
                                 is_percent: true,
                             },
-                            // `Length::Auto` has no meaning as a
-                            // transform offset; treat as zero.
-                            Length::Auto => TransformLength::default(),
+                            // Neither `Length::Auto` nor `Length::Full` has
+                            // meaning as a transform offset (`Full` describes
+                            // a corner radius); treat both as zero.
+                            Length::Auto | Length::Full => TransformLength::default(),
                         };
                         if entry.is_percent == self.static_translate[1].is_percent {
                             self.static_translate[1].value += entry.value;
@@ -458,6 +460,9 @@ fn resolve_gradient(g: &Gradient) -> Option<ResolvedGradient> {
 fn px(t: Option<&Tokenized<Length>>) -> f32 {
     match t.map(|x| x.resolve()) {
         Some(Length::Px(v)) => v,
+        // Resolved before the box is known; the painter clamps. See
+        // `Length::FULL_RADIUS_FALLBACK_PX`.
+        Some(Length::Full) => Length::FULL_RADIUS_FALLBACK_PX,
         _ => 0.0,
     }
 }

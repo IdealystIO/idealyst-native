@@ -712,6 +712,11 @@ pub fn length_css(l: runtime_shared::Length) -> String {
         Length::Px(v) => format!("{}px", css_num(v)),
         Length::Percent(v) => format!("{}%", css_num(v)),
         Length::Auto => "auto".to_string(),
+        // The CSS spelling of "fully round". `calc(infinity * 1px)` is a real
+        // value the browser clamps to half the shorter side on every paint,
+        // which is what `Length::Full` means — so the pill stays a pill at any
+        // size, with no magic number on this side either.
+        Length::Full => "calc(infinity * 1px)".to_string(),
     }
 }
 

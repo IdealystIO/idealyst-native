@@ -1554,7 +1554,10 @@ fn length_to_lp(l: FwLength) -> LengthPercentage {
     match l {
         FwLength::Px(v) => LengthPercentage::Length(v),
         FwLength::Percent(v) => LengthPercentage::Percent(v / 100.0),
-        FwLength::Auto => LengthPercentage::Length(0.0),
+        // `Full` is a corner-radius concept (see `Length::resolve_radius`);
+        // it describes a shape, not a layout size, so it has no meaning to
+        // Taffy. Treated as the same "not a layout length" as `Auto`.
+        FwLength::Auto | FwLength::Full => LengthPercentage::Length(0.0),
     }
 }
 
@@ -1562,7 +1565,7 @@ fn length_to_lpa(l: Option<FwLength>) -> LengthPercentageAuto {
     match l {
         Some(FwLength::Px(v)) => LengthPercentageAuto::Length(v),
         Some(FwLength::Percent(v)) => LengthPercentageAuto::Percent(v / 100.0),
-        Some(FwLength::Auto) | None => LengthPercentageAuto::Auto,
+        Some(FwLength::Auto) | Some(FwLength::Full) | None => LengthPercentageAuto::Auto,
     }
 }
 
@@ -1570,7 +1573,7 @@ fn length_to_dim(l: FwLength) -> Dimension {
     match l {
         FwLength::Px(v) => Dimension::Length(v),
         FwLength::Percent(v) => Dimension::Percent(v / 100.0),
-        FwLength::Auto => Dimension::Auto,
+        FwLength::Auto | FwLength::Full => Dimension::Auto,
     }
 }
 
