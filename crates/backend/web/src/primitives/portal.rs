@@ -511,12 +511,42 @@ fn install_anchor_reposition(
     (Some(scroll_closure), Some(resize_closure), Some(initial_measure_task))
 }
 
-/// Read the portal content's rendered `(width, height)` from the
-/// DOM. Returns the bounding client rect's size; if the element has
-/// no layout yet, returns `(0, 0)` and the caller's clamp will keep
-/// the top-left at the gutter.
+/// Read the portal content's NATURAL rendered `(width, height)` from
+/// the DOM. If the element has no layout yet, returns `(0, 0)` and the
+/// caller's clamp will keep the top-left at the gutter.
+///
+/// The read parks the element at the viewport origin first. The portal
+/// root is `position: fixed` with no width, so it shrink-to-fits against
+/// the space between its `left` and the viewport's right edge: measured
+/// where it currently sits, a portal near the right edge reports the
+/// SQUEEZED width (the browser has re-wrapped its text into what's left),
+/// not the width it wants. Feeding that to the placement resolver makes
+/// the clamp under-correct — the overlay lands flush against the viewport
+/// edge with no gutter, still wearing its squeezed wrap. Reading at the
+/// origin gives the natural size the resolver has to reason about.
+///
+/// The previous `left`/`top` are restored before returning, and the
+/// caller writes the resolved position in the same task, so the parked
+/// position never paints.
 fn measure_portal_size(el: &web_sys::HtmlElement) -> (f32, f32) {
+    let style = el.style();
+    let prev_left = style.get_property_value("left").unwrap_or_default();
+    let prev_top = style.get_property_value("top").unwrap_or_default();
+    let _ = style.set_property("left", "0px");
+    let _ = style.set_property("top", "0px");
+
     let rect = el.get_bounding_client_rect();
+
+    let restore = |prop: &str, prev: &str| {
+        if prev.is_empty() {
+            let _ = style.remove_property(prop);
+        } else {
+            let _ = style.set_property(prop, prev);
+        }
+    };
+    restore("left", &prev_left);
+    restore("top", &prev_top);
+
     (rect.width() as f32, rect.height() as f32)
 }
 
@@ -627,4 +657,99 @@ pub(crate) fn install_focus_trap(
         closure.as_ref().unchecked_ref(),
     );
     Some(closure)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::*;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// Build a portal-shaped element — `position: fixed`, no width, so it
+    /// shrink-to-fits — holding wrappable text under the same 260px cap the
+    /// Tooltip bubble uses. Parked `left` px from the viewport's left edge.
+    fn parked_portal(left: f64) -> web_sys::HtmlElement {
+        let doc = web_sys::window().unwrap().document().unwrap();
+        let el: web_sys::HtmlElement = doc
+            .create_element("div")
+            .unwrap()
+            .dyn_into::<web_sys::HtmlElement>()
+            .unwrap();
+        el.set_attribute(
+            "style",
+            &format!("{PORTAL_ROOT_BASE_STYLE} top: 40px; left: {left}px;"),
+        )
+        .unwrap();
+        let inner = doc.create_element("div").unwrap();
+        inner
+            .set_attribute("style", "max-width: 260px; font: 14px sans-serif;")
+            .unwrap();
+        inner.set_text_content(Some(
+            "1 timesheet item needs to be resolved before you can finalize.",
+        ));
+        el.append_child(&inner).unwrap();
+        doc.body().unwrap().append_child(&el).unwrap();
+        el
+    }
+
+    /// Regression: a portal parked near the viewport's right edge measured
+    /// SQUEEZED (a shrink-to-fit `position: fixed` box re-wraps into the
+    /// space left over), so `resolve_anchored_placement` clamped against a
+    /// width smaller than the box would take once moved — landing the
+    /// overlay flush against the edge with no `EDGE_GAP` gutter. The
+    /// measurement must report the natural size instead.
+    #[wasm_bindgen_test]
+    fn regression_measure_portal_size_reads_natural_width_near_right_edge() {
+        let (vw, _) = viewport_size();
+        // 60px of room left: far too little for the 260px-capped content, so
+        // the browser squeezes the shrink-to-fit box.
+        let el = parked_portal((vw - 60.0) as f64);
+
+        let squeezed = el.get_bounding_client_rect().width() as f32;
+        let measured = measure_portal_size(&el).0;
+
+        assert!(
+            squeezed < 200.0,
+            "test setup: the parked box should be squeezed by the viewport edge, got {squeezed}"
+        );
+        assert!(
+            measured > squeezed + 1.0,
+            "measure must report the NATURAL width ({measured}) not the squeezed one ({squeezed})"
+        );
+        assert!(
+            (el.get_bounding_client_rect().width() as f32 - squeezed).abs() < 1.0,
+            "measuring must leave the portal where it found it"
+        );
+
+        el.remove();
+    }
+
+    /// The measure parks the element to read it, so it must put `left`/`top`
+    /// back exactly — including restoring the *absence* of an inline value,
+    /// which is what the first (pre-position) measure pass sees.
+    #[wasm_bindgen_test]
+    fn measure_portal_size_restores_absent_inline_position() {
+        let doc = web_sys::window().unwrap().document().unwrap();
+        let el: web_sys::HtmlElement = doc
+            .create_element("div")
+            .unwrap()
+            .dyn_into::<web_sys::HtmlElement>()
+            .unwrap();
+        el.set_attribute("style", PORTAL_ROOT_BASE_STYLE).unwrap();
+        el.set_text_content(Some("hint"));
+        doc.body().unwrap().append_child(&el).unwrap();
+
+        let _ = measure_portal_size(&el);
+
+        let style = el.style();
+        assert_eq!(style.get_property_value("left").unwrap_or_default(), "");
+        assert_eq!(style.get_property_value("top").unwrap_or_default(), "");
+
+        el.remove();
+    }
 }

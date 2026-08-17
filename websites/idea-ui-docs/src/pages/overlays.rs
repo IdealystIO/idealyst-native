@@ -12,8 +12,8 @@ use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{signal, ui, Element, PressableHandle, Ref};
 use idea_ui::{
     push_toast, push_toast_with, tone, typography_kind, variant, Alert, AlertClose, Button,
-    Collapsible, CollapsibleTransition, Modal, Popover, Stack, StackAxis, StackGap, ToastHost,
-    ToastPlacement, Tooltip, Typography,
+    Collapsible, CollapsibleTransition, Modal, Popover, Stack, StackAxis, StackGap, StackJustify,
+    ToastHost, ToastPlacement, Tooltip, Typography,
 };
 
 use crate::pages::body;
@@ -40,6 +40,155 @@ pub fn tooltip() -> Element {
                         )
                     }
                 }
+                P(content = "The bubble is a surface box clamped to 260px, so a hint too \
+                    long for one line wraps inside it.".to_string())
+                DemoSurface {
+                    Tooltip(text = "1 timesheet item needs to be resolved before you can \
+                        finalize. Click to see the list.".to_string()) {
+                        Button(
+                            label = "Long hint".to_string(),
+                            on_click = (Rc::new(|| {}) as Rc<dyn Fn()>),
+                            tone = tone::Neutral,
+                            variant = variant::Soft,
+                        )
+                    }
+                }
+            }
+
+            Section(title = "Placement".to_string()) {
+                P(content = "side picks which edge of the trigger the bubble sits on — \
+                    Above (the default), Below, Start, or End. offset is the gap in px \
+                    between the two.".to_string())
+                DemoSurface {
+                    Stack(axis = StackAxis::Row, gap = StackGap::Md, justify = StackJustify::Center, wrap = true) {
+                        Tooltip(text = "side = Above".to_string(), side = ElementSide::Above) {
+                            Button(
+                                label = "Above".to_string(),
+                                on_click = (Rc::new(|| {}) as Rc<dyn Fn()>),
+                                tone = tone::Neutral,
+                                variant = variant::Soft,
+                            )
+                        }
+                        Tooltip(text = "side = Below".to_string(), side = ElementSide::Below) {
+                            Button(
+                                label = "Below".to_string(),
+                                on_click = (Rc::new(|| {}) as Rc<dyn Fn()>),
+                                tone = tone::Neutral,
+                                variant = variant::Soft,
+                            )
+                        }
+                        Tooltip(text = "side = Start".to_string(), side = ElementSide::Start) {
+                            Button(
+                                label = "Start".to_string(),
+                                on_click = (Rc::new(|| {}) as Rc<dyn Fn()>),
+                                tone = tone::Neutral,
+                                variant = variant::Soft,
+                            )
+                        }
+                        Tooltip(text = "side = End".to_string(), side = ElementSide::End) {
+                            Button(
+                                label = "End".to_string(),
+                                on_click = (Rc::new(|| {}) as Rc<dyn Fn()>),
+                                tone = tone::Neutral,
+                                variant = variant::Soft,
+                            )
+                        }
+                    }
+                }
+                P(content = "align slides the bubble along that edge. With side = Below, \
+                    Start lines the bubble's left edge up with the trigger's, Center \
+                    (the default) centers it, End lines up the right edges. It reads on a \
+                    bubble wider than its trigger.".to_string())
+                DemoSurface {
+                    Stack(axis = StackAxis::Row, gap = StackGap::Md, justify = StackJustify::Center, wrap = true) {
+                        Tooltip(
+                            text = "align = Start — left edges line up".to_string(),
+                            side = ElementSide::Below,
+                            align = ElementAlign::Start,
+                        ) {
+                            Button(
+                                label = "Start".to_string(),
+                                on_click = (Rc::new(|| {}) as Rc<dyn Fn()>),
+                                tone = tone::Neutral,
+                                variant = variant::Soft,
+                            )
+                        }
+                        Tooltip(
+                            text = "align = Center — centered on the trigger".to_string(),
+                            side = ElementSide::Below,
+                            align = ElementAlign::Center,
+                        ) {
+                            Button(
+                                label = "Center".to_string(),
+                                on_click = (Rc::new(|| {}) as Rc<dyn Fn()>),
+                                tone = tone::Neutral,
+                                variant = variant::Soft,
+                            )
+                        }
+                        Tooltip(
+                            text = "align = End — right edges line up".to_string(),
+                            side = ElementSide::Below,
+                            align = ElementAlign::End,
+                        ) {
+                            Button(
+                                label = "End".to_string(),
+                                on_click = (Rc::new(|| {}) as Rc<dyn Fn()>),
+                                tone = tone::Neutral,
+                                variant = variant::Soft,
+                            )
+                        }
+                    }
+                }
+            }
+
+            Section(title = "Staying on screen".to_string()) {
+                P(content = "side and align are a request, not a guarantee. On web the \
+                    bubble is measured before it is placed: if the requested side has no \
+                    room and the opposite side has more, it flips there, and the result is \
+                    then clamped so the whole bubble stays inside the viewport with an 8px \
+                    gutter at every edge. A tooltip does not render half off-screen.".to_string())
+                P(content = "To watch it work, narrow the window until these triggers sit \
+                    near an edge and hover them again — the bubbles slide inward instead \
+                    of overflowing. For the flip, scroll the Placement row above until its \
+                    Below trigger sits at the bottom of the window: with no room under it, \
+                    the bubble opens above the trigger instead.".to_string())
+                DemoSurface {
+                    Stack(axis = StackAxis::Row, gap = StackGap::Md, justify = StackJustify::Between, wrap = true) {
+                        Tooltip(
+                            text = "Anchored Start — flips to the other side when the \
+                                left edge runs out of room.".to_string(),
+                            side = ElementSide::Start,
+                        ) {
+                            Button(
+                                label = "Left edge".to_string(),
+                                on_click = (Rc::new(|| {}) as Rc<dyn Fn()>),
+                                tone = tone::Neutral,
+                                variant = variant::Soft,
+                            )
+                        }
+                        Tooltip(
+                            text = "Wider than its trigger and anchored to the right — \
+                                the clamp keeps it on screen.".to_string(),
+                            side = ElementSide::Below,
+                            align = ElementAlign::Start,
+                        ) {
+                            Button(
+                                label = "Right edge".to_string(),
+                                on_click = (Rc::new(|| {}) as Rc<dyn Fn()>),
+                                tone = tone::Neutral,
+                                variant = variant::Soft,
+                            )
+                        }
+                    }
+                }
+                Callout(label = "Native placement".to_string()) {
+                    P(content = "The side/align geometry is shared code — every backend \
+                        computes the bubble's corner the same way. The measured flip and \
+                        viewport clamp on top of it run on web and on the desktop GPU \
+                        backend; the iOS, macOS and Android anchor trackers currently \
+                        re-pin to the requested side without them, so near a screen edge \
+                        a native bubble can still overflow.".to_string())
+                }
             }
 
             Section(title = "Props".to_string()) {
@@ -64,10 +213,11 @@ pub fn tooltip() -> Element {
             }
 
             Callout(label = "Tooltip vs Popover".to_string()) {
-                P(content = "Tooltip is a single styled text node — non-interactive, no \
-                    backdrop, no focus trap. The bubble inverts onto the theme's color-text \
-                    so it reads against any surface. When you need clickable content (menu \
-                    items, a form), reach for Popover instead.".to_string())
+                P(content = "Tooltip is a hint bubble — non-interactive, no backdrop, no \
+                    focus trap. The bubble is a bordered surface box holding one line of \
+                    text, clamped to 260px so a long hint wraps inside it. When you need \
+                    clickable content (menu items, a form), reach for Popover \
+                    instead.".to_string())
             }
         }
     }])

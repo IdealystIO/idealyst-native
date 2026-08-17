@@ -2486,22 +2486,47 @@ stylesheet! {
 }
 
 // =============================================================================
-// Tooltip — compact high-contrast bubble
+// Tooltip — compact bubble
+//
+// TWO sheets, and the split is load-bearing. `TooltipBubble` styles the
+// bubble's *box* (a `view`); `TooltipBubbleText` styles the label inside it.
+// Painting the box on the text node instead gives a per-LINE background on
+// backends that lay text out inline (web: a wrapped `text` paints one ragged
+// rect per line, not one bubble) — the box has to be a real container so
+// every backend draws the same single rounded rect.
 // =============================================================================
 
 stylesheet! {
     pub TooltipBubble<IdeaThemeRef> {
         base(t) {
-            background: t.color.text(),
-            color: t.color.text_inverse(),
+            background: t.color.surface(),
+            border_width: 1.0,
+            border_color: t.color.border(),
             padding_vertical: t.spacing.xs(),
             padding_horizontal: t.spacing.sm(),
-            border_radius: t.radius.sm(),
-            font_size: t.typography.body_sm_size(),
+            border_radius: t.radius.md(),
+            flex_direction: FlexDirection::Column,
+            // Clamps the bubble so a long hint wraps into a readable column
+            // instead of running the width of the viewport.
             max_width: 260.0,
             shadow: runtime_core::Shadow {
                 x: 0.0, y: 4.0, blur: 12.0, color: Color("rgba(15, 17, 21, 0.22)".into()),
             },
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub TooltipBubbleText<IdeaThemeRef> {
+        base(t) {
+            color: t.color.text(),
+            font_size: t.typography.body_sm_size(),
+            line_height: 18.0,
+            text_align: TextAlign::Left,
         }
     }
 }

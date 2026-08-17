@@ -22,9 +22,12 @@
 //!   [`TooltipProps::dismiss_ms`] (the recognizer reports the press start,
 //!   not the release, so a timed dismissal is the touch idiom).
 //!
-//! The bubble itself is a single styled text node rendered through the
-//! framework's `anchored_overlay`, anchored to the wrapper — non-interactive,
-//! no backdrop, no focus trap. For clickable content reach for `Popover`.
+//! The bubble itself is a styled `view` box holding the label text, rendered
+//! through the framework's `anchored_overlay` and anchored to the wrapper —
+//! non-interactive, no backdrop, no focus trap. The box (not the text node)
+//! carries the background, border, padding and the max-width clamp, so a long
+//! hint wraps *inside* one rounded surface instead of painting a ragged
+//! background strip per line. For clickable content reach for `Popover`.
 
 use std::rc::Rc;
 
@@ -35,7 +38,7 @@ use runtime_core::{
     IntoElement, LongPressRecognizer, Position, Reactive, Ref, StyleRules, StyleSheet, ViewHandle,
 };
 
-use crate::stylesheets::TooltipBubble;
+use crate::stylesheets::{TooltipBubble, TooltipBubbleText};
 
 /// Default time (ms) a touch-triggered (long-press) tooltip stays up
 /// before auto-dismissing. Hover tooltips ignore this — they hide on
@@ -104,6 +107,21 @@ fn hidden_sheet() -> Rc<StyleSheet> {
     }))
 }
 
+/// The bubble surface: a `view` BOX carrying the background, border, padding,
+/// radius and the max-width clamp, with the label `text` inside it.
+///
+/// The box has to be a real container. Painting the bubble on the text node
+/// itself (what this used to do) yields one background rect per *line* on
+/// backends that lay text out inline — a wrapped hint rendered as ragged bars
+/// behind each line rather than a single rounded bubble — and leaves the
+/// padding hanging off the text box. Splitting box from label makes every
+/// backend draw the same surface, and puts the width clamp on the thing that
+/// actually wraps its content.
+fn bubble_box(text: Reactive<String>) -> Element {
+    let label = runtime_core::text(text).with_style(TooltipBubbleText()).into_element();
+    runtime_core::view(vec![label]).with_style(TooltipBubble()).into_element()
+}
+
 /// Renders the trigger wrapped in a hover/long-press anchor; shows a hint
 /// bubble (anchored to the trigger) while hovered (desktop) or briefly on
 /// long-press (touch). See the module docs.
@@ -154,9 +172,10 @@ pub fn Tooltip(props: TooltipProps) -> Element {
     let bubble = when(
         move || open.get(),
         move || {
-            let bubble_text =
-                runtime_core::text(text.clone()).with_style(TooltipBubble()).into_element();
-            runtime_core::anchored_overlay(AnchorTarget::from(anchor_ref), vec![bubble_text])
+            runtime_core::anchored_overlay(
+                AnchorTarget::from(anchor_ref),
+                vec![bubble_box(text.clone())],
+            )
                 .side(side)
                 .align(align)
                 .offset(offset)
@@ -208,6 +227,45 @@ mod tests {
                 matches!(classify(kids.remove(0)), P::Other(_)),
                 "second child must be the reactive bubble (a `when` gated on hover/press)",
             );
+        });
+    }
+
+    /// Regression: the bubble used to be a lone `text` node carrying the
+    /// background/padding/max-width, which paints one ragged rect per line
+    /// once the hint wraps (inline text layout) instead of a single rounded
+    /// box. The surface must be a `view` BOX holding the label, with the box
+    /// owning background + padding + the width clamp, and the label owning
+    /// only ink (color/size) — no background of its own.
+    #[test]
+    fn regression_tooltip_bubble_is_a_box_not_a_styled_text_node() {
+        with_test_world(|| {
+            let (box_style, label) = match classify(bubble_box(Reactive::Static("hi".into()))) {
+                P::View { mut children, style, .. } => {
+                    assert_eq!(children.len(), 1, "bubble box holds exactly the label");
+                    (style.expect("bubble box must be styled"), children.remove(0))
+                }
+                _ => panic!("bubble must be a View box, not a bare styled text node"),
+            };
+
+            let rules = box_style.resolve();
+            assert!(rules.background.is_some(), "the BOX paints the bubble background");
+            assert!(rules.max_width.is_some(), "the BOX clamps the bubble width");
+            // `padding_vertical` / `padding_horizontal` are shorthands — they
+            // resolve into the per-edge fields.
+            assert!(rules.padding_top.is_some(), "the BOX owns the bubble padding");
+            assert!(rules.padding_left.is_some(), "the BOX owns the bubble padding");
+
+            match classify(label) {
+                P::Text { style, .. } => {
+                    let text_rules = style.expect("label must be styled").resolve();
+                    assert!(text_rules.color.is_some(), "label carries the ink color");
+                    assert!(
+                        text_rules.background.is_none(),
+                        "label must NOT paint a background — that's the per-line-bars bug",
+                    );
+                }
+                _ => panic!("bubble box's only child must be the label Text"),
+            }
         });
     }
 }
