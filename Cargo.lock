@@ -6087,6 +6087,7 @@ dependencies = [
 name = "idea-ui-docs"
 version = "1.3.8"
 dependencies = [
+ "anyhow",
  "backend-android-mobile",
  "backend-ios-mobile",
  "backend-macos",
@@ -6139,6 +6140,7 @@ dependencies = [
  "host-gtk",
  "idea-ui-docs",
  "runtime-shared",
+ "runtime-vocabulary",
 ]
 
 [[package]]

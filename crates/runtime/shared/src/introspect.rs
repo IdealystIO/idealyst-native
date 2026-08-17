@@ -11,9 +11,11 @@
 //! output that looks the same on every backend. Screenshots prove *a* pixel
 //! result but can't be diffed structurally. [`NativeNode`] gives a structured,
 //! per-primitive read of the **platform's resolved state** — colors, corner
-//! radii, fonts, frames — so two running apps (say web and macOS) can have
+//! radii, fonts, frames — so two running apps (say web and Linux/GTK) can have
 //! their trees captured over the robot bridge and compared key-by-key to find
-//! parity drift.
+//! parity drift. `native-parity` owns that comparison, and it diffs the
+//! [`frame`](NativeNode::frame) as well as the props: layout divergence is what
+//! parity mostly exists to catch, and it never moves a visual prop.
 //!
 //! # The cardinal rule: read from the platform, never from author input
 //!

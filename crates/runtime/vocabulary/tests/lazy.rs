@@ -78,6 +78,73 @@ fn text_el(s: &'static str) -> Element {
 /// container), the chunk body mounts when the load lands (old subtree
 /// dropped, container cleared, body inserted), and `on_state` observes
 /// Loading → Rendered.
+/// A lazily-loaded body must register UNDER the element it is nested in, not as
+/// a detached robot-registry root.
+///
+/// `swap_to` realizes from a callback, outside the mount's dynamic scope, so
+/// without re-establishing the ambient parent every state UI it mounts became a
+/// registry ROOT: the elements stay individually addressable, but `get_parent` /
+/// `get_children` link them to nothing and any tooling that scopes by a
+/// `test_id` ancestor sees an EMPTY subtree.
+///
+/// Measured on the `idea-ui-docs` web build, whose page bodies are all
+/// `#[component(lazy)]`: the `page-content` anchor reported 0 children while a
+/// detached 399-element root held the actual page, so the cross-platform parity
+/// sweep scoped to that anchor compared nothing at all — and, because it only
+/// logged on the compare path, did so in silence. Native was unaffected: `lazy`
+/// mounts inline there, through the mount context, which keeps the parenting.
+#[test]
+fn a_lazy_body_registers_under_its_enclosing_element() {
+    use runtime_vocabulary::builders::view;
+    use runtime_vocabulary::robot::{Query, Robot};
+
+    let robot = Robot::new();
+    robot.reset();
+    let h = harness(true);
+    let ready = Rc::new(Cell::new(false));
+
+    // `#anchor` wraps the lazy boundary, exactly as the docs app's
+    // `page-content` wraps each screen's lazily-loaded body.
+    let el = view()
+        .test_id("anchor")
+        .child(
+            lazy_split(gated_loader(ready.clone(), || {
+                Ok(Box::new(|| {
+                    view().test_id("chunk-root").child(text_el("chunk-body")).build()
+                }) as LazyBodyThunk)
+            }))
+            .placeholder(|| text_el("loading"))
+            .into_element(),
+        )
+        .build();
+    let realized = h.mount(el);
+
+    // Land the chunk.
+    ready.set(true);
+    h.world.flush();
+    pump_tasks();
+    h.world.flush();
+
+    let anchor = robot
+        .find(Query::test_id("anchor"))
+        .expect("the enclosing element registers");
+    let chunk = robot
+        .find(Query::test_id("chunk-root"))
+        .expect("the lazily-loaded body registers");
+    assert_eq!(
+        robot.parent_of(&chunk).map(|p| p.id),
+        Some(anchor.id),
+        "a lazily-loaded body must be parented under the element it is nested \
+         in — as a detached root, every test_id-scoped query sees an empty \
+         subtree",
+    );
+    assert!(
+        robot.children_of(&anchor).iter().any(|c| c.id == chunk.id),
+        "…and the parent must list it among its children",
+    );
+    drop(realized);
+}
+
 #[test]
 fn placeholder_renders_then_body_mounts_on_chunk_load() {
     let h = harness(true);

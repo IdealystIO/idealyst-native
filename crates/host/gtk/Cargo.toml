@@ -19,6 +19,12 @@ license.workspace = true
 [lib]
 crate-type = ["rlib"]
 
+[features]
+# Forwarded to the backend so a generated wrapper can turn the Robot surface on
+# through its own `dev` feature — the wrapper depends on `host-gtk`, not on
+# `backend-linux` directly.
+robot = ["backend-linux/robot"]
+
 [dependencies]
 # `async-driver` brings in `runtime_core::driver` — the per-frame
 # render-loop hook an embedded GPU host (`host-linux-desktop`) rides,

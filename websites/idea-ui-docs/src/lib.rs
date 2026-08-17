@@ -103,6 +103,19 @@ pub fn register_scene_extensions_recorder(registry: &mut dev_server::newcore::Sc
 // `runtime_vocabulary::navigator_outlet()`.
 // =============================================================================
 
+/// Every catalog route's stable id (`Route::name()`), in sidebar order.
+///
+/// Public so `tests/parity.rs` can sweep the whole catalog: each id is also the
+/// `test_id` on that route's sidebar link (see `shell::route_link_anchored`), so
+/// the parity runner navigates by `find_element { test_id } → click` and then
+/// diffs the two platforms' `page-content` subtrees.
+pub fn route_ids() -> Vec<&'static str> {
+    CATALOG
+        .iter()
+        .flat_map(|g| g.entries.iter().map(|e| e.route.name()))
+        .collect()
+}
+
 /// Root entry — the symbol every boot path mounts (the CLI-generated
 /// per-platform wrappers, the sidecar, and `standalone.html`'s
 /// `web_entry` below).

@@ -72,6 +72,43 @@ fn introspect_one(client: &mut RobotClient, id: u64) -> anyhow::Result<Option<Na
     parse_native(v).map_err(|e| anyhow::anyhow!("bad introspect_native payload: {e}"))
 }
 
+/// Read a whole subtree's native nodes in ONE bridge call, keyed by element id.
+///
+/// Falls back to `None` when the app predates the `introspect_subtree` verb, so
+/// a newer harness still drives an older build (the caller then walks
+/// element-by-element).
+///
+/// Why it matters: a bridge round trip is bounded below by the bridge's 16 ms
+/// poll, so the per-element path spent ~2 round trips per aligned element —
+/// measured at over ten seconds per platform on a 400-element screen, and a
+/// 49-route sweep well past ten minutes. One call per screen per platform
+/// removes that entirely.
+fn introspect_subtree(
+    client: &mut RobotClient,
+    root_id: u64,
+) -> anyhow::Result<Option<std::collections::HashMap<u64, NativeNode>>> {
+    let v = match client.call("introspect_subtree", json!({ "element_id": root_id })) {
+        Ok(v) => v,
+        // An older app answers "unknown command"; that is a capability gap, not
+        // a failure — the caller degrades to the per-element path.
+        Err(e) if e.to_string().contains("unknown command") => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let Some(map) = v.as_object() else {
+        return Ok(None);
+    };
+    let mut out = std::collections::HashMap::with_capacity(map.len());
+    for (id, node) in map {
+        let Ok(id) = id.parse::<u64>() else { continue };
+        if let Some(node) = parse_native(node.clone())
+            .map_err(|e| anyhow::anyhow!("bad introspect_subtree payload for {id}: {e}"))?
+        {
+            out.insert(id, node);
+        }
+    }
+    Ok(Some(out))
+}
+
 /// Cross-platform render-parity comparison of two running apps. This is the
 /// right entry point for a parity test: it **structurally aligns** the two
 /// element trees (by `test_id`/`kind`+`label`, tolerating wrapper/order
@@ -113,13 +150,35 @@ pub fn compare(
     };
     let alignment = align(&list_a, &list_b);
 
+    // One batched read per side where the app supports it; element-by-element
+    // otherwise. The batch is rooted at the comparison root so it covers exactly
+    // the elements the alignment can pair.
+    let root_a = list_a.first().map(|n| n.id);
+    let root_b = list_b.first().map(|n| n.id);
+    let batch_a = match root_a {
+        Some(id) => introspect_subtree(a, id)?,
+        None => None,
+    };
+    let batch_b = match root_b {
+        Some(id) => introspect_subtree(b, id)?,
+        None => None,
+    };
+
     let mut cap_a = Capture::new();
     let mut cap_b = Capture::new();
     for pair in &alignment.pairs {
-        if let Some(n) = introspect_one(a, pair.id_a)? {
+        let node_a = match &batch_a {
+            Some(m) => m.get(&pair.id_a).cloned(),
+            None => introspect_one(a, pair.id_a)?,
+        };
+        if let Some(n) = node_a {
             cap_a.insert(pair.path.clone(), n);
         }
-        if let Some(n) = introspect_one(b, pair.id_b)? {
+        let node_b = match &batch_b {
+            Some(m) => m.get(&pair.id_b).cloned(),
+            None => introspect_one(b, pair.id_b)?,
+        };
+        if let Some(n) = node_b {
             cap_b.insert(pair.path.clone(), n);
         }
     }

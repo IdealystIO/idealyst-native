@@ -39,6 +39,15 @@
 //! - **Android** — a `RustCodeBlock` (HorizontalScrollView + TextView)
 //!   that sets a `SpannableString` with one `ForegroundColorSpan` per
 //!   run. One TextView per code block, regardless of token count.
+//! - **Linux (GTK4)** — one `gtk::Label` carrying the concatenated runs
+//!   with a `pango::AttrList` holding one foreground-colour range each.
+//!   Deliberately NOT selectable: `gtk_label_set_selectable()` also makes
+//!   the widget focusable, and GTK focuses the first focusable widget in a
+//!   freshly mapped subtree, so a selectable code panel captured the caret
+//!   on every navigation (see `linux.rs`).
+//! - **Windows** — one painted colored-runs leaf via the Windows backend's
+//!   `create_colored_code_leaf`, wrapped in a `create_view` so author box
+//!   styling lands like everywhere else.
 //! - **Every other host (web, SSR, terminal, gpu, host-mock)** — one
 //!   `create_element("pre")` outer node with one `create_text` child
 //!   per run, each carrying its literal color. Backends with no tag

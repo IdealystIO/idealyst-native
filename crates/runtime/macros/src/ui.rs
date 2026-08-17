@@ -3501,6 +3501,45 @@ mod tests {
         emit(ui, &input).to_string()
     }
 
+    /// `link(test_id = …)` must emit a `.test_id(…)` call.
+    ///
+    /// A link is usually an app's only way to reach another screen, so a dropped
+    /// anchor here means automation cannot navigate a route-based app at all.
+    /// The macro's generic primitive path carries this (the `link`-specific
+    /// emitter deliberately does not duplicate it); the drops that DID bite were
+    /// downstream — `LinkPrim` had no identity slot and the glue wrapper was
+    /// `test_id_ignored`. Pinned here so the macro half cannot regress silently.
+    #[test]
+    fn a_route_link_forwards_its_test_id() {
+        let out = parse_and_emit(quote::quote! {
+            link(route = MY_ROUTE, params = (), test_id = "go") {
+                text("Go")
+            }
+        });
+        // NOT `contains("test_id")`: the emitted stream also carries the
+        // `__ui_recover` salvage copy of the INPUT, which mentions
+        // `test_id = "go"` and would make that assertion vacuous (see
+        // `parse_and_emit`). Only a method CALL proves the forwarding.
+        assert!(
+            out.contains(". test_id ("),
+            "the emitted link must carry a `.test_id(…)` CALL; got:\n{out}"
+        );
+    }
+
+    /// Same for an off-app link, which takes the other branch of the emitter.
+    #[test]
+    fn an_external_link_forwards_its_test_id() {
+        let out = parse_and_emit(quote::quote! {
+            link(external = "https://example.com", test_id = "out") {
+                text("Out")
+            }
+        });
+        assert!(
+            out.contains(". test_id ("),
+            "the emitted external link must carry a `.test_id(…)` CALL; got:\n{out}"
+        );
+    }
+
     #[test]
     fn empty_ui_emits_empty_view() {
         let out = parse_and_emit(quote! {});

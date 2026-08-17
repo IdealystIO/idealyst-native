@@ -60,6 +60,43 @@ use crate::caps::{LifecycleOps, ViewOps};
 use crate::prims::{LazyPrim, PrimCell};
 use crate::style_attach::{attach_style, StyleServices};
 
+// ---------------------------------------------------------------------------
+// Robot-registry parenting for the ASYNC mount
+//
+// `swap_to` realizes its subtree from a callback, long after the mount's
+// dynamic scope is gone — so without help every state UI it mounts registers as
+// a DETACHED registry root. The elements stay individually addressable, but
+// `get_parent`/`get_children` link them to nothing and any tooling that scopes
+// by a `test_id` ancestor sees an empty subtree. Measured on the `idea-ui-docs`
+// web build (page bodies are all `#[component(lazy)]`): the `page-content`
+// anchor reported 0 children while a detached 399-element root held the page.
+//
+// Fix: capture the ambient parent at MOUNT time and re-establish it around each
+// realize. Shimmed rather than `cfg`-ed at the call sites so the closure body
+// reads the same in both builds.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "robot")]
+type RobotParent = Option<crate::robot::ElementId>;
+#[cfg(not(feature = "robot"))]
+type RobotParent = ();
+
+#[cfg(feature = "robot")]
+fn capture_robot_parent() -> RobotParent {
+    crate::robot::current_parent()
+}
+#[cfg(not(feature = "robot"))]
+fn capture_robot_parent() -> RobotParent {}
+
+#[cfg(feature = "robot")]
+fn with_robot_parent<R>(parent: RobotParent, f: impl FnOnce() -> R) -> R {
+    crate::robot::with_parent(parent, f)
+}
+#[cfg(not(feature = "robot"))]
+fn with_robot_parent<R>(_parent: RobotParent, f: impl FnOnce() -> R) -> R {
+    f()
+}
+
 /// Mount a `lazy` boundary — port of `walker/lazy.rs::build`.
 pub fn mount_lazy<H>(cx: &mut MountCx<'_, H>, prim: LazyPrim, _children: Vec<Element>) -> H::Node
 where
@@ -157,6 +194,9 @@ where
         // subtree realizes and inserts. The initial paint skips the
         // clear (freshly empty container — the walker's
         // `show_loading(false)` contract).
+        // The element this lazy boundary sits under, as the robot registry saw it
+        // at mount. Re-established around every async realize below.
+        let robot_parent = capture_robot_parent();
         let swap_to: Rc<dyn Fn(Element)> = {
             let backend = backend.clone();
             let registry = registry.clone();
@@ -168,7 +208,8 @@ where
                     drop(old);
                     backend.borrow_mut().clear_children(&container);
                 }
-                let realized = realize(&backend, &registry, element);
+                let realized =
+                    with_robot_parent(robot_parent, || realize(&backend, &registry, element));
                 {
                     let mut b = backend.borrow_mut();
                     let mut c = container.clone();

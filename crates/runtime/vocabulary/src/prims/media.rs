@@ -79,6 +79,16 @@ pub struct RouteLink {
 /// `LinkActivator` (P6); links with NONE of callback/external/route
 /// panic at mount — a link that silently does nothing is a footgun.
 pub struct LinkPrim {
+    /// Robot/automation anchor (`test_id = …`). Always present so the builder
+    /// setter compiles in every build; read only by the `robot`-feature
+    /// registration in the mount handler.
+    ///
+    /// A link USED to have no slot here, so `test_id = …` on a `link` parsed,
+    /// compiled, and was then silently discarded — which made in-app navigation
+    /// unaddressable: a route-based app's only navigation affordance could not
+    /// be found by `find_element`, so nothing could drive it to a screen. That
+    /// is the shape of hole the parity sweep needs closed to visit 49 routes.
+    pub test_id: Option<&'static str>,
     pub url: Value<String>,
     pub external: bool,
     pub on_activate: Option<Rc<dyn Fn()>>,

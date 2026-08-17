@@ -228,6 +228,7 @@ impl IconBuilder {
 pub fn link() -> LinkBuilder {
     LinkBuilder {
         prim: LinkPrim {
+            test_id: None,
             url: Value::Const(String::new()),
             external: false,
             on_activate: None,
@@ -246,6 +247,17 @@ pub struct LinkBuilder {
 }
 
 impl LinkBuilder {
+    /// Robot/automation anchor (`test_id = …`): the mount handler registers
+    /// this node under `id` in the vocabulary robot registry (`robot` feature;
+    /// the slot is inert otherwise).
+    ///
+    /// A link is usually an app's only way to reach another screen, so this
+    /// slot is what makes route navigation drivable from automation at all.
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.prim.test_id = Some(id);
+        self
+    }
+
     pub fn child(mut self, child: impl SceneChild) -> Self {
         self.children.push(child.into_child());
         self

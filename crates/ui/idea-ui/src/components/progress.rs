@@ -180,6 +180,23 @@ fn sim_next(cur: f32, rand01: f32) -> f32 {
 /// scope and the whole chain dies with it (a mode flip or unmount
 /// drops the pending shot — no detached timers).
 fn schedule_sim_step(progress: Signal<f32>, rng: Rc<Cell<u32>>) {
+    // A self-rescheduling chain MUST NOT arm without a real scheduler.
+    // `after_ms` with none installed runs its closure SYNCHRONOUSLY on
+    // every non-web platform (delay ignored), so the re-arm below would
+    // call straight back into this fn and recurse until the stack is
+    // gone — a SIGSEGV with a ~100k-frame trace and no message, not a
+    // panic. `is_scheduler_installed` exists for exactly this shape (see
+    // its doc); the SSR/terminal/cpu/roku/email hosts guard their own
+    // loops the same way. Bailing means the creep stays at its initial
+    // value in a schedulerless host (SSR renders one static frame
+    // anyway) — a still bar instead of a dead process.
+    //
+    // Reached from the docs app on GTK before the guard existed: opening
+    // the Progress page from a host that skipped
+    // `host_gtk::install_scheduler()` took the process down.
+    if !runtime_core::scheduling::is_scheduler_installed() {
+        return;
+    }
     let delay = SIM_STEP_MIN_MS
         + ((SIM_STEP_MAX_MS - SIM_STEP_MIN_MS) as f32 * sim_rand01(&rng)) as i32;
     runtime_core::after_ms_scoped(delay, move || {

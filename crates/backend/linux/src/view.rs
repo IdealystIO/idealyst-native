@@ -437,6 +437,18 @@ impl IdealystView {
         self.imp().model.borrow().background
     }
 
+    /// The full paint state this view hands GSK on every snapshot.
+    ///
+    /// Read by `introspect_native` for the parity capture. It is the resolved
+    /// state (`apply_style` has already run tokens, breakpoints and state
+    /// overlays through it), not raw author input — but it is still the state we
+    /// intend to paint rather than an independent engine's read of what WAS
+    /// painted, which GTK cannot answer for a custom widget. See
+    /// `crate::introspect`.
+    pub fn paint_model(&self) -> PaintModel {
+        self.imp().model.borrow().clone()
+    }
+
     /// This node's Taffy layout size — the authoritative size a parent
     /// allocates it to (see the note in `size_allocate`).
     pub fn layout_size(&self) -> (i32, i32) {

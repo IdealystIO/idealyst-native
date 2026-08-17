@@ -34,6 +34,16 @@ license.workspace = true
 crate-type = ["rlib"]
 
 [features]
+# Robot/automation surface. Turns on the vocabulary's element REGISTRY (which
+# the walker registers every mounted primitive into) and the shared bridge
+# TRANSPORT, and compiles `newcore::install_robot_env` into the boot path.
+#
+# Both halves are needed and neither implies the other: with only the transport
+# the bridge binds and answers every verb from the OLD (empty) registry, so
+# `find_element` returns `null` and `get_snapshot` returns `[]` for a perfectly
+# healthy app — a silently blinded driver rather than an error. See
+# `newcore::install_robot_env`.
+robot = ["runtime-vocabulary/robot", "runtime-shared/robot"]
 
 [dependencies]
 # The permanent substrate both cores compiled against (style engine,

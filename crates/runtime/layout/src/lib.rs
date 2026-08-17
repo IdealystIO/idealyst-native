@@ -499,6 +499,19 @@ impl LayoutTree {
     /// backend's text-measure signature). The `tree.set_style` write itself is
     /// unconditional, so Taffy's dirty bookkeeping is identical for every
     /// backend; only the return value is advisory.
+    /// A style dimension that is a definite pixel length, or `None` for
+    /// `auto` / percentage / unset. Percentages are excluded on purpose: a
+    /// percentage floor would resolve against the parent and could exceed the
+    /// space the parent actually has.
+    fn definite_length_of(
+        dim: Option<&runtime_shared::Tokenized<runtime_shared::Length>>,
+    ) -> Option<f32> {
+        match dim.map(|t| *t.value()) {
+            Some(runtime_shared::Length::Px(px)) if px.is_finite() && px >= 0.0 => Some(px),
+            _ => None,
+        }
+    }
+
     pub fn set_style(&mut self, node: LayoutNode, rules: &StyleRules) -> bool {
         // Surface lifecycle bugs cleanly: if a caller hands us a node
         // that was already freed via `remove_node`, panic *here* with a
@@ -666,10 +679,57 @@ impl LayoutTree {
             // column can shrink and wrap. Re-applied here on every
             // restyle so a reactive cell keeps the reset.
             style.min_size.width = Dimension::Length(0.0);
+        } else if let Some(w) = Self::definite_length_of(rules.width.as_ref())
+            // A scroll container is exempt: `set_overflow_scroll` seeds it
+            // `flex_basis: 0` + `flex_grow: 1` so it FILLS its parent, and
+            // flooring its declared size fights that seed (it collapsed a
+            // seeded scroll box inside a hug parent).
+            .filter(|_| {
+                style.overflow.x != taffy::Overflow::Scroll
+                    && style.overflow.y != taffy::Overflow::Scroll
+            })
+            .map(|w| match Self::definite_length_of(rules.max_width.as_ref()) {
+                // Never floor above the author's own ceiling: `width: 800` with
+                // `max_width: 500` must still resolve to 500, not be forced up
+                // to 800 by its own floor.
+                Some(max) => w.min(max),
+                None => w,
+            })
+        {
+            // An explicitly sized box does not shrink below its own size.
+            //
+            // Taffy leaves `min_size: Auto`, which for a flex item resolves to
+            // the CONTENT-based automatic minimum — so a box declared 38x38
+            // with a 19px icon inside shrinks to 19 whenever its row is
+            // over-constrained, while the browser holds it at 38. Measured on
+            // the docs app's Overview: the Principles cards' 38x38 icon boxes
+            // rendered 20x38 on native and 38x38 on web (`frame.width web=38
+            // linux=20`, found by the cross-platform parity sweep).
+            //
+            // Neither engine is *wrong* — CSS and Taffy both default
+            // `flex-shrink: 1` / `min-width: auto` and differ in how they
+            // resolve the automatic minimum. So the framework pins its OWN
+            // default rather than inheriting either: a declared width is a
+            // floor. That matches the box model the framework already commits
+            // to on web (`BOX_SIZING_RESET`: "padding/border live INSIDE the
+            // declared width/height") — a declared size means that size.
+            //
+            // Deliberately AFTER the grid-item arm: a grid item's min stays 0
+            // so tracks can still shrink and wrap. Authors who want a sized
+            // box to shrink say so with `min_width` or `flex_shrink`.
+            style.min_size.width = Dimension::Length(w);
         }
         if let Some(h) = rules.min_height.as_ref().map(|t| *t.value()) {
             style.min_size.height = length_to_dim(h);
         }
+        // NOTE: deliberately NO height counterpart to the width floor above.
+        // The cross axis already carries framework seeding of its own — a
+        // `scroll_view` gets `flex_basis: 0` + `flex_grow: 1` so it fills its
+        // parent, and flooring its declared height fought that (it collapsed a
+        // seeded scroll box in a hug parent). The divergence this rule exists
+        // to fix was measured on the main axis only; adding the cross axis
+        // speculatively broke two existing regressions, so it stays out until
+        // something actually measures a cross-axis divergence.
         if let Some(w) = rules.max_width.as_ref().map(|t| *t.value()) {
             style.max_size.width = length_to_dim(w);
             // Author owns max-width now — stop applying the default clamp.
@@ -1926,6 +1986,99 @@ mod tests {
     /// skip a needless layout pass (the macOS scroll-jitter fix); a real
     /// geometry change (width) must return `true`.
     #[test]
+    /// An explicitly-sized box must not shrink below its declared size.
+    ///
+    /// Taffy leaves `min_size: Auto`, which for a flex item resolves to the
+    /// CONTENT-based automatic minimum — so a 38x38 box holding a 19px icon
+    /// shrank to 19 whenever its row was over-constrained, while the browser
+    /// held it at 38. Found by the cross-platform parity sweep on the docs
+    /// app's Overview screen: the Principles cards' icon boxes measured 20x38
+    /// on native against web's 38x38 (`frame.width web=38 linux=20`), which
+    /// reads as a squished rectangle instead of a rounded square.
+    ///
+    /// Neither engine is wrong — both default `flex-shrink: 1` / `min-width:
+    /// auto` and differ only in resolving the automatic minimum — so the
+    /// framework pins its own default: a declared width is a floor.
+    #[test]
+    fn regression_explicitly_sized_box_does_not_shrink_below_its_size() {
+        // The shape that reproduced it: a 468px row holding a fixed 38x38 box
+        // and a grow+shrink text column whose content is far wider than the
+        // row, so the flex algorithm has a deficit to distribute.
+        let mut t = LayoutTree::new();
+        let row = t.new_node();
+        let mut rr = StyleRules::default();
+        rr.flex_direction = Some(runtime_shared::FlexDirection::Row);
+        rr.width = Some(px(468.0));
+        t.set_style(row, &rr);
+
+        let boxn = t.new_node();
+        let mut br = StyleRules::default();
+        br.width = Some(px(38.0));
+        br.height = Some(px(38.0));
+        t.set_style(boxn, &br);
+        let icon = t.new_node();
+        t.set_style(icon, &StyleRules::default());
+        t.set_intrinsic_size(icon, 19.0, 19.0);
+        t.add_child(boxn, icon);
+
+        let col = t.new_node();
+        let mut cr = StyleRules::default();
+        cr.flex_grow = Some(Tokenized::Literal(1.0));
+        cr.flex_shrink = Some(Tokenized::Literal(1.0));
+        cr.min_width = Some(px(0.0));
+        t.set_style(col, &cr);
+        let text = t.new_node();
+        t.set_style(text, &StyleRules::default());
+        t.set_intrinsic_size(text, 900.0, 40.0);
+        t.add_child(col, text);
+
+        t.add_child(row, boxn);
+        t.add_child(row, col);
+        t.compute(row, 468.0, 800.0);
+
+        let f = t.frame_of(boxn);
+        assert_eq!(
+            (f.width, f.height),
+            (38.0, 38.0),
+            "a box declared 38x38 must stay 38x38 — it shrank to its content \
+             floor, which is what made the docs app's icon boxes render as \
+             squished rectangles on native while web drew squares",
+        );
+    }
+
+    /// …but an author who ASKS for shrinking still gets it, and a grid item's
+    /// tracks can still collapse. The floor is a default, not a lock.
+    #[test]
+    fn an_explicit_min_width_or_flex_shrink_still_overrides_the_floor() {
+        let build = |apply: &dyn Fn(&mut StyleRules)| -> f32 {
+            let mut t = LayoutTree::new();
+            let row = t.new_node();
+            let mut rr = StyleRules::default();
+            rr.flex_direction = Some(runtime_shared::FlexDirection::Row);
+            rr.width = Some(px(100.0));
+            t.set_style(row, &rr);
+            let boxn = t.new_node();
+            let mut br = StyleRules::default();
+            br.width = Some(px(80.0));
+            apply(&mut br);
+            t.set_style(boxn, &br);
+            let other = t.new_node();
+            let mut or = StyleRules::default();
+            or.width = Some(px(80.0));
+            or.flex_shrink = Some(Tokenized::Literal(0.0));
+            t.set_style(other, &or);
+            t.add_child(row, boxn);
+            t.add_child(row, other);
+            t.compute(row, 100.0, 100.0);
+            t.frame_of(boxn).width
+        };
+        // Default: holds its declared width.
+        assert_eq!(build(&|_| {}), 80.0);
+        // Explicit min_width lets it shrink to that floor instead.
+        let shrunk = build(&|r| r.min_width = Some(px(10.0)));
+        assert!(shrunk < 80.0, "an explicit min_width must win over the default floor (got {shrunk})");
+    }
+
     fn set_style_reports_only_geometry_changes() {
         use runtime_shared::Color;
         let mut t = LayoutTree::new();

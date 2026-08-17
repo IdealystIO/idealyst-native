@@ -62,6 +62,9 @@ standalone-web = []
 [dev-dependencies]
 robot-test = { workspace = true }
 serde_json = "1"
+# `tests/parity.rs` returns `anyhow::Result` from its bridge helpers, matching
+# `RobotClient::call`'s own error type.
+anyhow = { workspace = true }
 
 [dependencies]
 # The platform surface, used by `src/main.rs` only — it carries whatever

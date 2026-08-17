@@ -129,6 +129,7 @@ use runtime_shared::assets::{
     AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId,
 };
 use runtime_shared::breakpoint::Breakpoint;
+#[cfg(feature = "robot")]
 use runtime_shared::introspect::NativeNode;
 use runtime_shared::primitives;
 use runtime_shared::primitives::portal::ViewportRect;
@@ -1750,16 +1751,25 @@ impl caps::AnimationOps for WebBackend {
     }
 }
 
+// Gated on `robot`, like the modules backing it: this is the diagnostic surface
+// the Robot bridge reads, and none of it can run in a release app (nothing dials
+// the bridge). On web that weight is a WASM BUNDLE the browser downloads, so
+// carrying the `getComputedStyle` reader and the boundary-marking set in a
+// production build is bytes shipped to every user for a feature they cannot
+// reach. With the feature off the trait's defaults apply — `supports_* -> false`
+// and `None` — which is the truthful answer for such a build.
 impl caps::IntrospectionOps for WebBackend {
-
+    #[cfg(feature = "robot")]
     fn supports_native_introspection(&self) -> bool {
         WebBackend::supports_native_introspection_impl(self)
     }
 
+    #[cfg(feature = "robot")]
     fn introspect_native(&self, node: &Self::Node) -> Option<NativeNode> {
         WebBackend::introspect_native_impl(self, node)
     }
 
+    #[cfg(feature = "robot")]
     fn note_introspection_root(&self, node: &Self::Node) {
         WebBackend::note_introspection_root_impl(self, node)
     }

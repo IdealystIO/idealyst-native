@@ -102,7 +102,17 @@ mod graphics;
 mod gradient;
 mod handles;
 mod image;
+// Diagnostic surfaces, reachable ONLY through the Robot bridge — which release
+// builds never start. Gated so they are not compiled into one either: the
+// render-node walk, the PNG encode path and their `NativeNode` machinery are
+// pure dev weight in a shipped app. The `caps` methods that expose them fall
+// back to the trait defaults (`supports_* -> false`) when the feature is off,
+// which is the honest answer for a build that cannot serve them.
+#[cfg(feature = "robot")]
+mod introspect;
 mod portal;
+#[cfg(feature = "robot")]
+mod screenshot;
 mod states;
 mod sticky;
 mod touch;
@@ -182,6 +192,22 @@ impl LinuxNode {
     pub fn widget(&self) -> &gtk4::Widget {
         &self.widget
     }
+}
+
+/// Per-image-node load state — see [`LinuxBackend::image_nodes`].
+#[derive(Default)]
+struct ImageNodeState {
+    /// Last resolved outcome, replayed when a handler installs late.
+    outcome: Option<image::ImageOutcome>,
+    on_load: Option<runtime_shared::primitives::image::ImageLoadHandler>,
+    on_error: Option<runtime_shared::primitives::image::ImageErrorHandler>,
+}
+
+/// Which handler `settle_image` decided to call, lifted out of the
+/// backend borrow so the call itself happens with no borrow held.
+enum ImageFire {
+    Load(runtime_shared::primitives::image::ImageLoadHandler, f32, f32),
+    Error(runtime_shared::primitives::image::ImageErrorHandler),
 }
 
 /// What framework primitive a node is — drives per-kind styling
@@ -468,6 +494,15 @@ pub struct LinuxBackend {
     ///
     /// [`insert`]: LinuxBackend::insert
     portal_roots: HashSet<u64>,
+    /// Per-image-node load state: the last resolved outcome plus the
+    /// author's `on_load` / `on_error` handlers.
+    ///
+    /// The outcome has to be REMEMBERED, not just dispatched: the walker
+    /// installs handlers AFTER `create_image` returns, and the capability
+    /// contract says `on_load` MUST fire immediately for an image that has
+    /// already decoded. A `data:` URI decodes inside `create_image`, so
+    /// without this the handler would arrive after the only event.
+    image_nodes: HashMap<u64, ImageNodeState>,
     /// Anchored portals → the trigger + placement intent they track.
     /// Only `PortalTarget::Anchor` portals get an entry; viewport-placed
     /// ones are fully positioned by their container's flex.
@@ -513,6 +548,7 @@ impl LinuxBackend {
             parent_of: HashMap::new(),
             _font_files: Vec::new(),
             root_id: None,
+            image_nodes: HashMap::new(),
             self_ref: std::rc::Weak::new(),
             sticky_nodes: HashMap::new(),
             published_viewport: (0.0, 0.0),
@@ -616,6 +652,95 @@ impl LinuxBackend {
                 Some(parent) => cur = *parent,
                 None => return Some((x, y, w, h)),
             }
+        }
+    }
+
+    /// Resolve an image node's outcome and fire the matching author
+    /// handler, if one is installed.
+    ///
+    /// Takes the handler OUT of the map and drops the borrow before
+    /// calling it: author handlers write signals, signal writes run
+    /// effects synchronously, and effects re-enter the backend — firing
+    /// one under a live `RefCell` borrow aborts with `RefCell already
+    /// borrowed`. Same rule as `set_viewport_size` and `on_scroll`.
+    pub(crate) fn settle_image(
+        backend: &std::rc::Weak<std::cell::RefCell<LinuxBackend>>,
+        id: u64,
+        outcome: image::ImageOutcome,
+    ) {
+        let Some(rc) = backend.upgrade() else { return };
+        let fired = {
+            let Ok(mut b) = rc.try_borrow_mut() else { return };
+            let Some(st) = b.image_nodes.get_mut(&id) else { return };
+            st.outcome = Some(outcome);
+            match outcome {
+                image::ImageOutcome::Loaded { width, height } => st
+                    .on_load
+                    .clone()
+                    .map(|h| ImageFire::Load(h, width, height)),
+                image::ImageOutcome::Failed => st.on_error.clone().map(ImageFire::Error),
+                image::ImageOutcome::Pending => None,
+            }
+        };
+        match fired {
+            Some(ImageFire::Load(h, w, hgt)) => {
+                h(&runtime_shared::primitives::image::ImageLoadEvent {
+                    width: w,
+                    height: hgt,
+                })
+            }
+            Some(ImageFire::Error(h)) => h(),
+            None => {}
+        }
+    }
+
+    /// Introspect by raw element id — the seam the integration tests drive.
+    ///
+    /// The `caps` method takes a `&LinuxNode`, which a test in another crate
+    /// cannot mint from an id; this exposes the same read by id. Behind the
+    /// `robot` feature with everything else diagnostic.
+    #[cfg(feature = "robot")]
+    pub fn introspect_native_for_test(
+        &self,
+        id: u64,
+    ) -> Option<runtime_shared::introspect::NativeNode> {
+        self.introspect_native_impl(id)
+    }
+
+    /// The framework root widget, once mounted. The subtree the app
+    /// actually renders — what a screenshot or an introspection walk means
+    /// by "the app screen".
+    pub(crate) fn root_widget(&self) -> Option<gtk4::Widget> {
+        self.root_id
+            .and_then(|id| self.nodes.get(&id))
+            .map(|s| s.widget.clone())
+    }
+
+    #[cfg(feature = "robot")]
+    /// Whether [`capture_screenshot_impl`](Self::capture_screenshot_impl)
+    /// can produce a picture right now: it needs a mounted root inside a
+    /// realized toplevel (the `GskRenderer` lives on the toplevel).
+    pub(crate) fn supports_screenshot_impl(&self) -> bool {
+        self.root_widget()
+            .and_then(|w| w.native())
+            .and_then(|n| n.renderer())
+            .is_some()
+    }
+
+    #[cfg(feature = "robot")]
+    /// Capture the app content as PNG. **Frame-deferred**: `done` usually
+    /// fires a main-loop turn or two later, because a GTK widget's render
+    /// node only exists once GTK has drawn a frame for it — see
+    /// [`crate::screenshot`] for the measurements behind that. Callers must
+    /// let the main loop run; a caller that blocks waiting for `done`
+    /// deadlocks.
+    pub(crate) fn capture_screenshot_impl(
+        &self,
+        done: Box<dyn FnOnce(Result<runtime_shared::Screenshot, String>)>,
+    ) {
+        match self.root_widget() {
+            Some(w) => crate::screenshot::capture(&w, done),
+            None => done(Err("no framework root mounted yet".to_string())),
         }
     }
 
@@ -1151,6 +1276,24 @@ impl LinuxBackend {
         label.set_wrap(true);
         label.set_xalign(0.0);
         let node = self.wrap(label.clone().upcast::<gtk4::Widget>(), NodeKind::Text);
+        // Push the framework's DEFAULT text paint immediately, rather than
+        // waiting for an `apply_style` that may never come.
+        //
+        // A GtkLabel with no Pango attributes renders in the user's SYSTEM
+        // GTK theme font and colour. Text whose author style mentions no
+        // colour therefore painted near-WHITE on a dark desktop theme and
+        // near-black on a light one — the same tree looking different on two
+        // Linux machines, and on a dark desktop simply invisible against the
+        // app canvas (which `install_canvas_background` pins to #ffffff for
+        // exactly this reason). Found on the `idea-ui-docs` Calendar page:
+        // every day number was styled for size/weight only, so the cells
+        // rendered blank.
+        //
+        // `NodeState.text` is already seeded with `TextPaint::default()`, so
+        // this just makes the widget agree with the state the backend
+        // believes it is in; a later `apply_style` resolves over the same
+        // default and nothing else changes.
+        text::apply(&label, &text::TextPaint::default());
         // Give Taffy the label's intrinsic size so flex layout can size
         // + center text. The closure reads the label live at compute
         // time, so it reflects the font `apply_style` sets afterward.
@@ -1641,13 +1784,94 @@ impl LinuxBackend {
         // `image.rs`). `register_external_view` installs the intrinsic-
         // size measure fn so an unpinned image sizes to its bitmap;
         // author `width`/`height` still win via Taffy.
-        let pic = image::build_picture(src, alt);
-        self.register_external_view(pic.upcast::<gtk4::Widget>())
+        //
+        // The node id isn't known until `register_external_view` runs, so
+        // the async completion route goes through a cell the wrap fills in.
+        // A remote fetch cannot complete before this fn returns (GIO
+        // dispatches on a later main-loop turn), so the cell is always set
+        // by the time the closure runs.
+        let pending_id: Rc<std::cell::Cell<u64>> = Rc::new(std::cell::Cell::new(0));
+        let weak = self.self_ref();
+        let (pic, outcome) = {
+            let pending_id = pending_id.clone();
+            let weak = weak.clone();
+            image::build_picture(src, alt, move |o| {
+                LinuxBackend::settle_image(&weak, pending_id.get(), o);
+            })
+        };
+        let node = self.register_external_view(pic.upcast::<gtk4::Widget>());
+        pending_id.set(node.id);
+        self.image_nodes.insert(
+            node.id,
+            ImageNodeState {
+                // A `Pending` remote fetch has no outcome yet; the GIO
+                // callback records the real one.
+                outcome: (outcome != image::ImageOutcome::Pending).then_some(outcome),
+                ..Default::default()
+            },
+        );
+        node
     }
 
     fn update_image_src(&mut self, node: &LinuxNode, src: &str) {
         if let Some(pic) = node.widget.downcast_ref::<gtk4::Picture>() {
-            image::set_source(pic, src);
+            let weak = self.self_ref();
+            let id = node.id;
+            let outcome = image::set_source(pic, src, move |o| {
+                LinuxBackend::settle_image(&weak, id, o);
+            });
+            // A reactive `src` swap must re-fire the handlers, so clear the
+            // remembered outcome and settle on the new one. Deferred to an
+            // idle: this runs inside the walker's update pass, and firing an
+            // author handler here would re-enter the backend borrow.
+            if outcome != image::ImageOutcome::Pending {
+                let weak = self.self_ref();
+                if let Some(st) = self.image_nodes.get_mut(&id) {
+                    st.outcome = None;
+                }
+                gtk4::glib::idle_add_local_once(move || {
+                    LinuxBackend::settle_image(&weak, id, outcome);
+                });
+            }
+        }
+    }
+
+    fn install_image_load_handler(
+        &mut self,
+        node: &LinuxNode,
+        handler: runtime_shared::primitives::image::ImageLoadHandler,
+    ) {
+        let st = self.image_nodes.entry(node.id).or_default();
+        st.on_load = Some(handler.clone());
+        // Replay: the contract says `on_load` MUST fire immediately for an
+        // image that already decoded, and a `data:`/local source decodes
+        // inside `create_image` — before this install.
+        if let Some(image::ImageOutcome::Loaded { width, height }) = st.outcome {
+            let weak = self.self_ref();
+            let id = node.id;
+            gtk4::glib::idle_add_local_once(move || {
+                LinuxBackend::settle_image(
+                    &weak,
+                    id,
+                    image::ImageOutcome::Loaded { width, height },
+                );
+            });
+        }
+    }
+
+    fn install_image_error_handler(
+        &mut self,
+        node: &LinuxNode,
+        handler: runtime_shared::primitives::image::ImageErrorHandler,
+    ) {
+        let st = self.image_nodes.entry(node.id).or_default();
+        st.on_error = Some(handler);
+        if let Some(image::ImageOutcome::Failed) = st.outcome {
+            let weak = self.self_ref();
+            let id = node.id;
+            gtk4::glib::idle_add_local_once(move || {
+                LinuxBackend::settle_image(&weak, id, image::ImageOutcome::Failed);
+            });
         }
     }
 
@@ -2622,5 +2846,260 @@ mod layout_tests {
             hand.widget.cursor().is_none(),
             "dropping the property must clear the widget cursor",
         );
+
+        // --- 11. A text leaf must carry the FRAMEWORK's default paint from
+        // creation, not the user's system GTK theme.
+        //
+        // A GtkLabel with no Pango attributes renders in the desktop
+        // theme's font and colour, so text whose author style mentions no
+        // colour painted near-white on a dark desktop and near-black on a
+        // light one — the same app looking different on two Linux machines,
+        // and invisible against the #ffffff canvas
+        // `install_canvas_background` pins. Found on the `idea-ui-docs`
+        // Calendar page: day numbers are styled for size/weight only, so
+        // every cell rendered blank on a dark-themed desktop.
+        let plain = backend.create_text("31", &a11y);
+        let plain_label = plain
+            .widget
+            .downcast_ref::<gtk4::Label>()
+            .expect("text leaf is a GtkLabel");
+        let attrs = plain_label
+            .attributes()
+            .expect("an unstyled text leaf must still carry attributes —                      without them GTK paints it in the SYSTEM theme colour");
+        // The default paint is opaque black; assert the colour attribute is
+        // actually present rather than just "some attribute list".
+        let mut iter = attrs.iterator();
+        let mut saw_foreground = false;
+        loop {
+            if iter
+                .get(gtk4::pango::AttrType::Foreground)
+                .is_some()
+            {
+                saw_foreground = true;
+            }
+            if !iter.next_style_change() {
+                break;
+            }
+        }
+        assert!(
+            saw_foreground,
+            "the default text paint must set an explicit foreground colour,              or the label falls back to the desktop theme's text colour",
+        );
+
+        // A style that mentions only typography must not drop the colour
+        // back to the theme default either.
+        backend.apply_style(
+            &plain,
+            &std::rc::Rc::new(StyleRules {
+                font_size: Some(runtime_shared::Tokenized::Literal(
+                    runtime_shared::Length::Px(13.0),
+                )),
+                ..Default::default()
+            }),
+        );
+        let attrs = plain_label
+            .attributes()
+            .expect("attributes must survive a typography-only restyle");
+        let mut iter = attrs.iterator();
+        let mut saw_foreground = false;
+        loop {
+            if iter.get(gtk4::pango::AttrType::Foreground).is_some() {
+                saw_foreground = true;
+            }
+            if !iter.next_style_change() {
+                break;
+            }
+        }
+        assert!(
+            saw_foreground,
+            "a size-only restyle must keep an explicit foreground colour",
+        );
+
+        // --- 12. `install_image_load_handler` / `install_image_error_handler`
+        // are DEFAULTED no-ops on the capability trait. Inheriting them meant
+        // an author's `Image(on_error = …)` fallback never ran on Linux while
+        // it did on web and Apple — the `idea-ui-docs` Image page promises
+        // "Falls back to a placeholder if the source can't load" and rendered
+        // an empty box, because the fetch failed and nothing told the app.
+        //
+        // Handlers install AFTER `create_image`, so a source that resolves
+        // synchronously must have its outcome REMEMBERED and replayed; both
+        // replays are deferred to a GLib idle (firing an author handler under
+        // the backend borrow aborts with `RefCell already borrowed`), so the
+        // assertions pump the main loop.
+        let rc = std::rc::Rc::new(std::cell::RefCell::new(backend));
+        rc.borrow_mut().set_self_ref(std::rc::Rc::downgrade(&rc));
+        let pump = || {
+            let ctx = gtk4::glib::MainContext::default();
+            for _ in 0..50 {
+                ctx.iteration(false);
+            }
+        };
+
+        // A 1x1 PNG as a `data:` URI decodes inside `create_image`.
+        // A valid 2x2 RGB PNG, generated rather than hand-copied — the first
+        // attempt at this fixture had a corrupt IDAT CRC, and the backend
+        // correctly reported it as a load FAILURE, which is a good sign for
+        // the error path and a bad one for a load-path fixture.
+        const PNG_2X2: &str = "data:image/png;base64,\
+            iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4\
+            z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==";
+        let ok_node = rc.borrow_mut().create_image(PNG_2X2, None, &a11y);
+        let loaded: std::rc::Rc<std::cell::Cell<Option<(f32, f32)>>> =
+            std::rc::Rc::new(std::cell::Cell::new(None));
+        {
+            let sink = loaded.clone();
+            rc.borrow_mut().install_image_load_handler(
+                &ok_node,
+                std::rc::Rc::new(move |ev: &runtime_shared::primitives::image::ImageLoadEvent| {
+                    sink.set(Some((ev.width, ev.height)));
+                }),
+            );
+        }
+        pump();
+        assert_eq!(
+            loaded.get(),
+            Some((2.0, 2.0)),
+            "on_load must fire (with the bitmap's natural size) for a source \
+             that had already decoded before the handler was installed",
+        );
+
+        // A local path that does not exist fails synchronously.
+        let bad_node = rc.borrow_mut().create_image(
+            "/nonexistent/idealyst-test-image-that-cannot-load.png",
+            None,
+            &a11y,
+        );
+        let errored = std::rc::Rc::new(std::cell::Cell::new(false));
+        {
+            let sink = errored.clone();
+            rc.borrow_mut()
+                .install_image_error_handler(&bad_node, std::rc::Rc::new(move || sink.set(true)));
+        }
+        pump();
+        assert!(
+            errored.get(),
+            "on_error must fire for a source that cannot be decoded — without \
+             it an app's load-failure fallback never renders on Linux",
+        );
+
+        // --- 12b. The author's `line_height` must reach the text box.
+        //
+        // GTK dropped it entirely: `TextPaint` had no field and `resolve` never
+        // read `style.line_height`, while web resolves CSS `line-height` and
+        // macOS feeds the same property into its layout policy. Every text box
+        // was therefore SHORTER on Linux — the cross-platform parity sweep
+        // measured a wrapped paragraph at 39px against web's 50 and a badge row
+        // at 23 against 32, and since a column's height is the sum of its
+        // children's, the error accumulated to a 74px difference on the docs
+        // app's Color page. No visual prop moved, so only a geometry diff could
+        // have caught it.
+        //
+        // Asserted as a RELATION (taller with a large line-height, shorter with
+        // a small one) rather than exact pixels, so the test does not depend on
+        // the host's font metrics.
+        let lh_text = "line height probe";
+        let measure_at = |line_height: Option<f32>| -> f32 {
+            let node = rc.borrow_mut().create_text(lh_text, &a11y);
+            let mut rules = StyleRules {
+                font_size: Some(runtime_shared::Tokenized::Literal(
+                    runtime_shared::Length::Px(14.0),
+                )),
+                ..StyleRules::default()
+            };
+            rules.line_height = line_height.map(runtime_shared::Tokenized::Literal);
+            rc.borrow_mut().apply_style(&node, &std::rc::Rc::new(rules));
+            let label = node
+                .widget
+                .downcast_ref::<gtk4::Label>()
+                .expect("text leaf is a GtkLabel")
+                .clone();
+            crate::text::measure(
+                &label,
+                runtime_layout::Size { width: None, height: None },
+                runtime_layout::Size {
+                    width: runtime_layout::AvailableSpace::MaxContent,
+                    height: runtime_layout::AvailableSpace::MaxContent,
+                },
+            )
+            .height
+        };
+        let natural = measure_at(None);
+        let tall = measure_at(Some(40.0));
+        let short = measure_at(Some(8.0));
+        assert!(
+            tall > natural,
+            "a 40px line_height must make the box TALLER than the font's own \
+             spacing (natural {natural}, with line_height {tall}) — an ignored \
+             line_height is what made every Linux text box shorter than web's",
+        );
+        assert!(
+            short < tall,
+            "an 8px line_height must produce a shorter box than a 40px one \
+             (got {short} vs {tall}) — the value has to be read, not just the \
+             presence of the property",
+        );
+
+        // --- 13. `text::measure` must return a SELF-CONSISTENT box: the height
+        // it reports has to be the height GTK produces at the width it reports.
+        //
+        // `gtk_widget_measure(Horizontal, -1)` computes the natural width from
+        // the unwrapped layout's logical extents (rounded up to whole px); the
+        // height-for-width path re-runs Pango's line breaker at that pixel
+        // width. `letter_spacing` makes the two disagree — the per-glyph spacing
+        // accumulates a fractional total the width report rounds away and the
+        // breaker does not — so GTK names a width and then refuses to render in
+        // it. Trusting it sized the docs app's `Tag(label = "✓ Verified")` 67px
+        // wide when GTK needed 68, and the label wrapped inside its own box:
+        // the glyph rendered ABOVE the word on Linux while web drew one line.
+        // Reported by a user as "Tag with icon positions the icon above the
+        // text".
+        //
+        // Swept across font sizes because WHICH sizes disagree depends on the
+        // host's fonts; the letter-spacing (0.3px, what `TagSheetBuilder`
+        // gives every Tag) is the part that reproduces anywhere. Asserting
+        // self-consistency rather than specific pixel widths keeps the test
+        // font-independent while failing for exactly this bug.
+        for text in ["★ Featured", "✓ Verified", "→ Next"] {
+            for size in 9..=24 {
+                let node = rc.borrow_mut().create_text(text, &a11y);
+                rc.borrow_mut().apply_style(
+                    &node,
+                    &std::rc::Rc::new(StyleRules {
+                        font_size: Some(runtime_shared::Tokenized::Literal(
+                            runtime_shared::Length::Px(size as f32),
+                        )),
+                        font_weight: Some(runtime_shared::FontWeight::SemiBold),
+                        letter_spacing: Some(runtime_shared::Tokenized::Literal(0.3)),
+                        ..StyleRules::default()
+                    }),
+                );
+                let label = node
+                    .widget
+                    .downcast_ref::<gtk4::Label>()
+                    .expect("text leaf is a GtkLabel")
+                    .clone();
+                // A bare leaf has no margins, so the measure's content box and
+                // GTK's margin-inclusive numbers coincide and compare directly.
+                let out = crate::text::measure(
+                    &label,
+                    runtime_layout::Size { width: None, height: None },
+                    runtime_layout::Size {
+                        width: runtime_layout::AvailableSpace::MaxContent,
+                        height: runtime_layout::AvailableSpace::MaxContent,
+                    },
+                );
+                let (_, h_at_reported, _, _) =
+                    label.measure(gtk4::Orientation::Vertical, out.width.round() as i32);
+                assert_eq!(
+                    h_at_reported as f32, out.height,
+                    "measure({text:?} @ {size}px, letter-spacing 0.3) reported \
+                     {}x{} but GTK lays that text out {}px tall at {}px wide — \
+                     the reported width is one the label cannot render in, so it \
+                     wraps inside its own box",
+                    out.width, out.height, h_at_reported, out.width,
+                );
+            }
+        }
     }
 }

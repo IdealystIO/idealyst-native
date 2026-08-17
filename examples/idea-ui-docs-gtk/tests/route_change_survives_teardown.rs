@@ -31,6 +31,13 @@ fn is_click(w: &gtk4::Widget) -> bool {
 #[test]
 fn regression_route_change_does_not_abort_on_stale_state_setter() {
     if gtk4::init().is_err() { eprintln!("SKIP"); return; }
+
+    // Install the scheduler the real host installs. Without it,
+    // `after_ms` runs SYNCHRONOUSLY on native, so any self-rescheduling
+    // animation (`Progress(mode = Simulated)`, `Skeleton`'s shimmer)
+    // recurses into itself and overflows the stack — the test would be
+    // exercising a runtime configuration production never uses.
+    host_gtk::install_scheduler();
     let window = gtk4::Window::new();
     window.set_default_size(1280, 860);
     runtime_shared::set_viewport_size(runtime_shared::ViewportSize { width: 1280.0, height: 860.0 });

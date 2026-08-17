@@ -1,5 +1,23 @@
 //! Linux (GTK4) handler for the `markdown` external.
 //!
+//! # STATUS: not wired — this module is not compiled
+//!
+//! `lib.rs` declares only `mod ir;` / `mod parse;`, so nothing pulls this
+//! file into the crate. It also still speaks the pre-scene-registry
+//! `Element::External` model (`backend.register_external::<MarkdownDoc,
+//! _>`), which CLAUDE.md §3 records as removed. On Linux today markdown
+//! renders through the ONE caps-generic handler `register` installs
+//! (`mount_markdown`), the same path web/SSR/terminal take — correct
+//! output, without this file's one-label optimization.
+//!
+//! Kept (rather than deleted) because it is the written half of a
+//! single-node GTK leaf; wiring it up means declaring the module behind
+//! `cfg(all(target_os = "linux", not(target_arch = "wasm32")))`, adding a
+//! `Registry<LinuxBackend>` type-dispatch arm to `register` the way
+//! `codeblock::register` does, and typechecking it for the first time —
+//! it has never been compiled. Until then, treat every claim below as
+//! unverified.
+//!
 //! Renders the WHOLE document as ONE `gtk::Label` whose text is the
 //! concatenation of the shared [`segments::lower`] flattening and whose
 //! per-segment styling is carried as `pango::Attr*` ranges on a single
@@ -19,6 +37,19 @@
 //!   block tint);
 //! - `AttrInt` underline (links) / strikethrough (GFM `~~`).
 //!
+//! # Not selectable — and therefore not a focus stop
+//!
+//! `gtk_label_set_selectable()` also turns the widget's `focusable`
+//! property on, and GTK hands keyboard focus to the first focusable
+//! widget in a freshly mapped subtree. A selectable document label
+//! therefore captured focus the moment its screen mounted: it drew a
+//! focus caret (reading as a highlight over the first block) and ate the
+//! arrow keys that should have scrolled the page. Text rendered from a
+//! `text`/markdown leaf is not a focus stop on any other backend, so the
+//! label stays non-selectable here too (CLAUDE.md §7 — converge on the
+//! observable behavior). Adding text selection is an all-backends change,
+//! not a GTK-local one.
+//!
 //! # Pango ranges are BYTE indices
 //!
 //! Attribute `start_index`/`end_index` are byte offsets into the UTF-8
@@ -26,14 +57,13 @@
 //! concatenate segments so multi-byte runs (`│`, `─`, `•`, emoji) color
 //! the correct range.
 //!
-//! # No measure fn (backend limitation)
+//! # Measurement
 //!
-//! `register_external_view` wraps the label as a plain leaf without a
-//! Taffy measure function (the backend's `layout` handle is `pub(crate)`
-//! and this crate must not edit `backend-linux`). The label sizes from the
-//! author's `.with_style` dimensions on the markdown node. A width-aware
-//! wrapping measure is a backend-side follow-up, the shape of iOS's
-//! `install_external_wrapping_measure`.
+//! `register_external_view` installs a Taffy measure fn over the widget
+//! (`backend_linux::widget_measure`), so the label sizes to its intrinsic
+//! content when the author pins no explicit width/height. Author
+//! `width`/`height` from `.with_style` still win — they land in Taffy's
+//! `size` via `apply_style`, which overrides the measured intrinsic.
 
 use crate::ir::MarkdownDoc;
 use crate::segments::{self, Seg};
@@ -67,9 +97,10 @@ fn build(doc: &Rc<MarkdownDoc>, b: &mut LinuxBackend) -> LinuxNode {
     // Multi-line, word-wrapped, top-left aligned — matches the framework
     // `text` leaf defaults and the mobile handlers' wrapping labels.
     label.set_wrap(true);
-    label.set_selectable(true);
     label.set_xalign(0.0);
     label.set_yalign(0.0);
+    // See "Not selectable — and therefore not a focus stop" above.
+    label.set_focusable(false);
 
     let segs = segments::lower(doc);
     let (text, attrs) = build_text_and_attrs(&segs);
@@ -173,3 +204,4 @@ fn build_text_and_attrs(segs: &[Seg]) -> (String, pango::AttrList) {
 fn channel_to_u16(c: f32) -> u16 {
     (c.clamp(0.0, 1.0) * 65535.0).round() as u16
 }
+

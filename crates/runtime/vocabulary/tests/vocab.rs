@@ -860,8 +860,49 @@ fn default_text_font_fills_absent_font_family() {
 mod robot_registry {
     use super::*;
     use runtime_scene::dyn_keyed;
-    use runtime_vocabulary::builders::{scroll_view, text_input};
+    use runtime_vocabulary::builders::{link, scroll_view, text_input};
     use runtime_vocabulary::robot::{ElementKind, Query, Robot, RobotError};
+
+    /// A `link` must honor `test_id`, and its robot `click` must fire the
+    /// activation.
+    ///
+    /// `LinkPrim` used to carry NO identity slot: `link(test_id = …)` parsed,
+    /// compiled, and was silently discarded (the glue wrapper was explicitly
+    /// `test_id_ignored`). A link is usually an app's only way to reach another
+    /// screen, so that dropped anchor meant automation could not navigate a
+    /// route-based app at all — `find_element` had nothing to match, and the
+    /// per-route parity sweep over `idea-ui-docs` had no way to visit a route.
+    #[test]
+    fn a_link_registers_its_test_id_and_click_activates_it() {
+        let robot = Robot::new();
+        robot.reset();
+        let h = harness();
+        let activations = Rc::new(Cell::new(0));
+        let sink = activations.clone();
+        let _realized = h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                link()
+                    .test_id("go-to-settings")
+                    .url("/settings")
+                    .on_activate(move || sink.set(sink.get() + 1))
+                    .build(),
+            )
+        });
+
+        let el = robot
+            .find(Query::test_id("go-to-settings"))
+            .expect("a link must register under its test_id");
+        assert_eq!(el.kind, ElementKind::Link);
+        robot.click(&el).expect("click available on a link");
+        assert_eq!(
+            activations.get(),
+            1,
+            "the robot click must run the link's activation — the same one a real \
+             tap fires",
+        );
+    }
 
     /// Mount registers every identity-bearing prim; lookup by test_id
     /// resolves the RIGHT node — clicking the found button fires that

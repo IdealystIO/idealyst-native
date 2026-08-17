@@ -8,7 +8,12 @@
 //! engine, not from the `StyleRules` the framework asked for, so a diff
 //! against the macOS backend catches real divergence.
 //!
-//! Gated on `debug-stats` (a diagnostic surface; compiled out of production).
+//! NOT gated: this module is compiled into every web build, including release.
+//! (It claimed a `debug-stats` gate for a long time and never had one.) The
+//! runtime cost is nil — the only caller is the Robot bridge, which a release
+//! build never starts — but the code is carried. `backend-linux` gates its
+//! equivalent behind its `robot` feature; doing the same here means deciding
+//! what a wasm release build should pay for a diagnostic it cannot serve.
 
 use wasm_bindgen::JsCast;
 use web_sys::Element;

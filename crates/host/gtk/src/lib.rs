@@ -35,6 +35,56 @@ use backend_linux::LinuxBackend;
 
 mod scheduler;
 
+/// Install the framework scheduler on the GTK main loop (GLib sources
+/// backing `after_ms` / `raf_loop` / `schedule_microtask`).
+///
+/// [`run`] / [`run_with`] already call this, so an app never needs it.
+/// It is public for the two callers that build the host configuration
+/// themselves and would otherwise run a DIFFERENT runtime than
+/// production:
+///
+/// - **integration tests** that mount an app over a hand-built
+///   `LinuxBackend` (they cannot go through `run`, which blocks on the
+///   main loop);
+/// - **embedders** hosting the backend inside their own GTK application.
+///
+/// Skipping it is not a graceful degradation. `after_ms` with no
+/// scheduler installed runs its closure SYNCHRONOUSLY on every non-web
+/// target, so any self-rescheduling animation — `Progress(mode =
+/// Simulated)`, the welcome timeline, `Skeleton`'s shimmer — recurses
+/// into itself without ever yielding and takes the process down with a
+/// stack overflow. Mirrors `backend_web::install_scheduler`.
+pub fn install_scheduler() {
+    scheduler::install();
+}
+
+/// Run `f` once, as soon as the GTK main loop starts turning.
+///
+/// The reason this exists: the Robot bridge's poll is SCHEDULER-driven
+/// (`bridge::schedule_periodic_poll` bails outright when no scheduler is
+/// installed), and the scheduler is installed inside [`run`] / [`run_with`] —
+/// so a generated wrapper cannot start the bridge before handing control over,
+/// and has nowhere to do it after. Deferring to a GLib idle threads it exactly
+/// between the two: [`run_with`] installs the scheduler synchronously before the
+/// loop starts, so by the time this fires there is one.
+///
+/// Kept generic (rather than a bridge-specific hook) so `host-gtk` needs no
+/// dependency on the robot surface; the wrapper owns that, gated on its own
+/// `dev` feature.
+pub fn on_main_loop_start<F: FnOnce() + 'static>(f: F) {
+    gtk4::glib::idle_add_local_once(f);
+}
+
+/// Install the GTK per-frame render-loop driver
+/// (`runtime_core::driver::render_loop`), which an embedded GPU host
+/// uses to drive its paint. Called by [`run`] / [`run_with`]; public for
+/// the same two callers as [`install_scheduler`]. Without it,
+/// `render_loop` hands back an inert handle and an embedded wgpu preview
+/// stays blank with nothing logged.
+pub fn install_render_loop() {
+    scheduler::install_render_loop();
+}
+
 /// Window configuration for [`run`].
 pub struct RunOptions {
     pub title: String,
@@ -124,7 +174,14 @@ where
 
         let window = gtk4::ApplicationWindow::new(app);
         window.set_title(Some(&opts.title));
-        window.set_default_size(opts.width, opts.height);
+        // `IDEALYST_WINDOW_SIZE` overrides the requested size. This is how
+        // `idealyst test --parity` pins every platform to the SAME viewport —
+        // without it the GTK window opens at the app's own default while the
+        // headless browser opens at the parity viewport, and every
+        // responsive-layout difference between the two shows up as a false
+        // divergence. The gpu AppKit host reads the same variable.
+        let (w, h) = window_size_override().unwrap_or((opts.width, opts.height));
+        window.set_default_size(w, h);
 
         // Seed the reactive viewport BEFORE anything realizes.
         //
@@ -147,8 +204,8 @@ where
         // information available pre-realize; the allocation-driven publish
         // in `run_layout` still corrects the signal once GTK settles.
         runtime_shared::set_viewport_size(runtime_shared::ViewportSize {
-            width: opts.width as f32,
-            height: opts.height as f32,
+            width: w as f32,
+            height: h as f32,
         });
 
         let backend = LinuxBackend::new(window.clone().upcast());
@@ -209,4 +266,17 @@ where
         app_handle.stop();
     }
     exit.into()
+}
+
+/// `IDEALYST_WINDOW_SIZE=1280x800` (also accepts `X` or `,`), the
+/// cross-platform window-size override the parity runner sets. `None` when
+/// unset or unparseable; a non-positive dimension is rejected rather than
+/// applied, so a malformed value falls back to the app's own default instead of
+/// opening a zero-sized window.
+fn window_size_override() -> Option<(i32, i32)> {
+    let raw = std::env::var("IDEALYST_WINDOW_SIZE").ok()?;
+    let (w, h) = raw.split_once(['x', 'X', ','])?;
+    let w = w.trim().parse::<i32>().ok()?;
+    let h = h.trim().parse::<i32>().ok()?;
+    (w > 0 && h > 0).then_some((w, h))
 }

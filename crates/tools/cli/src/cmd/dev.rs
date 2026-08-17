@@ -2123,6 +2123,27 @@ fn spawn_headless_client(host: &str, port: u16, dir: &Path, children: Arc<Mutex<
 /// available, or the TCP poll times out, we exit silently — the URL
 /// is already logged above, so the user can click that.
 fn spawn_browser_opener(host: &str, port: u16) {
+    // Never hijack the user's browser when the CLI is DRIVING one.
+    //
+    // `idealyst test` (parity / robot) sets `IDEALYST_TEST_DRIVER=1` and
+    // launches its own headless client at a pinned viewport. Opening the
+    // default browser as well puts TWO clients on the relay, and the verbs are
+    // then answered by whichever dialled — in practice the visible window, at
+    // whatever size the user's display happens to be.
+    //
+    // That silently invalidates a whole parity run: measured live, the visible
+    // window laid the page out at 1912x890 while the pinned headless client (and
+    // the native app it was being compared against) were at 1280x800, so every
+    // element differed in size and position and all 49 screens "failed". It also
+    // steals focus and pops a window in the user's face mid-test.
+    if std::env::var_os("IDEALYST_TEST_DRIVER").is_some() {
+        crate::dlog!(
+            "dev web",
+            "IDEALYST_TEST_DRIVER set — not opening a browser (the test driver \
+             launches its own at a pinned viewport)"
+        );
+        return;
+    }
     let connect_host = match host {
         "0.0.0.0" | "::" | "[::]" => "localhost".to_string(),
         other => other.to_string(),

@@ -275,6 +275,52 @@ fn bump_revision() {
 }
 
 /// The current change-revision (read by a bridge/relay transport).
+/// The element a registration would currently be parented under — the top of
+/// the parent stack, or `None` at a realize root.
+///
+/// Captured by handlers that realize a subtree LATER, outside the mount's
+/// dynamic scope (see [`with_parent`]).
+pub fn current_parent() -> Option<ElementId> {
+    PARENT_STACK.with(|s| s.borrow().last().copied())
+}
+
+/// Run `f` with `parent` as the ambient registration parent.
+///
+/// # Why this exists
+///
+/// A handler that realizes its subtree asynchronously — `lazy`, once its chunk
+/// arrives — is no longer inside the dynamic scope that `register_mount`'s
+/// parent stack tracks, so everything it mounts registers as a detached
+/// registry ROOT. The elements are all there and individually addressable, but
+/// `get_parent` / `get_children` report nothing linking them to the tree, and
+/// any tooling that scopes by a `test_id` ancestor sees an EMPTY subtree.
+///
+/// Measured on the `idea-ui-docs` web build, whose page bodies are all
+/// `#[component(lazy)]`: the `page-content` anchor had 0 children while a
+/// detached 399-element root held the actual page, so a parity sweep scoped to
+/// that anchor compared nothing at all. Native was unaffected — `lazy` mounts
+/// inline there, through the mount context, which keeps the parenting.
+///
+/// Pass the value [`current_parent`] returned at MOUNT time.
+pub fn with_parent<R>(parent: Option<ElementId>, f: impl FnOnce() -> R) -> R {
+    let Some(parent) = parent else {
+        return f();
+    };
+    PARENT_STACK.with(|s| s.borrow_mut().push(parent));
+    let out = f();
+    PARENT_STACK.with(|s| {
+        let mut stack = s.borrow_mut();
+        debug_assert_eq!(
+            stack.last(),
+            Some(&parent),
+            "robot parent stack out of order — `with_parent` must nest LIFO with \
+             the `RegisteredPrim` guards realized inside it"
+        );
+        stack.pop();
+    });
+    out
+}
+
 pub fn current_revision() -> u64 {
     ROBOT_REVISION.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -1269,6 +1315,41 @@ pub mod bridge {
                         .map_err(|e| format!("failed to serialize native tree: {e}")),
                     None => Ok("null".into()),
                 }
+            }
+            "introspect_subtree" => {
+                // BATCHED `introspect_native`: one call returns the native node
+                // for `element_id` and every descendant, keyed by element id.
+                //
+                // The per-element verb costs a full bridge round trip each, and
+                // the round trip is bounded below by the bridge's 16 ms poll —
+                // so a cross-platform parity capture of a 400-element screen
+                // spent ~800 round trips and over ten seconds PER PLATFORM,
+                // which put a 49-route sweep past ten minutes. Reading the whole
+                // subtree in one call collapses that to one round trip per
+                // screen per platform.
+                //
+                // Elements the backend cannot introspect are omitted rather than
+                // emitted as `null`: absence already means "no data" to every
+                // caller, and skipping them keeps the payload to what is
+                // actually comparable.
+                let el = resolve_element(args)?;
+                let mut out: Vec<String> = Vec::new();
+                let mut stack = vec![el];
+                while let Some(current) = stack.pop() {
+                    for child in robot.children_of(&current) {
+                        stack.push(child);
+                    }
+                    match robot.introspect_native(&current).map_err(|e| e.to_string())? {
+                        Some(node) => {
+                            let json = serde_json::to_string(&node).map_err(|e| {
+                                format!("failed to serialize native tree: {e}")
+                            })?;
+                            out.push(format!("\"{}\":{}", current.id.0, json));
+                        }
+                        None => continue,
+                    }
+                }
+                Ok(format!("{{{}}}", out.join(",")))
             }
             "list_components" => {
                 // Same JSON shape as the old bridge's `list_components`

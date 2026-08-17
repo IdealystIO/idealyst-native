@@ -39,7 +39,7 @@ pub struct DevLaunch {
     /// in), matching the bare `idealyst dev` behavior.
     pub dir: Option<PathBuf>,
     /// Target platforms — any of `web`, `ios`, `android`, `macos`,
-    /// `terminal`. Empty + `all == false` → `idealyst dev` falls back
+    /// `terminal`, `linux`, `windows`. Empty + `all == false` → `idealyst dev` falls back
     /// to the manifest's declared `targets`.
     pub platforms: Vec<String>,
     /// `--all`: every platform the host can build for.
@@ -415,11 +415,11 @@ pub fn tail_log(
 /// doesn't fail later with a clap error the caller never sees (its
 /// stderr goes to the log file, not the tool response).
 fn validate_platforms(platforms: &[String]) -> Result<(), String> {
-    const VALID: &[&str] = &["web", "ios", "android", "macos", "terminal"];
+    const VALID: &[&str] = &["web", "ios", "android", "macos", "terminal", "linux", "windows"];
     for p in platforms {
         if !VALID.contains(&p.to_lowercase().as_str()) {
             return Err(format!(
-                "unknown platform {p:?}; valid: web, ios, android, macos, terminal"
+                "unknown platform {p:?}; valid: web, ios, android, macos, terminal, linux, windows"
             ));
         }
     }
@@ -454,6 +454,20 @@ mod tests {
         assert!(err.contains("wat"), "{err}");
         // Case-insensitive accept.
         validate_platforms(&["Web".into(), "IOS".into()]).unwrap();
+    }
+
+    /// The native desktop targets must be reachable from MCP.
+    ///
+    /// `idealyst dev` has taken `--linux` (GTK4 via `host-gtk`) and
+    /// `--windows` (Win32) for a while, and the flag this module emits is
+    /// just `--<platform>` — but the allow-list here omitted both, so an
+    /// agent could build and drive a Linux app only by shelling out to the
+    /// CLI, never through `run_dev`.
+    #[test]
+    fn accepts_the_native_desktop_platforms() {
+        validate_platforms(&["linux".into()]).unwrap();
+        validate_platforms(&["windows".into()]).unwrap();
+        validate_platforms(&["Linux".into(), "web".into()]).unwrap();
     }
 
     #[test]

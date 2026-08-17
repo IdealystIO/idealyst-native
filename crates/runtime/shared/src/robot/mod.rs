@@ -15,8 +15,8 @@
 //!   reports them) via [`Robot::introspect_native`] / the bridge's
 //!   `introspect_native` verb, so two backends' trees can be diffed for
 //!   cross-platform parity. See [`crate::introspect`]. Backed by
-//!   `Backend::introspect_native` (web + macOS today); the verb is gated on
-//!   the `debug-stats` feature.
+//!   `Backend::introspect_native` (web, macOS and Linux/GTK today); the verb is
+//!   gated on the `debug-stats` feature.
 //!
 //! # Architecture
 //!

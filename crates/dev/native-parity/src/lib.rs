@@ -38,14 +38,34 @@ pub enum PropValue {
     Flag(bool),
 }
 
+/// Platform-resolved geometry in logical px, window/viewport-relative —
+/// mirrors `runtime_shared::introspect::NativeRect`. Read from the layout
+/// engine (`getBoundingClientRect`, a GTK allocation, a `CALayer` frame), never
+/// from the framework's own Taffy result: on web especially the browser is the
+/// layout authority and Taffy's numbers are an input, not the outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Deserialize)]
+pub struct NativeRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
 /// One native node as reported by a backend. `class` (the platform class/tag)
 /// is intentionally **not** compared across platforms — `NSTextField` vs
-/// `input` is expected to differ; the *resolved props* are what must match.
+/// `input` is expected to differ; the *resolved props* and the *geometry* are
+/// what must match.
 #[derive(Debug, Clone, Deserialize)]
 pub struct NativeNode {
     pub class: String,
     #[serde(default)]
     pub role: Option<String>,
+    /// The platform's laid-out rect. `Option` because absence is meaningful:
+    /// a backend that reports no geometry must not be diffed as if it had
+    /// claimed `0x0` at the origin. Every geometry comparison requires BOTH
+    /// sides to have a frame.
+    #[serde(default)]
+    pub frame: Option<NativeRect>,
     #[serde(default)]
     pub props: BTreeMap<String, PropValue>,
     #[serde(default)]
@@ -311,11 +331,22 @@ pub struct Tolerance {
     pub color: f32,
     pub length: f32,
     pub number: f32,
+    /// Budget for laid-out geometry (sizes + parent-relative offsets), in
+    /// logical px.
+    ///
+    /// Deliberately looser than [`length`](Self::length): two platforms
+    /// rasterize and measure text with different engines (HarfBuzz/Pango vs
+    /// the browser's shaper), so an intrinsically-sized label legitimately
+    /// differs by a pixel or two and every ancestor inherits that drift.
+    /// Sub-pixel exactness is not the property worth asserting — "the same box
+    /// in the same place" is. A real layout bug (a row that became a column, a
+    /// collapsed container) is off by tens of px and clears any sane budget.
+    pub geometry: f32,
 }
 
 impl Default for Tolerance {
     fn default() -> Self {
-        Self { color: 0.02, length: 0.5, number: 0.5 }
+        Self { color: 0.02, length: 0.5, number: 0.5, geometry: 2.0 }
     }
 }
 
@@ -342,11 +373,17 @@ pub struct DiffOptions {
     ///
     /// Off → a raw, key-by-key compare (every representation difference shows).
     pub normalize: bool,
+    /// Compare laid-out GEOMETRY as well as visual props: each element's size,
+    /// its offset within its aligned parent, and the axis its children are
+    /// arranged along. On by default — layout divergence is the main thing
+    /// cross-platform parity exists to catch, and it is invisible in the prop
+    /// maps. See [`geometry_mismatches`].
+    pub geometry: bool,
 }
 
 impl Default for DiffOptions {
     fn default() -> Self {
-        Self { tol: Tolerance::default(), normalize: true }
+        Self { tol: Tolerance::default(), normalize: true, geometry: true }
     }
 }
 
@@ -404,6 +441,187 @@ pub fn diff_with(a: &Capture, b: &Capture, opts: DiffOptions) -> Vec<Mismatch> {
                         kind: MismatchKind::PropMissing { in_a: present_a.is_some() } });
                 }
             }
+        }
+    }
+    if opts.geometry {
+        out.extend(geometry_mismatches(a, b, opts.tol.geometry));
+    }
+    out
+}
+
+// ===========================================================================
+// Geometry
+//
+// The frame is where cross-platform layout bugs actually live, and it was the
+// one thing this diff did not look at: the model dropped `frame` on the floor
+// (serde ignored it) and `diff_with` walked only `props`. A row that renders as
+// a column, a container that collapses to zero height, an element pushed off
+// its parent — none of it moved a single canonical prop, so parity reported
+// clean.
+//
+// Three comparisons, in increasing order of robustness:
+//
+// 1. `frame.width` / `frame.height` — the element's own box. Absolute, because
+//    "the same element is the same size" holds regardless of where it sits.
+//
+// 2. `frame.dx` / `frame.dy` — position RELATIVE to the nearest aligned
+//    ancestor, not absolute. Absolute positions differ for legitimate reasons
+//    (different chrome, a scroll offset, a window inset), and comparing them
+//    would report every descendant of a shifted container as broken. Relative
+//    offsets localize a divergence to the element that actually moved.
+//
+// 3. `frame.child_axis` — the axis a node's children progress along, derived
+//    from their frames and compared as a CATEGORY (row / column). This is the
+//    tolerance-free one, and the one that catches the bug class this exists
+//    for: an icon that sits beside its label on one platform and above it on
+//    another is a Row-vs-Column disagreement no pixel budget can explain away.
+// ===========================================================================
+
+/// The axis a set of sibling frames progresses along.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildAxis {
+    /// Each sibling starts after the previous one horizontally.
+    Row,
+    /// Each sibling starts below the previous one.
+    Column,
+    /// Siblings overlap, or progress along different axes from pair to pair
+    /// (a wrapped row, a stack of absolutely-positioned children). Not
+    /// comparable — reporting it would be noise, so it is skipped.
+    Ambiguous,
+}
+
+impl ChildAxis {
+    fn label(self) -> &'static str {
+        match self {
+            ChildAxis::Row => "row",
+            ChildAxis::Column => "column",
+            ChildAxis::Ambiguous => "ambiguous",
+        }
+    }
+}
+
+/// Classify how `frames` (in sibling order) are arranged.
+///
+/// A consecutive pair separates horizontally when the later frame starts at or
+/// after the earlier one's right edge, and vertically when it starts at or
+/// below its bottom edge. `overlap_eps` absorbs the sub-pixel touch of
+/// adjacent boxes. Exactly one axis holding makes the pair determinate; both or
+/// neither (overlapping boxes) makes it ambiguous. The whole set is `Row` /
+/// `Column` only when every determinate pair agrees.
+pub fn classify_axis(frames: &[NativeRect], overlap_eps: f32) -> ChildAxis {
+    if frames.len() < 2 {
+        return ChildAxis::Ambiguous;
+    }
+    let mut seen: Option<ChildAxis> = None;
+    for w in frames.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let horizontal = b.x + overlap_eps >= a.x + a.width;
+        let vertical = b.y + overlap_eps >= a.y + a.height;
+        let pair = match (horizontal, vertical) {
+            (true, false) => ChildAxis::Row,
+            (false, true) => ChildAxis::Column,
+            _ => continue, // overlapping or coincident — no signal from this pair
+        };
+        match seen {
+            None => seen = Some(pair),
+            Some(prev) if prev == pair => {}
+            Some(_) => return ChildAxis::Ambiguous,
+        }
+    }
+    seen.unwrap_or(ChildAxis::Ambiguous)
+}
+
+/// The nearest ancestor path of `path` that both captures hold, or `None` for a
+/// top-level element (whose absolute position is legitimately platform-specific
+/// and so is never compared).
+fn aligned_parent<'a>(path: &'a str, a: &Capture, b: &Capture) -> Option<&'a str> {
+    let mut cut = path;
+    while let Some(i) = cut.rfind('/') {
+        cut = &cut[..i];
+        if a.contains_key(cut) && b.contains_key(cut) {
+            return Some(cut);
+        }
+    }
+    None
+}
+
+/// Direct children of `path` within a capture, in path order.
+fn child_paths<'a>(path: &str, cap: &'a Capture) -> Vec<&'a String> {
+    let prefix = format!("{path}/");
+    cap.keys()
+        .filter(|k| {
+            k.strip_prefix(&prefix)
+                .map(|rest| !rest.contains('/'))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+/// Compare the laid-out geometry of every element present in both captures.
+/// See the module section above for what is compared and why.
+pub fn geometry_mismatches(a: &Capture, b: &Capture, tol: f32) -> Vec<Mismatch> {
+    let mut out = Vec::new();
+    for (path, na) in a {
+        let Some(nb) = b.get(path) else { continue };
+        let (Some(fa), Some(fb)) = (na.frame, nb.frame) else { continue };
+
+        let mut push = |key: &str, x: f32, y: f32| {
+            if (x - y).abs() > tol {
+                out.push(Mismatch {
+                    path: path.clone(),
+                    key: key.to_string(),
+                    kind: MismatchKind::ValueDiffers {
+                        a: PropValue::Length(x),
+                        b: PropValue::Length(y),
+                    },
+                });
+            }
+        };
+        push("frame.width", fa.width, fb.width);
+        push("frame.height", fa.height, fb.height);
+
+        // Parent-relative offset — see (2) above.
+        if let Some(parent) = aligned_parent(path, a, b) {
+            let (pa, pb) = (a[parent].frame, b[parent].frame);
+            if let (Some(pa), Some(pb)) = (pa, pb) {
+                push("frame.dx", fa.x - pa.x, fb.x - pb.x);
+                push("frame.dy", fa.y - pa.y, fb.y - pb.y);
+            }
+        }
+    }
+
+    // Child-axis disagreement — see (3) above. Compared per parent, over the
+    // children BOTH captures have, in the same order.
+    for path in a.keys() {
+        if !b.contains_key(path) {
+            continue;
+        }
+        let kids: Vec<&String> = child_paths(path, a)
+            .into_iter()
+            .filter(|k| b.contains_key(*k))
+            .collect();
+        if kids.len() < 2 {
+            continue;
+        }
+        let frames = |cap: &Capture| -> Option<Vec<NativeRect>> {
+            kids.iter().map(|k| cap[*k].frame).collect()
+        };
+        let (Some(fa), Some(fb)) = (frames(a), frames(b)) else { continue };
+        let (axis_a, axis_b) = (classify_axis(&fa, tol), classify_axis(&fb, tol));
+        // Only a determinate disagreement is a finding; `Ambiguous` on either
+        // side means the arrangement carries no comparable signal.
+        if axis_a != axis_b
+            && axis_a != ChildAxis::Ambiguous
+            && axis_b != ChildAxis::Ambiguous
+        {
+            out.push(Mismatch {
+                path: path.clone(),
+                key: "frame.child_axis".into(),
+                kind: MismatchKind::ValueDiffers {
+                    a: PropValue::Text(axis_a.label().into()),
+                    b: PropValue::Text(axis_b.label().into()),
+                },
+            });
         }
     }
     out
@@ -478,7 +696,19 @@ mod tests {
         NativeNode {
             class: "x".into(),
             role: None,
+            frame: None,
             props: props.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(),
+            children: Vec::new(),
+        }
+    }
+
+    /// A node carrying only geometry — the shape the geometry checks read.
+    fn framed(x: f32, y: f32, w: f32, h: f32) -> NativeNode {
+        NativeNode {
+            class: "x".into(),
+            role: None,
+            frame: Some(NativeRect { x, y, width: w, height: h }),
+            props: BTreeMap::new(),
             children: Vec::new(),
         }
     }
@@ -487,6 +717,140 @@ mod tests {
         let mut c = Capture::new();
         c.insert(path.into(), n);
         c
+    }
+
+    /// The reported bug this whole geometry pass exists for: `Tag` with a
+    /// leading icon renders icon-beside-label on web and icon-ABOVE-label on
+    /// Linux. Not one canonical prop differs — only the frames do — so before
+    /// geometry was compared, parity called this clean.
+    #[test]
+    fn child_axis_catches_a_row_that_became_a_column() {
+        // web: icon then label, side by side inside a 60x20 tag.
+        let mut web = Capture::new();
+        web.insert("Tag#0".into(), framed(0.0, 0.0, 60.0, 20.0));
+        web.insert("Tag#0/icon#0".into(), framed(0.0, 2.0, 16.0, 16.0));
+        web.insert("Tag#0/text|Verified#0".into(), framed(20.0, 2.0, 40.0, 16.0));
+
+        // linux: the same two children stacked vertically.
+        let mut lin = Capture::new();
+        lin.insert("Tag#0".into(), framed(0.0, 0.0, 40.0, 36.0));
+        lin.insert("Tag#0/icon#0".into(), framed(0.0, 0.0, 16.0, 16.0));
+        lin.insert("Tag#0/text|Verified#0".into(), framed(0.0, 20.0, 40.0, 16.0));
+
+        let m = diff(&web, &lin, Tolerance::default());
+        let axis = m
+            .iter()
+            .find(|x| x.key == "frame.child_axis")
+            .expect("a row-vs-column disagreement must be reported");
+        assert_eq!(axis.path, "Tag#0");
+        assert_eq!(
+            axis.kind,
+            MismatchKind::ValueDiffers {
+                a: PropValue::Text("row".into()),
+                b: PropValue::Text("column".into()),
+            }
+        );
+        // The label's parent-relative offset moved too, and that is reported at
+        // the element that actually moved rather than at every later sibling.
+        assert!(m.iter().any(|x| x.key == "frame.dy" && x.path.ends_with("Verified#0")));
+    }
+
+    /// The comparison ROOT has no aligned parent, so its own offset is never
+    /// compared — only its size and its descendants' offsets within it. That is
+    /// what makes a scoped comparison (`root = "page-content"`) work: the
+    /// content column sits at a different absolute x on two platforms whose
+    /// chrome differs, and that must not be a finding.
+    #[test]
+    fn the_scoped_root_offset_is_never_compared() {
+        let mut a = Capture::new();
+        a.insert("#page-content#0".into(), framed(252.0, 58.0, 700.0, 400.0));
+        a.insert("#page-content#0/text|Hi#0".into(), framed(260.0, 66.0, 30.0, 20.0));
+        let mut b = Capture::new();
+        // Same content box, at a different absolute origin.
+        b.insert("#page-content#0".into(), framed(300.0, 90.0, 700.0, 400.0));
+        b.insert("#page-content#0/text|Hi#0".into(), framed(308.0, 98.0, 30.0, 20.0));
+        assert!(
+            diff(&a, &b, Tolerance::default()).is_empty(),
+            "only the root's SIZE is comparable; its position is chrome"
+        );
+        // A child that moved WITHIN the root is still caught.
+        b.insert("#page-content#0/text|Hi#0".into(), framed(308.0, 140.0, 30.0, 20.0));
+        let m = diff(&a, &b, Tolerance::default());
+        assert!(m.iter().any(|x| x.key == "frame.dy"), "got {m:?}");
+    }
+
+    /// Identical layout must be silent even though the two platforms sit at
+    /// different absolute positions — that is what makes offsets
+    /// parent-relative.
+    #[test]
+    fn a_whole_subtree_offset_is_not_a_divergence() {
+        let mut a = Capture::new();
+        a.insert("Root#0".into(), framed(0.0, 0.0, 100.0, 40.0));
+        a.insert("Root#0/text|Hi#0".into(), framed(8.0, 8.0, 30.0, 20.0));
+        let mut b = Capture::new();
+        // Same shape, whole subtree shifted by (250, 60) — a sidebar's width,
+        // a header's height, a scroll offset.
+        b.insert("Root#0".into(), framed(250.0, 60.0, 100.0, 40.0));
+        b.insert("Root#0/text|Hi#0".into(), framed(258.0, 68.0, 30.0, 20.0));
+        assert!(
+            diff(&a, &b, Tolerance::default()).is_empty(),
+            "absolute position is platform chrome, not a parity failure"
+        );
+    }
+
+    /// A collapsed container is a size divergence even when its children agree.
+    #[test]
+    fn a_collapsed_box_is_reported_as_a_size_divergence() {
+        let a = cap("V#0", framed(0.0, 0.0, 200.0, 48.0));
+        let b = cap("V#0", framed(0.0, 0.0, 200.0, 0.0));
+        let m = diff(&a, &b, Tolerance::default());
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].key, "frame.height");
+    }
+
+    /// Text measured by two different shapers legitimately differs by a pixel
+    /// or so; that must not drown the report.
+    #[test]
+    fn sub_pixel_text_metric_drift_is_within_budget() {
+        let a = cap("t#0", framed(0.0, 0.0, 40.0, 20.0));
+        let b = cap("t#0", framed(0.0, 0.0, 41.4, 20.5));
+        assert!(diff(&a, &b, Tolerance::default()).is_empty());
+        // …but a real miss is still caught.
+        let c = cap("t#0", framed(0.0, 0.0, 64.0, 20.0));
+        assert_eq!(diff(&a, &c, Tolerance::default()).len(), 1);
+    }
+
+    /// Overlapping children carry no axis signal, so no verdict is emitted —
+    /// otherwise every absolutely-positioned stack would report a phantom
+    /// divergence.
+    #[test]
+    fn overlapping_children_are_ambiguous_not_a_finding() {
+        let over = [
+            NativeRect { x: 0.0, y: 0.0, width: 50.0, height: 50.0 },
+            NativeRect { x: 10.0, y: 10.0, width: 50.0, height: 50.0 },
+        ];
+        assert_eq!(classify_axis(&over, 2.0), ChildAxis::Ambiguous);
+
+        let mut a = Capture::new();
+        a.insert("S#0".into(), framed(0.0, 0.0, 60.0, 60.0));
+        a.insert("S#0/a#0".into(), framed(0.0, 0.0, 50.0, 50.0));
+        a.insert("S#0/b#0".into(), framed(10.0, 10.0, 50.0, 50.0));
+        let mut b = Capture::new();
+        b.insert("S#0".into(), framed(0.0, 0.0, 60.0, 60.0));
+        b.insert("S#0/a#0".into(), framed(0.0, 0.0, 50.0, 50.0));
+        b.insert("S#0/b#0".into(), framed(10.0, 10.0, 50.0, 50.0));
+        assert!(!diff(&a, &b, Tolerance::default())
+            .iter()
+            .any(|m| m.key == "frame.child_axis"));
+    }
+
+    /// A backend that reports no geometry must not be diffed as if it had
+    /// claimed a zero rect at the origin.
+    #[test]
+    fn a_missing_frame_is_skipped_not_treated_as_zero() {
+        let a = cap("0", framed(0.0, 0.0, 100.0, 40.0));
+        let b = cap("0", node(&[])); // no frame in the payload
+        assert!(diff(&a, &b, Tolerance::default()).is_empty());
     }
 
     #[test]

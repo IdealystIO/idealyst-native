@@ -36,7 +36,42 @@
 //! `content-fit` (the `ObjectFit`) is honored in `apply_style`
 //! (`super::apply_style` routes an image node here) — a `src` swap keeps
 //! the fit, matching the other backends.
+//!
+//! ## `on_load` / `on_error`
+//!
+//! `install_image_load_handler` / `install_image_error_handler` are
+//! DEFAULTED no-ops on the capability trait, and this backend used to
+//! inherit both — so an author's `Image(on_error = ...)` fallback simply
+//! never ran on Linux while it did on web and Apple. The docs app's Image
+//! page says "Falls back to a placeholder if the source can't load" and
+//! rendered an empty box instead: the remote fetch failed (no GVfs http
+//! backend on the host) and nothing told the app.
+//!
+//! Both are wired now, which required taking the load into our own hands
+//! rather than handing GTK a `GFile`:
+//!
+//! - `data:` URI and local path resolve SYNCHRONOUSLY, so the outcome is
+//!   known inside `set_source`.
+//! - `http(s)` goes through [`gio::File::load_bytes_async`] +
+//!   `gdk::Texture::from_bytes` instead of `Picture::set_file`. Same GIO
+//!   transport as before — but `set_file` reports no error at all, whereas
+//!   `load_bytes_async` hands back a `Result`, which is the difference
+//!   between an app's error fallback running and a silently blank box.
+//!
+//! Handlers are installed by the walker AFTER `create_image` returns, so a
+//! synchronous outcome has to be REMEMBERED and replayed on install — the
+//! trait requires `on_load` to fire immediately for an already-decoded
+//! image. [`LinuxBackend::image_nodes`](crate::LinuxBackend) holds that
+//! per-node state.
+//!
+//! Author handlers are invoked with NO backend borrow held: they write
+//! signals, signal writes run effects synchronously, and effects re-enter
+//! the backend. Firing one through a live `RefCell` borrow aborts the
+//! process with `RefCell already borrowed` — the same hazard documented on
+//! `set_viewport_size` and `on_scroll`.
 
+use gtk4::gio::prelude::*;
+use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib};
 
 use runtime_shared::ObjectFit;
@@ -57,50 +92,113 @@ pub(crate) fn map_fit(fit: ObjectFit) -> gtk4::ContentFit {
 /// when the node's `object_fit` is set. `set_can_shrink(true)` lets the
 /// picture size *down* to a box smaller than the bitmap (GTK defaults to
 /// only shrinking, but we set it explicitly so intent is visible).
-pub(crate) fn build_picture(src: &str, alt: Option<&str>) -> gtk4::Picture {
+pub(crate) fn build_picture(
+    src: &str,
+    alt: Option<&str>,
+    finish: impl Fn(ImageOutcome) + 'static,
+) -> (gtk4::Picture, ImageOutcome) {
     let pic = gtk4::Picture::new();
     pic.set_content_fit(gtk4::ContentFit::Contain);
     pic.set_can_shrink(true);
     if let Some(a) = alt {
         pic.set_alternative_text(Some(a));
     }
-    set_source(&pic, src);
-    pic
+    let outcome = set_source(&pic, src, finish);
+    (pic, outcome)
 }
 
-/// Point a `gtk::Picture` at `src`, decoding by source kind. An empty
-/// `src` clears the paintable (an image whose reactive source resolved to
-/// nothing renders blank rather than keeping the stale bitmap).
-pub(crate) fn set_source(pic: &gtk4::Picture, src: &str) {
+/// What a [`set_source`] attempt resolved to. `Pending` means a remote
+/// fetch is in flight and the outcome will arrive on the GIO callback.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ImageOutcome {
+    /// Decoded, with the bitmap's natural size in px.
+    Loaded { width: f32, height: f32 },
+    /// Nothing decodable — bad bytes, missing file, transport error.
+    Failed,
+    /// Remote fetch in flight.
+    Pending,
+}
+
+/// Point a `gtk::Picture` at `src`, decoding by source kind, and report
+/// what happened so the caller can fire `on_load` / `on_error`.
+///
+/// An empty `src` clears the paintable (an image whose reactive source
+/// resolved to nothing renders blank rather than keeping the stale
+/// bitmap) and counts as a failure — there is no bitmap to report.
+///
+/// `finish` is invoked for the ASYNC (remote) case only, on a later
+/// main-loop turn; the synchronous cases report through the return value.
+pub(crate) fn set_source(
+    pic: &gtk4::Picture,
+    src: &str,
+    finish: impl Fn(ImageOutcome) + 'static,
+) -> ImageOutcome {
     if src.is_empty() {
         pic.set_paintable(gdk::Paintable::NONE);
-        return;
+        return ImageOutcome::Failed;
     }
     if let Some(rest) = src.strip_prefix("data:") {
-        match decode_data_uri(rest) {
-            Some(bytes) => {
-                // `glib::Bytes` copies the slice; the decoded Vec can drop.
-                let gbytes = glib::Bytes::from(&bytes[..]);
-                match gdk::Texture::from_bytes(&gbytes) {
-                    Ok(tex) => pic.set_paintable(Some(&tex)),
-                    // Undecodable payload → blank, don't panic.
-                    Err(_) => pic.set_paintable(gdk::Paintable::NONE),
-                }
+        let decoded = decode_data_uri(rest)
+            // `glib::Bytes` copies the slice; the decoded Vec can drop.
+            .map(|bytes| glib::Bytes::from(&bytes[..]))
+            .and_then(|gbytes| gdk::Texture::from_bytes(&gbytes).ok());
+        return match decoded {
+            Some(tex) => {
+                pic.set_paintable(Some(&tex));
+                loaded_of(&tex)
             }
-            None => pic.set_paintable(gdk::Paintable::NONE),
-        }
-        return;
+            // Undecodable payload → blank, don't panic.
+            None => {
+                pic.set_paintable(gdk::Paintable::NONE);
+                ImageOutcome::Failed
+            }
+        };
     }
     if src.starts_with("http://") || src.starts_with("https://") {
-        // GTK loads the paintable through GIO/GVfs (see module doc for the
-        // async caveat). `for_uri` never blocks here; the fetch is driven
-        // by GTK's media file machinery.
+        // `load_bytes_async` rather than `Picture::set_file`: same GIO
+        // transport, but it hands back a `Result` we can turn into
+        // `on_error`. `set_file` fails silently (see module doc).
         let file = gio::File::for_uri(src);
-        pic.set_file(Some(&file));
-        return;
+        let pic = pic.clone();
+        file.load_bytes_async(gio::Cancellable::NONE, move |res| {
+            let outcome = match res.map(|(bytes, _etag)| bytes) {
+                Ok(bytes) => match gdk::Texture::from_bytes(&bytes) {
+                    Ok(tex) => {
+                        pic.set_paintable(Some(&tex));
+                        loaded_of(&tex)
+                    }
+                    Err(_) => ImageOutcome::Failed,
+                },
+                Err(_) => ImageOutcome::Failed,
+            };
+            if outcome == ImageOutcome::Failed {
+                pic.set_paintable(gdk::Paintable::NONE);
+            }
+            finish(outcome);
+        });
+        return ImageOutcome::Pending;
     }
     // Anything else is a local filesystem path (absolute or relative).
-    pic.set_filename(Some(std::path::Path::new(src)));
+    // `Texture::from_filename` (not `Picture::set_filename`) for the same
+    // reason as above: it reports whether the decode worked.
+    match gdk::Texture::from_filename(std::path::Path::new(src)) {
+        Ok(tex) => {
+            pic.set_paintable(Some(&tex));
+            loaded_of(&tex)
+        }
+        Err(_) => {
+            pic.set_paintable(gdk::Paintable::NONE);
+            ImageOutcome::Failed
+        }
+    }
+}
+
+/// The natural size a decoded texture reports, as an `ImageOutcome`.
+fn loaded_of(tex: &gdk::Texture) -> ImageOutcome {
+    ImageOutcome::Loaded {
+        width: tex.width().max(0) as f32,
+        height: tex.height().max(0) as f32,
+    }
 }
 
 // =========================================================================

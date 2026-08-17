@@ -129,6 +129,12 @@ use runtime_shared::animation::AnimProp;
 use runtime_shared::assets::{AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId};
 use runtime_shared::accessibility::AccessibilityProps;
 use runtime_shared::primitives;
+#[cfg(feature = "robot")]
+use runtime_shared::introspect::NativeNode;
+#[cfg(feature = "robot")]
+use runtime_shared::primitives::portal::ViewportRect;
+#[cfg(feature = "robot")]
+use runtime_shared::Screenshot;
 use runtime_shared::{
     Action, Color, ColorScheme, Platform, StyleRules,
     VirtualizerCallbacks,
@@ -308,12 +314,70 @@ pub fn start_with<S, R, B>(
     // author reactivity re-fires on resize instead of freezing at its seed.
     set_viewport_sink(Some(vp_sig));
     BACKEND.with(|b| *b.borrow_mut() = Some(Rc::downgrade(&backend)));
+    // Point the Robot bridge at the registry this boot actually fills.
+    #[cfg(feature = "robot")]
+    install_robot_env();
     NewCoreApp {
         realized,
         _backend: backend,
         _registry: registry,
         world,
     }
+}
+
+/// Point the Robot bridge at the vocabulary registry and give it a way to enter
+/// the mounted world.
+///
+/// # Why this is needed, and what its absence looks like
+///
+/// There are TWO robot registries: the shared substrate's (legacy) and
+/// `runtime_vocabulary`'s, which is the one the v2 walker registers every
+/// mounted primitive into. `runtime_shared`'s bridge dispatches to its own by
+/// default, so a native app that merely starts the bridge answers every verb
+/// from an EMPTY registry: `find_element` → `null`, `get_snapshot` → `[]`,
+/// `list_navigators` → `[]`, on a perfectly healthy app. Well-formed answers,
+/// all of them wrong — a silently blinded driver, which is worse than an error.
+/// Measured exactly that way on the GTK docs app before this existed.
+///
+/// `install_verb_router` redirects to the vocabulary dispatch, falling back to
+/// the shared one on the precise `unknown command:` marker so verbs the
+/// vocabulary does not own (`get_logs`, host-registered commands like
+/// `screenshot`) still resolve, and a REAL verb error is never masked.
+///
+/// `install_driver_env` supplies the two things vocabulary verbs need from the
+/// host: queries run INSIDE the mounted world (a reactive `label_fn` reads world
+/// signals, and reading outside a world panics), and actions settle through a
+/// flush so an author callback's staged writes are committed before the verb
+/// returns — otherwise `click` reports success and the caller reads the state
+/// from before the click.
+///
+/// The sidecar does this for runtime-server sessions and `backend-web` does it
+/// for the browser; local-mount native had no equivalent, which is why
+/// `idealyst dev --linux` produced an app the Robot tools could reach and not
+/// see.
+#[cfg(feature = "robot")]
+fn install_robot_env() {
+    runtime_vocabulary::robot::install_driver_env(
+        |f| match mounted_world() {
+            Some(world) => world.enter(|| f()),
+            // Pre-boot / post-stop there is no world; run plainly so a query
+            // still resolves static labels instead of panicking.
+            None => f(),
+        },
+        || {
+            if let Some(world) = mounted_world() {
+                if !world.is_flushing() {
+                    world.flush();
+                }
+            }
+        },
+    );
+    runtime_shared::robot::bridge::install_verb_router(|cmd, args| {
+        match runtime_vocabulary::robot::bridge::invoke_command(cmd, args) {
+            Err(e) if e.starts_with("unknown command:") => None,
+            other => Some(other),
+        }
+    });
 }
 
 fn set_flush_world(world: Option<World>) {
@@ -728,6 +792,35 @@ impl caps::ImageOps for LinuxBackend {
         // Delegates to the inherent GTK body — master's placeholder
         // here did not render at full fidelity.
         LinuxBackend::create_image(self, _src, _alt, _a11y)
+    }
+
+    // Both of these are DEFAULTED no-ops on the trait, and inheriting them
+    // meant an author's `Image(on_load = …, on_error = …)` never fired on
+    // Linux while it did on web and Apple — so an app's "couldn't load"
+    // fallback silently never rendered. See `crate::image`.
+    fn install_image_load_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: runtime_shared::primitives::image::ImageLoadHandler,
+    ) {
+        // Dispatch-site glue: the completion runs author code, which must
+        // be followed by one deduped flush.
+        let handler: runtime_shared::primitives::image::ImageLoadHandler = {
+            let f = handler;
+            Rc::new(move |ev| {
+                f(ev);
+                schedule_flush();
+            })
+        };
+        LinuxBackend::install_image_load_handler(self, node, handler)
+    }
+
+    fn install_image_error_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: runtime_shared::primitives::image::ImageErrorHandler,
+    ) {
+        LinuxBackend::install_image_error_handler(self, node, flushing0(handler))
     }
 }
 
@@ -1171,7 +1264,74 @@ impl caps::AnimationOps for LinuxBackend {
     }
 }
 
-impl caps::IntrospectionOps for LinuxBackend {}
+// The trait's bodies all default to `None` / "unsupported", and leaving
+// this impl empty meant the Robot surface was dark on Linux even though
+// the backend already had every number it needed: `get_frame` /
+// `get_absolute_frame` returned nothing (while `ViewHandle` reported the
+// same values correctly to author code), and `screenshot` reported
+// "not supported on this backend" — so an agent could drive a GTK app but
+// never see or measure it. Same silently-degrading-default trap this
+// backend hit before with `create_link` and `make_scroll_view_handle`.
+// EVERY method here is behind `robot`. This whole trait is the DIAGNOSTIC
+// surface — the robot bridge's `get_frame` / `get_absolute_frame` /
+// `introspect_native` / `screenshot` verbs — and a shipped app must not carry
+// it. With the feature off the trait's own defaults apply (`None`,
+// `supports_* -> false`), which is the honest answer for a build that cannot
+// serve them.
+//
+// The geometry helpers themselves (`node_frame` / `node_absolute_frame`) are
+// NOT gated, and must not be: `ViewHandle::absolute_frame()` is a production
+// author API reached through `handles.rs`, and real apps do real layout maths
+// with it — the docs app's and the website's "On this page" scroll-spy both
+// compare a section's absolute frame against the scroll viewport on every
+// scroll event. Gating the helpers would break a shipping feature; gating this
+// trait only removes the bridge's access to them.
+impl caps::IntrospectionOps for LinuxBackend {
+    #[cfg(feature = "robot")]
+    fn frame(&self, node: &Self::Node) -> Option<ViewportRect> {
+        self.node_frame(node.id())
+            .map(|(x, y, width, height)| ViewportRect { x, y, width, height })
+    }
+
+    #[cfg(feature = "robot")]
+    fn absolute_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
+        self.node_absolute_frame(node.id())
+            .map(|(x, y, width, height)| ViewportRect { x, y, width, height })
+    }
+
+    // `device_frame` (physical screen pixels, for OS-level input
+    // injection) stays at the trait default `None` DELIBERATELY. A Wayland
+    // client is not told where the compositor placed its surface — there
+    // is no `wl_surface` → screen-origin query — so any number here would
+    // be a guess that silently misaims injected clicks. Reporting `None`
+    // makes callers fall back to widget-relative injection, which this
+    // backend does support.
+
+    #[cfg(feature = "robot")]
+    fn supports_native_introspection(&self) -> bool {
+        LinuxBackend::supports_native_introspection_impl(self)
+    }
+
+    #[cfg(feature = "robot")]
+    fn introspect_native(&self, node: &Self::Node) -> Option<NativeNode> {
+        LinuxBackend::introspect_native_impl(self, node.id())
+    }
+
+    #[cfg(feature = "robot")]
+    fn note_introspection_root(&self, node: &Self::Node) {
+        LinuxBackend::note_introspection_root_impl(self, node.widget())
+    }
+
+    #[cfg(feature = "robot")]
+    fn supports_screenshot(&self) -> bool {
+        LinuxBackend::supports_screenshot_impl(self)
+    }
+
+    #[cfg(feature = "robot")]
+    fn capture_screenshot(&self, done: Box<dyn FnOnce(Result<Screenshot, String>)>) {
+        LinuxBackend::capture_screenshot_impl(self, done)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Batch + wire bindings

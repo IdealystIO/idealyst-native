@@ -1355,11 +1355,11 @@ pub fn empty_absolute_view() -> Element {
 ///
 /// `test_id`: the default arm forwards to the builder's identity slot
 /// (the P5 seam — registered by the mount handler under the `robot`
-/// feature). The `test_id_ignored` arm is for wrappers whose OLD-core
-/// element carries no test_id field (`Link`, the virtualizer behind
-/// `flat_list`): `Bound::test_id` compiled there but `with_test_id`
-/// silently no-opped, and same-source parity means the glue accepts and
-/// drops identically rather than breaking those call sites.
+/// feature). The `test_id_ignored` arm is for wrappers with no identity slot
+/// to forward to — now just the virtualizer behind `flat_list`. `link` was in
+/// that group and is no longer: accepting an anchor and silently dropping it
+/// left a route-based app's navigation unaddressable by `find_element`, so
+/// `LinkPrim` gained a real slot.
 macro_rules! glue_wrapper_common {
     ($wrapper:ident) => {
         impl $wrapper {
@@ -1960,7 +1960,12 @@ pub mod primitives {
             }
         }
 
-        glue_wrapper_common!(GlueLink, test_id_ignored);
+        // `test_id` is FORWARDED, not dropped: a link carries a real identity
+        // slot now (`LinkPrim::test_id`). It used to be `test_id_ignored`,
+        // mirroring the old core's element, which meant `link(test_id = …)`
+        // compiled and silently vanished — and with it any way for automation to
+        // navigate a route-based app.
+        glue_wrapper_common!(GlueLink);
     }
 
     /// `overlay(children)` / `anchored_overlay(target, children)` — the

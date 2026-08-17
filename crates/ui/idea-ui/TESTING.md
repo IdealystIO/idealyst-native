@@ -191,8 +191,18 @@ For any component you touch, walk this list across web + at least one native bac
   capture (web) — use it to diff parity between backends.
 - **Native introspection / parity diffing:** `introspect_native` reads each primitive's
   *platform-resolved* geometry and props from the live native object (CALayer /
-  getComputedStyle), not from author StyleRules. This is the strongest tool for catching
-  "web and macOS disagree" — capture both and diff. Web + macOS are full; others are stubs.
+  getComputedStyle / a GTK allocation), not from author StyleRules. This is the strongest
+  tool for catching "two platforms disagree" — capture both and diff. Web, macOS and
+  Linux/GTK are full; iOS/Android/terminal are stubs.
+- **Automated layout parity:** `idealyst test --parity web,linux <app>` builds and launches
+  one app per platform, pins both to the same viewport, and runs the app's `tests/parity.rs`
+  with each bridge address in the env. `websites/idea-ui-docs/tests/parity.rs` is the
+  worked example: it sweeps every catalog route and diffs the two platforms'
+  `page-content` subtrees. The diff covers GEOMETRY as well as props —
+  `frame.width`/`frame.height`, `frame.dx`/`frame.dy` (relative to the nearest aligned
+  ancestor, so a shifted container doesn't report every descendant), and
+  `frame.child_axis`, the tolerance-free row-vs-column check that catches "the glyph sits
+  beside the label on web and above it on native".
 - **Recipes:** `recipe!(Component, fn ...)` examples are compile-checked usage; they break
   the build if a prop changes, so they double as a guard that a component's public surface
   still works.

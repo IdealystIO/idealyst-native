@@ -300,7 +300,15 @@ fn platform_label() -> &'static str {
         TvOs => "tvos",
         AndroidTv => "androidtv",
         Roku => "roku",
-        _ => "unknown",
+        // A backend that declared its own identity gets that name verbatim:
+        // `Custom("linux")` → "linux", `Custom("windows")` → "windows". Every
+        // custom backend used to fall through to "unknown", so a GTK app could
+        // not be told apart from any other in `list_apps` and a
+        // `name:platform` parity selector (`docs:linux`) could never resolve.
+        // The empty string is the trait default — no identity declared — and
+        // stays "unknown", which is the truth.
+        Custom("") => "unknown",
+        Custom(name) => name,
     }
 }
 

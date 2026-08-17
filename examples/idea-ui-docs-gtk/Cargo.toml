@@ -16,5 +16,13 @@ idea-ui-docs = { workspace = true, default-features = false }
 host-gtk = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-backend-linux = { workspace = true }
+# `robot`: the tests drive the diagnostic surfaces (native introspection,
+# screenshot capture), which the backend gates so a release app does not carry
+# them. A dev/test build opts in exactly as the CLI-generated wrapper's own
+# `dev` feature does.
+backend-linux = { workspace = true, features = ["robot"] }
 runtime-shared = { workspace = true }
+# The capability traits the tests assert against directly
+# (`caps::IntrospectionOps` for the screenshot/geometry verbs) — they are
+# trait methods, so the trait has to be in scope at the call site.
+runtime-vocabulary = { workspace = true }

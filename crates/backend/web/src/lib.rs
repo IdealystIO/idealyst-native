@@ -40,6 +40,7 @@ mod a11y;
 mod animated;
 mod keyframes;
 mod batch_queue;
+#[cfg(feature = "robot")]
 mod introspect;
 pub mod newcore;
 mod newcore_url_sync;
@@ -54,7 +55,9 @@ mod defaults;
 #[cfg(feature = "runtime-server")]
 pub mod dev_transport;
 #[cfg(feature = "robot")]
+#[cfg(feature = "robot")]
 pub mod robot_transport;
+#[cfg(feature = "robot")]
 #[cfg(feature = "robot")]
 mod robot_screenshot;
 pub mod dispatch_hook;

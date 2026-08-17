@@ -26,6 +26,18 @@ pub struct TextPaint {
     pub italic: bool,
     /// Author letter-spacing in px (may be negative).
     pub letter_spacing_px: f32,
+    /// Author `line_height` in px. `None` = use the font's own line spacing.
+    ///
+    /// Absent from this struct entirely until the cross-platform parity sweep
+    /// found it: web resolves CSS `line-height` and macOS feeds
+    /// `style.line_height` into its layout policy, while GTK simply dropped the
+    /// property. Every text box was therefore SHORTER on Linux than on web —
+    /// measured on the docs app's Color page, a wrapped paragraph came out
+    /// 39px tall against web's 50, a badge row 23 against 32 — and because a
+    /// column's height is the sum of its children's, the error accumulated all
+    /// the way up (that page's content column: 917px vs 991px). It moved no
+    /// visual prop, so only a geometry diff could see it.
+    pub line_height_px: Option<f32>,
     pub color: [f32; 4],
     pub align: TextAlign,
 }
@@ -38,6 +50,7 @@ impl Default for TextPaint {
             weight: FontWeight::Normal,
             italic: false,
             letter_spacing_px: 0.0,
+            line_height_px: None,
             color: [0.0, 0.0, 0.0, 1.0],
             align: TextAlign::Left,
         }
@@ -113,6 +126,14 @@ pub fn resolve(style: &StyleRules, prev: &TextPaint) -> TextPaint {
         .as_ref()
         .map(|ls| ls.resolve())
         .unwrap_or(0.0);
+    // Independent, and absent means "use the font's own spacing" — not "keep
+    // whatever the previous style said" (see the group-vs-independent note
+    // above).
+    tp.line_height_px = style
+        .line_height
+        .as_ref()
+        .map(|lh| lh.resolve())
+        .filter(|px| *px > 0.0);
     if let Some(c) = &style.color {
         tp.color = color::to_srgb(&c.resolve());
     }
@@ -141,6 +162,19 @@ fn build_attrs(tp: &TextPaint) -> pango::AttrList {
         ));
     }
 
+    // Author `line_height`, in px, as Pango's ABSOLUTE line height (the
+    // factor variant would multiply the font's own spacing and so would not
+    // match a CSS `line-height: 20px`, which web resolves literally). Applying
+    // it as an attribute — rather than `Layout::set_line_spacing` — keeps the
+    // whole paint in one `AttrList`, so a restyle stays a single attribute
+    // rebuild and the Taffy measure fn (which reads the label live) picks the
+    // new height up with no extra plumbing.
+    if let Some(px) = tp.line_height_px {
+        attrs.insert(pango::AttrInt::new_line_height_absolute(
+            (px * pango::SCALE as f32).round() as i32,
+        ));
+    }
+
     // Foreground color + alpha (Pango takes 16-bit-per-channel).
     let [r, g, b, a] = tp.color;
     attrs.insert(pango::AttrColor::new_foreground(
@@ -158,6 +192,66 @@ fn build_attrs(tp: &TextPaint) -> pango::AttrList {
 /// constraint. Registered per text node so flex layout can size + center
 /// text (welcome's centered headline / subtitle). Reads the label live,
 /// so it reflects whatever font `apply_style` set before the layout pass.
+/// How far above GTK's reported natural width to look for a width the label can
+/// actually render on one line. The discrepancy observed is 1px; the bound keeps
+/// a pathological font from turning this into an unbounded scan, and 4px is far
+/// below the size of any real layout difference.
+const NAT_WIDTH_CORRECTION_MAX_PX: i32 = 4;
+
+/// GTK's reported natural width, corrected to a width its own layout agrees the
+/// text fits in on one line.
+///
+/// # The bug this exists for
+///
+/// `gtk_widget_measure(Horizontal, -1)` reports the natural width from the
+/// UNWRAPPED layout's logical extents, rounded up to whole pixels. The
+/// height-for-width path instead calls `pango_layout_set_width(w * PANGO_SCALE)`
+/// and re-runs the line breaker. **`letter_spacing` makes the two disagree**: the
+/// per-glyph spacing accumulates a fractional total that the width report rounds
+/// away and the line breaker does not, so GTK claims a width and then refuses to
+/// render in it. Measured on a letter-spaced label (0.3px, the value
+/// `TagSheetBuilder::build_text` gives every Tag), sweeping font sizes:
+///
+/// ```text
+/// "★ Featured"  short at 10, 13, 16, 22, 23 px
+/// "✓ Done"      short at  9, 12, 15, 18, 22 px
+/// "→ Next"      short at 10, 15, 18, 23 px
+/// ```
+///
+/// With no letter-spacing, none of those sizes disagree — the spacing is the
+/// trigger, not the glyph.
+///
+/// Trusting the short report made Taffy size the docs app's `Tag(label = "✓
+/// Verified")` 67px wide when GTK needed 68, so the label wrapped INSIDE its own
+/// box and the glyph rendered ABOVE the word while web drew one line. Reported by
+/// a user as "Tag with icon positions the icon above the text"; a real
+/// cross-platform layout divergence produced entirely by believing a
+/// one-pixel-short measurement.
+///
+/// The correction asks GTK the question it can answer consistently: the smallest
+/// width (from the reported natural width up) whose height-for-width equals the
+/// unconstrained height, i.e. the narrowest width that does not force an extra
+/// line. Costs two cached `measure` calls in the common case, where the reported
+/// width is already correct and the loop exits on its first iteration.
+fn honest_natural_width(label: &gtk4::Label, reported: i32) -> i32 {
+    if reported <= 0 {
+        return reported;
+    }
+    // The height with no wrapping at all — hard breaks (`\n`) still count.
+    let (_, h_unwrapped, _, _) = label.measure(gtk4::Orientation::Vertical, -1);
+    for extra in 0..=NAT_WIDTH_CORRECTION_MAX_PX {
+        let w = reported + extra;
+        let (_, h_at_w, _, _) = label.measure(gtk4::Orientation::Vertical, w);
+        if h_at_w <= h_unwrapped {
+            return w;
+        }
+    }
+    // Nothing within the bound fit. Report the widest probed rather than the
+    // known-short value: an extra pixel of slack is invisible, a wrapped line is
+    // not.
+    reported + NAT_WIDTH_CORRECTION_MAX_PX
+}
+
 pub fn measure(
     label: &gtk4::Label,
     known: Size<Option<f32>>,
@@ -175,6 +269,7 @@ pub fn measure(
     // Minimum (longest unbreakable word — the label's min-content width)
     // and natural (whole text on one line) widths, both unconstrained.
     let (wmin, wnat, _, _) = label.measure(gtk4::Orientation::Horizontal, -1);
+    let wnat = honest_natural_width(label, wnat);
     let (wmin, wnat) = ((wmin - mx).max(0), (wnat - mx).max(0));
     let width = known.width.unwrap_or_else(|| match available.width {
         AvailableSpace::Definite(aw) => (wnat as f32).min(aw),
@@ -194,7 +289,14 @@ pub fn measure(
     //
     // `for_size` goes back INTO GTK, so it must be margin-inclusive
     // again — the `+ mx` undoes the subtraction above for this one call.
-    let for_size = if width >= 1.0 {
+    let for_size = if width >= wnat as f32 {
+        // At (or above) the natural width the label is by definition NOT
+        // wrapping, so ask for the unconstrained height — the one that honours
+        // hard breaks only. Feeding the natural width back in as a constraint
+        // re-runs the wrap decision and re-invites the same off-by-one
+        // `honest_natural_width` exists to correct.
+        -1
+    } else if width >= 1.0 {
         (width.round() as i32).max(wmin) + mx
     } else {
         -1

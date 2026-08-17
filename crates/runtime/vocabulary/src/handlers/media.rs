@@ -225,16 +225,16 @@ where
         on_activate: alive.wrap0(on_activate),
     };
     let mut node = backend.borrow_mut().create_link(config, &prim.a11y);
-    // Links register WITHOUT a test_id (`LinkPrim` carries no slot —
-    // the old core's `Element::Link` has none either; `with_test_id`
-    // silently no-ops there, and the glue setter mirrors that). The
-    // robot's `click` is the same activation the backend wires on tap.
+    // The robot's `click` is the same activation the backend wires on tap, and
+    // `test_id` is honored — a link is usually an app's ONLY way to reach
+    // another screen, so a dropped anchor here means automation cannot navigate
+    // at all.
     #[cfg(feature = "robot")]
     let _robot = crate::robot::register_mount(
         &backend,
         &node,
         crate::robot::ElementKind::Link,
-        None,
+        prim.test_id,
         None,
         None,
         crate::robot::MountActions {

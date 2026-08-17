@@ -367,6 +367,21 @@ pub fn route_link(route: &'static Route<()>, child: Element) -> Element {
     }
 }
 
+/// A [`route_link`] carrying a `test_id` — the automation anchor.
+///
+/// `Route::name()` is already a stable, unique, `&'static str` id, and it is
+/// identical on every backend, which makes it the right `test_id`: the parity
+/// runner navigates by clicking `#<route name>`, and `native-parity`'s tree
+/// alignment prefers a `test_id` signature over `kind|label`, so a sidebar row
+/// lines up across platforms even if one of them nests an extra wrapper.
+pub fn route_link_anchored(route: &'static Route<()>, child: Element) -> Element {
+    ui! {
+        link(route = route, params = (), test_id = route.name()) {
+            child
+        }
+    }
+}
+
 fn nav_item(entry: &'static Entry, active_route: Signal<&'static str>) -> Element {
     let route = entry.route;
     let route_name = route.name();
@@ -384,7 +399,7 @@ fn nav_item(entry: &'static Entry, active_route: Signal<&'static str>) -> Elemen
             view(style = dot) {}
         }
     };
-    route_link(route, row)
+    route_link_anchored(route, row)
 }
 
 // =============================================================================
@@ -430,7 +445,11 @@ pub fn screen_frame(entry: &'static Entry) -> Element {
     ui! {
         view(style = ScreenFill()) {
             scroll_view(style = ScreenScroll()) {
-                view(style = ScrollContent()) {
+                // `page-content` is the anchor `idealyst test --parity` scopes
+                // to: it excludes the sidebar + header, so a per-route
+                // comparison diffs the page under test rather than re-diffing
+                // the chrome 49 times.
+                view(style = ScrollContent(), test_id = "page-content") {
                     body
                 }.bind(ctx.content_ref)
             }

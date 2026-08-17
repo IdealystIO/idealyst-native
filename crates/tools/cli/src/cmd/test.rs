@@ -18,7 +18,43 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-const DEFAULT_CHROME: &str = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+/// Chromium-family browsers the parity runner will drive headlessly, in
+/// preference order. `IDEALYST_CHROME` overrides the search entirely.
+///
+/// This used to be a single hardcoded macOS bundle path, which meant
+/// `--parity web,<anything>` on Linux always reported "no headless browser
+/// found" and left the web app waiting for a client that never dialled — the web
+/// half of a parity run simply could not start off a mac. Every candidate below
+/// takes the same `--headless=new` flags.
+const CHROME_CANDIDATES: &[&str] = &[
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/brave-browser",
+    "/usr/bin/brave",
+    "/usr/bin/microsoft-edge",
+];
+
+/// The headless browser to drive: `IDEALYST_CHROME` if set (honored even when
+/// it names a bare command on `PATH`), else the first existing
+/// [`CHROME_CANDIDATES`] entry.
+fn headless_browser() -> Option<String> {
+    if let Ok(explicit) = std::env::var("IDEALYST_CHROME") {
+        // A path must exist; a bare command name is left to the OS to resolve,
+        // so `IDEALYST_CHROME=chromium` works too.
+        if !explicit.contains('/') || Path::new(&explicit).exists() {
+            return Some(explicit);
+        }
+        eprintln!("[parity] IDEALYST_CHROME={explicit} does not exist — falling back to a search");
+    }
+    CHROME_CANDIDATES
+        .iter()
+        .find(|c| Path::new(c).exists())
+        .map(|c| c.to_string())
+}
 
 #[derive(Parser, Debug)]
 pub struct Args {
@@ -210,6 +246,23 @@ fn run_parity(args: &Args, dir: &Path) -> Result<()> {
         test_file.display()
     );
 
+    // Compile the parity test FIRST, before any app is launched, and run the
+    // resulting binary directly further down.
+    //
+    // Not an optimization — a correctness requirement. A native wrapper build
+    // (`--linux`, `--macos`, …) shares the project's `target/` but runs with its
+    // OWN workspace and cwd, so it records the framework path crates under
+    // ABSOLUTE paths while a workspace build records them RELATIVE. Both unit
+    // sets land in the same target dir, and a workspace `cargo test` issued
+    // AFTER the wrapper build then mixes them:
+    //
+    //     error[E0308]: expected `Element`, found `Element`
+    //     note: there are multiple different versions of crate `runtime_scene`
+    //
+    // Compiling first means the only cargo invocation that touches the
+    // workspace happens before any wrapper does, so there is nothing to mix.
+    let test_bin = build_parity_test(dir, &test_name)?;
+
     let viewport = parse_viewport(&args.viewport)?;
     let self_exe = std::env::current_exe().context("locating the idealyst binary")?;
     let apps_dir = default_apps_dir().context("no HOME for ~/.idealyst/apps")?;
@@ -261,10 +314,12 @@ fn run_parity(args: &Args, dir: &Path) -> Result<()> {
         seen.extend(discover_all(Some(dir), &apps_dir));
     }
 
-    // Run the parity test with every platform's bridge in the env it reads.
-    eprintln!("\n[parity] running `cargo test --test {test_name}`…\n");
-    let mut cargo = Command::new("cargo");
-    cargo.current_dir(dir).arg("test").arg("--test").arg(&test_name);
+    // Run the pre-built parity test with every platform's bridge in the env it
+    // reads. Executing the binary rather than re-entering cargo keeps the
+    // workspace build out of the picture entirely (see `build_parity_test`).
+    eprintln!("\n[parity] running {}…\n", test_bin.display());
+    let mut cargo = Command::new(&test_bin);
+    cargo.current_dir(dir);
     for (platform, addr) in &bridges {
         cargo.env(
             format!("IDEALYST_{}_BRIDGE", platform.to_uppercase()),
@@ -284,7 +339,6 @@ fn run_parity(args: &Args, dir: &Path) -> Result<()> {
             .collect::<Vec<_>>()
             .join(","),
     );
-    cargo.arg("--");
     if let Some(filter) = &args.filter {
         cargo.arg(filter);
     }
@@ -325,15 +379,66 @@ fn spawn_dev_app(
     Ok(())
 }
 
+/// Compile the parity test target and return its executable path.
+///
+/// Uses `--no-run --message-format=json` and takes the `executable` from the
+/// compiler-artifact line for the wanted test target, which is the only
+/// non-guessy way to locate a test binary (the file name carries a metadata
+/// hash). See the call site for WHY this has to happen before any wrapper build.
+fn build_parity_test(dir: &Path, test_name: &str) -> Result<PathBuf> {
+    eprintln!("[parity] building the `{test_name}` test target…");
+    let out = Command::new("cargo")
+        .current_dir(dir)
+        .args(["test", "--test", test_name, "--no-run", "--message-format=json"])
+        .output()
+        .context("running `cargo test --no-run` (is cargo on PATH?)")?;
+    if !out.status.success() {
+        // cargo's human-readable diagnostics went to stderr; surface them.
+        anyhow::bail!(
+            "building the `{test_name}` test target failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let mut found = None;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("reason").and_then(|r| r.as_str()) != Some("compiler-artifact") {
+            continue;
+        }
+        let is_wanted = v
+            .get("target")
+            .and_then(|t| t.get("name"))
+            .and_then(|n| n.as_str())
+            == Some(test_name);
+        if let (true, Some(exe)) = (is_wanted, v.get("executable").and_then(|e| e.as_str())) {
+            found = Some(PathBuf::from(exe));
+        }
+    }
+    found.ok_or_else(|| {
+        anyhow::anyhow!(
+            "cargo reported no executable for the `{test_name}` test target — \
+             is `tests/{test_name}.rs` a test target of this package?"
+        )
+    })
+}
+
 fn normalize_platform(p: &str) -> Result<String> {
     match p.trim().to_lowercase().as_str() {
         "web" => Ok("web".into()),
         "macos" | "mac" => Ok("macos".into()),
         "ios" => Ok("ios".into()),
         "android" => Ok("android".into()),
-        other => {
-            anyhow::bail!("unknown parity platform {other:?} (use web, macos, ios, or android)")
-        }
+        // Native desktop targets. `idealyst dev` has taken `--linux` / `--windows`
+        // for a while and the launcher below just forwards `--<platform>`, so the
+        // only thing that kept a Linux parity run from working was this list.
+        "linux" => Ok("linux".into()),
+        "windows" | "win" => Ok("windows".into()),
+        other => anyhow::bail!(
+            "unknown parity platform {other:?} \
+             (use web, macos, ios, android, linux, or windows)"
+        ),
     }
 }
 
@@ -396,11 +501,21 @@ fn wait_for_registration(
 }
 
 fn launch_headless_web(port: u16, viewport: (u32, u32)) -> Option<Child> {
-    let chrome = std::env::var("IDEALYST_CHROME").unwrap_or_else(|_| DEFAULT_CHROME.to_string());
-    if !Path::new(&chrome).exists() {
-        return None;
-    }
-    let profile = std::env::temp_dir().join("idealyst-test-chrome");
+    let chrome = headless_browser()?;
+    // A profile directory private to THIS runner process, wiped on the way in.
+    //
+    // Chrome refuses to start a second instance against a profile whose
+    // `SingletonLock` still exists, and a run that was killed (Ctrl-C, a
+    // timeout, a stray `pkill`) leaves that lock pointing at a dead pid. The
+    // next launch then hands its URL to a singleton that isn't there and exits
+    // immediately — the app never dials, and the runner blames its own 240s
+    // readiness wait. One killed run silently poisoned every run after it.
+    let profile = std::env::temp_dir().join(format!("idealyst-test-chrome-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&profile);
+    // Chrome's own diagnostics, kept rather than dropped on the floor: when the
+    // browser is the thing that failed, this file is the only evidence.
+    let log = profile.with_extension("log");
+    let errlog = std::fs::File::create(&log).map(Stdio::from).unwrap_or_else(|_| Stdio::null());
     Command::new(&chrome)
         .args([
             "--headless=new",
@@ -418,7 +533,22 @@ fn launch_headless_web(port: u16, viewport: (u32, u32)) -> Option<Child> {
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg(format!("http://127.0.0.1:{port}/"))
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(errlog)
         .spawn()
         .ok()
+        .and_then(|mut child| {
+            // A browser that cannot start is gone within a beat. Catching it
+            // here turns a silent 240s timeout into the actual reason.
+            std::thread::sleep(Duration::from_millis(750));
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    eprintln!(
+                        "[test] the headless browser exited immediately ({status}) — see {}",
+                        log.display()
+                    );
+                    None
+                }
+                _ => Some(child),
+            }
+        })
 }
