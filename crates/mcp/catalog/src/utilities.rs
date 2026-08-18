@@ -29,6 +29,30 @@ inventory::submit! {
 
 inventory::submit! {
     UtilityEntry {
+        name: "spawn_then",
+        module_path: "runtime_core",
+        docs: "Bridge async APIs into synchronous UI code: `spawn_then(future, |result| { … })` runs `future` detached, then applies `result` in the callback. THE way to call an `async` SDK/server fn from a handler or component body (crate feature `async-driver`; generated wrappers enable it). Put ALL signal reads and writes in the CALLBACK, never in the future. Why: every `.await` is a flush boundary — the host flushes after each future poll, so the world commits, structural drivers run, and scopes are torn down BETWEEN two adjacent lines of one async block. A `Signal<T>` is `Copy` and captures into an `async move` with nothing in the types objecting, so a write after the await lands on a freed slot and aborts the app with `idealyst[stale-signal-handle]` (the classic case: a save handler that navigates on success — the navigation drops the screen and the trailing `busy.set(false)` dies every time). The callback is `FnOnce`, not a future, so it cannot suspend: it runs inside one turn with the liveness check immediately before it, making the update ATOMIC — every write lands or none does, which no per-write `is_alive()` guard can promise. Reads are covered too, and that matters more: a stale READ can never be made benign (there is no value to synthesize). The in-flight IO still completes; only its result is discarded, so a save is never abandoned mid-write. For declarative async state prefer `resource(deps, fetcher)` (fetch-and-store) or `mutation(handler)` (submit-and-settle), which carry the same guard. `runtime_core::driver::spawn_async` remains for genuinely detached work that must OUTLIVE the component (a background upload, a storage write-through). The `signal-across-await` lint flags the raw form. See [[reactivity-in-depth]].",
+        params: &[
+            ParamSpec {
+                name: "task",
+                type_str: "impl Future<Output = T>",
+                type_short_name: "Future",
+            },
+            ParamSpec {
+                name: "then",
+                type_str: "impl FnOnce(T)",
+                type_short_name: "FnOnce",
+            },
+        ],
+        return_type: "()",
+        return_type_short: "()",
+        category: UtilityCategory::Reactive,
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
         name: "memo",
         module_path: "runtime_core",
         docs: "Cached derived signal: `memo(move || expr)` recomputes when a signal the closure reads changes, and notifies subscribers only when the value actually differs (`T: PartialEq`). A plain function (the historical `memo!` macro was removed — write the `move ||` yourself). Returns the READ half only (`ReadSignal<T>`): a memo is a pure derivation, so its output is not writable. Use for derived state read in several places or expensive to compute — the work runs once per dependency change, not once per read. For a cheap derivation, a plain closure or `rx!` is lighter; for a near-equality comparison (float tolerance) call `memo_with(eq, f)` — it narrows the comparison but does not lift the bound, so a type with no equality at all still needs a `PartialEq` impl or a `runtime_core::ByIdentity<T>` wrapper. Body must be pure — a `.set()` inside the compute panics. See [[reactivity]].",
