@@ -14,7 +14,7 @@ Flags idiom-drift patterns in idealyst projects, over the project's
 | `snapshot-condition` | warn | hoisted `let ok = x.get()…;` used as a `ui!` `if` condition | `memo(move \|\| …)`, inline the `.get()`, or `.get_untracked()` if intentional |
 | `prefer-keyed-list` | warn | a child list built by hand — `VEC.push(ui! { … })` / `.map(\|x\| ui! { … })` — outside the macro | `ui! { view() { for item in items, key = item.id { … } } }` |
 | `snapshot-loop` | warn | `for item in items.get()` inside a `ui!` / `jsx!` body — a frozen build-time snapshot | `for item in items, key = item.id { … }` (iterate the Signal itself) |
-| `signal-across-await` | warn | a component-scoped signal read or written after an `.await` inside a detached `spawn_async` — the scope can die at any await boundary and the resumed task aborts with `stale-signal-handle` | `resource(deps, fetcher)` / `mutation(handler)`, an `is_alive()` guard after the **last** await, or hoist the signal so it is root-owned |
+| `signal-across-await` | warn | a component-scoped signal read or written after an `.await` inside a detached `spawn_async` (or the future half of `spawn_then`) — the scope can die at any await boundary and the resumed task aborts with `stale-signal-handle` | `spawn_then(future, \|result\| { … })` — the callback runs inside a turn or not at all; also `resource(deps, fetcher)` / `mutation(handler)`, or hoist the signal so it is root-owned |
 
 > **Why un-expanded source?** After macro expansion, `signal(0)` *is*
 > `Signal::new(0)` and `ui! { … }` *is* `BuildElement::build(…)` — the idiom

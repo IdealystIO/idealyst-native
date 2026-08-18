@@ -244,6 +244,41 @@ intended.
   through a handle whose slot was recycled *while the world is still alive* is
   a use-after-unmount logic error, and panics rather than silently poking the
   slot's new occupant.
+- **Never touch a component-scoped signal after an `.await` — use
+  `spawn_then`.** Every `.await` is a flush boundary: the host flushes after
+  each future poll, so the world commits, structural drivers run, and scopes
+  are torn down *between two adjacent lines of one async block*. A `Signal<T>`
+  is `Copy` and captures into an `async move` with nothing in the types
+  objecting, so the resumed continuation writes a slot its scope already freed
+  and raises the panic above. Split the halves instead:
+
+  ```rust
+  // NO — the tail runs after navigation dropped the screen
+  spawn_async(async move {
+      let saved = save_report(id).await;
+      nav.push(Route::Report(saved.id));
+      busy.set(false);                     // stale-signal-handle
+  });
+
+  // YES — IO in the future, every signal touch in the callback
+  spawn_then(
+      async move { save_report(id).await },
+      move |saved| {
+          nav.push(Route::Report(saved.id));
+          busy.set(false);
+      },
+  );
+  ```
+
+  The callback is `FnOnce`, not a future, so it cannot suspend: it runs
+  inside a single turn with the liveness check immediately before it. That
+  makes the update **atomic** — every write lands or none does, which no
+  per-write guard can promise. Reads are covered too, and that matters more:
+  a stale *read* can never be made benign (there is no `T` to synthesize).
+  The IO itself still completes; only its result is discarded, so an
+  in-flight save is never abandoned. `resource(deps, fetcher)` and
+  `mutation(handler)` carry the same guard for fetch-and-store and
+  submit-and-settle. The `signal-across-await` lint flags the raw form.
 - **Never `.set()` inside a `Ref::with` / `handle.with` closure.** That closure
   holds the arena borrow; a signal write inside it aborts with *"RefCell already
   borrowed"* (the `is_reactive_busy` guard does **not** catch this). Read the

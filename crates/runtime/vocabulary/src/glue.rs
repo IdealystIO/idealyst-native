@@ -897,6 +897,12 @@ pub use runtime_shared::set_app_key_handler;
 // embedded-simulator new-core build is the precedent).
 #[cfg(feature = "async-driver")]
 pub use runtime_shared::driver;
+// `spawn_then` — the scope-safe imperative spawn: IO in the future, every
+// signal read/write in a sync callback that runs inside a turn or not at
+// all. Prefer it over reaching into `driver::spawn_async` directly; see
+// `crate::scoped_spawn` for the guarantee.
+#[cfg(feature = "async-driver")]
+pub use crate::scoped_spawn::spawn_then;
 // `resource` / `mutation` — new-core REIMPLEMENTATIONS (old fns are
 // built on old-core reactivity; see `crate::async_reactive`'s module
 // docs for anchoring, completion staging, and the documented

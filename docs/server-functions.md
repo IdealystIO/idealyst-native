@@ -740,18 +740,27 @@ the browser send the httpOnly cookie).
 
 ### Calling from UI code
 
-Stubs are plain futures — drive them with the framework's async driver:
+Stubs are plain futures — drive them with `spawn_then`: the call goes in the
+future, every signal touch goes in the callback.
 
 ```rust
 let on_click = move || {
-    runtime_core::driver::spawn_async(async move {
-        match create_todo(input).await {
+    runtime_core::spawn_then(
+        async move { create_todo(input).await },
+        move |result| match result {
             Ok(todo) => todos.update(|t| t.push(todo)),
             Err(e) => status.set(format!("failed: {e}")),
-        }
-    });
+        },
+    );
 };
 ```
+
+Writing those signals inside the future instead would be a teardown race:
+every `.await` is a flush boundary, so navigating away on success (or any
+other unmount) frees the component's slots before the continuation resumes,
+and the write aborts with `idealyst[stale-signal-handle]`. The callback runs
+inside a turn or not at all, so the whole update applies or none of it does.
+The `signal-across-await` lint flags the raw form.
 
 ### Batching (opt-in)
 

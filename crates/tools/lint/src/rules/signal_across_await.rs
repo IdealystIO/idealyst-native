@@ -41,9 +41,10 @@
 //! - only bindings from a top-level `let NAME = signal(…)` in that body
 //!   (a signal arriving via a prop or `inject` is owned elsewhere and
 //!   invisible here);
-//! - only inside an `async` block passed to `spawn_async(…)` — a block
-//!   handed to a scope-anchored spawner is safe by construction and never
-//!   matches;
+//! - only inside an `async` block passed to `spawn_async(…)`, or to the
+//!   FUTURE half of `spawn_then(…)` (its callback is where signal work
+//!   belongs and is never scanned); a block handed to any other spawner
+//!   never matches;
 //! - only uses that appear, in source order, after the block's first
 //!   `.await` (so the safe prelude `busy.set(true); fetch().await;` is
 //!   clean, while a write inside a `match fetch().await { … }` arm is
@@ -81,11 +82,20 @@ use crate::diagnostic::RawDiag;
 
 pub(crate) const RULE: &str = "signal-across-await";
 
-/// The spawner whose tasks are detached from the spawning scope. A block
-/// handed to any other spawner is not this rule's business — that is the
-/// forward-compatible escape hatch (a scope-anchored spawner, or an
-/// explicitly-named detached one, simply never matches here).
-const DETACHED_SPAWNER: &str = "spawn_async";
+/// Spawners whose async body this rule inspects, and which argument
+/// holds it.
+///
+/// - `spawn_async(fut)` — fully detached; every async-block argument is
+///   in scope for the rule.
+/// - `spawn_then(fut, then)` — the scope-safe form. Its **callback** is
+///   exactly where signal work belongs and is never scanned; its
+///   **future** is still plain detached IO, so a signal touched there
+///   after an await is the same bug. Only argument 0 is inspected.
+///
+/// A block handed to any other spawner never matches, which is the
+/// forward-compatible escape hatch.
+const INSPECTED_SPAWNERS: &[(&str, Option<usize>)] =
+    &[("spawn_async", None), ("spawn_then", Some(0))];
 
 /// Signal operations that route through the arena and therefore abort on a
 /// stale handle. Split by class so the message can say which half died.
@@ -173,14 +183,17 @@ struct DetachedSpawnFinder {
 
 impl<'ast> Visit<'ast> for DetachedSpawnFinder {
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
-        let is_detached = match &*node.func {
-            syn::Expr::Path(p) => {
-                p.path.segments.last().is_some_and(|s| s.ident == DETACHED_SPAWNER)
-            }
-            _ => false,
+        let spawner = match &*node.func {
+            syn::Expr::Path(p) => p.path.segments.last().and_then(|s| {
+                INSPECTED_SPAWNERS.iter().find(|(name, _)| s.ident == *name).copied()
+            }),
+            _ => None,
         };
-        if is_detached {
-            for arg in &node.args {
+        if let Some((_, only_arg)) = spawner {
+            for (i, arg) in node.args.iter().enumerate() {
+                if only_arg.is_some_and(|want| want != i) {
+                    continue; // e.g. `spawn_then`'s callback — signals belong there
+                }
                 if let syn::Expr::Async(a) = arg {
                     self.blocks.push(a.block.clone());
                 }
@@ -381,10 +394,11 @@ fn first_await_pos(block: &syn::Block) -> Option<(usize, usize)> {
 fn help_for(is_write: bool) -> String {
     let mut help = String::from(
         "every `.await` is a flush boundary, so the component can be torn down between two \
-         lines of the same async block. Prefer `resource(deps, fetcher)` for fetch-and-store \
-         or `mutation(handler)` for submit-and-settle — both keep a liveness guard across the \
-         await. If the state must outlive the component, create the signal outside the \
-         component body so it is root-owned.",
+         lines of the same async block. Move the signal work into `spawn_then(future, |result| \
+         { … })` — its callback runs inside a turn or not at all, so the update is atomic. \
+         `resource(deps, fetcher)` and `mutation(handler)` carry the same guard for \
+         fetch-and-store / submit-and-settle. If the state must outlive the component, create \
+         the signal outside the component body so it is root-owned.",
     );
     if !is_write {
         help.push_str(
@@ -824,5 +838,52 @@ fn A() -> Element {
         );
         assert_eq!(out.len(), 1, "{out:?}");
         assert!(out[0].message.contains("loading"), "{out:?}");
+    }
+
+    #[test]
+    fn spawn_then_callback_is_never_scanned() {
+        // The callback is exactly where signal work belongs — it runs
+        // inside a turn or not at all.
+        let out = diags(
+            r#"
+#[component]
+fn A() -> Element {
+    let busy = signal(false);
+    let go = move || {
+        spawn_then(async move { save().await }, move |_saved| {
+            busy.set(false);
+        });
+    };
+    ui! { view() {} }
+}
+"#,
+        );
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    #[test]
+    fn spawn_then_future_half_is_still_scanned() {
+        // Signals do not belong in the IO half; after an await there it
+        // is the same bug as a raw `spawn_async`.
+        let out = diags(
+            r#"
+#[component]
+fn A() -> Element {
+    let busy = signal(false);
+    let go = move || {
+        spawn_then(
+            async move {
+                save().await;
+                busy.set(false);
+            },
+            move |_| {},
+        );
+    };
+    ui! { view() {} }
+}
+"#,
+        );
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].message.contains("busy"), "{out:?}");
     }
 }

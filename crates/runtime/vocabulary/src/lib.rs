@@ -201,6 +201,10 @@ pub mod robot_methods;
 #[cfg(feature = "robot")]
 #[doc(hidden)]
 pub mod robot_watch;
+// `spawn_then` — detached IO, result applied inside a turn (feature
+// `async-driver`, same gate as the `spawn_async` it builds on).
+#[cfg(feature = "async-driver")]
+pub mod scoped_spawn;
 pub mod scoped_scheduling;
 pub mod slots;
 pub mod style_attach;

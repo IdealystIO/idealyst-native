@@ -110,6 +110,18 @@ mod tests {
     }
 }
 
+#[cfg(all(test, feature = "async-driver"))]
+mod _spawn_then_reachable {
+    /// `spawn_then` must be reachable from the AUTHOR root — the guides
+    /// (`sdks.md`, `server-functions.md`, `reactivity-in-depth.md`) all
+    /// spell it `runtime_core::spawn_then`, and app code never depends on
+    /// `runtime-vocabulary` directly.
+    #[test]
+    fn spawn_then_is_on_the_author_surface() {
+        let _f: fn(std::future::Ready<i32>, fn(i32)) = crate::spawn_then;
+    }
+}
+
 #[cfg(test)]
 mod _scope_alive_reachable {
     /// `ScopeAlive` must be reachable from the AUTHOR/SDK root, not just

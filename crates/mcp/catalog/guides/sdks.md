@@ -317,26 +317,43 @@ server relay → `server`, camera/mic/recording → the media crates.
 ## Calling async APIs from UI code
 
 Several SDK surfaces (`storage`, `net`, …) are `async`. UI handlers and
-component bodies are synchronous — bridge with
-`runtime_core::driver::spawn_async`:
+component bodies are synchronous — bridge with `runtime_core::spawn_then`:
+IO in the future, every signal read and write in the callback.
 
 ```rust
-use runtime_core::driver::spawn_async;
+use runtime_core::spawn_then;
 
 let items = signal(Vec::new());
-spawn_async(async move {
-    let store = storage::platform_storage("my-app");
-    if let Ok(Some(saved)) = store.get("items").await {
-        items.set(parse(saved));
-    }
-});
+spawn_then(
+    async move {
+        let store = storage::platform_storage("my-app");
+        store.get("items").await
+    },
+    move |saved| {
+        if let Ok(Some(saved)) = saved {
+            items.set(parse(saved));
+        }
+    },
+);
 ```
 
-No `Send` bound is required, and the executor is pre-installed by the
-CLI-generated app wrappers on every platform — no setup in app code. Signal
-writes inside the future notify the UI exactly like writes from a handler.
+**Do not write signals inside the future.** Every `.await` is a flush
+boundary, so the component can be torn down between two adjacent lines of
+one async block; a signal write in the resumed continuation lands on a
+freed slot and aborts with `idealyst[stale-signal-handle]`. `spawn_then`'s
+callback runs inside a turn or not at all, so the update is atomic and
+reads are safe too. The in-flight IO still completes — only its result is
+discarded — so a save is never abandoned mid-write. The
+`signal-across-await` lint flags the raw form.
 
-`spawn_async` exists only when the `runtime-core` dependency enables the
+`runtime_core::driver::spawn_async` remains for genuinely detached work
+that must outlive the component (a background upload, a storage
+write-through). No `Send` bound is required, and the executor is
+pre-installed by the CLI-generated app wrappers on every platform — no
+setup in app code. Signal writes from the callback notify the UI exactly
+like writes from a handler.
+
+`spawn_then` and `spawn_async` exist only when the `runtime-core` dependency enables the
 `async-driver` feature — CLI-generated wrapper Cargo.tomls do, but a
 hand-written dep line must add it:
 
