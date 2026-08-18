@@ -27,6 +27,7 @@ mod keyed_list;
 mod prefer_macros;
 mod prefer_ui;
 mod premint_crawl;
+mod signal_across_await;
 mod snapshot_condition;
 mod snapshot_loop;
 
@@ -91,6 +92,11 @@ pub fn all_rules() -> &'static [RuleInfo] {
             summary: "`for … in <expr>.get()` inside `ui!`/`jsx!` — a build-time snapshot; iterate the Signal itself with `key = …`",
         },
         RuleInfo {
+            id: signal_across_await::RULE,
+            default_level: Level::Warn,
+            summary: "a component-scoped signal used after an `.await` in a detached `spawn_async` — the scope can be torn down at any await boundary, and the resumed task then aborts with `stale-signal-handle`",
+        },
+        RuleInfo {
             id: premint_crawl::STATE_KEYED_RULE,
             default_level: Level::Warn,
             summary: "sheet identity/cache key selected by a runtime conditional — the arm not taken at mount gets no premint CSS (UNCRAWLED panic under --premint-only); make the state a variant axis",
@@ -119,6 +125,7 @@ impl<'ast> Visit<'ast> for Linter {
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
         component_case::check_fn(node, &mut self.diags);
         snapshot_condition::check_fn(node, &mut self.diags);
+        signal_across_await::check_fn(node, &mut self.diags);
         syn::visit::visit_item_fn(self, node);
     }
 

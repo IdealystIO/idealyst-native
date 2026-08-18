@@ -16,6 +16,11 @@
 //! 4. Frozen-snapshot reactivity traps — a hoisted `.get()` used as a
 //!    `ui!` condition or loop source (`snapshot-condition`,
 //!    `snapshot-loop`).
+//! 4a. Teardown races — a component-scoped signal touched after an
+//!    `.await` inside a detached `spawn_async` (`signal-across-await`).
+//!    Every await is a flush boundary, so the owning scope can die
+//!    between two adjacent lines of one async block; the resumed task
+//!    then aborts with `stale-signal-handle`.
 //! 5. Premint crawl-contract violations — sheet identity or cache keys
 //!    selected by runtime conditionals, and `with_computed` layers
 //!    (`premint-state-keyed-sheet`, `premint-computed-layer`); the
