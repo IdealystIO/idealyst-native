@@ -123,6 +123,7 @@ pub(crate) fn placement_style(target: &PortalTarget) -> StyleRules {
 pub(crate) fn configure(
     view: &IdealystView,
     node_id: u64,
+    anchored: bool,
     backend: Weak<RefCell<LinuxBackend>>,
     host_window: gtk4::Window,
     on_dismiss: Option<Rc<dyn Fn()>>,
@@ -135,16 +136,34 @@ pub(crate) fn configure(
     view.set_halign(gtk4::Align::Fill);
     view.set_valign(gtk4::Align::Fill);
 
+    // An ANCHORED container is a coordinate space, not a surface: it is
+    // full-viewport only so the resolved placement has somewhere to live, and
+    // the framework lowers it expecting a root that "only covers what it
+    // renders". Filling the viewport without this made it swallow every click
+    // outside the panel — the dismiss-catcher overlay beneath it never saw
+    // them, so click-outside did nothing while Escape still worked.
+    if anchored {
+        view.set_input_transparent(true);
+    }
+
     // Detached layout pass — same mechanism the framework root uses, but
     // scoped to this orphan subtree.
     {
         let backend = backend.clone();
         view.set_layout_callback(Rc::new(move |w, h| {
-            if let Some(b) = backend.upgrade() {
-                if let Ok(mut b) = b.try_borrow_mut() {
-                    b.layout_detached_root(node_id, w as f32, h as f32);
-                }
-            }
+            let Some(b) = backend.upgrade() else { return };
+            // Resolve the trigger rect FIRST, under an immutable borrow: it
+            // reaches back through the author's handle into this same
+            // `RefCell`, so doing it inside the mutable borrow below fails and
+            // the handle falls back to the zero rect — which the placement
+            // algorithm reads as a real 0x0 target at the window origin, and
+            // every popover lands in the top-left corner.
+            let trigger = match b.try_borrow() {
+                Ok(bref) => bref.anchor_trigger_rect(node_id),
+                Err(_) => None,
+            };
+            let Ok(mut bmut) = b.try_borrow_mut() else { return };
+            bmut.layout_detached_root(node_id, w as f32, h as f32, trigger);
         }));
     }
 

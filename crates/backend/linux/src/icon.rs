@@ -531,6 +531,9 @@ mod imp {
         pub view_box: Cell<(u16, u16)>,
         /// Straight-sRGB stroke/fill color.
         pub color: Cell<[f32; 4]>,
+        /// Whether `color` came from the author rather than inheritance, so an
+        /// ambient-colour refresh does not stomp a deliberate tint.
+        pub explicit_color: Cell<bool>,
         /// `true` → fill (honoring `even_odd`), `false` → stroke.
         pub filled: Cell<bool>,
         /// Even-odd fill rule when `filled`; else non-zero winding.
@@ -543,6 +546,7 @@ mod imp {
                 paths: RefCell::new(Vec::new()),
                 view_box: Cell::new((24, 24)),
                 color: Cell::new(DEFAULT_ICON_COLOR),
+                explicit_color: Cell::new(false),
                 filled: Cell::new(false),
                 even_odd: Cell::new(false),
             }
@@ -635,6 +639,28 @@ impl IdealystIcon {
     }
 
     /// Recolor + repaint (reactive `update_icon_color`).
+    /// Whether an author set this icon's colour explicitly.
+    ///
+    /// An icon with no colour of its own follows the ambient text colour (the
+    /// primitive's contract, and what web's `currentColor` does), so the
+    /// backend must be able to tell "author said black" from "nobody said
+    /// anything" — otherwise inheritance would stomp a deliberate colour.
+    pub fn has_explicit_color(&self) -> bool {
+        self.imp().explicit_color.get()
+    }
+
+    /// Set the colour an author asked for. Marks the icon as explicitly
+    /// coloured, so ambient-colour refreshes leave it alone.
+    pub fn set_explicit_color(&self, color: [f32; 4]) {
+        self.imp().explicit_color.set(true);
+        self.set_color(color);
+    }
+
+    /// The colour this icon strokes/fills with — what a parity read needs.
+    pub fn color(&self) -> [f32; 4] {
+        self.imp().color.get()
+    }
+
     pub fn set_color(&self, color: [f32; 4]) {
         self.imp().color.set(color);
         self.queue_draw();

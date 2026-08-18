@@ -412,7 +412,7 @@ fn size_and_layout(state: &Rc<RefCell<State>>, node: &LinuxNode, w: f32, h: f32)
     let backend = state.borrow().backend.clone();
     if let Some(b) = backend.upgrade() {
         if let Ok(mut b) = b.try_borrow_mut() {
-            b.layout_detached_root(node.id, w, h);
+            b.layout_detached_root(node.id, w, h, None);
         }
     }
 }

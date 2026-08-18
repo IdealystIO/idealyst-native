@@ -57,7 +57,7 @@ impl Default for TextPaint {
     }
 }
 
-fn family_name(f: &FontFamily) -> Option<String> {
+pub fn family_name(f: &FontFamily) -> Option<String> {
     match f {
         FontFamily::System(name) => Some(name.clone()),
         FontFamily::Typeface(t) => Some(t.family_name.to_string()),
@@ -86,38 +86,79 @@ fn map_weight(w: FontWeight) -> pango::Weight {
 /// otherwise "not set", i.e. the default, never "keep the old value".
 /// Getting that backwards makes every text property one-way: settable
 /// but never unsettable.
-pub fn resolve(style: &StyleRules, prev: &TextPaint) -> TextPaint {
+/// The inheritable text properties, resolved from the ancestor chain.
+///
+/// CSS inherits `color` and the font shorthand independently down the tree;
+/// native backends have no cascade, so the backend resolves them (see
+/// `LinuxBackend::ambient_text`) and hands the result here.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Inherited {
+    pub color: [f32; 4],
+    pub family: Option<String>,
+    pub size_px: f32,
+    pub weight: FontWeight,
+    pub italic: bool,
+}
+
+impl Default for Inherited {
+    fn default() -> Self {
+        let d = TextPaint::default();
+        Self {
+            color: d.color,
+            family: d.family,
+            size_px: d.size_px,
+            weight: d.weight,
+            italic: d.italic,
+        }
+    }
+}
+
+/// Resolve a text paint, with `inherited_color` standing in for the CSS
+/// cascade's `color`.
+///
+/// The web backend gets inheritance for free: a `<span>` with no `color` picks
+/// up its ancestor's, and an icon's `currentColor` resolves the same way. Native
+/// backends have no cascade, so an unset colour used to fall back to
+/// `TextPaint::default()`'s opaque black — right-looking under a light theme and
+/// invisible under a dark one. The caller resolves the nearest ancestor that
+/// declares a colour (see `LinuxBackend::ambient_color`) and passes it here.
+pub fn resolve(style: &StyleRules, prev: &TextPaint, inherited: &Inherited) -> TextPaint {
     let mut tp = prev.clone();
 
-    // Typography (family / size / weight / italic) resolves as a GROUP,
-    // exactly like the macOS backend's `apply_text_style`: if the
-    // incoming style mentions ANY of the four, all four are rebuilt from
-    // it, with defaults for the ones it omits.
+    // Typography: start from what this node INHERITS, then overlay what it
+    // declares. Each property independently, exactly as CSS cascades them.
     //
-    // Layering each field independently over the previous paint — what
-    // this used to do — means a property can only ever be turned ON. The
-    // website's table of contents bolds its active entry; when that
-    // entry went inactive the new style simply had no `font_weight`, the
-    // old Bold survived, and every entry the user had visited stayed
-    // permanently bold. Same trap for italic, size and family.
+    // This used to layer over `prev` behind a "does the style mention any
+    // typography" gate, rebuilding the whole group from `TextPaint::default()`
+    // when it did. Two problems. The gate's default base meant a style setting
+    // only `font_weight` — which is most labels — silently discarded an
+    // inherited 14px for the hardcoded 16px and blanked the family: 167 wrong
+    // font sizes and 394 missing families across the docs catalogue, and wrong
+    // text metrics feed wrong box heights all the way up the tree. And layering
+    // over `prev` at all made properties one-way: the website's table of
+    // contents bolded its active entry and every visited entry stayed bold,
+    // because the inactive style simply omitted `font_weight`.
     //
-    // The group gate is what keeps a colour-only restyle from wiping an
-    // author's font: a style that says nothing about typography is
-    // asking to leave typography alone, not to reset it.
-    let has_typography = style.font_family.is_some()
-        || style.font_size.is_some()
-        || style.font_weight.is_some()
-        || style.font_style.is_some();
-    if has_typography {
-        let d = TextPaint::default();
-        tp.family = style.font_family.as_ref().and_then(family_name);
-        tp.size_px = match style.font_size.as_ref().map(|t| t.resolve()) {
-            Some(Length::Px(v)) => v,
-            _ => d.size_px,
-        };
-        tp.weight = style.font_weight.unwrap_or(d.weight);
-        tp.italic = matches!(style.font_style, Some(FontStyle::Italic));
-    }
+    // Inheriting instead fixes both by construction: `apply_style` always
+    // receives the node's COMPLETE resolved rules (see
+    // `runtime_vocabulary::style_attach`), so a property the rules do not
+    // mention is genuinely unset and must come from the ancestor chain — never
+    // from this node's own previous state, which is what made it sticky.
+    tp.family = style
+        .font_family
+        .as_ref()
+        .and_then(family_name)
+        .or_else(|| inherited.family.clone());
+    tp.size_px = match style.font_size.as_ref().map(|t| t.resolve()) {
+        Some(Length::Px(v)) => v,
+        _ => inherited.size_px,
+    };
+    tp.weight = style.font_weight.unwrap_or(inherited.weight);
+    tp.italic = match style.font_style {
+        Some(FontStyle::Italic) => true,
+        Some(_) => false,
+        None => inherited.italic,
+    };
 
     // These are independent, and each reverts to its default when
     // absent, for the same reason: absent means "not set".
@@ -134,9 +175,12 @@ pub fn resolve(style: &StyleRules, prev: &TextPaint) -> TextPaint {
         .as_ref()
         .map(|lh| lh.resolve())
         .filter(|px| *px > 0.0);
-    if let Some(c) = &style.color {
-        tp.color = color::to_srgb(&c.resolve());
-    }
+    // Own colour wins; otherwise inherit. Absent must NOT mean "keep whatever
+    // the previous style said" — a node whose ancestor re-themes has to follow.
+    tp.color = match &style.color {
+        Some(c) => color::to_srgb(&c.resolve()),
+        None => inherited.color,
+    };
     tp.align = style.text_align.unwrap_or(TextAlign::Left);
     tp
 }
@@ -344,7 +388,7 @@ mod tests {
         // being set) but no weight or italic — those must revert.
         let mut style = StyleRules::default();
         style.font_size = Some(Tokenized::Literal(Length::Px(20.0)));
-        let out = resolve(&style, &bolded);
+        let out = resolve(&style, &bolded, &Inherited::default());
         assert!(
             matches!(out.weight, FontWeight::Normal),
             "dropping font_weight must un-bold, not keep Bold",
@@ -361,28 +405,68 @@ mod tests {
             align: TextAlign::Center,
             ..Default::default()
         };
-        let out = resolve(&StyleRules::default(), &prev);
+        let out = resolve(&StyleRules::default(), &prev, &Inherited::default());
         assert_eq!(out.letter_spacing_px, 0.0, "letter spacing must reset");
         assert!(matches!(out.align, TextAlign::Left), "alignment must reset");
     }
 
+    /// A colour-only restyle must not wipe the font — the font comes from the
+    /// ancestor chain, which is where it lives on web too.
+    ///
+    /// This used to assert that the font survived from the node's OWN previous
+    /// paint, behind a "does this style mention typography" gate. That gate is
+    /// what made a style setting only `font_weight` discard an inherited size
+    /// and family for `TextPaint::default()`'s 16px system font — 167 wrong
+    /// sizes and 394 missing families across the docs catalogue. Resolving from
+    /// the INHERITED context instead keeps a colour-only restyle harmless
+    /// (below) without ever reading this node's stale state.
     #[test]
-    fn resolve_keeps_font_when_style_mentions_no_typography() {
-        let base = TextPaint {
+    fn a_colour_only_restyle_keeps_the_inherited_font() {
+        let inherited = Inherited {
             family: Some("Inter".into()),
             size_px: 56.0,
             weight: FontWeight::Bold,
             ..Default::default()
         };
+        // Whatever this node resolved to previously is irrelevant: stale state
+        // is exactly what made properties sticky.
+        let stale = TextPaint {
+            family: Some("Comic Sans".into()),
+            size_px: 9.0,
+            ..Default::default()
+        };
         let mut style = StyleRules::default();
         style.color = Some(Tokenized::Literal(Color("#ff0000".into())));
-        let out = resolve(&style, &base);
-        // Colour changed…
-        assert!((out.color[0] - 1.0).abs() < 1e-3);
-        // …and a colour-only restyle leaves the font alone.
-        assert_eq!(out.family.as_deref(), Some("Inter"));
+        let out = resolve(&style, &stale, &inherited);
+        assert!((out.color[0] - 1.0).abs() < 1e-3, "the declared colour applies");
+        assert_eq!(out.family.as_deref(), Some("Inter"), "font inherited, not stale");
         assert_eq!(out.size_px, 56.0);
         assert!(matches!(out.weight, FontWeight::Bold));
+    }
+
+    /// A style that sets ONE font property must not reset the others to
+    /// hardcoded defaults — it inherits them.
+    ///
+    /// This is the shape most labels have (`font_weight` only), and the reason
+    /// 167 nodes rendered at 16px where web rendered 14px: wrong metrics, and
+    /// every ancestor's box wrong with them.
+    #[test]
+    fn regression_declaring_one_font_property_inherits_the_rest() {
+        let inherited = Inherited {
+            family: Some("Inter".into()),
+            size_px: 14.0,
+            ..Default::default()
+        };
+        let mut style = StyleRules::default();
+        style.font_weight = Some(FontWeight::Bold);
+        let out = resolve(&style, &TextPaint::default(), &inherited);
+        assert!(matches!(out.weight, FontWeight::Bold), "the declared weight applies");
+        assert_eq!(out.size_px, 14.0, "size must inherit, not fall back to 16px");
+        assert_eq!(
+            out.family.as_deref(),
+            Some("Inter"),
+            "family must inherit, not blank to the system font"
+        );
     }
 
     #[test]
@@ -391,7 +475,7 @@ mod tests {
         style.font_size = Some(Tokenized::Literal(Length::Px(18.0)));
         style.font_weight = Some(FontWeight::SemiBold);
         style.letter_spacing = Some(Tokenized::Literal(0.6));
-        let out = resolve(&style, &TextPaint::default());
+        let out = resolve(&style, &TextPaint::default(), &Inherited::default());
         assert_eq!(out.size_px, 18.0);
         assert!(matches!(out.weight, FontWeight::SemiBold));
         assert!((out.letter_spacing_px - 0.6).abs() < 1e-4);

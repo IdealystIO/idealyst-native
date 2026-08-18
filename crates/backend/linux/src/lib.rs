@@ -222,6 +222,25 @@ enum NodeKind {
 
 /// Per-node backend state. Transform is split static/animated so a
 /// restyle can't clobber an in-flight animation (see [`transform`]).
+/// What a node DECLARES for each inheritable text property. `None` means "says
+/// nothing", which is what lets a descendant look further up the chain.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct OwnText {
+    color: Option<[f32; 4]>,
+    family: Option<String>,
+    size_px: Option<f32>,
+    weight: Option<runtime_shared::FontWeight>,
+    italic: Option<bool>,
+}
+
+impl OwnText {
+    /// Whether this node declares nothing at all — the common case, and the
+    /// cheap early-out when walking the chain.
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 struct NodeState {
     widget: gtk4::Widget,
     layout: LayoutNode,
@@ -237,6 +256,11 @@ struct NodeState {
     order: u64,
     /// Resolved text style (text nodes only).
     text: text::TextPaint,
+    /// The inheritable properties this node DECLARES — the cascade source for
+    /// descendants that declare none. Recorded for every kind, because a plain
+    /// `view` is the usual place an author sets the colour and font that its
+    /// text and icons are meant to pick up.
+    own_text: OwnText,
     /// Box paint for a text leaf — background / gradient / border / radius.
     ///
     /// Held on the node because the PARENT paints it (a `GtkLabel` is final in
@@ -251,6 +275,34 @@ struct NodeState {
 // Style → paint-model helpers (free fns; the unit-testable pieces live
 // in the `view` / `gradient` / `color` / `transform` modules).
 // =========================================================================
+
+/// Whether a widget event is a real user interaction rather than teardown
+/// noise.
+///
+/// GTK moves focus out of a subtree it is destroying, which fires
+/// `EventControllerFocus::leave` on the way down. Delivering that to the
+/// author is not just redundant — it is a CRASH: the component's reactive
+/// scope is already dropped, so the handler touches a freed signal and the
+/// world aborts with `stale-signal-handle` (and because the callback runs in
+/// a non-unwinding GTK trampoline, it aborts rather than unwinds).
+///
+/// A widget with no root is not in a window, so it has no focus to lose and
+/// no user could have typed in it. That is the distinction: a real blur
+/// happens to a widget that is still on screen.
+fn is_live_interaction(widget: &impl IsA<gtk4::Widget>) -> bool {
+    widget.as_ref().root().is_some()
+}
+
+/// `[f32; 4]` straight-sRGB → a CSS `rgba()` GTK's parser accepts.
+fn css_rgba(c: [f32; 4]) -> String {
+    format!(
+        "rgba({},{},{},{})",
+        (c[0] * 255.0).round() as u8,
+        (c[1] * 255.0).round() as u8,
+        (c[2] * 255.0).round() as u8,
+        c[3]
+    )
+}
 
 fn len_px(t: &Option<Tokenized<Length>>) -> f32 {
     match t.as_ref().map(|x| x.resolve()) {
@@ -445,6 +497,63 @@ pub(crate) fn leaf_alloc_size(
 /// intrinsic size an `Element::External` leaf reports to layout. Same
 /// shape as [`text::measure`] but for any `gtk::Widget` (Picture, Video,
 /// Label, …): natural width unconstrained, then height for that width.
+/// GDK keyval → the framework's spec key name.
+///
+/// The vocabulary is the DOM's `KeyboardEvent.key` (see
+/// `runtime_shared::primitives::key`), so author code that checks
+/// `"Enter"` or `"ArrowDown"` reads identically on every backend. Named
+/// keys are mapped explicitly; anything else falls back to the character
+/// the keyval produces, which is what the DOM reports for printable keys.
+/// Warn once per portal, on the layout beat.
+///
+/// These fire from the layout pass, which runs every frame while a popover is
+/// open — an unguarded `eprintln!` here emitted 1623 lines in a few seconds of
+/// one open menu. Once per portal is enough to diagnose and cheap enough to
+/// leave in dev builds.
+#[cfg(debug_assertions)]
+fn warn_once_portal(portal_id: u64, msg: std::fmt::Arguments<'_>) {
+    use std::cell::RefCell;
+    use std::collections::HashSet;
+    thread_local! {
+        static WARNED: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
+    }
+    WARNED.with(|w| {
+        if w.borrow_mut().insert(portal_id) {
+            eprintln!("[backend-linux] anchored portal {portal_id}: {msg}");
+        }
+    });
+}
+
+fn key_name(keyval: gtk4::gdk::Key) -> String {
+    use gtk4::gdk::Key;
+    let named = match keyval {
+        Key::Return | Key::KP_Enter => "Enter",
+        Key::Escape => "Escape",
+        Key::Tab | Key::ISO_Left_Tab => "Tab",
+        Key::BackSpace => "Backspace",
+        Key::Delete | Key::KP_Delete => "Delete",
+        Key::Up | Key::KP_Up => "ArrowUp",
+        Key::Down | Key::KP_Down => "ArrowDown",
+        Key::Left | Key::KP_Left => "ArrowLeft",
+        Key::Right | Key::KP_Right => "ArrowRight",
+        Key::Home | Key::KP_Home => "Home",
+        Key::End | Key::KP_End => "End",
+        Key::Page_Up | Key::KP_Page_Up => "PageUp",
+        Key::Page_Down | Key::KP_Page_Down => "PageDown",
+        Key::space | Key::KP_Space => " ",
+        _ => "",
+    };
+    if !named.is_empty() {
+        return named.to_string();
+    }
+    keyval
+        .to_unicode()
+        .map(|c| c.to_string())
+        // No character and no name: report the GDK name rather than an empty
+        // string, so an unhandled key is diagnosable instead of invisible.
+        .unwrap_or_else(|| keyval.name().map(|n| n.to_string()).unwrap_or_default())
+}
+
 fn widget_measure(
     widget: &gtk4::Widget,
     known: Size<Option<f32>>,
@@ -540,6 +649,22 @@ pub struct LinuxBackend {
     children: HashMap<u64, Vec<u64>>,
     /// child id → parent id (for locating siblings on z change).
     parent_of: HashMap<u64, u64>,
+    /// Event controllers the `text_input` path attaches (focus / key), kept so
+    /// teardown can unhook them.
+    ///
+    /// Same hazard `states::StateControllers` documents: GTK emits focus-leave
+    /// while the framework unparents a focused widget, i.e. AFTER the author's
+    /// scope may be gone, and the resulting write through a freed signal slot
+    /// aborts inside a non-unwinding GObject trampoline. Removing the
+    /// controller stops delivery at the source.
+    input_controllers: HashMap<u64, Vec<gtk4::EventController>>,
+    /// Per-node CSS providers for widgets GTK paints ITSELF (`GtkEntry`,
+    /// `GtkTextView`). See `apply_native_widget_css`.
+    native_css: HashMap<u64, gtk4::CssProvider>,
+    /// Per-text-input re-entrancy guards: set while the backend writes the
+    /// entry's text, so the `changed` signal does not call the author back
+    /// with the value they just set (see `update_text_input_value`).
+    text_input_guards: HashMap<u64, Rc<std::cell::Cell<bool>>>,
     // The per-backend External table and navigator registry are gone in
     // runtime-v2: SDK payloads mount through `runtime_scene::Registry`
     // (typed by `TypeId`, installed at the app's boot seam) rather than
@@ -628,6 +753,9 @@ impl LinuxBackend {
             nodes: HashMap::new(),
             children: HashMap::new(),
             parent_of: HashMap::new(),
+            input_controllers: HashMap::new(),
+            native_css: HashMap::new(),
+            text_input_guards: HashMap::new(),
             _font_files: Vec::new(),
             root_id: None,
             image_nodes: HashMap::new(),
@@ -1012,10 +1140,26 @@ impl LinuxBackend {
     /// from inside the subtree root's own `size_allocate` (portal) or
     /// immediately after placing a cell (virtualizer), where the result
     /// is consumed by the same/next allocation.
-    pub fn layout_detached_root(&mut self, id: u64, width: f32, height: f32) {
+    pub fn layout_detached_root(
+        &mut self,
+        id: u64,
+        width: f32,
+        height: f32,
+        trigger: Option<runtime_shared::primitives::portal::ViewportRect>,
+    ) {
         if width <= 0.0 || height <= 0.0 {
+            // An anchored portal that never lays out never gets pinned, and
+            // ends up at its container's origin looking like broken anchoring.
+            #[cfg(debug_assertions)]
+            if self.portal_anchors.contains_key(&id) {
+                warn_once_portal(id, format_args!(
+                    "container allocated {width}x{height}, layout skipped — the \
+                     popover cannot be positioned"
+                ));
+            }
             return;
         }
+
         let Some(root_layout) = self.nodes.get(&id).map(|s| s.layout) else {
             return;
         };
@@ -1026,7 +1170,7 @@ impl LinuxBackend {
         // the shared resolver needs it to center-align, to decide whether
         // the requested side actually fits, and to clamp the overlay
         // inside the viewport.
-        let anchor_override = self.anchor_override(id, width, height);
+        let anchor_override = self.anchor_override(id, width, height, trigger);
 
         // Collect `id` + every tracked descendant (self.children is the
         // parent→children linkage the walker's `insert` populates).
@@ -1100,14 +1244,55 @@ impl LinuxBackend {
     /// the same author intent placing differently per platform. This
     /// backend supplies measured rects and applies the answer; it does
     /// not get its own opinion about geometry (CLAUDE.md §7).
-    fn anchor_override(&self, portal_id: u64, vw: f32, vh: f32) -> Option<(u64, f32, f32)> {
+    /// The trigger's viewport rect for an anchored portal.
+    ///
+    /// Deliberately separate from [`Self::anchor_override`] and called with
+    /// only an IMMUTABLE borrow held: resolving it goes back out through the
+    /// author's handle, whose ops re-enter this backend's `RefCell`. Called
+    /// from inside the layout pass — which runs under `try_borrow_mut` — that
+    /// re-entrant `try_borrow` fails, and the handle's contract is to return
+    /// the ZERO rect when it cannot read. The placement algorithm then happily
+    /// pinned every popover to a 0x0 target at the window origin.
+    pub(crate) fn anchor_trigger_rect(
+        &self,
+        portal_id: u64,
+    ) -> Option<runtime_shared::primitives::portal::ViewportRect> {
+        self.portal_anchors.get(&portal_id)?.target.rect()
+    }
+
+    fn anchor_override(
+        &self,
+        portal_id: u64,
+        vw: f32,
+        vh: f32,
+        trigger: Option<runtime_shared::primitives::portal::ViewportRect>,
+    ) -> Option<(u64, f32, f32)> {
         let spec = self.portal_anchors.get(&portal_id)?;
-        let child_id = *self.portal_anchor_child.get(&portal_id)?;
+        // Each of the three ways this can bail leaves the popover sitting at
+        // its container's flex origin — the top-left corner — which looks
+        // exactly like "anchoring is not implemented". Say which one it was.
+        let Some(child_id) = self.portal_anchor_child.get(&portal_id).copied() else {
+            #[cfg(debug_assertions)]
+            warn_once_portal(portal_id, format_args!(
+                "no content child registered — it will render at the container's \
+                 origin, not at its trigger"
+            ));
+            return None;
+        };
         let child_layout = self.nodes.get(&child_id)?.layout;
         // Trigger not mounted / not yet measured: leave the flex origin
         // alone rather than pinning to a bogus rect. The next pass picks
         // it up once the trigger has a frame.
-        let rect = spec.target.rect()?;
+        // Pre-resolved by the caller (see `anchor_trigger_rect`) precisely
+        // because reading it here would re-enter the backend's borrow.
+        let Some(rect) = trigger else {
+            #[cfg(debug_assertions)]
+            warn_once_portal(portal_id, format_args!(
+                "trigger rect unresolved (handle unbound, or the trigger has no frame \
+                 yet) — rendering at the container's origin"
+            ));
+            return None;
+        };
         let content = self.layout.frame_of(child_layout);
         let placed = runtime_shared::primitives::portal::resolve_anchored_placement(
             rect,
@@ -1165,6 +1350,7 @@ impl LinuxBackend {
                 static_opacity: 1.0,
                 anim_opacity: None,
                 text_box: view::PaintModel::default(),
+                own_text: OwnText::default(),
                 z: 0.0,
                 order: 0,
                 text: text::TextPaint::default(),
@@ -1271,6 +1457,223 @@ impl LinuxBackend {
             if changed {
                 self.rebuild_transform(id, quiet);
             }
+        }
+    }
+
+    /// Unhook the `text_input` controllers for a node being torn down.
+    ///
+    /// Called from `on_node_unstyled` alongside the state controllers — see
+    /// [`Self::input_controllers`] for the abort this prevents.
+    pub(crate) fn detach_input_controllers(&mut self, id: u64, widget: &gtk4::Widget) {
+        if let Some(cs) = self.input_controllers.remove(&id) {
+            for c in cs {
+                widget.remove_controller(&c);
+            }
+        }
+    }
+
+    /// Push the app's resolved style into a widget GTK paints for us.
+    ///
+    /// `GtkEntry` and `GtkTextView` draw their own background, border and text
+    /// colour from the DESKTOP's GTK theme — so on a `prefer-dark` desktop a
+    /// light-themed app rendered black input boxes, and on a light desktop a
+    /// dark-themed app would render white ones. Same failure the window canvas
+    /// had (see `install_canvas_background`): the system theme showing through
+    /// a surface the app believes it controls, and the same "same app,
+    /// different machine" divergence the framework exists to remove.
+    ///
+    /// Scoped to a per-node CSS class, so one entry's colours can never leak
+    /// onto another's.
+    fn apply_native_widget_css(&mut self, id: u64, style: &StyleRules) {
+        let Some(st) = self.nodes.get(&id) else { return };
+        let widget = st.widget.clone();
+        if !(widget.is::<gtk4::Entry>() || widget.is::<gtk4::TextView>()) {
+            return;
+        }
+
+        let class = format!("idealyst-native-{id}");
+        let bg = style
+            .background
+            .as_ref()
+            .map(|c| color::to_srgb(&c.resolve()))
+            // No author background: transparent, so whatever the framework
+            // paints behind shows — never the desktop theme's own fill.
+            .unwrap_or([0.0, 0.0, 0.0, 0.0]);
+        // Text follows the author's colour, else the ambient cascade — the
+        // same rule text nodes use, so an input's text matches the copy around
+        // it instead of the desktop theme's foreground.
+        let fg = style
+            .color
+            .as_ref()
+            .map(|c| color::to_srgb(&c.resolve()))
+            .unwrap_or_else(|| self.ambient_text(id).color);
+        let border = build_border(style);
+        let radius = len_px(&style.border_top_left_radius);
+
+        // `outline: none` + `box-shadow: none` strip GTK's OWN focus
+        // decoration.
+        //
+        // The framework already owns focus appearance: idea-ui's Field paints a
+        // `__state_focused` variant that recolours the border with the
+        // `color-focus-ring` token, and the backend flips `StateBits::FOCUSED`
+        // through `set_text_input_focus_handler`. Leaving the desktop theme's
+        // ring on top gives a second ring the author cannot style, move or
+        // remove — appearance the framework cannot control, which is exactly
+        // what the one-tree/every-backend contract rules out. Suppressed here
+        // so the app's ring is the only one, and an app that wants NO ring gets
+        // none.
+        //
+        // Known gap: author shadows are not translated onto native-painted
+        // widgets, so `box-shadow: none` currently drops nothing of the
+        // author's — when `shadow_*` reaches this path it must be emitted here
+        // rather than blanket-cleared.
+        // Text colour and the suppression of the desktop theme's own chrome.
+        //
+        // The BOX — background, border, radius — is deliberately NOT here. GTK
+        // draws widget CSS on the WIDGET, and a text input's widget is smaller
+        // than its Taffy frame (its padding becomes GTK margins, then the entry
+        // sizes to content): measured 438x30 inside a 480x48 frame. A border
+        // drawn there lands ~9px inside the shell's border, so the two read as
+        // two concentric rings — the "double ring" on the docs Field page. Web
+        // draws the input's box at the input's own border box, so the two
+        // coincide and read as one. The box is painted by the parent at the
+        // node's Taffy frame instead (see the `set_child_model` call in
+        // `apply_style`), which is that same border box.
+        let css = format!(
+            ".{class}, .{class} > text {{ background-image: none; \
+             background-color: rgba(0,0,0,0); color: {fg}; caret-color: {fg}; \
+             border: 0px solid rgba(0,0,0,0); \
+             min-height: 0; min-width: 0; \
+             outline: none; outline-width: 0; outline-style: none; \
+             box-shadow: none; }} \
+             .{class}:focus, .{class}:focus-visible, .{class}:focus-within, \
+             .{class} > text:focus, .{class} > text:focus-visible {{ \
+             outline: none; outline-width: 0; outline-style: none; \
+             box-shadow: none; }}",
+            fg = css_rgba(fg),
+        );
+        let _ = (bg, border, radius);
+
+        let provider = self.native_css.entry(id).or_insert_with(|| {
+            let p = gtk4::CssProvider::new();
+            gtk4::style_context_add_provider_for_display(
+                &gtk4::prelude::WidgetExt::display(&widget),
+                &p,
+                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+            p
+        });
+        provider.load_from_data(&css);
+        if !widget.has_css_class(&class) {
+            widget.add_css_class(&class);
+        }
+    }
+
+    /// What a node INHERITS: for each property, the nearest ancestor that
+    /// declares it.
+    ///
+    /// This is the CSS cascade, which native backends otherwise lack. Web
+    /// resolves it for free — an unstyled `<span>` inherits `color` and the
+    /// font, an icon's `currentColor` resolves the same way — so without this a
+    /// text node fell back to `TextPaint::default()`: opaque black at 16px in
+    /// the system font. Correct-looking under a light theme, invisible under a
+    /// dark one, and the wrong size and face everywhere.
+    ///
+    /// Properties resolve INDEPENDENTLY: an ancestor that sets only a colour
+    /// does not stop the search for a font, exactly as in CSS.
+    fn ambient_text(&self, id: u64) -> text::Inherited {
+        let mut out = text::Inherited::default();
+        let (mut have_color, mut have_family) = (false, false);
+        let (mut have_size, mut have_weight, mut have_italic) = (false, false, false);
+        let mut cur = self.parent_of.get(&id).copied();
+        while let Some(node_id) = cur {
+            let Some(st) = self.nodes.get(&node_id) else { break };
+            if !st.own_text.is_empty() {
+                let o = &st.own_text;
+                if !have_color {
+                    if let Some(c) = o.color {
+                        out.color = c;
+                        have_color = true;
+                    }
+                }
+                if !have_family {
+                    if let Some(f) = &o.family {
+                        out.family = Some(f.clone());
+                        have_family = true;
+                    }
+                }
+                if !have_size {
+                    if let Some(v) = o.size_px {
+                        out.size_px = v;
+                        have_size = true;
+                    }
+                }
+                if !have_weight {
+                    if let Some(w) = o.weight {
+                        out.weight = w;
+                        have_weight = true;
+                    }
+                }
+                if !have_italic {
+                    if let Some(i) = o.italic {
+                        out.italic = i;
+                        have_italic = true;
+                    }
+                }
+                if have_color && have_family && have_size && have_weight && have_italic {
+                    break;
+                }
+            }
+            cur = self.parent_of.get(&node_id).copied();
+        }
+        out
+    }
+
+    /// Re-apply inherited text properties through a subtree.
+    ///
+    /// Needed because inheritance is resolved at style time: when an ancestor
+    /// changes (a theme swap re-runs the app's stylesheets), every descendant
+    /// that inherits has already resolved against the OLD values. A descendant
+    /// that declares the property itself terminates that property's walk — it
+    /// and its subtree are unaffected, exactly as in CSS.
+    fn refresh_inherited_text(&mut self, id: u64) {
+        let kids = self.children.get(&id).cloned().unwrap_or_default();
+        for kid in kids {
+            let Some(st) = self.nodes.get(&kid) else { continue };
+            let declares_all = !st.own_text.color.is_none()
+                && st.own_text.family.is_some()
+                && st.own_text.size_px.is_some();
+            if declares_all {
+                continue; // nothing inheritable left to change beneath it
+            }
+            let inherited = self.ambient_text(kid);
+            let kind = st.kind;
+            let widget = st.widget.clone();
+            match kind {
+                NodeKind::Text => {
+                    if let Some(st) = self.nodes.get_mut(&kid) {
+                        let own = st.own_text.clone();
+                        // Own declarations still win over the refreshed values.
+                        st.text.color = own.color.unwrap_or(inherited.color);
+                        st.text.family = own.family.clone().or(inherited.family.clone());
+                        st.text.size_px = own.size_px.unwrap_or(inherited.size_px);
+                        st.text.weight = own.weight.unwrap_or(inherited.weight);
+                        st.text.italic = own.italic.unwrap_or(inherited.italic);
+                        let paint = st.text.clone();
+                        if let Some(label) = widget.downcast_ref::<gtk4::Label>() {
+                            text::apply(label, &paint);
+                        }
+                    }
+                }
+                _ => {
+                    if let Some(ic) = widget.downcast_ref::<icon::IdealystIcon>() {
+                        if !ic.has_explicit_color() {
+                            ic.set_color(inherited.color);
+                        }
+                    }
+                }
+            }
+            self.refresh_inherited_text(kid);
         }
     }
 
@@ -1581,6 +1984,30 @@ impl LinuxBackend {
         // 1. Layout — push flex/size/position/padding/margin into Taffy.
         self.layout.set_style(layout, style);
 
+        // 1-. Record what this node DECLARES for each inheritable property, so
+        // descendants that declare none can inherit it (the cascade, which this
+        // backend has to resolve itself — see `ambient_text`).
+        let declared = OwnText {
+            color: style.color.as_ref().map(|c| color::to_srgb(&c.resolve())),
+            family: style.font_family.as_ref().and_then(text::family_name),
+            size_px: match style.font_size.as_ref().map(|t| t.resolve()) {
+                Some(Length::Px(v)) => Some(v),
+                _ => None,
+            },
+            weight: style.font_weight,
+            italic: style
+                .font_style
+                .map(|s| matches!(s, runtime_shared::FontStyle::Italic)),
+        };
+        let inheritable_changed = self
+            .nodes
+            .get(&id)
+            .map(|st| st.own_text != declared)
+            .unwrap_or(false);
+        if let Some(st) = self.nodes.get_mut(&id) {
+            st.own_text = declared;
+        }
+
         // 1a. Padding on a LEAF widget → GTK margins.
         //
         // Taffy sizes a node's box to INCLUDE its padding and insets any
@@ -1699,8 +2126,9 @@ impl LinuxBackend {
                 }
             }
             NodeKind::Text => {
+                let inherited = self.ambient_text(id);
                 if let Some(st) = self.nodes.get_mut(&id) {
-                    st.text = text::resolve(style, &st.text);
+                    st.text = text::resolve(style, &st.text, &inherited);
                     if let Some(label) = st.widget.downcast_ref::<gtk4::Label>() {
                         text::apply(label, &st.text);
                     }
@@ -1736,6 +2164,43 @@ impl LinuxBackend {
                 }
             }
             NodeKind::Other => {
+                // Widgets GTK paints itself (`GtkEntry`, `GtkTextView`) take
+                // the app's colours rather than the desktop theme's.
+                self.apply_native_widget_css(id, style);
+                // …and their BOX is painted by the parent at this node's Taffy
+                // frame, so it lands on the same border box web draws on rather
+                // than inset by the widget's margins. Same mechanism a text
+                // leaf uses; see `IdealystView::set_child_model`.
+                if let Some(st) = self.nodes.get(&id) {
+                    let is_native_painted =
+                        st.widget.is::<gtk4::Entry>() || st.widget.is::<gtk4::TextView>();
+                    if is_native_painted {
+                        let pm = build_paint_model(style);
+                        let widget = st.widget.clone();
+                        if let Some(stm) = self.nodes.get_mut(&id) {
+                            stm.text_box = pm.clone();
+                        }
+                        if let Some(parent) = widget
+                            .parent()
+                            .and_then(|p| p.downcast::<IdealystView>().ok())
+                        {
+                            parent.set_child_model(&widget, pm);
+                        }
+                    }
+                }
+                // An icon with no colour of its own follows the ambient text
+                // colour — the primitive's documented contract and what web's
+                // `currentColor` gives for free. Without this it painted the
+                // hardcoded `DEFAULT_ICON_COLOR` (opaque black), which reads as
+                // correct under a light theme and is invisible under a dark one.
+                if let Some(st) = self.nodes.get(&id) {
+                    if let Some(ic) = st.widget.downcast_ref::<icon::IdealystIcon>() {
+                        if !ic.has_explicit_color() {
+                            let inherited = self.ambient_text(id);
+                            ic.set_color(inherited.color);
+                        }
+                    }
+                }
                 // Image nodes are `gtk::Picture` (NodeKind::Other). Honor
                 // `object_fit` → `content-fit` here — the framework calls
                 // `apply_style` separately from `create_image`, so this is
@@ -1748,6 +2213,16 @@ impl LinuxBackend {
                     }
                 }
             }
+        }
+
+        // 4. A changed declaration re-flows through the subtree.
+        //
+        // Inheritance is resolved at style time, so descendants that inherit
+        // have already resolved against the OLD colour — a theme swap would
+        // leave them on it. Descendants that declare their own colour stop the
+        // walk, exactly as in CSS.
+        if inheritable_changed {
+            self.refresh_inherited_text(id);
         }
     }
 
@@ -2017,6 +2492,11 @@ impl LinuxBackend {
             .map(color::to_srgb)
             .unwrap_or(icon::DEFAULT_ICON_COLOR);
         let widget = icon::IdealystIcon::new_from_data(data, rgba);
+        // An author colour is sticky; no colour means "follow the ambient text
+        // colour", resolved in `apply_style` once the node has a parent.
+        if color.is_some() {
+            widget.set_explicit_color(rgba);
+        }
         let node = self.wrap(widget.upcast::<gtk4::Widget>(), NodeKind::Other);
 
         // Pin a 24x24 default intrinsic size, matching iOS/macOS
@@ -2046,7 +2526,9 @@ impl LinuxBackend {
 
     fn update_icon_color(&mut self, node: &LinuxNode, color: &Color) {
         if let Some(w) = node.widget.downcast_ref::<icon::IdealystIcon>() {
-            w.set_color(color::to_srgb(color));
+            // Author-driven (a reactive `tone`/`color`), so it must survive an
+            // ambient refresh.
+            w.set_explicit_color(color::to_srgb(color));
         }
     }
 
@@ -2071,22 +2553,176 @@ impl LinuxBackend {
     // TODO(icon-stroke-anim): implement update_icon_stroke / animate_icon_stroke
     // via PathMeasure-driven dash trimming + a tick-callback easing clock.
 
+    /// A `text_input`, wired to the author's handlers and given an
+    /// intrinsic size.
+    ///
+    /// This used to create a bare `GtkEntry`, set its text, and drop
+    /// everything else on the floor — placeholder, `on_change`,
+    /// `on_key_down`, `on_blur` — with no measure fn. The result was an
+    /// input that was **invisible and inert**: Taffy had no height source
+    /// for the entry so it laid out 426x0 (the same failure the icon
+    /// primitive documents), it showed no placeholder, and typing never
+    /// reached the app because nothing was connected to `changed`.
     fn create_text_input(
         &mut self,
         initial_value: &str,
-        _placeholder: Option<&str>,
-        _on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
-        _on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
+        placeholder: Option<&str>,
+        on_change: Rc<dyn Fn(String)>,
+        on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
         secure: bool,
         _a11y: &AccessibilityProps,
     ) -> LinuxNode {
+        use runtime_shared::primitives::key::{KeyEvent, KeyOutcome};
+        use runtime_shared::primitives::text_input::BlurOutcome;
+
         let entry = gtk4::Entry::new();
         entry.set_text(initial_value);
+        if let Some(p) = placeholder {
+            entry.set_placeholder_text(Some(p));
+        }
         if secure {
             entry.set_visibility(false);
         }
-        self.wrap(entry.upcast::<gtk4::Widget>(), NodeKind::Other)
+
+        // Author `on_change`, guarded against the echo from our OWN writes:
+        // `update_text_input_value` calls `set_text`, which fires `changed`,
+        // which would call the author back with the value they just set — a
+        // controlled input then fights itself every keystroke.
+        let mut pending_controllers: Vec<gtk4::EventController> = Vec::new();
+        let echo_guard = Rc::new(std::cell::Cell::new(false));
+        let guard = echo_guard.clone();
+        entry.connect_changed(move |e| {
+            // NOT guarded on `is_live_interaction`: GTK does not reset an
+            // entry's text on teardown, so `changed` has no teardown-fire
+            // path — unlike the focus controller, which demonstrably does.
+            if guard.get() {
+                return;
+            }
+            (on_change)(e.text().to_string());
+        });
+
+        if let Some(handler) = on_key_down {
+            let keys = gtk4::EventControllerKey::new();
+            let entry_for_keys = entry.clone();
+            keys.connect_key_pressed(move |_, keyval, _code, state| {
+                let (start, end) = entry_for_keys
+                    .selection_bounds()
+                    .map(|(s, e)| (s as usize, e as usize))
+                    .unwrap_or_else(|| {
+                        let p = entry_for_keys.position().max(0) as usize;
+                        (p, p)
+                    });
+                let ev = KeyEvent {
+                    key: key_name(keyval),
+                    shift: state.contains(gtk4::gdk::ModifierType::SHIFT_MASK),
+                    ctrl: state.contains(gtk4::gdk::ModifierType::CONTROL_MASK),
+                    alt: state.contains(gtk4::gdk::ModifierType::ALT_MASK),
+                    meta: state.contains(gtk4::gdk::ModifierType::SUPER_MASK),
+                    selection_start: start,
+                    selection_end: end,
+                };
+                match (handler)(&ev) {
+                    KeyOutcome::PreventDefault => gtk4::glib::Propagation::Stop,
+                    KeyOutcome::Default => gtk4::glib::Propagation::Proceed,
+                }
+            });
+            entry.add_controller(keys.clone());
+            pending_controllers.push(keys.upcast());
+        }
+
+        if let Some(handler) = on_blur {
+            let focus = gtk4::EventControllerFocus::new();
+            let entry_for_blur = entry.clone();
+            focus.connect_leave(move |_| {
+                // Teardown also fires `leave`; delivering it would call the
+                // author after their scope is gone (see `is_live_interaction`).
+                if !is_live_interaction(&entry_for_blur) {
+                    return;
+                }
+                // `Keep` vetoes the blur: take focus straight back. GTK has
+                // already moved it, so this is a re-grab rather than a
+                // suppression — the closest this toolkit gets to the veto.
+                if matches!((handler)(), BlurOutcome::Keep) {
+                    entry_for_blur.grab_focus();
+                }
+            });
+            entry.add_controller(focus.clone());
+            pending_controllers.push(focus.upcast());
+        }
+
+        let node = self.wrap(entry.clone().upcast::<gtk4::Widget>(), NodeKind::Other);
+        if !pending_controllers.is_empty() {
+            self.input_controllers.insert(node.id, pending_controllers);
+        }
+        self.text_input_guards.insert(node.id, echo_guard);
+
+        // Give Taffy the entry's intrinsic size. Without this the node has
+        // NO height source and the field lays out at zero height — present
+        // in the tree, findable by the robot, and invisible on screen.
+        if let Some(layout) = self.nodes.get(&node.id).map(|s| s.layout) {
+            let w = entry.upcast::<gtk4::Widget>();
+            self.layout.set_measure_fn(
+                layout,
+                Rc::new(move |known, available| widget_measure(&w, known, available)),
+            );
+        }
+        node
+    }
+
+    /// Drive a controlled input from its signal.
+    ///
+    /// Was the trait's no-op default, so a `value`-bound input never
+    /// reflected programmatic changes — the author's signal and the widget
+    /// diverged the moment anything but typing set it.
+    fn update_text_input_value(&mut self, node: &LinuxNode, value: &str) {
+        if let Some(entry) = node.widget.downcast_ref::<gtk4::Entry>() {
+            if entry.text() == value {
+                return; // no-op writes would still fire `changed`
+            }
+            let guard = self.text_input_guards.get(&node.id).cloned();
+            if let Some(g) = &guard {
+                g.set(true);
+            }
+            // Preserve the caret: `set_text` moves it to the end, which makes
+            // editing mid-string jump on every keystroke of a controlled input.
+            let caret = entry.position();
+            entry.set_text(value);
+            entry.set_position(caret.min(value.chars().count() as i32));
+            if let Some(g) = &guard {
+                g.set(false);
+            }
+        }
+    }
+
+    fn update_text_input_placeholder(&mut self, node: &LinuxNode, placeholder: Option<&str>) {
+        if let Some(entry) = node.widget.downcast_ref::<gtk4::Entry>() {
+            entry.set_placeholder_text(placeholder);
+        }
+    }
+
+    fn set_text_input_focus_handler(&mut self, node: &LinuxNode, handler: Rc<dyn Fn(bool)>) {
+        if let Some(entry) = node.widget.downcast_ref::<gtk4::Entry>() {
+            let focus = gtk4::EventControllerFocus::new();
+            let enter = handler.clone();
+            let on_enter = entry.clone();
+            focus.connect_enter(move |_| {
+                if is_live_interaction(&on_enter) {
+                    (enter)(true);
+                }
+            });
+            // THE crash: navigating away from a page with a mounted input made
+            // GTK move focus out of the dying subtree, firing `leave` into
+            // `Field`'s handler after its scope was dropped —
+            // `stale-signal-handle`, then abort (non-unwinding trampoline).
+            let on_leave = entry.clone();
+            focus.connect_leave(move |_| {
+                if is_live_interaction(&on_leave) {
+                    (handler)(false);
+                }
+            });
+            entry.add_controller(focus);
+        }
     }
 
     fn update_text_input_secure(&mut self, node: &LinuxNode, secure: bool) {
@@ -2346,6 +2982,7 @@ impl LinuxBackend {
             offset,
         } = &target
         {
+
             self.portal_anchors.insert(
                 node.id,
                 portal::AnchorSpec {
@@ -2365,6 +3002,7 @@ impl LinuxBackend {
         portal::configure(
             &view,
             node.id,
+            self.portal_anchors.contains_key(&node.id),
             self.self_ref(),
             self.host_window.clone(),
             on_dismiss,
@@ -2396,8 +3034,8 @@ impl LinuxBackend {
 #[cfg(test)]
 mod layout_tests {
     use super::{
-        install_canvas_background, leaf_alloc_size, scroll_document, IdealystView, LinuxBackend,
-        StyleRules,
+        install_canvas_background, is_live_interaction, leaf_alloc_size, scroll_document,
+        IdealystView, LinuxBackend, StyleRules,
     };
     use gtk4::prelude::*;
     use runtime_shared::{Color, Length, Tokenized};
@@ -2919,7 +3557,8 @@ mod layout_tests {
                 ..Default::default()
             }),
         );
-        backend.layout_detached_root(anchored.id, 1000.0, 800.0);
+        let trigger = backend.anchor_trigger_rect(anchored.id);
+        backend.layout_detached_root(anchored.id, 1000.0, 800.0, trigger);
 
         let placed = backend.node_frame(content.id).unwrap();
         // Below + Start: y = 200 + 20 + 4 = 224, x = trigger.x = 100.
@@ -3256,6 +3895,350 @@ mod layout_tests {
                 css.contains("rgb(15,22,37)"),
                 "set_app_background did not reach the canvas provider; css = {css:?}"
             );
+        }
+
+        // --- 21. A text input's BOX must be painted at its Taffy frame, not on
+        // the GTK widget — or a bordered input draws a SECOND ring inside its
+        // shell's.
+        //
+        // GTK draws widget CSS on the widget, and a text input's widget is
+        // smaller than its Taffy frame: its padding becomes GTK margins and the
+        // entry then sizes to content (measured 438x30 inside a 480x48 frame).
+        // A border emitted through the widget's CSS therefore landed ~9px
+        // inside the shell's border, and the two read as two concentric rings.
+        // Only the two docs Fields whose input carries its own border showed it
+        // (Email + Validation); the other five have no input border and looked
+        // fine — which is exactly how it was reported. Web draws the input's
+        // box at the input's own border box, so there the two coincide.
+        {
+            let mut backend = LinuxBackend::new(gtk4::Window::new());
+            let mut shell = backend.create_view(&a11y);
+            let input = backend.create_text_input(
+                "",
+                None,
+                std::rc::Rc::new(|_: String| {}),
+                None,
+                None,
+                false,
+                &a11y,
+            );
+            backend.insert(&mut shell, input.clone());
+            let bordered = std::rc::Rc::new(StyleRules {
+                border_top_width: Some(Tokenized::Literal(1.0)),
+                border_right_width: Some(Tokenized::Literal(1.0)),
+                border_bottom_width: Some(Tokenized::Literal(1.0)),
+                border_left_width: Some(Tokenized::Literal(1.0)),
+                border_top_color: Some(Tokenized::Literal(Color("#6366f1".into()))),
+                border_right_color: Some(Tokenized::Literal(Color("#6366f1".into()))),
+                border_bottom_color: Some(Tokenized::Literal(Color("#6366f1".into()))),
+                border_left_color: Some(Tokenized::Literal(Color("#6366f1".into()))),
+                background: Some(Tokenized::Literal(Color("#ffffff".into()))),
+                padding_left: Some(Tokenized::Literal(Length::Px(12.0))),
+                padding_right: Some(Tokenized::Literal(Length::Px(12.0))),
+                ..Default::default()
+            });
+            backend.apply_style(&input, &bordered);
+
+            // The PARENT must carry the box, so it paints at the child's frame.
+            let parent = input
+                .widget
+                .parent()
+                .and_then(|p| p.downcast::<IdealystView>().ok())
+                .expect("input must be parented by an IdealystView");
+            let model = parent
+                .child_model(&input.widget)
+                .expect("parent must know this child");
+            assert!(
+                model.border.as_ref().is_some_and(|b| b.widths[0] > 0.0),
+                "a bordered text input's border must reach the PARENT's paint, \
+                 which draws it at the node's Taffy frame"
+            );
+            assert!(
+                model.background.is_some(),
+                "the input's background must travel with its border"
+            );
+
+            // …and the widget's own CSS must NOT draw one, or both appear.
+            let css = backend
+                .native_css
+                .get(&input.id)
+                .map(|p| p.to_str().to_string())
+                .expect("entry must have a CSS provider");
+            // GTK normalizes to per-side longhands, so match its own spelling.
+            assert!(
+                css.contains("border-top-width: 0"),
+                "the widget's CSS still draws a border; GTK paints widget CSS on \
+                 the WIDGET, which is smaller than the node's Taffy frame, so it \
+                 lands inside the shell's border and renders as a second ring:\n{css}"
+            );
+            assert!(
+                css.contains("background-color: rgba(0,0,0,0)"),
+                "the widget's CSS still fills a background; it would paint the \
+                 smaller widget box and misalign with the border:\n{css}"
+            );
+        }
+
+        // --- 20. The text-input HANDLE must be real.
+        //
+        // `make_text_input_handle` was never implemented, so it fell to
+        // `NoopTextInputOps`: an author's `handle.focus()` / `blur()` /
+        // `select_all()` / `insert_text()` all did nothing on this backend, and
+        // the robot's focus/blur verbs silently no-opped with it. That last
+        // part makes focus behaviour UNTESTABLE here — it is how a measurement
+        // of "does the focus ring apply" came back meaningless and produced a
+        // wrong conclusion.
+        {
+            let mut backend = LinuxBackend::new(gtk4::Window::new());
+            let node = backend.create_text_input(
+                "hello world",
+                None,
+                std::rc::Rc::new(|_: String| {}),
+                None,
+                None,
+                false,
+                &a11y,
+            );
+            let handle = crate::handles::make_text_input_handle(&backend, &node);
+            let entry = node.widget.downcast_ref::<gtk4::Entry>().expect("entry");
+
+            handle.select_all();
+            assert_eq!(
+                entry.selection_bounds(),
+                Some((0, 11)),
+                "select_all must select the whole value"
+            );
+
+            // Replaces the selection and leaves the caret after the insert.
+            handle.insert_text("bye");
+            assert_eq!(entry.text(), "bye", "insert_text must replace the selection");
+            assert_eq!(entry.position(), 3, "caret must land after the inserted text");
+
+            // With no selection it inserts at the caret.
+            entry.set_position(0);
+            handle.insert_text("oh ");
+            assert_eq!(entry.text(), "oh bye");
+        }
+
+        // --- 19. Widget callbacks must not fire during TEARDOWN.
+        //
+        // GTK moves focus out of a subtree it is destroying, firing
+        // `EventControllerFocus::leave` on the way down. Delivered to the
+        // author, that calls into a component whose reactive scope is already
+        // dropped — `stale-signal-handle`, and because the callback runs in a
+        // non-unwinding GTK trampoline the process ABORTS rather than unwinds.
+        // Repro: mount a page with a text input, then navigate away.
+        //
+        // `is_live_interaction` is the discriminator: a widget with no root is
+        // not in a window, so it has no focus to lose and no user could have
+        // typed in it. Pinned here because the guard is invisible at the call
+        // site and trivially "cleaned up" by someone who has not seen the abort.
+        {
+            let window = gtk4::Window::new();
+            let entry = gtk4::Entry::new();
+            window.set_child(Some(&entry));
+            assert!(
+                is_live_interaction(&entry),
+                "a widget inside a window is a live interaction target"
+            );
+            // What teardown looks like: the widget leaves the tree.
+            window.set_child(None::<&gtk4::Widget>);
+            assert!(
+                !is_live_interaction(&entry),
+                "an unrooted widget must be treated as teardown — delivering its \
+                 focus-leave to the author aborts the process on a freed signal"
+            );
+        }
+
+        // --- 18. An anchored portal's TRIGGER RECT must be resolved OUTSIDE
+        // the layout pass's mutable borrow.
+        //
+        // `spec.target.rect()` goes back out through the author's handle,
+        // whose ops re-enter this backend's `RefCell`. The layout pass runs
+        // under `try_borrow_mut`, so resolving the rect in there always failed
+        // — and the handle's contract is to return the ZERO rect when it
+        // cannot read, not an error. `resolve_anchored_placement` then treated
+        // it as a real 0x0 target at the window origin and parked every
+        // popover in the top-left corner. The existing placement test above
+        // could not catch it: its `FixedAnchor` answers without touching the
+        // backend.
+        {
+            let backend = std::rc::Rc::new(std::cell::RefCell::new(LinuxBackend::new(
+                gtk4::Window::new(),
+            )));
+            backend.borrow_mut().set_self_ref(std::rc::Rc::downgrade(&backend));
+
+            let trigger_node = backend.borrow_mut().create_pressable(std::rc::Rc::new(|| {}), &a11y);
+            // Give it a frame, the way a layout pass would.
+            if let Some(st) = backend.borrow_mut().nodes.get_mut(&trigger_node.id) {
+                st.frame = (100.0, 200.0, 80.0, 20.0);
+            }
+            let handle = {
+                let b = backend.borrow();
+                crate::handles::make_pressable_handle(&b, &trigger_node)
+            };
+
+            use runtime_shared::primitives::portal::AnchorableHandle;
+            // Outside any mutable borrow the handle reports the real rect.
+            let free = handle.rect();
+            assert_eq!(
+                (free.x, free.y, free.width, free.height),
+                (100.0, 200.0, 80.0, 20.0),
+                "a pressable handle must report its real rect — a zero rect here is \
+                 what pins popovers to the window origin"
+            );
+
+            // Under a mutable borrow — i.e. from inside the layout pass — it
+            // CANNOT read, and degrades to the zero rect. This is the hazard,
+            // pinned so the resolution order is not "simplified" back later.
+            let guard = backend.borrow_mut();
+            let blocked = handle.rect();
+            assert_eq!(
+                (blocked.x, blocked.y, blocked.width, blocked.height),
+                (0.0, 0.0, 0.0, 0.0),
+                "expected the re-entrant read to fail closed; if this now returns a \
+                 real rect the borrow hazard is gone and `anchor_trigger_rect` can be \
+                 folded back into `anchor_override`"
+            );
+            drop(guard);
+        }
+
+        // --- 17. TEXT INPUTS must be visible and wired.
+        //
+        // `create_text_input` built a bare `GtkEntry`, set its text, and
+        // dropped the rest: no measure fn, so Taffy had no height source and
+        // every field laid out at `426x0` — present in the tree, findable by
+        // the robot, invisible on screen; no placeholder; and nothing connected
+        // to `changed`, so typing never reached the app. `update_text_input_*`
+        // and `set_text_input_focus_handler` were not implemented at all, and
+        // their trait defaults are silent no-ops, so a `value`-bound input
+        // never followed its signal.
+        {
+            let mut backend = LinuxBackend::new(gtk4::Window::new());
+            let seen: std::rc::Rc<std::cell::RefCell<Vec<String>>> =
+                std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let sink = seen.clone();
+            let node = backend.create_text_input(
+                "hello",
+                Some("you@example.com"),
+                std::rc::Rc::new(move |v: String| sink.borrow_mut().push(v)),
+                None,
+                None,
+                false,
+                &a11y,
+            );
+            let entry = node
+                .widget
+                .downcast_ref::<gtk4::Entry>()
+                .expect("text input must be a GtkEntry");
+            assert_eq!(entry.text(), "hello");
+            assert_eq!(
+                entry.placeholder_text().map(|s| s.to_string()).as_deref(),
+                Some("you@example.com"),
+                "the placeholder was dropped"
+            );
+
+            // It must have an intrinsic height, or it renders as a 0px sliver.
+            // Asserted through the real layout path: put it in a parent and
+            // run the pass, exactly as a page does.
+            let mut parent = backend.create_view(&a11y);
+            backend.insert(&mut parent, node.clone());
+            let parent_layout = backend.nodes.get(&parent.id).unwrap().layout;
+            backend.layout.compute(parent_layout, 400.0, 300.0);
+            let input_layout = backend.nodes.get(&node.id).unwrap().layout;
+            let frame = backend.layout.frame_of(input_layout);
+            assert!(
+                frame.height > 1.0,
+                "a text input laid out {}x{} — with no measure fn Taffy has no \
+                 height source and the field is invisible on screen",
+                frame.width,
+                frame.height
+            );
+
+            // Typing reaches the author.
+            entry.set_text("typed");
+            assert_eq!(
+                seen.borrow().last().map(String::as_str),
+                Some("typed"),
+                "on_change never fired — the input is inert"
+            );
+
+            // A programmatic (controlled) write must NOT echo back to the
+            // author, or the signal and the widget fight every keystroke.
+            let before = seen.borrow().len();
+            backend.update_text_input_value(&node, "from signal");
+            assert_eq!(entry.text(), "from signal", "controlled value did not apply");
+            assert_eq!(
+                seen.borrow().len(),
+                before,
+                "a backend-driven write echoed back through on_change"
+            );
+
+            backend.update_text_input_placeholder(&node, Some("changed"));
+            assert_eq!(
+                entry.placeholder_text().map(|s| s.to_string()).as_deref(),
+                Some("changed")
+            );
+        }
+
+        // --- 16. COLOUR INHERITANCE. A text node or icon that declares no
+        // colour of its own must follow the nearest ancestor that does.
+        //
+        // Web gets this from CSS: an unstyled `<span>` inherits `color`, and an
+        // icon's `currentColor` resolves the same way — which is why
+        // `idea-ui`'s Icon documents "with neither set, the icon inherits the
+        // ambient text color". Native backends have no cascade, so an unset
+        // colour fell back to opaque black: correct-looking under a light theme
+        // and invisible under a dark one. 173 text nodes across the docs
+        // catalogue plus every untinted icon.
+        {
+            let mut backend = LinuxBackend::new(gtk4::Window::new());
+            let mut root = backend.create_view(&a11y);
+            let light = std::rc::Rc::new(StyleRules {
+                color: Some(Tokenized::Literal(Color("#e6edf6".into()))),
+                ..Default::default()
+            });
+            backend.apply_style(&root, &light);
+
+            // A text child that says nothing about colour inherits it.
+            let quiet = backend.create_text("inherits", &a11y);
+            backend.insert(&mut root, quiet.clone());
+            backend.apply_style(&quiet, &std::rc::Rc::new(StyleRules::default()));
+            let got = backend.nodes.get(&quiet.id).unwrap().text.color;
+            assert!(
+                (got[0] - 0.902).abs() < 1e-2 && (got[2] - 0.965).abs() < 1e-2,
+                "text with no colour of its own must inherit the ancestor's, \
+                 got {got:?} (opaque black here means it is invisible on a dark theme)"
+            );
+
+            // A child that DECLARES a colour keeps it.
+            let loud = backend.create_text("declares", &a11y);
+            backend.insert(&mut root, loud.clone());
+            backend.apply_style(
+                &loud,
+                &std::rc::Rc::new(StyleRules {
+                    color: Some(Tokenized::Literal(Color("#ff0000".into()))),
+                    ..Default::default()
+                }),
+            );
+            let got = backend.nodes.get(&loud.id).unwrap().text.color;
+            assert!(got[0] > 0.9 && got[1] < 0.1, "declared colour was overridden: {got:?}");
+
+            // --- 16b. A theme swap on the ANCESTOR must reach descendants that
+            // inherit — they resolved against the old value already.
+            let dark = std::rc::Rc::new(StyleRules {
+                color: Some(Tokenized::Literal(Color("#101820".into()))),
+                ..Default::default()
+            });
+            backend.apply_style(&root, &dark);
+            let got = backend.nodes.get(&quiet.id).unwrap().text.color;
+            assert!(
+                got[0] < 0.2 && got[2] < 0.2,
+                "an inheriting descendant did not follow the ancestor's new \
+                 colour, got {got:?} — this is the theme-swap case"
+            );
+            // …and the one that declared its own is untouched.
+            let got = backend.nodes.get(&loud.id).unwrap().text.color;
+            assert!(got[0] > 0.9, "a declared colour must survive an ancestor swap: {got:?}");
         }
 
         // --- 15. A `text` primitive's BOX — background / border / radius —
