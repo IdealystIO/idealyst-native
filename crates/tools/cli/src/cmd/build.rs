@@ -203,6 +203,30 @@ pub struct Args {
     #[arg(long)]
     pub premint: bool,
 
+    /// Web only, debug builds only: how much debug info the wasm carries.
+    /// `line-tables` (default) keeps stack frames symbolizing to source
+    /// lines while dropping the DWARF for locals and types — on a large
+    /// app that is most of the module's bytes, and wasm has no sidecar to
+    /// move them to. `full` restores cargo's `debug = 2` for a session
+    /// with a wasm-aware debugger; `none` drops it entirely. Panic
+    /// messages name their `file:line` at every level (that is `.rodata`,
+    /// not debug info). Release builds set their own posture and ignore
+    /// this.
+    #[arg(long, default_value = "line-tables")]
+    pub debuginfo: String,
+
+    /// Web only: skip the `wasm-split` pass. `#[component(lazy)]`
+    /// boundaries still work — their bodies ship in the main bundle and
+    /// resolve immediately instead of over the network. Trades bundle
+    /// size for packaging time: outside release, splitting is also the
+    /// only pass that compacts the module, so skipping it leaves the
+    /// relocs in and the served wasm several times larger (measured on
+    /// the `welcome` example: 2.2 MB split, 6.3 MB skipped, for 0.2s
+    /// saved). On a large app the browser then pays more to compile the
+    /// bigger module on every reload, which can outweigh the saving.
+    #[arg(long)]
+    pub no_split: bool,
+
     /// Web only: enable the Robot bridge in the bundle (`robot` feature →
     /// `backend-web/robot`). A browser app can't host
     /// the bridge itself, so it dials a `robot-relay` whose URL it reads from
@@ -571,6 +595,8 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
                 args.data_prune,
                 args.no_data_prune,
             ),
+            wasm_split: !args.no_split,
+            debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
             // `--premint-only` strips the engine, so it MUST also premint —
             // otherwise the bundle has neither build-time classes nor a
             // runtime to mint them, and every styled node panics.

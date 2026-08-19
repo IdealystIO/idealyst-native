@@ -142,6 +142,16 @@ pub struct BuildOptions {
     /// Log every engine fall-through (`--premint-report`). Implies
     /// [`Self::premint`].
     pub premint_report: bool,
+    /// Whether each rebuild runs `wasm-split` (`--no-split` clears it).
+    /// Passed through to [`build_web::BuildOptions::wasm_split`]
+    /// verbatim: `true` is the default, and clearing it trades a larger
+    /// served wasm for a shorter packaging pass.
+    pub wasm_split: bool,
+    /// Debug-info level for each rebuild's wasm (`--debuginfo`). Passed
+    /// through to [`build_web::BuildOptions::debuginfo`]; the default
+    /// trims DWARF that every post-cargo pass — and the browser, on every
+    /// reload — would otherwise re-process.
+    pub debuginfo: build_web::DebugInfo,
 }
 
 /// Run a single rebuild. Useful for callers that want one build
@@ -174,6 +184,8 @@ pub fn start(
             premint: false,
             premint_only: false,
             premint_report: false,
+            wasm_split: true,
+            debuginfo: build_web::DebugInfo::default(),
         },
     )
 }
@@ -346,6 +358,8 @@ fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
 fn to_build_web_options(opts: &BuildOptions) -> build_web::BuildOptions {
     let premint = opts.premint || opts.premint_only || opts.premint_report;
     build_web::BuildOptions {
+        wasm_split: opts.wasm_split,
+        debuginfo: opts.debuginfo,
         // Dev reload always builds the full vocabulary: the flag is a
         // release-bundle lever, and a dev rebuild that dropped a
         // primitive would panic at mount mid-session.
@@ -395,7 +409,20 @@ mod tests {
             premint,
             premint_only: only,
             premint_report: report,
+            wasm_split: true,
+            debuginfo: build_web::DebugInfo::default(),
         }
+    }
+
+    /// The dev loop passes the split choice straight through — a
+    /// `--no-split` session must not silently start splitting again on
+    /// the second rebuild.
+    #[test]
+    fn wasm_split_choice_reaches_the_web_build() {
+        let mut o = opts(false, false, false);
+        assert!(to_build_web_options(&o).wasm_split);
+        o.wasm_split = false;
+        assert!(!to_build_web_options(&o).wasm_split);
     }
 
     /// Premint dev builds must turn hydration OFF: `build_web` refuses

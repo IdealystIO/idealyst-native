@@ -244,6 +244,26 @@ pub struct Args {
     #[arg(long)]
     pub premint_report: bool,
 
+    /// Web + `--local` only: how much debug info each rebuild's wasm
+    /// carries. `line-tables` (default) keeps panic traces mapping to
+    /// source lines while dropping the DWARF for locals and types, which
+    /// on a large app is most of the module — and every byte is re-run
+    /// through wasm-bindgen and re-compiled by the browser on each
+    /// reload. `full` restores cargo's `debug = 2`; `none` drops it.
+    #[arg(long, default_value = "line-tables")]
+    pub debuginfo: String,
+
+    /// Web + `--local` only: skip the `wasm-split` pass on every
+    /// rebuild. `#[component(lazy)]` boundaries keep working — their
+    /// bodies stay in the main bundle and their loaders resolve
+    /// immediately, so `loading` flashes for a microtask instead of a
+    /// fetch. Buys packaging time and costs bundle size: outside release,
+    /// splitting is also the only pass that compacts the module, so the
+    /// served wasm keeps its relocs and gets several times larger — which
+    /// the browser then re-compiles on every reload.
+    #[arg(long)]
+    pub no_split: bool,
+
     /// Disable the Robot bridge in dev mode. By DEFAULT `idealyst dev` hosts a
     /// `robot-relay` and wires the launched app to dial it (web-local injects
     /// the URL; desktop-native apps inherit it), so the MCP server / inspector /
@@ -1371,6 +1391,11 @@ fn launch_web(
                     premint: false,
                     premint_only: false,
                     premint_report: false,
+                    // No `--no-split` here: the wire-mode shim is a
+                    // thin client the user never iterates on, so the
+                    // compaction is worth more than the packaging time.
+                    wasm_split: true,
+                    debuginfo: build_web::DebugInfo::default(),
                 },
             )
             .context("web build failed (runtime-server)")?;
@@ -1449,14 +1474,14 @@ fn launch_web(
                     premint: args.premint,
                     premint_only: args.premint_only,
                     premint_report: args.premint_report,
+                    // `--no-split`: skip the pass on every rebuild,
+                    // trading a bigger served wasm for a shorter
+                    // packaging tail. Splitting stays the default.
+                    wasm_split: !args.no_split,
+                    debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
                 },
             )?;
             std::mem::forget(handle);
-
-            // TODO(lazy-primitive): wasm-split-cli post-build step
-            // for the local-mode dev path. Splits the wasm-pack
-            // output into base + chunks, emits chunks into
-            // <project>/pkg/. Mirrors the build path; coming up next.
         }
 
         // ── Premint dev: the pkg-into-project path rewrites no
@@ -1735,6 +1760,10 @@ fn launch_ssr(
                 // rebuild.
                 prune_dead_data_min: None,
                 premint: false,
+                // Honors the same `--no-split` the local-web dev path
+                // does — this rebuilds the same wasm on every save.
+                wasm_split: !args.no_split,
+                debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
                 // Follows the session's resolved core (runtime-v2
                 // defaults flip) so the served SSR HTML and the
                 // hydrating bundle agree on a core.
@@ -1873,6 +1902,10 @@ fn launch_web_with_backend(
                 premint: args.premint,
                 premint_only: args.premint_only,
                 premint_report: args.premint_report,
+                // Same override the plain local-web path honors — the
+                // full-stack loop rebuilds the same wasm on every save.
+                wasm_split: !args.no_split,
+                debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
             },
         )
         .context("web bundle initial build + watcher start failed")?;
@@ -2507,6 +2540,8 @@ impl Args {
             premint: self.premint,
             premint_only: self.premint_only,
             premint_report: self.premint_report,
+            no_split: self.no_split,
+            debuginfo: self.debuginfo.clone(),
             no_robot: self.no_robot,
             headless_client: self.headless_client,
             no_headless_client: self.no_headless_client,

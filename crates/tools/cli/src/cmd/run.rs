@@ -572,6 +572,10 @@ fn run_server(args: &Args) -> anyhow::Result<()> {
                 hydrate: false,
                 prune_dead_data_min: None,
                 premint: false,
+                // No flag on `run server` — split, like every other
+                // build that doesn't ask otherwise.
+                wasm_split: true,
+                debuginfo: build_web::DebugInfo::default(),
             },
         )
         .context("web bundle build for `run server` failed")?;

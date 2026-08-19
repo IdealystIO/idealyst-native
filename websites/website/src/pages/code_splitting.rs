@@ -148,14 +148,22 @@ fn how_the_split_works() -> Element {
             title = "How the split works".to_string(),
             paragraphs = vec![
                 "The attribute wraps the body in a `#[wasm_split]` async function. \
-                 A release web build (`idealyst build --web --release`) runs the \
-                 wasm-split pass after wasm-bindgen: it walks the call graph, moves \
-                 code reachable only through the split function into a chunk wasm, \
-                 and emits the loader glue that fetches and links the chunk against \
-                 the live main instance.".to_string(),
+                 Every web build — dev included — runs the wasm-split pass after \
+                 wasm-bindgen: it walks the call graph, moves code reachable only \
+                 through the split function into a chunk wasm, and emits the loader \
+                 glue that fetches and links the chunk against the live main \
+                 instance.".to_string(),
                 "Chunk-only code leaves the main bundle automatically. Chunk-only \
                  static data follows under the experimental `--data-prune` flag; \
                  verify the app still renders when enabling it.".to_string(),
+                "`--no-split` skips the pass without removing your lazy boundaries: \
+                 the bodies ship inside the main bundle and their loaders resolve \
+                 immediately, so a lazy component still mounts and its `loading` \
+                 state just flashes by. It is an iteration-speed lever with a real \
+                 cost — outside release, splitting is also the only step that \
+                 compacts the module, so skipping it leaves the relocation payload \
+                 in the served wasm for the browser to re-compile on every \
+                 reload.".to_string(),
             ],
         )
     }

@@ -22,6 +22,12 @@ brotli = "7"
 # renamed to carry a build digest so redeploys can never be served
 # stale from HTTP caches.
 sha2 = { workspace = true }
+# Import-section scan for the `--no-split` inline loader: we need the
+# exact `./__wasm_split.js` import names the `#[wasm_split]` macro
+# emitted, and nothing else about the module. Streaming the sections is
+# cheap; a full `walrus` parse of a multi-hundred-MB debug wasm is the
+# cost `--no-split` exists to avoid.
+wasmparser = { workspace = true }
 # Vendored wasm-split toolchain. Called as a library (not a
 # subprocess) so our patches apply automatically without users
 # needing to install a separate binary on PATH.

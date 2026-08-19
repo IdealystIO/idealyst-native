@@ -7,6 +7,35 @@ each entry links to its migration guide.
 
 ### Added
 
+- **Dev web builds trim debug info and disable thin-local LTO** — a
+  debug wasm no longer carries cargo's default `debug = 2`, which on wasm
+  (no split-debuginfo, no sidecar) meant a *dev* bundle held more DWARF
+  than a release one, and every post-cargo pass re-processed it. Dev now
+  builds at `line-tables-only` with `lto = "off"`. Measured on
+  `websites/website`: rustc's wasm 273.6 MB → 114.3 MB, and the whole
+  post-cargo packaging pass (wasm-bindgen + wasm-split + fingerprint +
+  stage) 14.9–18.4s → 7.4–7.9s. The *served* bundle is unchanged
+  (6,675,436 B → 6,669,272 B) because wasm-split already stripped debug
+  info from what ships, and panic messages still name their `file:line`
+  at every level — those are `.rodata`, not debug info. `--debuginfo
+  full` restores cargo's default for a session with a wasm-aware
+  debugger; `--debuginfo none` drops line tables too. Release is
+  untouched.
+
+- **`--no-split` on `idealyst build --web` and `idealyst dev`** — skip
+  the `wasm-split` packaging pass. Default behavior is unchanged (every
+  build still splits); this is an opt-out for iteration loops that would
+  rather have the packaging time. It does **not** drop lazy boundaries:
+  the build emits an inline `__wasm_split.js` whose loaders resolve on a
+  microtask and whose body imports forward to the `_export_` twins
+  already in the main module, so a `#[component(lazy)]` still mounts —
+  its body just ships in the main bundle. The cost is size: outside
+  release the splitter is also the only pass that compacts the module, so
+  skipping it keeps the `--emit-relocs` payload in the served wasm
+  (measured on `examples/welcome`, which has nothing to extract:
+  2,249,884 B split vs 6,300,179 B skipped, for 0.2s saved), and a bigger
+  module costs the browser more to compile on every reload.
+
 - **`TouchPhase::Hovered`** — unpressed pointer motion (mouse/trackpad
   hover) now flows through `on_touch`: the web backend forwards
   unpressed mouse/pen `pointermove`s (with a throttled element-origin

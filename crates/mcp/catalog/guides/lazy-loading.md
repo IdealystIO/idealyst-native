@@ -114,6 +114,24 @@ idealyst build --web --release
 
 The release pipeline runs the wasm-split pass; the chunks land in
 `dist/web/pkg/` next to the main bundle and load over the network on demand.
+
+Dev builds split too. Outside release the splitter is also the only pass that
+compacts the module, so it earns its place even on an app with nothing to
+extract — on the `welcome` example, skipping it saves 0.2s of packaging and
+grows the served wasm from 2.2 MB to 6.3 MB.
+
+`--no-split` opts out, on both `idealyst build --web` and `idealyst dev`:
+
+```bash
+idealyst dev --web --local --no-split
+```
+
+It does not remove your lazy boundaries — it declines to extract them. The
+bodies ship inside the main bundle and their loaders resolve on a microtask
+instead of a network round trip, so a `#[component(lazy)]` still mounts and its
+`loading` state simply flashes by. What you give up is the smaller main bundle:
+skipping the pass also skips the only compaction a dev build gets, and on a
+large app the browser pays for that on every reload.
 Chunk-only **code** leaves `main.wasm` automatically. Chunk-only **data** (large
 `&'static` tables, an SDK's embedded payload) stays in `main.wasm` by default —
 dropping it requires the **experimental, opt-in** `--data-prune`:

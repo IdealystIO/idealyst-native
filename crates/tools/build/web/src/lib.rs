@@ -18,9 +18,11 @@
 //!
 //! What's left here is packaging, which `cargo build` does not do:
 //! `cargo build --target wasm32-unknown-unknown` against the app,
-//! then `wasm-bindgen` over the resulting `.wasm`, then (release)
-//! `wasm-split` + `wasm-opt`, then staging `pkg/` + `index.html` +
-//! assets into `dist/web`.
+//! then `wasm-bindgen` over the resulting `.wasm`, then `wasm-split`
+//! (unless `--no-split`, which is refused when the app has lazy
+//! boundaries — see [`BuildOptions::wasm_split`]), then (release)
+//! `wasm-opt`, then staging `pkg/` + `index.html` + assets into
+//! `dist/web`.
 //!
 //! ```text
 //! <workspace>/target/idealyst/<project>/web/
@@ -79,6 +81,10 @@ pub struct BuildOptions {
     /// runtime-valued layers that disqualified it, and a content
     /// fingerprint of the resolved rules to locate it in source.
     pub premint_report: bool,
+    /// How much debug information a DEV build's wasm carries
+    /// (`--debuginfo`). Ignored on release, which sets its own
+    /// `debug = "limited"` for wasm-split's benefit. See [`DebugInfo`].
+    pub debuginfo: DebugInfo,
     /// Which builtin primitives the bundle registers (`--primitives`).
     ///
     /// `None` keeps `runtime_vocabulary::AllBuiltins`, the historical
@@ -165,7 +171,91 @@ pub struct BuildOptions {
     /// with the same premint cfgs (build-ssr), so both sides stamp
     /// identical `iy-*` classes and adoption stays clean.
     pub premint: bool,
+    /// Run `wasm-split` over the bindgened module. **Default: `true`**
+    /// — `--no-split` is the opt-out.
+    ///
+    /// Off does not remove lazy boundaries; it declines to *extract*
+    /// them. The bodies ship in the main module and their loaders resolve
+    /// on a microtask instead of a network round trip, so a
+    /// `#[component(lazy)]` still mounts (its `loading` state just barely
+    /// flashes). See [`write_inline_split_loader`] for how the imports
+    /// the macro emitted get answered without a chunk.
+    ///
+    /// It is a trade, not a free win, because outside release the
+    /// splitter is ALSO the only pass that compacts the module (there is
+    /// no `wasm-opt` there): it rebuilds the module and drops the
+    /// `--emit-relocs` payload and unreachable code along the way.
+    /// Measured on `examples/welcome`, which has no split points at all:
+    ///
+    /// ```text
+    /// split   : 1.69s   welcome_bg.wasm = 2,249,884 B
+    /// no-split: 1.51s   welcome_bg.wasm = 6,300,179 B
+    /// ```
+    ///
+    /// So it buys packaging time and costs bundle size — and on a big app
+    /// the larger module also costs the browser more to compile on every
+    /// reload, which can eat the win. Which side wins depends on the app,
+    /// hence a flag rather than a heuristic.
+    pub wasm_split: bool,
 }
+
+/// How much debug information the wasm carries.
+///
+/// wasm has no split-debuginfo: DWARF cannot live in a sidecar file, so
+/// every byte of it ships inside the module and every post-cargo pass
+/// (wasm-bindgen, wasm-split, staging, and the browser's own compile on
+/// reload) pays for it. Cargo's dev default is `debug = 2`, which makes a
+/// dev bundle carry MORE debug info than the release profile's
+/// `"limited"` — measured on `websites/website`, 173 MB of a 298 MB debug
+/// module, and 7.7s of a single wasm-bindgen run.
+///
+/// Panic *messages* keep their `file:line` at every level here: those are
+/// `#[track_caller]` `Location` strings in live `.rodata`, not debug info
+/// (the release path's `remap_path_flags` exists precisely because
+/// `wasm-opt --strip-debug` can't reach them). What the levels change is
+/// what a DWARF-aware debugger can do with a *stack frame*.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DebugInfo {
+    /// Line tables only — stack frames still symbolize to source lines,
+    /// but locals and types are gone. The default for dev builds: it is
+    /// what makes a panic trace readable, at a fraction of the bytes.
+    #[default]
+    LineTables,
+    /// Cargo's dev default (`debug = 2`). Full DWARF — variable and type
+    /// inspection in a wasm-aware debugger. `--debuginfo full`.
+    Full,
+    /// No debug info at all. Panic messages still name their source
+    /// location; stack frames do not symbolize. `--debuginfo none`.
+    None,
+}
+
+impl DebugInfo {
+    /// The value cargo's `debug` profile key takes.
+    fn cargo_value(self) -> &'static str {
+        match self {
+            DebugInfo::LineTables => "\"line-tables-only\"",
+            DebugInfo::Full => "2",
+            DebugInfo::None => "0",
+        }
+    }
+
+    /// Parse the `--debuginfo` CLI value.
+    pub fn from_cli(value: &str) -> Result<Self> {
+        match value {
+            "line-tables" | "line-tables-only" => Ok(DebugInfo::LineTables),
+            "full" => Ok(DebugInfo::Full),
+            "none" => Ok(DebugInfo::None),
+            other => anyhow::bail!(
+                "unknown --debuginfo `{other}` (expected `line-tables`, `full`, or `none`)"
+            ),
+        }
+    }
+}
+
+/// The wasm import-module string `#[wasm_split]` (what
+/// `#[component(lazy)]` expands to) names for its loader, and therefore
+/// the marker that tells us a module has split points at all.
+const WASM_SPLIT_LOADER: &str = "./__wasm_split.js";
 
 #[derive(Debug)]
 pub struct BuildArtifact {
@@ -346,6 +436,10 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     //      uses to identify chunk-only code.
     //   3. `wasm-split-cli split` rewrites the bindgened wasm into a
     //      lean base + per-chunk wasms + a `__wasm_split.js` loader.
+    //      Skippable with `--no-split`. Not skipped by default even
+    //      when there is nothing to extract: outside release this is
+    //      also the only pass that compacts the module, so skipping it
+    //      trades packaging time for a much larger served wasm.
     //   4. `wasm-opt -Oz` runs LAST, per-file, on the base + every
     //      chunk. wasm-pack ran it BEFORE wasm-bindgen which mangled
     //      symbols wasm-split needed — that's why my earlier
@@ -368,6 +462,8 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         &bin_name,
         &target_dir,
         opts.release,
+        opts.wasm_split,
+        opts.debuginfo,
         opts.strip_panics,
         opts.premint,
         opts.premint_only,
@@ -381,13 +477,47 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         .with_context(|| "wasm-bindgen")?;
     neutralize_command_export_wrappers(&wrapper_pkg, &manifest.lib_name)
         .with_context(|| "wasm-bindgen command_export neutralize")?;
-    run_wasm_split(
-        &original_wasm,
-        &wrapper_pkg,
-        &manifest.lib_name,
-        opts.prune_dead_data_min,
-    )
-    .with_context(|| "wasm-split-cli post-build")?;
+    if opts.wasm_split {
+        run_wasm_split(
+            &original_wasm,
+            &wrapper_pkg,
+            &manifest.lib_name,
+            opts.prune_dead_data_min,
+        )
+        .with_context(|| "wasm-split-cli post-build")?;
+    } else {
+        // `--no-split` means "bundle it anyway", not "drop it": the module
+        // still declares whatever imports `#[wasm_split]` emitted, and an
+        // unsatisfied import is a module the browser refuses to
+        // instantiate. So read them back off the module and answer them
+        // locally.
+        let bindgened = wrapper_pkg.join(format!("{}_bg.wasm", manifest.lib_name));
+        let imports = wasm_split_imports(
+            &fs::read(&bindgened).with_context(|| format!("read {}", bindgened.display()))?,
+        )
+        .with_context(|| "wasm-split: scan for split-loader imports")?;
+        // Stale chunks + loader from an earlier splitting build go FIRST —
+        // `fingerprint_pkg` digests every file under pkg/ and `stage_bundle`
+        // copies them, so an orphan would ship. This also clears the path
+        // the inline loader is about to be written to.
+        clear_wasm_split_artifacts(&wrapper_pkg)
+            .with_context(|| "wasm-split: clear stale chunk artifacts")?;
+        if imports.is_empty() {
+            eprintln!(
+                "[build-web] wasm-split: skipped (--no-split); no lazy boundaries, \
+                 {}_bg.wasm keeps its relocs and is correspondingly larger",
+                manifest.lib_name,
+            );
+        } else {
+            let inlined =
+                write_inline_split_loader(&wrapper_pkg, &manifest.lib_name, &imports)?;
+            eprintln!(
+                "[build-web] wasm-split: skipped (--no-split); {inlined} lazy \
+                 boundary(ies) stay in {}_bg.wasm and resolve immediately",
+                manifest.lib_name,
+            );
+        }
+    }
     if opts.release {
         wasm_opt_pkg(&wrapper_pkg).with_context(|| "wasm-opt post-split")?;
     }
@@ -1334,9 +1464,27 @@ fn feature_spec(name: &str) -> String {
 /// only (the glob excludes the app crate, so app iteration stays fast to
 /// compile). Without it, compute-heavy dependency crates — a CPU
 /// rasterizer's un-inlined inner loops — run 10-40x slower in dev.
-fn profile_config_args(release: bool) -> Vec<String> {
-    let settings: &[&str] = if release {
-        &[
+///
+/// The two dev-only settings beside it are pure iteration cost, and both
+/// override whatever the app's own workspace declares (that is what
+/// `--config` does — same as the opt-level line above):
+///
+/// * `debug` — cargo defaults dev to `2`, which on wasm means a dev
+///   bundle carries MORE debug info than release's `"limited"`, with no
+///   sidecar to put it in. See [`DebugInfo`]; `--debuginfo full` restores
+///   cargo's default for a debugging session.
+/// * `lto = "off"` — `false` (cargo's dev default) still runs thin-LOCAL
+///   LTO across the crate's own codegen units. `-Ztime-passes` on the
+///   website's app crate attributes 0.63s per rebuild to it, buying
+///   nothing a dev build wants.
+///
+/// Note the app crate's own `opt-level` is deliberately NOT set: dropping
+/// it to 0 measured *slower* end-to-end (10.4s vs 9.1s on the website)
+/// and 30% larger, because unoptimized IR costs more to emit and link
+/// than the `-Oz` passes cost to run.
+fn profile_config_args(release: bool, debuginfo: DebugInfo) -> Vec<String> {
+    let settings: Vec<String> = if release {
+        [
             "profile.release.opt-level=\"z\"",
             "profile.release.codegen-units=1",
             "profile.release.lto=\"off\"",
@@ -1344,12 +1492,21 @@ fn profile_config_args(release: bool) -> Vec<String> {
             "profile.release.strip=\"none\"",
             "profile.release.debug=\"limited\"",
         ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
     } else {
-        &["profile.dev.package.\"*\".opt-level=3"]
+        let debug = debuginfo.cargo_value();
+        vec![
+            "profile.dev.package.\"*\".opt-level=3".to_string(),
+            format!("profile.dev.debug={debug}"),
+            format!("profile.dev.package.\"*\".debug={debug}"),
+            "profile.dev.lto=\"off\"".to_string(),
+        ]
     };
     settings
         .iter()
-        .flat_map(|s| ["--config".to_string(), (*s).to_string()])
+        .flat_map(|s| ["--config".to_string(), s.clone()])
         .collect()
 }
 
@@ -1410,6 +1567,8 @@ fn cargo_build_wasm(
     bin_name: &str,
     target_dir: &Path,
     release: bool,
+    wasm_split: bool,
+    debuginfo: DebugInfo,
     strip_panics: bool,
     premint: bool,
     premint_only: bool,
@@ -1440,7 +1599,7 @@ fn cargo_build_wasm(
         .args(["--bin", bin_name])
         .arg("--target-dir")
         .arg(target_dir)
-        .args(profile_config_args(release));
+        .args(profile_config_args(release, debuginfo));
     if release {
         cmd.arg("--release");
     }
@@ -1501,6 +1660,15 @@ fn cargo_build_wasm(
     flags.push("target-feature=+simd128".into());
     flags.push("-C".into());
     flags.push("link-args=--emit-relocs".into());
+    if !wasm_split {
+        // `--no-split`'s inline loader wakes the Rust future through the
+        // main module's function table, which LLD only exports when asked.
+        // The splitter adds that export itself, so this rides the no-split
+        // path alone rather than being set unconditionally — an exported
+        // table roots every entry, which would cost release builds DCE.
+        flags.push("-C".into());
+        flags.push("link-args=--export-table".into());
+    }
     if premint {
         // Flip the `stylesheet!`-generated builders to their preminted
         // fast path (`StyleSource::Preminted` for all-constant
@@ -1651,6 +1819,136 @@ fn wasm_opt_pkg(pkg_dir: &Path) -> Result<()> {
         }
         fs::rename(&tmp, &path)?;
         eprintln!("[build-web] wasm-opt → {}", path.display());
+    }
+    Ok(())
+}
+
+/// Every `./__wasm_split.js` import the bindgened module declares.
+///
+/// The `#[wasm_split]` macro emits exactly two imports per split point:
+///
+/// * `__wasm_split_load_<module>_<hash>_<name>(callback, data)` — the
+///   loader the Rust future awaits, and
+/// * `__wasm_split_00___<module>___00_import_<hash>_<name>` — the body
+///   itself, which the splitter would have moved into a chunk.
+///
+/// Both must be satisfied by whatever `__wasm_split.js` the build
+/// writes, so `--no-split` needs their exact names. Scans the import
+/// section only — `walrus`-parsing a multi-hundred-MB debug module is
+/// most of the cost `--no-split` exists to avoid.
+fn wasm_split_imports(wasm: &[u8]) -> Result<Vec<String>> {
+    use wasmparser::{Parser, Payload};
+
+    let mut names = Vec::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::ImportSection(reader) = payload.context("wasm: parse sections")? {
+            for import in reader {
+                let import = import.context("wasm: parse import")?;
+                if import.module == WASM_SPLIT_LOADER {
+                    names.push(import.name.to_string());
+                }
+            }
+        }
+    }
+    Ok(names)
+}
+
+/// Write the `__wasm_split.js` a NON-split build needs.
+///
+/// Nothing was extracted, so every `#[wasm_split]` body is still in the
+/// main module — under its `…_export_…` name, which the macro emits as a
+/// `#[no_mangle]` export next to the `…_import_…` declaration. This
+/// loader is what makes "don't split" mean "bundle it anyway" instead of
+/// "ship a module with unresolved imports":
+///
+/// * each `__wasm_split_load_*` resolves immediately — there is nothing
+///   to fetch — by waking the Rust future through the main module's
+///   function table, exactly as [`wasm_split_cli::MAKE_LOAD_JS`] does;
+/// * each `…_import_…` forwards straight to its `…_export_…` twin.
+///
+/// The lazy boundary therefore still *works* — `loading` shows for one
+/// microtask instead of one network round trip — while the body ships in
+/// the main bundle.
+///
+/// Reaching the table requires the wasm to export it, which is why the
+/// no-split cargo invocation adds `--export-table` (see
+/// [`cargo_build_wasm`]); the splitter adds that export itself on the
+/// split path, which is why the flag is not set unconditionally.
+fn write_inline_split_loader(pkg_dir: &Path, lib_name: &str, imports: &[String]) -> Result<usize> {
+    use std::fmt::Write as _;
+
+    let mut js = format!(
+        "// Generated by `idealyst build --web --no-split`.\n\
+         //\n\
+         // Nothing was split out, so every `#[wasm_split]` body is still in\n\
+         // {lib_name}_bg.wasm. These exports satisfy the imports the macro\n\
+         // emitted: the loaders resolve immediately, and each `_import_`\n\
+         // forwards to the `_export_` twin already present in the main module.\n\
+         import {{ initSync }} from \"./{lib_name}.js\";\n\
+         \n\
+         let mainExports;\n\
+         function main() {{\n\
+         \x20 return (mainExports ??= initSync(undefined, undefined));\n\
+         }}\n\
+         \n\
+         // Mirrors the real loader's signalling path: the callback arrives as\n\
+         // an index into the main module's function table. Deferred to a\n\
+         // microtask so it never fires inside `SplitLoaderFuture::poll`, which\n\
+         // is still mid-way through setting its waker when it calls us.\n\
+         function loadedAlready(callbackIndex, callbackData) {{\n\
+         \x20 queueMicrotask(() => {{\n\
+         \x20   if (callbackIndex === undefined) return;\n\
+         \x20   main().__indirect_function_table.get(callbackIndex)(callbackData, true);\n\
+         \x20 }});\n\
+         }}\n\
+         \n",
+    );
+
+    let mut loaders = 0usize;
+    for name in imports {
+        if name.starts_with("__wasm_split_load_") {
+            writeln!(js, "export const {name} = loadedAlready;")?;
+            loaders += 1;
+        } else {
+            // `…___00_import_…` ⇄ `…___00_export_…`: the macro derives both
+            // from one hash, so the twin's name is this one with the single
+            // `_import_` segment swapped. Replacing only that segment (not
+            // every occurrence) keeps a user function literally named
+            // `_import_something` from being mangled.
+            let export = name.replacen("___00_import_", "___00_export_", 1);
+            writeln!(
+                js,
+                "export function {name}(...args) {{ return main()[\"{export}\"](...args); }}",
+            )?;
+        }
+    }
+
+    let path = pkg_dir.join("__wasm_split.js");
+    fs::write(&path, js).with_context(|| format!("write {}", path.display()))?;
+    Ok(loaders)
+}
+
+/// Remove the loader + chunk wasms a PREVIOUS split build left in
+/// `pkg_dir`.
+///
+/// pkg/ is incremental — wasm-bindgen overwrites its own outputs and
+/// leaves everything else alone. Without this, turning splitting off
+/// (or removing the app's last lazy component) would leave orphaned
+/// `chunk_*.wasm` / `module_*.wasm` files that `fingerprint_pkg`
+/// digests and `stage_bundle` ships.
+fn clear_wasm_split_artifacts(pkg_dir: &Path) -> Result<()> {
+    let loader = pkg_dir.join("__wasm_split.js");
+    if loader.is_file() {
+        fs::remove_file(&loader).with_context(|| format!("remove {}", loader.display()))?;
+    }
+    for entry in fs::read_dir(pkg_dir).with_context(|| format!("read {}", pkg_dir.display()))? {
+        let path = entry?.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if (name.starts_with("chunk_") || name.starts_with("module_")) && name.ends_with(".wasm") {
+            fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+        }
     }
     Ok(())
 }
@@ -1897,7 +2195,7 @@ mod regression_tests {
     /// framework doesn't own.
     #[test]
     fn release_profile_config_preserves_what_wasm_split_needs() {
-        let args = profile_config_args(true);
+        let args = profile_config_args(true, DebugInfo::default());
         let joined = args.join(" ");
         assert!(joined.contains("profile.release.lto=\"off\""), "{joined}");
         assert!(joined.contains("profile.release.strip=\"none\""), "{joined}");
@@ -1915,7 +2213,7 @@ mod regression_tests {
     /// compute-heavy deps don't run 10-40x slower.
     #[test]
     fn dev_profile_config_optimizes_dependencies_only() {
-        let args = profile_config_args(false);
+        let args = profile_config_args(false, DebugInfo::default());
         let joined = args.join(" ");
         assert!(
             joined.contains("profile.dev.package.\"*\".opt-level=3"),
@@ -1925,6 +2223,58 @@ mod regression_tests {
             !joined.contains("profile.dev.opt-level"),
             "must not slow the app crate's own compile: {joined}"
         );
+    }
+
+    /// The dev default trims debuginfo on BOTH halves of the graph. Only
+    /// setting `profile.dev.debug` would leave every dependency at
+    /// cargo's `2`, which is where most of the bytes are — the app crate
+    /// is one crate out of ~70.
+    #[test]
+    fn dev_profile_config_trims_debuginfo_for_deps_and_app_alike() {
+        let joined = profile_config_args(false, DebugInfo::default()).join(" ");
+        assert!(joined.contains("profile.dev.debug=\"line-tables-only\""), "{joined}");
+        assert!(
+            joined.contains("profile.dev.package.\"*\".debug=\"line-tables-only\""),
+            "{joined}"
+        );
+    }
+
+    /// `lto = false` (cargo's dev default) still runs thin-local LTO;
+    /// only `"off"` disables it.
+    #[test]
+    fn dev_profile_config_disables_thin_local_lto() {
+        let joined = profile_config_args(false, DebugInfo::default()).join(" ");
+        assert!(joined.contains("profile.dev.lto=\"off\""), "{joined}");
+    }
+
+    /// `--debuginfo full` has to reach cargo as `2`, not as the string
+    /// `"full"` — cargo rejects that and the build dies before compiling.
+    #[test]
+    fn debuginfo_levels_map_onto_cargos_own_spelling() {
+        let full = profile_config_args(false, DebugInfo::Full).join(" ");
+        assert!(full.contains("profile.dev.debug=2"), "{full}");
+        let none = profile_config_args(false, DebugInfo::None).join(" ");
+        assert!(none.contains("profile.dev.debug=0"), "{none}");
+    }
+
+    /// Release owns its own debug posture (`"limited"`, which wasm-split's
+    /// call-graph matching needs); `--debuginfo` must not reach it.
+    #[test]
+    fn debuginfo_flag_does_not_touch_the_release_profile() {
+        for level in [DebugInfo::LineTables, DebugInfo::Full, DebugInfo::None] {
+            let joined = profile_config_args(true, level).join(" ");
+            assert!(joined.contains("profile.release.debug=\"limited\""), "{joined}");
+            assert!(!joined.contains("profile.dev."), "{joined}");
+        }
+    }
+
+    #[test]
+    fn debuginfo_cli_values_parse_and_reject_typos() {
+        assert_eq!(DebugInfo::from_cli("line-tables").unwrap(), DebugInfo::LineTables);
+        assert_eq!(DebugInfo::from_cli("full").unwrap(), DebugInfo::Full);
+        assert_eq!(DebugInfo::from_cli("none").unwrap(), DebugInfo::None);
+        let err = DebugInfo::from_cli("lines").unwrap_err().to_string();
+        assert!(err.contains("line-tables"), "{err}");
     }
 
     /// A crate with no binary target can't be an app any more. The error
@@ -2515,6 +2865,184 @@ mod regression_tests {
         assert!(!is_already_compressed(Path::new("a.js")));
         assert!(!is_already_compressed(Path::new("a.html")));
         assert!(!is_already_compressed(Path::new("a.ttf")));
+    }
+}
+
+#[cfg(test)]
+mod wasm_split_gate_tests {
+    //! Coverage for `--no-split`, whose contract is "bundle the lazy body
+    //! anyway" — NOT "drop the boundary". The module keeps importing what
+    //! `#[wasm_split]` declared, so the build has to answer those imports
+    //! itself; getting that wrong is a module the browser refuses to
+    //! instantiate.
+
+    use super::*;
+
+    /// The two imports the macro emits per split point, verbatim from the
+    /// website's pre-split module (`#[component(lazy)]` on
+    /// `HeroSimulator`). Hard-coded rather than paraphrased: the
+    /// `_import_` ⇄ `_export_` twin rule is a naming contract with
+    /// `wasm-split-macro`, and a paraphrase would still pass while the
+    /// real names drifted.
+    const LOAD_IMPORT: &str =
+        "__wasm_split_load___idealyst_lazy_HeroSimulator_a3558c2587326b3cb37c2057039bbac0___lazy_body";
+    const BODY_IMPORT: &str = "__wasm_split_00_____idealyst_lazy_HeroSimulator___00_import_\
+                               a3558c2587326b3cb37c2057039bbac0___lazy_body";
+    const BODY_EXPORT: &str = "__wasm_split_00_____idealyst_lazy_HeroSimulator___00_export_\
+                               a3558c2587326b3cb37c2057039bbac0___lazy_body";
+
+    fn tmpdir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("idealyst-split-gate-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A minimal valid wasm module that imports two functions from
+    /// `./__wasm_split.js` (plus one from elsewhere, which must be
+    /// ignored). Hand-encoded so the test needs no wasm toolchain.
+    fn wasm_importing_split_loader() -> Vec<u8> {
+        fn leb(mut n: u32, out: &mut Vec<u8>) {
+            loop {
+                let mut b = (n & 0x7f) as u8;
+                n >>= 7;
+                if n != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if n == 0 {
+                    break;
+                }
+            }
+        }
+        fn name(s: &str, out: &mut Vec<u8>) {
+            leb(s.len() as u32, out);
+            out.extend_from_slice(s.as_bytes());
+        }
+
+        // Type section: one `() -> ()`.
+        let mut types = vec![0x01, 0x60, 0x00, 0x00];
+        // Import section: three function imports of that type.
+        let mut imports = Vec::new();
+        leb(3, &mut imports);
+        for (module, field) in [
+            (WASM_SPLIT_LOADER, LOAD_IMPORT),
+            (WASM_SPLIT_LOADER, BODY_IMPORT),
+            ("./other.js", "unrelated"),
+        ] {
+            name(module, &mut imports);
+            name(field, &mut imports);
+            imports.push(0x00); // kind: func
+            leb(0, &mut imports); // type index
+        }
+
+        let mut wasm = b"\0asm\x01\0\0\0".to_vec();
+        for (id, body) in [(1u8, &mut types), (2u8, &mut imports)] {
+            wasm.push(id);
+            leb(body.len() as u32, &mut wasm);
+            wasm.append(body);
+        }
+        wasm
+    }
+
+    #[test]
+    fn import_scan_finds_split_imports_and_ignores_the_rest() {
+        let found = wasm_split_imports(&wasm_importing_split_loader()).unwrap();
+        assert_eq!(found, vec![LOAD_IMPORT.to_string(), BODY_IMPORT.to_string()]);
+    }
+
+    /// An app with no lazy boundary imports nothing from the loader, which
+    /// is what lets `--no-split` skip writing a loader at all there.
+    #[test]
+    fn import_scan_is_empty_for_a_module_without_split_points() {
+        let wasm = b"\0asm\x01\0\0\0".to_vec();
+        assert!(wasm_split_imports(&wasm).unwrap().is_empty());
+    }
+
+    /// The generated loader must answer BOTH imports: the load function
+    /// (resolve now — the body never left) and the body itself (forward to
+    /// the `_export_` twin the main module still carries).
+    #[test]
+    fn inline_loader_answers_every_import_the_module_declares() {
+        let tmp = tmpdir("inline");
+        let pkg = tmp.join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+
+        let inlined = write_inline_split_loader(
+            &pkg,
+            "demo",
+            &[LOAD_IMPORT.to_string(), BODY_IMPORT.to_string()],
+        )
+        .unwrap();
+        assert_eq!(inlined, 1, "one lazy boundary → one loader");
+
+        let js = fs::read_to_string(pkg.join("__wasm_split.js")).unwrap();
+        assert!(js.contains(&format!("export const {LOAD_IMPORT} = loadedAlready;")), "{js}");
+        assert!(js.contains(&format!("export function {BODY_IMPORT}(")), "{js}");
+        // The forwarder must target the EXPORT twin, not re-enter itself.
+        assert!(js.contains(&format!("main()[\"{BODY_EXPORT}\"]")), "{js}");
+        assert!(js.contains("import { initSync } from \"./demo.js\";"), "{js}");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// The callback arrives as a function-table index and MUST be invoked —
+    /// `SplitLoaderFuture` stays `Pending` forever otherwise, so the lazy
+    /// component would show its `loading` state until the tab closed. The
+    /// microtask defer keeps it from firing inside `poll`, which is still
+    /// installing its waker when it calls the loader.
+    #[test]
+    fn inline_loader_wakes_the_future_through_the_function_table() {
+        let tmp = tmpdir("wake");
+        let pkg = tmp.join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        write_inline_split_loader(&pkg, "demo", &[LOAD_IMPORT.to_string()]).unwrap();
+
+        let js = fs::read_to_string(pkg.join("__wasm_split.js")).unwrap();
+        assert!(js.contains("queueMicrotask"), "{js}");
+        assert!(
+            js.contains("__indirect_function_table.get(callbackIndex)(callbackData, true)"),
+            "{js}",
+        );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Skipping has to leave pkg/ in the state a never-split build would
+    /// have produced. A leftover chunk from an earlier splitting run is
+    /// digested by `fingerprint_pkg` and copied by `stage_bundle`, so an
+    /// orphan would ship AND would rotate the build hash when it later
+    /// disappeared.
+    #[test]
+    fn clearing_removes_the_loader_and_every_chunk_but_keeps_the_bundle() {
+        let tmp = tmpdir("clear");
+        let pkg = tmp.join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("demo.js"), "export { initSync };").unwrap();
+        fs::write(pkg.join("__wasm_split.js"), "makeLoad(...)").unwrap();
+        fs::write(pkg.join("chunk_0_split.wasm"), b"\0asm").unwrap();
+        fs::write(pkg.join("module_0___idealyst_lazy_body_abc.wasm"), b"\0asm").unwrap();
+        fs::write(pkg.join("demo_bg.wasm"), b"\0asm").unwrap();
+
+        clear_wasm_split_artifacts(&pkg).unwrap();
+
+        assert!(!pkg.join("__wasm_split.js").exists());
+        assert!(!pkg.join("chunk_0_split.wasm").exists());
+        assert!(!pkg.join("module_0___idealyst_lazy_body_abc.wasm").exists());
+        assert!(pkg.join("demo_bg.wasm").exists(), "the bundle itself must survive");
+        assert!(pkg.join("demo.js").exists(), "the entry shim must survive");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Clearing an already-clean pkg/ is a no-op, not an error — it runs on
+    /// every `--no-split` build, including the first one.
+    #[test]
+    fn clearing_is_idempotent() {
+        let tmp = tmpdir("idem");
+        let pkg = tmp.join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        clear_wasm_split_artifacts(&pkg).unwrap();
+        clear_wasm_split_artifacts(&pkg).unwrap();
+        fs::remove_dir_all(&tmp).ok();
     }
 }
 

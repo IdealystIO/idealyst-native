@@ -138,6 +138,10 @@ pub fn run(args: Args) -> Result<()> {
             // Debug builds skip data pruning; release docs aren't size-
             // critical enough to risk the heuristic, so leave it off.
             prune_dead_data_min: None,
+            // No CLI surface for this on `docs`; splitting is the
+            // default everywhere else too.
+            wasm_split: true,
+            debuginfo: build_web::DebugInfo::default(),
             premint: false,
         },
     )

@@ -2004,6 +2004,7 @@ dependencies = [
  "tempfile",
  "toml 0.8.23",
  "wasm-split-cli",
+ "wasmparser 0.224.1",
 ]
 
 [[package]]
