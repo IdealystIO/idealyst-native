@@ -304,3 +304,125 @@ fn outside_a_world_the_callback_still_runs() {
     pump();
     assert!(*done.borrow(), "a task spawned outside any world still applies");
 }
+
+// ---------------------------------------------------------------------
+// Handler-time spawning — the shape the build-time tests above MISS.
+// ---------------------------------------------------------------------
+
+/// Mount a pressable whose handler body runs `on_press`. The handler is
+/// invoked by the backend later, with no collector on the stack — which is
+/// where `ScopeAlive::current()` used to anchor to nothing.
+fn mount_button(h: &Harness, on_press: impl Fn(Signal<i32>) + 'static) -> Screen {
+    let hole: Rc<RefCell<Option<Signal<bool>>>> = Rc::new(RefCell::new(None));
+    let scoped: Rc<RefCell<Option<Signal<i32>>>> = Rc::new(RefCell::new(None));
+    let hole_b = hole.clone();
+    let scoped_b = scoped.clone();
+    let on_press = Rc::new(on_press);
+    let realized = h.mount(h.world.enter(|| {
+        let shown = signal(true);
+        *hole_b.borrow_mut() = Some(shown);
+        view()
+            .child(move || {
+                if shown.get() {
+                    let s = signal(0i32);
+                    *scoped_b.borrow_mut() = Some(s);
+                    let on_press = on_press.clone();
+                    view()
+                        .children(vec![runtime_vocabulary::builders::pressable(move || {
+                            on_press(s)
+                        })
+                        .build()])
+                        .build()
+                } else {
+                    view().build()
+                }
+            })
+            .build()
+    }));
+    let shown = hole.borrow().expect("hole built");
+    Screen { _realized: realized, shown, scoped }
+}
+
+/// The dominant real shape: a save handler spawns, the screen navigates
+/// away, the continuation lands after teardown.
+///
+/// Regression: `ScopeAlive::current()` called at HANDLER time found no
+/// ownership collector (handlers run outside `World::enter`, so
+/// `on_owned_drop` was inert), handed back a token that could never flip,
+/// and `spawn_then` guarded nothing. The build-time tests above all passed
+/// throughout, because a build DOES have a collector. Fixed by having each
+/// guarded callback publish its own (mount-time, correctly anchored) token
+/// as the ambient one while it runs.
+#[test]
+fn handler_spawned_task_dies_with_its_node() {
+    ensure_executor();
+    let h = Harness::new();
+    let gate = Gate::new();
+    let g = gate.clone();
+    let ran: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+    let ran_c = ran.clone();
+
+    let screen = mount_button(&h, move |scoped| {
+        let g = g.clone();
+        let ran = ran_c.clone();
+        spawn_then(
+            async move {
+                g.await;
+                7i32
+            },
+            move |v| {
+                *ran.borrow_mut() = true;
+                scoped.set(v); // would abort if this ran
+            },
+        );
+    });
+    h.world.flush();
+
+    h.press_handler(0)(); // user taps Save
+    h.world.flush();
+    pump(); // request in flight
+
+    screen.shown.set(false); // navigate away
+    h.world.flush();
+
+    gate.complete();
+    pump();
+    h.world.flush();
+
+    assert!(!*ran.borrow(), "a task spawned from a handler must die with the handler's node");
+}
+
+/// The inverse: a handler-spawned task whose node SURVIVES must still
+/// apply. Inheriting the handler's token must not make every such task
+/// inert — the failure mode a naive "always treat handler tasks as dead"
+/// fix would introduce.
+#[test]
+fn handler_spawned_task_applies_while_its_node_lives() {
+    ensure_executor();
+    let h = Harness::new();
+    let gate = Gate::new();
+    let g = gate.clone();
+
+    let screen = mount_button(&h, move |scoped| {
+        let g = g.clone();
+        spawn_then(
+            async move {
+                g.await;
+                7i32
+            },
+            move |v| scoped.set(v),
+        );
+    });
+    h.world.flush();
+    let scoped = screen.scoped.borrow().expect("mounted");
+
+    h.press_handler(0)();
+    h.world.flush();
+    pump();
+
+    gate.complete();
+    pump();
+    h.world.flush();
+    assert_eq!(scoped.get(), 7, "the node is still mounted — the result must apply");
+}
+

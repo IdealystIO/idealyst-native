@@ -62,14 +62,32 @@
 //!
 //! # Anchoring
 //!
-//! The liveness token comes from [`ScopeAlive::current`], taken at spawn
-//! time in the caller's scope — the same mechanism that guards every
-//! author callback crossing the backend seam, so there is one teardown
-//! flag in the framework rather than two. It is anchored with
-//! `on_owned_drop`, NOT `on_scope_drop`: the latter degrades to
-//! `on_cleanup` inside a running effect and would flip on that effect's
-//! next re-run, killing tasks spawned by a still-mounted subtree (the
-//! keyed-list case that `callbacks_survive_a_keyed_reconcile` pins).
+//! The liveness token comes from [`ScopeAlive::current`] — the same
+//! mechanism that guards every author callback crossing the backend seam,
+//! so there is one teardown flag in the framework rather than two. Which
+//! scope it binds to depends on where the spawn happens, and BOTH cases
+//! matter:
+//!
+//! - **Spawned during a build** (component body, mount walk, any
+//!   `collect_owned` region): anchors to the subtree being built, via
+//!   `on_owned_drop`. Deliberately not `on_scope_drop`, which degrades to
+//!   `on_cleanup` inside a running effect and would flip on that effect's
+//!   next re-run, killing tasks belonging to a still-mounted subtree (the
+//!   keyed-list case `callbacks_survive_a_keyed_reconcile` pins).
+//! - **Spawned from an event handler** (`on_press`, `on_change`, …):
+//!   inherits the *handler's own* token. This is the load-bearing case and
+//!   the one that is easy to get wrong. A handler runs long after the
+//!   build, invoked by the backend as a bare `Rc<dyn Fn()>` with no
+//!   ownership collector and outside `World::enter` — so asking for a
+//!   fresh anchor there yields a token bound to nothing, permanently
+//!   `true`, guarding nothing at all. `ScopeAlive`'s wrappers publish
+//!   their token for the duration of the call precisely so a spawn reached
+//!   from inside one binds to the node that mounted the handler.
+//!   Regression: `handler_spawned_task_dies_with_its_node`.
+//!
+//! The build case is checked FIRST, so a handler that realizes a subtree
+//! (a navigator push) gives that subtree its own lifetime rather than the
+//! button's.
 //!
 //! Outside any world the token is permanently live, so a task spawned from
 //! a test or a boot path still applies its result.
@@ -108,7 +126,11 @@ where
     spawn_async(async move {
         let value = task.await;
         if alive.get() {
-            then(value);
+            // Publish the token for the callback's duration, so a task
+            // chained from inside `then` inherits this same lifetime
+            // rather than anchoring to nothing (nothing is being built
+            // here, and no guarded callback is on the stack).
+            alive.clone().run_within(|| then(value));
         }
         // Dead scope: `then` drops unrun, releasing its captures.
     });

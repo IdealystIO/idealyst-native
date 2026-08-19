@@ -67,10 +67,35 @@
 //! inside a structural driver that re-runs while its nodes survive. See
 //! [`ScopeAlive::current`] for the keyed-list case that forced this.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use runtime_world::on_owned_drop;
+use runtime_world::{in_collector, on_owned_drop};
+
+thread_local! {
+    /// Stack of tokens whose guarded callbacks are currently running.
+    /// [`ScopeAlive::current`] consults it so a token acquired *during* a
+    /// callback inherits that callback's lifetime instead of silently
+    /// anchoring to nothing. Innermost last.
+    static ACTIVE: RefCell<Vec<Rc<Cell<bool>>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Pops the ACTIVE entry on drop, so an early return or a panic inside a
+/// guarded callback cannot leave a stale token on the stack.
+struct ActiveGuard;
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        ACTIVE.with(|s| {
+            s.borrow_mut().pop();
+        });
+    }
+}
+
+fn push_active(flag: &Rc<Cell<bool>>) -> ActiveGuard {
+    ACTIVE.with(|s| s.borrow_mut().push(flag.clone()));
+    ActiveGuard
+}
 
 /// Liveness token for an ownership scope: `true` until that scope's
 /// `Owned` drops, `false` forever after.
@@ -102,10 +127,43 @@ impl ScopeAlive {
     ///
     /// Regression: `callbacks_survive_a_keyed_reconcile`.
     pub fn current() -> Self {
+        // A BUILD is in progress (mount walk, component body, any
+        // `collect_owned` region) — anchor to the subtree being built.
+        // Checked FIRST so a handler that realizes a subtree (a navigator
+        // push) gives that subtree its own lifetime rather than the
+        // button's.
+        if in_collector() {
+            return Self::anchored();
+        }
+        // No build, but we are running INSIDE a guarded callback: inherit
+        // that callback's token. Without this, a token acquired at handler
+        // time anchors to nothing — `on_owned_drop` is inert outside a
+        // world and world-root-owned inside one — so it stays `true`
+        // forever and guards nothing. That is the shape a `spawn_then`
+        // called from an `on_press` has, which is the common one.
+        //
+        // Regression: `handler_spawned_task_dies_with_its_node`.
+        if let Some(flag) = ACTIVE.with(|s| s.borrow().last().cloned()) {
+            return Self(flag);
+        }
+        Self::anchored()
+    }
+
+    /// A fresh token tied to the innermost ownership scope, or permanently
+    /// live when there is no scope to tie to.
+    fn anchored() -> Self {
         let flag = Rc::new(Cell::new(true));
         let for_drop = flag.clone();
         on_owned_drop(move || for_drop.set(false));
         Self(flag)
+    }
+
+    /// Run `f` with this token as the ambient one, so a nested
+    /// [`current`](Self::current) inherits it. The seam `spawn_then` uses
+    /// to keep a chained task tied to the same node as its parent.
+    pub fn run_within<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _g = push_active(&self.0);
+        f()
     }
 
     /// A token that never flips — for callbacks with no scope to tie to.
@@ -123,6 +181,7 @@ impl ScopeAlive {
         let alive = self.0.clone();
         Rc::new(move || {
             if alive.get() {
+                let _g = push_active(&alive);
                 f();
             }
         })
@@ -133,6 +192,7 @@ impl ScopeAlive {
         let alive = self.0.clone();
         Rc::new(move |a| {
             if alive.get() {
+                let _g = push_active(&alive);
                 f(a);
             }
         })
@@ -143,6 +203,7 @@ impl ScopeAlive {
         let alive = self.0.clone();
         Rc::new(move |a, b| {
             if alive.get() {
+                let _g = push_active(&alive);
                 f(a, b);
             }
         })
@@ -159,7 +220,7 @@ impl ScopeAlive {
         R: Default + 'static,
     {
         let alive = self.0.clone();
-        Rc::new(move |a| if alive.get() { f(a) } else { R::default() })
+        Rc::new(move |a| if alive.get() { let _g = push_active(&alive); f(a) } else { R::default() })
     }
 
     /// Wrap an `Option`al callback, leaving `None` as `None` — a backend
@@ -195,7 +256,7 @@ impl ScopeAlive {
     ) -> runtime_shared::primitives::key::KeyDownHandler {
         use runtime_shared::primitives::key::KeyOutcome;
         let alive = self.0.clone();
-        Rc::new(move |ev| if alive.get() { f(ev) } else { KeyOutcome::Default })
+        Rc::new(move |ev| if alive.get() { let _g = push_active(&alive); f(ev) } else { KeyOutcome::Default })
     }
 
     /// `on_blur`. Dead scope → [`BlurOutcome::Allow`](runtime_shared::primitives::text_input::BlurOutcome::Allow): never veto a blur on
@@ -206,7 +267,7 @@ impl ScopeAlive {
     ) -> runtime_shared::primitives::text_input::BlurHandler {
         use runtime_shared::primitives::text_input::BlurOutcome;
         let alive = self.0.clone();
-        Rc::new(move || if alive.get() { f() } else { BlurOutcome::Allow })
+        Rc::new(move || if alive.get() { let _g = push_active(&alive); f() } else { BlurOutcome::Allow })
     }
 
     /// `on_touch`. Dead scope → `TouchResponse::default()` (neither
@@ -216,6 +277,7 @@ impl ScopeAlive {
         let alive = self.0.clone();
         Rc::new(move |ev| {
             if alive.get() {
+                let _g = push_active(&alive);
                 f(ev)
             } else {
                 runtime_shared::TouchResponse::default()
@@ -231,6 +293,7 @@ impl ScopeAlive {
         let alive = self.0.clone();
         Rc::new(move |ev| {
             if alive.get() {
+                let _g = push_active(&alive);
                 f(ev)
             } else {
                 runtime_shared::TouchResponse::default()
@@ -248,6 +311,7 @@ impl ScopeAlive {
         let alive = self.0.clone();
         Rc::new(move |ev| {
             if alive.get() {
+                let _g = push_active(&alive);
                 f(ev)
             } else {
                 runtime_shared::TouchResponse::default()
