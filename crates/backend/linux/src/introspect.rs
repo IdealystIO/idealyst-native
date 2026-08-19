@@ -173,6 +173,13 @@ fn read_widget(w: &gtk4::Widget, toplevel: &gtk4::Widget) -> NativeNode {
     // any widget, not just our own view subclass: a GtkLabel's fill or a
     // GtkPicture's clip is read the same way.
     read_paint_from_gsk(w, &mut node);
+    // An icon's colour, under the SAME key the web reader fills from CSS
+    // `color` — which is exactly what an icon's `currentColor` resolves to.
+    // Reporting nothing here left the icon-colour divergence invisible to the
+    // parity harness: 26 icons on the docs Icon page, every one unreadable.
+    if let Some(ic) = w.downcast_ref::<crate::icon::IdealystIcon>() {
+        node.set(keys::TEXT_COLOR, Some(NativeValue::Color(ic.color())));
+    }
     if let Some(label) = w.downcast_ref::<gtk4::Label>() {
         read_label(label, &mut node);
     }

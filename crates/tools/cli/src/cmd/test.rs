@@ -172,6 +172,13 @@ pub fn run(args: Args) -> Result<()> {
         .context("the app never registered with the relay (build failed? run `idealyst dev` to see)")?;
 
     if platform == "web" && !args.attach {
+        if !wait_for_web_server(args.port, Duration::from_secs(600)) {
+            anyhow::bail!(
+                "the web dev server never served http://127.0.0.1:{} — the wasm \
+                 build probably failed; run `idealyst dev --web` to see it",
+                args.port
+            );
+        }
         match launch_headless_web(args.port, viewport) {
             Some(child) => kill.0.push(child),
             None => eprintln!(
@@ -293,6 +300,13 @@ fn run_parity(args: &Args, dir: &Path) -> Result<()> {
         seen.insert(addr);
 
         if platform == "web" {
+            if !wait_for_web_server(args.port, Duration::from_secs(600)) {
+                anyhow::bail!(
+                    "the web dev server never served http://127.0.0.1:{} — the wasm \
+                     build probably failed; run `idealyst dev --web` to see it",
+                    args.port
+                );
+            }
             match launch_headless_web(args.port, viewport) {
                 Some(child) => kill.0.push(child),
                 None => eprintln!(
@@ -498,6 +512,37 @@ fn wait_for_registration(
         }
         std::thread::sleep(Duration::from_secs(1));
     }
+}
+
+/// Wait until the web dev server actually SERVES the app, not merely until it
+/// has registered with the relay.
+///
+/// Registration happens as soon as `dev` hosts the relay — before the wasm
+/// build finishes. Launching the browser at that moment races the build: on a
+/// cold build the page loads with no wasm, never retries, and the app never
+/// dials, so the run dies 240s later reporting "the app did not become ready"
+/// with a browser log that shows a perfectly healthy start. Warm builds win the
+/// race, which is what made this intermittent.
+fn wait_for_web_server(port: u16, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    let addr = format!("127.0.0.1:{port}");
+    while std::time::Instant::now() < deadline {
+        if let Ok(mut stream) = std::net::TcpStream::connect(&addr) {
+            use std::io::{Read as _, Write as _};
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let req = format!("GET / HTTP/1.0\r\nHost: {addr}\r\n\r\n");
+            if stream.write_all(req.as_bytes()).is_ok() {
+                let mut buf = [0u8; 64];
+                if let Ok(n) = stream.read(&mut buf) {
+                    if n > 0 && String::from_utf8_lossy(&buf[..n]).contains(" 200") {
+                        return true;
+                    }
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    false
 }
 
 fn launch_headless_web(port: u16, viewport: (u32, u32)) -> Option<Child> {

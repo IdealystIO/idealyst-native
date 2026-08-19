@@ -218,6 +218,9 @@ mod imp {
         /// allocation cycle (the reliable place to do it — GTK drives
         /// `size_allocate` on map + every resize).
         pub layout_cb: RefCell<Option<std::rc::Rc<dyn Fn(i32, i32)>>>,
+        /// Decline pointer events on this widget's OWN area while leaving its
+        /// children hit-testable. See [`IdealystView::set_input_transparent`].
+        pub input_transparent: std::cell::Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -312,6 +315,20 @@ mod imp {
                 let transform = child.transform.borrow().clone();
                 child.widget.allocate(w.max(0), h.max(0), -1, transform);
             }
+        }
+
+        /// Whether a point counts as "inside" this widget for input picking.
+        ///
+        /// GTK4 picks CHILDREN first and only asks the parent's `contains`
+        /// when no child claimed the point, so declining here makes the
+        /// widget transparent to clicks in its empty areas while everything
+        /// it renders stays clickable. `set_can_target(false)` cannot express
+        /// that — it removes the whole subtree from picking.
+        fn contains(&self, x: f64, y: f64) -> bool {
+            if self.input_transparent.get() {
+                return false;
+            }
+            self.parent_contains(x, y)
         }
 
         fn snapshot(&self, snapshot: &gtk4::Snapshot) {
@@ -560,6 +577,22 @@ impl IdealystView {
     /// intend to paint rather than an independent engine's read of what WAS
     /// painted, which GTK cannot answer for a custom widget. See
     /// `crate::introspect`.
+    /// Make this view decline pointer events on its own area, while its
+    /// children keep receiving them.
+    ///
+    /// For an ANCHORED portal container. The framework lowers anchored
+    /// overlays with `click_through: false` because — as `builders/portal.rs`
+    /// puts it — "popovers / tooltips / menus are content-sized, so their root
+    /// only covers what they render". This backend breaks that assumption:
+    /// `portal::configure` makes every container full-viewport so its flex has
+    /// the whole screen to place content in. The container then sat above the
+    /// dismiss-catcher in the GTK overlay stack and swallowed every click
+    /// outside the panel, so click-outside-to-dismiss did nothing while Escape
+    /// (a key controller on the container itself) still worked.
+    pub fn set_input_transparent(&self, transparent: bool) {
+        self.imp().input_transparent.set(transparent);
+    }
+
     pub fn paint_model(&self) -> PaintModel {
         self.imp().model.borrow().clone()
     }
@@ -605,6 +638,96 @@ mod full_radius_tests {
                 assert!(r.is_finite(), "radius must be finite for {w}x{h}, got {r}");
             }
         }
+    }
+}
+
+
+
+#[cfg(test)]
+mod input_transparency_tests {
+    use super::IdealystView;
+    use gtk4::prelude::*;
+
+    /// An input-transparent container must not claim clicks in its EMPTY
+    /// areas, while the content it renders stays clickable.
+    ///
+    /// Regression: an anchored portal's container is made full-viewport by
+    /// `portal::configure` (it only exists to supply the coordinate space the
+    /// resolved placement lives in), and GTK's overlay stacks it above the
+    /// dismiss-catcher overlay. Every click outside the popover panel landed
+    /// on that container and stopped there, so click-outside-to-dismiss did
+    /// nothing — while Escape, whose controller sits on the container itself,
+    /// still worked. That asymmetry is the signature.
+    ///
+    /// `set_can_target(false)` cannot express this: it removes the whole
+    /// subtree from picking, so the panel would stop being clickable too.
+    #[test]
+    fn an_input_transparent_container_passes_clicks_through_but_keeps_its_children() {
+        if gtk4::init().is_err() {
+            eprintln!("SKIP: no display");
+            return;
+        }
+        let window = gtk4::Window::new();
+        window.set_default_size(400, 300);
+
+        // Two stacked overlay children, mirroring catcher-then-anchored.
+        let overlay = gtk4::Overlay::new();
+        let catcher = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        catcher.set_hexpand(true);
+        catcher.set_vexpand(true);
+        overlay.set_child(Some(&catcher));
+
+        let container = IdealystView::new();
+        container.set_hexpand(true);
+        container.set_vexpand(true);
+        let panel = gtk4::Button::with_label("item");
+        panel.set_halign(gtk4::Align::Start);
+        panel.set_valign(gtk4::Align::Start);
+        panel.set_size_request(80, 40);
+        container.add_child(&panel);
+        overlay.add_overlay(&container);
+
+        window.set_child(Some(&overlay));
+        window.present();
+        // Let GTK map + allocate.
+        let ctx = gtk4::glib::MainContext::default();
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_millis(800) {
+            ctx.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        if !window.is_mapped() {
+            eprintln!("SKIP: window never mapped");
+            return;
+        }
+
+        container.set_input_transparent(true);
+        let widget: gtk4::Widget = container.clone().upcast();
+
+        // A point far from the panel must NOT resolve to the container.
+        let outside = overlay.pick(350.0, 250.0, gtk4::PickFlags::DEFAULT);
+        assert!(
+            outside.as_ref().map(|w| *w != widget).unwrap_or(true),
+            "an input-transparent container still claimed a click in its empty \
+             area — the dismiss-catcher beneath it never sees the click, so \
+             click-outside-to-dismiss silently does nothing"
+        );
+
+        // …and the panel it renders is still hit-testable.
+        let on_panel = container.pick(10.0, 10.0, gtk4::PickFlags::DEFAULT);
+        assert!(
+            on_panel.is_some(),
+            "input transparency must not remove the container's CHILDREN from \
+             picking — the popover's own items have to stay clickable"
+        );
+
+        // Turning it off restores the normal claim.
+        container.set_input_transparent(false);
+        let reclaimed = container.pick(350.0, 250.0, gtk4::PickFlags::DEFAULT);
+        assert!(
+            reclaimed.is_some(),
+            "a normal container must still claim points inside its allocation"
+        );
     }
 }
 

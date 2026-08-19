@@ -717,6 +717,13 @@ impl caps::InputOps for LinuxBackend {
 }
 
 impl caps::PressableOps for LinuxBackend {
+    /// Real handle, so a `Pressable` can be an overlay's anchor target.
+    /// The default returns a NO-OP handle whose `rect()` is the zero rect —
+    /// silently pinning every popover anchored to it at the window origin.
+    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_shared::PressableHandle {
+        crate::handles::make_pressable_handle(self, node)
+    }
+
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Self::Node {
         // Wrap the author callback so ONE deduped flush microtask is queued
         // after it returns. Without this the handler mutates its signal and
@@ -749,6 +756,14 @@ impl caps::TextOps for LinuxBackend {
 }
 
 impl caps::ButtonOps for LinuxBackend {
+    /// Real handle, so a `Button` can be an overlay's anchor target — the
+    /// `bind_to` in `Popover(target = AnchorTarget::from(trigger))`. Without
+    /// this the default no-op handle reports a zero rect and the popover
+    /// renders in the top-left corner instead of at its trigger.
+    fn make_button_handle(&self, node: &Self::Node) -> runtime_shared::ButtonHandle {
+        crate::handles::make_button_handle(self, node)
+    }
+
     fn create_button(
         &mut self,
         label: &str,
@@ -904,6 +919,32 @@ impl caps::TextInputOps for LinuxBackend {
         // Delegates to the inherent GTK body — master's placeholder
         // here did not render at full fidelity.
         LinuxBackend::update_text_input_secure(self, node, secure)
+    }
+
+    // The three below are easy to forget, and forgetting them is SILENT: the
+    // trait's defaults are no-ops, so a missing forward looks exactly like a
+    // backend that chose not to support the capability. That is how a
+    // `value`-bound input ended up never following its signal on this backend.
+    /// Real handle: `focus()`, `blur()`, `select_all()`, `insert_text()`.
+    /// The default is a NO-OP handle, which also silently disables the robot's
+    /// focus/blur verbs on this backend.
+    fn make_text_input_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_shared::primitives::text_input::TextInputHandle {
+        crate::handles::make_text_input_handle(self, node)
+    }
+
+    fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
+        LinuxBackend::update_text_input_value(self, node, value)
+    }
+
+    fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
+        LinuxBackend::update_text_input_placeholder(self, node, placeholder)
+    }
+
+    fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
+        LinuxBackend::set_text_input_focus_handler(self, node, flushing1(handler))
     }
 
     fn create_text_area(
@@ -1229,6 +1270,8 @@ impl caps::StyleOps for LinuxBackend {
         if let Some(installed) = self.state_controllers.remove(&node.id()) {
             installed.detach(&node.widget());
         }
+        // Same reason, for the controllers the `text_input` path attaches.
+        LinuxBackend::detach_input_controllers(self, node.id(), &node.widget());
     }
 }
 
