@@ -67,11 +67,26 @@ not rebuild them.
 
 ## Known gaps
 
-- **39 of 47 components** are exported — the ones with a `recipe!` in
-  `crates/ui/idea-ui/src/recipes.rs`. Missing: Autocomplete, Calendar,
-  DateInput, DatePicker, SegmentedControl, TimeInput, TypedField, Toast,
-  Surface, MenuPanel. Adding a recipe there exports the component on the next
-  run — no converter change needed.
+- **49 of 53 recipe targets** are exported. The export is driven by which
+  components have a `recipe!`, and recipes live in **two places**:
+  `src/recipes.rs` AND next to several components (chip.rs, date_input.rs,
+  date_picker.rs, field.rs, segmented_control.rs). Scanning only `recipes.rs`
+  silently under-exports — that mistake shipped a 39-component first pass.
+  `assert_recipe_coverage` in the converter now compares the hand-written
+  table against the `inventory` registry and fails loudly, so the gap cannot
+  reappear unnoticed.
+- **Deliberately not exported**, and why:
+  - `typed_field`, `menu_panel` — `pub(crate)` wiring shared by the typed
+    inputs and the anchored-menu family. Not components.
+  - `ToastCard` — `ToastEntry::render` is private (a toast is only built
+    through the `Toast` builder / `push_toast`), so a card cannot be
+    constructed from outside the module to render statically. `ToastHost` is
+    exported and covers the surface.
+  - `IdeaThemeDefaults`, `IdeaTokens`, `install_idea_theme`,
+    `install_idea_theme_reactive` — recipes with nothing to render.
+  - Recipes registered by `runtime-shared` and `idea-theme` (navigation
+    patterns, primitive usage, theme install) — a different subject; the
+    coverage assertion is scoped to `module_path.starts_with("idea_ui")`.
 - **Shells cover style axes + `children` + `className`,** not behavioural props
   (`on_click`, `value`, `bind_to`). They are for composing on-brand layouts in
   the design tool; the Rust component is the real API.

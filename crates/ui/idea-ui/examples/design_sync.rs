@@ -398,25 +398,80 @@ fn render_recipes(
     (format!("[\n{}\n]\n", items.join(",\n")), head_css)
 }
 
+/// Every `recipe!` self-registers a `RecipeEntry` through `inventory`. The
+/// entry carries no fn pointer, so the table above has to name each recipe by
+/// hand — which means it can silently fall behind the source and quietly
+/// shrink the export. Compare the two and fail loudly instead.
+///
+/// Scoped to recipes DEFINED IN idea-ui: `runtime-shared` and `idea-theme`
+/// register their own (navigation patterns, primitive usage, theme install),
+/// and those document things this converter does not export.
+fn assert_recipe_coverage(recipes: &[(&str, &str, &str, fn() -> Element)]) {
+    use std::collections::BTreeSet;
+    let listed: BTreeSet<&str> = recipes.iter().map(|(_, name, _, _)| *name).collect();
+    // idea-ui recipes with no component to render: the theme installers and
+    // the token vocabulary. Deliberately not exported.
+    const NOT_COMPONENTS: &[&str] = &[
+        "IdeaThemeDefaults",
+        "IdeaTokens",
+        "install_idea_theme",
+        "install_idea_theme_reactive",
+    ];
+    let missing: Vec<&str> = runtime_core::__mcp::inventory::iter::<runtime_core::__mcp::RecipeEntry>
+        .into_iter()
+        .filter(|e| e.module_path.starts_with("idea_ui"))
+        .filter(|e| !NOT_COMPONENTS.contains(&e.target))
+        .filter(|e| !listed.contains(e.name))
+        .map(|e| e.name)
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "design_sync: {} idea-ui recipe(s) are missing from the table in this \
+         example, so they would not be exported: {missing:?}. Add them \
+         (component, recipe fn, doc, fn pointer) and re-run.",
+        missing.len(),
+    );
+}
+
 fn main() {
     let out_dir = std::env::args().nth(1).expect("usage: design_sync <out-dir>");
     std::fs::create_dir_all(&out_dir).expect("create out dir");
 
+    // Regenerate this table when recipes are added — `RecipeEntry` carries
+    // metadata but no fn pointer, so the recipes cannot be invoked from the
+    // inventory registry. `assert_recipe_coverage` below turns forgetting to
+    // do so into a loud failure rather than a silently smaller export.
+    // Regenerate this table when recipes are added — `RecipeEntry` carries
+    // metadata but no fn pointer, so the recipes cannot be invoked from the
+    // inventory registry. `assert_recipe_coverage` below turns forgetting to
+    // do so into a loud failure rather than a silently smaller export.
+    //
+    // Recipes live in TWO places: `src/recipes.rs` and, for several
+    // components, next to the component itself (chip.rs, date_input.rs,
+    // date_picker.rs, field.rs, segmented_control.rs) — hence the differing
+    // module paths below. Scanning only `recipes.rs` silently under-exports.
     let recipes: Vec<(&str, &str, &str, fn() -> Element)> = vec![
         ("Accordion", "accordion_single", "A set of collapsible items. `expand = AccordionExpand::Single` keeps at most one open at a time (Multi allows any subset). The host owns `open: Signal<Vec<bool>>` (one bool per item); the Accordion writes to it on click. Each `AccordionItem` carries a `title` and an `Element` `body`.", idea_ui::recipes::accordion_single as fn() -> Element),
         ("Alert", "alert_with_action", "A banner with a title, optional body line, an optional trailing `action` slot, and a configurable `close`. Pick a semantic `tone` (Info/Success/Warning/Danger) and a `variant` (Soft/Filled/ Outline). `close = AlertClose::Button(handler)` shows the standard ×; `AlertClose::Custom(element)` supplies your own; the default `AlertClose::None` shows nothing.", idea_ui::recipes::alert_with_action as fn() -> Element),
+        ("Autocomplete", "autocomplete_filtering", "A type-to-filter combo box. The host owns the `value` signal (the current text); `on_change` fires as the user types AND when a row is picked. `options` are matched against the text — pass the same `SelectOption::new(id, label)` rows a `Select` takes. Use `empty_text` for the \"no matches\" line.", idea_ui::recipes::autocomplete_filtering as fn() -> Element),
         ("Avatar", "avatar_initials", "A round user chip. Pass `src` for a photo, or `initials` to render a colored monogram when there's no image. `color` picks the monogram palette and `size` scales the circle.", idea_ui::recipes::avatar_initials as fn() -> Element),
         ("Badge", "badge_status", "A small status pill for counts and labels. Pick a semantic `tone` (Primary/Success/Danger/…) and a `variant` (Soft/Filled/Outline). `label` is reactive, so it can be driven by a signal.", idea_ui::recipes::badge_status as fn() -> Element),
         ("Breadcrumbs", "breadcrumbs_trail", "A navigation trail. Build it from `Crumb`s — `Crumb::linked(label, on_press)` for clickable ancestors and `Crumb::new(label)` for the current (non-clickable) page. The `separator` between them is configurable.", idea_ui::recipes::breadcrumbs_trail as fn() -> Element),
         ("Button", "button_basic", "A primary action button that runs a callback when pressed. The default `tone`/`variant`/`size`/`shape` give a filled primary button; pass them explicitly to vary it.", idea_ui::recipes::button_basic as fn() -> Element),
         ("Button", "button_icon_block", "A full-width call-to-action with a leading icon. `block = true` stretches the button to its container's width; `leading_icon` / `trailing_icon` take an `IconData` constant (from an icon pack like `icons_lucide`) and render it inline beside the label, inheriting the button's text color.", idea_ui::recipes::button_icon_block as fn() -> Element),
+        ("Calendar", "calendar_inline", "An inline month grid for picking a single date. The host owns the `value` signal; `on_change` fires with the clicked day. `min`/`max` bound the selectable range and `framed = true` draws the panel border (leave it off when the calendar already sits inside a Card or a popover).", idea_ui::recipes::calendar_inline as fn() -> Element),
         ("Card", "card_elevated", "A surface container that wraps its children in a themed, rounded, bordered panel. Use `variant = card::variant::Elevated` for a raised look (surface-alt background + shadow); `padding` sets the inner spacing.", idea_ui::recipes::card_elevated as fn() -> Element),
         ("Card", "card_toned", "An intent-tinted card. Setting `tone = Some(...)` paints the card with a muted tone background + matching border (the Soft tint Alert uses) — for support/crisis/info panels that need to read as intent-colored. Works with either variant.", idea_ui::recipes::card_toned as fn() -> Element),
         ("Center", "center_content", "Centers its children on both axes inside the space it's given. Drop any single child (or a Stack) inside and it sits dead center — handy for empty states and loading screens.", idea_ui::recipes::center_content as fn() -> Element),
         ("Checkbox", "checkbox_controlled", "A controlled checkbox with a label. The host owns the `value: Signal<bool>`; `on_change` fires the toggled value. Tapping anywhere on the row (box or label) toggles it.", idea_ui::recipes::checkbox_controlled as fn() -> Element),
+        ("Chip", "chip_filter", "A selectable filter chip. The host owns the selected state (here a `Signal<bool>`); `on_select` flips it. Drop several in a row for a filter bar — make it multi-select by toggling each independently, or single-select by clearing the others in the callback.", idea_ui::components::chip::chip_filter as fn() -> Element),
         ("Collapsible", "collapsible_section", "A titled section that expands and collapses. The host owns the open-state `Signal<bool>`; `on_change` fires the toggled value. Children are revealed when open; the default `Measured` transition animates to the body's natural height.", idea_ui::recipes::collapsible_section as fn() -> Element),
+        ("DateInput", "date_input_birthdate", "Birthdate entry: lenient typed input (`7/3/1994` parses against `D/M/YYYY` and canonicalizes on blur) with the popup calendar capped at today. The month/year zoom in the popup header makes reaching a birth year fast.", idea_ui::components::date_input::date_input_birthdate as fn() -> Element),
+        ("DatePicker", "date_picker_deadline", "Deadline picker bounded to today-or-later, clearable. The host owns the signal; `on_change` receives `None` only from the Clear action, so binding it straight to the signal is the whole wiring.", idea_ui::components::date_picker::date_picker_deadline as fn() -> Element),
+        ("DateRangePicker", "date_range_picker_period", "Report-period range: first press anchors the start, second commits the ordered pair and closes.", idea_ui::components::date_picker::date_range_picker_period as fn() -> Element),
         ("Divider", "divider_separator", "A hairline rule separating content. Defaults to a horizontal line that fills its parent's width; pass `axis = DividerAxis::Vertical` for a vertical rule inside a row.", idea_ui::recipes::divider_separator as fn() -> Element),
         ("Field", "field_controlled", "A labeled, controlled text input. The host owns the `value` signal; `on_change` fires the new text on each edit. Add `help` for hint text or `error = Some(...)` to flag a validation problem (which paints the input in the Danger tone automatically).", idea_ui::recipes::field_controlled as fn() -> Element),
+        ("Field", "field_password_with_visibility_toggle", "Password field with a show/hide toggle, built from a reactive `secure` plus a trailing adornment. `secure = rx!(!visible.get())` makes the mask itself reactive: the Field is NOT wrapped in a `switch`, the underlying `text_input` is never rebuilt, and the typed `value` is never disturbed when the mask toggles — the framework flips the native secure-entry mode in place (on macOS, an in-place `NSSecureTextFieldCell` swap). The eye glyph is a reactive `text` leaf that flips with the same `visible` signal, so nothing in the tree is rebuilt on toggle. Swap the emoji for `icon = Some(icons_lucide::EYE/EYE_OFF)` in an app with an icon pack.", idea_ui::components::field::field_password_with_visibility_toggle as fn() -> Element),
         ("Grid", "grid_columns", "A fixed-column grid. `columns` sets how many equal-width tracks each row has; `gap` spaces both rows and columns. Children flow left-to-right, wrapping to a new row every `columns` items.", idea_ui::recipes::grid_columns as fn() -> Element),
         ("Icon", "icon_tinted", "A sized, optionally tinted vector icon. `data` is an `IconData` constant (from an icon pack like `icons_lucide`); `size` sets the square in points. Pass `tone = Some(...)` to paint it in a semantic intent color, or `color = Some(...)` for an explicit one — with neither, it inherits the ambient text color.", idea_ui::recipes::icon_tinted as fn() -> Element),
         ("IconButton", "icon_button_close", "A square, single-glyph clickable. Pick a `tone` × `variant` × `size`; `glyph` is the character drawn inside (e.g. `\"×\"` for a close button). `on_click` fires on press.", idea_ui::recipes::icon_button_close as fn() -> Element),
@@ -431,21 +486,27 @@ fn main() {
         ("Progress", "progress_bar", "A horizontal progress bar. Set `value` in 0.0..=1.0 for a value-driven bar (changes animate to the new width), or pick a `mode`: `Indeterminate` sweeps endlessly when you can't measure progress; `Simulated` creeps toward full like a fake page loader. `value` is reactive.", idea_ui::recipes::progress_bar as fn() -> Element),
         ("Radio", "radio_standalone", "A standalone radio row — the single-row primitive `RadioGroup` is built from. Use it directly only when laying out the rows yourself; the host then owns each row's `selected: Signal<bool>` and coordinates exclusivity in `on_select`.", idea_ui::recipes::radio_standalone as fn() -> Element),
         ("RadioGroup", "radio_group_controlled", "A set of mutually exclusive options. The host owns `value: Signal<String>` (the selected option's id); `on_change` writes the picked id back. Build the rows with `RadioOption::new(id, label)`. RadioGroup coordinates exclusivity for you.", idea_ui::recipes::radio_group_controlled as fn() -> Element),
+        ("RangeCalendar", "range_calendar_inline", "The two-ended sibling of [`calendar_inline`]. `value` holds the `(start, end)` pair; `on_change` fires with both ends once the second click lands, so a half-made range never reaches the host.", idea_ui::recipes::range_calendar_inline as fn() -> Element),
+        ("SegmentedControl", "segmented_control_view_switch", "A controlled segmented picker. The host owns the `value` signal (the selected segment's `id`); `on_change` writes the picked id back. Build the segments with `SegmentOption::new(id, label)`.", idea_ui::components::segmented_control::segmented_control_view_switch as fn() -> Element),
         ("Select", "select_controlled", "A controlled dropdown. The host owns the `value` signal (the chosen option's `id`); `on_change` writes the picked id back into it. Build the rows with `SelectOption::new(id, label)`.", idea_ui::recipes::select_controlled as fn() -> Element),
         ("Skeleton", "skeleton_placeholder", "Placeholder shimmer blocks shown while content loads. Stack a few with varied `width`s (Full/ThreeQuarter/Half or `Px`) to suggest the shape of the incoming content; `height` sets each block's thickness.", idea_ui::recipes::skeleton_placeholder as fn() -> Element),
         ("Slider", "slider_controlled", "A controlled horizontal value slider. The host owns `value: Signal<f32>`; `on_change` fires the new value during the drag. `min`/`max`/`step` bound and quantize it; `tone` colors the fill + thumb. Keep a fixed `width` and don't rebuild the Slider mid-drag (see its docs).", idea_ui::recipes::slider_controlled as fn() -> Element),
         ("Spacer", "spacer_gap", "A flexible gap that pushes its siblings apart. In a row it expands to fill the free space, shoving the items on either side to the edges — the standard \"title on the left, actions on the right\" toolbar trick.", idea_ui::recipes::spacer_gap as fn() -> Element),
         ("Spinner", "spinner_loading", "A spinning loading indicator for indeterminate waits. `size` picks `Small` or `Large`. Pair it with a label or center it in the area that's loading.", idea_ui::recipes::spinner_loading as fn() -> Element),
         ("Stack", "stack_layout", "The everyday vertical layout: stacks its children in a column with a uniform `gap`. Switch to a horizontal row with `axis = StackAxis::Row`; `align`/`justify` control cross- and main-axis placement.", idea_ui::recipes::stack_layout as fn() -> Element),
+        ("Surface", "surface_panel", "A themed background panel. `background` picks the elevation layer by token (`Background` is the recessed page base, `Surface` the raised panel, `SurfaceAlt` a layer above it), so nesting Surfaces reads as depth without hand-picked colors. `grow` is the flex weight, which is what makes Surface the usual split-pane building block.", idea_ui::recipes::surface_panel as fn() -> Element),
         ("Switch", "switch_controlled", "A controlled slide-toggle with an inline label. The host owns the `value: Signal<bool>`; `on_change` fires the flipped value. Use a semantic `tone` (e.g. Success) to color the \"on\" track.", idea_ui::recipes::switch_controlled as fn() -> Element),
         ("Table", "table_basic", "A themed data table: a header row (cells with `header = true`) plus body rows. Use `TableCell(header = true, text = \"...\")` for the simple text case; pass a `children` block for richer cell content.", idea_ui::recipes::table_basic as fn() -> Element),
         ("Tabs", "tabs_controlled", "A clickable tab strip. Tabs is pure UI: the host owns the active tab's `id` (a `Signal<String>`) and renders that tab's content itself (e.g. a `match` on `active.get()`). `tabs` is a `Signal<Vec<Tab>>` (a reactive, id-keyed list — wrap a fixed set in `signal!`); each `Tab::new(id, label)` carries its own identity.", idea_ui::recipes::tabs_controlled as fn() -> Element),
         ("Tag", "tag_removable", "A pill label, optionally removable. Provide `on_remove = Some(...)` to show a close affordance (e.g. for filter chips); omit it for a static tag. `tone` × `variant` set the palette.", idea_ui::recipes::tag_removable as fn() -> Element),
         ("Textarea", "textarea_autogrow", "A multi-line text input that grows to fit its content. `rows` sets the resting height; `max_rows` caps the autogrow (past it the field scrolls). The host owns the `value` signal; `on_change` fires the new text on each edit.", idea_ui::recipes::textarea_autogrow as fn() -> Element),
+        ("TimeInput", "time_input_masked", "The time-of-day counterpart to [`date_input_masked`], with the same parse-on-type / normalize-on-blur contract. `format` sets the mask (12- or 24-hour); `icon = true` shows the clock affordance.", idea_ui::recipes::time_input_masked as fn() -> Element),
         ("ToastHost", "toast_host", "The mount point for transient notifications. Render exactly one `ToastHost` near the root; anywhere in the app, call `push_toast(message, tone)` to enqueue a toast and it appears at the host's `placement`. `dismiss_toast(id)` removes one early.", idea_ui::recipes::toast_host as fn() -> Element),
         ("Tooltip", "tooltip_hint", "A small hint that wraps its trigger and reveals itself on hover (desktop) or long-press (touch) — no host open-state signal. `text` is the hint shown in the bubble.", idea_ui::recipes::tooltip_hint as fn() -> Element),
         ("Typography", "typography_heading", "The standard way to put themed text on screen. `kind` picks the type role (H1…H6, Body, Caption, …) from the theme's scale; set `muted = true` for secondary text or `tone = Some(...)` for intent-colored text.", idea_ui::recipes::typography_heading as fn() -> Element),
     ];
+
+    assert_recipe_coverage(&recipes);
 
     // Pass 1 — guard disarmed. Registers the sheets components build at
     // mount; the HTML is thrown away.

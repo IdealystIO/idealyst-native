@@ -1129,3 +1129,139 @@ recipe!(
         ui! { Button(label = "Toggle theme", on_click = toggle) }
     }
 );
+
+// ---------------------------------------------------------------------------
+// Typed value inputs, the segmented control, and Surface
+// ---------------------------------------------------------------------------
+//
+// These trail the block above because they were added when the design-sync
+// export revealed the gap: the exporter renders one preview per recipe, so a
+// component with no recipe here ships no card and no usage docs. Note that
+// `typed_field` and `menu_panel` are deliberately absent — they are
+// `pub(crate)` wiring shared by the inputs and the anchored-menu family, not
+// components. `ToastCard` is absent too: `ToastEntry::render` is private
+// (a toast is only ever built through the `Toast` builder / `push_toast`), so
+// a card cannot be constructed from outside the module to render statically.
+//
+// Recipes also live NEXT TO the components they document (chip.rs,
+// date_input.rs, date_picker.rs, field.rs, segmented_control.rs) — check
+// there before adding one here, or you will write a near-duplicate.
+
+recipe!(
+    Autocomplete,
+    /// A type-to-filter combo box. The host owns the `value` signal (the
+    /// current text); `on_change` fires as the user types AND when a row
+    /// is picked. `options` are matched against the text — pass the same
+    /// `SelectOption::new(id, label)` rows a `Select` takes. Use
+    /// `empty_text` for the "no matches" line.
+    pub fn autocomplete_filtering() -> ::runtime_core::Element {
+        use crate::{Autocomplete, SelectOption};
+        use ::runtime_core::{signal, ui};
+        use ::std::rc::Rc;
+
+        let value = signal(String::new());
+        let on_change: Rc<dyn Fn(String)> = Rc::new(move |v| value.set(v));
+        ui! {
+            Autocomplete(
+                value = value,
+                on_change = on_change,
+                options = vec![
+                    SelectOption::new("rs", "Rust"),
+                    SelectOption::new("ts", "TypeScript"),
+                    SelectOption::new("go", "Go"),
+                ],
+                placeholder = Some("Search languages".to_string()),
+                empty_text = Some("No languages match".to_string()),
+            )
+        }
+    }
+);
+
+
+recipe!(
+    Surface,
+    /// A themed background panel. `background` picks the elevation layer by
+    /// token (`Background` is the recessed page base, `Surface` the raised
+    /// panel, `SurfaceAlt` a layer above it), so nesting Surfaces reads as
+    /// depth without hand-picked colors. `grow` is the flex weight, which is
+    /// what makes Surface the usual split-pane building block.
+    pub fn surface_panel() -> ::runtime_core::Element {
+        use crate::{Surface, SurfaceColor, Typography};
+        use ::runtime_core::ui;
+
+        ui! {
+            Surface(background = SurfaceColor::Surface) {
+                Typography(content = "Panel content")
+            }
+        }
+    }
+);
+
+recipe!(
+    Calendar,
+    /// An inline month grid for picking a single date. The host owns the
+    /// `value` signal; `on_change` fires with the clicked day. `min`/`max`
+    /// bound the selectable range and `framed = true` draws the panel
+    /// border (leave it off when the calendar already sits inside a Card
+    /// or a popover).
+    pub fn calendar_inline() -> ::runtime_core::Element {
+        use crate::{Calendar, CivilDate};
+        use ::runtime_core::{signal, ui};
+        use ::std::rc::Rc;
+
+        let value = signal(CivilDate::new(2026, 3, 14));
+        let on_change: Rc<dyn Fn(CivilDate)> = Rc::new(move |d| value.set(Some(d)));
+        ui! {
+            Calendar(value = value, on_change = on_change, framed = true)
+        }
+    }
+);
+
+recipe!(
+    RangeCalendar,
+    /// The two-ended sibling of [`calendar_inline`]. `value` holds the
+    /// `(start, end)` pair; `on_change` fires with both ends once the
+    /// second click lands, so a half-made range never reaches the host.
+    pub fn range_calendar_inline() -> ::runtime_core::Element {
+        use crate::{CivilDate, RangeCalendar};
+        use ::runtime_core::{signal, ui};
+        use ::std::rc::Rc;
+
+        // Seeded with a real range: an unset RangeCalendar renders the epoch
+        // month with no highlight, which documents neither the range styling
+        // nor the component's normal state.
+        let value = signal(
+            CivilDate::new(2026, 3, 9).zip(CivilDate::new(2026, 3, 20)),
+        );
+        let on_change: Rc<dyn Fn(CivilDate, CivilDate)> =
+            Rc::new(move |start, end| value.set(Some((start, end))));
+        ui! {
+            RangeCalendar(value = value, on_change = on_change, framed = true)
+        }
+    }
+);
+
+
+recipe!(
+    TimeInput,
+    /// The time-of-day counterpart to [`date_input_masked`], with the same
+    /// parse-on-type / normalize-on-blur contract. `format` sets the mask
+    /// (12- or 24-hour); `icon = true` shows the clock affordance.
+    pub fn time_input_masked() -> ::runtime_core::Element {
+        use crate::{CivilTime, TimeInput};
+        use ::runtime_core::{signal, ui};
+        use ::std::rc::Rc;
+
+        let value = signal(CivilTime::new(9, 30, 0));
+        let on_change: Rc<dyn Fn(Option<CivilTime>)> = Rc::new(move |t| value.set(t));
+        ui! {
+            TimeInput(
+                value = value,
+                on_change = on_change,
+                label = Some("Starts at".to_string()),
+                icon = true,
+            )
+        }
+    }
+);
+
