@@ -190,7 +190,25 @@ fn button_icon_sheet() -> Rc<runtime_core::StyleSheet> {
 #[component]
 pub fn Button(props: &ButtonProps) -> Element {
     let label = props.label.clone();
-    let on_click = props.on_click.clone();
+    // The handler is re-anchored to the BUTTON's own scope, not the
+    // pressable node's. The structural `switch` below rebuilds the
+    // pressable when a live structural prop flips — including a
+    // `loading` signal the handler itself sets ("busy button": press →
+    // `busy.set(true)` → `spawn_then(io, done)`). A task spawned from
+    // the handler anchors, via `ScopeAlive::current`, to the node that
+    // mounted the handler — the very arm that flip tears down — so its
+    // callback was silently dropped: the IO completed, the spinner
+    // never stopped, and the done-writes vanished. Publishing the
+    // body-scope token around the call gives handler-reached spawns
+    // the Button's lifetime: alive across arm rebuilds, dead when the
+    // Button actually unmounts (same teardown moment as before on the
+    // static path, where the pressable IS the button's whole life).
+    // Regression: `tests/loading_button_spawn.rs`.
+    let on_click: Rc<dyn Fn()> = {
+        let anchor = runtime_core::ScopeAlive::current();
+        let inner = props.on_click.clone();
+        Rc::new(move || anchor.run_within(|| inner()))
+    };
     // Style axes — kept as `Reactive` and read live INSIDE `make_style` so a
     // reactive tone/variant/size/shape re-styles the button in place.
     let tone = props.tone.clone();

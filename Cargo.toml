@@ -173,6 +173,10 @@ members = [
     "crates/sdk/client/canvas/core",
     "crates/sdk/client/canvas/native",
     "crates/sdk/client/canvas/vello",
+    # `charts` charting SDK: `charts-core` is standalone by contract
+    # (zero idealyst deps, publishable on its own); the idealyst SDK
+    # layer adapts its mark IR onto `canvas_core::Scene`.
+    "crates/sdk/client/charts/core",
     "crates/sdk/client/toolbar",
     "crates/sdk/client/pdf",
     "crates/sdk/client/form",
@@ -538,6 +542,7 @@ video = { path = "crates/sdk/client/video" }
 svg = { path = "crates/sdk/client/svg" }
 canvas = { path = "crates/sdk/client/canvas" }
 canvas-core = { path = "crates/sdk/client/canvas/core" }
+charts-core = { path = "crates/sdk/client/charts/core" }
 canvas-native = { path = "crates/sdk/client/canvas/native", features = ["self-register"] }
 canvas-vello = { path = "crates/sdk/client/canvas/vello" }
 toolbar = { path = "crates/sdk/client/toolbar" }

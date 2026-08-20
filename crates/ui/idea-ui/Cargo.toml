@@ -90,3 +90,10 @@ table = { workspace = true, optional = true }
 # this. Used by `collapsible_direct_mount.rs`.
 host-mock = { workspace = true }
 runtime-scene = { workspace = true }
+# `tests/loading_button_spawn.rs` drives `spawn_then` through a manually
+# pumped test executor (the `tests/scoped_spawn.rs` pattern in
+# runtime-vocabulary): the executor install seam lives in
+# runtime-shared's driver, and `runtime_core::spawn_then` only exists
+# with `async-driver` on (feature unification covers the lib build).
+runtime-shared = { workspace = true, features = ["async-driver"] }
+runtime-core = { workspace = true, features = ["async-driver"] }

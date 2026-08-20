@@ -1,0 +1,29 @@
+[package]
+name = "charts-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Renderer-agnostic charting: a chart spec in, a vector mark IR + label placements out."
+
+# STANDALONE BY CONTRACT. This crate has zero idealyst dependencies and is
+# publishable on its own — that is the whole point of the layering, so keep
+# it that way. `canvas-core` is NOT a permissible dependency here: it pulls
+# `runtime-core` + `runtime-scene` + `runtime-vocabulary` + `media-stream`,
+# which would drag the entire framework into what is meant to be a portable
+# crate. The idealyst SDK (`charts`) owns the IR -> `canvas_core::Scene`
+# adapter instead; the IR is designed to map onto it losslessly.
+#
+# The one dependency is `plotters`, and only for its scale/tick machinery
+# (`coord::ranged1d`) — NOT its `DrawingBackend`. That trait is raster-first
+# (`BackendCoord = (i32, i32)`, a required `draw_pixel`, polyline-only paths,
+# and text delivered as a per-pixel callback with no font handle), all of
+# which we reject. `Ranged::key_points()` is backend-free and returns plain
+# values, so we take tick SELECTION from plotters and do our own f32
+# positioning. `default-features = false` keeps font-kit, `image`, and
+# pathfinder-geometry out of the tree — the graph is 7 crates total.
+[dependencies]
+plotters = { version = "0.3.7", default-features = false, features = ["datetime"] }
+# Already in the tree via plotters' `datetime` feature, so this is a
+# no-cost direct dep. Needed to build the `DateTime<Utc>` range plotters'
+# calendar-aware tick selection wants, and to format the resulting ticks.
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
