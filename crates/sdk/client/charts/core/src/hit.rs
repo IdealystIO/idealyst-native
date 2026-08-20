@@ -5,13 +5,105 @@
 //! domain and plot rect that render used. Recomputing it separately is how
 //! tooltips end up pointing at the wrong datum one frame after a resize.
 
+use std::f32::consts::TAU;
+
 use crate::scene::{Point, Rect};
 use crate::spec::Datum;
 
-/// One datum's resolved screen position.
+/// The region of the plot that resolves to one datum.
+///
+/// Shapes rather than points because the marks are shapes, and a
+/// nearest-point index silently disagrees with what the user can see. A bar
+/// indexed by its top-centre stops responding near its base; a pie slice
+/// indexed by its centroid resolves to a neighbour over most of its own
+/// area. Both bugs vanish once the index stores what was actually drawn.
 #[derive(Clone, Copy, PartialEq, Debug)]
-struct HitPoint {
-    at: Point,
+enum HitShape {
+    /// A marker: line/area/scatter points. Matched by proximity, since a
+    /// 3px dot is smaller than anyone can reliably aim at.
+    Point,
+    /// A bar. Matched by containment over its whole body.
+    Rect(Rect),
+    /// A pie or radial-bar slice. `start` is clockwise from twelve o'clock
+    /// in radians; `sweep` is non-negative.
+    Wedge { center: Point, r0: f32, r1: f32, start: f32, sweep: f32 },
+}
+
+/// Angle of `p` about `center`, clockwise from twelve o'clock, in `0..TAU`.
+///
+/// `atan2(dx, -dy)` rather than the usual `atan2(dy, dx)`: screen y grows
+/// downward, and charts measure a slice from the top. Doing the conversion
+/// here — once — is what keeps every other piece of polar math free of sign
+/// juggling.
+fn angle_at(center: Point, p: Point) -> f32 {
+    let (dx, dy) = (p.x - center.x, p.y - center.y);
+    dx.atan2(-dy).rem_euclid(TAU)
+}
+
+impl HitShape {
+    fn contains(&self, p: Point, anchor: Point) -> bool {
+        match *self {
+            // A point mark has no area; containment is meaningless and
+            // proximity is the only sensible test. `nearest_within` is the
+            // query for those.
+            HitShape::Point => false,
+            HitShape::Rect(r) => r.contains(p),
+            HitShape::Wedge { center, r0, r1, start, sweep } => {
+                let (dx, dy) = (p.x - center.x, p.y - center.y);
+                let d = (dx * dx + dy * dy).sqrt();
+                if d < r0 || d > r1 {
+                    return false;
+                }
+                // A full circle has no angular boundary to test, and the
+                // modular comparison below would reject exactly one ray of
+                // it. Ring gauges are drawn as one full-sweep wedge, so
+                // this is the common case, not an edge case.
+                if sweep >= TAU - f32::EPSILON {
+                    return true;
+                }
+                let _ = anchor;
+                (angle_at(center, p) - start).rem_euclid(TAU) <= sweep
+            }
+        }
+    }
+
+    /// Distance from `p` to the shape: zero inside, otherwise a measure that
+    /// grows as the pointer moves away.
+    fn distance(&self, p: Point, anchor: Point) -> f32 {
+        match *self {
+            HitShape::Point => dist(p, anchor),
+            HitShape::Rect(r) => {
+                let dx = (r.x - p.x).max(0.0).max(p.x - r.right());
+                let dy = (r.y - p.y).max(0.0).max(p.y - r.bottom());
+                (dx * dx + dy * dy).sqrt()
+            }
+            HitShape::Wedge { .. } => {
+                if self.contains(p, anchor) {
+                    0.0
+                } else {
+                    // Falling back to the centroid is deliberate: a wedge is
+                    // meant to be queried by containment, and an exact
+                    // distance-to-wedge is a lot of trigonometry for a
+                    // tie-break nobody looks at.
+                    dist(p, anchor)
+                }
+            }
+        }
+    }
+}
+
+fn dist(a: Point, b: Point) -> f32 {
+    let (dx, dy) = (a.x - b.x, a.y - b.y);
+    (dx * dx + dy * dy).sqrt()
+}
+
+/// One datum's resolved screen region.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct HitEntry {
+    shape: HitShape,
+    /// Where a tooltip should point. For a marker this is the marker; for a
+    /// bar, its outer end; for a wedge, its centroid.
+    anchor: Point,
     series: usize,
     index: usize,
     datum: Datum,
@@ -29,7 +121,8 @@ pub struct HitResult {
     pub datum: Datum,
     /// Where the datum was drawn, for anchoring a tooltip or crosshair.
     pub position: Point,
-    /// Pixel distance from the queried point.
+    /// Pixel distance from the queried point; zero when the pointer is
+    /// inside the mark.
     pub distance: f32,
 }
 
@@ -43,17 +136,67 @@ pub struct HitResult {
 /// is to bucket by x, not to reach for a general spatial structure.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct HitIndex {
-    points: Vec<HitPoint>,
+    entries: Vec<HitEntry>,
     plot: Rect,
 }
 
 impl HitIndex {
     pub(crate) fn new(plot: Rect) -> Self {
-        Self { points: Vec::new(), plot }
+        Self { entries: Vec::new(), plot }
     }
 
+    /// Index a point marker at `at`.
     pub(crate) fn push(&mut self, at: Point, series: usize, index: usize, datum: Datum) {
-        self.points.push(HitPoint { at, series, index, datum });
+        self.entries.push(HitEntry {
+            shape: HitShape::Point,
+            anchor: at,
+            series,
+            index,
+            datum,
+        });
+    }
+
+    /// Index a bar over its whole body, anchoring the tooltip at `anchor` —
+    /// the outer end, where a pointer approaching from outside the column
+    /// meets it first.
+    pub(crate) fn push_rect(
+        &mut self,
+        rect: Rect,
+        anchor: Point,
+        series: usize,
+        index: usize,
+        datum: Datum,
+    ) {
+        self.entries.push(HitEntry {
+            shape: HitShape::Rect(rect),
+            anchor,
+            series,
+            index,
+            datum,
+        });
+    }
+
+    /// Index a wedge. `start` is clockwise from twelve o'clock, in radians.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn push_wedge(
+        &mut self,
+        center: Point,
+        r0: f32,
+        r1: f32,
+        start: f32,
+        sweep: f32,
+        anchor: Point,
+        series: usize,
+        index: usize,
+        datum: Datum,
+    ) {
+        self.entries.push(HitEntry {
+            shape: HitShape::Wedge { center, r0, r1, start, sweep },
+            anchor,
+            series,
+            index,
+            datum,
+        });
     }
 
     /// The data area this index was built against.
@@ -62,26 +205,39 @@ impl HitIndex {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.points.is_empty()
+        self.entries.is_empty()
     }
 
-    fn to_result(&self, hp: &HitPoint, from: Point) -> HitResult {
-        let (dx, dy) = (hp.at.x - from.x, hp.at.y - from.y);
+    fn to_result(&self, e: &HitEntry, from: Point) -> HitResult {
         HitResult {
-            series: hp.series,
-            index: hp.index,
-            datum: hp.datum,
-            position: hp.at,
-            distance: (dx * dx + dy * dy).sqrt(),
+            series: e.series,
+            index: e.index,
+            datum: e.datum,
+            position: e.anchor,
+            distance: e.shape.distance(from, e.anchor),
         }
     }
 
-    /// Nearest datum by straight-line pixel distance, ignoring how far away
-    /// it is. Use when the tooltip should always show something.
-    pub fn nearest(&self, p: Point) -> Option<HitResult> {
-        self.points
+    /// The datum whose mark actually covers `p`, or `None`.
+    ///
+    /// Later entries win, because they were painted later and are therefore
+    /// what the user sees on top. This is the right query for bars, pie
+    /// slices, and heatmap cells — anything with area. Point markers never
+    /// match; use [`nearest_within`](Self::nearest_within) for those.
+    pub fn contains(&self, p: Point) -> Option<HitResult> {
+        self.entries
             .iter()
-            .map(|hp| self.to_result(hp, p))
+            .rev()
+            .find(|e| e.shape.contains(p, e.anchor))
+            .map(|e| self.to_result(e, p))
+    }
+
+    /// Nearest datum by pixel distance, ignoring how far away it is. Use
+    /// when the tooltip should always show something.
+    pub fn nearest(&self, p: Point) -> Option<HitResult> {
+        self.entries
+            .iter()
+            .map(|e| self.to_result(e, p))
             .min_by(|a, b| a.distance.total_cmp(&b.distance))
     }
 
@@ -89,6 +245,14 @@ impl HitIndex {
     /// should disappear as the pointer leaves the marks.
     pub fn nearest_within(&self, p: Point, radius: f32) -> Option<HitResult> {
         self.nearest(p).filter(|r| r.distance <= radius)
+    }
+
+    /// Whatever covers `p`, else the nearest mark within `radius`.
+    ///
+    /// The query a general tooltip wants: exact for marks with area,
+    /// forgiving for the ones too small to aim at.
+    pub fn pick(&self, p: Point, radius: f32) -> Option<HitResult> {
+        self.contains(p).or_else(|| self.nearest_within(p, radius))
     }
 
     /// Every series' datum at the x nearest the pointer, ordered by series.
@@ -108,18 +272,18 @@ impl HitIndex {
         // Nearest in pixel space picks the column; its data x defines the
         // column's membership.
         let Some(target) = self
-            .points
+            .entries
             .iter()
-            .min_by(|a, b| (a.at.x - p.x).abs().total_cmp(&(b.at.x - p.x).abs()))
-            .map(|hp| hp.datum.x)
+            .min_by(|a, b| (a.anchor.x - p.x).abs().total_cmp(&(b.anchor.x - p.x).abs()))
+            .map(|e| e.datum.x)
         else {
             return Vec::new();
         };
         let mut out: Vec<HitResult> = self
-            .points
+            .entries
             .iter()
-            .filter(|hp| hp.datum.x == target)
-            .map(|hp| self.to_result(hp, p))
+            .filter(|e| e.datum.x == target)
+            .map(|e| self.to_result(e, p))
             .collect();
         out.sort_by_key(|r| (r.series, r.index));
         out

@@ -1,10 +1,19 @@
 //! `charts-core` — renderer-agnostic charting.
 //!
-//! Takes a [`ChartSpec`] and a pixel rectangle, returns a [`ChartScene`]:
+//! Takes a spec and a pixel rectangle, returns a [`ChartScene`]:
 //! a flat list of vector marks, a list of text *placements* (not glyphs),
 //! and a [`HitIndex`] for pointer interaction. It draws nothing itself and
 //! knows about no UI toolkit, so the same render feeds a GPU canvas, an SVG
 //! string, or a native component tree.
+//!
+//! Two spec families, one output. [`ChartSpec`] is cartesian — line, area,
+//! bar, scatter, heatmap — and goes through [`render`]. [`PieSpec`] and
+//! [`RadialSpec`] are polar, and go through [`render_pie`] /
+//! [`render_radial`]. They are separate types because a pie inherits none of
+//! the cartesian machinery (two axes, a domain each, tick selection, gutters,
+//! bar-slot math, column hit-testing); see [`polar`] for the full argument.
+//! What they share is everything below the spec, so every renderer and every
+//! host serves both without knowing which it is drawing.
 //!
 //! # Why the seam is here
 //!
@@ -46,6 +55,9 @@
 #![deny(missing_debug_implementations)]
 
 pub mod hit;
+pub mod pie;
+pub mod polar;
+pub mod radial;
 pub mod render;
 pub mod scale;
 pub mod scene;
@@ -54,6 +66,12 @@ pub mod svg;
 pub mod tween;
 
 pub use hit::{HitIndex, HitResult};
+pub use pie::{
+    lerp_pie, render_pie, render_pie_tween, PieLabels, PieSpec, Slice, SliceContext, SliceOverride,
+    SliceStyleFn,
+};
+pub use polar::{PolarOutput, SliceHighlight};
+pub use radial::{lerp_radial, render_radial, render_radial_tween, RadialBar, RadialSpec};
 pub use render::{
     render, render_tween, render_with, ChartOutput, Gutters, LabelMetrics, Padding,
 };
@@ -64,7 +82,10 @@ pub use scene::{
     LineCap, LineJoin, Mark, Paint, Path, PathSeg, Point, PointInstance, Rect, Stroke, VAlign,
 };
 pub use spec::{
-    datum, AreaFill, AreaStyle, Axis, AxisKind, BarLayout, BarStyle, ChartSpec, Datum, DatumRef,
-    Domain, Emphasis, Highlight, LineStyle, MarkContext, MarkOverride, PointShape, PointStyle,
-    Ring, Series, SeriesKind, StyleFn,
+    cell, datum, Annotation, AnnotationAt, AreaFill, AreaStyle, Axis, AxisKind, BarLayout,
+    BarStyle, ChartSpec, ColorRamp, Datum, DatumRef, Domain, Emphasis, HeatmapStyle, Highlight,
+    Interpolation, LineStyle, MarkContext, MarkOverride, PointShape, PointStyle, Ring, Series,
+    SeriesKind, StepAt, StyleFn,
 };
+pub use polar::{arc_to, point_on, wedge_path};
+pub use svg::{scene_to_svg, to_svg, ApproxMetrics};

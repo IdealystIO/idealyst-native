@@ -131,9 +131,22 @@ pub fn marks_into_scene(marks: &[ir::Mark], scene: &mut cv::Scene, dx: f32, dy: 
                 });
             }
             ir::Mark::Stroke { path: p, stroke: s, paint: pt, .. } => {
+                // Shifted for the same reason a fill's gradient is: the
+                // endpoints live in the geometry's space, so leaving them
+                // put would slide the ramp off a translated mark. No mark
+                // emitted today is a gradient stroke, which is exactly why
+                // this would have shipped broken.
+                let pt = match pt {
+                    ir::Paint::Linear { from, to, stops } => ir::Paint::Linear {
+                        from: shift(*from),
+                        to: shift(*to),
+                        stops: stops.clone(),
+                    },
+                    other => other.clone(),
+                };
                 scene.push_op(cv::DrawOp::Stroke {
                     path: path(&shift_path(p)),
-                    paint: paint(pt),
+                    paint: paint(&pt),
                     stroke: stroke(s),
                 });
             }

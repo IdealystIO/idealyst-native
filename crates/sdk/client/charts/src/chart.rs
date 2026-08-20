@@ -35,13 +35,13 @@ use std::rc::Rc;
 use canvas_core::{Canvas, CanvasProps, Scene};
 use charts_core::{
     render_tween, render_with, ChartOutput, ChartSpec, Color as MarkColor, DatumRef, Gutters,
-    HAlign, HitResult, LabelPlacement, LabelRole, Rect as IrRect,
+    HAlign, HitResult, LabelPlacement, LabelRole, Rect as IrRect, VAlign,
 };
 use runtime_core::{
     after_animation_frame, component, memo, on_scope_drop, signal, switch, view, when, AlignItems,
-    Element, FlexDirection, IdealystSchema, IntoElement, LayoutSubscription, Length, Overflow,
-    PointerEvents, Position, Reactive, Ref, StyleRules, StyleSheet, TextAlign, Tokenized,
-    AnchorableHandle, StyleApplication, Transform, ViewHandle,
+    AnchorableHandle, Element, FlexDirection, IdealystSchema, IntoElement, LayoutSubscription,
+    Length, Overflow, PointerEvents, Position, Reactive, Ref, StyleApplication, StyleRules,
+    StyleSheet, TextAlign, Tokenized, Transform, ViewHandle,
 };
 use runtime_core::Color as StyleColor;
 use runtime_core::{Signal, TouchEvent, TouchPhase, TouchResponse};
@@ -86,6 +86,13 @@ pub const DEFAULT_X_AXIS_HEIGHT: f32 = 22.0;
 const X_LABEL_SLOT: f32 = 88.0;
 /// Line box height for a tick label, used to centre y labels on their tick.
 const LABEL_LINE_PX: f32 = 16.0;
+/// Line box height for the larger center readout of a donut or gauge.
+const CENTER_LINE_PX: f32 = 26.0;
+/// Width of the invisible box an in-plot label is aligned inside. The boxes
+/// overlap; they are transparent and pointer-transparent, so that is harmless
+/// — and it is what lets a label be centred on its anchor without this crate
+/// knowing how wide the rendered string is.
+const LABEL_SLOT: f32 = 120.0;
 
 #[runtime_core::props]
 #[derive(IdealystSchema)]
@@ -192,11 +199,11 @@ impl std::fmt::Debug for ChartProps {
     }
 }
 
-fn sheet(rules: StyleRules) -> Rc<StyleSheet> {
+pub(crate) fn sheet(rules: StyleRules) -> Rc<StyleSheet> {
     Rc::new(StyleSheet::r#static(rules))
 }
 
-fn px(v: f32) -> Option<Tokenized<Length>> {
+pub(crate) fn px(v: f32) -> Option<Tokenized<Length>> {
     Some(Tokenized::Literal(Length::Px(v)))
 }
 
@@ -237,6 +244,12 @@ fn root_rules() -> StyleRules {
     }
 }
 
+/// The default label sheet, shared by the cartesian and polar components so
+/// one unstyled chart looks like another.
+pub(crate) fn label_sheet() -> Rc<StyleSheet> {
+    sheet(label_rules())
+}
+
 /// The default tick-label look: small text that inherits its color.
 ///
 /// Colorless on purpose — an SDK that hardcoded a label color would fight
@@ -263,7 +276,7 @@ fn label_rules() -> StyleRules {
 /// `min_width` gives Taffy a floor to lay out against, and `max_width` keeps
 /// a long series name from stretching the bubble across the plot on the DOM
 /// side. Same bubble on every backend, no per-platform branch.
-fn tooltip_rules() -> StyleRules {
+pub(crate) fn tooltip_rules() -> StyleRules {
     StyleRules {
         position: Some(Position::Absolute),
         min_width: px(104.0),
@@ -341,6 +354,85 @@ fn label_element(l: &LabelPlacement, style: Rc<StyleSheet>, y_axis_width: f32) -
         .into_element()
 }
 
+/// The gutter sizes a spec actually needs: `(y width, x height)`.
+///
+/// An axis that draws no labels and no title has nothing to put in a gutter,
+/// so reserving one would make [`ChartSpec::sparkline`] cost exactly what the
+/// furniture it removed cost — a 40px-tall sparkline handed the default 22px
+/// x-gutter has 18px of plot left, and it looks broken rather than small.
+///
+/// Derived from the spec rather than from the props, so an author turning
+/// labels off does not also have to remember to zero the widths. Passing the
+/// widths in keeps them a prop for the case that matters: how much room the
+/// labels that DO exist need depends on the data's magnitude.
+pub fn gutters_for(spec: &ChartSpec, y_width: f32, x_height: f32) -> (f32, f32) {
+    let y = if spec.y.labels || spec.y.title.is_some() { y_width } else { 0.0 };
+    let x = if spec.x.labels || spec.x.title.is_some() { x_height } else { 0.0 };
+    (y, x)
+}
+
+/// One label, absolutely placed at its anchor inside the plot box.
+///
+/// For labels whose anchor is already where they belong: every polar label,
+/// and the cartesian annotation labels. Placement is a direct translation of
+/// the alignment the core asked for, unlike [`label_element`], which has to
+/// dispatch on role because each axis gutter is a different box.
+pub(crate) fn overlay_label(l: &LabelPlacement, style: Rc<StyleSheet>, plot_w: f32) -> Element {
+    let line = if l.role == LabelRole::Title { CENTER_LINE_PX } else { LABEL_LINE_PX };
+    let mut rules = StyleRules {
+        position: Some(Position::Absolute),
+        width: px(LABEL_SLOT),
+        height: px(line),
+        ..Default::default()
+    };
+    match l.h_align {
+        HAlign::Left => {
+            rules.left = px(l.anchor.x);
+            rules.text_align = Some(TextAlign::Left);
+        }
+        HAlign::Center => {
+            rules.left = px(l.anchor.x - LABEL_SLOT / 2.0);
+            rules.text_align = Some(TextAlign::Center);
+        }
+        HAlign::Right => {
+            // Anchored from the container's right edge, since that is what
+            // absolute `right` means — the alternative would need the
+            // rendered text width, which this crate deliberately never has.
+            rules.right = px((plot_w - l.anchor.x).max(0.0));
+            rules.text_align = Some(TextAlign::Right);
+        }
+    }
+    rules.top = px(match l.v_align {
+        VAlign::Top => l.anchor.y,
+        VAlign::Middle => l.anchor.y - line / 2.0,
+        VAlign::Bottom | VAlign::Baseline => l.anchor.y - line,
+    });
+
+    // A slice-tinted label carries its color on the placement; anything
+    // else inherits, so an unstyled chart picks up the surrounding theme
+    // instead of imposing one.
+    let text_style = match (l.role, l.color) {
+        (LabelRole::Title, _) => sheet(StyleRules {
+            font_size: px(20.0),
+            pointer_events: Some(PointerEvents::None),
+            ..Default::default()
+        }),
+        (_, Some(c)) => sheet(StyleRules {
+            font_size: px(11.0),
+            pointer_events: Some(PointerEvents::None),
+            color: Some(Tokenized::Literal(StyleColor(format!(
+                "#{:02x}{:02x}{:02x}",
+                c.r, c.g, c.b
+            )))),
+            ..Default::default()
+        }),
+        _ => style,
+    };
+    view(vec![runtime_core::text(l.text.clone()).with_style(text_style).into_element()])
+        .with_style(sheet(rules))
+        .into_element()
+}
+
 /// The spec the chart currently DISPLAYS.
 ///
 /// Mid-transition that is the interpolated state; at rest it is the settled
@@ -387,7 +479,11 @@ pub fn hover_at(out: &ChartOutput, x: f32, y: f32) -> Option<ChartHover> {
 /// cannot measure text — which is exactly the case the core documents as
 /// "the host lays these out". Here the host is a layout engine, so a flex
 /// row does it properly and the placements go unused.
-fn legend_entry(name: &str, color: MarkColor, label_style: Rc<StyleSheet>) -> Element {
+pub(crate) fn legend_entry(
+    name: &str,
+    color: MarkColor,
+    label_style: Rc<StyleSheet>,
+) -> Element {
     let swatch = view(Vec::new())
         .with_style(sheet(StyleRules {
             width: px(10.0),
@@ -442,7 +538,7 @@ pub fn Chart(props: &ChartProps) -> Element {
     let dim_others = props.dim_others.get();
     let transition_ms = props.transition_ms.get();
     let selected = props.selected.clone();
-    let label_style = props.label_style.clone().unwrap_or_else(|| sheet(label_rules()));
+    let label_style = props.label_style.clone().unwrap_or_else(label_sheet);
 
     // Measured plot size. Starts at zero: nothing draws until the first
     // layout callback arrives, which is one frame after mount. Drawing
@@ -560,6 +656,14 @@ pub fn Chart(props: &ChartProps) -> Element {
         });
     }
 
+    // Reactive because `sparkline()` (or any `labels(false)`) has to give the
+    // space back — see `gutters_for`. Part of every label layer's switch key
+    // below, so a spec that turns its axes off rebuilds the gutters too.
+    let gutters = {
+        let spec = spec.clone();
+        memo(move || gutters_for(&spec.get(), y_axis_width, x_axis_height))
+    };
+
     // The single render. Everything else reads this.
     let output = {
         let spec = spec.clone();
@@ -606,6 +710,17 @@ pub fn Chart(props: &ChartProps) -> Element {
     let sub_holder: Rc<RefCell<Option<LayoutSubscription>>> = Rc::new(RefCell::new(None));
     let holder = sub_holder.clone();
     let setup = after_animation_frame(move || {
+        // The last size we WROTE, in a plain cell rather than read back from
+        // the signals.
+        //
+        // `set` only STAGES; the driver's flush is what commits. The seeding
+        // write below and the first `on_layout` callback land in the same
+        // turn, so reading `plot_w.get()` in the guard returns the committed
+        // 0.0 rather than the width just staged — the guard then always
+        // fires and costs an extra render on mount. (The framework warns
+        // about exactly this read in debug builds.) A local is always
+        // current and costs no signal read per layout pass.
+        let seen = Rc::new(std::cell::Cell::new((0.0f32, 0.0f32)));
         let s = plot_ref.with(|h| {
             // Seed from the view's CURRENT frame before subscribing.
             //
@@ -619,22 +734,33 @@ pub fn Chart(props: &ChartProps) -> Element {
             // first size independent of that difference, and the
             // subscription then handles every later resize.
             let r = h.rect();
+            let mut seed = (0.0f32, 0.0f32);
             if r.width > 0.5 {
                 plot_w.set(r.width);
+                seed.0 = r.width;
             }
             if r.height > 0.5 {
                 plot_h.set(r.height);
+                seed.1 = r.height;
             }
+            seen.set(seed);
+            let seen = seen.clone();
             h.on_layout(move |w, hgt| {
-                // Guard the write: layout fires on every pass, and an
-                // unconditional set would re-run the memo, the painter and
-                // the label switch on every unrelated relayout.
-                if (plot_w.get() - w).abs() > 0.5 {
+                // Guarded: layout fires on every pass, and an unconditional
+                // set would re-run the memo, the painter and the label
+                // switches on every unrelated relayout. `seen` only advances
+                // when we actually write, so a run of sub-threshold changes
+                // still accumulates into one that crosses it.
+                let (mut pw, mut ph) = seen.get();
+                if (pw - w).abs() > 0.5 {
                     plot_w.set(w);
+                    pw = w;
                 }
-                if (plot_h.get() - hgt).abs() > 0.5 {
+                if (ph - hgt).abs() > 0.5 {
                     plot_h.set(hgt);
+                    ph = hgt;
                 }
+                seen.set((pw, ph));
             })
         });
         if let Some(s) = s {
@@ -778,8 +904,44 @@ pub fn Chart(props: &ChartProps) -> Element {
         },
     );
 
+    // --- in-plot labels ----------------------------------------------------
+    // Annotation text is anchored in PLOT-local space — it belongs beside its
+    // own rule, not in a gutter — so it gets its own absolutely-positioned
+    // layer rather than being routed by role like the axis labels. Without
+    // this the core emits the placements and the component silently drops
+    // them: the rule draws and its label does not.
+    let plot_labels = {
+        let label_style = label_style.clone();
+        switch(
+            move || {
+                output
+                    .get()
+                    .scene
+                    .labels
+                    .iter()
+                    .filter(|l| matches!(l.role, LabelRole::Annotation | LabelRole::DataLabel))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            },
+            move |ls: &Vec<LabelPlacement>| {
+                let w = plot_w.get();
+                view(ls.iter().map(|l| overlay_label(l, label_style.clone(), w)).collect())
+                    .with_style(sheet(StyleRules {
+                        position: Some(Position::Absolute),
+                        left: px(0.0),
+                        top: px(0.0),
+                        right: px(0.0),
+                        bottom: px(0.0),
+                        pointer_events: Some(PointerEvents::None),
+                        ..Default::default()
+                    }))
+                    .into_element()
+            },
+        )
+    };
+
     // --- plot area ---------------------------------------------------------
-    let plot = view(vec![canvas, tooltip])
+    let plot = view(vec![canvas, plot_labels, tooltip])
         .bind(plot_ref)
         .on_touch(move |ev| touch(ev))
         .on_hover(move |entering| {
@@ -813,19 +975,22 @@ pub fn Chart(props: &ChartProps) -> Element {
         let label_style = label_style.clone();
         switch(
             move || {
-                output
-                    .get()
-                    .scene
-                    .labels
-                    .iter()
-                    .filter(|l| matches!(l.role, LabelRole::AxisY | LabelRole::AxisTitleY))
-                    .cloned()
-                    .collect::<Vec<_>>()
+                (
+                    gutters.get().0,
+                    output
+                        .get()
+                        .scene
+                        .labels
+                        .iter()
+                        .filter(|l| matches!(l.role, LabelRole::AxisY | LabelRole::AxisTitleY))
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )
             },
-            move |labels: &Vec<LabelPlacement>| {
-                view(labels.iter().map(|l| label_element(l, label_style.clone(), y_axis_width)).collect())
+            move |(w, labels): &(f32, Vec<LabelPlacement>)| {
+                view(labels.iter().map(|l| label_element(l, label_style.clone(), *w)).collect())
                     .with_style(sheet(StyleRules {
-                        width: px(y_axis_width),
+                        width: px(*w),
                         // Fixed gutter: never let the growing plot squeeze it.
                         flex_shrink: Some(Tokenized::Literal(0.0)),
                         position: Some(Position::Relative),
@@ -840,19 +1005,24 @@ pub fn Chart(props: &ChartProps) -> Element {
         let label_style = label_style.clone();
         switch(
             move || {
-                output
-                    .get()
-                    .scene
-                    .labels
-                    .iter()
-                    .filter(|l| matches!(l.role, LabelRole::AxisX | LabelRole::AxisTitleX))
-                    .cloned()
-                    .collect::<Vec<_>>()
+                (
+                    gutters.get(),
+                    output
+                        .get()
+                        .scene
+                        .labels
+                        .iter()
+                        .filter(|l| matches!(l.role, LabelRole::AxisX | LabelRole::AxisTitleX))
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )
             },
-            move |labels: &Vec<LabelPlacement>| {
-                view(labels.iter().map(|l| label_element(l, label_style.clone(), y_axis_width)).collect())
+            // The x labels are offset by the Y gutter to get back into
+            // plot-local x, so this layer depends on BOTH sizes.
+            move |((y_w, h), labels): &((f32, f32), Vec<LabelPlacement>)| {
+                view(labels.iter().map(|l| label_element(l, label_style.clone(), *y_w)).collect())
                     .with_style(sheet(StyleRules {
-                        height: px(x_axis_height),
+                        height: px(*h),
                         flex_shrink: Some(Tokenized::Literal(0.0)),
                         position: Some(Position::Relative),
                         ..Default::default()
@@ -871,15 +1041,27 @@ pub fn Chart(props: &ChartProps) -> Element {
         switch(
             move || {
                 let s = spec_for_legend.get();
-                if !s.legend {
-                    return Vec::new();
-                }
-                s.series
-                    .iter()
-                    .map(|se| (se.name.clone(), se.color, se.visible))
-                    .collect::<Vec<(String, MarkColor, bool)>>()
+                let rows = if s.legend {
+                    s.series
+                        .iter()
+                        // A heatmap row has a ramp, not a color, so a
+                        // one-swatch entry for it would misstate how to read
+                        // the chart. Matches what the core omits.
+                        .filter(|se| !matches!(se.kind, charts_core::SeriesKind::Heatmap(_)))
+                        .map(|se| (se.name.clone(), se.color, se.visible))
+                        .collect::<Vec<(String, MarkColor, bool)>>()
+                } else {
+                    Vec::new()
+                };
+                (gutters.get().0, rows)
             },
-            move |entries: &Vec<(String, MarkColor, bool)>| {
+            move |(y_w, entries): &(f32, Vec<(String, MarkColor, bool)>)| {
+                // No entries means no row at all — an empty box still costs
+                // its padding, which is exactly the space a sparkline is
+                // trying to reclaim.
+                if entries.iter().all(|(_, _, visible)| !visible) {
+                    return view(Vec::new()).into_element();
+                }
                 view(entries
                     .iter()
                     .filter(|(_, _, visible)| *visible)
@@ -891,7 +1073,7 @@ pub fn Chart(props: &ChartProps) -> Element {
                         column_gap: px(14.0),
                         flex_shrink: Some(Tokenized::Literal(0.0)),
                         padding_bottom: px(6.0),
-                        padding_left: px(y_axis_width),
+                        padding_left: px(*y_w),
                         ..Default::default()
                     }))
                     .into_element()

@@ -67,7 +67,13 @@ pub fn lerp_data(from: &ChartSpec, to: &ChartSpec, t: f32) -> Option<ChartSpec> 
         let src = &from.series[i].data;
         for (j, d) in s.data.iter_mut().enumerate() {
             let a = src[j];
-            *d = Datum { x: lerp_f64(a.x, d.x, e), y: lerp_f64(a.y, d.y, e) };
+            *d = Datum {
+                x: lerp_f64(a.x, d.x, e),
+                y: lerp_f64(a.y, d.y, e),
+                // Heatmap intensity animates like any other value; for every
+                // other kind this channel is zero at both ends.
+                w: lerp_f64(a.w, d.w, e),
+            };
         }
     }
     Some(out)

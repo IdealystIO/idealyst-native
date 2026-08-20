@@ -449,6 +449,9 @@ pub enum LabelRole {
     Title,
     Legend,
     DataLabel,
+    /// Text belonging to a reference line or band
+    /// (see [`Annotation`](crate::spec::Annotation)).
+    Annotation,
 }
 
 /// A piece of text the chart wants rendered, and where.

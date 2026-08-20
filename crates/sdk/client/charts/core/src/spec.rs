@@ -16,10 +16,26 @@ use crate::scene::Color;
 pub struct Datum {
     pub x: f64,
     pub y: f64,
+    /// A third channel, for the series kinds that need one.
+    ///
+    /// [`SeriesKind::Heatmap`] is the reason it exists: a cell is positioned
+    /// by `(x, y)` — column and row — and its *magnitude* is a third
+    /// quantity with nowhere else to live. Every other kind ignores it.
+    ///
+    /// A separate `HeatmapSpec` was the alternative, and it is worse: a
+    /// heatmap is cartesian, so it would have had to duplicate axis
+    /// resolution, tick selection, gutter measurement and label emission to
+    /// get back what one extra `f64` buys outright.
+    pub w: f64,
 }
 
 pub const fn datum(x: f64, y: f64) -> Datum {
-    Datum { x, y }
+    Datum { x, y, w: 0.0 }
+}
+
+/// A heatmap cell: `value` at column `x`, row `y`.
+pub const fn cell(x: f64, y: f64, value: f64) -> Datum {
+    Datum { x, y, w: value }
 }
 
 /// Marker shape for a data point.
@@ -124,6 +140,51 @@ impl PointStyle {
     }
 }
 
+/// Where a step-interpolated line changes value between two samples.
+///
+/// Naming follows d3's `curveStep*` family, because that is the vocabulary
+/// anyone reaching for a stepped line already has.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum StepAt {
+    /// Hold each sample's value until the NEXT sample's x, then jump.
+    /// Horizontal first, then vertical. This is the one a state-over-time
+    /// series wants: the value was `y` from this timestamp until the next
+    /// reading, and the chart should not imply it drifted in between.
+    #[default]
+    After,
+    /// Jump to the next sample's value at THIS sample's x, then run flat to
+    /// it. Vertical first, then horizontal.
+    Before,
+    /// Change halfway between the two samples — the neutral reading when the
+    /// data is a periodic measurement rather than a state that persists.
+    Mid,
+}
+
+/// How consecutive samples are joined into a line.
+///
+/// A `bool smooth` cannot express stepping, and stepping is not a cosmetic
+/// variant: straight segments between two readings of a discrete state
+/// assert a transition that never happened. Making this an enum also means
+/// a future curve family is a variant rather than a second boolean that has
+/// to be reconciled with the first.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Interpolation {
+    /// Straight segments.
+    #[default]
+    Linear,
+    /// Fritsch-Carlson monotone cubic — smooth, and guaranteed not to
+    /// overshoot a local extremum.
+    Monotone,
+    /// Piecewise constant.
+    Step(StepAt),
+}
+
+impl Interpolation {
+    pub fn is_smooth(&self) -> bool {
+        matches!(self, Interpolation::Monotone)
+    }
+}
+
 /// How a line is stroked.
 #[derive(Clone, PartialEq, Debug)]
 pub struct LineStyle {
@@ -131,8 +192,8 @@ pub struct LineStyle {
     /// Stroke width while any point in the series is emphasised. Equal to
     /// `width` means "do not thicken".
     pub hover_width: f32,
-    /// Monotone-cubic interpolation instead of straight segments.
-    pub smooth: bool,
+    /// How consecutive samples are joined. See [`Interpolation`].
+    pub interpolation: Interpolation,
     /// Dash pattern; empty is solid. Used for projections and targets.
     pub dash: Vec<f32>,
     /// Draw a marker at each datum.
@@ -144,7 +205,7 @@ impl Default for LineStyle {
         Self {
             width: 2.0,
             hover_width: 3.0,
-            smooth: false,
+            interpolation: Interpolation::Linear,
             dash: Vec::new(),
             points: None,
         }
@@ -156,8 +217,21 @@ impl LineStyle {
         Self { width, hover_width: width * 1.5, ..Default::default() }
     }
 
+    /// Monotone-cubic interpolation. Shorthand for the overwhelmingly
+    /// common case; [`LineStyle::interpolate`] takes the general form.
     pub fn smooth(mut self) -> Self {
-        self.smooth = true;
+        self.interpolation = Interpolation::Monotone;
+        self
+    }
+
+    /// Step interpolation, changing value per [`StepAt`].
+    pub fn stepped(mut self, at: StepAt) -> Self {
+        self.interpolation = Interpolation::Step(at);
+        self
+    }
+
+    pub fn interpolate(mut self, i: Interpolation) -> Self {
+        self.interpolation = i;
         self
     }
 
@@ -265,6 +339,158 @@ impl BarStyle {
     }
 }
 
+/// A value-to-color ramp.
+///
+/// Interpolation is straight sRGB, which is not perceptually uniform — but
+/// it is what [`Paint::Linear`](crate::scene::Paint) already does in every
+/// renderer, so a ramp and a gradient built from the same stops agree. A
+/// ramp that quietly used a different color space would make a heatmap and
+/// the legend gradient beside it disagree, which is worse than either being
+/// imperfect.
+#[derive(Clone, PartialEq, Debug)]
+pub struct ColorRamp {
+    /// Ordered by `offset`, which runs 0..=1.
+    pub stops: Vec<crate::scene::GradientStop>,
+}
+
+impl ColorRamp {
+    pub fn new(stops: Vec<crate::scene::GradientStop>) -> Self {
+        let mut stops = stops;
+        stops.sort_by(|a, b| a.offset.total_cmp(&b.offset));
+        Self { stops }
+    }
+
+    /// A two-stop ramp.
+    pub fn two(low: Color, high: Color) -> Self {
+        use crate::scene::GradientStop;
+        Self {
+            stops: vec![
+                GradientStop { offset: 0.0, color: low },
+                GradientStop { offset: 1.0, color: high },
+            ],
+        }
+    }
+
+    /// A three-stop ramp — the shape a diverging scale needs, with the
+    /// neutral color pinned at the midpoint.
+    pub fn three(low: Color, mid: Color, high: Color) -> Self {
+        use crate::scene::GradientStop;
+        Self {
+            stops: vec![
+                GradientStop { offset: 0.0, color: low },
+                GradientStop { offset: 0.5, color: mid },
+                GradientStop { offset: 1.0, color: high },
+            ],
+        }
+    }
+
+    /// The color at `t`, clamped to the ends.
+    pub fn sample(&self, t: f32) -> Color {
+        let t = t.clamp(0.0, 1.0);
+        match self.stops.len() {
+            0 => Color::TRANSPARENT,
+            1 => self.stops[0].color,
+            _ => {
+                let last = self.stops.len() - 1;
+                if t <= self.stops[0].offset {
+                    return self.stops[0].color;
+                }
+                if t >= self.stops[last].offset {
+                    return self.stops[last].color;
+                }
+                for w in self.stops.windows(2) {
+                    let (a, b) = (w[0], w[1]);
+                    if t >= a.offset && t <= b.offset {
+                        let span = b.offset - a.offset;
+                        let f = if span.abs() < f32::EPSILON {
+                            0.0
+                        } else {
+                            (t - a.offset) / span
+                        };
+                        return mix(a.color, b.color, f);
+                    }
+                }
+                self.stops[last].color
+            }
+        }
+    }
+}
+
+impl Default for ColorRamp {
+    fn default() -> Self {
+        // Transparent-to-opaque in the series color is the ramp that needs
+        // no palette decision from this crate: the host already chose a
+        // color, and a heatmap of one hue at varying strength is a correct,
+        // theme-neutral default.
+        ColorRamp::two(Color::rgba(0, 0, 0, 0), Color::rgba(0, 0, 0, 255))
+    }
+}
+
+fn mix(a: Color, b: Color, t: f32) -> Color {
+    let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
+    Color { r: f(a.r, b.r), g: f(a.g, b.g), b: f(a.b, b.b), a: f(a.a, b.a) }
+}
+
+/// How heatmap cells are drawn.
+#[derive(Clone, PartialEq, Debug)]
+pub struct HeatmapStyle {
+    /// Value range the ramp spans. `None` fits this series' own values.
+    ///
+    /// Worth setting explicitly whenever two heatmaps are shown together:
+    /// auto-fitting each one independently makes the same color mean a
+    /// different number in each, which is the one thing a heatmap must not
+    /// do.
+    pub domain: Option<(f64, f64)>,
+    pub ramp: ColorRamp,
+    /// Corner radius on each cell.
+    pub radius: f32,
+    /// Pixels of space between adjacent cells. A small gap is what makes the
+    /// grid read as discrete cells rather than a continuous field.
+    pub gap: f32,
+    /// Outline drawn around an emphasised cell. Heatmap cells fill their
+    /// slot completely, so there is no room to grow one — an outline is the
+    /// emphasis that does not move anything.
+    pub emphasis_ring: Option<Ring>,
+}
+
+impl Default for HeatmapStyle {
+    fn default() -> Self {
+        Self {
+            domain: None,
+            ramp: ColorRamp::default(),
+            radius: 2.0,
+            gap: 2.0,
+            emphasis_ring: None,
+        }
+    }
+}
+
+impl HeatmapStyle {
+    pub fn new(ramp: ColorRamp) -> Self {
+        Self { ramp, ..Default::default() }
+    }
+
+    pub fn domain(mut self, min: f64, max: f64) -> Self {
+        self.domain = Some((min, max));
+        self
+    }
+
+    pub fn radius(mut self, r: f32) -> Self {
+        self.radius = r;
+        self
+    }
+
+    pub fn gap(mut self, g: f32) -> Self {
+        self.gap = g;
+        self
+    }
+
+    pub fn emphasis_ring(mut self, color: Color, width: f32) -> Self {
+        self.emphasis_ring = Some(Ring { color, width });
+        self
+    }
+}
+
 /// How a series is drawn.
 ///
 /// Each variant carries a style struct rather than loose fields, so a new
@@ -276,6 +502,16 @@ pub enum SeriesKind {
     Area(AreaStyle),
     Bar(BarStyle),
     Scatter(PointStyle),
+    /// A grid of colored cells. Each series is one ROW: the series name is
+    /// the row label, `Datum::x` is the column, `Datum::y` is the row index,
+    /// and [`Datum::w`] carries the value the ramp is sampled with.
+    ///
+    /// Row 0 is at the BOTTOM, because the y axis points up here exactly as
+    /// it does for every other kind. A heatmap read top-down is one `.rev()`
+    /// on the category list — deliberately the author's call, since flipping
+    /// the axis for one series kind would make a heatmap and a line on the
+    /// same axes disagree about which way is up.
+    Heatmap(HeatmapStyle),
 }
 
 impl SeriesKind {
@@ -285,6 +521,11 @@ impl SeriesKind {
 
     pub fn smooth_line() -> Self {
         SeriesKind::Line(LineStyle::default().smooth())
+    }
+
+    /// A stepped line — a state that holds until the next reading.
+    pub fn step_line(at: StepAt) -> Self {
+        SeriesKind::Line(LineStyle::default().stepped(at))
     }
 
     pub fn area() -> Self {
@@ -297,6 +538,14 @@ impl SeriesKind {
 
     pub fn scatter() -> Self {
         SeriesKind::Scatter(PointStyle::default())
+    }
+
+    pub fn heatmap(ramp: ColorRamp) -> Self {
+        SeriesKind::Heatmap(HeatmapStyle::new(ramp))
+    }
+
+    pub(crate) fn is_heatmap(&self) -> bool {
+        matches!(self, SeriesKind::Heatmap(_))
     }
 
     pub(crate) fn is_bar(&self) -> bool {
@@ -390,6 +639,120 @@ impl Highlight {
             Some(cx) => data.iter().any(|d| d.x == cx),
             None => false,
         }
+    }
+}
+
+/// Where an annotation sits, in DATA coordinates.
+///
+/// Data coordinates rather than pixels on purpose: a threshold at 90% has to
+/// stay at 90% through a resize, a pan, a zoom and a transition, and the only
+/// way to guarantee that is to put it through the same scale the series went
+/// through. A pixel-positioned overlay drifts off its value the moment the
+/// domain moves, which is precisely when a threshold matters most.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum AnnotationAt {
+    /// A horizontal rule at a constant y — a target, a limit, a mean.
+    Y(f64),
+    /// A vertical rule at a constant x — an event, a release, "today".
+    X(f64),
+    /// A shaded horizontal band — a tolerance range, a normal band.
+    YBand { from: f64, to: f64 },
+    /// A shaded vertical band — a period, an outage window, a weekend.
+    XBand { from: f64, to: f64 },
+}
+
+impl AnnotationAt {
+    /// Whether this form is a rule (stroked) rather than a band (filled).
+    pub fn is_line(&self) -> bool {
+        matches!(self, AnnotationAt::Y(_) | AnnotationAt::X(_))
+    }
+}
+
+/// A reference marker drawn in the plot but not derived from a series.
+///
+/// Deliberately NOT a `SeriesKind`. An annotation has no data points, takes
+/// no part in domain fitting or the hit index, and must not appear in the
+/// legend — modelling it as a degenerate series would mean special-casing it
+/// out of all four, in four different places.
+///
+/// It does not extend the domain either: a target line at 500 on a chart
+/// whose data tops out at 90 would flatten the series into the floor. The
+/// annotation is clipped to the visible window instead, so the axis keeps
+/// serving the data and the marker shows up when it is actually in range.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Annotation {
+    pub at: AnnotationAt,
+    pub color: Color,
+    /// Stroke width for the rule forms. Ignored by bands.
+    pub width: f32,
+    /// Dash pattern for the rule forms; empty is solid. A dashed rule is the
+    /// convention for "this is a reference, not a measurement".
+    pub dash: Vec<f32>,
+    /// Text drawn at the marker, emitted as a [`LabelRole::Annotation`]
+    /// placement. `None` draws the geometry alone.
+    pub label: Option<String>,
+    /// Paint above the series rather than behind them.
+    ///
+    /// The constructors set the reading that is right almost always: a rule
+    /// goes on top (a limit line hidden behind the bars it limits is useless)
+    /// and a band goes behind (a wash over the data dims it). Flip it when
+    /// the band IS the message — a selected range, say.
+    pub above: bool,
+}
+
+impl Annotation {
+    /// A horizontal rule at `y`.
+    pub fn y_line(y: f64, color: Color) -> Self {
+        Self { at: AnnotationAt::Y(y), color, width: 1.5, dash: Vec::new(), label: None, above: true }
+    }
+
+    /// A vertical rule at `x`.
+    pub fn x_line(x: f64, color: Color) -> Self {
+        Self { at: AnnotationAt::X(x), color, width: 1.5, dash: Vec::new(), label: None, above: true }
+    }
+
+    /// A shaded horizontal band between two y values.
+    pub fn y_band(from: f64, to: f64, color: Color) -> Self {
+        Self {
+            at: AnnotationAt::YBand { from, to },
+            color,
+            width: 0.0,
+            dash: Vec::new(),
+            label: None,
+            above: false,
+        }
+    }
+
+    /// A shaded vertical band between two x values.
+    pub fn x_band(from: f64, to: f64, color: Color) -> Self {
+        Self {
+            at: AnnotationAt::XBand { from, to },
+            color,
+            width: 0.0,
+            dash: Vec::new(),
+            label: None,
+            above: false,
+        }
+    }
+
+    pub fn dashed(mut self, pattern: impl Into<Vec<f32>>) -> Self {
+        self.dash = pattern.into();
+        self
+    }
+
+    pub fn width(mut self, w: f32) -> Self {
+        self.width = w;
+        self
+    }
+
+    pub fn label(mut self, text: impl Into<String>) -> Self {
+        self.label = Some(text.into());
+        self
+    }
+
+    pub fn above(mut self, on: bool) -> Self {
+        self.above = on;
+        self
     }
 }
 
@@ -612,6 +975,15 @@ pub struct Axis {
     pub title: Option<String>,
     /// Draw gridlines at this axis's ticks.
     pub grid: bool,
+    /// Emit tick-label placements for this axis.
+    ///
+    /// Separate from `grid` because the two are independently useful: a
+    /// sparkline wants neither, a dense scatter often wants gridlines
+    /// without the clutter of every label, and a chart whose values are
+    /// obvious from a legend wants labels without a grid. It is also what
+    /// lets a host collapse the axis gutter entirely — no labels means
+    /// nothing to reserve space for.
+    pub labels: bool,
     /// Desired tick count. Advisory — the underlying tick selection rounds
     /// to human-friendly intervals and may return fewer.
     pub tick_count: usize,
@@ -627,6 +999,7 @@ impl Default for Axis {
             domain: Domain::Auto,
             title: None,
             grid: true,
+            labels: true,
             tick_count: 5,
             include_zero: false,
         }
@@ -664,6 +1037,20 @@ impl Axis {
         self
     }
 
+    pub fn labels(mut self, on: bool) -> Self {
+        self.labels = on;
+        self
+    }
+
+    /// No gridlines, no tick labels — the axis still scales, it just shows
+    /// nothing. What a sparkline needs from an axis.
+    pub fn bare(mut self) -> Self {
+        self.grid = false;
+        self.labels = false;
+        self.title = None;
+        self
+    }
+
     pub fn domain(mut self, d: Domain) -> Self {
         self.domain = d;
         self
@@ -686,6 +1073,8 @@ pub struct ChartSpec {
     pub bar_group_padding: f32,
     /// Emit legend label placements.
     pub legend: bool,
+    /// Reference lines and bands. See [`Annotation`].
+    pub annotations: Vec<Annotation>,
     /// Which points are emphasised. See [`Highlight`].
     pub highlight: Highlight,
     /// Translucent band painted behind the highlighted column, spanning the
@@ -713,6 +1102,7 @@ impl Default for ChartSpec {
             bar_layout: BarLayout::default(),
             bar_group_padding: 0.2,
             legend: false,
+            annotations: Vec::new(),
             highlight: Highlight::default(),
             highlight_band: None,
             grid_color: Color::rgba(128, 128, 128, 40),
@@ -743,6 +1133,27 @@ impl ChartSpec {
 
     pub fn legend(mut self, on: bool) -> Self {
         self.legend = on;
+        self
+    }
+
+    /// Add a reference line or band.
+    pub fn annotate(mut self, a: Annotation) -> Self {
+        self.annotations.push(a);
+        self
+    }
+
+    /// Strip every piece of furniture: no grid, no tick labels, no axis
+    /// titles, no legend.
+    ///
+    /// What is left is the data and nothing else, which is the whole point of
+    /// a sparkline — it lives inline in a table cell or beside a KPI, where
+    /// the surrounding text already says what the axes would have. Hosts read
+    /// [`Axis::labels`] to collapse their gutters, so this also gives back the
+    /// space the axes were holding.
+    pub fn sparkline(mut self) -> Self {
+        self.x = self.x.bare();
+        self.y = self.y.bare();
+        self.legend = false;
         self
     }
 

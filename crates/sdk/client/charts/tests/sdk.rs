@@ -256,8 +256,9 @@ fn builds_the_gutter_plus_plot_tree() {
         assert!(is_reactive_hole(&row[0]), "y-axis labels rebuild reactively");
 
         let plot = children_of(&row[1]);
-        assert_eq!(plot.len(), 2, "canvas + tooltip layer");
-        assert!(is_reactive_hole(&plot[1]), "the tooltip is a reactive hole");
+        assert_eq!(plot.len(), 3, "canvas + in-plot labels + tooltip layer");
+        assert!(is_reactive_hole(&plot[1]), "annotation labels rebuild reactively");
+        assert!(is_reactive_hole(&plot[2]), "the tooltip is a reactive hole");
     });
 }
 
@@ -510,4 +511,208 @@ fn visual_state_falls_back_to_the_target_on_a_shape_change() {
     let got = visual_state(Some(&a), Some(&b), 0.5).expect("a state");
     assert_eq!(got.series[0].data.len(), 1);
     assert_eq!(got.series[0].data[0].y, 9.0);
+}
+
+// ===========================================================================
+// Polar components
+// ===========================================================================
+
+fn pie_spec() -> PieSpec {
+    PieSpec::donut(
+        vec![
+            Slice::new("direct", 40.0, BLUE),
+            Slice::new("search", 35.0, PINK),
+            Slice::new("social", 25.0, Color::rgb(0x3d, 0xd5, 0x98)),
+        ],
+        0.6,
+    )
+}
+
+fn with_pie<R>(props: PieChartProps, f: impl FnOnce(&Element) -> R) -> R {
+    let world = World::new();
+    let el = world.enter(|| runtime_scene::component_scope(|| PieChart(&props)));
+    world.enter(|| f(&el))
+}
+
+fn with_radial<R>(props: RadialChartProps, f: impl FnOnce(&Element) -> R) -> R {
+    let world = World::new();
+    let el = world.enter(|| runtime_scene::component_scope(|| RadialChart(&props)));
+    world.enter(|| f(&el))
+}
+
+/// A polar chart needs no gutters — its labels sit at their anchors inside
+/// the plot — so the tree is one level shallower than the cartesian one.
+/// Pinning it guards against a refactor quietly reintroducing gutter boxes
+/// that would then take space no polar label uses.
+#[test]
+fn a_pie_builds_a_legend_plus_plot_tree() {
+    with_pie(PieChartProps { spec: pie_spec().into(), ..Default::default() }, |el| {
+        let root = children_of(el);
+        assert_eq!(root.len(), 2, "legend + plot");
+        assert!(is_reactive_hole(&root[0]), "the legend rebuilds reactively");
+
+        let plot = children_of(&root[1]);
+        assert_eq!(plot.len(), 3, "canvas + label layer + tooltip");
+        assert!(is_reactive_hole(&plot[1]), "labels rebuild reactively");
+        assert!(is_reactive_hole(&plot[2]), "the tooltip is a reactive hole");
+    });
+}
+
+#[test]
+fn a_radial_chart_builds_the_same_shape() {
+    let spec = RadialSpec::gauge("cpu", 62.0, 100.0, BLUE);
+    with_radial(RadialChartProps { spec: spec.into(), ..Default::default() }, |el| {
+        assert_eq!(children_of(el).len(), 2);
+    });
+}
+
+#[test]
+fn a_polar_chart_with_no_data_still_builds() {
+    with_pie(PieChartProps::default(), |el| {
+        assert_eq!(children_of(el).len(), 2);
+    });
+}
+
+#[test]
+fn wedge_marks_reach_the_canvas_as_even_odd_fills() {
+    let out = render_pie(&pie_spec(), IrRect::new(0.0, 0.0, 300.0, 300.0));
+    let mut s = Scene::new();
+    charts::marks_into_scene(&out.scene.marks, &mut s, 0.0, 0.0);
+    let fills: Vec<&DrawOp> =
+        s.ops().iter().filter(|o| matches!(o, DrawOp::Fill { .. })).collect();
+    assert_eq!(fills.len(), 3, "one fill per slice");
+    // Even-odd is what punches the donut hole; NonZero would fill it in.
+    for f in fills {
+        match f {
+            DrawOp::Fill { fill_rule, .. } => {
+                assert_eq!(*fill_rule, canvas_core::FillRule::EvenOdd)
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// The offset exists so a host can place several charts on one canvas; a
+/// wedge's cubics have to move with everything else.
+#[test]
+fn a_translated_wedge_moves_every_control_point() {
+    let out = render_pie(&pie_spec(), IrRect::new(0.0, 0.0, 300.0, 300.0));
+    let mut a = Scene::new();
+    let mut b = Scene::new();
+    charts::marks_into_scene(&out.scene.marks, &mut a, 0.0, 0.0);
+    charts::marks_into_scene(&out.scene.marks, &mut b, 40.0, 0.0);
+    let xs = |s: &Scene| -> Vec<f32> {
+        s.ops()
+            .iter()
+            .filter_map(|o| match o {
+                DrawOp::Fill { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .flat_map(|p| {
+                p.segs
+                    .iter()
+                    .flat_map(|seg| match seg {
+                        canvas_core::PathSeg::MoveTo { x, .. }
+                        | canvas_core::PathSeg::LineTo { x, .. } => vec![*x],
+                        canvas_core::PathSeg::QuadTo { cx, x, .. } => vec![*cx, *x],
+                        canvas_core::PathSeg::CubicTo { c1x, c2x, x, .. } => {
+                            vec![*c1x, *c2x, *x]
+                        }
+                        canvas_core::PathSeg::Close => vec![],
+                    })
+                    .collect::<Vec<f32>>()
+            })
+            .collect()
+    };
+    let (left, right) = (xs(&a), xs(&b));
+    assert_eq!(left.len(), right.len());
+    assert!(
+        left.iter().zip(&right).all(|(l, r)| (r - l - 40.0).abs() < 0.01),
+        "every control point shifted by exactly the offset"
+    );
+}
+
+#[test]
+fn polar_hover_resolves_the_slice_under_the_pointer() {
+    use charts::__test_support::polar_hover_at;
+    let out = render_pie(&pie_spec(), IrRect::new(0.0, 0.0, 300.0, 300.0));
+    let labels: Vec<String> = pie_spec().slices.iter().map(|s| s.label.clone()).collect();
+
+    // 45° clockwise from twelve, inside the ring: the first slice spans
+    // 0..144°, so this is `direct`.
+    let p = charts_core::polar::point_on(out.center, out.radius * 0.8, 45f32.to_radians());
+    let hover = polar_hover_at(&out, &labels, p.x, p.y).expect("a slice is under the pointer");
+    assert_eq!(hover.index, 0);
+    assert_eq!(hover.label, "direct");
+    assert_eq!(hover.value, 40.0);
+}
+
+/// The hole is genuinely nothing, not a near miss — so the tooltip has to
+/// disappear there rather than latch onto whichever slice is closest.
+#[test]
+fn hovering_the_donut_hole_resolves_to_nothing() {
+    use charts::__test_support::polar_hover_at;
+    let out = render_pie(&pie_spec(), IrRect::new(0.0, 0.0, 300.0, 300.0));
+    let labels: Vec<String> = pie_spec().slices.iter().map(|s| s.label.clone()).collect();
+    assert!(polar_hover_at(&out, &labels, out.center.x, out.center.y).is_none());
+}
+
+// ===========================================================================
+// Gutter collapse
+// ===========================================================================
+
+/// A 40px sparkline handed the default 22px x-gutter and a 6px legend row has
+/// 12px of plot left, and it renders as a broken-looking fragment rather than
+/// a small chart. `sparkline()` promises the space back; this is the code
+/// that actually returns it.
+#[test]
+fn regression_a_sparkline_reserves_no_gutter_space() {
+    use charts::__test_support::gutters_for;
+    let spec = line_spec();
+    assert_eq!(
+        gutters_for(&spec, 44.0, 22.0),
+        (44.0, 22.0),
+        "an ordinary chart keeps its gutters"
+    );
+    assert_eq!(
+        gutters_for(&spec.clone().sparkline(), 44.0, 22.0),
+        (0.0, 0.0),
+        "a sparkline gives both back"
+    );
+}
+
+#[test]
+fn an_axis_title_keeps_its_gutter_even_with_labels_off() {
+    use charts::__test_support::gutters_for;
+    // The title still has to go somewhere, so the gutter cannot collapse just
+    // because the tick labels are gone.
+    let spec = line_spec().y(Axis::linear().labels(false).title("USD"));
+    assert_eq!(gutters_for(&spec, 44.0, 22.0).0, 44.0);
+}
+
+#[test]
+fn the_two_gutters_collapse_independently() {
+    use charts::__test_support::gutters_for;
+    let spec = line_spec().y(Axis::linear().labels(false));
+    assert_eq!(gutters_for(&spec, 44.0, 22.0), (0.0, 22.0));
+}
+
+/// The core emits annotation text as `LabelRole::Annotation` placements, and
+/// the component routed labels only into the two axis gutters — so a
+/// threshold line drew and its label silently did not.
+#[test]
+fn regression_annotation_labels_are_materialized() {
+    let spec = line_spec().annotate(Annotation::y_line(5.0, PINK).label("SLO"));
+    let out = render(&spec, IrRect::new(0.0, 0.0, 300.0, 200.0));
+    use charts_core::LabelRole;
+    let roles: Vec<LabelRole> = out.scene.labels.iter().map(|l| l.role).collect();
+    assert!(roles.contains(&LabelRole::Annotation), "the core emits it");
+
+    // The plot box carries a third child — the in-plot label layer — which is
+    // where a plot-local anchor belongs. Routing it into a gutter would put
+    // it in the wrong coordinate space entirely.
+    with_chart(ChartProps { spec: spec.into(), ..Default::default() }, |el| {
+        let row = children_of(&children_of(el)[1]);
+        assert_eq!(children_of(&row[1]).len(), 3);
+    });
 }

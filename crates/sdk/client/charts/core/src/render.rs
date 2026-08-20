@@ -12,8 +12,9 @@ use crate::scene::{
     LineCap, LineJoin, Mark, Paint, Path, Point, PointInstance, Rect, Stroke, VAlign,
 };
 use crate::spec::{
-    AreaFill, BarLayout, Domain, BarStyle, ChartSpec, Datum, Emphasis, Highlight, MarkContext,
-    MarkOverride, PointShape, PointStyle, Series, SeriesKind,
+    AreaFill, AnnotationAt, BarLayout, BarStyle, ChartSpec, Datum, Domain, Emphasis,
+    HeatmapStyle, Highlight, Interpolation, MarkContext, MarkOverride, PointShape, PointStyle,
+    Series, SeriesKind, StepAt,
 };
 
 /// Space reserved around the data area for axis furniture.
@@ -195,7 +196,8 @@ fn render_inner(
 
     draw_highlight_band(&mut scene, spec, &x, plot);
     draw_grid(&mut scene, spec, &x, &y, plot);
-    draw_axis_labels(&mut scene, spec, &x, &y, plot);
+    draw_axis_labels(&mut scene, spec, &x, &y, rect, plot);
+    draw_annotations(&mut scene, spec, &x, &y, plot);
     draw_series(&mut scene, &mut hit, spec, &x, &y, plot);
     if spec.legend {
         draw_legend(&mut scene, spec, plot);
@@ -256,29 +258,43 @@ fn measured_padding(
     y: &ResolvedAxis,
     m: &dyn LabelMetrics,
 ) -> Padding {
-    let widest_y = y
-        .ticks
-        .iter()
-        .map(|t| m.measure(&t.label, LabelRole::AxisY).0)
-        .fold(0.0f32, f32::max);
-    let tallest_x = x
-        .ticks
-        .iter()
-        .map(|t| m.measure(&t.label, LabelRole::AxisX).1)
-        .fold(0.0f32, f32::max);
+    // Suppressed labels reserve nothing. A sparkline turns both off, and
+    // the gutters have to actually vanish or the "no furniture" mode still
+    // costs the space the furniture would have taken.
+    let widest_y = if spec.y.labels {
+        y.ticks
+            .iter()
+            .map(|t| m.measure(&t.label, LabelRole::AxisY).0)
+            .fold(0.0f32, f32::max)
+    } else {
+        0.0
+    };
+    let tallest_x = if spec.x.labels {
+        x.ticks
+            .iter()
+            .map(|t| m.measure(&t.label, LabelRole::AxisX).1)
+            .fold(0.0f32, f32::max)
+    } else {
+        0.0
+    };
 
+    let gap_y = if spec.y.labels { LABEL_GAP + TICK_LEN } else { 0.0 };
+    let gap_x = if spec.x.labels { LABEL_GAP + TICK_LEN } else { 0.0 };
     let mut pad = Padding {
-        left: widest_y + LABEL_GAP + TICK_LEN,
+        left: widest_y + gap_y,
         top: 8.0,
         // Half the last x label can overhang the right edge; reserve it so
         // it is not clipped by the surface bounds.
-        right: x
-            .ticks
-            .last()
-            .map(|t| m.measure(&t.label, LabelRole::AxisX).0 / 2.0)
-            .unwrap_or(0.0)
-            .max(8.0),
-        bottom: tallest_x + LABEL_GAP + TICK_LEN,
+        right: if spec.x.labels {
+            x.ticks
+                .last()
+                .map(|t| m.measure(&t.label, LabelRole::AxisX).0 / 2.0)
+                .unwrap_or(0.0)
+                .max(8.0)
+        } else {
+            0.0
+        },
+        bottom: tallest_x + gap_x,
     };
     if spec.x.title.is_some() {
         pad.bottom += tallest_x + LABEL_GAP;
@@ -374,7 +390,13 @@ fn draw_grid(
 
     // The zero rule reads as part of the data, not the grid: it is the line
     // bars grow from, so it gets the stronger axis color.
-    if y.min < 0.0 && y.max > 0.0 {
+    //
+    // Never on a CATEGORY axis. Its resolved window is `-0.5 ..= n-0.5` — the
+    // half-slot padding that keeps the first and last slots whole — so zero
+    // is strictly inside it for every non-empty category list, and the test
+    // below fires. But zero there is not a value, it is the centre of the
+    // first category, and the rule draws a seam straight through it.
+    if y.categories.is_none() && y.min < 0.0 && y.max > 0.0 {
         let zero = y.map(0.0, plot.bottom(), plot.y);
         scene.push(Mark::Stroke {
             layer: Layer::Axis,
@@ -390,8 +412,10 @@ fn draw_axis_labels(
     spec: &ChartSpec,
     x: &ResolvedAxis,
     y: &ResolvedAxis,
+    rect: Rect,
     plot: Rect,
 ) {
+    if spec.y.labels {
     for t in &y.ticks {
         let py = y.map(t.value, plot.bottom(), plot.y);
         if py < plot.y - 0.5 || py > plot.bottom() + 0.5 {
@@ -407,7 +431,9 @@ fn draw_axis_labels(
             color: None,
         });
     }
+    }
 
+    if spec.x.labels {
     for t in &x.ticks {
         let px = x.map(t.value, plot.x, plot.right());
         if px < plot.x - 0.5 || px > plot.right() + 0.5 {
@@ -422,6 +448,7 @@ fn draw_axis_labels(
             rotation: 0.0,
             color: None,
         });
+    }
     }
 
     if let Some(title) = &spec.x.title {
@@ -438,7 +465,14 @@ fn draw_axis_labels(
     if let Some(title) = &spec.y.title {
         scene.label(LabelPlacement {
             text: title.clone(),
-            anchor: pt(plot.x - LABEL_GAP * 4.0, plot.y + plot.h / 2.0),
+            // Anchored against the SURFACE edge, not offset from the plot
+            // by a guessed amount. `measured_padding` reserves the outermost
+            // band of the left gutter for this title, and a fixed offset
+            // from `plot.x` lands wherever the tick labels happen to end —
+            // so it collided with them for any axis whose numbers were wide.
+            // Hosts that lay out their own gutters (the idealyst SDK routes
+            // this role into its own slot) ignore the anchor entirely.
+            anchor: pt(rect.x + LABEL_GAP, plot.y + plot.h / 2.0),
             h_align: HAlign::Center,
             v_align: VAlign::Middle,
             role: LabelRole::AxisTitleY,
@@ -450,10 +484,175 @@ fn draw_axis_labels(
     }
 }
 
+/// Draw the reference lines and bands.
+///
+/// Everything is clipped to the resolved window rather than allowed to
+/// extend the domain — see [`crate::spec::Annotation`] for why. A marker entirely outside
+/// the window emits nothing at all, which is the honest outcome: drawing it
+/// pinned to the plot edge would assert a value the axis does not show.
+fn draw_annotations(
+    scene: &mut ChartScene,
+    spec: &ChartSpec,
+    x: &ResolvedAxis,
+    y: &ResolvedAxis,
+    plot: Rect,
+) {
+    for a in &spec.annotations {
+        let stroke = Stroke {
+            width: a.width,
+            cap: LineCap::Butt,
+            join: LineJoin::Miter,
+            dash: a.dash.clone(),
+            dash_offset: 0.0,
+        };
+        let line_layer = if a.above { Layer::Axis } else { Layer::Grid };
+        let band_layer = if a.above { Layer::Overlay } else { Layer::Background };
+
+        match a.at {
+            AnnotationAt::Y(v) => {
+                if !y.is_plottable(v) {
+                    continue;
+                }
+                let py = y.map(v, plot.bottom(), plot.y);
+                if py < plot.y - 0.5 || py > plot.bottom() + 0.5 {
+                    continue;
+                }
+                scene.push(Mark::Stroke {
+                    layer: line_layer,
+                    path: Path::new().move_to(plot.x, py).line_to(plot.right(), py),
+                    stroke,
+                    paint: Paint::solid(a.color),
+                });
+                if let Some(text) = &a.label {
+                    scene.label(LabelPlacement {
+                        text: text.clone(),
+                        // Sits just above the rule at the right edge, where a
+                        // series is least likely to be — lines usually run
+                        // left-to-right toward their latest value, so the top
+                        // right is the emptiest corner of a typical plot.
+                        anchor: pt(plot.right() - LABEL_GAP / 2.0, py - LABEL_GAP / 2.0),
+                        h_align: HAlign::Right,
+                        v_align: VAlign::Bottom,
+                        role: LabelRole::Annotation,
+                        rotation: 0.0,
+                        color: Some(a.color),
+                    });
+                }
+            }
+            AnnotationAt::X(v) => {
+                if !x.is_plottable(v) {
+                    continue;
+                }
+                let px = x.map(v, plot.x, plot.right());
+                if px < plot.x - 0.5 || px > plot.right() + 0.5 {
+                    continue;
+                }
+                scene.push(Mark::Stroke {
+                    layer: line_layer,
+                    path: Path::new().move_to(px, plot.y).line_to(px, plot.bottom()),
+                    stroke,
+                    paint: Paint::solid(a.color),
+                });
+                if let Some(text) = &a.label {
+                    scene.label(LabelPlacement {
+                        text: text.clone(),
+                        anchor: pt(px + LABEL_GAP / 2.0, plot.y + LABEL_GAP / 2.0),
+                        h_align: HAlign::Left,
+                        v_align: VAlign::Top,
+                        role: LabelRole::Annotation,
+                        rotation: 0.0,
+                        color: Some(a.color),
+                    });
+                }
+            }
+            AnnotationAt::YBand { from, to } => {
+                let Some((lo, hi)) =
+                    span_px(y, from, to, plot.bottom(), plot.y, plot.y, plot.bottom())
+                else {
+                    continue;
+                };
+                let r = Rect::new(plot.x, lo, plot.w, hi - lo);
+                scene.push(Mark::Fill {
+                    layer: band_layer,
+                    path: Path::rect(r),
+                    paint: Paint::solid(a.color),
+                    rule: FillRule::NonZero,
+                });
+                if let Some(text) = &a.label {
+                    scene.label(LabelPlacement {
+                        text: text.clone(),
+                        anchor: pt(plot.right() - LABEL_GAP / 2.0, lo + LABEL_GAP / 2.0),
+                        h_align: HAlign::Right,
+                        v_align: VAlign::Top,
+                        role: LabelRole::Annotation,
+                        rotation: 0.0,
+                        color: Some(a.color),
+                    });
+                }
+            }
+            AnnotationAt::XBand { from, to } => {
+                let Some((lo, hi)) =
+                    span_px(x, from, to, plot.x, plot.right(), plot.x, plot.right())
+                else {
+                    continue;
+                };
+                let r = Rect::new(lo, plot.y, hi - lo, plot.h);
+                scene.push(Mark::Fill {
+                    layer: band_layer,
+                    path: Path::rect(r),
+                    paint: Paint::solid(a.color),
+                    rule: FillRule::NonZero,
+                });
+                if let Some(text) = &a.label {
+                    scene.label(LabelPlacement {
+                        text: text.clone(),
+                        anchor: pt(lo + LABEL_GAP / 2.0, plot.y + LABEL_GAP / 2.0),
+                        h_align: HAlign::Left,
+                        v_align: VAlign::Top,
+                        role: LabelRole::Annotation,
+                        rotation: 0.0,
+                        color: Some(a.color),
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Pixel extent of a data span, clamped to the plot, or `None` when the span
+/// falls entirely outside the visible window.
+///
+/// The clamp is what makes a half-visible band correct: it is truncated at
+/// the plot edge rather than either overflowing the data area or vanishing
+/// because one end could not be placed.
+fn span_px(
+    axis: &ResolvedAxis,
+    from: f64,
+    to: f64,
+    lo_px: f32,
+    hi_px: f32,
+    clamp_lo: f32,
+    clamp_hi: f32,
+) -> Option<(f32, f32)> {
+    if !axis.is_plottable(from) || !axis.is_plottable(to) {
+        return None;
+    }
+    let a = axis.map(from, lo_px, hi_px);
+    let b = axis.map(to, lo_px, hi_px);
+    let (lo, hi) = (a.min(b), a.max(b));
+    let (lo, hi) = (lo.max(clamp_lo), hi.min(clamp_hi));
+    (hi - lo > f32::EPSILON).then_some((lo, hi))
+}
+
 fn draw_legend(scene: &mut ChartScene, spec: &ChartSpec, plot: Rect) {
     // Placements only — the host lays the entries out, because their widths
     // depend on text it will measure and we deliberately do not.
-    for (i, (_, s)) in spec.visible().enumerate() {
+    //
+    // Heatmaps are skipped: a legend entry is a color swatch, and a heatmap
+    // row has no single color — it has a ramp. The right legend for one is a
+    // gradient scale bar, which is a different thing the host draws from
+    // `HeatmapStyle::ramp`.
+    for (i, (_, s)) in spec.visible().filter(|(_, s)| !s.kind.is_heatmap()).enumerate() {
         scene.label(LabelPlacement {
             text: s.name.clone(),
             anchor: pt(plot.x + i as f32 * 100.0, plot.y - LABEL_GAP * 2.0),
@@ -556,7 +755,7 @@ fn draw_series(
                 if pts.len() >= 2 {
                     scene.push(Mark::Stroke {
                         layer: Layer::Series,
-                        path: build_line(&pts, style.smooth),
+                        path: build_line(&pts, style.interpolation),
                         stroke: Stroke {
                             width: style.width_for(series_emphasis),
                             cap: LineCap::Round,
@@ -584,7 +783,7 @@ fn draw_series(
                         plot.bottom()
                     };
                     if let Some(paint) = area_paint(&style.fill, s.color, plot.y, base, dim) {
-                        let mut fill = build_line(&pts, style.line.smooth);
+                        let mut fill = build_line(&pts, style.line.interpolation);
                         let (first, last) = (pts[0], pts[pts.len() - 1]);
                         fill = fill.line_to(last.x, base).line_to(first.x, base).close();
                         scene.push(Mark::Fill {
@@ -596,7 +795,7 @@ fn draw_series(
                     }
                     scene.push(Mark::Stroke {
                         layer: Layer::Series,
-                        path: build_line(&pts, style.line.smooth),
+                        path: build_line(&pts, style.line.interpolation),
                         stroke: Stroke {
                             width: style.line.width_for(series_emphasis),
                             cap: LineCap::Round,
@@ -615,6 +814,9 @@ fn draw_series(
                 let pts = project(s.data.iter(), x, y, plot);
                 push_hits(hit, &pts, si, &s.data);
                 push_points(scene, &pts, s, style, si, hl, dim);
+            }
+            SeriesKind::Heatmap(style) => {
+                draw_heatmap(scene, hit, x, y, plot, si, s, style, hl, dim);
             }
         }
     }
@@ -882,10 +1084,125 @@ fn draw_bars(
             paint: Paint::solid(apply_override(base, &ov)),
             rule: FillRule::NonZero,
         });
-        // Anchor the tooltip at the bar's outer end, where a pointer
-        // approaching from outside the column meets it first.
-        hit.push(pt(left + bar_w / 2.0, y_to), series_index, i, *d);
+        // Index the bar's whole body, anchoring the tooltip at its outer
+        // end where a pointer approaching from outside the column meets it
+        // first. A zero-height bar still gets a rect so a hover near the
+        // baseline resolves to it — degenerate geometry, but a real datum.
+        hit.push_rect(r, pt(left + bar_w / 2.0, y_to), series_index, i, *d);
     }
+}
+
+/// Draw one heatmap ROW.
+///
+/// Each series is a row (see [`SeriesKind::Heatmap`]), so this runs once per
+/// row and the y position comes from `Datum::y` — which means a heatmap gets
+/// axis resolution, tick labels, gutters and the hit index from the same
+/// cartesian pipeline as everything else, with no code of its own.
+///
+/// Both axes want to be [`AxisKind::Category`](crate::spec::AxisKind): its
+/// half-slot padding is what makes the first and last cells whole rather
+/// than sliced in half by the plot edge.
+#[allow(clippy::too_many_arguments)]
+fn draw_heatmap(
+    scene: &mut ChartScene,
+    hit: &mut HitIndex,
+    x: &ResolvedAxis,
+    y: &ResolvedAxis,
+    plot: Rect,
+    series_index: usize,
+    s: &Series,
+    style: &HeatmapStyle,
+    hl: &Highlight,
+    dim: f32,
+) {
+    // Pixels per data unit, taken straight from the scale. One expression
+    // covers both axis kinds: on a category axis a unit IS a slot, and on a
+    // continuous one it is whatever the domain makes it — so there is no
+    // "is this categorical?" branch to get wrong.
+    let cell_w = (x.map(1.0, plot.x, plot.right()) - x.map(0.0, plot.x, plot.right())).abs();
+    let cell_h = (y.map(1.0, plot.bottom(), plot.y) - y.map(0.0, plot.bottom(), plot.y)).abs();
+    if cell_w <= 0.0 || cell_h <= 0.0 {
+        return;
+    }
+
+    let (lo, hi) = style.domain.unwrap_or_else(|| auto_intensity(&s.data));
+    let span = hi - lo;
+
+    for (i, d) in s.data.iter().enumerate() {
+        if !x.is_plottable(d.x) || !y.is_plottable(d.y) {
+            continue;
+        }
+        let cx = x.map(d.x, plot.x, plot.right());
+        let cy = y.map(d.y, plot.bottom(), plot.y);
+        let r = Rect::new(
+            cx - cell_w / 2.0 + style.gap / 2.0,
+            cy - cell_h / 2.0 + style.gap / 2.0,
+            (cell_w - style.gap).max(0.0),
+            (cell_h - style.gap).max(0.0),
+        );
+        if r.w <= 0.0 || r.h <= 0.0 {
+            continue;
+        }
+
+        let t = if span.abs() < f64::EPSILON {
+            0.0
+        } else {
+            ((d.w - lo) / span) as f32
+        };
+        let emphasis = hl.of(series_index, i, d.x);
+        let base = fade(style.ramp.sample(t), dim);
+        let ov = s.override_for(&MarkContext {
+            series: series_index,
+            index: i,
+            datum: *d,
+            emphasis,
+            base_color: base,
+        });
+        scene.push(Mark::Fill {
+            layer: Layer::Series,
+            path: Path::rounded_rect(r, [style.radius; 4]),
+            paint: Paint::solid(apply_override(base, &ov)),
+            rule: FillRule::NonZero,
+        });
+
+        // A cell fills its slot, so emphasis cannot grow it without
+        // overlapping its neighbours. An outline is the one form that adds
+        // no geometry anywhere else.
+        if emphasis != Emphasis::None {
+            if let Some(ring) = style.emphasis_ring {
+                scene.push(Mark::Stroke {
+                    layer: Layer::Overlay,
+                    path: Path::rounded_rect(r, [style.radius; 4]),
+                    stroke: Stroke::width(ring.width),
+                    paint: Paint::solid(ring.color),
+                });
+            }
+        }
+
+        hit.push_rect(r, pt(cx, cy), series_index, i, *d);
+    }
+}
+
+/// The intensity range to sample the ramp over when none was given.
+///
+/// A degenerate span falls back to including zero, so a row of identical
+/// values still renders as a definite color rather than dividing by nothing.
+/// If they are all zero there is genuinely no variation to show, and the
+/// bottom of the ramp is the honest answer.
+fn auto_intensity(data: &[Datum]) -> (f64, f64) {
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for d in data.iter().filter(|d| d.w.is_finite()) {
+        lo = lo.min(d.w);
+        hi = hi.max(d.w);
+    }
+    if !lo.is_finite() || !hi.is_finite() {
+        return (0.0, 1.0);
+    }
+    if (hi - lo).abs() < f64::EPSILON {
+        return (lo.min(0.0), hi.max(0.0));
+    }
+    (lo, hi)
 }
 
 fn distinct_x(spec: &ChartSpec) -> usize {
@@ -899,16 +1216,46 @@ fn distinct_x(spec: &ChartSpec) -> usize {
 // Line geometry
 // ---------------------------------------------------------------------------
 
-fn build_line(pts: &[Point], smooth: bool) -> Path {
-    if smooth && pts.len() >= 3 {
-        monotone_cubic(pts)
-    } else {
-        let mut p = Path::new().move_to(pts[0].x, pts[0].y);
-        for q in &pts[1..] {
-            p = p.line_to(q.x, q.y);
+fn build_line(pts: &[Point], interp: Interpolation) -> Path {
+    match interp {
+        // Monotone needs three points to have an interior tangent to limit;
+        // with two it degenerates to the straight segment anyway.
+        Interpolation::Monotone if pts.len() >= 3 => monotone_cubic(pts),
+        Interpolation::Step(at) => step_path(pts, at),
+        _ => {
+            let mut p = Path::new().move_to(pts[0].x, pts[0].y);
+            for q in &pts[1..] {
+                p = p.line_to(q.x, q.y);
+            }
+            p
         }
-        p
     }
+}
+
+/// Piecewise-constant interpolation.
+///
+/// Every variant emits exactly two segments per interval, so the path stays
+/// axis-aligned and an area fill built from it closes cleanly against the
+/// baseline with no diagonal edge — which is the whole reason a stepped
+/// area reads as a histogram rather than as a lumpy polygon.
+fn step_path(pts: &[Point], at: StepAt) -> Path {
+    let mut p = Path::new().move_to(pts[0].x, pts[0].y);
+    for w in pts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        match at {
+            StepAt::After => {
+                p = p.line_to(b.x, a.y).line_to(b.x, b.y);
+            }
+            StepAt::Before => {
+                p = p.line_to(a.x, b.y).line_to(b.x, b.y);
+            }
+            StepAt::Mid => {
+                let mid = (a.x + b.x) / 2.0;
+                p = p.line_to(mid, a.y).line_to(mid, b.y).line_to(b.x, b.y);
+            }
+        }
+    }
+    p
 }
 
 /// Monotone cubic interpolation (Fritsch-Carlson).

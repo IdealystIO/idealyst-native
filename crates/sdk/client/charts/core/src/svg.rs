@@ -14,7 +14,8 @@ use std::fmt::Write as _;
 
 use crate::render::ChartOutput;
 use crate::scene::{
-    Color, FillRule, HAlign, LabelPlacement, LabelRole, Mark, Paint, Path, PathSeg, Stroke, VAlign,
+    ChartScene, Color, FillRule, HAlign, LabelPlacement, LabelRole, Mark, Paint, Path, PathSeg,
+    Stroke, VAlign,
 };
 
 /// Font size in pixels for each label role.
@@ -23,6 +24,7 @@ fn font_size(role: LabelRole) -> f32 {
         LabelRole::Title => 16.0,
         LabelRole::AxisTitleX | LabelRole::AxisTitleY => 12.0,
         LabelRole::Legend => 12.0,
+        LabelRole::Annotation => 10.0,
         _ => 11.0,
     }
 }
@@ -176,11 +178,22 @@ fn label_svg(l: &LabelPlacement, text_color: Color) -> String {
     )
 }
 
-/// Render a chart to a standalone SVG document.
+/// Render a cartesian chart to a standalone SVG document.
 ///
 /// `size` is the full surface; `text_color` is used for every label that
 /// does not carry its own (legend entries do).
 pub fn to_svg(out: &ChartOutput, size: (f32, f32), text_color: Color) -> String {
+    scene_to_svg(&out.scene, size, text_color)
+}
+
+/// Render any [`ChartScene`] — cartesian or polar — to a standalone SVG
+/// document.
+///
+/// Takes the scene rather than an output type, which is what makes the same
+/// twenty lines serve both families. A renderer that needed to know whether
+/// it was drawing a bar chart or a donut would mean the mark IR had failed
+/// at its one job.
+pub fn scene_to_svg(scene: &ChartScene, size: (f32, f32), text_color: Color) -> String {
     let mut s = format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}" viewBox="0 0 {} {}" font-family="sans-serif">"#,
         fmt_num(size.0),
@@ -191,7 +204,7 @@ pub fn to_svg(out: &ChartOutput, size: (f32, f32), text_color: Color) -> String 
 
     // Gradients must be declared before use, so collect them in one pass.
     let mut defs = String::new();
-    for (i, m) in out.scene.marks.iter().enumerate() {
+    for (i, m) in scene.marks.iter().enumerate() {
         if let Mark::Fill { paint: Paint::Linear { from, to, stops }, .. } = m {
             let _ = write!(
                 defs,
@@ -217,7 +230,7 @@ pub fn to_svg(out: &ChartOutput, size: (f32, f32), text_color: Color) -> String 
         let _ = write!(s, "<defs>{defs}</defs>");
     }
 
-    for (i, m) in out.scene.marks.iter().enumerate() {
+    for (i, m) in scene.marks.iter().enumerate() {
         match m {
             Mark::Fill { path, paint, rule, .. } => {
                 let fill = match paint {
@@ -284,7 +297,7 @@ pub fn to_svg(out: &ChartOutput, size: (f32, f32), text_color: Color) -> String 
         }
     }
 
-    for l in &out.scene.labels {
+    for l in &scene.labels {
         s.push_str(&label_svg(l, text_color));
     }
     s.push_str("</svg>");

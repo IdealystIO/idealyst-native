@@ -148,6 +148,7 @@ receives events produced on another.
 | **`media-writer`** | Record live media streams to a file (mp4). |
 | **`video`** | Third-party `Video` playback primitive (a scene-registry payload). |
 | **`canvas`** | The author-facing facade for the 2D-drawing SDK (GPU canvas + self-capture compositor). |
+| **`charts`** | Reactive charting — line/area/bar/scatter/heatmap, pie/donut, radial bars and gauges. Draws onto a `canvas`. See the [charts guide](charts.md). |
 
 ## UI primitives & extensions (scene-registry payloads)
 
