@@ -250,6 +250,23 @@ fn format_number(v: f64) -> String {
 /// A `Fixed` domain is taken verbatim — that is what makes pan/zoom work
 /// without the data pulling the viewport back.
 pub fn resolve(axis: &Axis, values: impl Iterator<Item = f64>) -> ResolvedAxis {
+    resolve_with_ticks(axis, values, None)
+}
+
+/// [`resolve`], but with the tick VALUES supplied from elsewhere.
+///
+/// Exists for transitions. While a chart animates, its domain is somewhere
+/// between the old and the new one, and choosing ticks from that intermediate
+/// range makes the labels churn through arbitrary values — `3.7`, `7.4` —
+/// for the length of the animation. Passing the destination's ticks instead
+/// keeps the labels stable from the first frame while the gridlines slide
+/// smoothly into place. Ticks outside the current window are culled by the
+/// renderer's existing range check.
+pub fn resolve_with_ticks(
+    axis: &Axis,
+    values: impl Iterator<Item = f64>,
+    forced: Option<&[Tick]>,
+) -> ResolvedAxis {
     if let AxisKind::Category(cats) = &axis.kind {
         let n = cats.len();
         // Half-slot padding at each end so the first and last bars are not
@@ -257,11 +274,11 @@ pub fn resolve(axis: &Axis, values: impl Iterator<Item = f64>) -> ResolvedAxis {
         return ResolvedAxis {
             min: -0.5,
             max: n as f64 - 0.5,
-            ticks: cats
+            ticks: forced.map(|t| t.to_vec()).unwrap_or_else(|| cats
                 .iter()
                 .enumerate()
                 .map(|(i, c)| Tick { value: i as f64, label: c.clone() })
-                .collect(),
+                .collect()),
             categories: Some(n),
             transform: Transform::Linear,
         };
@@ -322,13 +339,36 @@ pub fn resolve(axis: &Axis, values: impl Iterator<Item = f64>) -> ResolvedAxis {
                 ensure_width(lo, hi)
             };
 
-            // Round outward to the tick grid so the axis ends on a labelled
-            // value instead of a ragged data extreme. Only for Auto — a
-            // Fixed domain is a viewport and must be honored exactly.
+            // Round OUTWARD to the next tick boundary, so the extremes sit
+            // inside the axis rather than exactly on its edge.
+            //
+            // Taking `hi.max(last_tick)` is not enough and was a real bug:
+            // tick selection only returns values INSIDE the range, so the
+            // last tick is always <= hi and the domain stays pinned to the
+            // raw data max. The topmost data point then lands exactly on the
+            // plot's top edge, and since the plot clips its overflow, the
+            // outer half of a line's stroke width is shaved off — a visibly
+            // flat-topped peak.
+            //
+            // Only for Auto: a Fixed domain is a viewport and is honored
+            // exactly, or pan/zoom would fight this rounding every frame.
             let probe = ticks_for(lo, hi);
-            match (probe.first(), probe.last()) {
-                (Some(f), Some(l)) if l.value > f.value => (lo.min(f.value), hi.max(l.value)),
-                _ => (lo, hi),
+            let step = match probe.as_slice() {
+                [a, b, ..] => (b.value - a.value).abs(),
+                _ => 0.0,
+            };
+            if step > 0.0 && transform == Transform::Linear {
+                // `- f64::EPSILON` on the ceil guard so a value already
+                // sitting exactly on a tick does not gain a whole empty
+                // step above it.
+                let up = (hi / step - f64::EPSILON).ceil() * step;
+                let down = (lo / step + f64::EPSILON).floor() * step;
+                (down.min(lo), up.max(hi))
+            } else {
+                match (probe.first(), probe.last()) {
+                    (Some(f), Some(l)) if l.value > f.value => (lo.min(f.value), hi.max(l.value)),
+                    _ => (lo, hi),
+                }
             }
         }
     };
@@ -339,5 +379,9 @@ pub fn resolve(axis: &Axis, values: impl Iterator<Item = f64>) -> ResolvedAxis {
         (min, max)
     };
 
-    ResolvedAxis { min, max, ticks: ticks_for(min, max), categories: None, transform }
+    let ticks = match forced {
+        Some(t) => t.to_vec(),
+        None => ticks_for(min, max),
+    };
+    ResolvedAxis { min, max, ticks, categories: None, transform }
 }

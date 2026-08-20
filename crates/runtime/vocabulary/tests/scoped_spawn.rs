@@ -153,7 +153,7 @@ fn callback_applies_its_writes_while_the_scope_is_alive() {
 
 #[test]
 fn regression_callback_is_skipped_when_the_scope_died_during_the_io() {
-    // The CrewForge shape. Under a raw `spawn_async` the tail writes a
+    // Under a raw `spawn_async` the tail writes a
     // freed slot and the app aborts with `stale-signal-handle`.
     ensure_executor();
     let h = Harness::new();

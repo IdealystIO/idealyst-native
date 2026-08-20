@@ -737,7 +737,6 @@ fn A() -> Element {
 
     #[test]
     fn a_bail_out_is_alive_guard_suppresses_the_rest_of_the_block() {
-        // CrewForge's prevailing shape.
         let out = diags(
             r#"
 #[component]

@@ -8,6 +8,16 @@ description = "Charts demo — the charts SDK across line / smooth / area / bar 
 [lib]
 crate-type = ["rlib"]
 
+[features]
+# Opt IN to the GPU renderer. OFF by default on purpose: `canvas-native`
+# (Canvas2D on web, CoreGraphics on macOS) is the baseline everywhere, and
+# vello drags wgpu into the build — a real cost on web in particular. This
+# flag is here so the GPU path can be tried and measured, not so it can
+# quietly become the default.
+#
+#     cargo build --features vello        (or `idealyst dev --features vello`)
+vello = ["dep:canvas-vello"]
+
 [dependencies]
 # The platform surface, used by `src/main.rs` only — it carries whatever
 # the target needs, so this manifest names no backend directly. An
@@ -26,6 +36,8 @@ charts = { workspace = true }
 # just a canvas author). `canvas-native` has real handlers for both
 # targets this demo ships to: Canvas2D on web, CoreGraphics on macOS.
 canvas-native = { workspace = true }
+# Optional GPU renderer — see the `vello` feature.
+canvas-vello = { workspace = true, optional = true }
 
 [package.metadata.idealyst.app]
 name      = "Charts"

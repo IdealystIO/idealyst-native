@@ -40,19 +40,23 @@ pub mod __test_support {
     //! Pure helpers the integration suite exercises directly. Not a public
     //! API — exposed only so the tests can reach the logic without a
     //! backend or a synthetic event stream.
-    pub use crate::chart::hover_at;
+    pub use crate::chart::{hover_at, visual_state};
 }
 
 // The spec/scale/hit surface is re-exported so a screen imports one crate.
 pub use charts_core::{
-    datum, render, render_with, Axis, AxisKind, BarLayout, ChartOutput, ChartSpec, Color, Datum,
-    Domain, Gutters, HitIndex, HitResult, Series, SeriesKind, Tick,
+    datum, render, render_with, AreaFill, AreaStyle, Axis, AxisKind, BarLayout, BarStyle,
+    ChartOutput, ChartSpec, Color, Datum, DatumRef, Domain, Emphasis, Gutters, Highlight, HitIndex,
+    HitResult, LineStyle, MarkContext, MarkOverride, PointShape, PointStyle, Ring, Series,
+    SeriesKind, StyleFn, Tick,
 };
 
 /// The small namespace a screen imports.
 pub mod prelude {
     pub use super::{Chart, ChartHover, ChartProps};
     pub use charts_core::{
-        datum, Axis, AxisKind, BarLayout, ChartSpec, Color, Datum, Domain, Series, SeriesKind,
+        datum, AreaFill, AreaStyle, Axis, AxisKind, BarLayout, BarStyle, ChartSpec, Color, Datum,
+        DatumRef, Domain, Highlight, LineStyle, MarkContext, MarkOverride, PointShape, PointStyle,
+        Ring, Series, SeriesKind, StyleFn,
     };
 }

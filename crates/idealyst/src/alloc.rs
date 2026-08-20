@@ -26,7 +26,7 @@
 //! fragmentation — exactly what a UI runtime produces when it mounts a
 //! subtree, tears it down, and mounts a differently-shaped one.
 //!
-//! Measured in CrewForge's schedule grid (~1400 cells re-sliced per
+//! Measured schedule grid (~1400 cells re-sliced per
 //! scroll step, debug wasm): **62% of a scroll frame** inside
 //! `FreeListAllocator`, and still 44% after two rounds of cutting the
 //! app's own hot path. Nothing in app code came within an order of

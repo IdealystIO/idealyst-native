@@ -145,7 +145,7 @@ fn cubic_segments_reach_the_canvas_unflattened() {
 fn dash_pattern_survives_the_adapter() {
     let spec = ChartSpec::new(vec![Series::new(
         "target",
-        SeriesKind::Line { width: 2.0, smooth: false, dash: vec![6.0, 4.0], points: false },
+        SeriesKind::Line(LineStyle::default().dashed([6.0, 4.0])),
         BLUE,
         vec![datum(0.0, 1.0), datum(1.0, 2.0)],
     )]);
@@ -238,18 +238,20 @@ fn with_chart<R>(props: ChartProps, f: impl FnOnce(&Element) -> R) -> R {
     world.enter(|| f(&el))
 }
 
-/// The tree is [root [ plot_row [ y_gutter, plot [ canvas, tooltip ] ] ],
-/// x_gutter ]. Pinning it matters because the gutters' *existence* is what
+/// The tree is [root [ legend, plot_row [ y_gutter, plot [ canvas, tooltip ] ],
+/// x_gutter ]]. Pinning it matters because the gutters' *existence* is what
 /// lets the framework lay out labels — a refactor that collapsed them would
-/// silently move label positioning back into the canvas.
+/// silently move label positioning back into the canvas — and because the
+/// legend is a real flex row rather than absolutely-placed text.
 #[test]
 fn builds_the_gutter_plus_plot_tree() {
     with_chart(ChartProps { spec: line_spec().into(), ..Default::default() }, |el| {
         let root = children_of(el);
-        assert_eq!(root.len(), 2, "plot row + x-axis gutter");
-        assert!(is_reactive_hole(&root[1]), "x-axis labels rebuild reactively");
+        assert_eq!(root.len(), 3, "legend + plot row + x-axis gutter");
+        assert!(is_reactive_hole(&root[0]), "the legend rebuilds reactively");
+        assert!(is_reactive_hole(&root[2]), "x-axis labels rebuild reactively");
 
-        let row = children_of(&root[0]);
+        let row = children_of(&root[1]);
         assert_eq!(row.len(), 2, "y-axis gutter + plot area");
         assert!(is_reactive_hole(&row[0]), "y-axis labels rebuild reactively");
 
@@ -268,7 +270,7 @@ fn builds_the_gutter_plus_plot_tree() {
 #[test]
 fn canvas_paints_nothing_before_the_first_layout() {
     with_chart(ChartProps { spec: line_spec().into(), ..Default::default() }, |el| {
-        let row = children_of(&children_of(el)[0]);
+        let row = children_of(&children_of(el)[1]);
         let canvas_el = &children_of(&row[1])[0];
 
         let prim = match unwrap_owned(canvas_el) {
@@ -306,7 +308,7 @@ fn author_style_replaces_the_default_root() {
         ChartProps { spec: line_spec().into(), style: Some(custom), ..Default::default() },
         |el| {
             // Still the same shape — the style channel must not change structure.
-            assert_eq!(children_of(el).len(), 2);
+            assert_eq!(children_of(el).len(), 3);
         },
     );
 }
@@ -335,6 +337,177 @@ fn usable_from_the_ui_macro() {
         // view -> Chart(Owned) -> root
         let outer = children_of(&el);
         assert_eq!(outer.len(), 1, "the view wraps exactly one chart");
-        assert_eq!(children_of(&outer[0]).len(), 2, "plot row + x gutter");
+        assert_eq!(children_of(&outer[0]).len(), 3, "legend + plot row + x gutter");
     });
+}
+
+// ===========================================================================
+// Emphasis wiring
+// ===========================================================================
+
+/// Emphasis is keyed on the DATA column, not the pointer's pixel position.
+///
+/// This is what keeps the render memo from re-running on every pointer move:
+/// `hover_at` reports a full `ChartHover` (which carries pixels and so
+/// changes constantly), but the value fed to the highlight is the datum's x,
+/// which only changes when the pointer crosses into a new column.
+#[test]
+fn hover_resolves_to_a_stable_column_across_pixel_moves() {
+    let spec = ChartSpec::new(vec![Series::new(
+        "s",
+        SeriesKind::scatter(),
+        BLUE,
+        vec![datum(0.0, 1.0), datum(1.0, 5.0), datum(2.0, 3.0)],
+    )]);
+    let out = render(&spec, IrRect::new(0.0, 0.0, 300.0, 200.0));
+
+    let col = |x: f32| out.hit.column_at(charts_core::pt(x, 100.0)).first().map(|e| e.datum.x);
+    // Several distinct pixel positions inside the same column agree.
+    let a = col(148.0);
+    let b = col(150.0);
+    let c = col(152.0);
+    assert_eq!(a, b);
+    assert_eq!(b, c);
+    assert_eq!(a, Some(1.0));
+    // A position over a different column reports a different one.
+    assert_ne!(col(2.0), a);
+}
+
+/// The emphasis knobs reach the marks: a hovered column enlarges its points
+/// and thickens its line, end to end through the spec the SDK builds.
+#[test]
+fn highlight_reaches_the_rendered_marks() {
+    let style = PointStyle::new(3.0).hover(9.0);
+    let mut spec = ChartSpec::new(vec![Series::new(
+        "s",
+        SeriesKind::Scatter(style),
+        BLUE,
+        vec![datum(0.0, 1.0), datum(1.0, 2.0)],
+    )]);
+    let plain = render(&spec, IrRect::new(0.0, 0.0, 300.0, 200.0));
+    spec.highlight = Highlight::column(1.0);
+    let hovered = render(&spec, IrRect::new(0.0, 0.0, 300.0, 200.0));
+
+    let radii = |o: &ChartOutput| -> Vec<f32> {
+        o.scene
+            .marks
+            .iter()
+            .filter_map(|m| match m {
+                charts_core::Mark::Points { instances, .. } => {
+                    Some(instances.iter().map(|p| p.half.x).collect::<Vec<_>>())
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    };
+    assert_eq!(radii(&plain), vec![3.0, 3.0]);
+    assert_eq!(radii(&hovered), vec![3.0, 9.0]);
+}
+
+/// A styled series survives the adapter with its emphasis applied — the
+/// enlarged marker must reach the canvas batch, not just the IR.
+#[test]
+fn emphasised_marker_size_reaches_the_canvas() {
+    let mut spec = ChartSpec::new(vec![Series::new(
+        "s",
+        SeriesKind::Scatter(PointStyle::new(3.0).hover(10.0)),
+        BLUE,
+        vec![datum(0.0, 1.0), datum(1.0, 2.0)],
+    )]);
+    spec.highlight = Highlight::column(1.0);
+    let s = scene_of(&spec);
+    let halves: Vec<f32> = s
+        .ops()
+        .iter()
+        .filter_map(|o| match o {
+            DrawOp::Shapes { shapes, .. } => Some(shapes.iter().map(|sh| sh.hw).collect::<Vec<_>>()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert!(halves.contains(&10.0), "the hovered marker's size must reach the canvas: {halves:?}");
+}
+
+// ===========================================================================
+// Transition state
+// ===========================================================================
+
+use charts::__test_support::visual_state;
+
+fn tspec(v: [f64; 2]) -> ChartSpec {
+    ChartSpec::new(vec![Series::new(
+        "s",
+        SeriesKind::bar(),
+        BLUE,
+        v.iter().enumerate().map(|(i, y)| datum(i as f64, *y)).collect(),
+    )])
+}
+
+/// A settled chart displays its target.
+#[test]
+fn visual_state_at_rest_is_the_target() {
+    let t = tspec([5.0, 6.0]);
+    let got = visual_state(Some(&tspec([1.0, 1.0])), Some(&t), 1.0).expect("a state");
+    assert_eq!(got.series[0].data, t.series[0].data);
+}
+
+/// Mid-flight it is the interpolated state, so a change landing during an
+/// animation continues from what is on screen.
+#[test]
+fn visual_state_mid_flight_is_interpolated() {
+    let got = visual_state(Some(&tspec([0.0, 0.0])), Some(&tspec([10.0, 10.0])), 0.5)
+        .expect("a state");
+    for d in &got.series[0].data {
+        assert!(d.y > 0.0 && d.y < 10.0, "expected intermediate, got {}", d.y);
+    }
+}
+
+/// The successive-change case that broke in the demo.
+///
+/// Regression guard: the second data change animated from the chart's
+/// ORIGINAL values instead of from where the first change settled — the
+/// visible symptom was the bars snapping back before animating again. It
+/// happened because the animation's start was read from a signal only ever
+/// written when an animation BEGINS, so it never advanced past the first
+/// spec. Chaining `visual_state` reproduces the sequence exactly.
+#[test]
+fn regression_successive_changes_start_from_the_previous_target() {
+    let (a, b, c) = (tspec([1.0, 1.0]), tspec([10.0, 10.0]), tspec([4.0, 4.0]));
+
+    // First change settles on `b`.
+    let after_first = visual_state(Some(&a), Some(&b), 1.0).expect("settled");
+    assert_eq!(after_first.series[0].data[0].y, 10.0);
+
+    // Second change must therefore start from `b`, not from `a`.
+    let start_of_second = visual_state(Some(&after_first), Some(&b), 1.0).expect("settled");
+    assert_eq!(
+        start_of_second.series[0].data[0].y, 10.0,
+        "the second transition starts where the first ended"
+    );
+
+    // And a frame early in that second transition sits between 10 and 4 —
+    // never back near the original 1.
+    let early = charts_core::lerp_data(&start_of_second, &c, 0.25).expect("same shape");
+    let y = early.series[0].data[0].y;
+    assert!(y > 4.0 && y <= 10.0, "expected a value between 10 and 4, got {y}");
+    assert!(y > 2.0, "must not fall back toward the original value");
+}
+
+/// With no history there is nothing to animate from.
+#[test]
+fn visual_state_is_none_before_the_first_spec() {
+    assert!(visual_state(None, None, 1.0).is_none());
+}
+
+/// A shape change cannot be interpolated, so the visual state is the target
+/// — which is what makes the transition snap rather than pair unrelated
+/// points.
+#[test]
+fn visual_state_falls_back_to_the_target_on_a_shape_change() {
+    let a = tspec([1.0, 1.0]);
+    let b = ChartSpec::new(vec![Series::new("s", SeriesKind::bar(), BLUE, vec![datum(0.0, 9.0)])]);
+    let got = visual_state(Some(&a), Some(&b), 0.5).expect("a state");
+    assert_eq!(got.series[0].data.len(), 1);
+    assert_eq!(got.series[0].data[0].y, 9.0);
 }

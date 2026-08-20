@@ -7,6 +7,7 @@
 
 use charts_core::render::Gutters;
 use charts_core::svg::{to_svg, ApproxMetrics};
+use charts_core::scene::{GradientStop, PointInstance};
 use charts_core::*;
 
 const BLUE: Color = Color::rgb(0x4c, 0x8d, 0xff);
@@ -55,7 +56,9 @@ fn golden_line() {
 #[test]
 fn golden_smooth_line_and_points() {
     let mut spec = line_spec();
-    spec.series[0].kind = SeriesKind::Line { width: 2.5, smooth: true, dash: vec![], points: true };
+    spec.series[0].kind = SeriesKind::Line(
+        LineStyle::new(2.5).smooth().with_points(PointStyle::new(3.5)),
+    );
     render_golden("smooth_line", &spec);
 }
 
@@ -487,4 +490,691 @@ fn zero_area_plot_renders_no_marks() {
     // Degenerate in one axis only is just as unrenderable.
     let flat = render(&line_spec(), Rect::new(0.0, 0.0, 300.0, 0.0));
     assert!(flat.scene.marks.is_empty());
+}
+
+/// An auto-fitted domain must extend PAST the data, not stop on it.
+///
+/// Regression guard: tick selection only returns values inside the range,
+/// so rounding the domain to `max(hi, last_tick)` leaves it pinned to the
+/// raw data max. The topmost point then sits exactly on the plot's top
+/// edge, and because the plot clips its overflow the outer half of the
+/// line's stroke is shaved off — the peak renders visibly flat.
+#[test]
+fn regression_auto_domain_extends_past_the_data_extreme() {
+    let spec = ChartSpec::new(vec![Series::new(
+        "s",
+        SeriesKind::line(),
+        BLUE,
+        vec![datum(0.0, 3.0), datum(1.0, 11.6), datum(2.0, 5.0)],
+    )])
+    .y(Axis::linear().include_zero(true));
+
+    let out = render(&spec, surface());
+    assert!(
+        out.y.max > 11.6,
+        "domain top {} must clear the data max 11.6",
+        out.y.max
+    );
+
+    // And the peak must be strictly inside the plot, by more than a stroke
+    // half-width, so nothing is clipped.
+    let peak_y = out.y.map(11.6, out.scene.plot.bottom(), out.scene.plot.y);
+    assert!(
+        peak_y > out.scene.plot.y + 2.0,
+        "peak at y={peak_y} is on the plot's top edge {}",
+        out.scene.plot.y
+    );
+}
+
+/// Rounding outward must not add a whole empty step when the data already
+/// ends exactly on a tick.
+#[test]
+fn auto_domain_does_not_pad_data_already_on_a_tick() {
+    let spec = ChartSpec::new(vec![Series::new(
+        "s",
+        SeriesKind::bar(),
+        BLUE,
+        vec![datum(0.0, 0.0), datum(1.0, 100.0)],
+    )])
+    .x(Axis::category(["a", "b"]))
+    .y(Axis::linear().include_zero(true));
+
+    let out = render(&spec, surface());
+    assert!(
+        out.y.max <= 125.0,
+        "expected a tight domain around 100, got {}",
+        out.y.max
+    );
+}
+
+/// In a stacked column only the OUTERMOST segment rounds its corners.
+///
+/// Regression guard: applying the grouped-bar rule (every bar rounds its
+/// top) to a stack puts a rounded seam between segments, so one column
+/// reads as a pile of separate pills. Reported from the demo.
+#[test]
+fn regression_stacked_segments_round_only_at_the_stack_ends() {
+    let spec = ChartSpec::new(vec![
+        Series::new("bottom", SeriesKind::bar(), BLUE, vec![datum(0.0, 5.0)]),
+        Series::new("middle", SeriesKind::bar(), PINK, vec![datum(0.0, 5.0)]),
+        Series::new("top", SeriesKind::bar(), BLUE, vec![datum(0.0, 5.0)]),
+    ])
+    .x(Axis::category(["only"]))
+    .bars(BarLayout::Stacked);
+
+    let out = render(&spec, surface());
+    // Bars are filled paths; a rounded one carries cubic segments, a square
+    // one is only move/line/close.
+    let curvy: Vec<bool> = out
+        .scene
+        .marks
+        .iter()
+        .filter_map(|m| match m {
+            Mark::Fill { layer: Layer::Series, path, .. } => Some(
+                path.segs.iter().any(|s| matches!(s, PathSeg::CubicTo(..))),
+            ),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(curvy.len(), 3, "three stacked segments");
+    assert_eq!(
+        curvy.iter().filter(|c| **c).count(),
+        1,
+        "exactly one segment (the top of the stack) may be rounded"
+    );
+    // Emission order follows series order, so the LAST one is the stack top.
+    assert!(curvy[2], "the topmost segment is the one that rounds");
+}
+
+/// Grouped bars are each their own column, so every one still rounds.
+#[test]
+fn grouped_bars_all_round_their_own_top() {
+    let spec = ChartSpec::new(vec![
+        Series::new("a", SeriesKind::bar(), BLUE, vec![datum(0.0, 5.0)]),
+        Series::new("b", SeriesKind::bar(), PINK, vec![datum(0.0, 7.0)]),
+    ])
+    .x(Axis::category(["only"]))
+    // Without a zero baseline the domain fits 5..7 and the y=5 bar has
+    // ZERO height — which correctly degrades to no rounding, and would make
+    // this test assert the wrong thing.
+    .y(Axis::linear().include_zero(true))
+    .bars(BarLayout::Grouped);
+
+    let out = render(&spec, surface());
+    let curvy = out
+        .scene
+        .marks
+        .iter()
+        .filter(|m| matches!(m, Mark::Fill { layer: Layer::Series, .. }))
+        .filter(|m| match m {
+            Mark::Fill { path, .. } => path.segs.iter().any(|s| matches!(s, PathSeg::CubicTo(..))),
+            _ => false,
+        })
+        .count();
+    assert_eq!(curvy, 2, "both grouped bars round independently");
+}
+
+// ---------------------------------------------------------------------------
+// Per-kind styling + emphasis
+// ---------------------------------------------------------------------------
+
+fn point_batches(out: &ChartOutput) -> Vec<Vec<PointInstance>> {
+    out.scene
+        .marks
+        .iter()
+        .filter_map(|m| match m {
+            Mark::Points { instances, .. } => Some(instances.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn scatter_spec(style: PointStyle) -> ChartSpec {
+    ChartSpec::new(vec![Series::new(
+        "s",
+        SeriesKind::Scatter(style),
+        BLUE,
+        vec![datum(0.0, 1.0), datum(1.0, 2.0), datum(2.0, 3.0)],
+    )])
+}
+
+/// Hovering a column enlarges exactly the points in it.
+#[test]
+fn hovered_column_enlarges_only_its_points() {
+    let style = PointStyle::new(3.0).hover(9.0);
+    let mut spec = scatter_spec(style);
+    spec.highlight = Highlight::column(1.0);
+
+    let out = render(&spec, surface());
+    let batch = point_batches(&out).pop().expect("a scatter batch");
+    let radii: Vec<f32> = batch.iter().map(|p| p.half.x).collect();
+    assert_eq!(radii, vec![3.0, 9.0, 3.0], "only the hovered column grows");
+}
+
+/// A selected point uses the selected radius, and selection outranks hover.
+#[test]
+fn selection_outranks_hover() {
+    let style = PointStyle::new(3.0).hover(9.0).selected(12.0);
+    let mut spec = scatter_spec(style);
+    spec.highlight = Highlight::column(1.0).with_points(vec![DatumRef { series: 0, index: 1 }]);
+
+    let out = render(&spec, surface());
+    let batch = point_batches(&out).pop().expect("a scatter batch");
+    assert_eq!(batch[1].half.x, 12.0, "selected wins over hovered");
+}
+
+/// `dim_others` fades series that contain nothing emphasised, and leaves the
+/// emphasised one at full opacity.
+#[test]
+fn dim_others_fades_untouched_series() {
+    let mut spec = ChartSpec::new(vec![
+        Series::new("a", SeriesKind::line(), BLUE, vec![datum(0.0, 1.0), datum(1.0, 2.0)]),
+        Series::new("b", SeriesKind::line(), PINK, vec![datum(5.0, 1.0), datum(6.0, 2.0)]),
+    ]);
+    // Column 0.0 exists only in series "a".
+    spec.highlight = Highlight::column(0.0).dim_others(true);
+
+    let out = render(&spec, surface());
+    let alphas: Vec<u8> = out
+        .scene
+        .marks
+        .iter()
+        .filter_map(|m| match m {
+            Mark::Stroke { layer: Layer::Series, paint: Paint::Solid(c), .. } => Some(c.a),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(alphas.len(), 2);
+    assert_eq!(alphas[0], 255, "the emphasised series stays opaque");
+    assert!(alphas[1] < 255, "the other series is dimmed, got {}", alphas[1]);
+}
+
+/// An emphasised series thickens its stroke.
+#[test]
+fn hover_thickens_the_line() {
+    let mut spec = ChartSpec::new(vec![Series::new(
+        "s",
+        SeriesKind::Line(LineStyle::new(2.0).hover_width(6.0)),
+        BLUE,
+        vec![datum(0.0, 1.0), datum(1.0, 2.0)],
+    )]);
+    let plain = render(&spec, surface());
+    spec.highlight = Highlight::column(0.0);
+    let hovered = render(&spec, surface());
+
+    let width_of = |o: &ChartOutput| -> f32 {
+        o.scene
+            .marks
+            .iter()
+            .find_map(|m| match m {
+                Mark::Stroke { layer: Layer::Series, stroke, .. } => Some(stroke.width),
+                _ => None,
+            })
+            .expect("a series stroke")
+    };
+    assert_eq!(width_of(&plain), 2.0);
+    assert_eq!(width_of(&hovered), 6.0);
+}
+
+/// Each `AreaFill` maps to the paint it names — and `None` emits no fill at
+/// all rather than a transparent one.
+#[test]
+fn area_fill_modes_map_to_their_paints() {
+    let fill_paint = |fill: AreaFill| -> Option<Paint> {
+        let spec = ChartSpec::new(vec![Series::new(
+            "s",
+            SeriesKind::Area(AreaStyle::default().fill(fill)),
+            BLUE,
+            vec![datum(0.0, 1.0), datum(1.0, 2.0)],
+        )]);
+        render(&spec, surface()).scene.marks.iter().find_map(|m| match m {
+            Mark::Fill { layer: Layer::AreaFill, paint, .. } => Some(paint.clone()),
+            _ => None,
+        })
+    };
+
+    assert!(fill_paint(AreaFill::None).is_none(), "None must emit no fill mark");
+    match fill_paint(AreaFill::Flat { opacity: 0.5 }) {
+        Some(Paint::Solid(c)) => assert_eq!(c.a, 128, "flat fill takes the named opacity"),
+        other => panic!("expected a solid fill, got {other:?}"),
+    }
+    match fill_paint(AreaFill::Gradient { top_opacity: 1.0, bottom_opacity: 0.0 }) {
+        Some(Paint::Linear { stops, .. }) => {
+            assert_eq!(stops.len(), 2);
+            assert_eq!(stops[0].color.a, 255);
+            assert_eq!(stops[1].color.a, 0);
+        }
+        other => panic!("expected a gradient, got {other:?}"),
+    }
+    let custom = vec![
+        GradientStop { offset: 0.0, color: PINK },
+        GradientStop { offset: 0.5, color: BLUE },
+        GradientStop { offset: 1.0, color: PINK.with_alpha(0) },
+    ];
+    match fill_paint(AreaFill::Stops(custom.clone())) {
+        Some(Paint::Linear { stops, .. }) => assert_eq!(stops, custom),
+        other => panic!("expected explicit stops, got {other:?}"),
+    }
+}
+
+/// A ring is a second instanced batch UNDER the fills, not a per-point
+/// stroke — so a ringed scatter stays two draw ops regardless of point count.
+#[test]
+fn ring_emits_one_extra_batch_beneath_the_fill() {
+    let out = render(&scatter_spec(PointStyle::new(4.0).ring(PINK, 2.0)), surface());
+    let batches = point_batches(&out);
+    assert_eq!(batches.len(), 2, "ring batch + fill batch");
+    // The ring is emitted first (drawn under) and is larger by its width.
+    assert_eq!(batches[0][0].color, PINK);
+    assert_eq!(batches[0][0].half.x, 6.0);
+    assert_eq!(batches[1][0].half.x, 4.0);
+}
+
+/// Marker shape is carried by the instance's corner radius.
+#[test]
+fn point_shapes_map_to_corner_radii() {
+    let radius_for = |shape: PointShape| -> f32 {
+        let out = render(&scatter_spec(PointStyle::new(4.0).shape(shape)), surface());
+        point_batches(&out)[0][0].radius
+    };
+    assert_eq!(radius_for(PointShape::Circle), 4.0, "radius == half-extent is a circle");
+    assert_eq!(radius_for(PointShape::Square), 0.0);
+    assert!(radius_for(PointShape::RoundedSquare) > 0.0);
+    assert!(radius_for(PointShape::RoundedSquare) < 4.0);
+}
+
+/// A bar recolors only the emphasised datum.
+#[test]
+fn bar_hover_color_applies_to_the_hovered_bar_only() {
+    let mut spec = ChartSpec::new(vec![Series::new(
+        "s",
+        SeriesKind::Bar(BarStyle::new(4.0).hover_color(PINK)),
+        BLUE,
+        vec![datum(0.0, 3.0), datum(1.0, 5.0), datum(2.0, 4.0)],
+    )])
+    .x(Axis::category(["a", "b", "c"]))
+    .y(Axis::linear().include_zero(true));
+    spec.highlight = Highlight::column(1.0);
+
+    let out = render(&spec, surface());
+    let colors: Vec<Color> = out
+        .scene
+        .marks
+        .iter()
+        .filter_map(|m| match m {
+            Mark::Fill { layer: Layer::Series, paint: Paint::Solid(c), .. } => Some(*c),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(colors, vec![BLUE, PINK, BLUE]);
+}
+
+/// A per-series `width_fraction` overrides the chart-wide bar padding.
+#[test]
+fn bar_width_fraction_overrides_group_padding() {
+    let bar_width = |style: BarStyle| -> f32 {
+        let spec = ChartSpec::new(vec![Series::new(
+            "s",
+            SeriesKind::Bar(style),
+            BLUE,
+            vec![datum(0.0, 3.0)],
+        )])
+        .x(Axis::category(["only"]))
+        .y(Axis::linear().include_zero(true));
+        let out = render(&spec, surface());
+        out.scene
+            .marks
+            .iter()
+            .find_map(|m| match m {
+                Mark::Fill { layer: Layer::Series, path, .. } => {
+                    let xs: Vec<f32> = path
+                        .segs
+                        .iter()
+                        .filter_map(|s| match s {
+                            PathSeg::MoveTo(a) | PathSeg::LineTo(a) => Some(a.x),
+                            PathSeg::CubicTo(_, _, a) => Some(a.x),
+                            _ => None,
+                        })
+                        .collect();
+                    let lo = xs.iter().cloned().fold(f32::INFINITY, f32::min);
+                    let hi = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                    Some(hi - lo)
+                }
+                _ => None,
+            })
+            .expect("a bar")
+    };
+
+    let default_w = bar_width(BarStyle::default());
+    let narrow = bar_width(BarStyle::default().width_fraction(0.25));
+    assert!(narrow < default_w, "0.25 must be narrower than the 0.8 default");
+    assert!((narrow / default_w - 0.25 / 0.8).abs() < 0.05);
+}
+
+/// With nothing emphasised, `dim_others` changes nothing — an idle chart
+/// must not render faded.
+#[test]
+fn empty_highlight_dims_nothing() {
+    let mut spec = scatter_spec(PointStyle::new(3.0));
+    spec.highlight = Highlight::default().dim_others(true);
+    let out = render(&spec, surface());
+    for p in &point_batches(&out)[0] {
+        assert_eq!(p.color.a, 255, "an idle chart must not be dimmed");
+        assert_eq!(p.half.x, 3.0, "and must not be enlarged");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Highlight band + per-mark style callback
+// ---------------------------------------------------------------------------
+
+fn band_rect(out: &ChartOutput) -> Option<(f32, f32)> {
+    out.scene.marks.iter().find_map(|m| match m {
+        Mark::Fill { layer: Layer::Background, path, .. } => {
+            let xs: Vec<f32> = path
+                .segs
+                .iter()
+                .filter_map(|s| match s {
+                    PathSeg::MoveTo(a) | PathSeg::LineTo(a) => Some(a.x),
+                    _ => None,
+                })
+                .collect();
+            let lo = xs.iter().cloned().fold(f32::INFINITY, f32::min);
+            let hi = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            Some((lo, hi - lo))
+        }
+        _ => None,
+    })
+}
+
+fn bar_band_spec() -> ChartSpec {
+    ChartSpec::new(vec![
+        Series::new("a", SeriesKind::bar(), BLUE, vec![datum(0.0, 3.0), datum(1.0, 5.0), datum(2.0, 4.0)]),
+        Series::new("b", SeriesKind::bar(), PINK, vec![datum(0.0, 2.0), datum(1.0, 6.0), datum(2.0, 1.0)]),
+    ])
+    .x(Axis::category(["a", "b", "c"]))
+    .y(Axis::linear().include_zero(true))
+    .highlight_band(Color::rgba(0, 0, 0, 20))
+}
+
+/// The band covers the whole CATEGORY SLOT, not just the bar.
+///
+/// That is the entire point of it: with grouped bars the pointer is often in
+/// the gap between two bars, and emphasising bars alone leaves the column
+/// looking inactive there.
+#[test]
+fn highlight_band_spans_the_whole_category_slot() {
+    let mut spec = bar_band_spec();
+    spec.highlight = Highlight::column(1.0);
+
+    let out = render(&spec, surface());
+    let (x0, w) = band_rect(&out).expect("a background band");
+    let slot = out.scene.plot.w / 3.0;
+    assert!((w - slot).abs() < 0.5, "band width {w} should equal the slot {slot}");
+
+    // And it is centred on the hovered category.
+    let center = out.x.map(1.0, out.scene.plot.x, out.scene.plot.right());
+    assert!((x0 + w / 2.0 - center).abs() < 0.5);
+}
+
+/// The band is painted BEHIND the data — a translucent rect over the bars
+/// would wash them out.
+#[test]
+fn highlight_band_paints_behind_the_series() {
+    let mut spec = bar_band_spec();
+    spec.highlight = Highlight::column(1.0);
+    let out = render(&spec, surface());
+
+    let band_at = out.scene.marks.iter().position(|m| m.layer() == Layer::Background);
+    let first_series = out.scene.marks.iter().position(|m| m.layer() == Layer::Series);
+    assert!(band_at.is_some() && first_series.is_some());
+    assert!(band_at < first_series, "the band must sort before the series");
+}
+
+#[test]
+fn no_band_without_a_highlighted_column() {
+    let out = render(&bar_band_spec(), surface());
+    assert!(band_rect(&out).is_none(), "an idle chart draws no band");
+}
+
+/// A style callback recolors individual bars — the conditional-formatting
+/// case (negative values in red, thresholds, per-category branding).
+#[test]
+fn style_callback_recolors_individual_bars() {
+    let red = Color::rgb(0xd0, 0x30, 0x30);
+    let f: StyleFn = std::rc::Rc::new(move |ctx: &MarkContext| {
+        if ctx.datum.y < 0.0 {
+            MarkOverride::color(red)
+        } else {
+            MarkOverride::default()
+        }
+    });
+    let spec = ChartSpec::new(vec![Series::new(
+        "s",
+        SeriesKind::bar(),
+        BLUE,
+        vec![datum(0.0, 3.0), datum(1.0, -2.0), datum(2.0, 4.0)],
+    )
+    .styled(f)])
+    .x(Axis::category(["a", "b", "c"]));
+
+    let out = render(&spec, surface());
+    let colors: Vec<Color> = out
+        .scene
+        .marks
+        .iter()
+        .filter_map(|m| match m {
+            Mark::Fill { layer: Layer::Series, paint: Paint::Solid(c), .. } => Some(*c),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(colors, vec![BLUE, red, BLUE], "only the negative bar recolors");
+}
+
+/// The callback sees the resolved emphasis, so it can build on hover state
+/// instead of reimplementing it.
+#[test]
+fn style_callback_receives_the_resolved_emphasis() {
+    let gold = Color::rgb(0xff, 0xc1, 0x07);
+    let f: StyleFn = std::rc::Rc::new(move |ctx: &MarkContext| match ctx.emphasis {
+        Emphasis::None => MarkOverride::default(),
+        _ => MarkOverride::color(gold).with_radius(14.0),
+    });
+    let mut spec = ChartSpec::new(vec![Series::new(
+        "s",
+        SeriesKind::Scatter(PointStyle::new(3.0)),
+        BLUE,
+        vec![datum(0.0, 1.0), datum(1.0, 2.0)],
+    )
+    .styled(f)]);
+    spec.highlight = Highlight::column(1.0);
+
+    let out = render(&spec, surface());
+    let batch = point_batches(&out).pop().expect("a scatter batch");
+    assert_eq!(batch[0].color, BLUE);
+    assert_eq!(batch[1].color, gold, "the hovered point takes the override");
+    assert_eq!(batch[1].half.x, 14.0, "and its radius");
+}
+
+/// Two specs sharing one `Rc` callback compare equal; a fresh closure does
+/// not. This is the memoisation contract — a host that rebuilds its callback
+/// every tick would re-render every tick.
+#[test]
+fn style_callback_compares_by_identity() {
+    let make = |f: Option<StyleFn>| {
+        let mut s = Series::new("s", SeriesKind::bar(), BLUE, vec![datum(0.0, 1.0)]);
+        s.style_fn = f;
+        ChartSpec::new(vec![s])
+    };
+    let shared: StyleFn = std::rc::Rc::new(|_: &MarkContext| MarkOverride::default());
+
+    assert_eq!(make(Some(shared.clone())), make(Some(shared.clone())), "same Rc is equal");
+    assert_eq!(make(None), make(None));
+
+    let other: StyleFn = std::rc::Rc::new(|_: &MarkContext| MarkOverride::default());
+    assert_ne!(make(Some(shared)), make(Some(other)), "a different Rc is not equal");
+}
+
+/// `opacity` on an override multiplies the resolved alpha.
+#[test]
+fn style_callback_opacity_multiplies_alpha() {
+    let f: StyleFn = std::rc::Rc::new(|ctx: &MarkContext| {
+        if ctx.index == 1 {
+            MarkOverride::opacity(0.5)
+        } else {
+            MarkOverride::default()
+        }
+    });
+    let spec = ChartSpec::new(vec![Series::new(
+        "s",
+        SeriesKind::Scatter(PointStyle::new(3.0)),
+        BLUE,
+        vec![datum(0.0, 1.0), datum(1.0, 2.0)],
+    )
+    .styled(f)]);
+
+    let out = render(&spec, surface());
+    let batch = point_batches(&out).pop().expect("a batch");
+    assert_eq!(batch[0].color.a, 255);
+    assert_eq!(batch[1].color.a, 128);
+}
+
+// ---------------------------------------------------------------------------
+// Transitions
+// ---------------------------------------------------------------------------
+
+fn tween_spec(values: [f64; 3]) -> ChartSpec {
+    ChartSpec::new(vec![Series::new(
+        "s",
+        SeriesKind::bar(),
+        BLUE,
+        values.iter().enumerate().map(|(i, v)| datum(i as f64, *v)).collect(),
+    )])
+    .x(Axis::category(["a", "b", "c"]))
+    .y(Axis::linear().include_zero(true))
+}
+
+/// A transition must LAND exactly on the plain destination render.
+///
+/// Otherwise the chart visible at rest depends on whether an animation
+/// happened to run — the worst kind of inconsistency, because it only shows
+/// up some of the time.
+#[test]
+fn transition_lands_exactly_on_the_destination_render() {
+    let (a, b) = (tween_spec([1.0, 2.0, 3.0]), tween_spec([9.0, 4.0, 6.0]));
+    let at1 = render_tween(&a, &b, 1.0, surface(), &Gutters::None);
+    assert_eq!(at1.scene.marks, render(&b, surface()).scene.marks);
+    assert_eq!(at1.scene.labels, render(&b, surface()).scene.labels);
+}
+
+/// At t=0 the DATA is still the source's, even though the labels have
+/// already switched to the destination's.
+///
+/// The split is deliberate: values glide, labels do not churn. Pinning it
+/// here so a future change to tick handling cannot silently start animating
+/// the marks from the wrong place.
+#[test]
+fn transition_starts_from_the_source_data() {
+    let (a, b) = (tween_spec([1.0, 2.0, 3.0]), tween_spec([9.0, 4.0, 6.0]));
+    let series_marks = |o: &ChartOutput| -> Vec<Mark> {
+        o.scene.marks.iter().filter(|m| m.layer() == Layer::Series).cloned().collect()
+    };
+    // Same domain in both specs would make this vacuous; assert it is not.
+    let at0 = render_tween(&a, &b, 0.0, surface(), &Gutters::None);
+    assert_eq!(
+        series_marks(&at0),
+        series_marks(&render(&a, surface())),
+        "the marks at t=0 are the source's"
+    );
+}
+
+/// Mid-transition, values sit between the endpoints.
+#[test]
+fn transition_midpoint_lies_between_the_endpoints() {
+    let (a, b) = (tween_spec([0.0, 0.0, 0.0]), tween_spec([10.0, 10.0, 10.0]));
+    let mid = charts_core::lerp_data(&a, &b, 0.5).expect("same shape");
+    for d in &mid.series[0].data {
+        assert!(d.y > 0.0 && d.y < 10.0, "expected an intermediate value, got {}", d.y);
+    }
+}
+
+/// The DOMAIN tweens too. Without it the axis jumps to its final range on
+/// the first frame while the marks glide into it, which reads as a glitch.
+#[test]
+fn transition_interpolates_the_axis_domain() {
+    let (a, b) = (tween_spec([1.0, 1.0, 1.0]), tween_spec([100.0, 100.0, 100.0]));
+    let at0 = render_tween(&a, &b, 0.0, surface(), &Gutters::None);
+    let mid = render_tween(&a, &b, 0.5, surface(), &Gutters::None);
+    let at1 = render_tween(&a, &b, 1.0, surface(), &Gutters::None);
+
+    assert!(mid.y.max > at0.y.max, "domain must grow from the source");
+    assert!(mid.y.max < at1.y.max, "and not reach the destination early");
+}
+
+/// Tick LABELS come from the destination for the whole transition, so they
+/// do not churn through arbitrary intermediate values while the gridlines
+/// move.
+#[test]
+fn transition_keeps_the_destination_tick_labels() {
+    let (a, b) = (tween_spec([1.0, 1.0, 1.0]), tween_spec([100.0, 100.0, 100.0]));
+    let target = render(&b, surface());
+    let want: Vec<String> = target.y.ticks.iter().map(|t| t.label.clone()).collect();
+
+    for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+        let f = render_tween(&a, &b, t, surface(), &Gutters::None);
+        let got: Vec<String> = f.y.ticks.iter().map(|t| t.label.clone()).collect();
+        assert_eq!(got, want, "labels must stay put at t={t}");
+    }
+}
+
+/// Specs that cannot be paired point-for-point snap to the destination
+/// rather than pairing unrelated points.
+#[test]
+fn transition_snaps_when_the_shape_changes() {
+    let a = tween_spec([1.0, 2.0, 3.0]);
+    let b = ChartSpec::new(vec![
+        Series::new("s", SeriesKind::bar(), BLUE, vec![datum(0.0, 1.0)]),
+        Series::new("t", SeriesKind::bar(), PINK, vec![datum(0.0, 2.0)]),
+    ])
+    .x(Axis::category(["a"]));
+
+    assert!(!charts_core::same_shape(&a, &b));
+    assert!(charts_core::lerp_data(&a, &b, 0.5).is_none());
+
+    let mid = render_tween(&a, &b, 0.5, surface(), &Gutters::None);
+    let plain = render(&b, surface());
+    assert_eq!(mid.scene.marks, plain.scene.marks, "a shape change snaps to the destination");
+}
+
+/// Only VALUES interpolate. A color change or a new selection takes effect
+/// immediately — fading through an intermediate nobody asked for is worse
+/// than switching.
+#[test]
+fn transition_does_not_interpolate_non_value_properties() {
+    let a = tween_spec([1.0, 2.0, 3.0]);
+    let mut b = tween_spec([1.0, 2.0, 3.0]);
+    b.series[0].color = PINK;
+
+    let mid = charts_core::lerp_data(&a, &b, 0.5).expect("same shape");
+    assert_eq!(mid.series[0].color, PINK, "color switches, it does not blend");
+}
+
+/// Easing is smooth and pinned at both ends, so a transition starts and
+/// finishes at rest.
+#[test]
+fn easing_is_pinned_at_both_ends() {
+    assert_eq!(charts_core::ease_in_out(0.0), 0.0);
+    assert_eq!(charts_core::ease_in_out(1.0), 1.0);
+    assert!((charts_core::ease_in_out(0.5) - 0.5).abs() < 1e-6, "symmetric at the midpoint");
+    // Monotonic.
+    let mut prev = -1.0;
+    for i in 0..=20 {
+        let v = charts_core::ease_in_out(i as f32 / 20.0);
+        assert!(v >= prev, "easing must not go backwards");
+        prev = v;
+    }
+    // And clamped outside 0..1 rather than overshooting.
+    assert_eq!(charts_core::ease_in_out(-1.0), 0.0);
+    assert_eq!(charts_core::ease_in_out(2.0), 1.0);
 }

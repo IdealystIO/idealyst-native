@@ -51,12 +51,20 @@ pub mod scale;
 pub mod scene;
 pub mod spec;
 pub mod svg;
+pub mod tween;
 
 pub use hit::{HitIndex, HitResult};
-pub use render::{render, render_with, ChartOutput, Gutters, LabelMetrics, Padding};
+pub use render::{
+    render, render_tween, render_with, ChartOutput, Gutters, LabelMetrics, Padding,
+};
+pub use tween::{ease_in_out, lerp_data, same_shape};
 pub use scale::{ResolvedAxis, Tick};
 pub use scene::{
     pt, ChartScene, Color, FillRule, GradientStop, HAlign, LabelPlacement, LabelRole, Layer,
     LineCap, LineJoin, Mark, Paint, Path, PathSeg, Point, PointInstance, Rect, Stroke, VAlign,
 };
-pub use spec::{datum, Axis, AxisKind, BarLayout, ChartSpec, Datum, Domain, Series, SeriesKind};
+pub use spec::{
+    datum, AreaFill, AreaStyle, Axis, AxisKind, BarLayout, BarStyle, ChartSpec, Datum, DatumRef,
+    Domain, Emphasis, Highlight, LineStyle, MarkContext, MarkOverride, PointShape, PointStyle,
+    Ring, Series, SeriesKind, StyleFn,
+};

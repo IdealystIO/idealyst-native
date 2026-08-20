@@ -144,10 +144,12 @@ pub(crate) fn apply_static_transform(
                     Transform::TranslateY(Length::Percent(v)) => {
                         s.static_translate_pct_y = Some(*v)
                     }
-                    Transform::TranslateX(Length::Auto)
-                    | Transform::TranslateY(Length::Auto) => {
-                        // Auto on translate is meaningless — leave identity.
-                    }
+                    // Neither `Auto` nor `Full` means anything on a
+                    // translate: `Auto` defers to layout, which a transform
+                    // has no part in, and `Full` is the corner-radius pill.
+                    // Both leave the identity translate.
+                    Transform::TranslateX(Length::Auto | Length::Full)
+                    | Transform::TranslateY(Length::Auto | Length::Full) => {}
                     Transform::Scale(v) => {
                         s.scale_x = *v;
                         s.scale_y = *v;

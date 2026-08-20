@@ -244,7 +244,15 @@ fn text_shadow_offset(x: f32, y: f32) -> (CGFloat, CGFloat) {
 pub(crate) fn length_to_px(len: &runtime_shared::Length) -> CGFloat {
     match len {
         runtime_shared::Length::Px(v) => *v as CGFloat,
-        runtime_shared::Length::Percent(_) | runtime_shared::Length::Auto => 0.0,
+        // This one serves TEXT lengths (font size, styled-run metrics), not
+        // corner radii. `Full` is the pill radius and has no meaning on a
+        // font size, so it lands with Percent/Auto on "no defined value" and
+        // the caller falls back to its default. The radius-context
+        // `length_to_px` in `imp/mod.rs` is the one that maps `Full` to
+        // `FULL_RADIUS_FALLBACK_PX`.
+        runtime_shared::Length::Full
+        | runtime_shared::Length::Percent(_)
+        | runtime_shared::Length::Auto => 0.0,
     }
 }
 

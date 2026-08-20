@@ -2560,8 +2560,13 @@ stylesheet! {
             gap: t.spacing.sm(),
             background: Color("transparent".into()),
             color: t.color.text(),
-            padding_vertical: t.spacing.xs(),
-            padding_horizontal: t.spacing.sm(),
+            // Desktop-menu proportions: ~36px rows with a real inline
+            // inset, and a floor so a short-labeled menu still reads as
+            // a panel rather than a tag. `xs`/`sm` here made every menu
+            // read compressed.
+            padding_vertical: t.spacing.sm(),
+            padding_horizontal: t.spacing.md(),
+            min_width: 160.0,
             border_radius: t.radius.sm(),
             font_size: t.typography.body_size(),
             text_align: TextAlign::Left,
@@ -2591,8 +2596,10 @@ stylesheet! {
             font_weight: FontWeight::SemiBold,
             letter_spacing: 0.8,
             text_transform: TextTransform::Uppercase,
+            // Inline inset tracks MenuItemRow's so the heading sits on
+            // the rows' text column.
             padding_vertical: t.spacing.xs(),
-            padding_horizontal: t.spacing.sm(),
+            padding_horizontal: t.spacing.md(),
         }
     }
 }
