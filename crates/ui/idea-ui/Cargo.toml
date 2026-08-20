@@ -25,6 +25,21 @@ docs = ["dep:idea-ui-docs-derive"]
 # forwarding compiles out).
 robot = ["runtime-core/robot"]
 
+# Off by default. Exposes the premint delta-introspection accessors
+# (`premint_variant_axes`, `premint_base`, …) that `runtime-core` gates
+# behind `style-dump`. Declared HERE rather than only on the dep line
+# because the `examples/dump_premint_manifest.rs` converter calls those
+# accessors directly, and a feature enabled only on a dependency is not
+# visible to this crate's own build. Same rule as the `debug-stats`
+# forwarding documented in CLAUDE.md §6.
+style-dump = ["runtime-core/style-dump"]
+
+# Off by default. Compiles the `recipe!` usage examples in `src/recipes.rs`
+# (they self-gate on the catalog feature and expand to nothing without it).
+# The design-sync renderer calls those fns to produce its stories, so it
+# needs them present; production builds leave this off and pay nothing.
+catalog = ["runtime-core/catalog", "idea-theme/catalog"]
+
 # The themed `Table` component + its `table` SDK dep (ON by default).
 # The only feature on this crate that still removes linked code: without
 # it the `table` crate never enters the graph.
@@ -89,6 +104,18 @@ table = { workspace = true, optional = true }
 # every capability trait over a recording op log — it exists for exactly
 # this. Used by `collapsible_direct_mount.rs`.
 host-mock = { workspace = true }
+# The CSS-emission half of the design-sync converter
+# (`examples/design_sync_dump.rs`). Turns the PREMINT_SHEETS registry
+# this crate's `stylesheet!` blocks register into (under
+# `--cfg idealyst_premint_dump`) into the shipped .css text. Dev-only:
+# examples never link into a shipped app.
+premint-dump = { workspace = true }
+# The HTML-emission half of the design-sync converter
+# (`examples/design_sync_render.rs`). Rendering each component through the
+# real SSR backend is what makes the exported markup ground truth: the
+# framework decides the DOM shape and the preminted class list, rather
+# than the converter inferring either. Dev-only.
+backend-ssr = { workspace = true }
 runtime-scene = { workspace = true }
 # `tests/loading_button_spawn.rs` drives `spawn_then` through a manually
 # pumped test executor (the `tests/scoped_spawn.rs` pattern in

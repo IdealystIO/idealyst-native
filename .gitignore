@@ -23,3 +23,5 @@ dist/
 # a `.env.example` with empty values instead.
 .env
 **/.env
+# Generated design-sync upload bundle (rebuild: see .design-sync/NOTES.md)
+ds-bundle/

@@ -1,0 +1,11 @@
+{
+  "projectId": "f82ba3fb-ebd8-4ceb-b1cc-a13ac9977f60",
+  "projectName": "idea-ui (Idealyst)",
+  "shape": "custom",
+  "note": "Rust workspace — neither the storybook nor the package converter applies. The converter is `crates/ui/idea-ui/examples/design_sync_dump.rs`; see .design-sync/NOTES.md.",
+  "converter": {
+    "cmd": "RUSTFLAGS=\"--cfg idealyst_premint_dump\" cargo run -p idea-ui --features style-dump --example design_sync_dump -- <out-dir>",
+    "emits": ["tokens.css", "components.css", "manifest.json"]
+  },
+  "outDir": "ds-bundle"
+}
