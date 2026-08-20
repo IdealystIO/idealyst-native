@@ -17,8 +17,6 @@ something regresses here, the surface area to bisect is small.
   catches data-segment pruning that zeroes vtable bytes (the failure mode
   is `RuntimeError: null function` or wrong dispatch at the first
   indirect call).
-- `theme-swap/` — many tokens + light/dark toggle that exercises the
-  reactive token-cohort and `update_tokens` batching path.
 - `lazy-chunk-handoff/` — minimal app wrapping a `lazy! { … }` block;
   verifies the main bundle ↔ chunk boundary survives release-mode
   pruning (chunks reach into main-bundle data symbols for shared

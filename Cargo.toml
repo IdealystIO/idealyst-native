@@ -177,6 +177,7 @@ members = [
     # (zero idealyst deps, publishable on its own); the idealyst SDK
     # layer adapts its mark IR onto `canvas_core::Scene`.
     "crates/sdk/client/charts/core",
+    "crates/sdk/client/charts",
     "crates/sdk/client/toolbar",
     "crates/sdk/client/pdf",
     "crates/sdk/client/form",
@@ -313,6 +314,7 @@ members = [
     "crates/mcp/examples/mcp-demo",
     "crates/sdk/client/camera/examples/camera-demo",
     "crates/sdk/client/canvas/examples/canvas-demo",
+    "crates/sdk/client/charts/examples/charts-demo",
     "crates/sdk/client/denoise/examples/denoise-demo",
     "crates/sdk/client/dnd/examples/dnd-demo",
     "crates/sdk/client/dnd/examples/kanban-demo",
@@ -370,7 +372,6 @@ members = [
 
     # Framework regression test apps. See tests/README.md.
     "tests/vtable-dispatch",
-    "tests/theme-swap",
     "tests/lazy-chunk-handoff",
     "tests/lazy-many-splits",
     "tests/lazy-payload-split/heavy",
@@ -543,6 +544,7 @@ svg = { path = "crates/sdk/client/svg" }
 canvas = { path = "crates/sdk/client/canvas" }
 canvas-core = { path = "crates/sdk/client/canvas/core" }
 charts-core = { path = "crates/sdk/client/charts/core" }
+charts = { path = "crates/sdk/client/charts" }
 canvas-native = { path = "crates/sdk/client/canvas/native", features = ["self-register"] }
 canvas-vello = { path = "crates/sdk/client/canvas/vello" }
 toolbar = { path = "crates/sdk/client/toolbar" }

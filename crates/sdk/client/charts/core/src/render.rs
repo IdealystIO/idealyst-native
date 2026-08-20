@@ -114,6 +114,18 @@ pub fn render_with(spec: &ChartSpec, rect: Rect, gutters: &Gutters<'_>) -> Chart
     let mut scene = ChartScene { marks: Vec::new(), labels: Vec::new(), plot };
     let mut hit = HitIndex::new(plot);
 
+    // A plot with no area cannot show anything, and every mark it would
+    // emit collapses onto a degenerate line. Return early rather than
+    // producing that geometry: hosts measure their plot AFTER first mount,
+    // so this is the state every chart passes through on frame one, and
+    // rendering a full scene there is pure waste — plus the marks are
+    // meaningless, which makes them a bad thing to hand a GPU renderer.
+    // The axes are still resolved, so a caller can read the domain before
+    // the first layout.
+    if plot.w <= 0.0 || plot.h <= 0.0 {
+        return ChartOutput { scene, x, y, hit };
+    }
+
     draw_grid(&mut scene, spec, &x, &y, plot);
     draw_axis_labels(&mut scene, spec, &x, &y, plot);
     draw_series(&mut scene, &mut hit, spec, &x, &y, plot);

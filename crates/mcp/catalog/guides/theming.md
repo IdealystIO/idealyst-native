@@ -72,11 +72,21 @@ theme.typography.body_size = 15.0;
 install_idea_theme(theme);
 ```
 
-Note: the string name in `Tokenized::token("…", …)` is **cosmetic**. On install,
-each field's value is registered under its own fixed canonical name
-(`intent-primary-solid-bg`, `spacing-lg`, …) regardless of the name you pass — so
-a plain `Tokenized::Literal(...)` override is enough and a typo'd token name can't
-silently no-op your change.
+Note: the string name in `Tokenized::token("…", …)` is **cosmetic**. Each field
+is keyed by its own fixed canonical name (`intent-primary-solid-bg`,
+`spacing-lg`, …) regardless of what you pass, in both directions:
+
+- On install, the field's value is registered under the canonical name, so a
+  typo'd token name can't silently no-op your change.
+- On read, component sheets reference the canonical name, so a literal override
+  still resolves through the token — on web it emits
+  `var(--intent-primary-solid-bg, #0066ff)`, not a baked `#0066ff`.
+
+The second half is what keeps a customized theme swappable at runtime: a color
+baked as a literal into a component's class can never repaint, so the app would
+paint the canvas dark while every button and heading kept its light color.
+`Tokenized::Literal(...)` is therefore a complete override — you never need to
+restate a token name to keep light/dark working.
 
 ## A fully custom theme
 

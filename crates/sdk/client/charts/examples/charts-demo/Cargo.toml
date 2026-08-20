@@ -1,0 +1,37 @@
+[package]
+name = "charts-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Charts demo — the charts SDK across line / smooth / area / bar / stacked / scatter, with live data, hover tooltips and a hover readout."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# The platform surface, used by `src/main.rs` only — it carries whatever
+# the target needs, so this manifest names no backend directly. An
+# idealyst app IS its binary; there is no generated wrapper crate.
+idealyst = { workspace = true }
+# The author surface. `runtime-vocabulary` because `ui!` emits absolute
+# `::runtime_vocabulary::glue::…` paths; `runtime-scene` because
+# `register_scene_extensions` is generic over the scene `Registry`.
+runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+idea-ui = { workspace = true }
+charts = { workspace = true }
+# The chart draws through a `Canvas`, so the app must install a canvas
+# RENDERER — `charts` deliberately installs none of its own (a chart is
+# just a canvas author). `canvas-native` has real handlers for both
+# targets this demo ships to: Canvas2D on web, CoreGraphics on macOS.
+canvas-native = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Charts"
+bundle_id = "ai.truday.idealyst.chartsdemo"
+version   = "0.0.1"
+targets   = ["web", "macos"]
+
+[package.metadata.idealyst.app.macos]
+category = "public.app-category.developer-tools"

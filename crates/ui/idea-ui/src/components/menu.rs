@@ -43,7 +43,7 @@ use runtime_core::{
 /// intent" delay.
 const SUBMENU_HOVER_GRACE_MS: i32 = 120;
 
-use crate::stylesheets::{MenuChevron, MenuItemRow, MenuLabel as MenuLabelStyle, MenuSeparator as MenuSeparatorStyle, Spacer};
+use crate::stylesheets::{MenuCheckMark, MenuCheckbox, MenuChevron, MenuItemRow, MenuLabel as MenuLabelStyle, MenuSeparator as MenuSeparatorStyle, Spacer};
 
 /// Right-pointing chevron shown on SubMenu rows.
 const CHEVRON: &str = "\u{203A}";
@@ -277,20 +277,60 @@ pub fn MenuSeparator(_props: MenuSeparatorProps) -> Element {
 // SubMenu
 // =============================================================================
 
-/// One row in a [`SubMenu`] flyout. `MenuEntry::new(label, on_select)`.
+/// One row in a [`SubMenu`] flyout. `MenuEntry::new(label, on_select)`
+/// for a classic pick-and-close row, `MenuEntry::checkable(label,
+/// checked, on_select)` for a multi-select row.
 #[derive(Clone, IdealystSchema)]
 pub struct MenuEntry {
     /// Flyout row label. `Reactive<String>` — static or live.
     #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub label: Reactive<String>,
-    /// Fires when this flyout row is chosen (also closes the flyout).
+    /// Fires when this flyout row is chosen (also closes the flyout,
+    /// unless the row is checkable).
     pub on_select: Rc<dyn Fn()>,
+    /// `Some` renders a leading checkbox reflecting the value LIVE
+    /// (pass a signal/`rx!` so toggles re-mark the row in place), and
+    /// selecting the row does NOT close the flyout — multi-select rows
+    /// keep it open for the next toggle. `None` is the classic row.
+    #[schema(constraint = "reactive: static bool or Signal/rx!")]
+    pub checked: Option<Reactive<bool>>,
 }
 
 impl MenuEntry {
     pub fn new(label: impl Into<Reactive<String>>, on_select: Rc<dyn Fn()>) -> Self {
-        Self { label: label.into(), on_select }
+        Self { label: label.into(), on_select, checked: None }
     }
+
+    /// A multi-select row: leading checkbox bound to `checked`, and the
+    /// flyout stays open across selects.
+    pub fn checkable(
+        label: impl Into<Reactive<String>>,
+        checked: impl Into<Reactive<bool>>,
+        on_select: Rc<dyn Fn()>,
+    ) -> Self {
+        Self { label: label.into(), on_select, checked: Some(checked.into()) }
+    }
+}
+
+/// The small checkbox glyph checkable [`MenuEntry`]s render — exported
+/// so composed [`MenuItem`]s (a chip's value menu, say) can carry the
+/// same mark in their `leading` slot. Reactive: pass a signal/`rx!`
+/// and the mark flips in place.
+pub fn menu_checkbox(checked: impl Into<Reactive<bool>>) -> Element {
+    let checked = checked.into();
+    let mark_checked = checked.clone();
+    let mark = runtime_core::text("✓".to_string())
+        .with_style(move || {
+            StyleApplication::new(MenuCheckMark::sheet())
+                .with("checked", if mark_checked.get() { "on" } else { "off" }.to_string())
+        })
+        .into_element();
+    runtime_core::view(vec![mark])
+        .with_style(move || {
+            StyleApplication::new(MenuCheckbox::sheet())
+                .with("checked", if checked.get() { "on" } else { "off" }.to_string())
+        })
+        .into_element()
 }
 
 // Reactive-by-default: `label` is already reactive; `items` is a LIST
@@ -415,13 +455,21 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
                 for entry in items.iter() {
                     let on_select = entry.on_select.clone();
                     let label = entry.label.clone();
-                    let row = runtime_core::pressable(
-                        vec![runtime_core::text(label).into_element()],
-                        move || {
-                            (on_select)();
+                    // Checkable rows keep the flyout open — multi-select
+                    // toggles stack without re-hovering (the checkbox
+                    // itself re-marks reactively).
+                    let keep_open = entry.checked.is_some();
+                    let mut kids: Vec<Element> = Vec::with_capacity(2);
+                    if let Some(c) = entry.checked.clone() {
+                        kids.push(menu_checkbox(c));
+                    }
+                    kids.push(runtime_core::text(label).into_element());
+                    let row = runtime_core::pressable(kids, move || {
+                        (on_select)();
+                        if !keep_open {
                             open.set(false);
-                        },
-                    )
+                        }
+                    })
                     .with_style(|| StyleApplication::new(MenuItemRow::sheet()))
                     .into_element();
                     rows.push(row);

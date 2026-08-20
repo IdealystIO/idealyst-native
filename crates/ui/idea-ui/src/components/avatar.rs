@@ -20,7 +20,7 @@ use runtime_core::{
     StyleApplication, VariantEnum,
 };
 
-use crate::stylesheets::{Avatar as AvatarStyle, AvatarText};
+use crate::stylesheets::{Avatar as AvatarStyle, AvatarImage, AvatarText};
 use crate::theme::IdeaThemeRef;
 
 pub use crate::stylesheets::{AvatarColor, AvatarSize};
@@ -112,7 +112,12 @@ pub fn Avatar(props: &AvatarProps) -> Element {
             // Read `src` INSIDE so the `when` Effect subscribes; the source is
             // `Some` here because the `cond` selected this branch.
             let source = src.get().expect("when(src.is_some) image branch");
-            let img = image_from(source).into_element();
+            // Sized to FILL the disc (see `AvatarImage`): unstyled, the
+            // image renders at natural size and the clipped container
+            // shows only its center.
+            let img = image_from(source)
+                .with_style(StyleApplication::new(AvatarImage::sheet()))
+                .into_element();
             ui! {
                 view(style = container_style.clone()) {
                     img

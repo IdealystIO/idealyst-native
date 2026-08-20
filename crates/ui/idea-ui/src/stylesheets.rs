@@ -1453,6 +1453,22 @@ stylesheet! {
 }
 
 stylesheet! {
+    // The photo inside the disc. Fill + `Cover`, because the container
+    // is a fixed-size clipped circle: an UNSIZED image renders at its
+    // natural pixel size and the disc's `overflow: hidden` shows only
+    // its center — a 300px avatar in a 40px disc read as a heavy zoom
+    // onto the middle of the face. Cover keeps the disc filled for any
+    // source aspect without distortion.
+    pub AvatarImage<IdeaThemeRef> {
+        base(_t) {
+            width: Length::pct(100.0),
+            height: Length::pct(100.0),
+            object_fit: runtime_core::ObjectFit::Cover,
+        }
+    }
+}
+
+stylesheet! {
     pub AvatarText<IdeaThemeRef> {
         base(_t) {
             font_weight: FontWeight::SemiBold,
@@ -2599,6 +2615,53 @@ stylesheet! {
         base(t) {
             color: t.color.text_muted(),
             font_size: t.typography.body_size(),
+        }
+    }
+}
+
+// Leading checkbox for CHECKABLE menu rows (multi-select flyouts and
+// composed rows via `menu_checkbox`). Box + mark are separate sheets:
+// native text nodes don't inherit color from a parent, so the mark
+// carries its own color and flips it with the same variant key.
+stylesheet! {
+    pub MenuCheckbox<IdeaThemeRef> {
+        base(t) {
+            width: 16.0,
+            height: 16.0,
+            flex_shrink: 0.0,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            border_radius: t.radius.sm(),
+            border_width: 1.5,
+        }
+        variant checked {
+            #[default]
+            off(t) {
+                border_color: t.color.border(),
+                background: Color("transparent".into()),
+            }
+            on(t) {
+                border_color: t.intent.primary.solid_bg(),
+                background: t.intent.primary.solid_bg(),
+            }
+        }
+        transitions { background: 120ms EaseOut, border_color: 120ms EaseOut }
+    }
+}
+
+stylesheet! {
+    // The ✓ inside the box. Always rendered, transparent while off, so
+    // toggling never reflows the row.
+    pub MenuCheckMark<IdeaThemeRef> {
+        base(_t) {
+            font_size: 11.0,
+            font_weight: FontWeight::Bold,
+            line_height: 12.0,
+        }
+        variant checked {
+            #[default]
+            off(_t) { color: Color("transparent".into()) }
+            on(t) { color: t.intent.primary.solid_text() }
         }
     }
 }

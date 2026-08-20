@@ -117,6 +117,15 @@ pub struct Intents {
 // =============================================================================
 
 /// Theme-wide color tokens that aren't tied to a single intent.
+///
+/// Every field may be written as a bare literal
+/// (`Tokenized::Literal(Color("#18181b".into()))`) or as a
+/// `Tokenized::token(name, fallback)` with any name at all — both are
+/// keyed by the field's CANONICAL token name
+/// ([`CANONICAL_NEUTRAL_TOKENS`]) when the theme is installed AND when a
+/// component sheet reads it back through [`IdeaThemeRef`]. Keeping the
+/// read half canonical is what lets a customized theme still swap at
+/// runtime — a literal baked into a component's class can never repaint.
 #[derive(Clone)]
 pub struct Colors {
     pub background: Tokenized<Color>,
@@ -186,6 +195,12 @@ pub struct Typography {
 
 /// The contract idea-ui's stylesheets depend on. Implement this on
 /// any `'static` struct to make it a valid theme.
+///
+/// Implementors return colors in whatever `Tokenized` shape is
+/// convenient — literals are fine. Every install path wraps the theme in
+/// [`IdeaThemeRef`], which is what component sheets actually read, and
+/// that rewrites each color into a canonical token reference so runtime
+/// theme swaps work regardless of how the theme was authored.
 pub trait IdeaTheme: Any + 'static {
     fn colors(&self) -> &Colors;
     fn intents(&self) -> &Intents;
@@ -234,19 +249,38 @@ pub trait IdeaTheme: Any + 'static {
 // IdeaThemeRef — the framework-side concrete carrier
 // =============================================================================
 
+/// The concrete `Any` carrier every installed theme is wrapped in — and
+/// the type component-sheet closures downcast to.
+///
+/// Besides carrying the trait object it **canonicalizes the read path**:
+/// the `colors()` / `intents()` it hands back reference tokens by their
+/// canonical names whatever the wrapped theme wrote. That is what makes
+/// a literal-authored or free-form-named theme swap at runtime.
 pub struct IdeaThemeRef {
     inner: Rc<dyn IdeaTheme>,
+    /// The wrapped theme's colors, rewritten so every field is a
+    /// `Tokenized::Token` under its CANONICAL name — see
+    /// [`canonicalize_color`] for why the read path has to do this.
+    /// Computed once per install, not per style resolution.
+    colors: Colors,
+    /// Same treatment for all seven intent palettes.
+    intents: Intents,
 }
 
 impl IdeaThemeRef {
     pub fn new<T: IdeaTheme>(theme: T) -> Self {
-        Self { inner: Rc::new(theme) }
+        Self::from_rc(Rc::new(theme))
     }
 
     pub fn from_rc(inner: Rc<dyn IdeaTheme>) -> Self {
-        Self { inner }
+        let colors = canonicalize_colors(inner.colors());
+        let intents = canonicalize_intents(inner.intents());
+        Self { inner, colors, intents }
     }
 
+    /// The theme as the author wrote it — colors NOT canonicalized.
+    /// Style code wants [`IdeaTheme::colors`] on the ref instead; this
+    /// is for callers that need the original struct back.
     pub fn inner(&self) -> &dyn IdeaTheme {
         &*self.inner
     }
@@ -254,10 +288,10 @@ impl IdeaThemeRef {
 
 impl IdeaTheme for IdeaThemeRef {
     fn colors(&self) -> &Colors {
-        self.inner.colors()
+        &self.colors
     }
     fn intents(&self) -> &Intents {
-        self.inner.intents()
+        &self.intents
     }
     fn spacing(&self) -> &Spacing {
         self.inner.spacing()
@@ -276,6 +310,92 @@ impl IdeaTheme for IdeaThemeRef {
     }
     fn pressed_overlay(&self) -> Tokenized<Color> {
         self.inner.pressed_overlay()
+    }
+}
+
+// =============================================================================
+// Canonicalizing the READ path
+// =============================================================================
+
+/// Rewrite one theme color field into a token reference under its
+/// **canonical** name, keeping the author's value as the fallback.
+///
+/// Why this exists: `ThemeTokens::tokens()` registers every field's
+/// value under the field's canonical name regardless of what the field
+/// itself says (see its comment — that's what makes a non-canonical
+/// `color_token!` override take effect instead of silently no-opping).
+/// That fixes the WRITE side only. The READ side — what a component
+/// sheet emits into a rule — used to hand back the field verbatim, so
+/// the two could disagree:
+///
+/// - A **literal** field (`Color("#18181b").into()`, the shape a
+///   hand-rolled `Colors { .. }` produces) emitted a baked hex. Web has
+///   nothing to swap; the node is frozen at its mount-time color while
+///   `:root` updates underneath it.
+/// - A field carrying a **free-form** name emitted
+///   `var(--ok-surface, #abcdef)` while the value was registered under
+///   `--color-surface`. `--ok-surface` is defined nowhere, so the rule
+///   resolves to its fallback — right on first paint, frozen forever
+///   after.
+///
+/// Both present as a half-themed app: canvas, scrollbars, and
+/// author-written `stylesheet!` rules (which reference canonical names
+/// directly) re-tint on swap while every idea-ui component keeps the
+/// palette it mounted with.
+///
+/// A field that is ALREADY canonical is cloned through untouched, so
+/// correctly-authored themes emit byte-identical rules and no
+/// content-hashed class churns.
+fn canonicalize_color(name: &'static str, t: &Tokenized<Color>) -> Tokenized<Color> {
+    match t {
+        Tokenized::Token { name: n, .. } if *n == name => t.clone(),
+        _ => Tokenized::Token { name, fallback: t.value().clone() },
+    }
+}
+
+/// [`canonicalize_color`] over every [`Colors`] field. The name each
+/// field maps to must stay in sync with [`CANONICAL_NEUTRAL_TOKENS`]
+/// and with `ThemeTokens::tokens()`; the
+/// `canonical_read_path_covers_every_color_field` test pins that.
+fn canonicalize_colors(c: &Colors) -> Colors {
+    Colors {
+        background: canonicalize_color("color-background", &c.background),
+        surface: canonicalize_color("color-surface", &c.surface),
+        surface_alt: canonicalize_color("color-surface-alt", &c.surface_alt),
+        text: canonicalize_color("color-text", &c.text),
+        text_muted: canonicalize_color("color-text-muted", &c.text_muted),
+        text_inverse: canonicalize_color("color-text-inverse", &c.text_inverse),
+        border: canonicalize_color("color-border", &c.border),
+        border_hover: canonicalize_color("color-border-hover", &c.border_hover),
+        border_strong: canonicalize_color("color-border-strong", &c.border_strong),
+        focus_ring: canonicalize_color("color-focus-ring", &c.focus_ring),
+        overlay: canonicalize_color("color-overlay", &c.overlay),
+    }
+}
+
+/// [`canonicalize_color`] over one intent block, under
+/// `intent-<intent>-<slot>` names.
+fn canonicalize_intent(intent: &str, ic: &IntentColors) -> IntentColors {
+    IntentColors {
+        solid_bg: canonicalize_color(intent_slot_token(intent, "solid-bg"), &ic.solid_bg),
+        solid_text: canonicalize_color(intent_slot_token(intent, "solid-text"), &ic.solid_text),
+        soft_bg: canonicalize_color(intent_slot_token(intent, "soft-bg"), &ic.soft_bg),
+        soft_text: canonicalize_color(intent_slot_token(intent, "soft-text"), &ic.soft_text),
+        fg: canonicalize_color(intent_slot_token(intent, "fg"), &ic.fg),
+        border: canonicalize_color(intent_slot_token(intent, "border"), &ic.border),
+    }
+}
+
+/// [`canonicalize_intent`] over all seven built-in intent palettes.
+fn canonicalize_intents(i: &Intents) -> Intents {
+    Intents {
+        primary: canonicalize_intent("primary", &i.primary),
+        secondary: canonicalize_intent("secondary", &i.secondary),
+        neutral: canonicalize_intent("neutral", &i.neutral),
+        success: canonicalize_intent("success", &i.success),
+        danger: canonicalize_intent("danger", &i.danger),
+        warning: canonicalize_intent("warning", &i.warning),
+        info: canonicalize_intent("info", &i.info),
     }
 }
 
@@ -1436,6 +1556,178 @@ mod tests {
             !toks.iter().any(|e| e.name == "ok-surface" || e.name == "ok-primary-bg"),
             "the free-form color_token! name must not appear as a registered key — \
              install keys off the field's canonical name"
+        );
+    }
+
+    /// Regression: a theme field whose `Tokenized` does NOT carry its
+    /// canonical token name must still be READ as a canonical token
+    /// reference through `IdeaThemeRef`.
+    ///
+    /// Two authoring shapes reach this: a bare literal
+    /// (`Color("#18181b").into()`) and a `color_token!` with a
+    /// free-form name. `ThemeTokens::tokens()` already keys the
+    /// install registry off the canonical name for both (see
+    /// `noncanonical_override_name_still_takes_effect`) — but that only
+    /// fixes the WRITE side. The READ side is what idea-ui's component
+    /// sheets emit, and on web a non-canonical/literal reference
+    /// compiles to a literal or to `var(--nobody-defines-this, hex)`,
+    /// so the node freezes at mount-time colors while `:root` swaps
+    /// underneath it. Half-themed dark mode.
+    #[test]
+    fn theme_ref_canonicalizes_literal_and_noncanonical_color_fields() {
+        let mut t = light_theme();
+        // (a) bare literal — the shape a hand-rolled `Colors { .. }` produces.
+        t.colors.text = Tokenized::Literal(Color("#18181b".into()));
+        // (b) free-form `color_token!` name — the documented rebrand shape.
+        t.colors.surface = Tokenized::token("ok-surface", Color("#abcdef".into()));
+        t.intents.primary.solid_bg = Tokenized::token("ok-primary-bg", Color("#3f73e3".into()));
+
+        let r = IdeaThemeRef::new(t);
+
+        for (label, field, canonical, value) in [
+            ("literal text", r.colors().text.clone(), "color-text", "#18181b"),
+            ("noncanonical surface", r.colors().surface.clone(), "color-surface", "#abcdef"),
+            (
+                "noncanonical intent",
+                r.intents().primary.solid_bg.clone(),
+                "intent-primary-solid-bg",
+                "#3f73e3",
+            ),
+        ] {
+            match field {
+                Tokenized::Token { name, fallback } => {
+                    assert_eq!(
+                        name, canonical,
+                        "{label}: must be read under the canonical token name — that is the \
+                         only name `tokens()` registers the value under, so any other name \
+                         resolves to nothing and pins the node to its fallback forever"
+                    );
+                    assert_eq!(fallback.0, value, "{label}: fallback must keep the author's value");
+                }
+                Tokenized::Literal(v) => panic!(
+                    "{label}: read back as a literal ({}) — a literal color reaches the web \
+                     backend as a baked hex, so a theme swap can never repaint it",
+                    v.0
+                ),
+            }
+        }
+    }
+
+    /// The canonicalizing read path must be a NO-OP for a
+    /// correctly-authored theme: same names, same fallbacks. Otherwise
+    /// every content-hashed class in the app would churn.
+    #[test]
+    fn theme_ref_leaves_canonical_fields_byte_identical() {
+        let plain = light_theme();
+        let r = IdeaThemeRef::new(light_theme());
+        for (a, b, label) in [
+            (&plain.colors.text, &r.colors().text, "color-text"),
+            (&plain.colors.background, &r.colors().background, "color-background"),
+            (&plain.colors.overlay, &r.colors().overlay, "color-overlay"),
+            (
+                &plain.intents.danger.soft_bg,
+                &r.intents().danger.soft_bg,
+                "intent-danger-soft-bg",
+            ),
+        ] {
+            assert_eq!(a.name(), b.name(), "{label}: token name must be unchanged");
+            assert_eq!(a.value().0, b.value().0, "{label}: value must be unchanged");
+            // Same compile-time &'static str, not a re-derived copy.
+            assert_eq!(
+                a.name().unwrap().as_ptr(),
+                b.name().unwrap().as_ptr(),
+                "{label}: canonicalization must reuse the existing &'static str"
+            );
+        }
+    }
+
+    /// Drift guard for the canonicalizing read path: EVERY color field a
+    /// theme exposes must come back as a canonical token, and the set of
+    /// names the read path produces must be exactly the set of color
+    /// names the install path registers. A field left out of
+    /// `canonicalize_colors` / `canonicalize_intent` reads back as
+    /// whatever the author wrote — the half-themed bug this all exists to
+    /// prevent — and a name that disagrees with `tokens()` points at a
+    /// variable nothing defines.
+    #[test]
+    fn canonical_read_path_covers_every_color_field() {
+        // A theme whose every color field is a bare literal: nothing here
+        // carries a token name, so any field the read path forgets shows
+        // up as a `Literal` below.
+        let lit = || Tokenized::Literal(Color("#123456".into()));
+        let intent = || IntentColors {
+            solid_bg: lit(), solid_text: lit(), soft_bg: lit(),
+            soft_text: lit(), fg: lit(), border: lit(),
+        };
+        let mut t = light_theme();
+        t.colors = Colors {
+            background: lit(), surface: lit(), surface_alt: lit(),
+            text: lit(), text_muted: lit(), text_inverse: lit(),
+            border: lit(), border_hover: lit(), border_strong: lit(),
+            focus_ring: lit(), overlay: lit(),
+        };
+        t.intents = Intents {
+            primary: intent(), secondary: intent(), neutral: intent(),
+            success: intent(), danger: intent(), warning: intent(), info: intent(),
+        };
+
+        let r = IdeaThemeRef::new(t);
+        let c = r.colors();
+        let i = r.intents();
+
+        let mut read_names: Vec<&str> = Vec::new();
+        for (label, field) in [
+            ("background", &c.background), ("surface", &c.surface),
+            ("surface_alt", &c.surface_alt), ("text", &c.text),
+            ("text_muted", &c.text_muted), ("text_inverse", &c.text_inverse),
+            ("border", &c.border), ("border_hover", &c.border_hover),
+            ("border_strong", &c.border_strong), ("focus_ring", &c.focus_ring),
+            ("overlay", &c.overlay),
+        ] {
+            let name = field.name().unwrap_or_else(|| {
+                panic!("Colors::{label} read back as a literal — add it to canonicalize_colors")
+            });
+            assert!(is_canonical_token(name), "Colors::{label} → non-canonical '{name}'");
+            read_names.push(name);
+        }
+        for (intent_name, block) in [
+            ("primary", &i.primary), ("secondary", &i.secondary),
+            ("neutral", &i.neutral), ("success", &i.success),
+            ("danger", &i.danger), ("warning", &i.warning), ("info", &i.info),
+        ] {
+            for (slot, field) in [
+                ("solid_bg", &block.solid_bg), ("solid_text", &block.solid_text),
+                ("soft_bg", &block.soft_bg), ("soft_text", &block.soft_text),
+                ("fg", &block.fg), ("border", &block.border),
+            ] {
+                let name = field.name().unwrap_or_else(|| {
+                    panic!(
+                        "Intents::{intent_name}.{slot} read back as a literal — add it to \
+                         canonicalize_intent"
+                    )
+                });
+                assert!(
+                    is_canonical_token(name),
+                    "Intents::{intent_name}.{slot} → non-canonical '{name}'"
+                );
+                read_names.push(name);
+            }
+        }
+        read_names.sort_unstable();
+
+        // The install path's color keys, for comparison.
+        let mut write_names: Vec<&str> = IdeaThemeRef::new(light_theme())
+            .tokens()
+            .into_iter()
+            .filter(|e| matches!(e.value, TokenValue::Color(_)))
+            .map(|e| e.name)
+            .collect();
+        write_names.sort_unstable();
+
+        assert_eq!(
+            read_names, write_names,
+            "the names component sheets READ must be exactly the color names \
+             `ThemeTokens::tokens()` WRITES — any difference is a var() nothing defines"
         );
     }
 

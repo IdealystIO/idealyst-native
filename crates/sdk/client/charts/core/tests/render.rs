@@ -467,3 +467,24 @@ fn regression_svg_uses_opacity_attributes_not_rgba() {
         "translucent marks must carry an explicit opacity attribute"
     );
 }
+
+/// A zero-area plot renders nothing.
+///
+/// Every host passes through this state: the plot rect is measured after
+/// first mount, so frame one always has size (0, 0). Emitting the full
+/// mark set there wastes a render per chart per mount and hands the
+/// renderer geometry collapsed onto a degenerate line. The axes still
+/// resolve, so a caller can read the domain before layout lands.
+#[test]
+fn zero_area_plot_renders_no_marks() {
+    let out = render(&line_spec(), Rect::new(0.0, 0.0, 0.0, 0.0));
+    assert!(out.scene.marks.is_empty(), "no marks for a zero-area plot");
+    assert!(out.scene.labels.is_empty(), "no labels either");
+    assert!(out.hit.is_empty());
+    assert!(out.y.max > out.y.min, "but the domain is still resolved");
+    assert!(!out.y.ticks.is_empty(), "and ticks are still available");
+
+    // Degenerate in one axis only is just as unrenderable.
+    let flat = render(&line_spec(), Rect::new(0.0, 0.0, 300.0, 0.0));
+    assert!(flat.scene.marks.is_empty());
+}

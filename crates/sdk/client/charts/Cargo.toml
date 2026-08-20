@@ -1,0 +1,34 @@
+[package]
+name = "charts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reactive charting for idealyst: charts-core's mark IR on a Canvas, with native text and tooltips."
+
+# The idealyst SDK layer over `charts-core`.
+#
+# Layering mirrors `canvas` (and `maps`):
+# - `charts-core` — standalone, publishable, zero idealyst deps. Owns the
+#                   spec, the scales, the mark IR, and hit-testing.
+# - this crate    — the idealyst binding: mark IR -> `canvas_core::Scene`,
+#                   labels -> real `text` primitives, tooltip -> components.
+#
+# Renderer choice is NOT made here. The app installs exactly one of
+# `canvas_native::register` / `canvas_vello::register` at its boot seam, the
+# same as any other canvas consumer — a chart is just a canvas author.
+[dependencies]
+charts-core = { workspace = true }
+canvas-core = { workspace = true }
+runtime-core = { workspace = true }
+# The `#[props]` / `#[component]` macros expand to `runtime_vocabulary::…`
+# paths, so every crate that uses them needs it in scope directly — the
+# same reason `idea-ui` depends on it.
+runtime-vocabulary = { workspace = true }
+
+[dev-dependencies]
+# Mounting a component through the scene registry in tests.
+host-mock = { workspace = true }
+# The suite inspects the built `Element` tree directly (the same substrate
+# the `table` SDK's scene suite uses) and needs a world to build inside.
+runtime-scene = { workspace = true }
+runtime-world = { workspace = true }

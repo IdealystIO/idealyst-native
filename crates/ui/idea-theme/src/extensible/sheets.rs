@@ -2360,6 +2360,94 @@ mod selection_sheet_tests {
 
     const BUILTIN_APPEARANCE_ARMS: usize = 7 * 4; // 7 tones × 4 variants
 
+    /// Regression for the half-themed-dark-mode field report: a theme
+    /// whose color fields are bare literals (the shape a hand-rolled
+    /// `Colors { .. }` produces) must STILL reach a component sheet as
+    /// canonical token references.
+    ///
+    /// This is the exact path the report named — Typography's `color`
+    /// axis and Button's `appearance` arm. A literal here compiles to a
+    /// baked hex on web, so the node keeps its mount-time color while
+    /// `:root` swaps underneath it; `canonicalize_color` in
+    /// `theme.rs` is what keeps the reference a `var(--…)`.
+    #[test]
+    fn regression_literal_theme_still_emits_token_refs_in_component_sheets() {
+        use crate::theme::{
+            install_idea_theme, light_theme, Colors, IntentColors, Intents,
+        };
+        use runtime_core::Color;
+
+        crate::testing::with_test_world(|| {
+            let lit = |hex: &str| Tokenized::Literal(Color(hex.into()));
+            let mut t = light_theme();
+            t.colors = Colors {
+                background: lit("#ffffff"),
+                surface: lit("#fafafa"),
+                surface_alt: lit("#f4f4f5"),
+                text: lit("#18181b"),
+                text_muted: lit("#71717a"),
+                text_inverse: lit("#ffffff"),
+                border: lit("#e4e4e7"),
+                border_hover: lit("#d4d4d8"),
+                border_strong: lit("#a1a1aa"),
+                focus_ring: lit("#6366f1"),
+                overlay: lit("rgba(0,0,0,0.45)"),
+            };
+            let intent = || IntentColors {
+                solid_bg: lit("#4f46e5"),
+                solid_text: lit("#ffffff"),
+                soft_bg: lit("#eef2ff"),
+                soft_text: lit("#3730a3"),
+                fg: lit("#4338ca"),
+                border: lit("#c7d2fe"),
+            };
+            t.intents = Intents {
+                primary: intent(),
+                secondary: intent(),
+                neutral: intent(),
+                success: intent(),
+                danger: intent(),
+                warning: intent(),
+                info: intent(),
+            };
+            install_idea_theme(t);
+
+            // Typography's default color arm — the "every heading and
+            // body-text node kept its light color" half of the report.
+            let typo = installed_typography_sheet();
+            let mut vs = VariantSet::default();
+            vs.0.insert("color".into(), "default".into());
+            let rules = typo.resolve(&vs);
+            match rules.color.as_ref().expect("typography sets a color") {
+                Tokenized::Token { name, fallback } => {
+                    assert_eq!(*name, "color-text");
+                    assert_eq!(fallback.0, "#18181b", "the author's value stays the fallback");
+                }
+                Tokenized::Literal(c) => panic!(
+                    "Typography resolved to a literal color ({}) — web bakes that into the \
+                     class and no theme swap can repaint it",
+                    c.0
+                ),
+            }
+
+            // Button's filled appearance arm — the "button fill kept its
+            // light color" half.
+            let btn = installed_button_sheet();
+            let mut vs = VariantSet::default();
+            vs.0.insert("appearance".into(), "primary_filled".into());
+            let rules = btn.resolve(&vs);
+            match rules.background.as_ref().expect("filled button sets a background") {
+                Tokenized::Token { name, fallback } => {
+                    assert_eq!(*name, "intent-primary-solid-bg");
+                    assert_eq!(fallback.0, "#4f46e5");
+                }
+                Tokenized::Literal(c) => {
+                    panic!("Button fill resolved to a literal color ({})", c.0)
+                }
+            }
+        });
+    }
+
     #[test]
     fn switch_sheet_has_builtin_arms_and_axes() {
         let sheet = SwitchSheetBuilder::new().build();
