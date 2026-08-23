@@ -532,6 +532,7 @@ icons-lucide = { path = "crates/ui/icons-lucide" }
 pan = { path = "crates/sdk/client/pan" }
 zoom = { path = "crates/sdk/client/zoom" }
 dnd = { path = "crates/sdk/client/dnd" }
+gesture = { path = "crates/sdk/client/gesture" }
 maps = { path = "crates/sdk/client/maps" }
 maps-core = { path = "crates/sdk/client/maps/core" }
 maps-web = { path = "crates/sdk/client/maps/web" }
@@ -552,6 +553,7 @@ pdf = { path = "crates/sdk/client/pdf" }
 form = { path = "crates/sdk/client/form" }
 table = { path = "crates/sdk/client/table" }
 virtualized = { path = "crates/sdk/client/virtualized" }
+offload = { path = "crates/sdk/client/offload" }
 menu = { path = "crates/sdk/client/menu" }
 net = { path = "crates/sdk/client/net" }
 storage = { path = "crates/sdk/client/storage" }

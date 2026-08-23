@@ -65,7 +65,7 @@ pub mod spec;
 pub mod svg;
 pub mod tween;
 
-pub use hit::{HitIndex, HitResult};
+pub use hit::{HitIndex, HitResult, MarkBounds};
 pub use pie::{
     lerp_pie, render_pie, render_pie_tween, PieLabels, PieSpec, Slice, SliceContext, SliceOverride,
     SliceStyleFn,
@@ -75,7 +75,7 @@ pub use radial::{lerp_radial, render_radial, render_radial_tween, RadialBar, Rad
 pub use render::{
     render, render_tween, render_with, ChartOutput, Gutters, LabelMetrics, Padding,
 };
-pub use tween::{ease_in_out, lerp_data, same_shape};
+pub use tween::{ease_in_out, lerp_color, lerp_data, same_shape, TweenAt};
 pub use scale::{ResolvedAxis, Tick};
 pub use scene::{
     pt, ChartScene, Color, FillRule, GradientStop, HAlign, LabelPlacement, LabelRole, Layer,

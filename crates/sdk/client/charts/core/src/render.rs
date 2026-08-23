@@ -112,14 +112,14 @@ pub fn render(spec: &ChartSpec, rect: Rect) -> ChartOutput {
 pub fn render_tween(
     from: &ChartSpec,
     to: &ChartSpec,
-    t: f32,
+    at: crate::tween::TweenAt,
     rect: Rect,
     gutters: &Gutters<'_>,
 ) -> ChartOutput {
-    let Some(spec) = crate::tween::lerp_data(from, to, t) else {
+    let Some(spec) = crate::tween::lerp_data(from, to, at) else {
         return render_with(to, rect, gutters);
     };
-    let e = crate::tween::ease_in_out(t);
+    let e = at.value;
 
     // Resolve both ENDS, then interpolate the resolved windows. Resolving
     // the tweened data instead would re-fit the domain every frame, so the
@@ -143,7 +143,91 @@ pub fn render_tween(
         min: crate::tween::lerp_f64(fy.min, ty.min, e),
         max: crate::tween::lerp_f64(fy.max, ty.max, e),
     };
-    render_inner(&spec, rect, gutters, Some((&tx.ticks, &ty.ticks)))
+    // The `from` spec rides along so a `StyleFn`'s answer can be resolved at
+    // BOTH ends and the two interpolated — see `ColorTween`.
+    render_inner(
+        &spec,
+        rect,
+        gutters,
+        Some((&tx.ticks, &ty.ticks)),
+        Some(ColorTween { from, to, t: at.color }),
+    )
+}
+
+/// BOTH ends of a colour transition, carried down to the three places that
+/// resolve a mark's final colour.
+///
+/// Only a [`StyleFn`](crate::spec::StyleFn)'s own answer needs this. A
+/// series' base colour is already interpolated by
+/// [`lerp_data`](crate::tween::lerp_data), and emphasis/dim come from the
+/// target's highlight because those are instant by design.
+///
+/// # Why `to` is here and not just `from`
+///
+/// A callback is a function of the DATUM, so the two colours being
+/// interpolated must both come from real endpoint data. Resolving it against
+/// the tweened datum makes a threshold recolor flip at whatever frame the
+/// interpolated value crosses the threshold — a hard switch in the middle of
+/// a smooth transition.
+///
+/// Resolving only the `from` end that way is not enough, and that bug shipped
+/// once: the destination was still taken from the interpolated spec, so with
+/// per-channel durations — the whole point of splitting the channels — a
+/// finished 180 ms colour fade would sit on whatever the 40%-animated value
+/// resolved to, and snap later when it crossed. `regression_color_channel_is_
+/// independent_of_the_value_clock` pins it.
+///
+/// With both ends held, this is the same treatment the axis domain gets
+/// above: resolve at the endpoints, interpolate the results.
+#[derive(Clone, Copy)]
+pub(crate) struct ColorTween<'a> {
+    pub from: &'a ChartSpec,
+    pub to: &'a ChartSpec,
+    /// Pre-eased fraction of the colour channel.
+    pub t: f32,
+}
+
+/// Resolve one mark's final colour, folding the series' `StyleFn` override
+/// onto `ctx.base_color` — and interpolating that whole resolution against
+/// the same resolution on the `from` spec when a transition is running.
+///
+/// `base_color` is the SAME for both evaluations on purpose: it already
+/// carries the interpolated series colour plus the target's emphasis and dim,
+/// so only what the callback itself *adds* is interpolated. Feeding each end
+/// its own base would interpolate the series colour twice.
+pub(crate) fn resolve_mark_color(
+    series: &Series,
+    ctx: &MarkContext,
+    tw: Option<&ColorTween<'_>>,
+) -> Color {
+    // No transition: the spec in hand IS the answer.
+    let Some(tw) = tw else {
+        return apply_override(ctx.base_color, &series.override_for(ctx));
+    };
+
+    // Resolve one endpoint against ITS OWN datum and ITS OWN callback.
+    //
+    // A series or datum missing from an endpoint means the pair was not
+    // shape-matched, which `lerp_data` already rejected — but the render path
+    // must not panic on it, so fall back to the spec in hand.
+    let at = |end: &ChartSpec| -> Color {
+        match end
+            .series
+            .get(ctx.series)
+            .and_then(|s| s.data.get(ctx.index).map(|d| (s, *d)))
+        {
+            Some((s, datum)) => {
+                apply_override(ctx.base_color, &s.override_for(&MarkContext { datum, ..*ctx }))
+            }
+            None => apply_override(ctx.base_color, &series.override_for(ctx)),
+        }
+    };
+
+    let end = at(tw.to);
+    if tw.t >= 1.0 {
+        return end;
+    }
+    crate::tween::lerp_color(at(tw.from), end, tw.t)
 }
 
 /// Gap in pixels between an axis and its labels.
@@ -153,7 +237,7 @@ const TICK_LEN: f32 = 4.0;
 
 /// Render into `rect`, deriving the data area per `gutters`.
 pub fn render_with(spec: &ChartSpec, rect: Rect, gutters: &Gutters<'_>) -> ChartOutput {
-    render_inner(spec, rect, gutters, None)
+    render_inner(spec, rect, gutters, None, None)
 }
 
 fn render_inner(
@@ -161,6 +245,7 @@ fn render_inner(
     rect: Rect,
     gutters: &Gutters<'_>,
     forced_ticks: Option<(&[crate::scale::Tick], &[crate::scale::Tick])>,
+    color_tween: Option<ColorTween<'_>>,
 ) -> ChartOutput {
     // Resolve axes against the FULL rect first. Gutter width depends on the
     // tick labels, which depend on the domain, which does not depend on the
@@ -198,7 +283,7 @@ fn render_inner(
     draw_grid(&mut scene, spec, &x, &y, plot);
     draw_axis_labels(&mut scene, spec, &x, &y, rect, plot);
     draw_annotations(&mut scene, spec, &x, &y, plot);
-    draw_series(&mut scene, &mut hit, spec, &x, &y, plot);
+    draw_series(&mut scene, &mut hit, spec, &x, &y, plot, color_tween.as_ref());
     if spec.legend {
         draw_legend(&mut scene, spec, plot);
     }
@@ -686,6 +771,7 @@ fn draw_series(
     x: &ResolvedAxis,
     y: &ResolvedAxis,
     plot: Rect,
+    tw: Option<&ColorTween<'_>>,
 ) {
     let bar_series: Vec<usize> =
         spec.visible().filter(|(_, s)| s.kind.is_bar()).map(|(i, _)| i).collect();
@@ -746,7 +832,7 @@ fn draw_series(
                 let slot = bar_series.iter().position(|i| *i == si).unwrap_or(0);
                 draw_bars(
                     scene, hit, spec, x, y, plot, si, s, style, slot, bar_series.len(),
-                    &mut stack, &stack_caps, dim,
+                    &mut stack, &stack_caps, dim, tw,
                 );
             }
             SeriesKind::Line(style) => {
@@ -767,7 +853,7 @@ fn draw_series(
                     });
                 }
                 if let Some(ps) = &style.points {
-                    push_points(scene, &pts, s, ps, si, hl, dim);
+                    push_points(scene, &pts, s, ps, si, hl, dim, tw);
                 }
             }
             SeriesKind::Area(style) => {
@@ -807,16 +893,16 @@ fn draw_series(
                     });
                 }
                 if let Some(ps) = &style.line.points {
-                    push_points(scene, &pts, s, ps, si, hl, dim);
+                    push_points(scene, &pts, s, ps, si, hl, dim, tw);
                 }
             }
             SeriesKind::Scatter(style) => {
                 let pts = project(s.data.iter(), x, y, plot);
                 push_hits(hit, &pts, si, &s.data);
-                push_points(scene, &pts, s, style, si, hl, dim);
+                push_points(scene, &pts, s, style, si, hl, dim, tw);
             }
             SeriesKind::Heatmap(style) => {
-                draw_heatmap(scene, hit, x, y, plot, si, s, style, hl, dim);
+                draw_heatmap(scene, hit, x, y, plot, si, s, style, hl, dim, tw);
             }
         }
     }
@@ -873,6 +959,7 @@ fn push_points(
     series_index: usize,
     hl: &Highlight,
     dim: f32,
+    tw: Option<&ColorTween<'_>>,
 ) {
     if pts.is_empty() {
         return;
@@ -892,14 +979,17 @@ fn push_points(
             };
             let emphasis = hl.of(series_index, i, d.x);
             let radius = style.radius_for(emphasis);
-            let ov = series.override_for(&MarkContext {
+            let ctx = MarkContext {
                 series: series_index,
                 index: i,
                 datum: *d,
                 emphasis,
                 base_color: base_fill,
-            });
-            (ov.radius.unwrap_or(radius), apply_override(base_fill, &ov))
+            };
+            // Radius comes from the target end only: a marker resizing is a
+            // hover response, and `Emphasis` is instant by design.
+            let r = series.override_for(&ctx).radius.unwrap_or(radius);
+            (r, resolve_mark_color(series, &ctx, tw))
         })
         .collect();
 
@@ -990,6 +1080,7 @@ fn draw_bars(
     stack: &mut Vec<(f64, f64, f64)>,
     stack_caps: &[StackCap],
     dim: f32,
+    tw: Option<&ColorTween<'_>>,
 ) {
     let radius = style.radius;
     let n_slots = x.categories.unwrap_or_else(|| distinct_x(spec).max(1));
@@ -1071,17 +1162,17 @@ fn draw_bars(
             (_, Some(c)) => c,
         };
         let base = fade(base, dim);
-        let ov = s.override_for(&MarkContext {
+        let ctx = MarkContext {
             series: series_index,
             index: i,
             datum: *d,
             emphasis,
             base_color: base,
-        });
+        };
         scene.push(Mark::Fill {
             layer: Layer::Series,
             path: Path::rounded_rect(r, radii),
-            paint: Paint::solid(apply_override(base, &ov)),
+            paint: Paint::solid(resolve_mark_color(s, &ctx, tw)),
             rule: FillRule::NonZero,
         });
         // Index the bar's whole body, anchoring the tooltip at its outer
@@ -1114,6 +1205,7 @@ fn draw_heatmap(
     style: &HeatmapStyle,
     hl: &Highlight,
     dim: f32,
+    tw: Option<&ColorTween<'_>>,
 ) {
     // Pixels per data unit, taken straight from the scale. One expression
     // covers both axis kinds: on a category axis a unit IS a slot, and on a
@@ -1151,17 +1243,17 @@ fn draw_heatmap(
         };
         let emphasis = hl.of(series_index, i, d.x);
         let base = fade(style.ramp.sample(t), dim);
-        let ov = s.override_for(&MarkContext {
+        let ctx = MarkContext {
             series: series_index,
             index: i,
             datum: *d,
             emphasis,
             base_color: base,
-        });
+        };
         scene.push(Mark::Fill {
             layer: Layer::Series,
             path: Path::rounded_rect(r, [style.radius; 4]),
-            paint: Paint::solid(apply_override(base, &ov)),
+            paint: Paint::solid(resolve_mark_color(s, &ctx, tw)),
             rule: FillRule::NonZero,
         });
 

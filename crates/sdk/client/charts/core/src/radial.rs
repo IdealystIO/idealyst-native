@@ -360,16 +360,22 @@ fn arc_path(center: Point, r: f32, start: f32, sweep: f32) -> Path {
     arc_to(Path::new().move_to(p0.x, p0.y), center, r, start, sweep)
 }
 
-/// Interpolate two radial specs, for a transition. Values only — see
+/// Interpolate two radial specs, for a transition. Values and the range on
+/// the value clock, bar colors on the color clock — see
 /// [`lerp_pie`](crate::pie::lerp_pie).
-pub fn lerp_radial(from: &RadialSpec, to: &RadialSpec, t: f32) -> Option<RadialSpec> {
+pub fn lerp_radial(
+    from: &RadialSpec,
+    to: &RadialSpec,
+    at: crate::tween::TweenAt,
+) -> Option<RadialSpec> {
     if from.bars.len() != to.bars.len() {
         return None;
     }
-    let e = crate::tween::ease_in_out(t);
+    let e = at.value;
     let mut out = to.clone();
     for (i, b) in out.bars.iter_mut().enumerate() {
         b.value = crate::tween::lerp_f64(from.bars[i].value, b.value, e);
+        b.color = crate::tween::lerp_color(from.bars[i].color, b.color, at.color);
     }
     // The range is interpolated too, unlike a pie's (which has none): a
     // gauge whose max changes would otherwise snap its whole scale on the
@@ -384,10 +390,10 @@ pub fn lerp_radial(from: &RadialSpec, to: &RadialSpec, t: f32) -> Option<RadialS
 pub fn render_radial_tween(
     from: &RadialSpec,
     to: &RadialSpec,
-    t: f32,
+    at: crate::tween::TweenAt,
     rect: Rect,
 ) -> PolarOutput {
-    match lerp_radial(from, to, t) {
+    match lerp_radial(from, to, at) {
         Some(spec) => render_radial(&spec, rect),
         None => render_radial(to, rect),
     }

@@ -694,3 +694,115 @@ fn regression_no_zero_rule_on_a_category_axis() {
     );
     let _ = plot;
 }
+
+// ---------------------------------------------------------------------------
+// Mark bounds on a hit
+// ---------------------------------------------------------------------------
+//
+// `HitResult::position` is one anchor point per mark type, which is enough to
+// point a callout AT a mark but not to place a surface BESIDE one. Since the
+// charts SDK renders no tooltip of its own, every caller doing that placement
+// needs the mark's extent, so the index exposes the geometry it already holds.
+// These lock the two properties a placement can rely on: the bounds are the
+// mark AS DRAWN, and they agree with the hit test that produced them.
+
+/// A bar's bounds are its body — not a point, and not the anchor.
+///
+/// The distinction is the whole reason the field exists: `position` is the
+/// bar's OUTER END, so a surface centred on it sits at the bar's tip. Placing
+/// one at the bar's vertical middle needs `Rect`.
+#[test]
+fn a_bar_hit_carries_the_bar_body_not_just_its_anchor() {
+    let spec = ChartSpec::new(vec![Series::new(
+        "s",
+        SeriesKind::bar(),
+        Color::rgb(0x40, 0x80, 0xf0),
+        vec![datum(0.0, 10.0), datum(1.0, 4.0)],
+    )]);
+    let out = render_with(&spec, surface(), &Gutters::None);
+
+    let tall = out.hit.nearest(pt(0.0, 0.0)).expect("a bar to hit");
+    let MarkBounds::Rect(r) = tall.bounds else {
+        panic!("a bar indexes as a rect, got {:?}", tall.bounds);
+    };
+    assert!(r.w > 0.0 && r.h > 0.0, "the bar has a real body: {r:?}");
+
+    // The anchor is the outer end, so it sits ON the rect's edge — which is
+    // exactly why it is the wrong point to centre a surface on.
+    assert!(
+        (tall.position.y - r.y).abs() < 0.5,
+        "a positive bar anchors at its top edge: anchor {:?} vs rect {:?}",
+        tall.position,
+        r
+    );
+    assert!(
+        r.h > 1.0,
+        "…and the body extends well below it, which is what `bounds` adds"
+    );
+}
+
+/// The bounds are the shape the hit test used, so a point inside them hits.
+///
+/// Guards the failure that would make placement quietly wrong: bounds derived
+/// from the spec rather than taken from the index would drift from what the
+/// pointer actually resolves to, and a surface would anchor to a box the user
+/// cannot hover.
+#[test]
+fn bar_bounds_agree_with_the_hit_test() {
+    let spec = ChartSpec::new(vec![Series::new(
+        "s",
+        SeriesKind::bar(),
+        Color::rgb(0x40, 0x80, 0xf0),
+        vec![datum(0.0, 10.0), datum(1.0, 4.0), datum(2.0, 7.0)],
+    )]);
+    let out = render_with(&spec, surface(), &Gutters::None);
+
+    for probe in [pt(0.0, 0.0), pt(200.0, 150.0), pt(399.0, 299.0)] {
+        let Some(hit) = out.hit.nearest(probe) else { continue };
+        let MarkBounds::Rect(r) = hit.bounds else { continue };
+        let centre = pt(r.x + r.w / 2.0, r.y + r.h / 2.0);
+        let inside = out.hit.contains(centre).expect("a bar's own centre hits");
+        assert_eq!(
+            (inside.series, inside.index),
+            (hit.series, hit.index),
+            "the centre of a mark's bounds resolves back to that same mark"
+        );
+    }
+}
+
+/// A marker carries `Point`: it has no extent the index knows about, because
+/// the drawn radius is a style concern the core never sees. Recording a
+/// fabricated box here would be worse than recording none.
+#[test]
+fn a_scatter_hit_carries_point_bounds() {
+    let spec = ChartSpec::new(vec![Series::new(
+        "s",
+        SeriesKind::scatter(),
+        Color::rgb(0x40, 0x80, 0xf0),
+        vec![datum(0.0, 1.0), datum(1.0, 5.0)],
+    )]);
+    let out = render_with(&spec, surface(), &Gutters::None);
+    let hit = out.hit.nearest(pt(10.0, 10.0)).expect("a point to hit");
+    assert_eq!(hit.bounds, MarkBounds::Point);
+}
+
+/// A pie slice carries its wedge, so a caller can place a label along the
+/// slice's own bisector at whatever radius it likes rather than being stuck
+/// with the centroid the core picked.
+#[test]
+fn a_pie_hit_carries_its_wedge() {
+    let spec = PieSpec::new(vec![
+        Slice::new("a", 3.0, Color::rgb(0xf0, 0x40, 0x40)),
+        Slice::new("b", 1.0, Color::rgb(0x40, 0xf0, 0x40)),
+    ]);
+    let out = render_pie(&spec, surface());
+    let centre = pt(surface().w / 2.0, surface().h / 2.0);
+    // Straight up from the centre is inside the first slice: slices start at
+    // twelve o'clock and sweep clockwise.
+    let hit = out.hit.contains(pt(centre.x, centre.y - 40.0)).expect("a slice to hit");
+    let MarkBounds::Wedge { r0, r1, sweep, .. } = hit.bounds else {
+        panic!("a pie slice indexes as a wedge, got {:?}", hit.bounds);
+    };
+    assert_eq!(r0, 0.0, "a pie has no hole");
+    assert!(r1 > 0.0 && sweep > 0.0, "the wedge has a real extent");
+}

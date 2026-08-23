@@ -10,7 +10,7 @@
 //!
 //! A pie and a radial gauge differ only in their spec type and their
 //! renderer. Everything else — measuring the plot, driving a transition,
-//! materializing labels, hit-testing a wedge, the tooltip — is identical, so
+//! materializing labels, hit-testing a wedge, reporting hover — is identical, so
 //! it lives once in [`polar_body`], parameterized by four function pointers.
 //! Two full copies would drift, and the drift would be invisible until one
 //! of them stopped animating.
@@ -20,40 +20,42 @@ use std::rc::Rc;
 
 use canvas_core::{Canvas, CanvasProps, Scene};
 use charts_core::{
-    lerp_pie, lerp_radial, render_pie, render_radial, Color as MarkColor, HitResult,
-    LabelPlacement, LabelRole, PieSpec, PolarOutput, RadialSpec, Rect as IrRect, SliceHighlight,
+    lerp_pie, lerp_radial, render_pie, render_pie_tween, render_radial, render_radial_tween,
+    Color as MarkColor, HitResult, LabelPlacement, LabelRole, PieSpec, PolarOutput, RadialSpec,
+    Rect as IrRect, SliceHighlight, TweenAt,
 };
 use runtime_core::{
-    after_animation_frame, component, memo, on_scope_drop, signal, switch, view, when, AlignItems,
+    after_animation_frame, component, memo, on_scope_drop, signal, switch, view, AlignItems,
     AnchorableHandle, Element, FlexDirection, IdealystSchema, IntoElement, LayoutSubscription,
-    Length, Overflow, PointerEvents, Position, Reactive, Ref, Signal, StyleApplication, StyleRules,
-    StyleSheet, Tokenized, TouchEvent, TouchPhase, TouchResponse, ViewHandle,
+    Length, Overflow, PointerEvents, Position, Reactive, Ref, Signal, StyleRules,
+    StyleSheet, Tokenized, TouchEvent, TouchPhase, TouchResponse, Transition, ViewHandle,
 };
 
-use crate::chart::{label_sheet, overlay_label, px, sheet};
+use crate::chart::{
+    label_sheet, overlay_label, pointer_frame, px, sheet, tween_at, transition_span_ms,
+    PointerFrame,
+};
 
 /// What the pointer is over in a polar chart.
 ///
 /// One slice, not a column: a radial chart has no shared x, so the "every
-/// series at this position" question a cartesian tooltip answers does not
+/// series at this position" question a cartesian readout answers does not
 /// arise. `None` from a hit means the pointer is in the hole or outside the
 /// ring, which is genuinely nothing rather than a near miss.
 #[derive(Clone, PartialEq, Debug)]
 pub struct PolarHover {
-    /// Pointer position in plot-local pixels.
-    pub x: f32,
-    pub y: f32,
+    /// Where the pointer is, in every space. See [`PointerFrame`].
+    pub at: PointerFrame,
     /// Index into the spec's `slices` / `bars`.
     pub index: usize,
-    /// The slice's own label, so a tooltip needs no second lookup.
+    /// The slice's own label, so a caller needs no second lookup.
     pub label: String,
     pub value: f64,
-    /// The underlying hit, for callers wanting the anchor point.
+    /// The underlying hit — its `position` is the wedge's centroid and its
+    /// `bounds` the wedge itself, so a caller can place a surface along the
+    /// slice's own bisector at whatever radius it likes.
     pub hit: HitResult,
 }
-
-/// Renders the tooltip body for a hovered slice.
-pub type PolarTooltipRenderer = Rc<dyn Fn(&PolarHover) -> Element>;
 /// Notified whenever the hovered slice changes; `None` on leave.
 pub type PolarHoverCallback = Rc<dyn Fn(Option<PolarHover>)>;
 
@@ -66,13 +68,11 @@ pub type PolarHoverCallback = Rc<dyn Fn(Option<PolarHover>)>;
 pub fn polar_hover_at(
     out: &PolarOutput,
     labels: &[String],
-    x: f32,
-    y: f32,
+    at: PointerFrame,
 ) -> Option<PolarHover> {
-    let hit = out.hit.contains(charts_core::pt(x, y))?;
+    let hit = out.hit.contains(charts_core::pt(at.local.x, at.local.y))?;
     Some(PolarHover {
-        x,
-        y,
+        at,
         index: hit.index,
         label: labels.get(hit.index).cloned().unwrap_or_default(),
         value: hit.datum.y,
@@ -106,22 +106,29 @@ type LegendEntry = (String, MarkColor, bool);
 /// that actually differ between them.
 struct PolarOps<S: 'static> {
     render: fn(&S, IrRect) -> PolarOutput,
-    lerp: fn(&S, &S, f32) -> Option<S>,
+    lerp: fn(&S, &S, TweenAt) -> Option<S>,
+    /// The TWEEN render, not `lerp` + `render`.
+    ///
+    /// A `SliceStyleFn` has to be resolved at BOTH ends and the two colours
+    /// interpolated, and only the tween entry point does that — going
+    /// through `lerp` and rendering the result would resolve the callback
+    /// once, against the tweened value, and a threshold recolor would flip
+    /// mid-transition instead of fading.
+    render_tween: fn(&S, &S, TweenAt, IrRect) -> PolarOutput,
     /// Apply hover/selection emphasis to a copy of the spec.
     emphasise: fn(&mut S, SliceHighlight),
     /// `(label, color, visible)` per entry, and whether a legend was asked
-    /// for. Used for both the legend row and tooltip labels.
+    /// for. Used for the legend row and to label a hit.
     entries: fn(&S) -> (Vec<LegendEntry>, bool),
 }
 
 struct PolarConfig<S: 'static> {
     spec: Reactive<S>,
-    tooltip: bool,
+    value_transition: Option<Transition>,
+    color_transition: Option<Transition>,
     highlight_on_hover: bool,
     dim_others: bool,
-    transition_ms: u32,
     selected: Reactive<Vec<usize>>,
-    tooltip_content: Option<PolarTooltipRenderer>,
     on_hover: Option<PolarHoverCallback>,
     label_style: Option<Rc<StyleSheet>>,
     style: Option<Rc<StyleSheet>>,
@@ -148,12 +155,11 @@ fn polar_root_rules() -> StyleRules {
 fn polar_body<S: Clone + PartialEq + 'static>(cfg: PolarConfig<S>, ops: PolarOps<S>) -> Element {
     let PolarConfig {
         spec,
-        tooltip: show_tooltip,
+        value_transition,
+        color_transition,
         highlight_on_hover,
         dim_others,
-        transition_ms,
         selected,
-        tooltip_content,
         on_hover: on_hover_cb,
         label_style,
         style,
@@ -174,11 +180,12 @@ fn polar_body<S: Clone + PartialEq + 'static>(cfg: PolarConfig<S>, ops: PolarOps
     // --- transition state (mirrors `Chart`; see its comments) --------------
     let origin: Signal<Option<S>> = signal(None);
     let target: Signal<Option<S>> = signal(None);
-    let progress = signal(1.0_f32);
+    let elapsed = signal(f32::INFINITY);
+    let span_ms = transition_span_ms(value_transition, color_transition);
     let anim: Rc<RefCell<Option<runtime_core::scheduling::RafLoop>>> = Rc::new(RefCell::new(None));
     let anim_stop: Rc<RefCell<Option<runtime_core::ScheduledTask>>> = Rc::new(RefCell::new(None));
 
-    if transition_ms > 0 {
+    if span_ms > 0 {
         let spec_for_anim = spec.clone();
         let anim_slot = anim.clone();
         let stop_slot = anim_stop.clone();
@@ -186,9 +193,12 @@ fn polar_body<S: Clone + PartialEq + 'static>(cfg: PolarConfig<S>, ops: PolarOps
         runtime_core::effect!({
             let next = spec_for_anim.get();
             let visual = runtime_core::untrack(|| {
-                let (o, tg, t) = (origin.get(), target.get(), progress.get());
+                let (o, tg) = (origin.get(), target.get());
+                let at = tween_at(value_transition, color_transition, elapsed.get());
                 match (o, tg) {
-                    (Some(o), Some(tg)) if t < 1.0 => Some(lerp(&o, &tg, t).unwrap_or(tg)),
+                    (Some(o), Some(tg)) if at.value < 1.0 || at.color < 1.0 => {
+                        Some(lerp(&o, &tg, at).unwrap_or(tg))
+                    }
                     (_, tg) => tg,
                 }
             });
@@ -196,24 +206,23 @@ fn polar_body<S: Clone + PartialEq + 'static>(cfg: PolarConfig<S>, ops: PolarOps
                 None => {
                     origin.set(Some(next.clone()));
                     target.set(Some(next));
-                    progress.set(1.0);
+                    elapsed.set(f32::INFINITY);
                 }
                 Some(v) if v == next => target.set(Some(next)),
                 Some(v) => {
                     origin.set(Some(v));
                     target.set(Some(next));
-                    progress.set(0.0);
+                    elapsed.set(0.0);
                     stop_slot.borrow_mut().take();
                     let start = runtime_core::time::now_micros();
-                    let dur = (transition_ms as u64).max(1) * 1000;
+                    let span_us = (span_ms as u64).max(1) * 1000;
                     let inner = anim_slot.clone();
                     let stop_slot = stop_slot.clone();
                     *anim_slot.borrow_mut() =
                         Some(runtime_core::scheduling::raf_loop(move || {
-                            let elapsed = runtime_core::time::now_micros().saturating_sub(start);
-                            let t = (elapsed as f32 / dur as f32).min(1.0);
-                            progress.set(t);
-                            if t >= 1.0 && stop_slot.borrow().is_none() {
+                            let us = runtime_core::time::now_micros().saturating_sub(start);
+                            elapsed.set(us as f32 / 1000.0);
+                            if us >= span_us && stop_slot.borrow().is_none() {
                                 let slot = inner.clone();
                                 let task = after_animation_frame(move || {
                                     slot.borrow_mut().take();
@@ -238,7 +247,8 @@ fn polar_body<S: Clone + PartialEq + 'static>(cfg: PolarConfig<S>, ops: PolarOps
     let output = {
         let spec = spec.clone();
         let selected = selected.clone();
-        let (render, lerp, emphasise) = (ops.render, ops.lerp, ops.emphasise);
+        let (render, render_tween, emphasise) =
+            (ops.render, ops.render_tween, ops.emphasise);
         memo(move || {
             let (w, h) = (plot_w.get(), plot_h.get());
             let mut s = spec.get();
@@ -255,16 +265,14 @@ fn polar_body<S: Clone + PartialEq + 'static>(cfg: PolarConfig<S>, ops: PolarOps
             emphasise(&mut s, hl);
 
             let rect = IrRect::new(0.0, 0.0, w, h);
-            let t = progress.get();
+            let at = tween_at(value_transition, color_transition, elapsed.get());
             match origin.get() {
-                Some(from) if transition_ms > 0 && t < 1.0 => {
-                    // Emphasis is applied to the DESTINATION only; a lerp
-                    // that failed to pair falls back to it as well, so the
-                    // hovered slice never loses its highlight mid-flight.
-                    match lerp(&from, &s, t) {
-                        Some(mid) => render(&mid, rect),
-                        None => render(&s, rect),
-                    }
+                Some(from) if span_ms > 0 && (at.value < 1.0 || at.color < 1.0) => {
+                    // Emphasis is applied to the DESTINATION only, and the
+                    // tween render falls back to it when the pair cannot be
+                    // matched — so the hovered slice never loses its
+                    // highlight mid-flight.
+                    render_tween(&from, &s, at, rect)
                 }
                 _ => render(&s, rect),
             }
@@ -349,7 +357,7 @@ fn polar_body<S: Clone + PartialEq + 'static>(cfg: PolarConfig<S>, ops: PolarOps
                 TouchPhase::Hovered | TouchPhase::Moved | TouchPhase::Began => {
                     let out = output.get();
                     let next =
-                        polar_hover_at(&out, &labels_of(), ev.position.x, ev.position.y);
+                        polar_hover_at(&out, &labels_of(), pointer_frame(plot_ref, ev));
                     let idx = next.as_ref().map(|h| h.index);
                     if hover_idx.get() != idx {
                         hover_idx.set(idx);
@@ -378,58 +386,6 @@ fn polar_body<S: Clone + PartialEq + 'static>(cfg: PolarConfig<S>, ops: PolarOps
         }
     };
     let leave_cb = on_hover_cb.clone();
-
-    // --- tooltip (three layers, same reasoning as `Chart`) -----------------
-    let tooltip = when(
-        move || show_tooltip && hover.get().is_some(),
-        move || {
-            let tooltip_content = tooltip_content.clone();
-            let rows = switch(
-                move || hover.get().map(|h| (h.index, h.value)),
-                move |_key: &Option<(usize, f64)>| {
-                    let Some(h) = hover.get() else {
-                        return view(Vec::new()).into_element();
-                    };
-                    let body = match &tooltip_content {
-                        Some(f) => vec![f(&h)],
-                        None => vec![runtime_core::text(format!("{}: {}", h.label, h.value))
-                            .with_style(sheet(StyleRules {
-                                font_size: px(12.0),
-                                ..Default::default()
-                            }))
-                            .into_element()],
-                    };
-                    view(body)
-                        .with_style(sheet(StyleRules {
-                            flex_direction: Some(FlexDirection::Column),
-                            ..Default::default()
-                        }))
-                        .into_element()
-                },
-            );
-            view(vec![rows])
-                .with_style(move || {
-                    let (x, y) = hover.get().map(|h| (h.x, h.y)).unwrap_or((0.0, 0.0));
-                    let mut rules = crate::chart::tooltip_rules();
-                    if x > plot_w.get() * 0.6 {
-                        rules.right = px((plot_w.get() - x + 12.0).max(0.0));
-                    } else {
-                        rules.left = px(x + 12.0);
-                    }
-                    rules.top = px((y - 12.0).max(0.0));
-                    StyleApplication::new(sheet(rules))
-                })
-                .into_element()
-        },
-        || {
-            view(Vec::new())
-                .with_style(sheet(StyleRules {
-                    position: Some(Position::Absolute),
-                    ..Default::default()
-                }))
-                .into_element()
-        },
-    );
 
     // --- labels ------------------------------------------------------------
     // Keyed on the placements themselves, so text nodes are rebuilt only
@@ -465,7 +421,7 @@ fn polar_body<S: Clone + PartialEq + 'static>(cfg: PolarConfig<S>, ops: PolarOps
         )
     };
 
-    let plot = view(vec![canvas, labels, tooltip])
+    let plot = view(vec![canvas, labels])
         .bind(plot_ref)
         .on_touch(move |ev| touch(ev))
         .on_hover(move |entering| {
@@ -519,28 +475,31 @@ pub struct PieChartProps {
     /// The pie or donut to draw.
     #[schema(constraint = "reactive: static PieSpec or Signal/rx!")]
     pub spec: PieSpec,
-    /// Show the built-in tooltip on hover. Default `true`.
-    pub tooltip: bool,
     /// Let hovering drive the spec's highlight — the hovered slice grows and
     /// pulls out per `hover_grow` / `hover_explode`. Default `true`.
     pub highlight_on_hover: bool,
     /// Fade the slices that are neither hovered nor selected. Default
     /// `false`.
     pub dim_others: bool,
-    /// Animate value changes over this many milliseconds. `0` disables it.
-    /// A change in the number of slices snaps.
-    pub transition_ms: u32,
+    /// Animate values. `None` (the default) snaps. A change in the
+    /// number of slices snaps too.
+    ///
+    /// Same [`Transition`] the style system uses — one vocabulary. See
+    /// [`ChartProps::value_transition`](crate::ChartProps::value_transition).
+    #[prop(static)]
+    #[schema(constraint = "optional Transition { duration_ms, easing }")]
+    pub value_transition: Option<Transition>,
+    /// Animate slices colours, including a `SliceStyleFn`'s answer. `None`
+    /// (the default) snaps. See
+    /// [`ChartProps::color_transition`](crate::ChartProps::color_transition).
+    #[prop(static)]
+    #[schema(constraint = "optional Transition { duration_ms, easing }")]
+    pub color_transition: Option<Transition>,
     /// Slices to render as selected, by index. `#[prop(reactive)]` because
     /// `#[props]` treats a bare `Vec` as children.
     #[prop(reactive)]
     #[schema(constraint = "reactive: Vec<usize> of selected slice indices")]
     pub selected: Vec<usize>,
-    /// Render the tooltip body yourself. `#[prop(static)]` is required: a
-    /// type alias hides the `Rc<dyn Fn>` from `#[props]`, which would
-    /// otherwise wrap the field in `Reactive` and reject a plain `None`.
-    #[prop(static)]
-    #[schema(constraint = "optional Fn(&PolarHover) -> Element")]
-    pub tooltip_content: Option<PolarTooltipRenderer>,
     /// Called whenever the hovered slice changes, and with `None` on leave.
     #[prop(static)]
     #[schema(constraint = "optional Fn(Option<PolarHover>)")]
@@ -557,12 +516,11 @@ impl Default for PieChartProps {
     fn default() -> Self {
         Self {
             spec: Reactive::Static(PieSpec::default()),
-            tooltip: Reactive::Static(true),
             highlight_on_hover: Reactive::Static(true),
             dim_others: Reactive::Static(false),
-            transition_ms: Reactive::Static(0),
+            value_transition: None,
+            color_transition: None,
             selected: Reactive::Static(Vec::new()),
-            tooltip_content: None,
             on_hover: None,
             label_style: None,
             style: None,
@@ -573,7 +531,6 @@ impl Default for PieChartProps {
 impl std::fmt::Debug for PieChartProps {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PieChartProps")
-            .field("tooltip_content", &self.tooltip_content.is_some())
             .field("on_hover", &self.on_hover.is_some())
             .field("label_style", &self.label_style.is_some())
             .field("style", &self.style.is_some())
@@ -587,12 +544,11 @@ pub fn PieChart(props: &PieChartProps) -> Element {
     polar_body(
         PolarConfig {
             spec: props.spec.clone(),
-            tooltip: props.tooltip.get(),
+            value_transition: props.value_transition,
+            color_transition: props.color_transition,
             highlight_on_hover: props.highlight_on_hover.get(),
             dim_others: props.dim_others.get(),
-            transition_ms: props.transition_ms.get(),
             selected: props.selected.clone(),
-            tooltip_content: props.tooltip_content.clone(),
             on_hover: props.on_hover.clone(),
             label_style: props.label_style.clone(),
             style: props.style.clone(),
@@ -600,6 +556,7 @@ pub fn PieChart(props: &PieChartProps) -> Element {
         PolarOps {
             render: render_pie,
             lerp: lerp_pie,
+            render_tween: render_pie_tween,
             emphasise: |s: &mut PieSpec, hl| s.highlight = hl,
             entries: |s: &PieSpec| {
                 (
@@ -621,24 +578,29 @@ pub struct RadialChartProps {
     /// The radial bar chart or gauge to draw.
     #[schema(constraint = "reactive: static RadialSpec or Signal/rx!")]
     pub spec: RadialSpec,
-    /// Show the built-in tooltip on hover. Default `true`.
-    pub tooltip: bool,
     /// Let hovering thicken the ring under the pointer. Default `true`.
     pub highlight_on_hover: bool,
     /// Fade the rings that are neither hovered nor selected. Default
     /// `false`.
     pub dim_others: bool,
-    /// Animate value and range changes over this many milliseconds. `0`
-    /// disables it. A change in the number of rings snaps.
-    pub transition_ms: u32,
+    /// Animate values and the range. `None` (the default) snaps. A change in the
+    /// number of rings snaps too.
+    ///
+    /// Same [`Transition`] the style system uses — one vocabulary. See
+    /// [`ChartProps::value_transition`](crate::ChartProps::value_transition).
+    #[prop(static)]
+    #[schema(constraint = "optional Transition { duration_ms, easing }")]
+    pub value_transition: Option<Transition>,
+    /// Animate rings colours, including a `SliceStyleFn`'s answer. `None`
+    /// (the default) snaps. See
+    /// [`ChartProps::color_transition`](crate::ChartProps::color_transition).
+    #[prop(static)]
+    #[schema(constraint = "optional Transition { duration_ms, easing }")]
+    pub color_transition: Option<Transition>,
     /// Rings to render as selected, by index.
     #[prop(reactive)]
     #[schema(constraint = "reactive: Vec<usize> of selected ring indices")]
     pub selected: Vec<usize>,
-    /// Render the tooltip body yourself.
-    #[prop(static)]
-    #[schema(constraint = "optional Fn(&PolarHover) -> Element")]
-    pub tooltip_content: Option<PolarTooltipRenderer>,
     /// Called whenever the hovered ring changes, and with `None` on leave.
     #[prop(static)]
     #[schema(constraint = "optional Fn(Option<PolarHover>)")]
@@ -655,12 +617,11 @@ impl Default for RadialChartProps {
     fn default() -> Self {
         Self {
             spec: Reactive::Static(RadialSpec::default()),
-            tooltip: Reactive::Static(true),
             highlight_on_hover: Reactive::Static(true),
             dim_others: Reactive::Static(false),
-            transition_ms: Reactive::Static(0),
+            value_transition: None,
+            color_transition: None,
             selected: Reactive::Static(Vec::new()),
-            tooltip_content: None,
             on_hover: None,
             label_style: None,
             style: None,
@@ -671,7 +632,6 @@ impl Default for RadialChartProps {
 impl std::fmt::Debug for RadialChartProps {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RadialChartProps")
-            .field("tooltip_content", &self.tooltip_content.is_some())
             .field("on_hover", &self.on_hover.is_some())
             .field("label_style", &self.label_style.is_some())
             .field("style", &self.style.is_some())
@@ -685,12 +645,11 @@ pub fn RadialChart(props: &RadialChartProps) -> Element {
     polar_body(
         PolarConfig {
             spec: props.spec.clone(),
-            tooltip: props.tooltip.get(),
+            value_transition: props.value_transition,
+            color_transition: props.color_transition,
             highlight_on_hover: props.highlight_on_hover.get(),
             dim_others: props.dim_others.get(),
-            transition_ms: props.transition_ms.get(),
             selected: props.selected.clone(),
-            tooltip_content: props.tooltip_content.clone(),
             on_hover: props.on_hover.clone(),
             label_style: props.label_style.clone(),
             style: props.style.clone(),
@@ -698,6 +657,7 @@ pub fn RadialChart(props: &RadialChartProps) -> Element {
         PolarOps {
             render: render_radial,
             lerp: lerp_radial,
+            render_tween: render_radial_tween,
             emphasise: |s: &mut RadialSpec, hl| s.highlight = hl,
             entries: |s: &RadialSpec| {
                 (

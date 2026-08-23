@@ -406,9 +406,9 @@ fn rings_stop_when_they_run_out_of_room() {
 fn a_pie_tween_starts_at_the_source_and_lands_on_the_destination() {
     let from = PieSpec::new(vec![Slice::new("a", 1.0, BLUE), Slice::new("b", 3.0, PINK)]);
     let to = PieSpec::new(vec![Slice::new("a", 3.0, BLUE), Slice::new("b", 1.0, PINK)]);
-    assert_eq!(lerp_pie(&from, &to, 0.0).unwrap().slices[0].value, 1.0);
-    assert_eq!(lerp_pie(&from, &to, 1.0).unwrap().slices[0].value, 3.0);
-    let mid = lerp_pie(&from, &to, 0.5).unwrap().slices[0].value;
+    assert_eq!(lerp_pie(&from, &to, TweenAt::uniform(0.0)).unwrap().slices[0].value, 1.0);
+    assert_eq!(lerp_pie(&from, &to, TweenAt::uniform(1.0)).unwrap().slices[0].value, 3.0);
+    let mid = lerp_pie(&from, &to, TweenAt::uniform(0.5)).unwrap().slices[0].value;
     assert!(mid > 1.0 && mid < 3.0, "and passes between them");
 }
 
@@ -416,9 +416,9 @@ fn a_pie_tween_starts_at_the_source_and_lands_on_the_destination() {
 fn a_pie_tween_with_a_different_slice_count_snaps() {
     let from = PieSpec::new(vec![Slice::new("a", 1.0, BLUE)]);
     let to = PieSpec::new(vec![Slice::new("a", 1.0, BLUE), Slice::new("b", 1.0, PINK)]);
-    assert!(lerp_pie(&from, &to, 0.5).is_none());
+    assert!(lerp_pie(&from, &to, TweenAt::uniform(0.5)).is_none());
     // The renderer still produces the destination rather than nothing.
-    let out = render_pie_tween(&from, &to, 0.5, surface());
+    let out = render_pie_tween(&from, &to, TweenAt::uniform(0.5), surface());
     assert_eq!(out.scene.marks.len(), 2);
 }
 
@@ -429,15 +429,39 @@ fn a_pie_tween_with_a_different_slice_count_snaps() {
 fn a_radial_tween_interpolates_the_range_too() {
     let from = RadialSpec::gauge("x", 50.0, 100.0, BLUE);
     let to = RadialSpec::gauge("x", 50.0, 200.0, BLUE);
-    let mid = lerp_radial(&from, &to, 0.5).unwrap();
+    let mid = lerp_radial(&from, &to, TweenAt::uniform(0.5)).unwrap();
     assert!(mid.max > 100.0 && mid.max < 200.0);
 }
 
+/// Slice colors ride the COLOR clock, independently of the value clock.
+///
+/// This used to assert the opposite — that a recolor snapped to the
+/// destination on frame one. It was changed deliberately: a slice sliding to
+/// a new share while its color jumped read as a glitch, and the two channels
+/// now have their own `Transition` exactly so a host can pick the balance.
 #[test]
-fn colors_come_from_the_destination_not_the_midpoint() {
+fn slice_colors_ride_the_color_clock() {
     let from = PieSpec::new(vec![Slice::new("a", 1.0, BLUE)]);
     let to = PieSpec::new(vec![Slice::new("a", 2.0, PINK)]);
-    assert_eq!(lerp_pie(&from, &to, 0.5).unwrap().slices[0].color, PINK);
+
+    // Settled ends are exact — an animation must not leave a rounding
+    // residue on the color it lands on.
+    assert_eq!(lerp_pie(&from, &to, TweenAt::uniform(0.0)).unwrap().slices[0].color, BLUE);
+    assert_eq!(lerp_pie(&from, &to, TweenAt::uniform(1.0)).unwrap().slices[0].color, PINK);
+
+    let mid = lerp_pie(&from, &to, TweenAt::uniform(0.5)).unwrap().slices[0].color;
+    assert_ne!(mid, BLUE);
+    assert_ne!(mid, PINK);
+    assert!(
+        mid.r > BLUE.r.min(PINK.r) && mid.r < BLUE.r.max(PINK.r),
+        "the midpoint lies between the endpoints: {mid:?}"
+    );
+
+    // The two clocks are genuinely independent: holding color at zero while
+    // the value runs must leave the color untouched.
+    let split = lerp_pie(&from, &to, TweenAt { value: 1.0, color: 0.0 }).unwrap();
+    assert_eq!(split.slices[0].color, BLUE, "color pinned at the `from` end");
+    assert_eq!(split.slices[0].value, 2.0, "…while the value has fully arrived");
 }
 
 // ---------------------------------------------------------------------------

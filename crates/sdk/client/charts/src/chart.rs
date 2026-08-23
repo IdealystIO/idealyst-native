@@ -2,7 +2,7 @@
 //!
 //! # The split
 //!
-//! Marks go through a `Canvas`; axis labels and the tooltip are ordinary
+//! Marks go through a `Canvas`; axis labels and the legend are ordinary
 //! elements. That is not a compromise between two rendering strategies, it
 //! is the point: text drawn into a canvas has to be shaped and rasterized
 //! by whoever draws it, and would ignore the app's fonts, its theme colors,
@@ -23,11 +23,32 @@
 //!   memo there repaints on change;
 //! - the label layer is a `switch` keyed on the label vector itself, so it
 //!   rebuilds only when a label actually changes — a resize that moves no
-//!   ticks does not churn the text nodes;
-//! - the tooltip is a `when` over the hover signal.
+//!   ticks does not churn the text nodes.
 //!
 //! The memo matters: without it the painter and the label layer would each
 //! re-run a full render on every change.
+//!
+//! # No hover surface
+//!
+//! The chart reports hover through [`ChartProps::on_hover`] and renders no
+//! tooltip. This is deliberate and it is not a gap.
+//!
+//! A tooltip is composable from the hover callback plus a surface, so by the
+//! framework's own rule it belongs in a caller or a wrapper rather than in
+//! the SDK. Owning one here also forced three bad positions at once: the
+//! bubble lived inside the plot's `overflow: hidden` and was clipped by it;
+//! it had to either hardcode colors (wrong in half the themes it is dropped
+//! into) or render unbacked text over the marks; and its placement was a
+//! fixed cursor-follow, when real charts variously snap to the hovered mark,
+//! track x while pinning y, or park in a corner. Every one of those is a
+//! caller's decision.
+//!
+//! What the SDK owes a caller instead is enough information to place a
+//! surface anywhere: [`PointerFrame`] carries the pointer in plot-local AND
+//! window space plus the plot's viewport rect, and `HitResult` carries each
+//! mark's anchor and its full `MarkBounds`. Cursor-follow, snap-to-bar and
+//! pinned-axis placements are then all expressible outside the chart, and
+//! none of them is privileged by the SDK.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -35,31 +56,70 @@ use std::rc::Rc;
 use canvas_core::{Canvas, CanvasProps, Scene};
 use charts_core::{
     render_tween, render_with, ChartOutput, ChartSpec, Color as MarkColor, DatumRef, Gutters,
-    HAlign, HitResult, LabelPlacement, LabelRole, Rect as IrRect, VAlign,
+    HAlign, HitResult, LabelPlacement, LabelRole, Point, Rect as IrRect, TweenAt, VAlign,
 };
 use runtime_core::{
-    after_animation_frame, component, memo, on_scope_drop, signal, switch, view, when, AlignItems,
+    after_animation_frame, component, memo, on_scope_drop, signal, switch, view, AlignItems,
     AnchorableHandle, Element, FlexDirection, IdealystSchema, IntoElement, LayoutSubscription,
-    Length, Overflow, PointerEvents, Position, Reactive, Ref, StyleApplication, StyleRules,
-    StyleSheet, TextAlign, Tokenized, Transform, ViewHandle,
+    Length, Overflow, PointerEvents, Position, Reactive, Ref, StyleRules,
+    StyleSheet, TextAlign, Tokenized, Transform, Transition, ViewHandle, ViewportRect,
 };
 use runtime_core::Color as StyleColor;
 use runtime_core::{Signal, TouchEvent, TouchPhase, TouchResponse};
 
-/// What the pointer is currently over.
-#[derive(Clone, PartialEq, Debug)]
-pub struct ChartHover {
-    /// Pointer position in plot-local pixels.
-    pub x: f32,
-    pub y: f32,
-    /// Every series' datum in the hovered column, ordered by series. This
-    /// is a column rather than a single nearest datum because that is what
-    /// a multi-series tooltip shows — see `HitIndex::column_at`.
-    pub entries: Vec<HitResult>,
+/// Where the pointer is, in every space the SDK can report it.
+///
+/// The three travel together because they are only useful together. The chart
+/// renders no tooltip of its own, so a caller's surface lives OUTSIDE the
+/// chart's tree and has to place itself in its own coordinate space —
+/// `local` alone cannot get it there.
+///
+/// - `local` is plot-local, the space [`HitResult::position`] and
+///   [`HitResult::bounds`] are in. Use it to query, not to place.
+/// - `window` is the pointer in window pixels, for a surface that follows
+///   the cursor.
+/// - `plot` is the plot box in viewport space. Adding its origin to any
+///   plot-local point converts that point into the same space `window` is
+///   in — which is what makes "sit beside the hovered bar" expressible
+///   from outside the chart. Without it, plot-local geometry is unplaceable
+///   and cursor-following is the only implementable behaviour.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct PointerFrame {
+    /// Pointer in plot-local pixels.
+    pub local: Point,
+    /// Pointer in window pixels.
+    pub window: Point,
+    /// The plot box in viewport space.
+    pub plot: ViewportRect,
 }
 
-/// Renders the tooltip body for a hovered column.
-pub type TooltipRenderer = Rc<dyn Fn(&ChartHover) -> Element>;
+impl PointerFrame {
+    /// Convert a plot-local point (a [`HitResult::position`], a corner of a
+    /// [`HitResult::bounds`]) into viewport space — the space a surface
+    /// rendered outside the chart positions itself in.
+    ///
+    /// Provided because getting it wrong is silent: a surface placed with
+    /// raw plot-local coordinates lands at the top-left of the WINDOW and
+    /// looks like a z-order or portal bug rather than a coordinate one.
+    pub fn to_viewport(&self, local: Point) -> Point {
+        Point { x: self.plot.x + local.x, y: self.plot.y + local.y }
+    }
+}
+
+/// What the pointer is currently over.
+///
+/// Reported through [`ChartProps::on_hover`] on every pointer move, not only
+/// when the hovered column changes — a surface that follows the cursor needs
+/// the finer rate. Dedupe on `entries` if yours snaps to a mark instead.
+#[derive(Clone, PartialEq, Debug)]
+pub struct ChartHover {
+    /// Where the pointer is. See [`PointerFrame`].
+    pub at: PointerFrame,
+    /// Every series' datum in the hovered column, ordered by series. This
+    /// is a column rather than a single nearest datum because that is what
+    /// a multi-series readout shows — see `HitIndex::column_at`.
+    pub entries: Vec<HitResult>,
+}
 /// Notified whenever the hovered column changes; `None` on leave.
 pub type HoverCallback = Rc<dyn Fn(Option<ChartHover>)>;
 
@@ -106,9 +166,6 @@ pub struct ChartProps {
     pub y_axis_width: f32,
     /// Pixels reserved for x-axis labels. Default [`DEFAULT_X_AXIS_HEIGHT`].
     pub x_axis_height: f32,
-    /// Show the built-in tooltip on hover. Default `true`. Turn it off to
-    /// render your own from [`ChartProps::on_hover`].
-    pub tooltip: bool,
     /// Let hovering drive the spec's [`Highlight`](charts_core::Highlight) —
     /// enlarged markers, thicker lines, recolored bars. Default `true`.
     ///
@@ -119,15 +176,37 @@ pub struct ChartProps {
     /// Fade series containing nothing emphasised, so the highlighted one
     /// stands out. Default `false`.
     pub dim_others: bool,
-    /// Animate data changes over this many milliseconds. `0` disables it.
+    /// Animate datum values and the axis domain. `None` (the default) snaps.
     ///
-    /// Values and the axis domain glide; tick labels switch to the new ones
-    /// immediately so they do not churn through intermediate numbers. A
-    /// change that alters the chart's SHAPE — a series added or removed, a
-    /// series' length changed, a kind swapped — snaps, because pairing
-    /// unrelated points animates a bar toward a value it has nothing to do
-    /// with, which reads worse than not animating.
-    pub transition_ms: u32,
+    /// Same [`Transition`] the style system uses — one vocabulary, so
+    /// `Transition::new(420, Easing::EaseInOut)` means here what it means on
+    /// a `background_transition`. The mechanism differs (marks are painted
+    /// into a canvas, so the chart drives its own frame loop rather than
+    /// handing the backend a CSS transition), but the declaration does not.
+    ///
+    /// Tick labels switch to the new ones immediately so they do not churn
+    /// through intermediate numbers. A change that alters the chart's SHAPE
+    /// — a series added or removed, a series' length changed, a kind swapped
+    /// — snaps, because pairing unrelated points animates a bar toward a
+    /// value it has nothing to do with, which reads worse than not animating.
+    #[prop(static)]
+    #[schema(constraint = "optional Transition { duration_ms, easing }")]
+    pub value_transition: Option<Transition>,
+    /// Animate colour changes. `None` (the default) snaps.
+    ///
+    /// Covers both a series' own colour and whatever a
+    /// [`StyleFn`](charts_core::StyleFn) resolves to — a threshold recolor
+    /// fades across the transition instead of flipping at the frame the
+    /// value crosses the threshold.
+    ///
+    /// Its own channel because colour rarely wants the value clock: a 420 ms
+    /// glide is right for a bar changing height and sluggish for the same
+    /// bar changing hue. What it does NOT cover is highlight — a point
+    /// becoming selected lands at once, because easing into a state the user
+    /// just caused feels laggy rather than smooth.
+    #[prop(static)]
+    #[schema(constraint = "optional Transition { duration_ms, easing }")]
+    pub color_transition: Option<Transition>,
     /// Points to render as selected. Reactive, so a host can drive selection
     /// from its own signal without rebuilding the whole spec.
     ///
@@ -136,22 +215,16 @@ pub struct ChartProps {
     #[prop(reactive)]
     #[schema(constraint = "reactive: Vec<DatumRef> of selected points")]
     pub selected: Vec<DatumRef>,
-    /// Render the tooltip body yourself. Receives the hovered column;
-    /// return any element. `None` uses the built-in list.
+    /// Called on every pointer move over the plot, and with `None` when the
+    /// pointer leaves. This is the ONLY tooltip mechanism the SDK provides:
+    /// the chart draws marks, labels and legend, and a caller renders any
+    /// hover surface itself, outside the chart's tree. See [`ChartHover`].
     ///
-    /// `#[prop(static)]` is REQUIRED here and is not redundant: `#[props]`
-    /// recognises handlers by matching the literal path segments
-    /// `Rc`/`Arc`/`Box` followed by `dyn Fn`, so a type alias hides the
-    /// handler from it and the field would be wrapped as
-    /// `Reactive<Option<TooltipRenderer>>` — which then rejects a plain
+    /// `#[prop(static)]`: `#[props]` recognises handlers by matching the
+    /// literal path segments `Rc`/`Arc`/`Box` followed by `dyn Fn`, so the
+    /// `HoverCallback` alias hides the handler from it and the field would
+    /// be wrapped as `Reactive<Option<..>>` — which then rejects a plain
     /// `Some(..)`/`None` at every call site.
-    #[prop(static)]
-    #[schema(constraint = "optional Fn(&ChartHover) -> Element")]
-    pub tooltip_content: Option<TooltipRenderer>,
-    /// Called whenever the hovered column changes, and with `None` when the
-    /// pointer leaves. Fires regardless of whether the built-in tooltip is
-    /// on, so an app can drive a legend, a readout, or a linked chart.
-    /// `#[prop(static)]` for the same aliasing reason as `tooltip_content`.
     #[prop(static)]
     #[schema(constraint = "optional Fn(Option<ChartHover>)")]
     pub on_hover: Option<HoverCallback>,
@@ -171,12 +244,11 @@ impl Default for ChartProps {
             spec: Reactive::Static(ChartSpec::default()),
             y_axis_width: Reactive::Static(DEFAULT_Y_AXIS_WIDTH),
             x_axis_height: Reactive::Static(DEFAULT_X_AXIS_HEIGHT),
-            tooltip: Reactive::Static(true),
             highlight_on_hover: Reactive::Static(true),
             dim_others: Reactive::Static(false),
-            transition_ms: Reactive::Static(0),
             selected: Reactive::Static(Vec::new()),
-            tooltip_content: None,
+            value_transition: None,
+            color_transition: None,
             on_hover: None,
             label_style: None,
             style: None,
@@ -191,7 +263,6 @@ impl Default for ChartProps {
 impl std::fmt::Debug for ChartProps {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChartProps")
-            .field("tooltip_content", &self.tooltip_content.is_some())
             .field("on_hover", &self.on_hover.is_some())
             .field("label_style", &self.label_style.is_some())
             .field("style", &self.style.is_some())
@@ -260,36 +331,6 @@ fn label_rules() -> StyleRules {
         // Labels must never eat pointer events: the plot's hover handler
         // sits underneath them and a label swallowing a move would make
         // the tooltip flicker as the cursor crossed a tick.
-        pointer_events: Some(PointerEvents::None),
-        ..Default::default()
-    }
-}
-
-/// The tooltip bubble.
-///
-/// The width bounds are load-bearing, not cosmetic. An absolutely-positioned
-/// box with `left`/`top` set and no width is shrink-to-fit, and the two
-/// layout engines disagree about what that means: the DOM gives it
-/// max-content, while Taffy (macOS/iOS/Android) resolves it toward
-/// MIN-content — which for a text run is the widest single character, so the
-/// label wraps one letter per line into a tall vertical ribbon. A definite
-/// `min_width` gives Taffy a floor to lay out against, and `max_width` keeps
-/// a long series name from stretching the bubble across the plot on the DOM
-/// side. Same bubble on every backend, no per-platform branch.
-pub(crate) fn tooltip_rules() -> StyleRules {
-    StyleRules {
-        position: Some(Position::Absolute),
-        min_width: px(104.0),
-        max_width: px(260.0),
-        padding_top: px(6.0),
-        padding_bottom: px(6.0),
-        padding_left: px(8.0),
-        padding_right: px(8.0),
-        border_top_left_radius: px(6.0),
-        border_top_right_radius: px(6.0),
-        border_bottom_left_radius: px(6.0),
-        border_bottom_right_radius: px(6.0),
-        flex_direction: Some(FlexDirection::Column),
         pointer_events: Some(PointerEvents::None),
         ..Default::default()
     }
@@ -433,6 +474,45 @@ pub(crate) fn overlay_label(l: &LabelPlacement, style: Rc<StyleSheet>, plot_w: f
         .into_element()
 }
 
+/// The eased fraction of one transition channel at `elapsed_ms`.
+///
+/// `None` — no transition declared — is settled immediately, which is what
+/// makes "no transition" mean "snap" rather than "animate instantly over zero
+/// milliseconds and divide by zero". A declared duration of `0` is treated
+/// the same way for the same reason.
+///
+/// Pure so the two-clock arithmetic is a test rather than something to notice
+/// by eye on a 420 ms animation.
+pub fn channel_at(tr: Option<Transition>, elapsed_ms: f32) -> f32 {
+    match tr {
+        Some(t) if t.duration_ms > 0 => {
+            let linear = (elapsed_ms / t.duration_ms as f32).clamp(0.0, 1.0);
+            // The framework's own curve evaluator, so `Easing::Ease` means
+            // here exactly what it means on a `background_transition`.
+            runtime_core::animation::apply_easing(linear, t.easing)
+        }
+        _ => 1.0,
+    }
+}
+
+/// Both channels' eased fractions at `elapsed_ms`.
+pub fn tween_at(
+    value: Option<Transition>,
+    color: Option<Transition>,
+    elapsed_ms: f32,
+) -> TweenAt {
+    TweenAt { value: channel_at(value, elapsed_ms), color: channel_at(color, elapsed_ms) }
+}
+
+/// How long the whole transition runs: the longer of the two channels.
+///
+/// One frame loop drives both, so it has to outlast the slower one — stopping
+/// at the shorter would freeze the other channel part-resolved.
+pub fn transition_span_ms(value: Option<Transition>, color: Option<Transition>) -> u32 {
+    let d = |t: Option<Transition>| t.map_or(0, |t| t.duration_ms);
+    d(value).max(d(color))
+}
+
 /// The spec the chart currently DISPLAYS.
 ///
 /// Mid-transition that is the interpolated state; at rest it is the settled
@@ -447,11 +527,11 @@ pub(crate) fn overlay_label(l: &LabelPlacement, style: Rc<StyleSheet>, plot_w: f
 pub fn visual_state(
     origin: Option<&ChartSpec>,
     target: Option<&ChartSpec>,
-    t: f32,
+    at: TweenAt,
 ) -> Option<ChartSpec> {
     match (origin, target) {
-        (Some(o), Some(tg)) if t < 1.0 => {
-            Some(charts_core::lerp_data(o, tg, t).unwrap_or_else(|| tg.clone()))
+        (Some(o), Some(tg)) if at.value < 1.0 || at.color < 1.0 => {
+            Some(charts_core::lerp_data(o, tg, at).unwrap_or_else(|| tg.clone()))
         }
         (_, tg) => tg.cloned(),
     }
@@ -463,12 +543,38 @@ pub fn visual_state(
 /// [`ChartHover`] is testable without a backend, a mounted tree, or a
 /// synthetic touch event — the interesting logic is here, and the handler
 /// below is only event plumbing around it.
-pub fn hover_at(out: &ChartOutput, x: f32, y: f32) -> Option<ChartHover> {
-    let entries = out.hit.column_at(charts_core::pt(x, y));
+///
+/// Takes the whole [`PointerFrame`] rather than a local `(x, y)`: the window
+/// position and plot rect are carried through to the callback unchanged, and
+/// threading them past this function instead would let the component report a
+/// frame that disagrees with the hit it was resolved from.
+pub fn hover_at(out: &ChartOutput, at: PointerFrame) -> Option<ChartHover> {
+    let entries = out.hit.column_at(charts_core::pt(at.local.x, at.local.y));
     if entries.is_empty() {
         None
     } else {
-        Some(ChartHover { x, y, entries })
+        Some(ChartHover { at, entries })
+    }
+}
+
+/// Assemble the [`PointerFrame`] for one event.
+///
+/// The plot rect is read live from the mounted handle rather than cached,
+/// because it moves for reasons the chart never observes — an ancestor
+/// scrolling, a sibling panel opening, the window moving. A cached origin is
+/// correct until the first scroll and then silently offsets every surface a
+/// caller places, which is exactly the class of bug that is hardest to
+/// attribute back to the chart. The read is a backend rect query on a handle
+/// we already hold, on an event that is already doing a hit-test.
+///
+/// An unmounted handle yields a zero rect, so `local` and `window` still
+/// arrive intact and only viewport conversion degrades — the frame before
+/// first layout, where there is nothing to place against anyway.
+pub(crate) fn pointer_frame(plot_ref: Ref<ViewHandle>, ev: &TouchEvent) -> PointerFrame {
+    PointerFrame {
+        local: Point { x: ev.position.x, y: ev.position.y },
+        window: Point { x: ev.window_position.x, y: ev.window_position.y },
+        plot: plot_ref.with(|h| h.rect()).unwrap_or_default(),
     }
 }
 
@@ -509,34 +615,19 @@ pub(crate) fn legend_entry(
         .into_element()
 }
 
-fn default_tooltip_body(h: &ChartHover, spec: &ChartSpec) -> Vec<Element> {
-    let mut rows: Vec<Element> = Vec::with_capacity(h.entries.len());
-    for e in &h.entries {
-        let name = spec
-            .series
-            .get(e.series)
-            .map(|s| s.name.clone())
-            .unwrap_or_default();
-        let line = format!("{name}: {}", e.datum.y);
-        rows.push(
-            runtime_core::text(line)
-                .with_style(sheet(StyleRules { font_size: px(12.0), ..Default::default() }))
-                .into_element(),
-        );
-    }
-    rows
-}
-
-/// Renders a chart: marks on a canvas, labels and tooltip as real elements.
+/// Renders a chart: marks on a canvas, labels and legend as real elements.
+///
+/// No hover surface: see [`ChartProps::on_hover`].
 #[component]
 pub fn Chart(props: &ChartProps) -> Element {
     let spec = props.spec.clone();
     let y_axis_width = props.y_axis_width.get();
     let x_axis_height = props.x_axis_height.get();
-    let show_tooltip = props.tooltip.get();
     let highlight_on_hover = props.highlight_on_hover.get();
     let dim_others = props.dim_others.get();
-    let transition_ms = props.transition_ms.get();
+    let value_transition = props.value_transition;
+    let color_transition = props.color_transition;
+    let span_ms = transition_span_ms(value_transition, color_transition);
     let selected = props.selected.clone();
     let label_style = props.label_style.clone().unwrap_or_else(label_sheet);
 
@@ -572,7 +663,11 @@ pub fn Chart(props: &ChartProps) -> Element {
     // first spec the chart ever saw — usually a different shape by then, so
     // it took the snap path and nothing ever animated.
     let target: Signal<Option<ChartSpec>> = signal(None);
-    let progress = signal(1.0_f32);
+    // Wall-clock milliseconds since the current transition began. ONE clock
+    // for both channels — `tween_at` derives each channel's own eased
+    // fraction from it, so a 420 ms value glide and a 150 ms colour fade are
+    // one frame loop and one signal, not two of each.
+    let elapsed = signal(f32::INFINITY);
     let anim: Rc<RefCell<Option<runtime_core::scheduling::RafLoop>>> = Rc::new(RefCell::new(None));
     // Holds the one-shot that tears the frame loop down. It cannot be
     // dropped from inside the loop's own callback (that would re-enter the
@@ -580,7 +675,7 @@ pub fn Chart(props: &ChartProps) -> Element {
     // frame and parked here.
     let anim_stop: Rc<RefCell<Option<runtime_core::ScheduledTask>>> = Rc::new(RefCell::new(None));
 
-    if transition_ms > 0 {
+    if span_ms > 0 {
         let spec_for_anim = spec.clone();
         let anim_slot = anim.clone();
         let stop_slot = anim_stop.clone();
@@ -593,7 +688,8 @@ pub fn Chart(props: &ChartProps) -> Element {
             // interpolated state, so a change landing during an animation
             // continues from what is on screen instead of jumping back.
             let visual = runtime_core::untrack(|| {
-                visual_state(origin.get().as_ref(), target.get().as_ref(), progress.get())
+                let at = tween_at(value_transition, color_transition, elapsed.get());
+                visual_state(origin.get().as_ref(), target.get().as_ref(), at)
             });
 
             match visual {
@@ -601,7 +697,7 @@ pub fn Chart(props: &ChartProps) -> Element {
                 None => {
                     origin.set(Some(next.clone()));
                     target.set(Some(next));
-                    progress.set(1.0);
+                    elapsed.set(f32::INFINITY);
                 }
                 Some(v) if v == next => {
                     // Same values — keep the target current (colors or
@@ -611,23 +707,24 @@ pub fn Chart(props: &ChartProps) -> Element {
                 Some(v) => {
                     origin.set(Some(v));
                     target.set(Some(next));
-                    progress.set(0.0);
+                    elapsed.set(0.0);
                     stop_slot.borrow_mut().take();
 
-                    // Drive `progress` from wall-clock elapsed rather than a
-                    // per-frame increment, so the duration is honest on a
-                    // slow frame and cannot run long on a fast display.
+                    // Drive from wall-clock elapsed rather than a per-frame
+                    // increment, so the duration is honest on a slow frame
+                    // and cannot run long on a fast display.
                     let start = runtime_core::time::now_micros();
-                    let dur = (transition_ms as u64).max(1) * 1000;
+                    let span_us = (span_ms as u64).max(1) * 1000;
                     let inner = anim_slot.clone();
                     let stop_slot = stop_slot.clone();
                     *anim_slot.borrow_mut() =
                         Some(runtime_core::scheduling::raf_loop(move || {
-                            let elapsed =
-                                runtime_core::time::now_micros().saturating_sub(start);
-                            let t = (elapsed as f32 / dur as f32).min(1.0);
-                            progress.set(t);
-                            if t >= 1.0 && stop_slot.borrow().is_none() {
+                            let us = runtime_core::time::now_micros().saturating_sub(start);
+                            elapsed.set(us as f32 / 1000.0);
+                            // Runs until the LONGER channel is done; the
+                            // shorter one has already clamped to 1.0 and
+                            // simply stops changing.
+                            if us >= span_us && stop_slot.borrow().is_none() {
                                 // Stop from OUTSIDE the callback's own
                                 // borrow: dropping the RafLoop is what
                                 // cancels it, and doing that while the
@@ -690,10 +787,13 @@ pub fn Chart(props: &ChartProps) -> Element {
                 s.highlight.dim_opacity = 0.35;
             }
             let rect = IrRect::new(0.0, 0.0, w, h);
-            let t = progress.get();
+            let at = tween_at(value_transition, color_transition, elapsed.get());
             match origin.get() {
-                Some(from) if transition_ms > 0 && t < 1.0 => {
-                    render_tween(&from, &s, t, rect, &Gutters::None)
+                // Mid-flight on EITHER channel: values may have settled while
+                // a shorter-or-longer colour fade is still running, and the
+                // tween render is what interpolates the colour.
+                Some(from) if span_ms > 0 && (at.value < 1.0 || at.color < 1.0) => {
+                    render_tween(&from, &s, at, rect, &Gutters::None)
                 }
                 _ => render_with(&s, rect, &Gutters::None),
             }
@@ -799,7 +899,7 @@ pub fn Chart(props: &ChartProps) -> Element {
             match ev.phase {
                 TouchPhase::Hovered | TouchPhase::Moved | TouchPhase::Began => {
                     let out = output.get();
-                    let next = hover_at(&out, ev.position.x, ev.position.y);
+                    let next = hover_at(&out, pointer_frame(plot_ref, ev));
                     // Column first: it is what the render memo watches, and
                     // it changes far less often than the pointer does.
                     let col = next.as_ref().and_then(|h| h.entries.first().map(|e| e.datum.x));
@@ -832,77 +932,6 @@ pub fn Chart(props: &ChartProps) -> Element {
         }
     };
     let leave_cb = on_hover_cb.clone();
-
-    // --- tooltip -----------------------------------------------------------
-    // Two reactive layers, on purpose.
-    //
-    // `when` keys on its predicate's BOOLEAN (that is its documented dedup:
-    // a predicate reading extra signals must not rebuild on those extras).
-    // So a tooltip built entirely inside `when(hover.is_some())` mounts once
-    // and then NEVER updates — it displays whichever datum you hovered first
-    // while the readout beside it moves on. That was a real, visible bug.
-    //
-    // So: `when` only decides existence. Position rides a reactive STYLE
-    // closure, which re-resolves without rebuilding anything. Content rides
-    // a `switch` keyed on the hovered data, which rebuilds only when the
-    // pointer crosses into a different column — not on every pixel of
-    // movement.
-    let tooltip_content = props.tooltip_content.clone();
-    let spec_for_tip = spec.clone();
-    let tooltip = when(
-        move || show_tooltip && hover.get().is_some(),
-        move || {
-            let tooltip_content = tooltip_content.clone();
-            let spec_for_tip = spec_for_tip.clone();
-            let rows = switch(
-                move || {
-                    hover
-                        .get()
-                        .map(|h| h.entries.iter().map(|e| (e.series, e.datum.y)).collect::<Vec<_>>())
-                        .unwrap_or_default()
-                },
-                move |_key: &Vec<(usize, f64)>| {
-                    let Some(h) = hover.get() else {
-                        return view(Vec::new()).into_element();
-                    };
-                    let body = match &tooltip_content {
-                        Some(f) => vec![f(&h)],
-                        None => default_tooltip_body(&h, &spec_for_tip.get()),
-                    };
-                    view(body)
-                        .with_style(sheet(StyleRules {
-                            flex_direction: Some(FlexDirection::Column),
-                            ..Default::default()
-                        }))
-                        .into_element()
-                },
-            );
-            view(vec![rows])
-                .with_style(move || {
-                    let (x, y) = hover.get().map(|h| (h.x, h.y)).unwrap_or((0.0, 0.0));
-                    let mut rules = tooltip_rules();
-                    // Flip to the left of the cursor past the midpoint so
-                    // the bubble stays inside the plot instead of being
-                    // clipped by its `overflow: hidden`.
-                    if x > plot_w.get() * 0.6 {
-                        rules.right = px((plot_w.get() - x + 12.0).max(0.0));
-                    } else {
-                        rules.left = px(x + 12.0);
-                    }
-                    rules.top = px((y - 12.0).max(0.0));
-                    StyleApplication::new(sheet(rules))
-                })
-                .into_element()
-        },
-        || {
-            view(Vec::new())
-                .with_style(sheet(StyleRules {
-                    position: Some(Position::Absolute),
-                    ..Default::default()
-                }))
-                .into_element()
-        },
-    );
 
     // --- in-plot labels ----------------------------------------------------
     // Annotation text is anchored in PLOT-local space — it belongs beside its
@@ -941,7 +970,7 @@ pub fn Chart(props: &ChartProps) -> Element {
     };
 
     // --- plot area ---------------------------------------------------------
-    let plot = view(vec![canvas, plot_labels, tooltip])
+    let plot = view(vec![canvas, plot_labels])
         .bind(plot_ref)
         .on_touch(move |ev| touch(ev))
         .on_hover(move |entering| {

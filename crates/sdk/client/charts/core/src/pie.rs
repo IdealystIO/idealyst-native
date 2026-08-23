@@ -331,6 +331,14 @@ impl PieSpec {
 /// ellipse would misrepresent every share, since equal angles would no
 /// longer subtend equal area.
 pub fn render_pie(spec: &PieSpec, rect: Rect) -> PolarOutput {
+    render_pie_inner(spec, rect, None)
+}
+
+fn render_pie_inner(
+    spec: &PieSpec,
+    rect: Rect,
+    tw: Option<SliceColorTween<'_>>,
+) -> PolarOutput {
     let center = pt(rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
     let reserve = match spec.labels {
         PieLabels::None | PieLabels::Inside => 1.0,
@@ -380,20 +388,50 @@ pub fn render_pie(spec: &PieSpec, rect: Rect) -> PolarOutput {
         let emphasis = hl.of(i);
         let dim = hl.dim_for(i);
         let base = fade(s.color, dim);
-        let ov = spec.override_for(&SliceContext {
+        let ctx = SliceContext {
             index: i,
             label: &s.label,
             value: s.value,
             fraction,
             emphasis,
             base_color: base,
-        });
-        let color = {
+        };
+        let ov = spec.override_for(&ctx);
+        let fold = |ov: &SliceOverride| {
             let c = ov.color.unwrap_or(base);
             match ov.opacity {
                 Some(o) => fade(c, o),
                 None => c,
             }
+        };
+        let color = match tw {
+            // Resolve the callback at BOTH ends, each against its own value
+            // and its own share, and interpolate the two answers. Using the
+            // tweened slice for either end makes a threshold recolor snap at
+            // the frame the value crosses it. Same shape as the cartesian
+            // `resolve_mark_color`.
+            Some(tw) => {
+                let at = |end: &PieSpec, total: f64| match end.slices.get(i) {
+                    Some(sl) => fold(&end.override_for(&SliceContext {
+                        index: i,
+                        label: &sl.label,
+                        value: sl.value,
+                        fraction: if total > 0.0 { sl.value.max(0.0) / total } else { 0.0 },
+                        emphasis,
+                        base_color: base,
+                    })),
+                    // Unpaired: `lerp_pie` already rejected this, but the
+                    // render path must not panic on it.
+                    None => fold(&ov),
+                };
+                let settled = at(tw.to, tw.to_total);
+                if tw.t >= 1.0 {
+                    settled
+                } else {
+                    crate::tween::lerp_color(at(tw.from, tw.from_total), settled, tw.t)
+                }
+            }
+            None => fold(&ov),
         };
 
         let grow = if emphasis == Emphasis::None { 0.0 } else { spec.hover_grow };
@@ -547,24 +585,47 @@ fn push_legend(scene: &mut ChartScene, spec: &PieSpec, rect: Rect) {
 
 /// Interpolate two pies, for a transition.
 ///
-/// Values only, exactly as [`lerp_data`](crate::tween::lerp_data) does for a
-/// cartesian spec: colors, labels, and highlight come from `to`, so a slice
-/// changing color or becoming selected takes effect at once rather than
-/// fading through an intermediate nobody asked for.
+/// Values on the value clock, slice colors on the color clock — exactly as
+/// [`lerp_data`](crate::tween::lerp_data) does for a cartesian spec. Labels
+/// and highlight come from `to`, so a slice becoming selected takes effect at
+/// once rather than fading through an intermediate nobody asked for.
+///
+/// A [`SliceStyleFn`]'s own answer is resolved during the render instead, at
+/// both ends — see [`SliceColorTween`].
 ///
 /// Returns `None` when the slice counts differ — pairing slice 3 of one pie
 /// with slice 3 of an unrelated one animates a share into a value it has
 /// nothing to do with, which reads worse than not animating.
-pub fn lerp_pie(from: &PieSpec, to: &PieSpec, t: f32) -> Option<PieSpec> {
+pub fn lerp_pie(from: &PieSpec, to: &PieSpec, at: crate::tween::TweenAt) -> Option<PieSpec> {
     if from.slices.len() != to.slices.len() {
         return None;
     }
-    let e = crate::tween::ease_in_out(t);
     let mut out = to.clone();
     for (i, s) in out.slices.iter_mut().enumerate() {
-        s.value = crate::tween::lerp_f64(from.slices[i].value, s.value, e);
+        s.value = crate::tween::lerp_f64(from.slices[i].value, s.value, at.value);
+        s.color = crate::tween::lerp_color(from.slices[i].color, s.color, at.color);
     }
     Some(out)
+}
+
+/// BOTH ends of a colour transition for a polar spec.
+///
+/// Same argument as the cartesian [`ColorTween`](crate::render::ColorTween),
+/// including the reason `to` is here: a [`SliceStyleFn`] is a function of the
+/// slice's VALUE, so both colours being interpolated must come from real
+/// endpoint data. Resolving either against the tweened value makes a
+/// threshold recolor flip mid-transition instead of fading.
+///
+/// Each end carries its own `total` because a slice's `fraction` is its share
+/// of the whole pie, which cannot be derived from the tweened spec.
+#[derive(Clone, Copy)]
+pub(crate) struct SliceColorTween<'a> {
+    pub from: &'a PieSpec,
+    pub from_total: f64,
+    pub to: &'a PieSpec,
+    pub to_total: f64,
+    /// Pre-eased fraction of the colour channel.
+    pub t: f32,
 }
 
 /// Render a frame of a transition between two pies.
@@ -572,9 +633,27 @@ pub fn lerp_pie(from: &PieSpec, to: &PieSpec, t: f32) -> Option<PieSpec> {
 /// Falls back to `to` when the two cannot be paired. Unlike the cartesian
 /// tween there is no domain to interpolate — a pie's geometry comes entirely
 /// from the values, so interpolating those is the whole job.
-pub fn render_pie_tween(from: &PieSpec, to: &PieSpec, t: f32, rect: Rect) -> PolarOutput {
-    match lerp_pie(from, to, t) {
-        Some(spec) => render_pie(&spec, rect),
+pub fn render_pie_tween(
+    from: &PieSpec,
+    to: &PieSpec,
+    at: crate::tween::TweenAt,
+    rect: Rect,
+) -> PolarOutput {
+    match lerp_pie(from, to, at) {
+        Some(spec) => {
+            let sum = |p: &PieSpec| p.slices.iter().map(|s| s.value.max(0.0)).sum::<f64>();
+            render_pie_inner(
+                &spec,
+                rect,
+                Some(SliceColorTween {
+                    from,
+                    from_total: sum(from),
+                    to,
+                    to_total: sum(to),
+                    t: at.color,
+                }),
+            )
+        }
         None => render_pie(to, rect),
     }
 }

@@ -10,19 +10,31 @@ use std::f32::consts::TAU;
 use crate::scene::{Point, Rect};
 use crate::spec::Datum;
 
-/// The region of the plot that resolves to one datum.
+/// The region of the plot that resolves to one datum — the mark's actual
+/// drawn geometry.
 ///
 /// Shapes rather than points because the marks are shapes, and a
 /// nearest-point index silently disagrees with what the user can see. A bar
 /// indexed by its top-centre stops responding near its base; a pie slice
 /// indexed by its centroid resolves to a neighbour over most of its own
 /// area. Both bugs vanish once the index stores what was actually drawn.
+///
+/// Public because it is also what a caller needs to POSITION something
+/// against a mark. [`HitResult::position`] is a single anchor point chosen
+/// per mark type (a bar's outer end, a marker, a wedge's centroid), which
+/// answers "where does a callout point at?" but not "where is the bar's
+/// vertical middle?" or "how wide is this slot?". Since the SDK renders no
+/// tooltip of its own, every caller placing a surface beside a mark needs
+/// the second question answered too, so the geometry the index already
+/// stores is exposed rather than re-derived from the spec.
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum HitShape {
+pub enum MarkBounds {
     /// A marker: line/area/scatter points. Matched by proximity, since a
-    /// 3px dot is smaller than anyone can reliably aim at.
+    /// 3px dot is smaller than anyone can reliably aim at. Carries no
+    /// extent — the drawn radius is a style concern the index never sees.
     Point,
-    /// A bar. Matched by containment over its whole body.
+    /// A bar, in plot-local pixels. Matched by containment over its whole
+    /// body, so this is the bar as drawn.
     Rect(Rect),
     /// A pie or radial-bar slice. `start` is clockwise from twelve o'clock
     /// in radians; `sweep` is non-negative.
@@ -40,15 +52,15 @@ fn angle_at(center: Point, p: Point) -> f32 {
     dx.atan2(-dy).rem_euclid(TAU)
 }
 
-impl HitShape {
-    fn contains(&self, p: Point, anchor: Point) -> bool {
+impl MarkBounds {
+    pub(crate) fn contains(&self, p: Point, anchor: Point) -> bool {
         match *self {
             // A point mark has no area; containment is meaningless and
             // proximity is the only sensible test. `nearest_within` is the
             // query for those.
-            HitShape::Point => false,
-            HitShape::Rect(r) => r.contains(p),
-            HitShape::Wedge { center, r0, r1, start, sweep } => {
+            MarkBounds::Point => false,
+            MarkBounds::Rect(r) => r.contains(p),
+            MarkBounds::Wedge { center, r0, r1, start, sweep } => {
                 let (dx, dy) = (p.x - center.x, p.y - center.y);
                 let d = (dx * dx + dy * dy).sqrt();
                 if d < r0 || d > r1 {
@@ -69,15 +81,15 @@ impl HitShape {
 
     /// Distance from `p` to the shape: zero inside, otherwise a measure that
     /// grows as the pointer moves away.
-    fn distance(&self, p: Point, anchor: Point) -> f32 {
+    pub(crate) fn distance(&self, p: Point, anchor: Point) -> f32 {
         match *self {
-            HitShape::Point => dist(p, anchor),
-            HitShape::Rect(r) => {
+            MarkBounds::Point => dist(p, anchor),
+            MarkBounds::Rect(r) => {
                 let dx = (r.x - p.x).max(0.0).max(p.x - r.right());
                 let dy = (r.y - p.y).max(0.0).max(p.y - r.bottom());
                 (dx * dx + dy * dy).sqrt()
             }
-            HitShape::Wedge { .. } => {
+            MarkBounds::Wedge { .. } => {
                 if self.contains(p, anchor) {
                     0.0
                 } else {
@@ -100,7 +112,7 @@ fn dist(a: Point, b: Point) -> f32 {
 /// One datum's resolved screen region.
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct HitEntry {
-    shape: HitShape,
+    shape: MarkBounds,
     /// Where a tooltip should point. For a marker this is the marker; for a
     /// bar, its outer end; for a wedge, its centroid.
     anchor: Point,
@@ -119,8 +131,15 @@ pub struct HitResult {
     /// Index into that series' `data`.
     pub index: usize,
     pub datum: Datum,
-    /// Where the datum was drawn, for anchoring a tooltip or crosshair.
+    /// Where the datum was drawn: the single point a callout should point
+    /// at. Per mark type — a marker's centre, a bar's outer end, a wedge's
+    /// centroid. Use [`bounds`](Self::bounds) when you need the mark's
+    /// extent rather than one anchor.
     pub position: Point,
+    /// The mark's drawn geometry, in plot-local pixels. What you place
+    /// against when `position` is the wrong anchor for the surface you are
+    /// rendering — e.g. a bar's vertical middle, or its far side.
+    pub bounds: MarkBounds,
     /// Pixel distance from the queried point; zero when the pointer is
     /// inside the mark.
     pub distance: f32,
@@ -148,7 +167,7 @@ impl HitIndex {
     /// Index a point marker at `at`.
     pub(crate) fn push(&mut self, at: Point, series: usize, index: usize, datum: Datum) {
         self.entries.push(HitEntry {
-            shape: HitShape::Point,
+            shape: MarkBounds::Point,
             anchor: at,
             series,
             index,
@@ -168,7 +187,7 @@ impl HitIndex {
         datum: Datum,
     ) {
         self.entries.push(HitEntry {
-            shape: HitShape::Rect(rect),
+            shape: MarkBounds::Rect(rect),
             anchor,
             series,
             index,
@@ -191,7 +210,7 @@ impl HitIndex {
         datum: Datum,
     ) {
         self.entries.push(HitEntry {
-            shape: HitShape::Wedge { center, r0, r1, start, sweep },
+            shape: MarkBounds::Wedge { center, r0, r1, start, sweep },
             anchor,
             series,
             index,
@@ -214,6 +233,7 @@ impl HitIndex {
             index: e.index,
             datum: e.datum,
             position: e.anchor,
+            bounds: e.shape,
             distance: e.shape.distance(from, e.anchor),
         }
     }

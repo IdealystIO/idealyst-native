@@ -9,8 +9,8 @@ tags = ["charts", "chart", "graph", "plot", "line", "bar", "pie", "donut", "gaug
 Two crates. **`charts-core`** turns a spec plus a rectangle into a flat list of
 vector marks, a list of text *placements*, and a hit index — it draws nothing
 and knows about no UI toolkit. **`charts`** binds that to idealyst: marks go
-onto a `Canvas`, labels become real `text` primitives, and a tooltip rides the
-hit index.
+onto a `Canvas`, labels become real `text` primitives, and hover is reported
+through a callback.
 
 ```rust
 use charts::prelude::*;
@@ -214,15 +214,146 @@ workaround.
 Chart(
     spec = rx!(spec.get()),
     on_hover = my_callback,          // Rc<dyn Fn(Option<ChartHover>)>
-    tooltip_content = my_renderer,   // Rc<dyn Fn(&ChartHover) -> Element>
     selected = rx!(selected.get()),  // Vec<DatumRef>
     dim_others = true,
 )
 ```
 
 A cartesian hover resolves a **column** — every series' datum at that x — which
-is what a multi-series tooltip shows. A polar hover resolves one slice, and the
+is what a multi-series readout shows. A polar hover resolves one slice, and the
 donut hole resolves to nothing rather than latching onto the nearest wedge.
+
+`on_hover` fires on every pointer move, not only when the hovered column
+changes, because a surface that follows the cursor needs the finer rate.
+Dedupe on `entries` if yours snaps to a mark instead.
+
+### There is no built-in tooltip
+
+The SDK renders **no hover surface**. `on_hover` is the whole mechanism: the
+chart draws marks, labels and legend, and the app renders any tooltip itself,
+outside the chart's tree.
+
+This is deliberate. A tooltip is composable from the callback plus a surface,
+so it belongs in an app or a wrapper. Owning one in the SDK forced three bad
+positions at once — the bubble lived inside the plot's `overflow: hidden` and
+was clipped by it; it had to either hardcode colors (wrong in half the themes
+it lands in) or render unbacked text over the marks; and its placement was a
+fixed cursor-follow, when real charts variously snap to the hovered mark,
+track x while pinning y, or park in a corner.
+
+What the SDK owes you instead is enough information to place a surface
+anywhere. That is `PointerFrame`, on every hover:
+
+```rust
+pub struct PointerFrame {
+    pub local:  Point,         // pointer in PLOT-local px — the space HitResult uses
+    pub window: Point,         // pointer in window px
+    pub plot:   ViewportRect,  // the plot box in viewport space
+}
+
+frame.to_viewport(local_point)  // plot-local -> viewport space
+```
+
+`plot` is the load-bearing one. Adding its origin to any plot-local point puts
+that point in the same space `window` is in — which is what makes "sit beside
+the hovered bar" expressible from outside the chart. Without it, plot-local
+geometry is unplaceable and cursor-following is the only implementable
+behaviour.
+
+Placement is then a pure function of the frame and the entries. Split it in
+two — pick an **anchor**, then **resolve** that anchor against the bubble's
+measured size — so the edge handling is written once for every mode:
+
+```rust
+// 1. The anchor: the point the bubble should sit beside, in viewport space.
+match mode {
+    // `window` is already viewport-space.
+    Cursor => (at.window.x, at.window.y),
+
+    // Snap beside the hovered bar, at its vertical MIDDLE. `position` is the
+    // bar's outer end, so a bubble placed there rides up and down with the
+    // value — this is what `bounds` is for.
+    Mark => {
+        let local = match hit.bounds {
+            MarkBounds::Rect(r) => Point { x: r.x + r.w, y: r.y + r.h / 2.0 },
+            _ => hit.position,
+        };
+        let v = at.to_viewport(local);
+        (v.x, v.y)
+    }
+
+    // Track x, pin y to the plot's top edge. Mixing the two spaces is why
+    // the frame carries both.
+    TrackX => (at.window.x, at.plot.y + 24.0),
+}
+
+// 2. Resolve: keep it on screen. x FLIPS to the other side of the anchor
+//    (sliding it left instead would park it on the mark it describes);
+//    y CLAMPS (there is no side that reads better for a centred bubble).
+fn resolve((ax, ay): (f32, f32), (bw, bh): (f32, f32), (vw, vh): (f32, f32)) -> (f32, f32) {
+    let right = ax + GAP;
+    let x = if right + bw + MARGIN > vw && ax - GAP - bw >= MARGIN {
+        ax - GAP - bw
+    } else {
+        right.min((vw - bw - MARGIN).max(MARGIN))
+    };
+    let y = (ay - bh / 2.0).clamp(MARGIN, (vh - bh - MARGIN).max(MARGIN));
+    (x, y)
+}
+```
+
+The bubble's size comes from measuring it — `bind` a `Ref<ViewHandle>` and
+subscribe with `on_layout` (deferred one frame with `after_animation_frame`,
+since the handle is not filled until mount). The viewport comes from
+`runtime_core::viewport_size()`, which is reactive, so the placement
+re-resolves on window resize for free. Before the first measurement the size
+is `(0, 0)` and `resolve` degrades to "no flip", which is harmless — the
+layout callback lands before paint.
+
+Mount the surface at your **app root**, not inside the chart — a surface
+rendered inside the plot is clipped by the plot's own `overflow: hidden`, the
+clip that keeps marks off the axis gutters. The framework has no
+`Position::Fixed`, so an absolutely-positioned box in a non-scrolling root
+works directly; a scrolling root subtracts its scroll offset, or portals the
+bubble through `anchored_overlay`.
+
+### Two traps when you build the surface
+
+Both of these produce symptoms that look like chart bugs. Neither is.
+
+**1. `when` dedups on its predicate's boolean.** Building the whole bubble
+inside `when(|| hover.get().is_some())` mounts it once and then never updates
+it: the predicate stays `true` as you scrub, so the branch closure does not
+re-run and the bubble keeps whichever column you hovered first. It appears to
+work if you test by leaving the chart between hovers, because that flips the
+predicate and forces a rebuild. Split the work by how often each part changes:
+
+```rust
+when(
+    move || tip.get().is_some(),        // EXISTENCE only
+    move || {
+        let rows = switch(               // CONTENT — per column, not per pixel
+            move || tip.get().map(|(lines, _, _)| lines).unwrap_or_default(),
+            move |lines: &Vec<String>| { /* text nodes */ },
+        );
+        view(vec![rows]).with_style(move || {   // POSITION — per move, no rebuild
+            let (x, y) = tip.get().map(|(_, x, y)| (x, y)).unwrap_or((0.0, 0.0));
+            StyleApplication::new(bubble_sheet(x, y))
+        })
+    },
+    || /* closed branch — see trap 2 */,
+)
+```
+
+**2. Both `when` branches must be out of flow.** The two branches occupy the
+same child slot in the parent. If the open branch is `Position::Absolute` and
+the closed one is a plain `view`, then in a flex parent with a `gap` the empty
+view contributes a gap slot and the absolute bubble does not — so the whole
+layout shifts by one gap every time the pointer enters or leaves the chart.
+Give the closed branch `position: absolute` too.
+
+`examples/charts-demo` implements all three placements on one callback, with
+both traps handled, and is the reference.
 
 ### The hit index stores shapes, not points
 
@@ -238,6 +369,18 @@ out.hit.nearest_within(p, 12)  // proximity, for markers too small to aim at
 out.hit.pick(p, 12)            // containment first, then proximity
 out.hit.column_at(p)           // every series at that data x
 ```
+
+Each `HitResult` carries both an anchor and the geometry:
+
+```rust
+hit.position  // Point — one anchor per mark type: a marker's centre, a bar's
+              // OUTER END, a wedge's centroid. What a callout points AT.
+hit.bounds    // MarkBounds — the mark as drawn: Point | Rect | Wedge.
+              // What you place a surface BESIDE.
+```
+
+Both are plot-local; run them through `PointerFrame::to_viewport` to place
+against them from outside the chart.
 
 ### Conditional formatting
 
@@ -259,19 +402,87 @@ reactive tick. `PieSpec::styled` / `SliceStyleFn` work the same way.
 
 ## Transitions
 
+Declared with the framework's **own** `Transition`, not a charting dialect —
+the same type and the same `Easing` a stylesheet spells for
+`background_transition`:
+
 ```rust
-Chart(spec = ..., transition_ms = 420)
+Chart(
+    spec = ...,
+    value_transition = Some(Transition::new(420, Easing::EaseInOut)),
+    color_transition = Some(Transition::new(180, Easing::EaseOut)),
+)
 ```
 
-Values and the axis domain glide; tick labels switch immediately so they do not
-churn through intermediate numbers. A change that alters the chart's **shape**
-— a series added or removed, a length changed, a kind swapped — snaps, because
-pairing unrelated points animates a bar toward a value it has nothing to do
-with.
+`None` (the default) on either channel means **snap**.
 
-`PieChart` and `RadialChart` take the same prop. A radial transition
-interpolates the range too, so a gauge whose max changes does not snap its
-scale on frame one while the arc glides.
+Only the *mechanism* differs from a style transition. A style transition
+declares intent and the backend's native machinery interpolates (CSS
+`transition`, `CATransaction`, `ObjectAnimator`); marks are painted into a
+canvas, so there is no styled node to hand that to and the chart drives its own
+frame loop. The declaration is identical, and the author never spells the
+difference. Note also that a view's *transform* has no chart analogue — a
+mark's geometry **is** its data, so what would be a transform animation
+elsewhere is already the value channel here.
+
+### Two channels, and why
+
+| channel | covers | typical |
+|---|---|---|
+| `value_transition` | datum `x` / `y` / heatmap intensity, and the axis domain | 300–500 ms, `EaseInOut` |
+| `color_transition` | series colour **and** whatever a `StyleFn` resolves to | 120–200 ms, `EaseOut` |
+
+They are separate because a duration right for one is wrong for the other: 420
+ms suits a bar changing height and reads as sluggish on the same bar changing
+hue, where there is no distance for the eye to track. One frame loop drives
+both — it runs for the longer of the two, and the shorter channel simply
+clamps.
+
+The domain rides the **value** clock rather than owning a third: an axis
+settling on a different beat from the marks it measures reads as a glitch.
+Tick labels switch immediately regardless, so they do not churn through
+intermediate numbers.
+
+### A `StyleFn` fades, it does not flip
+
+A callback is a function of the datum, so resolving it once per frame against
+the *interpolated* value makes a threshold recolor switch abruptly at whatever
+frame the value crosses it — a hard cut in the middle of a smooth transition.
+Instead the callback is resolved at **both ends** and the two answers
+interpolated, which is exactly what the axis domain already did:
+
+```rust
+// y >= 10 turns a bar red. Animating 5 -> 15 now FADES blue -> red across
+// `color_transition`, instead of snapping at the frame the tween passes 10.
+let threshold: StyleFn = Rc::new(|ctx| if ctx.datum.y >= 10.0 {
+    MarkOverride::color(RED)
+} else {
+    MarkOverride::default()
+});
+```
+
+### What never animates
+
+**Highlight.** A point becoming selected, or a series being hovered, lands at
+once — easing into a state the user just caused feels laggy rather than
+smooth. `dim_others` and `hover_color` are part of that and snap with it.
+
+**A shape change.** A series added or removed, a length changed, a kind
+swapped — the pair cannot be matched point-for-point, so the render snaps.
+Pairing unrelated points animates a bar toward a value it has nothing to do
+with, which reads worse than not animating.
+
+`PieChart` and `RadialChart` take both props. A radial transition interpolates
+the range too, so a gauge whose max changes does not snap its scale on frame
+one while the arc glides.
+
+### For a non-idealyst consumer
+
+`charts-core` applies **no** easing: every `t` it takes is already eased, and
+the two channels arrive as `TweenAt { value, color }`. That boundary is what
+keeps the crate free of any runtime dependency — `Easing` is a runtime type it
+cannot see, and owning a duplicate would fork the vocabulary in two. A host
+with no runtime can use `charts_core::ease_in_out` for the old default curve.
 
 ---
 

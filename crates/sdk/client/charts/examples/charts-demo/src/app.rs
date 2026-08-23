@@ -1,11 +1,276 @@
-//! The demo screen: a chart, a row of controls, and a live hover readout.
+//! The demo screen: a chart, a row of controls, a live hover readout, and a
+//! tooltip.
+//!
+//! The tooltip is the part worth reading. The SDK renders no hover surface —
+//! it reports `on_hover` and nothing else — so everything below the
+//! `Placement` enum is APP code, not framework code. That is the point of the
+//! design: three genuinely different placements (follow the cursor, snap to
+//! the hovered mark, track x while pinning y) are ~40 lines each on the same
+//! callback, and none of them is privileged by the SDK.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use charts::prelude::*;
-use charts::{ChartHover, DatumRef, MarkContext, MarkOverride, PolarHover, StyleFn};
+use charts::{ChartHover, DatumRef, MarkBounds, MarkContext, MarkOverride, PolarHover, StyleFn};
 use idea_ui::{install_idea_theme, light_theme, tone, variant, Button, VariantRef};
-use runtime_core::{component, rx, signal, switch, ui, Element, IntoElement, Signal};
+use runtime_core::{after_animation_frame, component, rx, signal, switch, ui, when,
+    AnchorableHandle, Element,
+    IntoElement, LayoutSubscription, Length, Position, Ref, Signal, StyleApplication, StyleRules,
+    StyleSheet, ViewHandle};
+
+/// Values glide; colours fade FASTER.
+///
+/// The two are separate `Transition`s on purpose, and the demo picks
+/// deliberately different numbers to show why. 420 ms is right for a bar
+/// changing height — long enough to follow, short enough not to feel slow.
+/// The same 420 ms on a hue change reads as sluggish, because there is no
+/// distance for the eye to track, so the colour channel runs at 180 ms.
+///
+/// Exactly the `Transition` the style system uses: this is the same type and
+/// the same `Easing` a stylesheet spells for `background_transition`.
+const VALUE_GLIDE: Option<Transition> = Some(Transition {
+    duration_ms: 420,
+    easing: Easing::EaseInOut,
+});
+const COLOR_FADE: Option<Transition> = Some(Transition {
+    duration_ms: 180,
+    easing: Easing::EaseOut,
+});
+
+/// Where the demo puts its tooltip.
+///
+/// Three placements that real charts actually use, to show that the SDK
+/// privileges none of them. Each is a pure function of the pointer frame
+/// (`charts::PointerFrame`) and the hovered entries — see [`place`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Placement {
+    /// Follows the pointer on both axes. Simple, and usually the worst of
+    /// the three: the bubble jitters over a mark the user is trying to read.
+    Cursor,
+    /// Snaps beside the hovered mark. For bars this uses the bar's `bounds`
+    /// rather than its anchor, so the bubble sits at the bar's vertical
+    /// middle instead of hopping to its tip as the value changes.
+    #[default]
+    Mark,
+    /// Tracks x, pins y to the top of the plot. The common "scrubbing a time
+    /// series" idiom: the bubble stays on one line and never covers the marks.
+    TrackX,
+}
+
+impl Placement {
+    const ALL: [Placement; 3] = [Placement::Cursor, Placement::Mark, Placement::TrackX];
+
+    fn label(self) -> &'static str {
+        match self {
+            Placement::Cursor => "Tip: cursor",
+            Placement::Mark => "Tip: snap to mark",
+            Placement::TrackX => "Tip: track x",
+        }
+    }
+}
+
+/// Resolve a hover into the viewport-space point the bubble should sit beside.
+///
+/// Returns an ANCHOR, not a final position: the offset, the edge flip and the
+/// clamp all need the bubble's measured size, which is not known here — see
+/// [`resolve`]. Keeping the two apart is what lets the placement mode stay a
+/// three-line match while edge handling stays in one place for all of them.
+///
+/// Everything here is app code. The only SDK inputs are the frame's three
+/// coordinate spaces and the entries' `position` / `bounds` — which is
+/// exactly the surface the chart promises and nothing more.
+fn place(mode: Placement, h: &ChartHover) -> (f32, f32) {
+    let at = &h.at;
+    match mode {
+        // `window` is already viewport-space, so no conversion is needed.
+        Placement::Cursor => (at.window.x, at.window.y),
+
+        Placement::Mark => {
+            let first = &h.entries[0];
+            // A bar gets its body's right edge and vertical middle; anything
+            // else gets its anchor. This is the distinction `bounds` exists
+            // for: `position` on a bar is its OUTER END, so a bubble placed
+            // there rides up and down as the value changes.
+            let local = match first.bounds {
+                MarkBounds::Rect(r) => charts::Point { x: r.x + r.w, y: r.y + r.h / 2.0 },
+                _ => first.position,
+            };
+            let v = at.to_viewport(local);
+            (v.x, v.y)
+        }
+
+        // Track x from the cursor, pin y to the plot's top edge. Mixing the
+        // two spaces is why the frame carries both: x comes from `window`,
+        // y from the plot rect.
+        Placement::TrackX => (at.window.x, at.plot.y + 24.0),
+    }
+}
+
+/// Gap between the anchor and the bubble.
+const TIP_GAP: f32 = 12.0;
+/// Keep-out margin from the viewport edges.
+const TIP_MARGIN: f32 = 8.0;
+
+/// Turn an anchor plus a measured bubble size into a top-left that stays on
+/// screen.
+///
+/// Two different corrections, because the axes fail differently:
+///
+/// - **x flips.** Past the right edge the bubble moves to the OTHER side of
+///   the anchor, so it never covers the mark it describes. Sliding it left
+///   instead would park it on top of the very point the user is pointing at.
+///   The flip only happens if there is actually room on the left; otherwise
+///   it falls through to a clamp.
+/// - **y clamps.** There is no "other side" that reads better for a bubble
+///   that is already vertically centred on its anchor, and flipping it would
+///   make it jump for no visible reason.
+///
+/// `size` is `(0, 0)` on the frame before the bubble is first measured. That
+/// is harmless: the bubble is invisible until it has a size anyway, and the
+/// layout callback lands before paint.
+fn resolve(anchor: (f32, f32), size: (f32, f32), vp: (f32, f32)) -> (f32, f32) {
+    let (ax, ay) = anchor;
+    let (bw, bh) = size;
+    let (vw, vh) = vp;
+
+    let right = ax + TIP_GAP;
+    let x = if right + bw + TIP_MARGIN > vw && ax - TIP_GAP - bw >= TIP_MARGIN {
+        ax - TIP_GAP - bw
+    } else {
+        // No room to flip either: clamp, and never past the left margin.
+        right.min((vw - bw - TIP_MARGIN).max(TIP_MARGIN))
+    };
+
+    let y = (ay - bh / 2.0).clamp(TIP_MARGIN, (vh - bh - TIP_MARGIN).max(TIP_MARGIN));
+    (x, y)
+}
+
+/// The bubble — an ordinary view, positioned in viewport space.
+///
+/// # Three reactive layers, and why
+///
+/// The obvious shape — build the whole bubble inside
+/// `when(|| tip.get().is_some())` — is WRONG, and wrong in a way that looks
+/// like it works. `when` dedups on its predicate's BOOLEAN: once `tip` is
+/// `Some` the predicate stays `true`, so the branch closure never re-runs and
+/// the bubble keeps whichever column you hovered first while the readout
+/// beside it moves on. It only appears to work if you test by leaving the
+/// chart between hovers, which flips the predicate and forces a rebuild.
+///
+/// So the work is split by how often each part actually changes:
+///
+/// - `when` decides EXISTENCE only.
+/// - a `switch` keyed on the lines drives CONTENT — rebuilding the text nodes
+///   only when the hovered column changes, not on every pixel.
+/// - a reactive style closure drives POSITION — re-resolving without
+///   rebuilding anything, which is what makes a per-move placement cheap.
+///
+/// Absolute rather than fixed because the framework has no `Position::Fixed`;
+/// this works because the demo's root spans the viewport and does not scroll.
+/// An app with a scrolling root would subtract its scroll offset here, or
+/// portal the bubble through `anchored_overlay`.
+fn tooltip_surface(tip: Signal<Option<(Vec<String>, f32, f32)>>) -> Element {
+    // The bubble's own measured size, for the edge flip in `resolve`. Starts
+    // at zero — the first frame has no measurement, and `resolve` degrades to
+    // "no flip" rather than guessing a width and jumping once the real one
+    // lands.
+    let size = signal((0.0_f32, 0.0_f32));
+    let bubble_ref: Ref<ViewHandle> = Ref::new();
+
+    // `bubble_ref` is not filled until the view is mounted, so subscribing has
+    // to wait a frame. The subscription is held in a scope-owned slot: drop it
+    // and the callback stops firing, which would freeze the measured size at
+    // whatever the first layout reported.
+    let holder: Rc<RefCell<Option<LayoutSubscription>>> = Rc::new(RefCell::new(None));
+    let setup = {
+        let holder = holder.clone();
+        after_animation_frame(move || {
+            let sub = bubble_ref.with(|h| {
+                let r = h.rect();
+                size.set((r.width, r.height));
+                h.on_layout(move |w, ht| {
+                    // Guarded: layout fires on every pass, and an
+                    // unconditional set would re-resolve the position style
+                    // on every unrelated relayout.
+                    let (pw, ph) = size.get();
+                    if (pw - w).abs() > 0.5 || (ph - ht).abs() > 0.5 {
+                        size.set((w, ht));
+                    }
+                })
+            });
+            if let Some(sub) = sub {
+                *holder.borrow_mut() = Some(sub);
+            }
+        })
+    };
+    {
+        let holder = holder.clone();
+        runtime_core::on_scope_drop(move || {
+            drop(setup);
+            holder.borrow_mut().take();
+        });
+    }
+
+    let rows = switch(
+        move || tip.get().map(|(lines, _, _)| lines).unwrap_or_default(),
+        move |lines: &Vec<String>| {
+            runtime_core::view(
+                lines
+                    .iter()
+                    .map(|l| {
+                        runtime_core::text(l.clone())
+                            .with_style(std::rc::Rc::new(StyleSheet::r#static(StyleRules {
+                                font_size: Some(Length::Px(12.0).into()),
+                                color: Some(runtime_core::Color("#f5f5f5".into()).into()),
+                                ..Default::default()
+                            })))
+                            .into_element()
+                    })
+                    .collect(),
+            )
+            .with_style(std::rc::Rc::new(StyleSheet::r#static(StyleRules {
+                flex_direction: Some(runtime_core::FlexDirection::Column),
+                row_gap: Some(Length::Px(2.0).into()),
+                ..Default::default()
+            })))
+            .into_element()
+        },
+    );
+
+    runtime_core::view(vec![rows])
+        .bind(bubble_ref)
+        .with_style(move || {
+            let anchor = tip.get().map(|(_, x, y)| (x, y)).unwrap_or((0.0, 0.0));
+            let vp = runtime_core::viewport_size().get();
+            let (x, y) = resolve(anchor, size.get(), (vp.width, vp.height));
+            StyleApplication::new(std::rc::Rc::new(StyleSheet::r#static(StyleRules {
+                position: Some(Position::Absolute),
+                left: Some(Length::Px(x).into()),
+                top: Some(Length::Px(y).into()),
+                // A definite min-width: an absolutely-positioned box with no
+                // width is shrink-to-fit, and the DOM resolves that toward
+                // max-content while Taffy resolves it toward MIN-content —
+                // which for a text run is one character per line. Same bubble
+                // on every backend, no per-platform branch.
+                min_width: Some(Length::Px(120.0).into()),
+                padding_top: Some(Length::Px(6.0).into()),
+                padding_bottom: Some(Length::Px(6.0).into()),
+                padding_left: Some(Length::Px(9.0).into()),
+                padding_right: Some(Length::Px(9.0).into()),
+                border_top_left_radius: Some(Length::Px(6.0).into()),
+                border_top_right_radius: Some(Length::Px(6.0).into()),
+                border_bottom_left_radius: Some(Length::Px(6.0).into()),
+                border_bottom_right_radius: Some(Length::Px(6.0).into()),
+                background: Some(runtime_core::Color("#1e1e24".into()).into()),
+                // The bubble must never eat pointer events, or moving onto it
+                // ends the hover that produced it and it flickers away.
+                pointer_events: Some(runtime_core::PointerEvents::None),
+                ..Default::default()
+            })))
+        })
+        .into_element()
+}
 
 /// Which chart the demo is showing. One enum drives both the button row and
 /// the spec builder, so adding a kind is a single edit in each.
@@ -370,7 +635,7 @@ pub fn SparkCard(
             view(style = styles::SparkPlot()) {
                 // Tooltip off: a 40px-tall chart has nowhere to put one, and
                 // the number above it is already the readout.
-                Chart(spec = spark, tooltip = false, transition_ms = 420)
+                Chart(spec = spark, value_transition = VALUE_GLIDE)
             }
         }
     }
@@ -406,10 +671,14 @@ pub fn app() -> Element {
             MarkOverride::default()
         }
     });
-    // What the pointer is over. Driven by the chart's `on_hover`, which
-    // fires whether or not the built-in tooltip is showing — the point being
-    // that an app can render its own readout from the same data.
+    // What the pointer is over. Driven by the chart's `on_hover`, which is
+    // the ONLY hover mechanism the SDK offers — the readout and the tooltip
+    // below are both just consumers of it.
     let readout = signal(String::from("Hover the chart…"));
+    // The live hover, kept so the tooltip can render from it. Separate from
+    // `readout` because the tooltip needs the geometry, not the prose.
+    let tip = signal(None::<(Vec<String>, f32, f32)>);
+    let placement = signal(Placement::default());
 
     let on_hover: Rc<dyn Fn(Option<ChartHover>)> = Rc::new(move |h| match h {
         Some(h) => {
@@ -424,18 +693,40 @@ pub fn app() -> Element {
             let first = &h.entries[0];
             last_hover.set(Some(DatumRef { series: first.series, index: first.index }));
             readout.set(format!("x={:.0}   ·   {}", first.datum.x, parts.join("   ·   ")));
+
+            // The tooltip. `place` is a pure function of the frame and the
+            // entries; swapping the mode swaps the behaviour with no change
+            // to the chart.
+            let (x, y) = place(placement.get(), &h);
+            let mut lines = vec![format!("x = {:.0}", first.datum.x)];
+            lines.extend(parts);
+            tip.set(Some((lines, x, y)));
         }
         None => {
             // Deliberately does NOT clear `last_hover`. Moving the pointer
             // toward the Pin button leaves the chart and fires this — so
             // clearing here would mean the button always found nothing.
             readout.set(String::from("Hover the chart…"));
+            tip.set(None);
         }
     });
 
     let on_polar_hover: Rc<dyn Fn(Option<PolarHover>)> = Rc::new(move |h| match h {
-        Some(h) => readout.set(format!("{}   ·   {:.1}", h.label, h.value)),
-        None => readout.set(String::from("Hover the chart…")),
+        Some(h) => {
+            readout.set(format!("{}   ·   {:.1}", h.label, h.value));
+            // A slice has no meaningful "track x", so the polar path always
+            // snaps to the wedge's centroid. Same frame, same conversion.
+            let v = h.at.to_viewport(h.hit.position);
+            tip.set(Some((
+                vec![h.label.clone(), format!("{:.1}", h.value)],
+                v.x + 12.0,
+                v.y - 16.0,
+            )));
+        }
+        None => {
+            readout.set(String::from("Hover the chart…"));
+            tip.set(None);
+        }
     });
 
     // The chart area is a `switch` on the FAMILY rather than an `if` chain,
@@ -466,7 +757,8 @@ pub fn app() -> Element {
                             annotate.get(),
                         )),
                         dim_others = rx!(dim.get()),
-                        transition_ms = 420,
+                        value_transition = VALUE_GLIDE,
+                        color_transition = COLOR_FADE,
                         on_hover = on_hover.clone(),
                     )
                 },
@@ -474,7 +766,8 @@ pub fn app() -> Element {
                     PieChart(
                         spec = rx!(build_pie(kind.get(), seed.get(), slice_selected.get())),
                         dim_others = rx!(dim.get()),
-                        transition_ms = 420,
+                        value_transition = VALUE_GLIDE,
+                        color_transition = COLOR_FADE,
                         on_hover = on_polar_hover.clone(),
                     )
                 },
@@ -482,12 +775,35 @@ pub fn app() -> Element {
                     RadialChart(
                         spec = rx!(build_radial(kind.get(), seed.get(), slice_selected.get())),
                         dim_others = rx!(dim.get()),
-                        transition_ms = 420,
+                        value_transition = VALUE_GLIDE,
+                        color_transition = COLOR_FADE,
                         on_hover = on_polar_hover.clone(),
                     )
                 },
             }
             .into_element()
+        },
+    );
+
+    // The tooltip lives at the app root, NOT inside the chart — which is
+    // what lets it sit over the axis gutters and the controls. A surface
+    // rendered inside the plot would be clipped by the plot's own
+    // `overflow: hidden`, the clip that keeps marks off the gutters.
+    let tooltip = when(
+        move || tip.get().is_some(),
+        move || tooltip_surface(tip),
+        // The closed branch MUST be out of flow too. Both branches occupy the
+        // same child slot in the root's flex column, and that column has a
+        // `gap`: an in-flow empty view contributes a gap slot while the
+        // absolute bubble does not, so the entire page shifts by one gap
+        // every time the pointer enters or leaves the chart.
+        || {
+            runtime_core::view(Vec::new())
+                .with_style(std::rc::Rc::new(StyleSheet::r#static(StyleRules {
+                    position: Some(Position::Absolute),
+                    ..Default::default()
+                })))
+                .into_element()
         },
     );
 
@@ -556,6 +872,16 @@ pub fn app() -> Element {
                     on_click = Rc::new(move || annotate.set(!annotate.get())) as Rc<dyn Fn()>,
                 )
                 Button(
+                    label = rx!(placement.get().label().to_string()),
+                    tone = tone::Neutral,
+                    variant = variant::Soft,
+                    on_click = Rc::new(move || {
+                        let i = Placement::ALL.iter().position(|p| *p == placement.get());
+                        let next = (i.unwrap_or(0) + 1) % Placement::ALL.len();
+                        placement.set(Placement::ALL[next]);
+                    }) as Rc<dyn Fn()>,
+                )
+                Button(
                     label = rx!(if selected.get().is_empty() {
                         "Pin hovered".to_string()
                     } else {
@@ -580,6 +906,8 @@ pub fn app() -> Element {
             }
 
             text(style = styles::Readout()) { readout }
+
+            tooltip
 
             view(style = styles::SparkRow()) {
                 for (i, (name, color)) in SPARKS.iter().enumerate() {

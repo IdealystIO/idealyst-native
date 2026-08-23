@@ -1063,7 +1063,7 @@ fn tween_spec(values: [f64; 3]) -> ChartSpec {
 #[test]
 fn transition_lands_exactly_on_the_destination_render() {
     let (a, b) = (tween_spec([1.0, 2.0, 3.0]), tween_spec([9.0, 4.0, 6.0]));
-    let at1 = render_tween(&a, &b, 1.0, surface(), &Gutters::None);
+    let at1 = render_tween(&a, &b, TweenAt::uniform(1.0), surface(), &Gutters::None);
     assert_eq!(at1.scene.marks, render(&b, surface()).scene.marks);
     assert_eq!(at1.scene.labels, render(&b, surface()).scene.labels);
 }
@@ -1081,7 +1081,7 @@ fn transition_starts_from_the_source_data() {
         o.scene.marks.iter().filter(|m| m.layer() == Layer::Series).cloned().collect()
     };
     // Same domain in both specs would make this vacuous; assert it is not.
-    let at0 = render_tween(&a, &b, 0.0, surface(), &Gutters::None);
+    let at0 = render_tween(&a, &b, TweenAt::uniform(0.0), surface(), &Gutters::None);
     assert_eq!(
         series_marks(&at0),
         series_marks(&render(&a, surface())),
@@ -1093,7 +1093,7 @@ fn transition_starts_from_the_source_data() {
 #[test]
 fn transition_midpoint_lies_between_the_endpoints() {
     let (a, b) = (tween_spec([0.0, 0.0, 0.0]), tween_spec([10.0, 10.0, 10.0]));
-    let mid = charts_core::lerp_data(&a, &b, 0.5).expect("same shape");
+    let mid = charts_core::lerp_data(&a, &b, TweenAt::uniform(0.5)).expect("same shape");
     for d in &mid.series[0].data {
         assert!(d.y > 0.0 && d.y < 10.0, "expected an intermediate value, got {}", d.y);
     }
@@ -1104,9 +1104,9 @@ fn transition_midpoint_lies_between_the_endpoints() {
 #[test]
 fn transition_interpolates_the_axis_domain() {
     let (a, b) = (tween_spec([1.0, 1.0, 1.0]), tween_spec([100.0, 100.0, 100.0]));
-    let at0 = render_tween(&a, &b, 0.0, surface(), &Gutters::None);
-    let mid = render_tween(&a, &b, 0.5, surface(), &Gutters::None);
-    let at1 = render_tween(&a, &b, 1.0, surface(), &Gutters::None);
+    let at0 = render_tween(&a, &b, TweenAt::uniform(0.0), surface(), &Gutters::None);
+    let mid = render_tween(&a, &b, TweenAt::uniform(0.5), surface(), &Gutters::None);
+    let at1 = render_tween(&a, &b, TweenAt::uniform(1.0), surface(), &Gutters::None);
 
     assert!(mid.y.max > at0.y.max, "domain must grow from the source");
     assert!(mid.y.max < at1.y.max, "and not reach the destination early");
@@ -1122,7 +1122,7 @@ fn transition_keeps_the_destination_tick_labels() {
     let want: Vec<String> = target.y.ticks.iter().map(|t| t.label.clone()).collect();
 
     for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
-        let f = render_tween(&a, &b, t, surface(), &Gutters::None);
+        let f = render_tween(&a, &b, TweenAt::uniform(t), surface(), &Gutters::None);
         let got: Vec<String> = f.y.ticks.iter().map(|t| t.label.clone()).collect();
         assert_eq!(got, want, "labels must stay put at t={t}");
     }
@@ -1140,24 +1140,55 @@ fn transition_snaps_when_the_shape_changes() {
     .x(Axis::category(["a"]));
 
     assert!(!charts_core::same_shape(&a, &b));
-    assert!(charts_core::lerp_data(&a, &b, 0.5).is_none());
+    assert!(charts_core::lerp_data(&a, &b, TweenAt::uniform(0.5)).is_none());
 
-    let mid = render_tween(&a, &b, 0.5, surface(), &Gutters::None);
+    let mid = render_tween(&a, &b, TweenAt::uniform(0.5), surface(), &Gutters::None);
     let plain = render(&b, surface());
     assert_eq!(mid.scene.marks, plain.scene.marks, "a shape change snaps to the destination");
 }
 
-/// Only VALUES interpolate. A color change or a new selection takes effect
-/// immediately — fading through an intermediate nobody asked for is worse
-/// than switching.
+/// Values and colors interpolate on their OWN clocks; everything else takes
+/// effect at once.
+///
+/// The color half used to assert the opposite — that a recolor switched
+/// immediately. That was changed deliberately when colors got their own
+/// `Transition`: a bar gliding to a new height while its fill jumped read as
+/// a glitch. What must still be instant is HIGHLIGHT: a point becoming
+/// selected is a state change the user just caused, and easing into it makes
+/// the UI feel unresponsive rather than smooth.
 #[test]
-fn transition_does_not_interpolate_non_value_properties() {
+fn values_and_colors_interpolate_on_separate_clocks() {
     let a = tween_spec([1.0, 2.0, 3.0]);
     let mut b = tween_spec([1.0, 2.0, 3.0]);
     b.series[0].color = PINK;
 
-    let mid = charts_core::lerp_data(&a, &b, 0.5).expect("same shape");
-    assert_eq!(mid.series[0].color, PINK, "color switches, it does not blend");
+    // Colour held at the `from` end while the value clock is fully run.
+    let held = charts_core::lerp_data(&a, &b, TweenAt { value: 1.0, color: 0.0 })
+        .expect("same shape");
+    assert_eq!(held.series[0].color, a.series[0].color, "the color clock governs color");
+
+    let mid = charts_core::lerp_data(&a, &b, TweenAt::uniform(0.5)).expect("same shape");
+    assert_ne!(mid.series[0].color, PINK, "mid-transition is not the destination");
+    assert_ne!(mid.series[0].color, a.series[0].color, "…nor the origin");
+
+    // Settled is exact — no rounding residue on the color it lands on.
+    let end = charts_core::lerp_data(&a, &b, TweenAt::SETTLED).expect("same shape");
+    assert_eq!(end.series[0].color, PINK);
+}
+
+/// Highlight is NOT interpolated: it comes from `to` whole.
+///
+/// Guards the boundary the change above could erode — once colors animate it
+/// is tempting to animate emphasis too, and a selection that fades in feels
+/// laggy rather than smooth.
+#[test]
+fn a_transition_does_not_interpolate_highlight() {
+    let a = tween_spec([1.0, 2.0, 3.0]);
+    let mut b = tween_spec([1.0, 2.0, 3.0]);
+    b.highlight.points = vec![charts_core::DatumRef { series: 0, index: 1 }];
+
+    let mid = charts_core::lerp_data(&a, &b, TweenAt::uniform(0.5)).expect("same shape");
+    assert_eq!(mid.highlight, b.highlight, "selection lands at once, mid-transition or not");
 }
 
 /// Easing is smooth and pinned at both ends, so a transition starts and
