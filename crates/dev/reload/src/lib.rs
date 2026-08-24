@@ -21,7 +21,9 @@
 //! so the resulting wasm connects to the host's WebSocket instead
 //! of rendering the local `app()` tree.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -208,11 +210,166 @@ pub fn start_with(
         .context("spawn watch thread")
 }
 
-/// Watch `src/` + `Cargo.toml` under `dir`. Each debounced event
-/// batch triggers one `wasm-pack` build; the build is synchronous on
-/// this thread so events arriving while a build is in flight queue
-/// up naturally on the channel and we collapse them by draining
-/// before the next build.
+/// Every LOCAL source root in `manifest_path`'s cargo dependency
+/// closure: `src/` plus `Cargo.toml` for the crate itself and for each
+/// path / workspace-member crate it actually pulls in.
+///
+/// This deliberately follows the RESOLVED GRAPH rather than the project
+/// directory. The watch set used to be `[<dir>/src, <dir>/Cargo.toml]`
+/// and nothing else, which is correct only for a single-crate app. The
+/// moment shared UI moves into a sibling crate — the normal shape once
+/// an app grows, and the universal shape in a multi-app workspace —
+/// edits to that crate changed the built wasm but triggered no rebuild.
+/// The failure mode is silent: no error, no log line, just a browser
+/// serving an hours-old bundle while every save appears to succeed.
+///
+/// Registry and git dependencies are skipped: cargo reports them with a
+/// non-null `source`, and they cannot change under a running dev
+/// session. Only `source: null` packages — path deps and workspace
+/// members — are watched. A `[patch]` pointing the framework at a local
+/// checkout makes it local by that rule, so framework hacking rebuilds
+/// the app too; the printed watch list is what makes that visible.
+///
+/// Best-effort: if cargo can't be run, or its output doesn't parse,
+/// fall back to the old single-crate set. A dev session that watches
+/// too little beats one that refuses to start.
+pub fn watch_roots(manifest_path: &Path) -> Vec<PathBuf> {
+    let dir = manifest_path.parent().unwrap_or(Path::new("."));
+    let dirs = match package_dirs(manifest_path) {
+        Ok(d) if !d.is_empty() => d,
+        Ok(_) => {
+            eprintln!(
+                "[dev-reload] cargo metadata listed no local packages for {}; \
+                 watching the project crate only",
+                manifest_path.display(),
+            );
+            vec![dir.to_path_buf()]
+        }
+        Err(e) => {
+            eprintln!(
+                "[dev-reload] could not resolve the dependency closure ({e:#}); \
+                 watching the project crate only — edits to sibling crates will \
+                 NOT rebuild",
+            );
+            vec![dir.to_path_buf()]
+        }
+    };
+
+    let mut roots = Vec::new();
+    for d in dirs {
+        // A crate with no `src/` (build-script-only, or mid-scaffold)
+        // is not an error — watch what exists and move on.
+        let src = d.join("src");
+        if src.is_dir() {
+            roots.push(src);
+        }
+        let toml = d.join("Cargo.toml");
+        if toml.is_file() {
+            roots.push(toml);
+        }
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+/// Run `cargo metadata` for `manifest_path` and hand its document to
+/// [`local_package_dirs`].
+fn package_dirs(manifest_path: &Path) -> Result<Vec<PathBuf>> {
+    let out = Command::new("cargo")
+        .args(["metadata", "--format-version", "1"])
+        .arg("--manifest-path")
+        .arg(manifest_path)
+        .output()
+        .context("run `cargo metadata`")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "cargo metadata failed: {}",
+        String::from_utf8_lossy(&out.stderr).trim(),
+    );
+    let meta: serde_json::Value =
+        serde_json::from_slice(&out.stdout).context("parse `cargo metadata` output")?;
+    Ok(local_package_dirs(&meta))
+}
+
+/// The pure core of [`watch_roots`]: given a `cargo metadata` document,
+/// return the manifest directory of every local package reachable from
+/// the root package. Split out so the graph walk is unit-testable
+/// against a synthetic document, without invoking cargo or touching
+/// the filesystem.
+fn local_package_dirs(meta: &serde_json::Value) -> Vec<PathBuf> {
+    // id -> manifest dir, local packages only.
+    let mut local: BTreeMap<&str, PathBuf> = BTreeMap::new();
+    for pkg in meta["packages"].as_array().into_iter().flatten() {
+        // Absent or null `source` == path dependency or workspace
+        // member. Everything else came from a registry or a git rev.
+        if !pkg.get("source").map_or(true, |s| s.is_null()) {
+            continue;
+        }
+        let Some(id) = pkg["id"].as_str() else { continue };
+        let Some(dir) = pkg["manifest_path"]
+            .as_str()
+            .and_then(|m| Path::new(m).parent())
+        else {
+            continue;
+        };
+        local.insert(id, dir.to_path_buf());
+    }
+
+    // Restrict to the root package's closure. Without this, a two-app
+    // workspace would rebuild app A on every save in app B — they are
+    // both workspace members, but neither depends on the other.
+    let keep: BTreeSet<&str> = match meta.pointer("/resolve/root").and_then(|r| r.as_str()) {
+        Some(root) => {
+            let mut edges: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+            for node in meta
+                .pointer("/resolve/nodes")
+                .and_then(|n| n.as_array())
+                .into_iter()
+                .flatten()
+            {
+                let Some(id) = node["id"].as_str() else { continue };
+                edges.insert(
+                    id,
+                    node["dependencies"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|d| d.as_str())
+                        .collect(),
+                );
+            }
+            let mut seen = BTreeSet::new();
+            let mut stack = vec![root];
+            while let Some(id) = stack.pop() {
+                if !seen.insert(id) {
+                    continue;
+                }
+                for dep in edges.get(id).into_iter().flatten() {
+                    stack.push(dep);
+                }
+            }
+            seen
+        }
+        // A virtual workspace manifest has no single root package, so
+        // there is no closure to walk — watch every local package.
+        None => local.keys().copied().collect(),
+    };
+
+    local
+        .into_iter()
+        .filter(|(id, _)| keep.contains(id))
+        .map(|(_, dir)| dir)
+        .collect()
+}
+
+/// Watch every local source root in `dir`'s dependency closure (see
+/// [`watch_roots`]) — its own `src/` + `Cargo.toml`, plus those of
+/// each path / workspace-member crate it pulls in. Each debounced
+/// event batch triggers one `wasm-pack` build; the build is
+/// synchronous on this thread so events arriving while a build is in
+/// flight queue up naturally on the channel and we collapse them by
+/// draining before the next build.
 fn watch_loop(dir: PathBuf, signal: Arc<ReloadSignal>, opts: BuildOptions) {
     let (tx, rx) = mpsc::channel();
     let mut debouncer = match new_debouncer(Duration::from_millis(DEBOUNCE_MS), tx) {
@@ -223,7 +380,7 @@ fn watch_loop(dir: PathBuf, signal: Arc<ReloadSignal>, opts: BuildOptions) {
         }
     };
 
-    let watch_paths = [dir.join("src"), dir.join("Cargo.toml")];
+    let mut watch_paths = watch_roots(&dir.join("Cargo.toml"));
     for path in &watch_paths {
         if let Err(e) = debouncer
             .watcher()
@@ -235,11 +392,7 @@ fn watch_loop(dir: PathBuf, signal: Arc<ReloadSignal>, opts: BuildOptions) {
 
     eprintln!(
         "[dev-reload] watching {} for changes",
-        watch_paths
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", "),
+        describe(&watch_paths),
     );
 
     while let Ok(events) = rx.recv() {
@@ -255,12 +408,51 @@ fn watch_loop(dir: PathBuf, signal: Arc<ReloadSignal>, opts: BuildOptions) {
             }
             Err(e) => eprintln!("[dev-reload] rebuild failed: {e}"),
         }
+
+        // The save may have edited a `Cargo.toml` and ADDED a path
+        // dependency — and a dependency nobody watches is precisely the
+        // silent staleness this watcher exists to prevent, so it must
+        // not be reintroduced by a mid-session edit. Re-resolving costs
+        // one `cargo metadata` against a build we just spent orders of
+        // magnitude longer on, which is cheap enough to do
+        // unconditionally rather than sniff event paths for manifests.
+        let fresh = watch_roots(&dir.join("Cargo.toml"));
+        if fresh != watch_paths {
+            for path in &watch_paths {
+                let _ = debouncer.watcher().unwatch(path);
+            }
+            for path in &fresh {
+                if let Err(e) = debouncer
+                    .watcher()
+                    .watch(path, RecursiveMode::Recursive)
+                {
+                    eprintln!("[dev-reload] cannot watch {}: {e}", path.display());
+                }
+            }
+            watch_paths = fresh;
+            eprintln!(
+                "[dev-reload] dependencies changed — now watching {}",
+                describe(&watch_paths),
+            );
+        }
+
         // Coalesce anything queued during the build — wasm-pack
         // writes to `pkg/` (not watched) and cargo touches
         // `target/` (not watched), but defensively draining keeps
         // editor save-bursts from triggering N consecutive builds.
         drain(&rx);
     }
+}
+
+/// The watch set as one log-friendly line. Printed at startup and
+/// whenever it changes: a watcher that follows a dependency graph is
+/// only trustworthy if you can see what it decided to follow.
+fn describe(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn drain<T>(rx: &mpsc::Receiver<T>) {
@@ -538,5 +730,98 @@ mod tests {
         for h in handles {
             assert_eq!(h.join().expect("waiter panicked"), 1);
         }
+    }
+
+    /// A `cargo metadata` document shaped like a real multi-crate app
+    /// workspace: the app crate depends on a shared UI crate which
+    /// depends on an api crate; a SECOND app crate is a workspace
+    /// member but nothing depends on it; and the framework arrives by
+    /// git while serde arrives from the registry.
+    fn workspace_metadata() -> serde_json::Value {
+        serde_json::json!({
+            "packages": [
+                {"id": "app-main", "manifest_path": "/w/crates/app-main/Cargo.toml", "source": null},
+                {"id": "ui-shared", "manifest_path": "/w/crates/ui-shared/Cargo.toml", "source": null},
+                {"id": "api", "manifest_path": "/w/crates/api/Cargo.toml", "source": null},
+                {"id": "app-checkin", "manifest_path": "/w/crates/app-checkin/Cargo.toml", "source": null},
+                {"id": "idea-ui", "manifest_path": "/home/u/.cargo/git/checkouts/x/idea-ui/Cargo.toml",
+                 "source": "git+https://github.com/IdealystIO/idealyst-native.git?tag=1.3.16"},
+                {"id": "serde", "manifest_path": "/home/u/.cargo/registry/src/serde/Cargo.toml",
+                 "source": "registry+https://github.com/rust-lang/crates.io-index"}
+            ],
+            "resolve": {
+                "root": "app-main",
+                "nodes": [
+                    {"id": "app-main", "dependencies": ["ui-shared", "idea-ui", "serde"]},
+                    {"id": "ui-shared", "dependencies": ["api", "idea-ui"]},
+                    {"id": "api", "dependencies": ["serde"]},
+                    {"id": "app-checkin", "dependencies": ["ui-shared"]},
+                    {"id": "idea-ui", "dependencies": []},
+                    {"id": "serde", "dependencies": []}
+                ]
+            }
+        })
+    }
+
+    /// The regression this whole function exists for: a save in a
+    /// SIBLING crate must be watched. Before the closure walk the set
+    /// was `[<app>/src, <app>/Cargo.toml]`, so editing `ui-shared`
+    /// changed the bundle's contents but never triggered a rebuild —
+    /// silently, which is what made it so expensive to diagnose.
+    #[test]
+    fn path_dependencies_are_watched() {
+        let dirs = local_package_dirs(&workspace_metadata());
+        assert!(dirs.contains(&PathBuf::from("/w/crates/ui-shared")));
+        assert!(dirs.contains(&PathBuf::from("/w/crates/api")));
+        assert!(dirs.contains(&PathBuf::from("/w/crates/app-main")));
+    }
+
+    /// Registry and git deps can't change under a running session, and
+    /// watching a whole `~/.cargo` tree would be a lot of inotify
+    /// handles for nothing.
+    #[test]
+    fn registry_and_git_dependencies_are_not_watched() {
+        let dirs = local_package_dirs(&workspace_metadata());
+        assert!(
+            dirs.iter().all(|d| d.starts_with("/w/")),
+            "only local packages should be watched, got {dirs:?}",
+        );
+    }
+
+    /// The other app in a two-app workspace is a local package but NOT
+    /// in this app's closure. Watching it would rebuild the admin
+    /// bundle on every kiosk save.
+    #[test]
+    fn unrelated_workspace_members_are_not_watched() {
+        let dirs = local_package_dirs(&workspace_metadata());
+        assert!(
+            !dirs.contains(&PathBuf::from("/w/crates/app-checkin")),
+            "a sibling app nothing depends on should stay out of the watch set",
+        );
+    }
+
+    /// A virtual workspace manifest resolves no root package, so there
+    /// is no closure to walk — fall back to every local member rather
+    /// than watching nothing.
+    #[test]
+    fn virtual_workspace_watches_every_local_member() {
+        let mut meta = workspace_metadata();
+        meta["resolve"]["root"] = serde_json::Value::Null;
+        let dirs = local_package_dirs(&meta);
+        assert!(dirs.contains(&PathBuf::from("/w/crates/app-checkin")));
+        assert!(dirs.contains(&PathBuf::from("/w/crates/app-main")));
+        assert!(dirs.iter().all(|d| d.starts_with("/w/")));
+    }
+
+    /// A package with no `source` KEY at all (rather than an explicit
+    /// null) is still a local one — don't drop it on a shape cargo is
+    /// free to emit either way.
+    #[test]
+    fn missing_source_key_counts_as_local() {
+        let meta = serde_json::json!({
+            "packages": [{"id": "solo", "manifest_path": "/w/solo/Cargo.toml"}],
+            "resolve": {"root": "solo", "nodes": [{"id": "solo", "dependencies": []}]}
+        });
+        assert_eq!(local_package_dirs(&meta), vec![PathBuf::from("/w/solo")]);
     }
 }

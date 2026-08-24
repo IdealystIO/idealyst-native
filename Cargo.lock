@@ -3392,6 +3392,7 @@ dependencies = [
  "build-ios",
  "build-web",
  "notify-debouncer-mini",
+ "serde_json",
 ]
 
 [[package]]

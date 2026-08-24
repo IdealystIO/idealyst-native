@@ -1916,12 +1916,52 @@ fn launch_web_with_backend(
         std::mem::forget(handle);
     }
 
+    // Phase 1b: the STANDALONE server needs its own watcher. Its
+    // sources are a different dependency closure — typically a separate
+    // workspace, and always including whatever server-side crate the
+    // bundle shares (the `#[server]` fn crate under its `server`
+    // feature). The bundle watcher above never sees a `server-bin` edit
+    // at all, and even for a shared crate a restaged bundle is only
+    // half the change: the client decode is strict, so a bundle that
+    // knows a new DTO field talking to a server that doesn't fails
+    // outright rather than degrading. Both halves have to move together.
+    //
+    // The callback BUILDS but does not restart — the main loop owns the
+    // child. Building first is deliberate: a failed compile leaves the
+    // signal un-bumped and the running server up, so a broken edit
+    // costs a log line rather than a dead port.
+    let server_signal = dev_reload::ReloadSignal::new();
+    if standalone && !args.no_build {
+        match server_watch_setup(dir, manifest) {
+            Ok((roots, build)) => {
+                crate::dlog!(
+                    "dev web",
+                    "full-stack: server watcher over {} root(s)",
+                    roots.len(),
+                );
+                let handle =
+                    dev_reload::start_watch(roots, server_signal.clone(), "server", build)?;
+                // Detached for the session's lifetime, same as the
+                // bundle watcher above.
+                std::mem::forget(handle);
+            }
+            // A server we can't resolve well enough to watch is not a
+            // reason to refuse the dev session — it still runs, it just
+            // needs a manual restart, which is where every project was
+            // before this watcher existed.
+            Err(e) => eprintln!(
+                "[dev web] server sources will NOT be watched ({e:#}); \
+                 restart the dev session by hand after a server change",
+            ),
+        }
+    }
+
     // The server serves the UI same-origin, so its port is the only URL
     // the user needs. Open the browser once it's accepting connections.
     spawn_browser_opener("127.0.0.1", port);
 
     // Phase 2: spawn the server. Captured so we can kill + respawn on
-    // each rebuild (in-crate path only).
+    // each rebuild.
     let mut child = spawn_backend(dir, manifest, Some(dist_web.as_path()))?;
     crate::dlog!(
         "dev web",
@@ -1929,6 +1969,7 @@ fn launch_web_with_backend(
         child.id(),
     );
     let mut last_gen = signal.current();
+    let mut last_server_gen = server_signal.current();
 
     // Phase 3: wait on the watcher's generation signal. dev_reload bumps
     // the counter (and notifies the condvar) after each successful build;
@@ -1943,8 +1984,9 @@ fn launch_web_with_backend(
             last_gen = cur;
             if standalone {
                 // The bundle was restaged into `dist/web`; the running
-                // server serves it statically. Nothing to restart —
-                // refresh the browser to pick up the new wasm.
+                // server serves it statically, so there is nothing to
+                // restart for the CLIENT half. If the same save also
+                // touched server sources it arrives separately, below.
                 eprintln!("[dev web] bundle rebuilt → refresh the browser");
             } else {
                 eprintln!("[dev web] source change → restarting server");
@@ -1959,7 +2001,28 @@ fn launch_web_with_backend(
                         continue;
                     }
                 };
+                continue;
             }
+        }
+
+        // The standalone server's watcher already rebuilt it (and only
+        // bumps on success), so the respawn below is a no-op recompile
+        // and a fresh bind. Falling through from the bundle branch is
+        // intentional: one edit to a shared server crate legitimately
+        // bumps both signals, and both halves must land.
+        let server_gen = server_signal.current();
+        if server_gen != last_server_gen {
+            last_server_gen = server_gen;
+            eprintln!("[dev web] server rebuilt → restarting on port {port}");
+            let _ = child.kill();
+            let _ = child.wait();
+            child = match spawn_backend(dir, manifest, Some(dist_web.as_path())) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("[dev web] server respawn failed: {e:#}");
+                    continue;
+                }
+            };
             continue;
         }
 
@@ -1975,6 +2038,60 @@ fn launch_web_with_backend(
             );
         }
     }
+}
+
+/// Resolve what a STANDALONE server's watcher needs: the source roots
+/// to watch, and a closure that rebuilds it.
+///
+/// The roots come from the server manifest's own dependency closure —
+/// which for the standard shape is a different workspace than the app's
+/// (`server_manifest` exists precisely so the `server` feature never
+/// unifies into the client build), overlapping it only on the crate
+/// that declares the `#[server]` fns. That overlap is the interesting
+/// case: one edit there has to rebuild the bundle AND the server.
+///
+/// The closure runs `cargo build`, not `cargo run` — the caller owns
+/// the child process, and building separately means a compile error
+/// leaves the running server alone instead of taking the port down.
+///
+/// It narrows to `--bin <server_bin>` when the app declares one, which
+/// also keeps the rebuild cheap: a server package commonly carries a
+/// pile of sibling bins (seeders, migrations, one-off tools), and
+/// linking them all on every save is slow enough to OOM a container.
+/// Declaring `server_bin` alongside `server_manifest` is worth it for
+/// that alone.
+fn server_watch_setup(
+    dir: &Path,
+    manifest: &build_ios::Manifest,
+) -> Result<(Vec<PathBuf>, impl FnMut() -> Result<()> + Send + 'static)> {
+    let rel = manifest
+        .app
+        .server_manifest
+        .as_ref()
+        .context("no `server_manifest` declared")?;
+    let joined = dir.join(rel);
+    anyhow::ensure!(
+        joined.is_file(),
+        "server_manifest points at {}, which doesn't exist",
+        joined.display(),
+    );
+    // Collapse `../..` for a clean `--manifest-path`; canonicalize
+    // can't fail — we just confirmed it's a file.
+    let manifest_path = std::fs::canonicalize(&joined).unwrap_or(joined);
+
+    let roots = dev_reload::watch_roots(&manifest_path);
+    let bin = manifest.app.server_bin.clone();
+    let build = move || -> Result<()> {
+        let mut cmd = Command::new("cargo");
+        cmd.arg("build").arg("--manifest-path").arg(&manifest_path);
+        if let Some(b) = &bin {
+            cmd.arg("--bin").arg(b);
+        }
+        let status = cmd.status().context("run `cargo build` for the server")?;
+        anyhow::ensure!(status.success(), "server build failed");
+        Ok(())
+    };
+    Ok((roots, build))
 }
 
 /// Spawn the project's declared server with `cargo run`, inheriting stdio
