@@ -41,7 +41,14 @@ async fn main() {
     // `idealyst build --web` emits a self-contained static bundle at
     // `dist/web/` (its own `index.html` + a `pkg/` subdir with the wasm).
     // Serve that directory as the site root, and its `pkg/` at `/pkg`.
-    let dist_dir = project_dir.join("dist").join("web");
+    // `WEB_DIST` is exported by `idealyst dev --web` / `idealyst run
+    // server`; the baked path is the fallback for a plain `cargo run`.
+    // Env first, so a future change to the CLI's staging layout can't
+    // silently strand this bin on the old one (which is exactly what
+    // happened to the other full-stack examples).
+    let dist_dir = std::env::var_os("WEB_DIST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| project_dir.join("dist").join("web"));
     let pkg_dir = dist_dir.join("pkg");
     let static_dir = dist_dir.clone();
 

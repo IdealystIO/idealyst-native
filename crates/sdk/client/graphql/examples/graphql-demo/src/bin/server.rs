@@ -27,15 +27,33 @@ async fn main() {
     // The authoritative async-graphql schema, pre-seeded with one book.
     server::install_state(Arc::new(schema::build()));
 
-    // Baked-in crate dir — robust to whatever CWD `idealyst dev` launches
-    // from. The bundle lands in `<crate>/pkg/`; `index.html` is committed
-    // at the crate root.
-    let project_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let pkg_dir = project_dir.join("pkg");
-    let static_dir = project_dir.clone();
+    // Where the CLI staged the web bundle.
+    //
+    // `WEB_DIST` is exported by `idealyst dev --web` and `idealyst run
+    // server`; the baked `dist/web` is the fallback for a plain `cargo
+    // run`. Reading the env FIRST is the load-bearing part — it is what
+    // keeps this bin correct if the CLI's staging layout moves again.
+    //
+    // It moved once already, and this file didn't follow: it served
+    // `<crate>/pkg` (the pre-`dist/web` layout) while the CLI staged into
+    // `<crate>/dist/web`, so every `idealyst dev --web` session 404'd at
+    // `/` while reporting a perfectly successful build on every save.
+    //
+    // The absolute crate dir is baked at compile time rather than derived
+    // from `current_dir()`, which only works when run from the workspace
+    // root — the other 404-on-root trap.
+    let dist_dir = std::env::var_os("WEB_DIST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("dist")
+                .join("web")
+        });
+    let pkg_dir = dist_dir.join("pkg");
+    let static_dir = dist_dir.clone();
 
     if !pkg_dir.exists() {
-        eprintln!("warning: {} doesn't exist yet — run", pkg_dir.display());
+        eprintln!("warning: {} doesn't exist yet — run", dist_dir.display());
         eprintln!("  idealyst dev --web crates/sdk/client/graphql/examples/graphql-demo");
         eprintln!("(or `idealyst build --web …`) to produce the wasm bundle.");
     }

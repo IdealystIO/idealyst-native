@@ -2969,6 +2969,68 @@ mod tests {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
+    /// Regression guard for a silent 404: a full-stack example's server
+    /// bin serving a directory the CLI does not stage into.
+    ///
+    /// `idealyst dev --web` stages the bundle at
+    /// [`full_stack_web_bundle_dir`] (`<project>/dist/web`) and exports
+    /// that path as `WEB_DIST`. When staging moved there from the older
+    /// `<project>/pkg`, only ONE of the six in-tree full-stack examples
+    /// was updated — the other five kept serving `<crate>/pkg`, so every
+    /// `idealyst dev --web` session on them answered `/` with a 404 while
+    /// reporting a successful build on every save. Nothing failed; the
+    /// page was just never there.
+    ///
+    /// The fix was to resolve `WEB_DIST` first and fall back to the baked
+    /// `dist/web`, so the bin follows the CLI instead of duplicating a
+    /// guess about it. This pins that: a server bin must not reconstruct
+    /// the bundle path from the crate root, and must consult `WEB_DIST`.
+    ///
+    /// Source-level rather than behavioural because the alternative is
+    /// booting six servers and issuing HTTP requests; this catches the
+    /// drift at the point it is introduced. Skips silently when the
+    /// workspace layout isn't reachable (packaged crate, vendored build).
+    #[test]
+    fn full_stack_example_servers_serve_where_the_cli_stages() {
+        let Some(root) = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .find(|a| a.join("crates").is_dir() && a.join("examples").is_dir())
+        else {
+            return;
+        };
+        // Every in-tree crate that declares a `server_bin` and therefore
+        // gets routed through `launch_web_with_backend`.
+        let bins = [
+            "examples/login-demo/src/bin/server.rs",
+            "crates/api/server/examples/server-fn-demo/src/bin/server.rs",
+            "crates/sdk/client/sync/examples/todo-sync-demo/src/bin/server.rs",
+            "crates/sdk/client/graphql/examples/graphql-demo/src/bin/server.rs",
+            "crates/sdk/server/jobs/examples/jobs-demo/src/bin/server.rs",
+            "crates/sdk/server/pubsub/examples/pubsub-demo/src/bin/server.rs",
+        ];
+        let mut checked = 0;
+        for rel in bins {
+            let path = root.join(rel);
+            let Ok(src) = std::fs::read_to_string(&path) else {
+                // The example was renamed or removed — not this test's
+                // business, and failing here would just be noise.
+                continue;
+            };
+            checked += 1;
+            assert!(
+                src.contains("WEB_DIST"),
+                "{rel} must resolve WEB_DIST (the CLI exports it) rather than \
+                 hardcoding where the bundle lives",
+            );
+            assert!(
+                !src.contains(r#"project_dir.join("pkg")"#),
+                "{rel} serves <crate>/pkg — the pre-dist/web layout the CLI \
+                 stopped staging into. `/` will 404 on every dev session.",
+            );
+        }
+        assert!(checked > 0, "no full-stack example servers found to check");
+    }
+
     /// Regression guard for the bug that made every full-stack dev
     /// session unusable: a bundle-only rebuild used to kill the server
     /// child and respawn it through `cargo run`, so the port was CLOSED
