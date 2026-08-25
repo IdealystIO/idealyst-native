@@ -264,7 +264,10 @@ docs! {
              " — drop the inactive screen's scope (and its background work) \
               on switch; re-mount fresh on return. Lowest memory; loses \
               state. Matches browser semantics — both doc sites use it so \
-              navigating away from a page tears its work down."],
+              navigating away from a page tears its work down. On web, a \
+              section rebuilt this way re-reads the address bar as it \
+              mounts, so navigators nested inside it come back on the \
+              screen the URL names rather than their configured initial."],
         ),
     },
 
@@ -528,8 +531,13 @@ docs! {
              code("history.pushState"),
              " entries, browser back/forward reconcile into ordinary nav \
               commands, cold-start deep links seed the right screen, and \
-              per-entry scroll offsets restore on back. The handlers never \
-              touch the URL themselves."],
+              per-entry scroll offsets restore on back. A navigator that \
+              mounts LATER — a disposed section rebuilt by Back, or a \
+              shell remounted by a signal — resolves the live URL the same \
+              way a cold link does, whenever that URL names something \
+              below the navigator's own base; when it stops at the base, \
+              the configured initial stands. The handlers never touch the \
+              URL themselves."],
             [code("iOS / Android"),
              " — the stack still FEELS native: inside the outlet lives a \
               real ", code("UINavigationController"),

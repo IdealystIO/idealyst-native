@@ -68,10 +68,18 @@
 //! outgoing screen) and every driver commit (`after_commit`, scroll
 //! restore/reset). The web implementation lives in backend-web's
 //! `newcore_url_sync` (installed by `newcore::start`); hosts without
-//! URLs install nothing and the hooks vanish. Deep links need no seam:
-//! the handlers already `peek_initial_path()`, which the web boot seeds
-//! from `location.pathname` — `defer_initial_mount` is unnecessary on
-//! the new core because the seed happens before the synchronous mount.
+//! URLs install nothing and the hooks vanish. Cold-start deep links
+//! need no seam: the handlers already `peek_initial_path()`, which the
+//! web boot seeds from `location.pathname` — `defer_initial_mount` is
+//! unnecessary on the new core because the seed happens before the
+//! synchronous mount.
+//!
+//! A navigator that mounts LATER does need the seam, and takes it
+//! through [`url_sync::UrlSyncService::current_url`]: the launch slot is
+//! one-shot (the root clears it once its subtree is up), so a rebuilt
+//! subtree would otherwise have no way to ask what the address bar says
+//! at the moment IT mounts. See [`resolve_initial`] for the two sources
+//! and the boundary between them.
 //!
 //! # What is intentionally NOT ported here (each returns with its phase)
 //!
@@ -548,6 +556,17 @@ pub mod url_sync {
         /// service seed browser history for a cold-start deep link whose
         /// stack synthesized an index entry below.
         pub depth: usize,
+        /// This navigator's first screen was resolved from the COLD-START
+        /// launch URL.
+        ///
+        /// Gates the history seed, and ONLY the history seed. A launch
+        /// resolution may have reconstructed a back-stack the browser has
+        /// no entries for (the page just loaded with one entry), so the
+        /// service synthesizes them. A navigator that resolved the LIVE
+        /// URL is being rebuilt mid-session, underneath history the
+        /// browser already holds — synthesizing there would duplicate
+        /// entries the user already has to press Back through.
+        pub from_launch_url: bool,
         /// Hierarchical prefix resolver: full path →
         /// `(route, params, unconsumed remainder)`.
         pub resolve_entry:
@@ -569,6 +588,33 @@ pub mod url_sync {
         /// A navigator mounted. `None` ⇒ the service declines (e.g. no
         /// platform URL surface) and no further hooks fire for it.
         fn register(&self, reg: NavSyncRegistration) -> Option<u64>;
+        /// The platform's LIVE URL right now (path + query), or `None`
+        /// when this service has no readable URL surface.
+        ///
+        /// Read by [`resolve_initial`] for a navigator that mounts
+        /// AFTER boot, when the launch slot
+        /// (`peek_initial_path`) has already been consumed and cleared
+        /// by the root. Without it a navigator rebuilt mid-session — the
+        /// whole point of [`MountPolicy::LazyDisposing`] — opens on its
+        /// CONFIGURED initial route no matter what the address bar says,
+        /// so a browser Back into a disposed subtree re-selects the
+        /// section and silently drops every segment below it.
+        ///
+        /// The launch slot cannot serve this: it is a one-shot boot
+        /// value, and the comment on the root's `set_initial_path(None)`
+        /// names why it must stay one-shot — a later rebuild must not be
+        /// poisoned by a STALE path. The live URL is by definition not
+        /// stale, which is why it is a second, separately-typed source
+        /// rather than a re-seed of the first.
+        ///
+        /// Default `None` so a service without a URL surface (test
+        /// probes, future non-URL hosts) need not implement it; a host
+        /// that owns an address bar MUST override it.
+        ///
+        /// [`MountPolicy::LazyDisposing`]: crate::prims::MountPolicy::LazyDisposing
+        fn current_url(&self) -> Option<String> {
+            None
+        }
         /// Runs at DISPATCH time with the base-composed command, before
         /// it is staged — the outlet still shows the outgoing screen, so
         /// scroll snapshots see it (old `before_command` contract).
@@ -729,33 +775,108 @@ fn mirror_command(
     }
 }
 
-/// Resolve the initial (route, params, full path) for a navigator:
-/// consult the headless launch/deep-link path (PEEK, not take — each
-/// navigator in a nested cascade strips its own base; the root clears
-/// the slot after its subtree mounted), falling back to the configured
-/// initial. Port of the walker's non-deferred initial-mount resolution,
-/// including the concrete-path (not pattern) mirror fix.
-/// The launch URL's query rides out alongside the route so a cold load —
-/// a pasted link, a reload, a restored tab, an OS deep link — seeds the
-/// screen with exactly the state an in-app navigation would have handed
-/// it. This is the second half of the [`ScreenState`] contract: without
-/// it, state passing would work only for screens reached by navigating.
+/// What [`resolve_initial`] settled on for one navigator's first screen.
+struct InitialResolution {
+    route: &'static str,
+    params: Box<dyn Any>,
+    /// The screen's FULL (base-composed, concrete) path.
+    path: String,
+    query: QueryParams,
+    /// The screen came from the COLD-START launch URL, not the live
+    /// address bar or the configured initial. Rides out to the URL-sync
+    /// registration, which may only synthesize browser-history entries
+    /// for a launch resolution — see `NavSyncRegistration::from_launch_url`.
+    from_launch_url: bool,
+}
+
+/// Resolve the initial (route, params, full path) for a navigator from
+/// the first URL source that resolves against `base`, falling back to
+/// the configured initial. Port of the walker's non-deferred
+/// initial-mount resolution, including the concrete-path (not pattern)
+/// mirror fix.
+///
+/// Two sources, in order, because a navigator can mount at two very
+/// different moments:
+///
+/// 1. **The launch slot** ([`peek_initial_path`]) — the cold-start
+///    deep link (a pasted link, a reload, a restored tab, an OS deep
+///    link, SSR hydration). PEEK, not take: every navigator in the
+///    mounting cascade strips its own base off the same launch URL, and
+///    the ROOT clears the slot once its subtree is up. One-shot by
+///    design — a rebuild an hour later must not reopen the URL the page
+///    was *launched* on.
+/// 2. **The host's LIVE URL**
+///    ([`UrlSyncService::current_url`]) — for a navigator that mounts
+///    AFTER boot, when the slot is already empty. A `LazyDisposing`
+///    section that is disposed and rebuilt (browser Back into it, an
+///    auth-signal remount, any other cause) resolves the address bar as
+///    it reads *now*. Without this the rebuilt navigator opens on its
+///    configured initial and the URL silently stops describing the
+///    screen — the same URL renders two different screens depending on
+///    how you arrived.
+///
+///    Consulted ONLY when the live path extends past `base`: a URL that
+///    stops at this navigator's base names nothing for this navigator to
+///    decide, so the configured initial stands. That keeps this source to
+///    exactly the case it exists for — restoring a slice the URL really
+///    does carry — and is why source 1 is not simply re-read from here.
+///
+/// Both carry the query out alongside the route, so a screen restored
+/// from the URL gets exactly the state an in-app navigation would have
+/// handed it — the second half of the [`ScreenState`] contract.
 ///
 /// [`ScreenState`]: runtime_shared::primitives::navigator::ScreenState
-fn resolve_initial(
-    config: &NavConfig,
-    base: &str,
-) -> (&'static str, Box<dyn Any>, String, QueryParams) {
-    if let Some(raw) = peek_initial_path() {
+/// [`UrlSyncService::current_url`]: url_sync::UrlSyncService::current_url
+fn resolve_initial(config: &NavConfig, base: &str) -> InitialResolution {
+    let resolve_from = |raw: Option<String>, from_launch_url: bool| {
+        let raw = raw?;
         let (path, query) = split_query(&raw);
-        if let Some((name, params, rem)) = resolve_entry(&config.screens, base, path) {
-            return (name, params, consumed_prefix(path, &rem), query);
+        let (route, params, rem) = resolve_entry(&config.screens, base, path)?;
+        Some(InitialResolution {
+            route,
+            params,
+            path: consumed_prefix(path, &rem),
+            query,
+            from_launch_url,
+        })
+    };
+    if let Some(hit) = resolve_from(peek_initial_path(), true) {
+        return hit;
+    }
+    // Second source, read only when the first missed: the live-URL read
+    // is a host call (a `window.location` touch on web), and the launch
+    // slot answers every cold mount — the overwhelming majority.
+    //
+    // Gated on the live path carrying a slice BELOW `base`. When the
+    // address bar stops exactly AT this navigator's base, the URL has no
+    // opinion about which of THIS navigator's screens to show — the
+    // parent consumed all of it — and the configured initial is the
+    // answer, same as before the live-URL source existed. Without the
+    // gate a nested navigator whose initial is a non-index route would
+    // switch to its `""` route the moment a parent pushed the bare base,
+    // because an empty relative path matches `""`: a silent change to
+    // every such navigator, far outside the deep-URL restoration this
+    // source exists for. Pinned by
+    // `nested_swap_on_a_non_index_initial_route_keeps_its_initial_at_the_bare_base`.
+    if let Some(live) = url_sync::service().and_then(|svc| svc.current_url()) {
+        let names_a_screen_below_us = match_prefix(split_query(&live).0, base)
+            .is_some_and(|(_, rem)| !rem.is_empty());
+        if names_a_screen_below_us {
+            if let Some(hit) = resolve_from(Some(live), false) {
+                return hit;
+            }
         }
     }
     // The configured initial path may itself carry defaults
     // (`initial_path: "/inbox?filter=unread"`).
     let (path, query) = split_query(config.initial_path);
-    (config.initial, Box::new(()), join_path(base, path), query)
+    InitialResolution {
+        route: config.initial,
+        params: Box::new(()),
+        path: join_path(base, path),
+        query,
+        from_launch_url: false,
+    }
 }
 
 /// Trailing-slash-tolerant URL key (`/docs` == `/docs/`) — the swap
@@ -935,8 +1056,13 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     // cold-start deep link is their *committed* initial value (the new
     // core stages writes; creating-then-setting would leave chrome's
     // first build reading the configured initial).
-    let (initial_route, initial_params, initial_path, initial_query) =
-        resolve_initial(&prim.config, &base);
+    let InitialResolution {
+        route: initial_route,
+        params: initial_params,
+        path: initial_path,
+        query: initial_query,
+        from_launch_url,
+    } = resolve_initial(&prim.config, &base);
     // The CONFIGURED initial's full path (vs the resolved, possibly
     // deep-linked `initial_path`) — the URL-sync registration needs both.
     let initial_cfg_full = join_path(&base, split_query(prim.config.initial_path).0);
@@ -1193,6 +1319,7 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
             initial_full_path: initial_cfg_full,
             active_path: initial_path.clone(),
             depth: 1,
+            from_launch_url,
             resolve_entry: resolve,
             dispatch: dispatch.clone(),
             outlet: outlet_erased,
@@ -1526,8 +1653,13 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
     // SSG route discovery — see the swap mount's note (`record_route_paths`).
     record_route_paths(prim.config.screens.values().map(|e| e.path));
 
-    let (initial_route, initial_params, initial_path, initial_query) =
-        resolve_initial(&prim.config, &base);
+    let InitialResolution {
+        route: initial_route,
+        params: initial_params,
+        path: initial_path,
+        query: initial_query,
+        from_launch_url,
+    } = resolve_initial(&prim.config, &base);
     let (cfg_initial_path, cfg_initial_query) = split_query(prim.config.initial_path);
 
     let active_route = signal(initial_route);
@@ -1745,6 +1877,7 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
             initial_full_path: shared.initial_path.clone(),
             active_path: initial_path,
             depth: shared.stack.borrow().len(),
+            from_launch_url,
             resolve_entry: resolve,
             dispatch: dispatch.clone(),
             outlet: outlet_erased,

@@ -36,6 +36,33 @@ use notify_debouncer_mini::notify::RecursiveMode;
 
 const DEBOUNCE_MS: u64 = 150;
 
+/// How long the watcher waits for the filesystem to go quiet before it
+/// starts a build, on top of [`DEBOUNCE_MS`].
+///
+/// The 150ms debounce is tuned for one editor writing one file: a human
+/// hits ⌘S and exactly one batch arrives. It is much too short for the
+/// way the tree actually changes now — a multi-file refactor, a
+/// formatter sweeping a crate, or a second agent editing several files
+/// lands as a *sequence* of batches spread over hundreds of milliseconds
+/// to seconds. Each batch used to start its own full rebuild, and since
+/// a rebuild is far slower than the burst that triggered it, the queue
+/// never drained: the bundle was perpetually mid-build and the browser
+/// perpetually stale.
+///
+/// Waiting for a quiet window collapses one burst into one build. 400ms
+/// is below the threshold where a human notices their save "didn't do
+/// anything" and comfortably above the gap between writes in a
+/// multi-file edit.
+const QUIET_WINDOW_MS: u64 = 400;
+
+/// Ceiling on the coalescing wait, so a *continuous* trickle of writes
+/// still gets built.
+///
+/// Without it, an agent editing steadily for a minute would push the
+/// quiet window out that whole time and never trigger a rebuild — which
+/// is the same "never see my change" symptom by the opposite mechanism.
+const MAX_COALESCE_MS: u64 = 3_000;
+
 /// Shared "the build just changed" signal between the watcher and any
 /// consumers (the SSE endpoint in `dev-http`, the server-bin respawn
 /// loop in the CLI). `gen` is the canonical "which build is live"
@@ -103,6 +130,26 @@ impl ReloadSignal {
     }
 }
 
+/// What a watcher callback produced. Returned by the `on_change`
+/// closures [`start_watch`] drives.
+///
+/// The distinction exists because a successful rebuild is NOT the same
+/// event as a changed artifact. The full-stack server watcher rebuilds
+/// on every save in the app crate's closure — including UI-only edits,
+/// which for the in-crate shape live in the same package as the server
+/// bin — but cargo relinks the binary only when something it actually
+/// depends on moved. Bumping the generation regardless is what made a
+/// pure UI edit kill and rebind the server port for no reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rebuilt {
+    /// The artifact actually changed — bump the generation so browsers
+    /// reload / the CLI restarts the server.
+    Changed,
+    /// The callback succeeded but produced an identical artifact. Do
+    /// NOT bump: nothing downstream needs to react.
+    Unchanged,
+}
+
 /// Options for each rebuild. `source` is required because the
 /// generated wrapper Cargo.toml needs to know whether to pull
 /// framework crates by workspace path or by git rev (the CLI's
@@ -154,6 +201,12 @@ pub struct BuildOptions {
     /// trims DWARF that every post-cargo pass — and the browser, on every
     /// reload — would otherwise re-process.
     pub debuginfo: build_web::DebugInfo,
+    /// Optimization posture for each rebuild (`--dev-opt`). Passed
+    /// through to [`build_web::BuildOptions::dev_opt`]; the default
+    /// favours the case the dev loop actually spends its time in — a
+    /// framework-crate edit invalidating every workspace member
+    /// downstream — over the leaf-only edit.
+    pub dev_opt: build_web::DevOpt,
 }
 
 /// Run a single rebuild. Useful for callers that want one build
@@ -188,6 +241,7 @@ pub fn start(
             premint_report: false,
             wasm_split: true,
             debuginfo: build_web::DebugInfo::default(),
+            dev_opt: build_web::DevOpt::default(),
         },
     )
 }
@@ -400,7 +454,14 @@ fn watch_loop(dir: PathBuf, signal: Arc<ReloadSignal>, opts: BuildOptions) {
         if events.is_err() {
             continue;
         }
-        eprintln!("[dev-reload] change detected, rebuilding…");
+        // Absorb the rest of the burst before starting the build —
+        // otherwise a multi-file edit queues one full rebuild per file.
+        let folded = settle(&rx);
+        if folded > 0 {
+            eprintln!("[dev-reload] change detected (+{folded} more), rebuilding…");
+        } else {
+            eprintln!("[dev-reload] change detected, rebuilding…");
+        }
         match build_wasm(&dir, &opts) {
             Ok(()) => {
                 let new_gen = signal.bump();
@@ -459,6 +520,36 @@ fn drain<T>(rx: &mpsc::Receiver<T>) {
     while rx.try_recv().is_ok() {}
 }
 
+/// Wait for the filesystem to go quiet, absorbing every event batch that
+/// arrives meanwhile, and report how many extra batches were folded in.
+///
+/// Returns once either no batch has arrived for [`QUIET_WINDOW_MS`] or
+/// [`MAX_COALESCE_MS`] has elapsed since the first one. See
+/// [`QUIET_WINDOW_MS`] for why a fixed 150ms debounce isn't enough.
+///
+/// Split out from the watcher loops so the policy is unit-testable
+/// against a plain channel — the loops themselves are infinite and own a
+/// real filesystem watcher.
+fn settle<T>(rx: &mpsc::Receiver<T>) -> usize {
+    let deadline = std::time::Instant::now() + Duration::from_millis(MAX_COALESCE_MS);
+    let mut folded = 0usize;
+    loop {
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return folded;
+        }
+        // Never wait past the cap, even if the quiet window is longer
+        // than the time left on it.
+        let wait = Duration::from_millis(QUIET_WINDOW_MS).min(deadline - now);
+        match rx.recv_timeout(wait) {
+            Ok(_) => folded += 1,
+            // Quiet for a full window, or the watcher hung up — either
+            // way there is nothing more to fold in.
+            Err(_) => return folded,
+        }
+    }
+}
+
 /// Spawn a watcher on `paths` that runs `on_change` for each
 /// debounced event batch, and bumps `signal` after each successful
 /// call so connected browsers reload. Used by paths that aren't the
@@ -470,6 +561,10 @@ fn drain<T>(rx: &mpsc::Receiver<T>) {
 /// can tell which watcher fired. Failed callbacks log to stderr but
 /// don't bump the signal (or kill the thread) — the next change
 /// re-tries.
+///
+/// A callback returning [`Rebuilt::Unchanged`] also leaves the signal
+/// alone: it ran fine, it just produced the same artifact, so waking
+/// consumers would be pure churn (see [`Rebuilt`]).
 pub fn start_watch<F>(
     paths: Vec<PathBuf>,
     signal: Arc<ReloadSignal>,
@@ -477,7 +572,7 @@ pub fn start_watch<F>(
     mut on_change: F,
 ) -> Result<JoinHandle<()>>
 where
-    F: FnMut() -> Result<()> + Send + 'static,
+    F: FnMut() -> Result<Rebuilt> + Send + 'static,
 {
     thread::Builder::new()
         .name(format!("idealyst-watch-{label}"))
@@ -522,12 +617,20 @@ where
                 if events.is_err() {
                     continue;
                 }
-                eprintln!("[dev-reload {label}] change detected");
+                let folded = settle(&rx);
+                if folded > 0 {
+                    eprintln!("[dev-reload {label}] change detected (+{folded} more)");
+                } else {
+                    eprintln!("[dev-reload {label}] change detected");
+                }
                 match on_change() {
-                    Ok(()) => {
+                    Ok(Rebuilt::Changed) => {
                         let new_gen = signal.bump();
                         eprintln!("[dev-reload {label}] regen complete — gen={new_gen}");
                     }
+                    Ok(Rebuilt::Unchanged) => eprintln!(
+                        "[dev-reload {label}] rebuilt, artifact unchanged — nothing to do"
+                    ),
                     Err(e) => eprintln!("[dev-reload {label}] regen failed: {e}"),
                 }
                 drain(&rx);
@@ -566,6 +669,7 @@ fn to_build_web_options(opts: &BuildOptions) -> build_web::BuildOptions {
         // the plain dev-http / in-crate paths leave it `None` and
         // get the default pkg-into-project copy.
         bundle_out_dir: opts.bundle_out_dir.clone(),
+        dev_opt: opts.dev_opt,
         gzip: false,
         // Dev rebuilds skip the q11 encode; `.br` siblings are a
         // deploy-artifact concern (`idealyst build --web --release`).
@@ -593,6 +697,91 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
+    /// Regression guard for the save-storm that kept the dev bundle
+    /// perpetually mid-build: a multi-file edit arrives as a SEQUENCE of
+    /// debounced batches, and the old loop started a full rebuild for
+    /// each one. Since a rebuild outlasts the burst that triggered it,
+    /// the queue never drained. `settle` folds the burst into one build.
+    #[test]
+    fn settle_folds_a_burst_into_one_rebuild() {
+        let (tx, rx) = mpsc::channel::<u8>();
+        let writer = thread::spawn(move || {
+            // Five "files" written well inside the quiet window — what a
+            // formatter sweep or an agent's multi-file edit looks like.
+            for i in 0..5 {
+                thread::sleep(Duration::from_millis(40));
+                let _ = tx.send(i);
+            }
+        });
+        let folded = settle(&rx);
+        writer.join().unwrap();
+        assert_eq!(
+            folded, 5,
+            "every batch in the burst must be absorbed into the pending build",
+        );
+    }
+
+    /// A quiet channel must not make the watcher wait out the cap — the
+    /// single-file save (a human hitting ⌘S) has to start building after
+    /// one quiet window, not three seconds later.
+    #[test]
+    fn settle_returns_promptly_when_nothing_follows() {
+        let (_tx, rx) = mpsc::channel::<u8>();
+        let start = Instant::now();
+        let folded = settle(&rx);
+        let elapsed = start.elapsed();
+        assert_eq!(folded, 0);
+        assert!(
+            elapsed >= Duration::from_millis(QUIET_WINDOW_MS - 50),
+            "must actually wait for the window: {elapsed:?}",
+        );
+        assert!(
+            elapsed < Duration::from_millis(MAX_COALESCE_MS),
+            "a lone save must not pay the coalescing cap: {elapsed:?}",
+        );
+    }
+
+    /// A CONTINUOUS trickle of writes must not push the quiet window out
+    /// forever — that starves the rebuild and reproduces the very symptom
+    /// ("my change never shows up") from the other direction.
+    #[test]
+    fn settle_caps_a_continuous_trickle() {
+        let (tx, rx) = mpsc::channel::<u8>();
+        let stop = Arc::new(AtomicU64::new(0));
+        let stop_w = stop.clone();
+        let writer = thread::spawn(move || {
+            // Write faster than the quiet window, for longer than the cap.
+            while stop_w.load(Ordering::Acquire) == 0 {
+                if tx.send(1).is_err() {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let start = Instant::now();
+        let _ = settle(&rx);
+        let elapsed = start.elapsed();
+        stop.store(1, Ordering::Release);
+        let _ = writer.join();
+        assert!(
+            elapsed >= Duration::from_millis(MAX_COALESCE_MS - 100),
+            "should have coalesced up to the cap: {elapsed:?}",
+        );
+        assert!(
+            elapsed < Duration::from_millis(MAX_COALESCE_MS + 800),
+            "must not run past the cap while writes keep arriving: {elapsed:?}",
+        );
+    }
+
+    /// `Rebuilt::Unchanged` exists so a successful-but-no-op rebuild does
+    /// not wake consumers. The full-stack loop turns a generation bump
+    /// into a server restart, so bumping on an unchanged binary would
+    /// bounce the port for nothing.
+    #[test]
+    fn unchanged_rebuild_is_distinguishable_from_a_changed_one() {
+        assert_ne!(Rebuilt::Changed, Rebuilt::Unchanged);
+    }
+
     fn opts(premint: bool, only: bool, report: bool) -> BuildOptions {
         BuildOptions {
             source: FrameworkSource::Workspace { root: std::path::PathBuf::from("/x") },
@@ -603,6 +792,7 @@ mod tests {
             premint_report: report,
             wasm_split: true,
             debuginfo: build_web::DebugInfo::default(),
+            dev_opt: build_web::DevOpt::default(),
         }
     }
 

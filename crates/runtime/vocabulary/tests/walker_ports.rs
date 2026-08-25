@@ -1251,6 +1251,13 @@ struct Probe {
     /// When set, `before_command` claims every dispatch as the service's
     /// own echo (the popstate-reconciliation suppress bit).
     suppress_all: Cell<bool>,
+    /// What the host's address bar reads right now — the second source
+    /// `resolve_initial` consults, for a navigator mounting AFTER boot.
+    live_url: RefCell<Option<String>>,
+    /// `(id, from_launch_url)` per registration: whether that navigator's
+    /// first screen came from the COLD-START launch slot. Only a launch
+    /// resolution may synthesize browser history.
+    launch_flags: RefCell<Vec<(u64, bool)>>,
 }
 
 fn cmd_digest(cmd: &NavCommand) -> String {
@@ -1274,10 +1281,14 @@ impl UrlSyncService for ProbeService {
             .regs
             .borrow_mut()
             .push((id, reg.kind, reg.base.clone(), reg.active_path.clone(), reg.depth));
+        self.0.launch_flags.borrow_mut().push((id, reg.from_launch_url));
         self.0.resolvers.borrow_mut().insert(id, reg.resolve_entry);
         self.0.dispatches.borrow_mut().insert(id, reg.dispatch);
         self.0.outlets.borrow_mut().insert(id, reg.outlet);
         Some(id)
+    }
+    fn current_url(&self) -> Option<String> {
+        self.0.live_url.borrow().clone()
     }
     fn before_command(&self, id: u64, cmd: &NavCommand) -> bool {
         self.0.before.borrow_mut().push((id, cmd_digest(cmd)));
@@ -1485,4 +1496,193 @@ fn port_nested_navigator_url_sync_registers_composed_base_and_resolver() {
     dereg.sort_unstable();
     assert_eq!(dereg, vec![outer_id, inner_id]);
     clear_url_sync_service();
+}
+
+// ---------------------------------------------------------------------------
+// `resolve_initial`'s second source: the host's LIVE url, for a navigator
+// that mounts AFTER boot. The web half (real popstate, real history) is
+// backend-web's `regression_lazy_disposing_rebuild_opens_the_live_url_not_the_initial`;
+// these pin the vocabulary's half, backend-independently.
+// ---------------------------------------------------------------------------
+
+/// A navigator that mounts mid-session resolves the LIVE url when it
+/// names a screen below the navigator's own base.
+///
+/// The launch slot is one-shot — the root clears it once its subtree is
+/// up — so before the live-URL source a nested navigator rebuilt later
+/// had no way to ask what the address bar said at the moment it mounted:
+/// it opened its configured initial and every segment the URL carried
+/// below the parent's slice was silently dropped.
+#[test]
+fn nested_navigator_mounted_later_resolves_the_live_url() {
+    const INDEX: Route<()> = Route::new("index", "");
+    const NDETAIL: Route<()> = Route::new("ndetail", "/detail");
+
+    let h = Harness::new();
+    let probe: Rc<Probe> = Rc::default();
+    install_url_sync_service(Rc::new(ProbeService(probe.clone())));
+    // Boot state: no launch deep link (the root cleared the slot).
+    set_initial_path(None);
+
+    let handle_slot: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+    let realized = h.mount({
+        let handle_slot = handle_slot.clone();
+        swap_navigator(&HOME)
+            .mount_policy(MountPolicy::LazyDisposing)
+            .screen(HOME, |_| view().child(text().content("HOME")).build())
+            .screen(DOCS, move |_| {
+                stack_navigator(&INDEX)
+                    .screen(INDEX, |_| view().child(text().content("DOCS_INDEX")).build())
+                    .screen(NDETAIL, |_| {
+                        view().child(text().content("NESTED_DETAIL")).build()
+                    })
+                    .build()
+            })
+            .layout(|| view().child(navigator_outlet()).build())
+            .on_handle(move |handle| *handle_slot.borrow_mut() = Some(handle))
+            .build()
+    });
+    let root = one_root(&realized);
+    let handle = handle_slot.borrow().clone().expect("bound");
+
+    // The address bar already names the nested screen — the shape a
+    // browser Back into a disposed section produces, where the host
+    // re-selects the section and the tail is nobody's until the nested
+    // navigator mounts.
+    *probe.live_url.borrow_mut() = Some("/docs/detail".to_string());
+    handle.select(&DOCS, ());
+    h.flush();
+
+    assert!(
+        shows(&h, root, "NESTED_DETAIL"),
+        "the nested navigator opened the live url's screen, not its configured \
+         initial: {}",
+        h.tree(root)
+    );
+    let (_, _, inner_base, inner_active, _) = probe.regs.borrow()[1].clone();
+    assert_eq!(inner_base, "/docs");
+    assert_eq!(
+        inner_active, "/docs/detail",
+        "and registered that as its owned slice, so the next popstate reconciles"
+    );
+
+    h.world.enter(|| drop(realized));
+    clear_url_sync_service();
+}
+
+/// The boundary: a live url that stops AT the navigator's base names
+/// nothing for that navigator to decide, so the configured initial
+/// stands — including when the initial is a non-index route.
+///
+/// Without the gate, an empty base-relative path matches a `""` route
+/// and every nested navigator with a non-index initial would silently
+/// flip to its index the moment a parent pushed the bare base. That is
+/// not deep-URL restoration; it is a different change entirely.
+#[test]
+fn live_url_at_the_bare_base_leaves_the_configured_initial_alone() {
+    const INDEX: Route<()> = Route::new("index", "");
+    const TAB: Route<()> = Route::new("tab", "/tab");
+
+    let h = Harness::new();
+    let probe: Rc<Probe> = Rc::default();
+    install_url_sync_service(Rc::new(ProbeService(probe.clone())));
+    set_initial_path(None);
+
+    let handle_slot: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+    let realized = h.mount({
+        let handle_slot = handle_slot.clone();
+        swap_navigator(&HOME)
+            .screen(HOME, |_| view().child(text().content("HOME")).build())
+            .screen(DOCS, move |_| {
+                // Nested swap whose INITIAL is the non-index `/tab`.
+                swap_navigator(&TAB)
+                    .screen(INDEX, |_| view().child(text().content("ITEM_INDEX")).build())
+                    .screen(TAB, |_| view().child(text().content("ITEM_TAB")).build())
+                    .build()
+            })
+            .layout(|| view().child(navigator_outlet()).build())
+            .on_handle(move |handle| *handle_slot.borrow_mut() = Some(handle))
+            .build()
+    });
+    let root = one_root(&realized);
+    let handle = handle_slot.borrow().clone().expect("bound");
+
+    *probe.live_url.borrow_mut() = Some("/docs".to_string());
+    handle.select(&DOCS, ());
+    h.flush();
+
+    assert!(
+        shows(&h, root, "ITEM_TAB"),
+        "the url said nothing below /docs, so the configured initial stands: {}",
+        h.tree(root)
+    );
+    assert!(!shows(&h, root, "ITEM_INDEX"), "{}", h.tree(root));
+
+    h.world.enter(|| drop(realized));
+    clear_url_sync_service();
+}
+
+/// `from_launch_url` distinguishes the two sources on the registration,
+/// which is what lets a service seed browser history for a cold start
+/// and NOT for a mid-session rebuild (mid-session the browser already
+/// holds those entries; re-seeding splits the user's current entry).
+#[test]
+fn registration_reports_which_url_source_seated_the_screen() {
+    const INDEX: Route<()> = Route::new("index", "");
+    const NDETAIL: Route<()> = Route::new("ndetail", "/detail");
+
+    let h = Harness::new();
+    let probe: Rc<Probe> = Rc::default();
+    install_url_sync_service(Rc::new(ProbeService(probe.clone())));
+
+    // Cold start: the launch slot seats the root's screen.
+    set_initial_path(Some("/docs".to_string()));
+    let handle_slot: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+    let realized = h.mount({
+        let handle_slot = handle_slot.clone();
+        swap_navigator(&HOME)
+            .mount_policy(MountPolicy::LazyDisposing)
+            .screen(HOME, |_| view().child(text().content("HOME")).build())
+            .screen(DOCS, move |_| {
+                stack_navigator(&INDEX)
+                    .screen(INDEX, |_| view().child(text().content("DOCS_INDEX")).build())
+                    .screen(NDETAIL, |_| {
+                        view().child(text().content("NESTED_DETAIL")).build()
+                    })
+                    .build()
+            })
+            .layout(|| view().child(navigator_outlet()).build())
+            .on_handle(move |handle| *handle_slot.borrow_mut() = Some(handle))
+            .build()
+    });
+    // The root cleared the slot after its subtree mounted.
+    assert_eq!(peek_initial_path(), None);
+    let flags = probe.launch_flags.borrow().clone();
+    assert!(
+        flags.iter().all(|(_, from_launch)| *from_launch),
+        "every navigator in the cold-start cascade resolved the launch url: {flags:?}"
+    );
+
+    // Mid-session rebuild over a live deep url: same screen, other source.
+    let handle = handle_slot.borrow().clone().expect("bound");
+    handle.select(&HOME, ());
+    h.flush();
+    *probe.live_url.borrow_mut() = Some("/docs/detail".to_string());
+    handle.select(&DOCS, ());
+    h.flush();
+
+    let (_, from_launch) = *probe
+        .launch_flags
+        .borrow()
+        .last()
+        .expect("the rebuilt nested navigator registered");
+    assert!(
+        !from_launch,
+        "a live-url resolution must NOT be reported as a launch deep link — \
+         that flag is what gates the cold-start history seed"
+    );
+
+    h.world.enter(|| drop(realized));
+    clear_url_sync_service();
+    set_initial_path(None);
 }

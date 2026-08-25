@@ -253,6 +253,23 @@ pub struct Args {
     #[arg(long, default_value = "line-tables")]
     pub debuginfo: String,
 
+    /// Web only, debug builds only: how much CPU each rebuild spends
+    /// optimizing. `optimized` (default) keeps workspace members at the
+    /// workspace's own `[profile.dev]` and dependencies at `opt-level =
+    /// 3`; `fast` drops the app and every framework crate to `0` and
+    /// dependencies to `1`.
+    ///
+    /// `fast` cuts the cargo half but produces a ~37% larger module, and
+    /// wasm-bindgen + wasm-split are O(module size) and run on every
+    /// rebuild — so with incremental compilation on (cargo's default) it
+    /// is a net LOSS end-to-end, on framework-crate and leaf edits alike.
+    /// Reach for it when incremental is off (`CARGO_INCREMENTAL=0`, or
+    /// right after a `cargo clean`), where a framework-crate edit
+    /// measured 7.3s under `fast` vs 14.2s under `optimized`. Release
+    /// builds set their own posture and ignore this.
+    #[arg(long, default_value = "optimized")]
+    pub dev_opt: String,
+
     /// Web + `--local` only: skip the `wasm-split` pass on every
     /// rebuild. `#[component(lazy)]` boundaries keep working — their
     /// bodies stay in the main bundle and their loaders resolve
@@ -688,7 +705,7 @@ pub fn run(args: Args) -> Result<()> {
     // server, and native clients reach it via `IDEALYST_SERVER_URL`.
     let mut backend_pid: Option<u32> = None;
     if backend_declared && !active_targets.contains(&Target::Web) {
-        match spawn_backend(&dir, &manifest, None) {
+        match spawn_backend(&dir, &manifest, None, &server_target_dir(&dir)) {
             Ok(child) => {
                 let pid = child.id();
                 eprintln!(
@@ -1396,6 +1413,7 @@ fn launch_web(
                     // compaction is worth more than the packaging time.
                     wasm_split: true,
                     debuginfo: build_web::DebugInfo::default(),
+                    dev_opt: build_web::DevOpt::default(),
                 },
             )
             .context("web build failed (runtime-server)")?;
@@ -1479,6 +1497,7 @@ fn launch_web(
                     // packaging tail. Splitting stays the default.
                     wasm_split: !args.no_split,
                     debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
+                dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
                 },
             )?;
             std::mem::forget(handle);
@@ -1639,11 +1658,13 @@ fn sync_dev_web_overlay(
                 let handle = dev_reload::start_watch(watch_paths, signal, "icon", move || {
                     let cfg = icon_gen::load_config_from_manifest(&project_owned)?;
                     let Some(cfg) = cfg else {
-                        return Ok(());
+                        // No icon config — nothing regenerated, so nothing
+                        // downstream needs waking.
+                        return Ok(dev_reload::Rebuilt::Unchanged);
                     };
                     let block = cfg.resolved_for(icon_gen::Target::Web);
                     icon_gen::sync_web_icons(Some(&block), &overlay_owned)?;
-                    Ok(())
+                    Ok(dev_reload::Rebuilt::Changed)
                 })?;
                 std::mem::forget(handle);
             }
@@ -1764,6 +1785,7 @@ fn launch_ssr(
                 // does — this rebuilds the same wasm on every save.
                 wasm_split: !args.no_split,
                 debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
+                dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
                 // Follows the session's resolved core (runtime-v2
                 // defaults flip) so the served SSR HTML and the
                 // hydrating bundle agree on a core.
@@ -1855,6 +1877,31 @@ fn launch_ssr(
 /// and `run server` stage into, and the dir both servers serve (in-crate
 /// bakes `CARGO_MANIFEST_DIR/dist/web`; standalone reads `WEB_DIST`),
 /// so dev never diverges from build/run regardless of server shape.
+/// Where the dev loop builds AND runs the project's server.
+///
+/// Never the workspace's own `target/`. Cargo takes an exclusive lock on
+/// a build directory for the duration of a build, so sharing `target/`
+/// means any concurrent `cargo check` in the tree — rust-analyzer, a CI
+/// script, a second agent — blocks the dev server's rebuild, and vice
+/// versa. On a busy tree that alone keeps the port down for minutes at a
+/// time, which is indistinguishable from the server being broken.
+///
+/// Rooted at `cargo_target_dir` (the same base the web bundle uses) so
+/// sibling apps under one framework source still share a warm dependency
+/// cache. `server_watch_setup`'s `cargo build` and `spawn_backend`'s
+/// `cargo run` MUST both go through here — pointing them at different
+/// dirs would make every respawn a fresh compile with the port closed.
+fn server_target_dir(project_dir: &Path) -> PathBuf {
+    match crate::framework_source::resolve(project_dir) {
+        Ok(source) => source.cargo_target_dir(project_dir),
+        // Resolution only fails when the framework source can't be
+        // determined at all. Isolation matters more than the cross-app
+        // sharing, so fall back to a project-local dir — never `target/`.
+        Err(_) => project_dir.join("target"),
+    }
+    .join("idealyst-dev-server")
+}
+
 fn full_stack_web_bundle_dir(project_dir: &Path) -> PathBuf {
     project_dir.join("dist").join("web")
 }
@@ -1873,6 +1920,7 @@ fn launch_web_with_backend(
     // `run server` stage into the same dir). We stage into it on every
     // rebuild and hand it to the server as `WEB_DIST`.
     let dist_web = full_stack_web_bundle_dir(dir);
+    let server_target = server_target_dir(dir);
 
     // Phase 1: initial bundle build + spawn the watcher. `start_with`
     // runs the build before returning, so by the time we move on the
@@ -1906,6 +1954,7 @@ fn launch_web_with_backend(
                 // full-stack loop rebuilds the same wasm on every save.
                 wasm_split: !args.no_split,
                 debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
+                dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
             },
         )
         .context("web bundle initial build + watcher start failed")?;
@@ -1916,23 +1965,29 @@ fn launch_web_with_backend(
         std::mem::forget(handle);
     }
 
-    // Phase 1b: the STANDALONE server needs its own watcher. Its
-    // sources are a different dependency closure — typically a separate
-    // workspace, and always including whatever server-side crate the
-    // bundle shares (the `#[server]` fn crate under its `server`
-    // feature). The bundle watcher above never sees a `server-bin` edit
-    // at all, and even for a shared crate a restaged bundle is only
-    // half the change: the client decode is strict, so a bundle that
-    // knows a new DTO field talking to a server that doesn't fails
-    // outright rather than degrading. Both halves have to move together.
+    // Phase 1b: the server gets its own watcher — BOTH shapes, not just
+    // standalone. For standalone the sources are a different dependency
+    // closure (typically a separate workspace, overlapping the app only
+    // on the `#[server]` fn crate), so the bundle watcher never sees a
+    // server-bin edit at all. For in-crate they are the same closure,
+    // but routing the server through its own watcher is still what buys
+    // the fix: the callback BUILDS, and only a build that succeeded and
+    // actually relinked the binary bumps the signal.
     //
-    // The callback BUILDS but does not restart — the main loop owns the
-    // child. Building first is deliberate: a failed compile leaves the
-    // signal un-bumped and the running server up, so a broken edit
-    // costs a log line rather than a dead port.
+    // Building before restarting is the whole point. The in-crate path
+    // used to `kill()` the child and then `cargo run`, so the port was
+    // down for the entire compile — minutes, on a cold framework — and a
+    // broken edit left it down indefinitely. Now a failed compile leaves
+    // the signal un-bumped and the running server up: a bad save costs a
+    // log line, not a dead port.
+    //
+    // Even for a shared server crate a restaged bundle is only half the
+    // change: the client decode is strict, so a bundle that knows a new
+    // DTO field talking to a server that doesn't fails outright rather
+    // than degrading. Both halves have to move together.
     let server_signal = dev_reload::ReloadSignal::new();
-    if standalone && !args.no_build {
-        match server_watch_setup(dir, manifest) {
+    if !args.no_build {
+        match server_watch_setup(dir, manifest, &server_target) {
             Ok((roots, build)) => {
                 crate::dlog!(
                     "dev web",
@@ -1962,7 +2017,7 @@ fn launch_web_with_backend(
 
     // Phase 2: spawn the server. Captured so we can kill + respawn on
     // each rebuild.
-    let mut child = spawn_backend(dir, manifest, Some(dist_web.as_path()))?;
+    let mut child = spawn_backend(dir, manifest, Some(dist_web.as_path()), &server_target)?;
     crate::dlog!(
         "dev web",
         "full-stack: server running (pid {}) on port {port}",
@@ -1980,46 +2035,35 @@ fn launch_web_with_backend(
     // server crash. Bumps wake us immediately.
     loop {
         let cur = signal.wait_past(last_gen, Duration::from_millis(500));
-        if cur != last_gen {
-            last_gen = cur;
-            if standalone {
-                // The bundle was restaged into `dist/web`; the running
-                // server serves it statically, so there is nothing to
-                // restart for the CLIENT half. If the same save also
-                // touched server sources it arrives separately, below.
-                eprintln!("[dev web] bundle rebuilt → refresh the browser");
-            } else {
-                eprintln!("[dev web] source change → restarting server");
-                let _ = child.kill();
-                let _ = child.wait();
-                child = match spawn_backend(dir, manifest, Some(dist_web.as_path())) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("[dev web] server respawn failed: {e:#}");
-                        // Try again on the next gen bump rather than
-                        // tearing down the whole dev session.
-                        continue;
-                    }
-                };
-                continue;
-            }
+        let server_gen = server_signal.current();
+        let action = dev_action(cur != last_gen, server_gen != last_server_gen);
+        last_gen = cur;
+        last_server_gen = server_gen;
+
+        if action.refresh_browser() {
+            // The bundle was restaged into `dist/web`. BOTH server
+            // shapes serve that directory through a runtime `ServeDir`
+            // (the in-crate shape bakes only the *path*, via
+            // `env!("CARGO_MANIFEST_DIR")` — never the contents), so the
+            // process already on the port serves the new files on the
+            // next request. Restarting here would take the port down to
+            // publish files the running server had picked up anyway.
+            eprintln!("[dev web] bundle rebuilt → refresh the browser");
         }
 
-        // The standalone server's watcher already rebuilt it (and only
-        // bumps on success), so the respawn below is a no-op recompile
-        // and a fresh bind. Falling through from the bundle branch is
-        // intentional: one edit to a shared server crate legitimately
-        // bumps both signals, and both halves must land.
-        let server_gen = server_signal.current();
-        if server_gen != last_server_gen {
-            last_server_gen = server_gen;
+        if action.restart_server() {
+            // The watcher already BUILT this successfully and only bumps
+            // when the binary actually relinked, so the downtime here is
+            // a kill plus a rebind — not a compile.
             eprintln!("[dev web] server rebuilt → restarting on port {port}");
             let _ = child.kill();
             let _ = child.wait();
-            child = match spawn_backend(dir, manifest, Some(dist_web.as_path())) {
+            child = match spawn_backend(dir, manifest, Some(dist_web.as_path()), &server_target) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("[dev web] server respawn failed: {e:#}");
+                    // Try again on the next gen bump rather than
+                    // tearing down the whole dev session.
                     continue;
                 }
             };
@@ -2040,19 +2084,100 @@ fn launch_web_with_backend(
     }
 }
 
-/// Resolve what a STANDALONE server's watcher needs: the source roots
-/// to watch, and a closure that rebuilds it.
+/// What the full-stack dev loop should do when the watcher generations
+/// move. Split out as a pure function so the policy is testable without
+/// spawning cargo, a server, or a file watcher — the loop it drives is an
+/// infinite blocking loop over real child processes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DevAction {
+    /// Neither watcher moved — fall through to the child liveness check.
+    Idle,
+    /// Only the client bundle was restaged. Both server shapes serve
+    /// `dist/web` through a runtime `ServeDir`, so the process on the
+    /// port already serves it: tell the user to refresh, touch nothing.
+    RefreshBrowser,
+    /// Server sources rebuilt (successfully, and the binary relinked —
+    /// the watcher only bumps on both). Restart so the new binary binds.
+    RestartServer,
+    /// One save moved both halves — e.g. an edit to a crate the bundle
+    /// and the server share. The restart covers the bundle too.
+    RestartServerAndRefresh,
+}
+
+impl DevAction {
+    /// Whether the browser needs a nudge. A restart implies the bundle is
+    /// served fresh too, so callers print the refresh line either way.
+    fn refresh_browser(self) -> bool {
+        matches!(self, Self::RefreshBrowser | Self::RestartServerAndRefresh)
+    }
+
+    /// Whether the server child must be killed and respawned.
+    fn restart_server(self) -> bool {
+        matches!(self, Self::RestartServer | Self::RestartServerAndRefresh)
+    }
+}
+
+/// Map the two watcher signals onto the action the loop takes.
 ///
-/// The roots come from the server manifest's own dependency closure —
-/// which for the standard shape is a different workspace than the app's
-/// (`server_manifest` exists precisely so the `server` feature never
-/// unifies into the client build), overlapping it only on the crate
-/// that declares the `#[server]` fns. That overlap is the interesting
-/// case: one edit there has to rebuild the bundle AND the server.
+/// The load-bearing rule is that `bundle_moved` ALONE never restarts the
+/// server. A bundle rebuild republishes static files the running server
+/// reads at request time; killing the process to publish them takes the
+/// port down for a compile and buys nothing. This used to be
+/// standalone-only, and the in-crate shape paid a full `cargo run`
+/// compile — with the port closed — on every UI-only save.
+fn dev_action(bundle_moved: bool, server_moved: bool) -> DevAction {
+    match (bundle_moved, server_moved) {
+        (false, false) => DevAction::Idle,
+        (true, false) => DevAction::RefreshBrowser,
+        (false, true) => DevAction::RestartServer,
+        (true, true) => DevAction::RestartServerAndRefresh,
+    }
+}
+
+/// Size + mtime of a built executable — enough to tell "cargo relinked
+/// it" from "cargo decided nothing changed".
 ///
-/// The closure runs `cargo build`, not `cargo run` — the caller owns
-/// the child process, and building separately means a compile error
-/// leaves the running server alone instead of taking the port down.
+/// Deliberately NOT a content hash. When a build is a no-op cargo does
+/// not rewrite the binary at all, so the mtime is untouched and this
+/// catches it for free; when cargo *does* relink, the bytes have almost
+/// certainly changed anyway (for the in-crate shape the server bin links
+/// the app lib, so a UI edit genuinely produces a different binary).
+/// Hashing a few hundred MB of debug binary on every save would cost more
+/// than the restart it might save.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BinStamp {
+    len: u64,
+    mtime: Option<std::time::SystemTime>,
+}
+
+impl BinStamp {
+    fn of(path: &Path) -> Option<Self> {
+        let md = std::fs::metadata(path).ok()?;
+        Some(Self {
+            len: md.len(),
+            mtime: md.modified().ok(),
+        })
+    }
+}
+
+/// Resolve what the server's watcher needs: the source roots to watch,
+/// and a closure that rebuilds it and reports whether the binary moved.
+///
+/// Handles BOTH full-stack shapes:
+///
+/// - **standalone** (`server_manifest`) — a different dependency closure,
+///   typically its own workspace, overlapping the app only on the crate
+///   declaring the `#[server]` fns. That overlap is the interesting case:
+///   one edit there has to rebuild the bundle AND the server.
+/// - **in-crate** (`server_bin` alone) — the same closure the bundle
+///   watcher follows, built with `--features server`. It gets a watcher
+///   anyway, because a watcher is what makes "build, THEN restart"
+///   possible; the old code restarted straight off the bundle signal and
+///   compiled with the port closed.
+///
+/// The closure runs `cargo build`, not `cargo run` — the caller owns the
+/// child, and building separately means a compile error leaves the
+/// running server alone instead of taking the port down.
 ///
 /// It narrows to `--bin <server_bin>` when the app declares one, which
 /// also keeps the rebuild cheap: a server package commonly carries a
@@ -2060,38 +2185,110 @@ fn launch_web_with_backend(
 /// linking them all on every save is slow enough to OOM a container.
 /// Declaring `server_bin` alongside `server_manifest` is worth it for
 /// that alone.
+///
+/// `--message-format=json-render-diagnostics` is what lets the closure
+/// find the binary without guessing profile/target-dir layout: cargo
+/// still renders rustc diagnostics to stderr (so compile errors stay
+/// readable in the dev log) while stdout carries one JSON record per
+/// artifact, and the `executable` field of the last `compiler-artifact`
+/// names exactly what was produced.
 fn server_watch_setup(
     dir: &Path,
     manifest: &build_ios::Manifest,
-) -> Result<(Vec<PathBuf>, impl FnMut() -> Result<()> + Send + 'static)> {
-    let rel = manifest
-        .app
-        .server_manifest
-        .as_ref()
-        .context("no `server_manifest` declared")?;
-    let joined = dir.join(rel);
-    anyhow::ensure!(
-        joined.is_file(),
-        "server_manifest points at {}, which doesn't exist",
-        joined.display(),
-    );
-    // Collapse `../..` for a clean `--manifest-path`; canonicalize
-    // can't fail — we just confirmed it's a file.
-    let manifest_path = std::fs::canonicalize(&joined).unwrap_or(joined);
+    target_dir: &Path,
+) -> Result<(Vec<PathBuf>, impl FnMut() -> Result<dev_reload::Rebuilt> + Send + 'static)> {
+    let app = &manifest.app;
+    // Base command + the manifest whose local closure we watch.
+    let (watched_manifest, mut base_args): (PathBuf, Vec<String>) =
+        if let Some(rel) = &app.server_manifest {
+            let joined = dir.join(rel);
+            anyhow::ensure!(
+                joined.is_file(),
+                "server_manifest points at {}, which doesn't exist",
+                joined.display(),
+            );
+            // Collapse `../..` for a clean `--manifest-path`; canonicalize
+            // can't fail — we just confirmed it's a file.
+            let manifest_path = std::fs::canonicalize(&joined).unwrap_or(joined);
+            let args = vec![
+                "--manifest-path".to_string(),
+                manifest_path.display().to_string(),
+            ];
+            (manifest_path, args)
+        } else if app.server_bin.is_some() {
+            let manifest_path = dir.join("Cargo.toml");
+            anyhow::ensure!(
+                manifest_path.is_file(),
+                "no Cargo.toml at {}",
+                manifest_path.display(),
+            );
+            // In-crate: same package as the app, gated behind `server`.
+            // Mirrors `spawn_backend`'s in-crate arm exactly — the two
+            // must agree or `cargo run` recompiles what we just built.
+            let args = vec![
+                "-p".to_string(),
+                manifest.name.clone(),
+                "--features".to_string(),
+                "server".to_string(),
+            ];
+            (manifest_path, args)
+        } else {
+            anyhow::bail!("no server declared (set server_bin or server_manifest)");
+        };
+    if let Some(b) = &app.server_bin {
+        base_args.push("--bin".to_string());
+        base_args.push(b.clone());
+    }
 
-    let roots = dev_reload::watch_roots(&manifest_path);
-    let bin = manifest.app.server_bin.clone();
-    let build = move || -> Result<()> {
-        let mut cmd = Command::new("cargo");
-        cmd.arg("build").arg("--manifest-path").arg(&manifest_path);
-        if let Some(b) = &bin {
-            cmd.arg("--bin").arg(b);
-        }
-        let status = cmd.status().context("run `cargo build` for the server")?;
-        anyhow::ensure!(status.success(), "server build failed");
-        Ok(())
+    let roots = dev_reload::watch_roots(&watched_manifest);
+    let target_dir = target_dir.to_path_buf();
+    let mut last: Option<BinStamp> = None;
+    let build = move || -> Result<dev_reload::Rebuilt> {
+        let out = Command::new("cargo")
+            .arg("build")
+            .args(&base_args)
+            .arg("--target-dir")
+            .arg(&target_dir)
+            .arg("--message-format=json-render-diagnostics")
+            .stderr(std::process::Stdio::inherit())
+            .output()
+            .context("run `cargo build` for the server")?;
+        anyhow::ensure!(out.status.success(), "server build failed");
+        let exe = last_executable(&out.stdout).context(
+            "cargo reported success but emitted no executable artifact —              is `server_bin` the name of an actual [[bin]] target?",
+        )?;
+        let stamp = BinStamp::of(&exe);
+        let changed = last != stamp;
+        last = stamp;
+        Ok(if changed {
+            dev_reload::Rebuilt::Changed
+        } else {
+            dev_reload::Rebuilt::Unchanged
+        })
     };
     Ok((roots, build))
+}
+
+/// Last `executable` path in a cargo `--message-format=json` stream.
+///
+/// Cargo emits one `compiler-artifact` record per built target; only
+/// binary targets carry a non-null `executable`, and the final one is the
+/// requested `--bin`. Parsed leniently — a line that isn't JSON, or a
+/// record without the field, is simply not a candidate. Split out from
+/// the closure so the parse is unit-testable against a captured stream.
+fn last_executable(stdout: &[u8]) -> Option<PathBuf> {
+    // Bound to a local: `from_utf8_lossy` returns a Cow whose temporary
+    // would be dropped before `lines()` finished borrowing it.
+    let text = String::from_utf8_lossy(stdout);
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|v| v.get("reason").and_then(|r| r.as_str()) == Some("compiler-artifact"))
+        .filter_map(|v| {
+            v.get("executable")
+                .and_then(|e| e.as_str())
+                .map(PathBuf::from)
+        })
+        .last()
 }
 
 /// Spawn the project's declared server with `cargo run`, inheriting stdio
@@ -2107,14 +2304,21 @@ fn server_watch_setup(
 /// passed as `WEB_DIST` so a standalone full-stack server serves the
 /// freshly-staged bundle. Returns the child for kill-on-restart and
 /// Ctrl-C bookkeeping.
+///
+/// `target_dir` MUST be the same directory [`server_watch_setup`]'s
+/// rebuild closure used. The watcher builds and this runs; pointing them
+/// at different dirs would make every respawn a fresh compile inside
+/// `cargo run` — which is exactly the port-is-down-while-compiling bug
+/// this pair exists to avoid.
 fn spawn_backend(
     dir: &Path,
     manifest: &build_ios::Manifest,
     web_dist: Option<&Path>,
+    target_dir: &Path,
 ) -> Result<std::process::Child> {
     let app = &manifest.app;
     let mut cmd = std::process::Command::new("cargo");
-    cmd.arg("run");
+    cmd.arg("run").arg("--target-dir").arg(target_dir);
     if let Some(rel) = &app.server_manifest {
         let joined = dir.join(rel);
         if !joined.is_file() {
@@ -2659,6 +2863,7 @@ impl Args {
             premint_report: self.premint_report,
             no_split: self.no_split,
             debuginfo: self.debuginfo.clone(),
+            dev_opt: self.dev_opt.clone(),
             no_robot: self.no_robot,
             headless_client: self.headless_client,
             no_headless_client: self.no_headless_client,
@@ -2763,6 +2968,124 @@ mod tests {
     use super::*;
     use std::process::Command;
     use std::time::{Duration, Instant};
+
+    /// Regression guard for the bug that made every full-stack dev
+    /// session unusable: a bundle-only rebuild used to kill the server
+    /// child and respawn it through `cargo run`, so the port was CLOSED
+    /// for the whole recompile — minutes, whenever a framework crate was
+    /// dirty — even though nothing the server does had changed.
+    ///
+    /// Both shapes serve `dist/web` through a runtime `ServeDir`, so a
+    /// restaged bundle needs no restart at all. This pins that: bundle
+    /// movement alone must never restart the server.
+    #[test]
+    fn regression_bundle_rebuild_alone_never_restarts_server() {
+        let action = dev_action(true, false);
+        assert_eq!(action, DevAction::RefreshBrowser);
+        assert!(
+            !action.restart_server(),
+            "a bundle-only rebuild must leave the server process alone — \
+             restarting it takes the port down for a compile and republishes \
+             files the running server already serves",
+        );
+        assert!(action.refresh_browser());
+    }
+
+    /// The other half of the contract: a server rebuild DOES restart.
+    /// The watcher has already built successfully at this point (and only
+    /// bumps when the binary relinked), so the downtime is a rebind.
+    #[test]
+    fn server_rebuild_restarts_the_child() {
+        let action = dev_action(false, true);
+        assert_eq!(action, DevAction::RestartServer);
+        assert!(action.restart_server());
+        assert!(
+            !action.refresh_browser(),
+            "no bundle was restaged, so there is nothing new for the browser",
+        );
+    }
+
+    /// One save touching a crate the bundle and the server share moves
+    /// both signals. Both halves must land — the client decode is strict,
+    /// so a new-DTO bundle against an old server fails outright.
+    #[test]
+    fn shared_crate_edit_moves_both_halves() {
+        let action = dev_action(true, true);
+        assert_eq!(action, DevAction::RestartServerAndRefresh);
+        assert!(action.restart_server());
+        assert!(action.refresh_browser());
+    }
+
+    /// The keepalive tick wakes the loop every 500ms with nothing moved;
+    /// it must fall through to the liveness check, not churn the child.
+    #[test]
+    fn idle_tick_does_nothing() {
+        let action = dev_action(false, false);
+        assert_eq!(action, DevAction::Idle);
+        assert!(!action.restart_server());
+        assert!(!action.refresh_browser());
+    }
+
+    /// `server_watch_setup`'s closure locates the binary it just built by
+    /// reading cargo's JSON artifact stream. Only binary targets carry a
+    /// non-null `executable`, and the requested `--bin` is the last one.
+    #[test]
+    fn last_executable_picks_the_final_binary_artifact() {
+        let stream = concat!(
+            r#"{"reason":"compiler-artifact","executable":null,"target":{"name":"applib"}}"#,
+            "\n",
+            r#"{"reason":"compiler-message","message":{"rendered":"warning: unused"}}"#,
+            "\n",
+            r#"{"reason":"compiler-artifact","executable":"/t/debug/server","target":{"name":"server"}}"#,
+            "\n",
+            r#"{"reason":"build-finished","success":true}"#,
+            "\n",
+        );
+        assert_eq!(
+            last_executable(stream.as_bytes()),
+            Some(PathBuf::from("/t/debug/server")),
+        );
+    }
+
+    /// A stream with no binary artifact (lib-only package, or a bad
+    /// `server_bin` name) must be reported as "not found" rather than
+    /// silently stamping some other path — the caller turns this into an
+    /// actionable error instead of a mystery no-restart.
+    #[test]
+    fn last_executable_is_none_without_a_binary_artifact() {
+        let stream = concat!(
+            r#"{"reason":"compiler-artifact","executable":null,"target":{"name":"applib"}}"#,
+            "\n",
+            r#"not json at all"#,
+            "\n",
+            r#"{"reason":"build-finished","success":true}"#,
+            "\n",
+        );
+        assert_eq!(last_executable(stream.as_bytes()), None);
+    }
+
+    /// The dev server must never build into the workspace's `target/`:
+    /// cargo locks a build directory exclusively, so sharing it lets any
+    /// concurrent `cargo check` in the tree block the server's rebuild
+    /// (and vice versa) — the multi-agent starvation case.
+    #[test]
+    fn server_target_dir_is_isolated_from_the_workspace_target() {
+        // A path with no framework workspace above it exercises the
+        // fallback arm; both arms must land somewhere that is NOT the
+        // plain `target/` cargo locks for everything else in the tree.
+        let dir = Path::new("/nonexistent-project-root/apps/demo");
+        let target = server_target_dir(dir);
+        assert!(
+            target.ends_with("idealyst-dev-server"),
+            "got {}",
+            target.display(),
+        );
+        assert_ne!(
+            target,
+            dir.join("target"),
+            "the dev server must not share the workspace build lock",
+        );
+    }
 
     /// Regression guard for the "android blank screen" bug: in
     /// runtime-server mode the CLI must keep running while the dev-host

@@ -27,7 +27,11 @@
 //!   `window.location.pathname`, and the new-core navigator handlers peek
 //!   it during `resolve_initial`. Both installs sit in the same
 //!   `BuiltinSet::nav_services` closure at the boot seam and both run
-//!   before the app builds, so that ordering holds.
+//!   before the app builds, so that ordering holds. Deep-link REBUILD
+//!   does need this module: the slot is cleared once the root subtree is
+//!   up, so a navigator mounting later reads the live address bar
+//!   through `UrlSyncService::current_url` (implemented below over the
+//!   same [`HistoryPort`], which is what lets the tests drive it).
 //! - Popstate dispatch only STAGES commands, so the listener calls
 //!   [`crate::newcore::schedule_flush`] afterwards — popstate is a raw
 //!   DOM event outside every wrapped author callback (the residual the
@@ -302,7 +306,15 @@ impl UrlSyncService for WebUrlSync {
         // any deep-link back-stack synthesis) before registering, so
         // `depth`/`active_path` are already committed. Old semantics,
         // minus the microtask (module docs).
-        if reg.base.is_empty() {
+        //
+        // `from_launch_url` gates the whole block: the seed exists
+        // because a COLD START has exactly one history entry, so an
+        // app-synthesized back-stack has no browser counterpart. A root
+        // that remounts MID-session (an auth-signal refresh rebuilding
+        // the shell over a deep URL) resolves the live address bar and
+        // sits under history the browser already holds — replacing and
+        // re-pushing there would split the user's current entry in two.
+        if reg.base.is_empty() && reg.from_launch_url {
             if reg.depth > 1 && reg.active_path != reg.initial_full_path {
                 // Deep link with a synthesized entry below (a stack root
                 // that reconstructed its index): make the browser back
@@ -330,6 +342,32 @@ impl UrlSyncService for WebUrlSync {
             *entry.active_owned.borrow_mut() = entry.owned_of(&reg.active_path);
         }
         Some(id)
+    }
+
+    /// The live address bar, path AND query — routed through
+    /// [`pathname`] so the [`HistoryPort`] fake answers it in tests
+    /// exactly as `window.location` does in production.
+    ///
+    /// This is what lets a navigator REBUILT mid-session (a
+    /// `LazyDisposing` section the user pressed Back into) resolve the
+    /// URL it is actually under instead of its configured initial. See
+    /// `UrlSyncService::current_url`.
+    fn current_url(&self) -> Option<String> {
+        // A `history.back()` WE initiated has not traversed yet — the
+        // browser applies it asynchronously and fires the echoed
+        // `popstate` later, so `location` still names the screen being
+        // popped AWAY from. Answering with it would hand a navigator
+        // mounting inside the revealed screen a path from the future it
+        // is leaving. `None` ⇒ `resolve_initial` falls back to the
+        // configured initial, which is the right answer for a screen the
+        // stack is revealing from its own recorded entry.
+        //
+        // A RECONCILING dispatch needs no such guard: there the browser
+        // moved FIRST and `location` is already authoritative.
+        if PENDING_SELF_POPS.with(|c| c.get()) > 0 {
+            return None;
+        }
+        Some(pathname())
     }
 
     fn before_command(&self, id: u64, cmd: &NavCommand) -> bool {
@@ -642,6 +680,16 @@ mod tests {
             index: 0,
             log: Vec::new(),
         }));
+        arm_sim_history(&sim);
+        sim
+    }
+
+    /// Point [`HistoryPort`] at an EXISTING fake. `stop()` clears the
+    /// port (it is host state), so a test that reboots the app over the
+    /// same simulated browser history must re-arm it — otherwise the
+    /// module falls back to the real `window.location`, which the test
+    /// page pins at `/`.
+    fn arm_sim_history(sim: &Rc<RefCell<SimHistory>>) {
         let (s1, s2, s3, s4) = (sim.clone(), sim.clone(), sim.clone(), sim.clone());
         install_history_port(HistoryPort {
             current_path: Box::new(move || s1.borrow().current()),
@@ -667,7 +715,6 @@ mod tests {
                 h.log.push("back".to_string());
             }),
         });
-        sim
     }
 
     /// Fresh mount + fake history + cleared initial-path slot. The slot
@@ -1405,6 +1452,342 @@ mod tests {
             sim.borrow().log
         );
         runtime_shared::primitives::navigator::set_initial_path(None);
+        stop();
+    }
+
+    // =================================================================
+    // Rebuild-under-a-live-URL: a navigator that mounts AFTER boot.
+    // =================================================================
+
+    const TAB: Route<()> = Route::<()>::new("tab", "/tab");
+
+    /// Regression (CrewForge "Back brings me to the project list"): a
+    /// `LazyDisposing` section that is disposed and then rebuilt by a
+    /// browser Back must reopen the screen the ADDRESS BAR names, not the
+    /// nested navigator's configured initial.
+    ///
+    /// The launch slot answers this at boot and the root clears it once
+    /// its subtree is up, so before the fix the rebuilt nested stack had
+    /// no way to ask what the URL said at the moment IT mounted: the root
+    /// re-selected `/docs` and the `/detail` tail was dropped on the
+    /// floor, leaving `/docs/detail` in the address bar with the docs
+    /// INDEX on screen. Cold-loading the same URL rendered the detail —
+    /// one URL, two screens, decided by how you arrived.
+    #[wasm_bindgen_test]
+    fn regression_lazy_disposing_rebuild_opens_the_live_url_not_the_initial() {
+        let (mount, sim) = setup_sim("/");
+        let outer: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let inner: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+
+        let (o, i) = (outer.clone(), inner.clone());
+        start(move || {
+            let i = i.clone();
+            runtime_vocabulary::builders::swap_navigator(&ROOT)
+                .mount_policy(runtime_vocabulary::prims::MountPolicy::LazyDisposing)
+                .screen(ROOT, |_| {
+                    runtime_vocabulary::text().content("HOME CONTENT").build()
+                })
+                .screen(SETTINGS, |_| {
+                    runtime_vocabulary::text().content("SETTINGS CONTENT").build()
+                })
+                .screen(DOCS, move |_| {
+                    let i = i.clone();
+                    stack_navigator(&NESTED_INDEX)
+                        .screen(NESTED_INDEX, |_| {
+                            runtime_vocabulary::text().content("DOCS INDEX").build()
+                        })
+                        .screen(NESTED_DETAIL, |_| {
+                            runtime_vocabulary::text().content("NESTED DETAIL").build()
+                        })
+                        .layout(|| navigator_outlet().build())
+                        .on_handle(move |h| *i.borrow_mut() = Some(h))
+                        .build()
+                })
+                .layout(|| navigator_outlet().build())
+                .on_handle(move |h| *o.borrow_mut() = Some(h))
+                .build()
+        });
+        let onav = { let h = outer.borrow_mut().take(); h.expect("outer handle") };
+
+        onav.select(&DOCS, ());
+        crate::newcore::flush_sync();
+        let inav = { let h = inner.borrow_mut().take(); h.expect("nested handle") };
+        inav.push(&NESTED_DETAIL, ());
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("NESTED DETAIL"));
+        assert_eq!(sim.borrow().current(), "/docs/detail");
+
+        // Leave the section. LazyDisposing drops the docs screen, which
+        // tears the nested stack down and deregisters it from URL sync —
+        // so nothing claims `/detail` any more.
+        onav.select(&SETTINGS, ());
+        crate::newcore::flush_sync();
+        let t = text_of(&mount);
+        assert!(t.contains("SETTINGS CONTENT"), "left the section: {t}");
+        assert!(!t.contains("NESTED DETAIL"), "docs subtree disposed: {t}");
+
+        // Back into the disposed section.
+        browser_back(&sim);
+        assert_eq!(
+            sim.borrow().current(),
+            "/docs/detail",
+            "back returned to the deep URL, log: {:?}",
+            sim.borrow().log
+        );
+        let t = text_of(&mount);
+        assert!(
+            t.contains("NESTED DETAIL"),
+            "the rebuilt nested navigator opened the URL's screen, not its \
+             configured initial: {t}"
+        );
+        assert!(!t.contains("DOCS INDEX"), "index not left on screen: {t}");
+        stop();
+    }
+
+    /// A rebuilt nested navigator resolves the live url's QUERY too, not
+    /// just its path — the `ScreenState` half of the contract, which a
+    /// cold link already gets. Without it a restored section came back
+    /// with its state silently reset.
+    #[wasm_bindgen_test]
+    fn lazy_disposing_rebuild_restores_the_screen_state_query() {
+        let (mount, sim) = setup_sim("/");
+        let outer: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let inner: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+
+        let (o, i) = (outer.clone(), inner.clone());
+        start(move || {
+            let i = i.clone();
+            runtime_vocabulary::builders::swap_navigator(&ROOT)
+                .mount_policy(runtime_vocabulary::prims::MountPolicy::LazyDisposing)
+                .screen(ROOT, |_| {
+                    runtime_vocabulary::text().content("HOME CONTENT").build()
+                })
+                .screen(SETTINGS, |_| {
+                    runtime_vocabulary::text().content("SETTINGS CONTENT").build()
+                })
+                .screen(DOCS, move |_| {
+                    let i = i.clone();
+                    stack_navigator(&NESTED_INDEX)
+                        .screen(NESTED_INDEX, |_| {
+                            runtime_vocabulary::text().content("DOCS INDEX").build()
+                        })
+                        .screen(NESTED_DETAIL, |_| {
+                            let q = runtime_shared::primitives::navigator::screen_query();
+                            let tab = q.get("tab").unwrap_or("none").to_string();
+                            runtime_vocabulary::text()
+                                .content(format!("NESTED DETAIL tab={tab}"))
+                                .build()
+                        })
+                        .layout(|| navigator_outlet().build())
+                        .on_handle(move |h| *i.borrow_mut() = Some(h))
+                        .build()
+                })
+                .layout(|| navigator_outlet().build())
+                .on_handle(move |h| *o.borrow_mut() = Some(h))
+                .build()
+        });
+        let onav = { let h = outer.borrow_mut().take(); h.expect("outer handle") };
+
+        onav.select(&DOCS, ());
+        crate::newcore::flush_sync();
+        let inav = { let h = inner.borrow_mut().take(); h.expect("nested handle") };
+        inav.push_with_state(&NESTED_DETAIL, (), QueryParams::new().with("tab", "notes"));
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("NESTED DETAIL tab=notes"));
+        assert_eq!(sim.borrow().current(), "/docs/detail?tab=notes");
+
+        onav.select(&SETTINGS, ());
+        crate::newcore::flush_sync();
+        browser_back(&sim);
+
+        let t = text_of(&mount);
+        assert!(
+            t.contains("NESTED DETAIL tab=notes"),
+            "restored screen came back with its url state: {t}"
+        );
+        stop();
+    }
+
+    /// A navigator rebuilt mid-session must NOT re-run the cold-start
+    /// history seed. The seed exists because a page load has exactly one
+    /// history entry, so an app-synthesized back-stack has no browser
+    /// counterpart; mid-session the browser already holds those entries,
+    /// and replacing + re-pushing would split the user's current entry in
+    /// two (one extra Back press to leave the screen they are on).
+    #[wasm_bindgen_test]
+    fn rebuilt_root_navigator_does_not_re_seed_browser_history() {
+        let (mount, sim) = setup_sim("/");
+        let handle: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let fill = handle.clone();
+        start(move || {
+            stack_navigator(&ROOT)
+                .screen(ROOT, |_| {
+                    runtime_vocabulary::text().content("root-screen").build()
+                })
+                .screen(DETAIL, |_| {
+                    runtime_vocabulary::text().content("detail-screen").build()
+                })
+                .layout(|| navigator_outlet().build())
+                .on_handle(move |h| *fill.borrow_mut() = Some(h))
+                .build()
+        });
+        let nav = { let h = handle.borrow_mut().take(); h.expect("handle") };
+        nav.push(&DETAIL, ());
+        crate::newcore::flush_sync();
+        assert_eq!(sim.borrow().current(), "/detail");
+        assert!(text_of(&mount).contains("detail-screen"));
+
+        // Tear the whole app down and boot it again over the SAME live
+        // URL — the auth-signal / shell-remount shape. The rebuilt root
+        // resolves `/detail` (that is the fix), and because it did NOT
+        // come from the launch slot it must claim the entry with a plain
+        // replace, never replace-then-push.
+        stop();
+        let mount = setup_mount();
+        arm_sim_history(&sim); // `stop()` cleared the port
+        let pushes_before = sim.borrow().pushes();
+        start(move || {
+            stack_navigator(&ROOT)
+                .screen(ROOT, |_| {
+                    runtime_vocabulary::text().content("root-screen").build()
+                })
+                .screen(DETAIL, |_| {
+                    runtime_vocabulary::text().content("detail-screen").build()
+                })
+                .layout(|| navigator_outlet().build())
+                .build()
+        });
+        let t = text_of(&mount);
+        assert!(
+            t.contains("detail-screen"),
+            "the remounted root resolved the live url: {t}"
+        );
+        assert_eq!(
+            sim.borrow().pushes(),
+            pushes_before,
+            "a mid-session rebuild must not synthesize browser history, log: {:?}",
+            sim.borrow().log
+        );
+        assert_eq!(sim.borrow().current(), "/detail", "url untouched by the claim");
+        stop();
+    }
+
+    /// A programmatic `pop` moves the browser with `history.back()`,
+    /// which the real browser applies ASYNCHRONOUSLY — `location` still
+    /// names the screen being popped away from while the driver commits
+    /// the pop. A navigator mounting inside the revealed screen must not
+    /// be handed that path from the future it is leaving.
+    #[wasm_bindgen_test]
+    fn programmatic_pop_does_not_hand_the_revealed_screen_a_stale_url() {
+        let (mount, _sim) = setup_sim("/");
+        let handle: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let fill = handle.clone();
+        start(move || {
+            stack_navigator(&ROOT)
+                .screen(ROOT, |_| {
+                    // A navigator nested in the INDEX screen, whose base
+                    // is `/` — so the stale `/detail` would resolve
+                    // against it if `current_url` answered during a pop.
+                    runtime_vocabulary::builders::swap_navigator(&ROOT)
+                        .screen(ROOT, |_| {
+                            runtime_vocabulary::text().content("INNER HOME").build()
+                        })
+                        .screen(DETAIL, |_| {
+                            runtime_vocabulary::text().content("INNER DETAIL").build()
+                        })
+                        .layout(|| navigator_outlet().build())
+                        .build()
+                })
+                .screen(DETAIL, |_| {
+                    runtime_vocabulary::text().content("outer-detail").build()
+                })
+                .layout(|| navigator_outlet().build())
+                .on_handle(move |h| *fill.borrow_mut() = Some(h))
+                .build()
+        });
+        let nav = { let h = handle.borrow_mut().take(); h.expect("handle") };
+        assert!(text_of(&mount).contains("INNER HOME"));
+
+        nav.push(&DETAIL, ());
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("outer-detail"));
+
+        // `pop` calls history_back() at DISPATCH time and commits on the
+        // flush; the fake, like the browser, has not delivered the
+        // popstate yet.
+        nav.pop();
+        crate::newcore::flush_sync();
+        let t = text_of(&mount);
+        assert!(
+            t.contains("INNER HOME"),
+            "the revealed screen's navigator opened its own initial, not the \
+             url being popped away from: {t}"
+        );
+        assert!(!t.contains("INNER DETAIL"), "no stale-url resolution: {t}");
+        stop();
+    }
+
+    /// A nested navigator whose configured initial is a NON-index route
+    /// keeps that initial when the address bar stops at its bare base —
+    /// and still follows a platform pop to that base afterwards.
+    ///
+    /// Both halves matter to the live-URL source. The first is its
+    /// boundary: `/docs` names nothing below the swap's base, so the URL
+    /// has no opinion and `initial` stands. Drop the gate and the swap
+    /// silently flips to its `""` route the moment the parent pushes
+    /// `/docs`, because an empty relative path matches `""` — a change
+    /// to every nested navigator with a non-index initial, which is not
+    /// what deep-URL restoration is for. The second half pins the
+    /// reconciler side of the §5 report: the swap owns `/docs/tab` (its
+    /// initial composed onto its base) while the address bar only ever
+    /// said `/docs`, so a pop to `/docs` IS a change to its slice and it
+    /// re-selects the index — an initial-route slice reconciles exactly
+    /// like a pressed-route one.
+    #[wasm_bindgen_test]
+    fn nested_swap_on_a_non_index_initial_route_keeps_its_initial_at_the_bare_base() {
+        let (mount, sim) = setup_sim("/");
+        let handle: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let fill = handle.clone();
+        start(move || {
+            stack_navigator(&ROOT)
+                .screen(ROOT, |_| {
+                    runtime_vocabulary::text().content("LIST").build()
+                })
+                .screen(DOCS, |_| {
+                    // Nested swap, base `/docs`, INITIAL is the non-index
+                    // `/tab` route.
+                    runtime_vocabulary::builders::swap_navigator(&TAB)
+                        .screen(NESTED_INDEX, |_| {
+                            runtime_vocabulary::text().content("ITEM INDEX").build()
+                        })
+                        .screen(TAB, |_| {
+                            runtime_vocabulary::text().content("ITEM TAB").build()
+                        })
+                        .layout(|| navigator_outlet().build())
+                        .build()
+                })
+                .layout(|| navigator_outlet().build())
+                .on_handle(move |h| *fill.borrow_mut() = Some(h))
+                .build()
+        });
+        let nav = { let h = handle.borrow_mut().take(); h.expect("handle") };
+
+        nav.push(&DOCS, ());
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("ITEM TAB"), "mounted on its initial route");
+        assert_eq!(
+            sim.borrow().current(),
+            "/docs",
+            "a nested navigator's initial mount writes no history of its own"
+        );
+
+        // The platform URL moves to the parent slice. The swap's slice
+        // (`/docs/tab`) changed, so it reconciles to the index.
+        handle_popstate("/docs");
+        crate::newcore::flush_sync();
+        let t = text_of(&mount);
+        assert!(t.contains("ITEM INDEX"), "swap followed the pop to its index: {t}");
+        assert!(!t.contains("ITEM TAB"), "initial-route screen released: {t}");
         stop();
     }
 }

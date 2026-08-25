@@ -85,6 +85,10 @@ pub struct BuildOptions {
     /// (`--debuginfo`). Ignored on release, which sets its own
     /// `debug = "limited"` for wasm-split's benefit. See [`DebugInfo`].
     pub debuginfo: DebugInfo,
+    /// Optimization posture for DEV builds (`--dev-opt`). Ignored for
+    /// `release`, which has its own fixed profile. See [`DevOpt`] for the
+    /// measured trade-off and why `Fast` is the default.
+    pub dev_opt: DevOpt,
     /// Which builtin primitives the bundle registers (`--primitives`).
     ///
     /// `None` keeps `runtime_vocabulary::AllBuiltins`, the historical
@@ -248,6 +252,92 @@ impl DebugInfo {
             other => anyhow::bail!(
                 "unknown --debuginfo `{other}` (expected `line-tables`, `full`, or `none`)"
             ),
+        }
+    }
+}
+
+/// Optimization posture for DEV (non-release) web builds.
+///
+/// [`Optimized`][Self::Optimized] is the default and is what you want
+/// almost always. [`Fast`][Self::Fast] exists for one specific regime,
+/// documented below, and is a net loss outside it.
+///
+/// # Why the obvious change isn't a win
+///
+/// `profile.dev.package."*"` does NOT match workspace members (cargo:
+/// "for any non-workspace member"), so under `Optimized` every framework
+/// crate compiles at whatever the workspace `[profile.dev]` says —
+/// `opt-level = "z"` in this repo. Dropping members to `opt-level = 0`
+/// looks like it should make a framework-crate edit much cheaper, and in
+/// isolated `cargo build` timings it does.
+///
+/// It loses anyway, because cargo is not the whole build. `Fast` inflates
+/// the module by ~37% (41.9 MB vs 30.5 MB on `charts-demo`), and
+/// wasm-bindgen and wasm-split are both O(module size) and run on every
+/// rebuild. End-to-end through the CLI, warm target dir, two rounds:
+///
+/// | edit | `Fast` | `Optimized` |
+/// |---|---|---|
+/// | framework crate | 8.66s / 6.87s | **4.52s / 5.70s** |
+/// | leaf app crate | 4.90s / 5.63s | **3.37s / 3.16s** |
+///
+/// The cargo half is close (3.0-6.0s vs 2.9-4.1s); the post-cargo passes
+/// are what decide it (~2.5s vs ~1.4s). This is also why the older
+/// leaf-edit measurement recorded in [`profile_config_args`] still holds.
+///
+/// # When `Fast` does win
+///
+/// With incremental compilation OFF, the cargo half stops being close —
+/// a framework-crate edit measured 7.33s under `Fast` vs 14.19s under
+/// `Optimized` — and `Fast` wins comfortably. That is not the default
+/// regime, but it is the regime you are in after a `cargo clean`, with
+/// `CARGO_INCREMENTAL=0` exported, or on a machine where the incremental
+/// cache has been disabled for disk reasons.
+///
+/// Note that a *poisoned* incremental cache looks like this too but is a
+/// different problem with a different fix: the cache degrades when one
+/// target dir is shared across build configurations that keep evicting
+/// each other, which is what [`config_key`] now prevents by giving each
+/// configuration its own directory. Reach for `--dev-opt fast` only after
+/// confirming the target dir is healthy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DevOpt {
+    /// Workspace members inherit the workspace's own `[profile.dev]`,
+    /// registry dependencies at `opt-level = 3`. Default: smaller module,
+    /// and the post-cargo passes that run on every rebuild are cheaper
+    /// because of it.
+    #[default]
+    Optimized,
+    /// App + framework crates at `opt-level = 0`, registry dependencies
+    /// at `1`. Cheaper cargo, ~37% larger module. Wins only when
+    /// incremental compilation is off — see the type docs.
+    /// `--dev-opt fast`.
+    Fast,
+}
+
+impl DevOpt {
+    /// Stable identity for [`config_key`].
+    ///
+    /// MUST NOT be the enum discriminant. Hashing `self as u8` ties the
+    /// target-dir key to declaration ORDER, so reordering the variants
+    /// silently hands one posture the other's directory — which is a
+    /// full, unexplained rebuild of the framework the next time either is
+    /// used, i.e. exactly the failure `config_key` exists to prevent.
+    /// (This is not hypothetical: it happened when `Optimized` was
+    /// promoted to the default and moved to the front.)
+    fn key_tag(self) -> &'static str {
+        match self {
+            DevOpt::Optimized => "opt-optimized",
+            DevOpt::Fast => "opt-fast",
+        }
+    }
+
+    /// Parse the `--dev-opt` CLI value.
+    pub fn from_cli(value: &str) -> Result<Self> {
+        match value {
+            "fast" => Ok(DevOpt::Fast),
+            "optimized" => Ok(DevOpt::Optimized),
+            other => anyhow::bail!("unknown --dev-opt `{other}` (expected `fast` or `optimized`)"),
         }
     }
 }
@@ -417,13 +507,24 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         .wrapper_root(&project_dir)
         .join(&manifest.name)
         .join("web");
-    // The wasm build gets its own target dir. Not isolation for its own
-    // sake: it carries RUSTFLAGS the app's native builds don't
-    // (`--emit-relocs`, `+simd128`, the premint cfgs), so sharing a
-    // target dir with `cargo check` would invalidate one fingerprint
-    // every time the other ran. Shared across apps under one framework
-    // source so sibling apps still reuse dependency builds.
-    let target_dir = opts.source.cargo_target_dir(&project_dir).join("idealyst-web");
+    // The wasm build gets its own target dir, KEYED BY the build config.
+    // Not isolation for its own sake: it carries RUSTFLAGS the app's
+    // native builds don't (`--emit-relocs`, `+simd128`, the premint
+    // cfgs), so sharing a target dir with `cargo check` would invalidate
+    // one fingerprint every time the other ran. Shared across apps under
+    // one framework source so sibling apps still reuse dependency builds.
+    //
+    // The config key is what stops the far nastier version of the same
+    // problem — see [`config_key`].
+    let target_dir = opts
+        .source
+        .cargo_target_dir(&project_dir)
+        .join(format!("idealyst-web-{}", config_key(&opts)));
+    eprintln!(
+        "[build-web] target dir: {} ({})",
+        target_dir.display(),
+        config_summary(&opts),
+    );
 
     // Direct pipeline (no wasm-pack), so we can hit the flag matrix
     // wasm-split-cli needs to actually extract chunks:
@@ -457,33 +558,43 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     // classes and hydration's `classList.add` re-stamp is a no-op. The
     // historical bail here refused the combination back when the server
     // could only emit live-minted classes.
-    cargo_build_wasm(
-        &project_dir,
-        &bin_name,
-        &target_dir,
-        opts.release,
-        opts.wasm_split,
-        opts.debuginfo,
-        opts.strip_panics,
-        opts.premint,
-        opts.premint_only,
-        opts.premint_report,
-        opts.hydrate,
-        &opts.user_features,
-        &opts.source,
-        &project_dir,
-    )?;
-    wasm_bindgen_build(&original_wasm, &wrapper_pkg, &manifest.lib_name)
-        .with_context(|| "wasm-bindgen")?;
-    neutralize_command_export_wrappers(&wrapper_pkg, &manifest.lib_name)
-        .with_context(|| "wasm-bindgen command_export neutralize")?;
-    if opts.wasm_split {
-        run_wasm_split(
-            &original_wasm,
-            &wrapper_pkg,
-            &manifest.lib_name,
-            opts.prune_dead_data_min,
+    let mut timings = BuildTimings::default();
+    timings.time("cargo", || {
+        cargo_build_wasm(
+            &project_dir,
+            &bin_name,
+            &target_dir,
+            opts.release,
+            opts.wasm_split,
+            opts.debuginfo,
+            opts.dev_opt,
+            opts.strip_panics,
+            opts.premint,
+            opts.premint_only,
+            opts.premint_report,
+            opts.hydrate,
+            &opts.user_features,
+            &opts.source,
+            &project_dir,
         )
+    })?;
+    timings.time("wasm-bindgen", || {
+        wasm_bindgen_build(&original_wasm, &wrapper_pkg, &manifest.lib_name)
+    })
+    .with_context(|| "wasm-bindgen")?;
+    timings.time("command-export-neutralize", || {
+        neutralize_command_export_wrappers(&wrapper_pkg, &manifest.lib_name)
+    })
+    .with_context(|| "wasm-bindgen command_export neutralize")?;
+    if opts.wasm_split {
+        timings.time("wasm-split", || {
+            run_wasm_split(
+                &original_wasm,
+                &wrapper_pkg,
+                &manifest.lib_name,
+                opts.prune_dead_data_min,
+            )
+        })
         .with_context(|| "wasm-split-cli post-build")?;
     } else {
         // `--no-split` means "bundle it anyway", not "drop it": the module
@@ -519,7 +630,9 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         }
     }
     if opts.release {
-        wasm_opt_pkg(&wrapper_pkg).with_context(|| "wasm-opt post-split")?;
+        timings
+            .time("wasm-opt", || wasm_opt_pkg(&wrapper_pkg))
+            .with_context(|| "wasm-opt post-split")?;
     }
 
     if opts.premint {
@@ -527,13 +640,16 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         // wrapper pkg BEFORE staging/sync so both the staged bundle and
         // the in-project `pkg/` carry it, and before `fingerprint_pkg`
         // so it gets content-addressed with the rest of the bundle.
-        let css = premint::generate_and_run_dump(
-            &build_dir,
-            &project_dir,
-            &opts.source,
-            &manifest,
-        )
-        .with_context(|| "premint style dump")?;
+        let css = timings
+            .time("premint-dump", || {
+                premint::generate_and_run_dump(
+                    &build_dir,
+                    &project_dir,
+                    &opts.source,
+                    &manifest,
+                )
+            })
+            .with_context(|| "premint style dump")?;
         fs::write(wrapper_pkg.join(premint::PREMINT_CSS_NAME), &css).with_context(|| {
             format!("write {}", wrapper_pkg.join(premint::PREMINT_CSS_NAME).display())
         })?;
@@ -544,6 +660,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         );
     }
 
+    let stage_start = std::time::Instant::now();
     let (pkg_dir, bundle_dir, entry_js) = if let Some(out) = opts.bundle_out_dir.as_ref() {
         let default_index = default_index_html(&manifest.app.name, &manifest.lib_name);
         let staged = stage_bundle(
@@ -626,6 +743,11 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         }
         (project_pkg, None, None)
     };
+
+        timings
+        .phases
+        .push(("stage+fingerprint", stage_start.elapsed()));
+    timings.report();
 
     Ok(BuildArtifact {
         pkg_dir,
@@ -1482,7 +1604,143 @@ fn feature_spec(name: &str) -> String {
 /// it to 0 measured *slower* end-to-end (10.4s vs 9.1s on the website)
 /// and 30% larger, because unoptimized IR costs more to emit and link
 /// than the `-Oz` passes cost to run.
-fn profile_config_args(release: bool, debuginfo: DebugInfo) -> Vec<String> {
+/// Wall-clock attribution for the build pipeline.
+///
+/// The web build is a chain of passes with wildly different cost
+/// profiles — cargo, wasm-bindgen, the command-export neutralize,
+/// wasm-split, premint's second native build, staging, fingerprinting,
+/// compression — and until this existed none of them reported a
+/// duration. "Why did that rebuild take two minutes" could only be
+/// answered by re-running the pieces by hand, so in practice it was
+/// answered by guessing, and the guesses were wrong: the packaging
+/// passes are a near-constant few seconds and effectively all variance
+/// is cargo recompiling upstream crates.
+///
+/// Mirrors the runtime's `PhaseTimer` convention (see the profiling
+/// section of the repo's CLAUDE.md): stable, specific phase names,
+/// because they are aggregation keys. Unlike that one this is always on
+/// — a handful of `Instant::now()` calls per build is unmeasurable
+/// against passes that take seconds, and a profiler you have to enable
+/// is a profiler nobody has enabled when they need it.
+#[derive(Default)]
+struct BuildTimings {
+    phases: Vec<(&'static str, std::time::Duration)>,
+}
+
+impl BuildTimings {
+    /// Run `f`, record how long it took under `phase`, return its value.
+    /// Generic over the return type so it wraps fallible passes without
+    /// forcing a `?` inside the closure.
+    fn time<T>(&mut self, phase: &'static str, f: impl FnOnce() -> T) -> T {
+        let start = std::time::Instant::now();
+        let out = f();
+        self.phases.push((phase, start.elapsed()));
+        out
+    }
+
+    /// One summary line, longest phase first, plus the total. Printed at
+    /// the end of every build.
+    fn report(&self) {
+        if self.phases.is_empty() {
+            return;
+        }
+        let total: std::time::Duration = self.phases.iter().map(|(_, d)| *d).sum();
+        let mut sorted: Vec<_> = self.phases.iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        let body = sorted
+            .iter()
+            .map(|(name, d)| format!("{name} {:.2}s", d.as_secs_f64()))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        eprintln!(
+            "[build-web] timing: total {:.2}s — {body}",
+            total.as_secs_f64(),
+        );
+    }
+}
+
+/// Short stable key for every option that invalidates the WHOLE cargo
+/// build graph, used to give each build configuration its own target dir.
+///
+/// The flags below do not invalidate one crate — they invalidate all of
+/// them, because they ride in `CARGO_ENCODED_RUSTFLAGS` (the `--cfg`s,
+/// `--export-table`, the panic strategy) or change feature unification
+/// (`hydrate`, `user_features`) or the profile (`debuginfo`). Sharing one
+/// target dir across them means every toggle is a full cold rebuild of
+/// the framework, and — worse — that two *different commands* silently
+/// evict each other's cache. `idealyst dev --web` builds with
+/// `idealyst/hydrate` on and `idealyst build --web` builds it off, so
+/// alternating them used to recompile everything each way; you could see
+/// both fingerprints sitting in one dir as two `libidea_ui-*.rlib`s.
+///
+/// Keying the directory turns "recompile the world" into "switch
+/// directories". The cost is disk: each configuration you actually use
+/// keeps its own dependency build. Directories are created lazily, so an
+/// unused combination costs nothing.
+fn config_key(opts: &BuildOptions) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    // Every field here MUST be one that invalidates the whole graph. Adding
+    // a field that doesn't just fragments the cache for no benefit; leaving
+    // one out reintroduces the thrash this exists to prevent.
+    h.update([
+        opts.release as u8,
+        opts.premint as u8,
+        opts.premint_only as u8,
+        opts.premint_report as u8,
+        opts.wasm_split as u8,
+        opts.strip_panics as u8,
+        opts.hydrate as u8,
+    ]);
+    h.update(opts.debuginfo.cargo_value().as_bytes());
+    h.update(b"\x1f");
+    h.update(opts.dev_opt.key_tag().as_bytes());
+    // Feature order reaches cargo sorted+deduped; mirror that so a caller
+    // passing the same set in a different order lands in the same dir.
+    let mut features: Vec<&str> = opts.user_features.iter().map(String::as_str).collect();
+    features.sort_unstable();
+    features.dedup();
+    for f in features {
+        h.update(b"\x1f");
+        h.update(f.as_bytes());
+    }
+    let digest = h.finalize();
+    digest[..4].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Human-readable rendering of the same options [`config_key`] hashes.
+/// Logged next to the resolved target dir so a directory full of opaque
+/// `idealyst-web-<hex>` names is still debuggable.
+fn config_summary(opts: &BuildOptions) -> String {
+    let mut parts = vec![if opts.release { "release" } else { "dev" }.to_string()];
+    if opts.premint_only {
+        parts.push("premint-only".into());
+    } else if opts.premint {
+        parts.push("premint".into());
+    }
+    if opts.premint_report {
+        parts.push("premint-report".into());
+    }
+    if !opts.wasm_split {
+        parts.push("no-split".into());
+    }
+    if opts.strip_panics {
+        parts.push("strip-panics".into());
+    }
+    if opts.hydrate {
+        parts.push("hydrate".into());
+    }
+    parts.push(format!("debug={}", opts.debuginfo.cargo_value().trim_matches('"')));
+    if !opts.release {
+        parts.push(format!("opt={:?}", opts.dev_opt).to_lowercase());
+    }
+    for f in &opts.user_features {
+        parts.push(format!("+{f}"));
+    }
+    parts.join(", ")
+}
+
+fn profile_config_args(release: bool, debuginfo: DebugInfo, dev_opt: DevOpt) -> Vec<String> {
     let settings: Vec<String> = if release {
         [
             "profile.release.opt-level=\"z\"",
@@ -1497,12 +1755,27 @@ fn profile_config_args(release: bool, debuginfo: DebugInfo) -> Vec<String> {
         .collect()
     } else {
         let debug = debuginfo.cargo_value();
-        vec![
-            "profile.dev.package.\"*\".opt-level=3".to_string(),
+        let mut v = vec![
             format!("profile.dev.debug={debug}"),
             format!("profile.dev.package.\"*\".debug={debug}"),
             "profile.dev.lto=\"off\"".to_string(),
-        ]
+        ];
+        match dev_opt {
+            DevOpt::Fast => {
+                // `profile.dev.opt-level` is the half that does anything
+                // here: `package."*"` skips workspace members, so without
+                // it a framework-crate edit still recompiles every member
+                // at the workspace's `opt-level`. Deps drop to 1 rather
+                // than 0 because they rebuild rarely and their codegen
+                // quality still shows up in dev runtime.
+                v.push("profile.dev.opt-level=0".to_string());
+                v.push("profile.dev.package.\"*\".opt-level=1".to_string());
+            }
+            DevOpt::Optimized => {
+                v.push("profile.dev.package.\"*\".opt-level=3".to_string());
+            }
+        }
+        v
     };
     settings
         .iter()
@@ -1569,6 +1842,7 @@ fn cargo_build_wasm(
     release: bool,
     wasm_split: bool,
     debuginfo: DebugInfo,
+    dev_opt: DevOpt,
     strip_panics: bool,
     premint: bool,
     premint_only: bool,
@@ -1599,7 +1873,7 @@ fn cargo_build_wasm(
         .args(["--bin", bin_name])
         .arg("--target-dir")
         .arg(target_dir)
-        .args(profile_config_args(release, debuginfo));
+        .args(profile_config_args(release, debuginfo, dev_opt));
     if release {
         cmd.arg("--release");
     }
@@ -2195,7 +2469,7 @@ mod regression_tests {
     /// framework doesn't own.
     #[test]
     fn release_profile_config_preserves_what_wasm_split_needs() {
-        let args = profile_config_args(true, DebugInfo::default());
+        let args = profile_config_args(true, DebugInfo::default(), DevOpt::default());
         let joined = args.join(" ");
         assert!(joined.contains("profile.release.lto=\"off\""), "{joined}");
         assert!(joined.contains("profile.release.strip=\"none\""), "{joined}");
@@ -2208,21 +2482,210 @@ mod regression_tests {
         );
     }
 
-    /// Dev builds optimize DEPENDENCIES only — the `"*"` glob excludes
-    /// the app crate so iteration stays fast to compile, while
-    /// compute-heavy deps don't run 10-40x slower.
+    /// Build a `BuildOptions` whose every graph-invalidating field is at
+    /// its default, for the `config_key` tests to perturb one at a time.
+    fn key_opts() -> BuildOptions {
+        BuildOptions {
+            release: false,
+            source: FrameworkSource::Workspace {
+                root: PathBuf::from("/ws"),
+            },
+            premint: false,
+            premint_only: false,
+            premint_report: false,
+            primitives: None,
+            hydrate: false,
+            strip_panics: false,
+            gzip: false,
+            brotli: false,
+            wasm_split: true,
+            debuginfo: DebugInfo::default(),
+            dev_opt: DevOpt::default(),
+            user_features: Vec::new(),
+            bundle_out_dir: None,
+            prune_dead_data_min: None,
+        }
+    }
+
+    /// Regression guard for the thrash that made a dev rebuild look like
+    /// a cold build: `idealyst dev --web` builds with `idealyst/hydrate`
+    /// ON and `idealyst build --web` builds it OFF, and both used one
+    /// `target/idealyst-web`. Different feature unification, same
+    /// directory — so alternating the two commands recompiled the entire
+    /// framework each way, and you could find both fingerprints sitting
+    /// in the dir as two `libidea_ui-*.rlib`s.
+    ///
+    /// Keying the target dir by config is what turns that into a
+    /// directory switch instead of a rebuild.
     #[test]
-    fn dev_profile_config_optimizes_dependencies_only() {
-        let args = profile_config_args(false, DebugInfo::default());
-        let joined = args.join(" ");
+    fn regression_hydrate_toggle_does_not_share_a_target_dir() {
+        let mut dev = key_opts();
+        dev.hydrate = true;
+        let build = key_opts();
+        assert_ne!(
+            config_key(&dev),
+            config_key(&build),
+            "dev (hydrate on) and build (hydrate off) must not evict each other",
+        );
+    }
+
+    /// Every flag that reaches cargo through `CARGO_ENCODED_RUSTFLAGS`,
+    /// the feature list, or the profile invalidates the WHOLE graph, so
+    /// each must key a distinct target dir. Missing one silently
+    /// reintroduces the full-rebuild-on-toggle behavior.
+    #[test]
+    fn config_key_separates_every_graph_invalidating_flag() {
+        let base = config_key(&key_opts());
+        let mut seen = vec![base.clone()];
+        let mutate: Vec<(&str, fn(&mut BuildOptions))> = vec![
+            ("release", |o| o.release = true),
+            ("premint", |o| o.premint = true),
+            ("premint_only", |o| o.premint_only = true),
+            ("premint_report", |o| o.premint_report = true),
+            ("wasm_split", |o| o.wasm_split = false),
+            ("strip_panics", |o| o.strip_panics = true),
+            ("hydrate", |o| o.hydrate = true),
+            ("debuginfo", |o| o.debuginfo = DebugInfo::Full),
+            ("dev_opt", |o| o.dev_opt = DevOpt::Fast),
+            ("user_features", |o| o.user_features = vec!["vello".into()]),
+        ];
+        for (name, f) in mutate {
+            let mut o = key_opts();
+            f(&mut o);
+            let k = config_key(&o);
+            assert_ne!(k, base, "{name} must change the target dir key");
+            assert!(!seen.contains(&k), "{name} collided with an earlier key");
+            seen.push(k);
+        }
+    }
+
+    /// Fields that do NOT change what cargo compiles must not fragment
+    /// the cache. `gzip`/`brotli` rewrite staged output bytes and
+    /// `bundle_out_dir` only says where to copy — keying on them would
+    /// mean a second full dependency build for nothing.
+    #[test]
+    fn config_key_ignores_post_cargo_only_options() {
+        let base = config_key(&key_opts());
+        for f in [
+            (|o: &mut BuildOptions| o.gzip = true) as fn(&mut BuildOptions),
+            |o: &mut BuildOptions| o.brotli = true,
+            |o: &mut BuildOptions| o.bundle_out_dir = Some(PathBuf::from("/out")),
+            |o: &mut BuildOptions| o.prune_dead_data_min = Some(64),
+        ] {
+            let mut o = key_opts();
+            f(&mut o);
+            assert_eq!(config_key(&o), base, "post-cargo options must not fragment");
+        }
+    }
+
+    /// Regression guard: the target-dir key must not depend on enum
+    /// DECLARATION ORDER.
+    ///
+    /// `config_key` originally hashed `dev_opt as u8`. When `Optimized`
+    /// was promoted to the default and moved to the front of the enum,
+    /// its discriminant became `0` — the value `Fast` used to have — so
+    /// the new default silently inherited the directory full of `Fast`
+    /// artifacts and the next build recompiled the entire framework for
+    /// no visible reason. Keys must come from stable tags.
+    #[test]
+    fn regression_config_key_does_not_depend_on_enum_discriminants() {
+        assert_eq!(DevOpt::Optimized.key_tag(), "opt-optimized");
+        assert_eq!(DevOpt::Fast.key_tag(), "opt-fast");
+        assert_ne!(DevOpt::Optimized.key_tag(), DevOpt::Fast.key_tag());
+        // And the key itself must actually consume the tag.
+        let mut a = key_opts();
+        a.dev_opt = DevOpt::Optimized;
+        let mut b = key_opts();
+        b.dev_opt = DevOpt::Fast;
+        assert_ne!(config_key(&a), config_key(&b));
+    }
+
+    /// Feature order is a caller detail — cargo receives the list sorted
+    /// and deduped, so two spellings of one set must land in one dir.
+    #[test]
+    fn config_key_is_stable_across_feature_ordering() {
+        let mut a = key_opts();
+        a.user_features = vec!["vello".into(), "robot".into()];
+        let mut b = key_opts();
+        b.user_features = vec!["robot".into(), "vello".into(), "robot".into()];
+        assert_eq!(config_key(&a), config_key(&b));
+    }
+
+    /// `--dev-opt optimized` is the historical posture: optimize
+    /// DEPENDENCIES only — the `"*"` glob excludes workspace members, so
+    /// the app crate stays fast to compile while compute-heavy deps don't
+    /// run 10-40x slower.
+    #[test]
+    fn dev_opt_optimized_optimizes_dependencies_only() {
+        let joined = profile_config_args(false, DebugInfo::default(), DevOpt::Optimized).join(" ");
         assert!(
             joined.contains("profile.dev.package.\"*\".opt-level=3"),
             "{joined}"
         );
         assert!(
-            !joined.contains("profile.dev.opt-level"),
-            "must not slow the app crate's own compile: {joined}"
+            !joined.contains("profile.dev.opt-level="),
+            "workspace members must inherit the workspace profile here: {joined}"
         );
+    }
+
+    /// `--dev-opt fast` drops workspace members to `opt-level = 0`.
+    ///
+    /// That half is the one that does anything: `profile.dev.package."*"`
+    /// does NOT match workspace members (cargo: "for any non-workspace
+    /// member"), so setting only the glob leaves every framework crate at
+    /// the workspace's `opt-level` — which is the whole cost of a
+    /// framework-crate edit.
+    #[test]
+    fn dev_opt_fast_drops_workspace_members_to_zero() {
+        let joined = profile_config_args(false, DebugInfo::default(), DevOpt::Fast).join(" ");
+        assert!(joined.contains("profile.dev.opt-level=0"), "{joined}");
+        assert!(
+            joined.contains("profile.dev.package.\"*\".opt-level=1"),
+            "deps stay lightly optimized — they rebuild rarely: {joined}"
+        );
+        assert!(
+            !joined.contains("opt-level=3"),
+            "the 3 is what `Fast` exists to avoid: {joined}"
+        );
+    }
+
+    /// `Optimized` is the default.
+    ///
+    /// `Fast` cuts the cargo half but inflates the module ~37%, and
+    /// wasm-bindgen + wasm-split are O(module size) and run on EVERY
+    /// rebuild — so end-to-end it loses in the default (incremental-on)
+    /// regime, on both framework-crate and leaf edits. Pinned here
+    /// because the cargo-only numbers point the other way, and someone
+    /// reading only those would flip this back.
+    #[test]
+    fn dev_opt_defaults_to_optimized() {
+        assert_eq!(DevOpt::default(), DevOpt::Optimized);
+        assert_eq!(
+            profile_config_args(false, DebugInfo::default(), DevOpt::default()),
+            profile_config_args(false, DebugInfo::default(), DevOpt::Optimized),
+        );
+    }
+
+    /// The posture is a DEV-profile concern. Release has its own fixed
+    /// profile (`opt-level = "z"`, `codegen-units = 1`, …) that
+    /// `--dev-opt` must not perturb — a shipped bundle's size posture
+    /// cannot depend on an iteration-speed flag.
+    #[test]
+    fn dev_opt_never_touches_the_release_profile() {
+        let fast = profile_config_args(true, DebugInfo::default(), DevOpt::Fast);
+        let optimized = profile_config_args(true, DebugInfo::default(), DevOpt::Optimized);
+        assert_eq!(fast, optimized);
+        assert!(!fast.join(" ").contains("profile.dev"));
+    }
+
+    /// Unknown values are rejected rather than silently falling back —
+    /// a typo'd `--dev-opt fst` that quietly built the other posture
+    /// would produce timings nobody could explain.
+    #[test]
+    fn dev_opt_rejects_unknown_values() {
+        assert_eq!(DevOpt::from_cli("fast").unwrap(), DevOpt::Fast);
+        assert_eq!(DevOpt::from_cli("optimized").unwrap(), DevOpt::Optimized);
+        assert!(DevOpt::from_cli("fst").is_err());
     }
 
     /// The dev default trims debuginfo on BOTH halves of the graph. Only
@@ -2231,7 +2694,7 @@ mod regression_tests {
     /// is one crate out of ~70.
     #[test]
     fn dev_profile_config_trims_debuginfo_for_deps_and_app_alike() {
-        let joined = profile_config_args(false, DebugInfo::default()).join(" ");
+        let joined = profile_config_args(false, DebugInfo::default(), DevOpt::default()).join(" ");
         assert!(joined.contains("profile.dev.debug=\"line-tables-only\""), "{joined}");
         assert!(
             joined.contains("profile.dev.package.\"*\".debug=\"line-tables-only\""),
@@ -2243,7 +2706,7 @@ mod regression_tests {
     /// only `"off"` disables it.
     #[test]
     fn dev_profile_config_disables_thin_local_lto() {
-        let joined = profile_config_args(false, DebugInfo::default()).join(" ");
+        let joined = profile_config_args(false, DebugInfo::default(), DevOpt::default()).join(" ");
         assert!(joined.contains("profile.dev.lto=\"off\""), "{joined}");
     }
 
@@ -2251,9 +2714,9 @@ mod regression_tests {
     /// `"full"` — cargo rejects that and the build dies before compiling.
     #[test]
     fn debuginfo_levels_map_onto_cargos_own_spelling() {
-        let full = profile_config_args(false, DebugInfo::Full).join(" ");
+        let full = profile_config_args(false, DebugInfo::Full, DevOpt::default()).join(" ");
         assert!(full.contains("profile.dev.debug=2"), "{full}");
-        let none = profile_config_args(false, DebugInfo::None).join(" ");
+        let none = profile_config_args(false, DebugInfo::None, DevOpt::default()).join(" ");
         assert!(none.contains("profile.dev.debug=0"), "{none}");
     }
 
@@ -2262,7 +2725,7 @@ mod regression_tests {
     #[test]
     fn debuginfo_flag_does_not_touch_the_release_profile() {
         for level in [DebugInfo::LineTables, DebugInfo::Full, DebugInfo::None] {
-            let joined = profile_config_args(true, level).join(" ");
+            let joined = profile_config_args(true, level, DevOpt::default()).join(" ");
             assert!(joined.contains("profile.release.debug=\"limited\""), "{joined}");
             assert!(!joined.contains("profile.dev."), "{joined}");
         }

@@ -576,6 +576,7 @@ fn run_server(args: &Args) -> anyhow::Result<()> {
                 // build that doesn't ask otherwise.
                 wasm_split: true,
                 debuginfo: build_web::DebugInfo::default(),
+                dev_opt: build_web::DevOpt::default(),
             },
         )
         .context("web bundle build for `run server` failed")?;

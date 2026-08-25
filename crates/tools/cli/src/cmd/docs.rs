@@ -142,6 +142,7 @@ pub fn run(args: Args) -> Result<()> {
             // default everywhere else too.
             wasm_split: true,
             debuginfo: build_web::DebugInfo::default(),
+            dev_opt: build_web::DevOpt::default(),
             premint: false,
         },
     )

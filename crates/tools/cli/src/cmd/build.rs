@@ -215,6 +215,23 @@ pub struct Args {
     #[arg(long, default_value = "line-tables")]
     pub debuginfo: String,
 
+    /// Web only, debug builds only: how much CPU each rebuild spends
+    /// optimizing. `optimized` (default) keeps workspace members at the
+    /// workspace's own `[profile.dev]` and dependencies at `opt-level =
+    /// 3`; `fast` drops the app and every framework crate to `0` and
+    /// dependencies to `1`.
+    ///
+    /// `fast` cuts the cargo half but produces a ~37% larger module, and
+    /// wasm-bindgen + wasm-split are O(module size) and run on every
+    /// rebuild — so with incremental compilation on (cargo's default) it
+    /// is a net LOSS end-to-end, on framework-crate and leaf edits alike.
+    /// Reach for it when incremental is off (`CARGO_INCREMENTAL=0`, or
+    /// right after a `cargo clean`), where a framework-crate edit
+    /// measured 7.3s under `fast` vs 14.2s under `optimized`. Release
+    /// builds set their own posture and ignore this.
+    #[arg(long, default_value = "optimized")]
+    pub dev_opt: String,
+
     /// Web only: skip the `wasm-split` pass. `#[component(lazy)]`
     /// boundaries still work — their bodies ship in the main bundle and
     /// resolve immediately instead of over the network. Trades bundle
@@ -597,6 +614,7 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
             ),
             wasm_split: !args.no_split,
             debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
+            dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
             // `--premint-only` strips the engine, so it MUST also premint —
             // otherwise the bundle has neither build-time classes nor a
             // runtime to mint them, and every styled node panics.

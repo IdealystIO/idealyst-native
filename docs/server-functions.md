@@ -170,6 +170,33 @@ let base = server::dev_base_url()
 server::configure(server::ClientConfig::new(base));
 ```
 
+#### What a save actually rebuilds
+
+The dev loop runs two independent watchers and they do different things:
+
+| what changed | what happens | is the port down? |
+|---|---|---|
+| client bundle only | bundle restaged into `dist/web`, "refresh the browser" | no |
+| server sources | server rebuilt, **then** the process is restarted | only for the rebind |
+| a crate they share | both — rebuild, restage, restart | only for the rebind |
+
+Two properties are load-bearing:
+
+- **A bundle-only rebuild never restarts the server.** Both server shapes
+  serve `dist/web` through a runtime `ServeDir` — the in-crate shape bakes
+  only the *path* (`env!("CARGO_MANIFEST_DIR")`), never the contents — so
+  the running process already serves the new files.
+- **The server is rebuilt before it is killed, never after.** A save that
+  doesn't compile leaves the running server up and costs a log line. The
+  restart itself only happens once a build has succeeded *and* actually
+  relinked the binary, so the downtime is a rebind rather than a compile.
+
+The dev server also builds into its own target directory rather than the
+workspace's `target/`. Cargo locks a build directory exclusively for the
+duration of a build, so sharing it lets any concurrent `cargo check` in the
+tree — rust-analyzer, CI, a second person or agent — block the server's
+rebuild and hold the port down with it.
+
 ---
 
 ## 3. Parameters: wire args vs. injected extractors
