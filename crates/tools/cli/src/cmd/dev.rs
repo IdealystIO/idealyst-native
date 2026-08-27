@@ -99,7 +99,7 @@ fn dev_env_vars(
         if m.app.server_bin.is_some() || m.app.server_manifest.is_some() {
             out.push((
                 "IDEALYST_SERVER_URL".to_string(),
-                format!("http://127.0.0.1:{}", m.app.server_port),
+                format!("http://127.0.0.1:{}", dev_server_port(args, &m.app)),
             ));
         }
     }
@@ -166,6 +166,12 @@ fn project_app_name(project_dir: &Path) -> String {
 /// RAII drop handles cleanup). Kept as a no-op so the call sites
 /// don't all need to disappear in this diff.
 fn pre_launch_clear_registry(_project_dir: &Path) {}
+
+/// Port the CLI's own static-file dev server binds when `--port` is
+/// omitted. Only reachable on projects that declare no server — a
+/// full-stack session has no static-file server of its own and falls
+/// back to `[package.metadata.idealyst.app].server_port` instead.
+pub const DEFAULT_WEB_PORT: u16 = 8080;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -363,9 +369,24 @@ pub struct Args {
     #[arg(long = "static")]
     pub static_only: bool,
 
-    /// HTTP port for the web target's static-file server.
-    #[arg(long, default_value_t = 8080)]
-    pub port: u16,
+    /// HTTP port for the dev session's web server.
+    ///
+    /// On a project with no server declared this is the CLI's own
+    /// static-file server (default 8080). On a full-stack project
+    /// (`server_bin` / `server_manifest`) the project's own server
+    /// serves the bundle and the API same-origin, and `--port`
+    /// overrides `[app].server_port` for it — including the
+    /// `IDEALYST_SERVER_URL` advertised to native clients and the jobs
+    /// worker. Unset: the manifest's `server_port` (or 8080) stands.
+    // `Option` rather than a clap `default_value_t`: a default erases
+    // "the user picked a port" from "nobody said anything," and the
+    // full-stack path needs that distinction to know whether to fall
+    // back to `[app].server_port` (see [`dev_server_port`]). While this
+    // was a defaulted `u16`, the ONLY reader was the CLI's static-file
+    // server — which a full-stack session never starts — so `--port`
+    // was silently ignored whenever a client and an API ran together.
+    #[arg(long, value_name = "PORT")]
+    pub port: Option<u16>,
 
     /// HTTP port for the `--ssr` SSR-with-hydration server.
     #[arg(long, default_value_t = 8081)]
@@ -704,13 +725,13 @@ pub fn run(args: Args) -> Result<()> {
     // inclusive sessions skip this: the web launcher spawns + serves the
     // server, and native clients reach it via `IDEALYST_SERVER_URL`.
     let mut backend_pid: Option<u32> = None;
+    let backend_port = dev_server_port(&args, &manifest.app);
     if backend_declared && !active_targets.contains(&Target::Web) {
-        match spawn_backend(&dir, &manifest, None, &server_target_dir(&dir)) {
+        match spawn_backend(&dir, &manifest, None, &server_target_dir(&dir), backend_port) {
             Ok(child) => {
                 let pid = child.id();
                 eprintln!(
-                    "[dev backend] server running (pid {pid}) on port {} for native clients",
-                    manifest.app.server_port,
+                    "[dev backend] server running (pid {pid}) on port {backend_port} for native clients",
                 );
                 children.lock().unwrap().push(child);
                 backend_pid = Some(pid);
@@ -733,7 +754,7 @@ pub fn run(args: Args) -> Result<()> {
             .map(|c| c.jobs)
             .unwrap_or_default();
         match jobs_cfg.as_ref() {
-            Some(jobs) if jobs.is_shared() => match spawn_worker(&dir, &manifest, jobs) {
+            Some(jobs) if jobs.is_shared() => match spawn_worker(&dir, &manifest, jobs, backend_port) {
                 Ok(child) => {
                     let pid = child.id();
                     eprintln!(
@@ -1336,6 +1357,11 @@ fn launch_web(
         return launch_web_with_backend(dir, args, &source, &manifest);
     }
 
+    // Past the full-stack branch there is no project server, so the
+    // CLI's own static-file server owns the port: `--port` when given,
+    // else the built-in default.
+    let web_port = args.port.unwrap_or(DEFAULT_WEB_PORT);
+
     // `[package.metadata.idealyst.app.web].preload_fonts` from the
     // manifest. dev-http splices these into served HTML so the dev
     // loop matches what `build-web`'s `stage_bundle` ships in the
@@ -1430,16 +1456,16 @@ fn launch_web(
         crate::dlog!(
             "dev web",
             "runtime-server-bridged HTTP at http://{}:{}",
-            args.host, args.port
+            args.host, web_port
         );
         // Fire-and-forget browser open — matches the iOS sim
         // `open -a Simulator` UX. Spawned before `serve_static`
         // (which blocks forever) and TCP-polls until the bind lands
         // so we don't beat the server to the punch.
-        spawn_browser_opener(&args.host, args.port);
+        spawn_browser_opener(&args.host, web_port);
         serve_static(
             &args.host,
-            args.port,
+            web_port,
             dir,
             None,
             Some(ctx),
@@ -1568,9 +1594,9 @@ fn launch_web(
         crate::dlog!(
             "dev web",
             "livereload HTTP at http://{}:{}",
-            args.host, args.port
+            args.host, web_port
         );
-        spawn_browser_opener(&args.host, args.port);
+        spawn_browser_opener(&args.host, web_port);
         // Headless web client: with no display, nothing would ever load the
         // served page, so the app never dials the relay and the robot bridge
         // stays empty (MCP wait_for_app times out). Auto-launch a headless
@@ -1582,11 +1608,11 @@ fn launch_web(
             relay_active,
             crate::headless_client::has_display(),
         ) {
-            spawn_headless_client(&args.host, args.port, dir, Arc::clone(&children));
+            spawn_headless_client(&args.host, web_port, dir, Arc::clone(&children));
         }
         serve_static(
             &args.host,
-            args.port,
+            web_port,
             dir,
             Some(ctx),
             None,
@@ -1915,7 +1941,10 @@ fn launch_web_with_backend(
     use std::time::Duration;
 
     let standalone = manifest.app.server_manifest.is_some();
-    let port = manifest.app.server_port;
+    // `--port` overrides the manifest here: this one server IS the web
+    // server for the session (bundle + API, same-origin), so the flag
+    // that moves the site has to move it.
+    let port = dev_server_port(args, &manifest.app);
     // Both server shapes read the bundle from here (`build --web` /
     // `run server` stage into the same dir). We stage into it on every
     // rebuild and hand it to the server as `WEB_DIST`.
@@ -2017,7 +2046,7 @@ fn launch_web_with_backend(
 
     // Phase 2: spawn the server. Captured so we can kill + respawn on
     // each rebuild.
-    let mut child = spawn_backend(dir, manifest, Some(dist_web.as_path()), &server_target)?;
+    let mut child = spawn_backend(dir, manifest, Some(dist_web.as_path()), &server_target, port)?;
     crate::dlog!(
         "dev web",
         "full-stack: server running (pid {}) on port {port}",
@@ -2058,7 +2087,7 @@ fn launch_web_with_backend(
             eprintln!("[dev web] server rebuilt → restarting on port {port}");
             let _ = child.kill();
             let _ = child.wait();
-            child = match spawn_backend(dir, manifest, Some(dist_web.as_path()), &server_target) {
+            child = match spawn_backend(dir, manifest, Some(dist_web.as_path()), &server_target, port) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("[dev web] server respawn failed: {e:#}");
@@ -2300,7 +2329,8 @@ fn last_executable(stdout: &[u8]) -> Option<PathBuf> {
 ///   `--features server`).
 /// - `server_bin` alone → `cargo run -p <pkg> --bin <it> --features server`.
 ///
-/// `PORT` is always set from `server_port`. `web_dist`, when given, is
+/// `PORT` is always set from `port` (see [`dev_server_port`] — `--port`
+/// overrides the manifest's `server_port`). `web_dist`, when given, is
 /// passed as `WEB_DIST` so a standalone full-stack server serves the
 /// freshly-staged bundle. Returns the child for kill-on-restart and
 /// Ctrl-C bookkeeping.
@@ -2310,11 +2340,28 @@ fn last_executable(stdout: &[u8]) -> Option<PathBuf> {
 /// at different dirs would make every respawn a fresh compile inside
 /// `cargo run` — which is exactly the port-is-down-while-compiling bug
 /// this pair exists to avoid.
+/// The port the project's own server binds for this dev session.
+///
+/// `--port` wins over `[package.metadata.idealyst.app].server_port`;
+/// with no flag the manifest value stands, so existing projects are
+/// unaffected.
+///
+/// EVERY consumer of the dev server's address must resolve it here: the
+/// `PORT` handed to the spawned server, the URL the browser opens, the
+/// `IDEALYST_SERVER_URL` the jobs worker calls, and the same var handed
+/// to native clients. They have to agree — a client pointed at 3000
+/// while the server binds 9000 is a session where every API call fails
+/// with a connection refusal that looks like a broken server.
+fn dev_server_port(args: &Args, app: &build_ios::AppMetadata) -> u16 {
+    args.port.unwrap_or(app.server_port)
+}
+
 fn spawn_backend(
     dir: &Path,
     manifest: &build_ios::Manifest,
     web_dist: Option<&Path>,
     target_dir: &Path,
+    port: u16,
 ) -> Result<std::process::Child> {
     let app = &manifest.app;
     let mut cmd = std::process::Command::new("cargo");
@@ -2347,7 +2394,10 @@ fn spawn_backend(
     } else {
         anyhow::bail!("no server declared (set server_bin or server_manifest)");
     }
-    cmd.env("PORT", app.server_port.to_string());
+    // Resolved by the caller through `dev_server_port` — NOT read off
+    // `app.server_port` here, so a `--port` override reaches the process
+    // that actually binds.
+    cmd.env("PORT", port.to_string());
     if let Some(d) = web_dist {
         cmd.env("WEB_DIST", d);
     }
@@ -2389,6 +2439,7 @@ fn spawn_worker(
     dir: &Path,
     manifest: &build_ios::Manifest,
     jobs: &crate::dev_config::JobsConfig,
+    server_port: u16,
 ) -> Result<std::process::Child> {
     let app = &manifest.app;
     let mut cmd = std::process::Command::new("cargo");
@@ -2424,11 +2475,14 @@ fn spawn_worker(
     if let Some(u) = &jobs.url {
         cmd.env("IDEALYST_JOBS_URL", u);
     }
+    // Same resolved port the server was spawned on — a worker calling
+    // back into the manifest's port after `--port` moved the server
+    // would talk to nothing.
     cmd.env(
         "IDEALYST_SERVER_URL",
-        format!("http://127.0.0.1:{}", app.server_port),
+        format!("http://127.0.0.1:{server_port}"),
     );
-    cmd.env("PORT", app.server_port.to_string());
+    cmd.env("PORT", server_port.to_string());
     apply_pubsub_env(&mut cmd, dir);
     cmd.spawn().context("spawn worker (`cargo run`)")
 }
@@ -2968,6 +3022,119 @@ mod tests {
     use super::*;
     use std::process::Command;
     use std::time::{Duration, Instant};
+
+    /// Parse a `dev` invocation the way the real CLI does, so the tests
+    /// below exercise clap's own defaulting rather than a hand-built
+    /// `Args` that could disagree with the attribute macros.
+    fn parse_dev(argv: &[&str]) -> Args {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct TestCli {
+            #[command(subcommand)]
+            cmd: TestCmd,
+        }
+        #[derive(clap::Subcommand)]
+        enum TestCmd {
+            Dev(Args),
+        }
+        match TestCli::parse_from(argv).cmd {
+            TestCmd::Dev(a) => a,
+        }
+    }
+
+    /// A project manifest with whatever `[package.metadata.idealyst.app]`
+    /// body the test needs, parsed through the real `parse_manifest`.
+    fn manifest_with(metadata: &str) -> (tempfile::TempDir, build_ios::Manifest) {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            format!("[package]\nname = \"demo-app\"\nversion = \"0.0.0\"\n{metadata}"),
+        )
+        .unwrap();
+        let manifest = parse_manifest(tmp.path()).unwrap();
+        (tmp, manifest)
+    }
+
+    /// `--port` must be `None` when unset — NOT clap-defaulted to 8080.
+    ///
+    /// This is the mechanism the fix rests on: with a `default_value_t`
+    /// the full-stack path cannot tell "the user asked for 9000" from
+    /// "nobody said anything," so it can't safely override
+    /// `[app].server_port` and ended up ignoring the flag entirely.
+    #[test]
+    fn dev_port_flag_is_unset_by_default() {
+        assert_eq!(parse_dev(&["idealyst", "dev", "--web"]).port, None);
+        assert_eq!(
+            parse_dev(&["idealyst", "dev", "--web", "--port", "9123"]).port,
+            Some(9123),
+        );
+    }
+
+    /// With no `--port`, a full-stack project keeps binding the port its
+    /// manifest declares. The override must not move existing sessions.
+    #[test]
+    fn full_stack_port_defaults_to_the_manifest_value() {
+        let (_tmp, manifest) = manifest_with(
+            "[package.metadata.idealyst.app]\nserver_bin = \"server\"\nserver_port = 3000\n",
+        );
+        let args = parse_dev(&["idealyst", "dev", "--web", "--local"]);
+        assert_eq!(dev_server_port(&args, &manifest.app), 3000);
+    }
+
+    /// Regression: `idealyst dev --web --local --port <N>` on a project
+    /// that runs a client AND an API together used to ignore `--port`
+    /// completely. The full-stack path reads
+    /// `manifest.app.server_port`, and the only reader of `--port` was
+    /// the CLI's static-file server — which a full-stack session never
+    /// starts, because the project's own server serves the bundle and
+    /// the API same-origin. The session came up on `server_port` (3000
+    /// by default) with no diagnostic, on whatever port the user asked
+    /// for being silently dropped.
+    #[test]
+    fn regression_full_stack_dev_honors_port_flag() {
+        let (_tmp, manifest) = manifest_with(
+            "[package.metadata.idealyst.app]\nserver_bin = \"server\"\nserver_port = 3000\n",
+        );
+        let args = parse_dev(&["idealyst", "dev", "--web", "--local", "--port", "9123"]);
+        assert_eq!(
+            dev_server_port(&args, &manifest.app),
+            9123,
+            "--port must override [app].server_port on a full-stack dev \
+             session — that server IS the session's web server",
+        );
+    }
+
+    /// The override has to reach every advertised copy of the address,
+    /// not just the listener. `dev_env_vars` hands native clients
+    /// `IDEALYST_SERVER_URL`; if that kept naming the manifest port
+    /// while the server bound `--port`, `--port` would trade a
+    /// silently-ignored flag for silently-broken API calls from every
+    /// native client in the same session.
+    #[test]
+    fn regression_port_flag_reaches_native_clients_server_url() {
+        let (tmp, _manifest) = manifest_with(
+            "[package.metadata.idealyst.app]\nserver_bin = \"server\"\nserver_port = 3000\n",
+        );
+        let args = parse_dev(&["idealyst", "dev", "--macos", "--local", "--port", "9123"]);
+        let env = dev_env_vars(tmp.path(), &args, "demo-app", None, None);
+        let url = env
+            .iter()
+            .find(|(k, _)| k == "IDEALYST_SERVER_URL")
+            .map(|(_, v)| v.as_str())
+            .expect("full-stack projects advertise IDEALYST_SERVER_URL");
+        assert_eq!(url, "http://127.0.0.1:9123");
+    }
+
+    /// A project with no server declared has no manifest port to fall
+    /// back to, so the CLI's own static-file server owns the default.
+    #[test]
+    fn static_dev_server_falls_back_to_the_builtin_default() {
+        let args = parse_dev(&["idealyst", "dev", "--web", "--local"]);
+        assert_eq!(args.port.unwrap_or(DEFAULT_WEB_PORT), DEFAULT_WEB_PORT);
+        let args = parse_dev(&["idealyst", "dev", "--web", "--local", "--port", "9123"]);
+        assert_eq!(args.port.unwrap_or(DEFAULT_WEB_PORT), 9123);
+    }
 
     /// Regression guard for a silent 404: a full-stack example's server
     /// bin serving a directory the CLI does not stage into.

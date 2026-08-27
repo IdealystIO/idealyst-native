@@ -169,8 +169,11 @@ pub struct AppMetadata {
     ///
     /// [`server_bin`]: AppMetadata::server_bin
     pub server_manifest: Option<String>,
-    /// Port the project's server binds in dev / `run server`. The CLI
-    /// passes it through as the `PORT` env var when it spawns the server,
+    /// Port the project's server binds in dev / `run server`, unless the
+    /// CLI is given an explicit override (`idealyst dev --port`,
+    /// `idealyst run server --port`), which wins. The CLI
+    /// passes the resolved value through as the `PORT` env var when it
+    /// spawns the server,
     /// and advertises `http://<host>:<port>` to every client it launches
     /// (web via a `window.IDEALYST_SERVER_URL` global, native via the
     /// `IDEALYST_SERVER_URL` env var) so the app's `server::configure`

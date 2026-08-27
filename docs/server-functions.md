@@ -161,6 +161,11 @@ server_bin = "server"    # → cargo run --bin server --features server
 
 - `idealyst dev --web` runs your server bin instead of the static-only dev
   server, so `/_srv/*` works during development.
+- That one server binds `[app].server_port` (default `3000`) and serves the
+  bundle and the API same-origin. `idealyst dev --port <N>` overrides it —
+  the flag moves the whole session, including the `IDEALYST_SERVER_URL`
+  handed to native clients and the jobs worker, so client and API never
+  disagree about the address. Without the flag the manifest value stands.
 - For native targets the CLI exports `IDEALYST_SERVER_URL` to the app
   process; read it with `server::dev_base_url()`:
 
