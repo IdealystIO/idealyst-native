@@ -126,6 +126,10 @@ pub(crate) fn anchored_panel(
         .placement(ViewportPlacement::FullScreen)
         .backdrop(BackdropMode::Dismiss)
         .backdrop_style(StyleApplication::new(popup_backdrop_sheet()))
+        // Never trap focus: `overlay()` defaults the trap ON, and a trapping
+        // EMPTY catcher bounces focus out of the anchored panel beside it.
+        // See `popover::dismiss_catcher`.
+        .trap_focus(false)
         .on_dismiss(move || (catcher_close)())
         .into_element();
 
@@ -584,8 +588,42 @@ pub fn DateRangePicker(props: DateRangePickerProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P};
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
+
+    /// Regression: the popup's fullscreen catcher must NOT trap focus.
+    /// `overlay()` defaults the trap ON, and a trapping EMPTY portal bounces
+    /// focus out of every sibling — the anchored panel next to it included,
+    /// so a focusable control in the panel (or the field the picker hangs
+    /// off) can't hold focus while the popup is open. See
+    /// `popover::dismiss_catcher`.
+    #[test]
+    fn regression_date_popup_catcher_does_not_trap_focus() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let anchor: runtime_core::Ref<runtime_core::ViewHandle> = runtime_core::Ref::new();
+            let el = anchored_panel(
+                AnchorTarget::from(anchor),
+                vec![runtime_core::text("panel").into_element()],
+                Rc::new(|| {}),
+            );
+            let kids = match classify(el) {
+                P::View { children, .. } => children,
+                _ => panic!("the open popup wraps [catcher, anchored] in a View"),
+            };
+            for (i, child) in kids.into_iter().enumerate() {
+                match classify(child) {
+                    P::Portal { trap_focus, .. } => assert!(
+                        !trap_focus,
+                        "date popup portal {i} traps focus — an empty trapping portal steals \
+                         focus from the panel and the page behind it"
+                    ),
+                    _ => panic!("both of the open popup's children must be Portals"),
+                }
+            }
+    });
+    }
 
     // The popup panel + backdrop construct on OPEN — the premint crawl
     // never gets there. The panel reuses SelectMenu (premint pinned in
