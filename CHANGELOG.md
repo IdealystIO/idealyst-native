@@ -212,6 +212,28 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **`spawn_then` from an effect RE-RUN no longer anchors to nothing.**
+  The standard data-loading shape — an effect reads a reload counter and
+  fetches — was guarded correctly on the effect's first run (a build has
+  an ownership collector) and unguarded on every re-run: a re-run is not
+  a build (`run_effect` pushes no collector) and, under a host-driven
+  flush, no guarded callback is on the stack either, so
+  `ScopeAlive::current()` fell through to a fresh `on_owned_drop` anchor
+  — which with no ambient collector registers a WORLD-ROOT-owned
+  keepalive, a token that never flips. Anything that disposed the
+  component between the re-run and the response then let the callback run
+  anyway, and its first `Signal::set` aborted the app with
+  `idealyst[stale-signal-handle]`. On web the ordinary "create a record,
+  then open its detail screen" flow supplies the disposal every time
+  (`StackRetention` rebuilds covered screens there), which is why the
+  same code never crashed on a device. `ScopeAlive::current` now has the
+  rung it was missing: an effect body anchors to the running effect's own
+  slot, which its owning `Owned` frees on teardown. Deliberately not
+  `on_cleanup` (what the scoped timers use): that also fires before the
+  effect's next re-run, and cancelling an in-flight fetch because its
+  effect re-ran is a behaviour change, not a fix. New in `runtime-world`:
+  `current_effect()` and `effect_depth()`.
+
 - **Web: mounting `on_touch` elements dynamically no longer grows
   `window`'s listener list forever.** The web backend's release safety
   net — the `pointerup` / `pointercancel` pair on `window` that

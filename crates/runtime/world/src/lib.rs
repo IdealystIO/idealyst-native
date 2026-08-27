@@ -572,12 +572,49 @@ pub fn in_effect() -> bool {
     TLS.try_with(|t| !t.borrow().effect_stack.is_empty()).unwrap_or(false)
 }
 
+/// How many effect bodies are running, nested, on this thread — `0`
+/// outside every effect.
+///
+/// The discriminator a caller needs when it holds a lifetime captured at
+/// some earlier point and must decide whether the effect running NOW is
+/// *inside* that capture or *around* it. Comparing this against the depth
+/// recorded at capture time answers exactly that, which
+/// [`in_effect`] alone cannot: it says an effect is running, not whether
+/// it is the innermost dynamic scope. `runtime_vocabulary`'s
+/// `ScopeAlive::current` forks on the comparison.
+pub fn effect_depth() -> usize {
+    TLS.try_with(|t| t.borrow().effect_stack.len()).unwrap_or(0)
+}
+
+/// A handle to the effect whose body is running RIGHT NOW (innermost when
+/// nested), or `None` outside every effect.
+///
+/// The handle is the effect's own liveness: [`Effect::is_alive`] goes
+/// `false` exactly when the [`Owned`] that collected the effect drops and
+/// its slot is freed — NOT on the effect's re-runs. That distinction is
+/// the whole reason this exists rather than [`on_cleanup`]: work spawned
+/// from an effect body wants the lifetime of the effect's OWNER (the
+/// component subtree), while `on_cleanup` additionally fires before the
+/// next re-run. See `ScopeAlive::current` in `runtime_vocabulary` for the
+/// case that forced it — a `spawn_then` issued from an effect RE-RUN used
+/// to anchor to nothing at all.
+pub fn current_effect() -> Option<Effect> {
+    let (world, slot, gen) = TLS.try_with(|t| t.borrow().effect_stack.last().copied()).ok()??;
+    Some(Effect { world, slot, gen, _marker: PhantomData })
+}
+
 /// True while an ownership collector ([`collect_owned`]) is active on
 /// this thread — i.e. a signal/effect created right now would be owned
 /// by a component subtree's [`Owned`], not the world root.
 ///
-/// The scope-anchored scheduling helpers consult this BEFORE
-/// [`in_effect`]: a timer registered while a subtree is being BUILT —
+/// A subtree being BUILT wins over the effect that happens to be building
+/// it, so both the scope-anchored scheduling helpers and
+/// `runtime_vocabulary`'s `ScopeAlive::current` resolve this rung FIRST.
+/// (`scoped_scheduling::current_anchor` expresses that by applying the
+/// collector keepalive IN ADDITION to `on_cleanup` on its `in_effect`
+/// branch — whichever lifetime ends first kills the anchor — rather than
+/// by testing this predicate earlier; the effect is the same.) A timer
+/// registered while a subtree is being built —
 /// even when that build happens inside a running effect, e.g. a
 /// navigator's swap effect realizing a screen whose lazy fallback
 /// schedules timers — must die with the SUBTREE. Anchoring it to the

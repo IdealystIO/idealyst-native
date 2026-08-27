@@ -2522,3 +2522,71 @@ fn staged_read_diagnostic_is_debug_build_only() {
         assert_eq!(site_bytes, 0, "release builds must add no per-signal storage");
     }
 }
+
+// ---------------------------------------------------------------------
+// `current_effect` / `effect_depth` — the seam `runtime_vocabulary`'s
+// `ScopeAlive::current` anchors an effect-body spawn to.
+// ---------------------------------------------------------------------
+
+#[test]
+fn current_effect_names_the_innermost_running_effect() {
+    let world = World::new();
+    type Sighting = (usize, Option<Effect>);
+    let seen: Rc<RefCell<Vec<Sighting>>> = Rc::new(RefCell::new(Vec::new()));
+
+    assert_eq!(effect_depth(), 0, "no effect is running out here");
+    assert!(current_effect().is_none());
+
+    let outer_handle = world.enter(|| {
+        let s = seen.clone();
+        effect(move || {
+            let depth_outer = effect_depth();
+            let outer = current_effect();
+            // A nested effect runs its body immediately, one rung deeper.
+            let inner_handle = effect({
+                let s = s.clone();
+                move || s.borrow_mut().push((effect_depth(), current_effect()))
+            });
+            s.borrow_mut().push((depth_outer, outer));
+            let _ = inner_handle;
+        })
+    });
+
+    let seen = seen.borrow();
+    let (inner_depth, inner) = seen[0];
+    let (outer_depth, outer) = seen[1];
+    assert_eq!(outer_depth, 1);
+    assert_eq!(inner_depth, 2, "depth counts nesting, which `in_effect` cannot");
+    assert_eq!(outer, Some(outer_handle), "the outer body sees its own handle");
+    assert_ne!(inner, outer, "the inner body sees the INNER effect, not its parent");
+    assert_eq!(effect_depth(), 0, "the stack unwinds cleanly");
+}
+
+#[test]
+fn current_effect_dies_with_its_owner_not_with_its_reruns() {
+    // The property `spawn_then` anchors on: the handle taken during a run
+    // stays alive across that effect's own re-runs (an in-flight request
+    // is not cancelled by a newer one) and goes dead exactly when the
+    // `Owned` that collected the effect drops.
+    let world = World::new();
+    let taken: Rc<RefCell<Vec<Effect>>> = Rc::new(RefCell::new(Vec::new()));
+    let t = taken.clone();
+    let (src, owned) = world.enter(|| {
+        collect_owned(|| {
+            let src = signal(0u32);
+            effect(move || {
+                let _ = src.get();
+                t.borrow_mut().push(current_effect().expect("inside an effect"));
+            });
+            src
+        })
+    });
+
+    world.enter(|| src.set(1));
+    world.flush();
+    assert_eq!(taken.borrow().len(), 2);
+    assert!(taken.borrow()[0].is_alive(), "a re-run does not retire the effect");
+
+    drop(owned);
+    assert!(!taken.borrow()[0].is_alive(), "the owner's drop does");
+}

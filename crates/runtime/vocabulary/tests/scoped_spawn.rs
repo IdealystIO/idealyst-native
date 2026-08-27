@@ -426,3 +426,152 @@ fn handler_spawned_task_applies_while_its_node_lives() {
     assert_eq!(scoped.get(), 7, "the node is still mounted — the result must apply");
 }
 
+// ---------------------------------------------------------------------
+// Effect-body spawns — the data-loading shape.
+// ---------------------------------------------------------------------
+
+/// Mount a screen whose scope owns an effect reading `tick`, and run
+/// `on_run` from inside that effect's body on every run. This is the
+/// standard reload-counter data-loading shape: `effect!({ let _ =
+/// tick.get(); spawn_then(fetch(), move |r| rows.set(r)); })`.
+fn mount_effect_screen(
+    h: &Harness,
+    tick: Signal<i32>,
+    on_run: impl Fn(Signal<i32>, i32) + 'static,
+) -> Screen {
+    let hole: Rc<RefCell<Option<Signal<bool>>>> = Rc::new(RefCell::new(None));
+    let scoped: Rc<RefCell<Option<Signal<i32>>>> = Rc::new(RefCell::new(None));
+    let hole_b = hole.clone();
+    let scoped_b = scoped.clone();
+    let on_run = Rc::new(on_run);
+    let realized = h.mount(h.world.enter(|| {
+        let shown = signal(true);
+        *hole_b.borrow_mut() = Some(shown);
+        view()
+            .child(move || {
+                if shown.get() {
+                    let s = signal(0i32);
+                    *scoped_b.borrow_mut() = Some(s);
+                    let on_run = on_run.clone();
+                    // Owned by the SCREEN's scope, so unmounting the screen
+                    // frees this effect's slot.
+                    runtime_world::effect(move || on_run(s, tick.get()));
+                    view().build()
+                } else {
+                    view().build()
+                }
+            })
+            .build()
+    }));
+    let shown = hole.borrow().expect("hole built");
+    Screen { _realized: realized, shown, scoped }
+}
+
+/// The reported shape: a reload counter is bumped and the app navigates
+/// away in the same window. The effect re-runs during the flush, its
+/// `spawn_then` goes out, the screen is disposed, and the response lands
+/// into a scope that is gone.
+///
+/// Regression: an effect RE-RUN is neither a build (`run_effect` pushes no
+/// collector) nor — under a host-driven flush — inside any guarded
+/// callback, so `ScopeAlive::current()` fell through to a fresh
+/// `on_owned_drop` anchor. With no ambient collector that keepalive is
+/// WORLD-ROOT-owned, so the token never flipped and `spawn_then` guarded
+/// nothing: the callback ran and its first `Signal::set` aborted with
+/// `idealyst[stale-signal-handle]`. The effect's FIRST run was always
+/// guarded correctly (a build has a collector), which is why this only
+/// ever bit reloads.
+#[test]
+fn effect_rerun_spawned_task_dies_with_its_owner() {
+    ensure_executor();
+    let h = Harness::new();
+    let gate = Gate::new();
+    let g = gate.clone();
+    let ran: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+    let ran_c = ran.clone();
+    let tick = h.world.enter(|| signal(0i32));
+
+    let screen = mount_effect_screen(&h, tick, move |scoped, n| {
+        if n == 0 {
+            return; // first run is a build — the case under test is the re-run
+        }
+        let g = g.clone();
+        let ran = ran_c.clone();
+        spawn_then(
+            async move {
+                g.await;
+                7i32
+            },
+            move |v| {
+                *ran.borrow_mut() = true;
+                scoped.set(v); // would abort if this ran
+            },
+        );
+    });
+    h.world.flush();
+
+    h.world.enter(|| tick.set(1)); // reload
+    h.world.flush(); // the effect re-runs and spawns
+    pump(); // request in flight
+
+    screen.shown.set(false); // navigate away — the screen's scope is freed
+    h.world.flush();
+
+    gate.complete();
+    pump(); // the response lands into a disposed scope
+    h.world.flush();
+
+    assert!(
+        !*ran.borrow(),
+        "a task spawned from an effect RE-RUN must die with the scope that \
+         owns the effect",
+    );
+}
+
+/// The inverse, and the reason the anchor is the effect's SLOT rather than
+/// `on_cleanup`: an in-flight task must survive both its own effect
+/// re-running and the ordinary case where nothing is torn down at all.
+/// Anchoring via `on_cleanup` (what the scheduling helpers use for timers)
+/// would silently drop the result of every superseded fetch.
+#[test]
+fn effect_rerun_spawned_task_applies_while_its_owner_lives() {
+    ensure_executor();
+    let h = Harness::new();
+    let gate = Gate::new();
+    let g = gate.clone();
+    let tick = h.world.enter(|| signal(0i32));
+
+    let screen = mount_effect_screen(&h, tick, move |scoped, n| {
+        if n != 1 {
+            return; // exactly one task, issued by the first re-run
+        }
+        let g = g.clone();
+        spawn_then(
+            async move {
+                g.await;
+                7i32
+            },
+            move |v| scoped.set(v),
+        );
+    });
+    h.world.flush();
+    let scoped = screen.scoped.borrow().expect("mounted");
+
+    h.world.enter(|| tick.set(1));
+    h.world.flush();
+    pump(); // in flight
+
+    h.world.enter(|| tick.set(2)); // the same effect re-runs underneath it
+    h.world.flush();
+
+    gate.complete();
+    pump();
+    h.world.flush();
+
+    assert_eq!(
+        scoped.get(),
+        7,
+        "the screen is still mounted — a re-run of the spawning effect must \
+         not cancel a request that already went out",
+    );
+}

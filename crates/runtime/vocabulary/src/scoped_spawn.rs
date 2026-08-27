@@ -84,10 +84,24 @@
 //!   their token for the duration of the call precisely so a spawn reached
 //!   from inside one binds to the node that mounted the handler.
 //!   Regression: `handler_spawned_task_dies_with_its_node`.
+//! - **Spawned from an effect body** (the standard data-loading shape: an
+//!   effect reads a reload counter and fetches): anchors to that effect's
+//!   own slot, which its owning `Owned` frees on teardown. The effect's
+//!   FIRST run is a build and takes the case above; every RE-RUN is
+//!   neither a build (`run_effect` pushes no collector) nor — when the
+//!   flush comes from the host's post-dispatch hook — inside any guarded
+//!   callback, so before this case existed a re-run's spawn anchored to
+//!   nothing at all and its callback ran into a disposed component,
+//!   aborting on the first write with `idealyst[stale-signal-handle]`.
+//!   Note this is the effect's OWNER's lifetime, not the run's: an
+//!   in-flight task survives its own effect re-running, matching "the IO
+//!   still completes" below.
+//!   Regression: `effect_rerun_spawned_task_dies_with_its_owner`.
 //!
 //! The build case is checked FIRST, so a handler that realizes a subtree
 //! (a navigator push) gives that subtree its own lifetime rather than the
-//! button's.
+//! button's; between the other two the innermost dynamic scope wins. See
+//! `ScopeAlive::current` for the full rung order.
 //!
 //! Outside any world the token is permanently live, so a task spawned from
 //! a test or a boot path still applies its result.

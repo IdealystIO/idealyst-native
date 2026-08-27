@@ -789,6 +789,12 @@ and the write aborts with `idealyst[stale-signal-handle]`. The callback runs
 inside a turn or not at all, so the whole update applies or none of it does.
 The `signal-across-await` lint flags the raw form.
 
+The same holds for the reload shape — an `effect!` that reads a counter and
+calls a stub, so bumping the counter refetches. `spawn_then` anchors a call
+issued from an effect body to that effect's owner, so the callback is skipped
+if the component is torn down while the request is in flight, and a re-run of
+the effect does *not* cancel a request that already went out.
+
 ### Batching (opt-in)
 
 Each call is a direct `POST` by default. Concurrent calls coalesce into one
