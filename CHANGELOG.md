@@ -212,6 +212,20 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **A text input inside a `Popover` or `Menu` can be focused and typed
+  into.** The overlay family's fullscreen "click outside to close"
+  catcher is an `overlay()` portal, and `overlay()` defaults its focus
+  trap ON — a default that exists for `Modal`, whose card lives INSIDE
+  the trapping portal. A catcher's portal is empty and is a SIBLING of
+  the anchored surface, so the trap's document-level `focusin` bounce
+  fired on every press inside the surface and pulled focus back to the
+  catcher root: the input took the click and lost focus in the same
+  frame, so it could never be typed into. All three catchers
+  (`Popover`/`Menu`'s shared one, `Select`'s, `DatePicker`'s) now build
+  with `trap_focus(false)`; a catcher is a tap target and must never own
+  focus. `Modal` keeps its trap. idea-ui's `test_support` models
+  `Portal::trap_focus` so each catcher pins the invariant in a test.
+
 - **`spawn_then` from an effect RE-RUN no longer anchors to nothing.**
   The standard data-loading shape — an effect reads a reload counter and
   fetches — was guarded correctly on the effect's first run (a build has
