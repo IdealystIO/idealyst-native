@@ -118,6 +118,16 @@ stylesheet! {
 /// `Popover` and `Menu` — both want the universal dropdown "click-outside
 /// closes" behavior. `None` on_dismiss → an inert catcher (the tap is consumed
 /// but does nothing), so an unwired overlay can't silently no-op-close.
+///
+/// `trap_focus(false)` is LOAD-BEARING, not a default restated. `overlay()`
+/// defaults the trap ON (it exists for `Modal`, whose content lives inside
+/// the trapping portal), and a trapping portal installs a document-level
+/// `focusin` listener that bounces focus back to its own first focusable
+/// child. This catcher is EMPTY and is a SIBLING of the anchored surface, so
+/// a trap here bounced focus out of the surface the moment anything in it was
+/// focused: a text input inside a `Popover`/`Menu` could not be focused or
+/// typed into at all (the press landed, focus was yanked to the catcher root).
+/// A catcher's whole job is the outside tap; it must never own focus.
 pub(crate) fn dismiss_catcher(on_dismiss: Option<Rc<dyn Fn()>>) -> Element {
     let mut c = overlay(Vec::new())
         // FullScreen so the portal (and its inset-0 backdrop) is viewport-sized
@@ -125,7 +135,8 @@ pub(crate) fn dismiss_catcher(on_dismiss: Option<Rc<dyn Fn()>>) -> Element {
         // content, collapsing the catcher to 0×0.
         .placement(ViewportPlacement::FullScreen)
         .backdrop(BackdropMode::Dismiss)
-        .backdrop_style(StyleApplication::new(transparent_backdrop_sheet()));
+        .backdrop_style(StyleApplication::new(transparent_backdrop_sheet()))
+        .trap_focus(false);
     if let Some(d) = on_dismiss {
         c = c.on_dismiss(move || (d)());
     }
@@ -335,6 +346,52 @@ mod tests {
                 matches!(classify(kids.remove(0)), P::Portal { .. }),
                 "Popover's second child must be the anchored surface Portal"
             );
+    });
+    }
+
+    /// Regression: a text input inside a `Popover` could not be focused or
+    /// typed into. The catcher is built from `overlay()`, whose focus trap
+    /// defaults ON (it exists for `Modal`, whose content sits INSIDE the
+    /// trapping portal). Here the trapping portal is EMPTY and is a SIBLING
+    /// of the anchored surface, so the web backend's document-level `focusin`
+    /// bounce fired on every press inside the surface and yanked focus back
+    /// to the catcher root — the input took the click and immediately lost
+    /// focus, so nothing could be typed. NEITHER portal a Popover builds may
+    /// trap focus: the catcher is a tap target, and the surface deliberately
+    /// leaves focus where it is (a menu is not modal).
+    #[test]
+    fn regression_neither_popover_portal_traps_focus() {
+        with_test_world(|| {
+            use runtime_core::primitives::portal::AnchorTarget;
+            use runtime_core::{PressableHandle, Ref};
+
+            let trigger: Ref<PressableHandle> = Ref::new();
+            let el = Popover(PopoverProps {
+                target: Some(AnchorTarget::from(trigger)),
+                // The shape that broke: a focusable child on the surface.
+                children: vec![
+                    runtime_core::text_input(runtime_core::signal(String::new()), |_| {})
+                        .into_element(),
+                ],
+                ..Default::default()
+            });
+
+            let kids = match classify(el) {
+                P::View { children, .. } => children,
+                _ => panic!("a targeted Popover should wrap [catcher, anchored] in a View"),
+            };
+            assert_eq!(kids.len(), 2, "Popover = fullscreen catcher + anchored surface");
+
+            for (i, child) in kids.into_iter().enumerate() {
+                match classify(child) {
+                    P::Portal { trap_focus, .. } => assert!(
+                        !trap_focus,
+                        "Popover portal {i} traps focus — a trapping catcher/surface bounces \
+                         focus out of the surface and makes an input in a popover untypable"
+                    ),
+                    _ => panic!("both of a Popover's children must be Portals"),
+                }
+            }
     });
     }
 }

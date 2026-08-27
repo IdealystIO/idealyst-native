@@ -295,6 +295,11 @@ fn menu_build(
         .placement(ViewportPlacement::FullScreen)
         .backdrop(BackdropMode::Dismiss)
         .backdrop_style(StyleApplication::new(transparent_backdrop_sheet()))
+        // Never trap focus: `overlay()` defaults the trap ON (it's there for
+        // `Modal`), and a trapping EMPTY portal bounces focus out of every
+        // sibling portal — including the anchored menu beside it. See
+        // `popover::dismiss_catcher` for the full note.
+        .trap_focus(false)
         .on_dismiss(move || (catcher_close)())
         .into_element();
 
@@ -323,11 +328,50 @@ fn menu_build(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P};
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
     use runtime_core::{resolve_style, FontFamily};
 
     use crate::stylesheets::{SelectMenu, SelectTrigger};
+
+    /// Regression: the open menu's fullscreen catcher must NOT trap focus.
+    /// `overlay()` defaults the trap ON, and a trapping EMPTY portal installs
+    /// a document-level `focusin` bounce that pulls focus out of every sibling
+    /// — including whatever the app has focused behind the Select, and any
+    /// focusable content in the anchored menu beside it. See
+    /// `popover::dismiss_catcher` for the full note.
+    #[test]
+    fn regression_select_catcher_does_not_trap_focus() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let trigger: Ref<PressableHandle> = Ref::new();
+            let el = menu_build(
+                runtime_core::signal(String::new()),
+                Rc::new(vec![SelectOption {
+                    id: "a".to_string(),
+                    label: runtime_core::Reactive::Static("A".to_string()),
+                }]),
+                Rc::new(|_| {}),
+                Rc::new(|| {}),
+                trigger,
+            );
+            let kids = match classify(el) {
+                P::View { children, .. } => children,
+                _ => panic!("the open menu wraps [catcher, anchored] in a View"),
+            };
+            for (i, child) in kids.into_iter().enumerate() {
+                match classify(child) {
+                    P::Portal { trap_focus, .. } => assert!(
+                        !trap_focus,
+                        "Select portal {i} traps focus — an empty trapping portal steals focus \
+                         from the rest of the page while the menu is open"
+                    ),
+                    _ => panic!("both of the open menu's children must be Portals"),
+                }
+            }
+    });
+    }
 
     // Regression: on macOS the Select trigger showed AppKit's native blue focus
     // ring (the pressable host opted into `NSFocusRingTypeExterior`) instead of

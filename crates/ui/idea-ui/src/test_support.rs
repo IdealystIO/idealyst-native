@@ -144,6 +144,12 @@ pub enum P {
     Portal {
         children: Vec<Element>,
         target: PortalTarget,
+        /// Whether the portal installs a focus trap. Modelled because a
+        /// trap on the WRONG portal is invisible in the tree shape and
+        /// very visible to a user: an empty trapping portal bounces focus
+        /// out of every sibling portal (see
+        /// `popover::dismiss_catcher`'s note).
+        trap_focus: bool,
         style: Option<TStyle>,
     },
     Fragment {
@@ -312,7 +318,12 @@ mod imp {
         }
         if let Some(cell) = data.downcast_ref::<PrimCell<prims::PortalPrim>>() {
             let p = cell.take();
-            return P::Portal { children, target: p.target, style: style(p.style) };
+            return P::Portal {
+                children,
+                target: p.target,
+                trap_focus: p.trap_focus,
+                style: style(p.style),
+            };
         }
         P::Other("unmodeled-item")
     }

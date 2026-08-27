@@ -566,4 +566,34 @@ mod tests {
             );
     });
     }
+
+    /// Regression: neither portal a Menu builds may trap focus. The catcher
+    /// comes from `overlay()`, whose trap defaults ON, and a trapping EMPTY
+    /// portal bounces focus out of its SIBLING — so any focusable content on
+    /// the panel (a search box, an input row) took the press and instantly
+    /// lost focus. See `popover::dismiss_catcher`.
+    #[test]
+    fn regression_neither_menu_portal_traps_focus() {
+        with_test_world(|| {
+            let trigger: Ref<ViewHandle> = Ref::new();
+            let el = Menu(MenuProps {
+                target: Some(AnchorTarget::from(trigger)),
+                children: vec![runtime_core::text("Item".to_string()).into_element()],
+                ..Default::default()
+            });
+            let kids = match classify(el) {
+                P::View { children, .. } => children,
+                _ => panic!("a targeted Menu must wrap [catcher, anchored] in a View"),
+            };
+            for (i, child) in kids.into_iter().enumerate() {
+                match classify(child) {
+                    P::Portal { trap_focus, .. } => assert!(
+                        !trap_focus,
+                        "Menu portal {i} traps focus — focusable panel content becomes untypable"
+                    ),
+                    _ => panic!("both of a Menu's children must be Portals"),
+                }
+            }
+    });
+    }
 }
