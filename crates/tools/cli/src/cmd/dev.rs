@@ -592,6 +592,11 @@ pub fn run(args: Args) -> Result<()> {
     // pushes any subprocesses it spawns here; the signal handler
     // walks the vec and kills everything.
     let children: Arc<Mutex<Vec<Child>>> = Arc::new(Mutex::new(Vec::new()));
+    // The memory cap enforces itself with `process::abort()`, which runs
+    // none of the teardown below — so hand the same vec to the monitor
+    // thread, which kills it before aborting. Registered here rather than
+    // beside each `push` so a child added later is covered for free.
+    crate::memory_limit::watch_children(&children);
     // PID of the spawned macOS app, if any. The macOS launcher records it
     // here so the tail of this fn can wait on the app's lifetime: closing
     // the app window should tear the dev session down (and bring the
@@ -2047,6 +2052,11 @@ fn launch_web_with_backend(
     // Phase 2: spawn the server. Captured so we can kill + respawn on
     // each rebuild.
     let mut child = spawn_backend(dir, manifest, Some(dist_web.as_path()), &server_target, port)?;
+    // This server is not in the session's shared `children` vec — it is
+    // killed and respawned below on every rebuild, so the handle stays
+    // here. Register the pid so tripping the memory cap takes it (and
+    // the server underneath `cargo run`) down rather than orphaning it.
+    crate::memory_limit::watch_pid(child.id());
     crate::dlog!(
         "dev web",
         "full-stack: server running (pid {}) on port {port}",
@@ -2085,6 +2095,13 @@ fn launch_web_with_backend(
             // when the binary actually relinked, so the downtime here is
             // a kill plus a rebind — not a compile.
             eprintln!("[dev web] server rebuilt → restarting on port {port}");
+            // The tree, not the handle: `child` is `cargo run`, and the
+            // server is ITS child. Killing only cargo leaves the server
+            // holding the port this restart is about to rebind, and
+            // re-parents it to init — an orphan indistinguishable from
+            // the ones the memory cap used to leave.
+            crate::memory_limit::unwatch_pid(child.id());
+            crate::memory_limit::kill_tree(child.id());
             let _ = child.kill();
             let _ = child.wait();
             child = match spawn_backend(dir, manifest, Some(dist_web.as_path()), &server_target, port) {
@@ -2096,6 +2113,7 @@ fn launch_web_with_backend(
                     continue;
                 }
             };
+            crate::memory_limit::watch_pid(child.id());
             continue;
         }
 
