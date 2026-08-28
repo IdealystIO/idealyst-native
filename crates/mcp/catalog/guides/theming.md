@@ -30,7 +30,11 @@ NOT an idea-ui-only facility:
 
 - `colors` — non-intent neutrals: `background`, `surface`, `surface_alt`, `text`,
   `text_muted`, `text_inverse`, `border`, `border_hover`, `border_strong`,
-  `focus_ring`, `overlay`.
+  `focus_ring`, `overlay` — plus `table_header`, the one component-scoped
+  color: the `Table` header band (`<th>` cells). It defaults to the
+  `surface_alt` value, so the stock look is unchanged, but it exists as its own
+  token so retinting table headers doesn't drag cards, field wells, and row
+  hover along with it.
 - `intents` — the seven semantic palettes (`primary`, `secondary`, `neutral`,
   `success`, `danger`, `warning`, `info`), each an `IntentColors` with six slots
   (`solid_bg`, `solid_text`, `soft_bg`, `soft_text`, `fg`, `border`).
@@ -66,6 +70,7 @@ use idea_ui::{install_idea_theme, light_theme, Color, Tokenized};
 
 let mut theme = light_theme();
 theme.intents.primary.solid_bg = Tokenized::Literal(Color("#0066ff".into()));
+theme.colors.table_header = Tokenized::Literal(Color("#e8edf5".into()));
 theme.radius.md = 10.0;
 theme.spacing.lg = 20.0;
 theme.typography.body_size = 15.0;
@@ -140,6 +145,100 @@ layer directly: `idea_theme::set_theme(...)` for an event-driven swap, or
 `idea_theme::install_themes(active, &[("light", LIGHT), ("dark", DARK)])` with a
 `Signal<String>` for a fully signal-driven one. See [[styling]] and the
 `dark_mode_toggle` recipe.
+
+## Read the theme back — token editors and generated UI
+
+Tokens are readable as well as writable, which is what a theme editor (or any
+tool that generates one control per token) is built on.
+
+`token_descriptors()` enumerates the vocabulary as data — every token with an
+accessor, in declaration order:
+
+```rust
+use idea_theme::{token_descriptors, TokenKind};
+
+for d in token_descriptors() {
+    // d.name       "color-table-header"      — the registry key
+    // d.path       "color.table_header"      — how a stylesheet! names it
+    // d.namespace  "color"                   — the grouping to lay out by
+    // d.field_path Some("colors.table_header") — the IdeaThemeDefaults field
+    // d.kind       TokenKind::Color          — which control to render
+}
+```
+
+`runtime_core::token_value(name)` reads the value the app is CURRENTLY painting
+(not the base palette's default), so a control seeds with the live theme:
+
+```rust
+use runtime_core::{token_value, update_tokens, TokenEntry, TokenValue, Color};
+
+let current = token_value("color-table-header");
+update_tokens(&[TokenEntry {
+    name: "color-table-header",
+    value: TokenValue::Color(Color("#e8edf5".into())),
+}]);
+```
+
+`update_tokens` is the live-edit path: only effects that read the tokens you
+name re-run, so editing one token does not re-apply the whole tree.
+
+Two caveats worth designing around:
+
+- **`token_descriptors()` is the STATIC vocabulary** — it lists what has an
+  accessor. Extension tokens (a `tone!`'s `tokens = [...]` block) reach the live
+  world through their theme's `tokens()` and have no accessor to be described by.
+  Pair the descriptors with `runtime_core::token_names()`, which enumerates the
+  live per-world table, to reach those too. They have no `field_path`, so
+  generated source has to emit a token list for them rather than a field
+  assignment.
+- **Only tokenized values move.** Component sheets also carry hand-written
+  literals (a `1.0` border width, a fixed `opacity`). Those are not tokens and
+  will not respond to an edit — editing a theme is not editing every rule.
+
+`field_path` is what makes "export this theme as source" mechanical: prepend a
+binding and it is an assignable place expression.
+
+```rust
+let mut theme = light_theme();
+theme.colors.table_header = Tokenized::Literal(Color("#e8edf5".into()));
+install_idea_theme(theme);
+```
+
+`radius-pill` is the one token with `field_path: None` — "fully round" is a
+property of the box, not a number a theme picks, so `Radius` has no field for it
+and codegen must skip it.
+
+### The ready-made editor
+
+`idea-theme-editor` is that tool, built: a `ThemeEditor` component that renders
+one control per token, commits each edit live, and carries the whole
+import/export surface as plain methods.
+
+```rust
+use idea_theme_editor::{ThemeDraft, ThemeEditor};
+
+#[component]
+fn DevPanel() -> Element {
+    // After install_idea_theme — `from_live` reads the token table.
+    let draft = ThemeDraft::from_live();
+    ui! { ThemeEditor(draft = draft) }
+}
+```
+
+- `draft.to_json()` / `draft.load_json(&text)` — the save format, a flat
+  `name → text` object covering every token (extension tokens included).
+  A load is all-or-nothing: a file with one bad value applies nothing.
+- `draft.to_rust()` — the EDITS as source, ready to paste.
+- `draft.revert()` — back to the values the draft opened with.
+
+It is a separate crate, not an idea-ui feature, so an app that doesn't want a
+control panel in its bundle simply doesn't depend on it. The panel renders
+controls only — file dialogs and clipboards belong to the app.
+
+One sharp edge if you drive `ThemeDraft` yourself: signal writes stage until the
+world flushes, so `entry.text.set(t)` followed by `draft.commit(name)` in the
+same turn applies the text from *before* `t`. From an input handler use
+`commit_text(name, &t)`, which takes the text you already have.
 
 ## Custom tones and variants
 

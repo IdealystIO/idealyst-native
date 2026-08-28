@@ -1,0 +1,33 @@
+[package]
+name = "idea-theme-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A live theme editor for idea-ui: every theme token as an editable control, with save/load and Rust codegen."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# Forward a `test_id` to the root interactive primitive for robot/E2E.
+robot = ["runtime-core/robot", "idea-ui/robot"]
+
+[dependencies]
+# The framework author surface, reached under the historical `runtime_core`
+# name via the crate-root `extern crate runtime_core as runtime_core;`
+# alias in lib.rs.
+runtime-core = { workspace = true }
+# The `ui!` / `#[component]` emission spells absolute
+# `::runtime_vocabulary::glue::…` paths.
+runtime-vocabulary = { workspace = true }
+# `token_descriptors()` — the vocabulary this editor renders controls for.
+idea-theme = { workspace = true }
+# The controls themselves (Field, Stack, Card, Typography).
+idea-ui = { workspace = true }
+
+[dev-dependencies]
+# Theme install for the model + render tests: `from_live` reads an
+# installed theme, so every test needs one.
+idea-theme = { workspace = true }
+# The recording scene `Host` + capability mock the render test mounts on.
+host-mock = { workspace = true }

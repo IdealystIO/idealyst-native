@@ -44,6 +44,15 @@
 //! beneath them. Pin the SAME cell in every row (header included) or
 //! the column freezes only partially.
 //!
+//! # Theming the header band
+//!
+//! Head cells (`TableCell(header = true)` — a head row, and any footer
+//! row built the same way) paint `color-table-header`, a token of their
+//! own. It ships with the same value as `color-surface-alt`, so the
+//! default look is unchanged, but retinting table headers is now a
+//! one-token override that leaves cards, field wells, and row hover
+//! alone.
+//!
 //! # Row drag & drop — bring your own
 //!
 //! This component deliberately ships NO drag-and-drop behavior. What
@@ -286,8 +295,9 @@ fn make_row_cell_interactive(cell: Element, hovered: Signal<bool>, cb: Rc<dyn Fn
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TableCellProps {
-    /// When `true`, render as `<th>` (and use the head-cell surface +
-    /// uppercase muted text style). When `false`, render as `<td>`.
+    /// When `true`, render as `<th>` (and use the `color-table-header`
+    /// band + uppercase muted text style). When `false`, render as
+    /// `<td>`.
     // TODO(reactive-sweep): route `header` to the `<th>`/`<td>` element +
     // head/body style branch (structural: changes the SDK element tag, needs a
     // `when`/rebuild, not a style closure). Kept bare for now.
@@ -603,6 +613,42 @@ mod tests {
                 hovered.background.as_ref().map(|b| b.resolve().0.to_ascii_lowercase()),
                 Some(surface_alt),
                 "row_hovered arm resolves the themed surface-alt highlight"
+            );
+        });
+    }
+
+    /// The header band reads its OWN token, not `color-surface-alt`.
+    /// Head cells used to paint `surface_alt` directly, which made
+    /// "retint table headers" impossible without dragging every other
+    /// `surface_alt` consumer (cards, field wells, row hover) along.
+    /// Asserting the token NAME is the load-bearing half: a literal —
+    /// or the old `color-surface-alt` reference — is exactly what an
+    /// app-level `color-table-header` override could never reach.
+    #[test]
+    fn head_cell_background_reads_the_table_header_token() {
+        with_test_world(|| {
+            let app = TableHeadCell().into_style_application();
+            let rules = runtime_core::resolve_style(&app);
+            let bg = rules.background.as_ref().expect("head cells paint a background");
+            assert_eq!(
+                bg.name(),
+                Some("color-table-header"),
+                "the head-cell band must resolve through its own token"
+            );
+
+            // …and its default value is the `surface_alt` tint the band
+            // had before the token existed, so adding the token is not
+            // a visual change. Derived from the palette, never restated
+            // as a literal (see `regression_clickable_row_premints…`).
+            let colors = &crate::light_theme().colors;
+            assert_eq!(
+                colors.table_header.value().0.to_ascii_lowercase(),
+                colors.surface_alt.value().0.to_ascii_lowercase(),
+                "color-table-header ships as the surface-alt tint"
+            );
+            assert_eq!(
+                bg.resolve().0.to_ascii_lowercase(),
+                colors.table_header.value().0.to_ascii_lowercase(),
             );
         });
     }

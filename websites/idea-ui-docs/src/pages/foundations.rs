@@ -36,6 +36,16 @@ pub fn colors() -> Element {
     ];
     let cards: Vec<Element> = tokens.iter().map(|&(name, token, fallback)| swatch(name, token, fallback)).collect();
 
+    // Component-scoped tokens: not part of the neutral canvas, but
+    // still theme-bound. One entry per component that owns a surface
+    // the neutrals can't express without collateral damage.
+    let component_tokens: [(&str, &str, &str); 1] =
+        [("Table header", "color-table-header", "#f1f5f9")];
+    let component_cards: Vec<Element> = component_tokens
+        .iter()
+        .map(|&(name, token, fallback)| swatch(name, token, fallback))
+        .collect();
+
     body(vec![
         ui! {
             Section(title = "Neutral tokens".to_string()) {
@@ -43,6 +53,15 @@ pub fn colors() -> Element {
                     reference these by name; the active theme binds a value to each at install \
                     time, so a Light/Dark swap rebinds the values without regenerating a class.".to_string())
                 Grid(columns = 3u32, gap = StackGap::Md) { cards }
+            }
+        },
+        ui! {
+            Section(title = "Component tokens".to_string()) {
+                P(content = "A few surfaces get a token of their own because sharing a neutral \
+                    would make them un-retintable. Table headers ship with the surface-alt value, \
+                    so the default look is identical — but overriding color-table-header repaints \
+                    the header band alone, leaving cards, field wells and row hover untouched.".to_string())
+                Grid(columns = 3u32, gap = StackGap::Md) { component_cards }
             }
         },
     ])

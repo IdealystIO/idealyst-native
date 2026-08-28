@@ -630,7 +630,7 @@ pub const CATALOG: &[Group] = &[
                 route: &TABLE_ROUTE,
                 name: "Table",
                 status: Preview,
-                token: "color-border · surface-alt",
+                token: "color-border · table-header",
                 desc: "Tabular data with sortable headers, selection, zebra rows and density.",
                 body: lazy_pages::table,
                 code: "",

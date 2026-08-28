@@ -142,6 +142,17 @@ pub struct Colors {
 
     pub focus_ring: Tokenized<Color>,
     pub overlay: Tokenized<Color>,
+
+    /// The header band on a `Table` (`<th>` cells — a head row, and any
+    /// footer row built from `head = true` cells).
+    ///
+    /// Component-scoped rather than one of the neutrals above: it
+    /// defaults to the same value as `surface_alt` (which is what head
+    /// cells used to read directly), but it is its own token so an app
+    /// can retint table headers without dragging every other
+    /// `surface_alt` consumer — cards, field wells, row hover — along
+    /// with it.
+    pub table_header: Tokenized<Color>,
 }
 
 #[derive(Clone)]
@@ -370,6 +381,7 @@ fn canonicalize_colors(c: &Colors) -> Colors {
         border_strong: canonicalize_color("color-border-strong", &c.border_strong),
         focus_ring: canonicalize_color("color-focus-ring", &c.focus_ring),
         overlay: canonicalize_color("color-overlay", &c.overlay),
+        table_header: canonicalize_color("color-table-header", &c.table_header),
     }
 }
 
@@ -414,7 +426,7 @@ fn canonicalize_intents(i: &Intents) -> Intents {
 /// Canonical token names for the non-intent neutral colors, in the same
 /// field order as [`Colors`]. The Nth entry is the canonical key for the
 /// Nth `Colors` field.
-pub const CANONICAL_NEUTRAL_TOKENS: [&str; 11] = [
+pub const CANONICAL_NEUTRAL_TOKENS: [&str; 12] = [
     "color-background",
     "color-surface",
     "color-surface-alt",
@@ -426,6 +438,7 @@ pub const CANONICAL_NEUTRAL_TOKENS: [&str; 11] = [
     "color-border-strong",
     "color-focus-ring",
     "color-overlay",
+    "color-table-header",
 ];
 
 /// The seven built-in intent names, in [`Intents`] field order.
@@ -769,6 +782,7 @@ impl ThemeTokens for IdeaThemeRef {
             entry("color-border-strong", &c.border_strong),
             entry("color-focus-ring", &c.focus_ring),
             entry("color-overlay", &c.overlay),
+            entry("color-table-header", &c.table_header),
         ];
         intent_entries("primary", &i.primary, &mut out);
         intent_entries("secondary", &i.secondary, &mut out);
@@ -930,6 +944,10 @@ pub fn light_theme() -> IdeaThemeDefaults {
 
             focus_ring: tok("color-focus-ring", "#6366f1"),
             overlay: tok("color-overlay", "rgba(15, 23, 42, 0.45)"),
+
+            // Defaults to the `surface_alt` value — table headers keep
+            // the exact tint they had before the token existed.
+            table_header: tok("color-table-header", "#f1f5f9"),
         },
         intents: Intents {
             // primary: indigo
@@ -1004,6 +1022,9 @@ pub fn dark_theme() -> IdeaThemeDefaults {
 
             focus_ring: tok("color-focus-ring", "#818cf8"),
             overlay: tok("color-overlay", "rgba(0, 0, 0, 0.62)"),
+
+            // Matches dark `surface_alt` — see `light_theme`.
+            table_header: tok("color-table-header", "#1a2336"),
         },
         intents: Intents {
             primary: intent_colors!(
@@ -1665,6 +1686,7 @@ mod tests {
             text: lit(), text_muted: lit(), text_inverse: lit(),
             border: lit(), border_hover: lit(), border_strong: lit(),
             focus_ring: lit(), overlay: lit(),
+            table_header: lit(),
         };
         t.intents = Intents {
             primary: intent(), secondary: intent(), neutral: intent(),
@@ -1682,7 +1704,7 @@ mod tests {
             ("text_muted", &c.text_muted), ("text_inverse", &c.text_inverse),
             ("border", &c.border), ("border_hover", &c.border_hover),
             ("border_strong", &c.border_strong), ("focus_ring", &c.focus_ring),
-            ("overlay", &c.overlay),
+            ("overlay", &c.overlay), ("table_header", &c.table_header),
         ] {
             let name = field.name().unwrap_or_else(|| {
                 panic!("Colors::{label} read back as a literal — add it to canonicalize_colors")

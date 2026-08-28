@@ -597,6 +597,22 @@ pub fn update_tokens(tokens: &[runtime_shared::TokenEntry]) {
     seed_shared_token_registry(tokens, true);
 }
 
+/// Read one token's live value — the read half of [`update_tokens`],
+/// for tooling that edits a theme (a control seeded with what the app
+/// is actually painting, not with the base palette's default). Reads
+/// the per-world table, which is authoritative; the shared registry
+/// `seed_shared_token_registry` keeps in step is a mirror.
+pub fn token_value(name: &str) -> Option<runtime_shared::TokenValue> {
+    theme::token_value(name)
+}
+
+/// Every token name the ambient world has a value for — including
+/// extension tokens no vocabulary can enumerate. See
+/// [`theme::token_names`].
+pub fn token_names() -> Vec<&'static str> {
+    theme::token_names()
+}
+
 /// Declare every switchable palette so a STATIC render can serialize
 /// them all — see [`crate::theme::install_theme_palettes`]. Unlike
 /// [`install_tokens`] this seeds no shared registry: the inactive

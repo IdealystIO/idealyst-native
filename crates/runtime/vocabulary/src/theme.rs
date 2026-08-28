@@ -328,6 +328,11 @@ impl ThemeCtx {
         self.state.borrow().values.get(name).cloned()
     }
 
+    /// See [`token_names`]. Handler-safe.
+    pub fn token_names(&self) -> Vec<&'static str> {
+        self.state.borrow().values.keys().copied().collect()
+    }
+
     /// The world's theme VERSION signal (Copy handle) — for per-fire
     /// hot paths that captured the ctx at attach time (same rationale
     /// as [`Self::sheet_is_registered`]). Equivalent to the free
@@ -426,6 +431,25 @@ pub fn set_scrollbar_theme(thumb: Tokenized<Color>, track: Tokenized<Color>) {
 /// at P4 — module docs.)
 pub fn token_value(name: &str) -> Option<TokenValue> {
     theme_ctx_handler_safe().token_value(name)
+}
+
+/// Every token name the ambient world currently has a value for.
+///
+/// The enumeration half of [`token_value`], for tooling that walks the
+/// LIVE table rather than a theme struct — a theme editor seeding one
+/// control per token. It reaches what a static vocabulary list cannot:
+/// EXTENSION tokens (a `tone!`'s `tokens = [...]` block) land in this
+/// table through their theme's `tokens()` but have no accessor in any
+/// vocabulary, so nothing generated from the accessor set can name
+/// them.
+///
+/// Does not subscribe — the name SET is not a signal, and neither is
+/// [`token_value`]. Re-read after an install if you need to see tokens
+/// that appeared since.
+///
+/// Order is unspecified (hash order); sort before display.
+pub fn token_names() -> Vec<&'static str> {
+    theme_ctx_handler_safe().token_names()
 }
 
 /// Drain the pending host-level state into `backend` — tokens first
@@ -807,6 +831,71 @@ mod tests {
             Some(TokenValue::Color(Color("#0a0e17".into()))),
             "per-world isolation preserved for entered callers"
         );
+    }
+
+    /// `token_names` enumerates the live per-world table, including
+    /// tokens no vocabulary can describe.
+    ///
+    /// That last part is the reason the fn exists: a theme editor
+    /// generated from the idea vocabulary's accessor set can only offer
+    /// controls for tokens that HAVE an accessor, so an extension's own
+    /// tokens (a `tone!`'s `tokens = [...]` block, which reaches the
+    /// world through the theme's `tokens()` and nothing else) would be
+    /// invisible to it. Asserted with a name that deliberately belongs
+    /// to no namespace.
+    #[test]
+    fn token_names_enumerates_the_world_including_extension_tokens() {
+        let world = World::new();
+        world.enter(|| {
+            install_tokens(&[
+                TokenEntry {
+                    name: "color-surface",
+                    value: TokenValue::Color(Color("#fff".into())),
+                },
+                TokenEntry {
+                    name: "tone-hype-fill-bg",
+                    value: TokenValue::Color(Color("#f0f".into())),
+                },
+            ]);
+
+            let mut names = token_names();
+            names.sort_unstable();
+            assert_eq!(names, vec!["color-surface", "tone-hype-fill-bg"]);
+
+            // Every enumerated name reads back through the sibling fn —
+            // the pair is what an editor walks to seed its controls.
+            for name in names {
+                assert!(token_value(name).is_some(), "`{name}` enumerated but unreadable");
+            }
+        });
+
+        // Per-world, like the rest of this surface: a second world does
+        // not see the first world's tokens.
+        let other = World::new();
+        assert!(other.enter(token_names).is_empty(), "token tables are per-world");
+    }
+
+    /// An update REPLACES a value without adding a name — the set an
+    /// editor rendered controls from stays stable across edits.
+    #[test]
+    fn token_names_is_stable_across_updates() {
+        let world = World::new();
+        world.enter(|| {
+            install_tokens(&[TokenEntry {
+                name: "color-surface",
+                value: TokenValue::Color(Color("#fff".into())),
+            }]);
+            update_tokens(&[TokenEntry {
+                name: "color-surface",
+                value: TokenValue::Color(Color("#000".into())),
+            }]);
+            assert_eq!(token_names(), vec!["color-surface"]);
+            assert_eq!(
+                token_value("color-surface"),
+                Some(TokenValue::Color(Color("#000".into()))),
+            );
+            assert_eq!(token_value("color-nope"), None, "unknown names read as absent");
+        });
     }
 
     #[test]

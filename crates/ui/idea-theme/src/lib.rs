@@ -109,8 +109,9 @@ pub mod theme;
 pub mod tokens;
 
 pub use tokens::{
-    tokens, ColorTokens, DangerTokens, IdeaTokens, InfoTokens, IntentTokens, NeutralTokens, PrimaryTokens,
-    RadiusTokens, SecondaryTokens, SpacingTokens, SuccessTokens, TypographyTokens, WarningTokens,
+    token_descriptors, tokens, ColorTokens, DangerTokens, IdeaTokens, InfoTokens, IntentTokens,
+    NeutralTokens, PrimaryTokens, RadiusTokens, SecondaryTokens, SpacingTokens, SuccessTokens,
+    TokenDescriptor, TokenKind, TypographyTokens, WarningTokens,
 };
 
 // Generic theme-as-struct runtime. Re-exported at the crate root so

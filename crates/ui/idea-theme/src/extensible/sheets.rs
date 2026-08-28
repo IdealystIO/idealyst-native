@@ -2392,6 +2392,7 @@ mod selection_sheet_tests {
                 border_strong: lit("#a1a1aa"),
                 focus_ring: lit("#6366f1"),
                 overlay: lit("rgba(0,0,0,0.45)"),
+                table_header: lit("#f4f4f5"),
             };
             let intent = || IntentColors {
                 solid_bg: lit("#4f46e5"),

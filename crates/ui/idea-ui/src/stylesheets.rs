@@ -2100,7 +2100,11 @@ stylesheet! {
 stylesheet! {
     pub TableHeadCell<IdeaThemeRef> {
         base(t) {
-            background: t.color.surface_alt(),
+            // The header band has its own token (defaulting to the
+            // `surface_alt` value) so an app can retint table headers
+            // without moving every other `surface_alt` consumer —
+            // cards, field wells, row hover — with them.
+            background: t.color.table_header(),
             padding_vertical: t.spacing.md(),
             padding_horizontal: t.spacing.lg(),
             border_bottom_width: 1.0,
@@ -2130,7 +2134,7 @@ stylesheet! {
         // on every backend — the browser natively on web, the shared
         // sticky registry (which also raises pinned cells above the
         // content sliding beneath them) on native. The head cell's own
-        // `surface_alt` background already makes it opaque; the inner-
+        // `table_header` background already makes it opaque; the inner-
         // edge hairline marks where content slides underneath.
         variant pinned {
             #[default]

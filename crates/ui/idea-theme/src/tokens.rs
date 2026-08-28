@@ -88,6 +88,59 @@ fn length_display(l: Length) -> String {
 }
 
 // =============================================================================
+// The vocabulary as data
+// =============================================================================
+
+/// The payload a token carries. Decides which control a generated
+/// editor renders for it, and which style properties it is valid on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TokenKind {
+    Color,
+    Length,
+}
+
+/// One token of the vocabulary, described as data — the ungated
+/// sibling of the catalog's `StyleTokenEntry`.
+///
+/// The catalog slice carries richer metadata but rides
+/// `runtime-core/catalog`, which is off in every production build and
+/// pulls the whole component inventory with it. A theme EDITOR shipped
+/// inside an app needs the vocabulary at runtime without paying for
+/// that, and it needs one thing the catalog doesn't carry:
+/// [`field_path`](Self::field_path), the `IdeaThemeDefaults` path to
+/// assign when generating source.
+///
+/// All four string fields are compile-time `concat!`s of the same
+/// tokens the accessor is generated from, so a descriptor cannot drift
+/// from the accessor it describes.
+#[derive(Clone, Copy, Debug)]
+pub struct TokenDescriptor {
+    /// The registry key — `color-table-header`. What
+    /// `runtime_core::token_value` takes and `update_tokens` writes.
+    pub name: &'static str,
+    /// The accessor path inside a `stylesheet!` block, without the
+    /// binding — `color.table_header`, `intent.primary.solid_bg`.
+    pub path: &'static str,
+    /// First path segment — `color`, `intent`, `spacing`, `radius`,
+    /// `typography`. The grouping an editor lays out by.
+    pub namespace: &'static str,
+    /// The field path on [`IdeaThemeDefaults`](crate::IdeaThemeDefaults)
+    /// this token reads from — `colors.table_header`,
+    /// `intents.primary.solid_bg`, `spacing.md`. Prepend a theme
+    /// binding and it is an assignable place expression, which is what
+    /// makes "export this theme as Rust" a mechanical walk.
+    ///
+    /// `None` for a token with no field behind it: `radius-pill` is
+    /// the only one today (it emits [`Length::Full`], deliberately not
+    /// a number a theme can pick — see [`RadiusTokens::PILL`]).
+    /// Codegen must skip those rather than emit an assignment to a
+    /// field that does not exist.
+    pub field_path: Option<&'static str>,
+    /// Which `Tokenized<T>` the accessor returns.
+    pub kind: TokenKind,
+}
+
+// =============================================================================
 // Namespace generators
 // =============================================================================
 
@@ -111,6 +164,18 @@ macro_rules! color_namespace {
             /// order. Drives the round-trip tests; not needed to author a
             /// stylesheet.
             pub const NAMES: &'static [&'static str] = &[$($token),+];
+
+            /// Every token this namespace can emit, described as data.
+            /// Same declaration, same order as [`Self::NAMES`].
+            pub const DESCRIPTORS: &'static [TokenDescriptor] = &[$(
+                TokenDescriptor {
+                    name: $token,
+                    path: concat!($ns, ".", stringify!($accessor)),
+                    namespace: $ns,
+                    field_path: Some(concat!(stringify!($group), ".", stringify!($accessor))),
+                    kind: TokenKind::Color,
+                }
+            ),+];
 
             $(
                 #[doc = concat!("Theme token `", $token, "`.")]
@@ -148,6 +213,18 @@ macro_rules! length_namespace {
             /// Every token name this namespace can emit, in declaration order.
             pub const NAMES: &'static [&'static str] = &[$($token),+];
 
+            /// Every token this namespace can emit, described as data.
+            /// Same declaration, same order as [`Self::NAMES`].
+            pub const DESCRIPTORS: &'static [TokenDescriptor] = &[$(
+                TokenDescriptor {
+                    name: $token,
+                    path: concat!($ns, ".", stringify!($accessor)),
+                    namespace: $ns,
+                    field_path: Some(concat!(stringify!($group), ".", stringify!($accessor))),
+                    kind: TokenKind::Length,
+                }
+            ),+];
+
             $(
                 #[doc = concat!("Theme token `", $token, "`.")]
                 pub fn $accessor(&self) -> Tokenized<Length> {
@@ -180,6 +257,27 @@ macro_rules! intent_slot {
                     b.intents.$intent_field.$slot_field.value().clone(),
                 )
             })
+        }
+    };
+}
+
+/// One intent slot's [`TokenDescriptor`]. Peer of [`intent_slot`],
+/// split out for the same reason: the slot's token spelling
+/// (`solid-bg`) and field spelling (`solid_bg`) differ, so the name and
+/// the two paths have to be assembled from both.
+macro_rules! intent_descriptor {
+    ($intent_field:ident, $intent:literal, $slot_field:ident, $slot:literal) => {
+        TokenDescriptor {
+            name: concat!("intent-", $intent, "-", $slot),
+            path: concat!("intent.", $intent, ".", stringify!($slot_field)),
+            namespace: "intent",
+            field_path: Some(concat!(
+                "intents.",
+                stringify!($intent_field),
+                ".",
+                stringify!($slot_field)
+            )),
+            kind: TokenKind::Color,
         }
     };
 }
@@ -226,6 +324,17 @@ macro_rules! intent_namespaces {
                     concat!("intent-", $intent, "-soft-text"),
                     concat!("intent-", $intent, "-fg"),
                     concat!("intent-", $intent, "-border"),
+                ];
+
+                /// Every slot of this intent, described as data. Same
+                /// slot order as [`Self::NAMES`].
+                pub const DESCRIPTORS: &'static [TokenDescriptor] = &[
+                    intent_descriptor!($intent_field, $intent, solid_bg, "solid-bg"),
+                    intent_descriptor!($intent_field, $intent, solid_text, "solid-text"),
+                    intent_descriptor!($intent_field, $intent, soft_bg, "soft-bg"),
+                    intent_descriptor!($intent_field, $intent, soft_text, "soft-text"),
+                    intent_descriptor!($intent_field, $intent, fg, "fg"),
+                    intent_descriptor!($intent_field, $intent, border, "border"),
                 ];
 
                 intent_slot!($intent_field, $intent, solid_bg, "solid-bg");
@@ -279,6 +388,10 @@ color_namespace! {
         border_strong => "color-border-strong",
         focus_ring => "color-focus-ring",
         overlay => "color-overlay",
+        // Component-scoped: the `Table` header band. Defaults to the
+        // `surface_alt` value so it is invisible until an app overrides
+        // it — see `theme::Colors::table_header`.
+        table_header => "color-table-header",
     }
 }
 
@@ -317,6 +430,20 @@ impl RadiusTokens {
     pub fn pill(&self) -> Tokenized<Length> {
         Tokenized::token(Self::PILL, Length::Full)
     }
+}
+
+impl RadiusTokens {
+    /// `radius-pill` as data. Held apart from
+    /// [`Self::DESCRIPTORS`] because it is declared outside
+    /// `length_namespace!`, and it carries `field_path: None` — the
+    /// `Radius` struct has no `pill` field to assign, by design.
+    pub const PILL_DESCRIPTOR: &'static [TokenDescriptor] = &[TokenDescriptor {
+        name: Self::PILL,
+        path: "radius.pill",
+        namespace: "radius",
+        field_path: None,
+        kind: TokenKind::Length,
+    }];
 }
 
 catalog_token!("radius-pill", "radius.pill", "radius", "Length", {
@@ -361,6 +488,46 @@ pub struct IntentTokens {
     pub danger: DangerTokens,
     pub warning: WarningTokens,
     pub info: InfoTokens,
+}
+
+/// Every token in the idea vocabulary, described as data — the whole
+/// palette an editor can offer, in declaration order (neutrals, the
+/// seven intents, spacing, radius, typography).
+///
+/// Ungated, unlike the catalog slice: this is the enumeration a theme
+/// editor shipped inside an app walks to generate one control per
+/// token. It is the STATIC vocabulary, so it lists exactly what has an
+/// accessor — pair it with `runtime_core::token_names()` to also reach
+/// extension tokens (a `tone!`'s `tokens = [...]` block), which reach
+/// the live world but have no accessor to be described by.
+///
+/// ```
+/// use idea_theme::{token_descriptors, TokenKind};
+///
+/// let d = token_descriptors().find(|d| d.name == "color-table-header").unwrap();
+/// assert_eq!(d.path, "color.table_header");
+/// assert_eq!(d.field_path, Some("colors.table_header"));
+/// assert_eq!(d.kind, TokenKind::Color);
+/// ```
+pub fn token_descriptors() -> impl Iterator<Item = &'static TokenDescriptor> {
+    // Order mirrors `ColorTokens::NAMES` + the intents + the length
+    // namespaces, which is the order `declared_names()` builds in the
+    // tests — `descriptors_match_the_accessor_vocabulary` compares the
+    // two sequence-wise, so the two lists cannot drift apart in
+    // content OR order.
+    ColorTokens::DESCRIPTORS
+        .iter()
+        .chain(PrimaryTokens::DESCRIPTORS)
+        .chain(SecondaryTokens::DESCRIPTORS)
+        .chain(NeutralTokens::DESCRIPTORS)
+        .chain(SuccessTokens::DESCRIPTORS)
+        .chain(DangerTokens::DESCRIPTORS)
+        .chain(WarningTokens::DESCRIPTORS)
+        .chain(InfoTokens::DESCRIPTORS)
+        .chain(SpacingTokens::DESCRIPTORS)
+        .chain(RadiusTokens::DESCRIPTORS)
+        .chain(RadiusTokens::PILL_DESCRIPTOR)
+        .chain(TypographyTokens::DESCRIPTORS)
 }
 
 /// idea-ui's token vocabulary — the root namespace bound as `t` inside a
@@ -447,6 +614,7 @@ mod tests {
             t.color.border_strong(),
             t.color.focus_ring(),
             t.color.overlay(),
+            t.color.table_header(),
         ];
         macro_rules! slots {
             ($($ns:expr),+ $(,)?) => {
@@ -628,6 +796,100 @@ mod tests {
                 e.path, e.name
             );
             assert!(!e.default_value.get().is_empty(), "`{}` must render a base value", e.name);
+        }
+    }
+
+    /// The descriptor list and the accessor vocabulary are the same
+    /// facts in the same order. Compared sequence-wise, not as sets: a
+    /// descriptor that drifted onto the wrong namespace would still be
+    /// present, and only order catches it.
+    ///
+    /// This is what lets a generated editor be trusted — every control
+    /// it renders corresponds to an accessor a stylesheet can actually
+    /// name, and no token is missing a control.
+    #[test]
+    fn descriptors_match_the_accessor_vocabulary() {
+        let described: Vec<&'static str> = token_descriptors().map(|d| d.name).collect();
+        assert_eq!(described, declared_names());
+    }
+
+    /// Each descriptor's accessor path spells its own token name —
+    /// the same invariant the catalog slice is held to, restated for
+    /// the ungated list because an editor inserts `path` into
+    /// generated source while keying edits by `name`.
+    #[test]
+    fn descriptor_path_spells_its_token_name() {
+        for d in token_descriptors() {
+            let from_path = format!(
+                "{}{}",
+                if d.namespace == "intent" { "intent-" } else { "" },
+                d.path.trim_start_matches("intent.").replace('.', "-").replace('_', "-")
+            );
+            assert_eq!(from_path, d.name, "path `{}` must spell `{}`", d.path, d.name);
+            assert_eq!(
+                d.namespace,
+                d.path.split('.').next().unwrap(),
+                "namespace must be the path's first segment"
+            );
+        }
+    }
+
+    /// `field_path` names a real place on `IdeaThemeDefaults`: it
+    /// starts at one of the five theme groups and ends at the same
+    /// accessor the path does. A generated `theme.<field_path> = …`
+    /// that pointed at a group that doesn't exist would only fail in
+    /// the USER's crate, long after the descriptor shipped.
+    ///
+    /// `radius-pill` is the sole exception and is asserted as such —
+    /// the `Radius` struct deliberately has no `pill` field, so
+    /// codegen must skip it rather than emit an assignment.
+    #[test]
+    fn descriptor_field_path_points_at_a_theme_field() {
+        const GROUPS: [&str; 5] = ["colors", "intents", "spacing", "radius", "typography"];
+        let mut without_field = Vec::new();
+        for d in token_descriptors() {
+            let Some(field) = d.field_path else {
+                without_field.push(d.name);
+                continue;
+            };
+            let mut segments = field.split('.');
+            let group = segments.next().unwrap();
+            assert!(GROUPS.contains(&group), "`{}` → unknown theme group `{group}`", d.name);
+            assert_eq!(
+                field.rsplit('.').next(),
+                d.path.rsplit('.').next(),
+                "`{}`: field path and accessor path must end at the same identifier",
+                d.name
+            );
+        }
+        assert_eq!(
+            without_field,
+            vec!["radius-pill"],
+            "only radius-pill has no theme field behind it"
+        );
+    }
+
+    /// A descriptor's declared [`TokenKind`] matches the `TokenValue`
+    /// variant the base palette actually installs under that name.
+    ///
+    /// The one assertion that catches a Color/Length mix-up in the
+    /// macros: an editor picks its control from `kind`, so a token
+    /// described as a Color but installed as a Length would render a
+    /// color picker that writes a value nothing can resolve.
+    #[test]
+    fn descriptor_kind_matches_the_installed_value() {
+        let installed: BTreeMap<&'static str, TokenValue> = IdeaThemeRef::new(light_theme())
+            .tokens()
+            .into_iter()
+            .map(|e| (e.name, e.value))
+            .collect();
+
+        for d in token_descriptors() {
+            match (d.kind, installed.get(d.name)) {
+                (TokenKind::Color, Some(TokenValue::Color(_)))
+                | (TokenKind::Length, Some(TokenValue::Length(_))) => {}
+                (kind, other) => panic!("`{}` described as {kind:?} but installs as {other:?}", d.name),
+            }
         }
     }
 

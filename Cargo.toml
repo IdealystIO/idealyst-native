@@ -148,6 +148,7 @@ members = [
 
     # UI — component library + extras.
     "crates/ui/idea-theme",
+    "crates/ui/idea-theme-editor",
     "crates/ui/idea-ui",
     "crates/ui/idea-ui-mail",
     "crates/ui/idea-ui-nav",
@@ -400,7 +401,7 @@ exclude = [
 
 [workspace.package]
 edition = "2021"
-version = "1.3.22"
+version = "1.3.24"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
@@ -524,6 +525,7 @@ posix-log-capture = { path = "crates/backend/posix-log-capture" }
 # workspace specs are plain — a `{ workspace = true }` consumer gets each
 # crate's own defaults.
 idea-theme = { path = "crates/ui/idea-theme" }
+idea-theme-editor = { path = "crates/ui/idea-theme-editor" }
 idea-ui = { path = "crates/ui/idea-ui" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail" }
 idea-ui-nav = { path = "crates/ui/idea-ui-nav" }
