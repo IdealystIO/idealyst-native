@@ -1,6 +1,6 @@
 //! Cross-platform LAYOUT parity for every screen in the idea-ui catalog.
 //!
-//! One author tree, two platforms, 49 routes: navigate both apps to the same
+//! One author tree, two platforms, 50 routes: navigate both apps to the same
 //! route, read each element's PLATFORM-RESOLVED geometry (the browser's
 //! `getBoundingClientRect`, GTK's allocated bounds — never Taffy's own numbers,
 //! which are the layout *input* and would make the check tautological), and diff
@@ -38,7 +38,7 @@
 //! # What is compared, and what is deliberately not
 //!
 //! Scoped to the `page-content` anchor: the sidebar and header are the same
-//! author tree on every backend, but re-diffing them on all 49 routes would
+//! author tree on every backend, but re-diffing them on all 50 routes would
 //! bury the page under test in noise. Alignment is structural (by `test_id`,
 //! else `kind|label`), so an extra wrapper on one platform is reported as one
 //! structural line rather than throwing off every later sibling.
@@ -72,7 +72,7 @@ const ROUTE_SETTLE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Most mismatch lines to print per route.
 ///
-/// A sweep over 49 screens can produce thousands of lines the first time a
+/// A sweep over 50 screens can produce thousands of lines the first time a
 /// divergence class appears, and a panic message that long is unreadable — the
 /// interesting part is WHICH screens broke and what the first few findings look
 /// like. The count is always reported in full so nothing is hidden.
@@ -200,7 +200,7 @@ fn viewport_width(client: &mut RobotClient) -> anyhow::Result<f32> {
 /// Seen live: `idealyst dev --web` opened the user's DEFAULT browser alongside
 /// the runner's pinned headless one, both dialled the relay, and the visible
 /// window (1912x890) answered the verbs while the native app was at 1280x800 —
-/// so all 49 screens "failed". One clear error beats 3000 bogus findings.
+/// so all 50 screens "failed". One clear error beats 3000 bogus findings.
 fn assert_same_viewport(
     a: &mut RobotClient,
     b: &mut RobotClient,

@@ -36,7 +36,10 @@ pub fn length_to_px(len: &Length) -> CGFloat {
     match len {
         Length::Px(v) => *v as CGFloat,
         Length::Percent(_) => 0.0,
-        Length::Auto => 0.0,
+        // Neither resolves to a px length here: `Auto` defers to layout,
+        // and `Full` is the corner-radius pill, which
+        // `requested_corner_radius_px` handles on its own path.
+        Length::Auto | Length::Full => 0.0,
     }
 }
 

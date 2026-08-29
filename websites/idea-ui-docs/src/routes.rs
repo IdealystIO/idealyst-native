@@ -69,6 +69,8 @@ pub const OVERVIEW_ROUTE: Route<()> = Route::<()>::new("overview", "/overview");
 pub const COLORS_ROUTE: Route<()> = Route::<()>::new("colors", "/foundations/color");
 pub const INTENTS_ROUTE: Route<()> = Route::<()>::new("intents", "/foundations/intents");
 pub const SCALE_ROUTE: Route<()> = Route::<()>::new("scale", "/foundations/scale");
+pub const THEME_EDITOR_ROUTE: Route<()> =
+    Route::<()>::new("theme-editor", "/foundations/theme-editor");
 // Primitives
 pub const TYPOGRAPHY_ROUTE: Route<()> = Route::<()>::new("typography", "/primitives/typography");
 pub const ICON_ROUTE: Route<()> = Route::<()>::new("icon", "/primitives/icon");
@@ -183,6 +185,16 @@ pub const CATALOG: &[Group] = &[
                     shared by every component.",
                 body: lazy_pages::scale,
                 code: "padding: spacing-md;   // 12px\nborder-radius: radius-lg; // 12px",
+            },
+            Entry {
+                route: &THEME_EDITOR_ROUTE,
+                name: "Theme editor",
+                status: Preview,
+                token: "every token",
+                desc: "Edit this site's own tokens and watch it re-tint as you type, then take \
+                    the result away as JSON or as Rust.",
+                body: lazy_pages::theme_editor,
+                code: "let draft = ThemeDraft::from_live();\nui! { ThemeEditor(draft = draft) }",
             },
         ],
     },

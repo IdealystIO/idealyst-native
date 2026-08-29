@@ -1,18 +1,19 @@
-//! Foundations — Color, Intents, Spacing & Radius.
+//! Foundations — Color, Intents, Spacing & Radius, Theme editor.
 //!
 //! Body-only pages: the central frame renders the title, lead, overline,
 //! status badge, and Usage panel.
 
 use std::rc::Rc;
 
-use runtime_core::{ui, view, Color, Element, IntoElement, StyleApplication, Tokenized};
+use runtime_core::{signal, ui, view, Color, Element, IntoElement, StyleApplication, Tokenized};
 use idea_ui::{
     tone, typography_kind, variant, Badge, Button, Grid, Stack, StackAxis, StackGap, ToneRef,
     Typography,
 };
+use idea_theme_editor::{ThemeDraft, ThemeEditor};
 
 use crate::pages::body;
-use crate::shell::{Callout, DemoSurface, P, Section};
+use crate::shell::{Callout, CodePanel, DemoSurface, P, Section};
 use crate::styles::{GapBlock, RadiusBox, RadiusBoxR, SwatchBlock};
 
 // =============================================================================
@@ -201,4 +202,111 @@ fn radius_box(label: &'static str, r: RadiusBoxR) -> Element {
             Typography(content = label.to_string(), kind = typography_kind::Caption, muted = true)
         }
     }
+}
+
+
+// =============================================================================
+// Theme editor — the live token panel, editing THIS site
+// =============================================================================
+
+/// The `idea-theme-editor` panel, pointed at the docs site's own theme.
+///
+/// Deliberately not a sandboxed preview: the panel edits the tokens this
+/// page is painted with, so a change to `color-surface` re-tints the
+/// sidebar, the header, and the panel itself at the same time. That IS
+/// the demonstration — every component reads its colors through named
+/// tokens, so one write reaches all of them.
+pub fn theme_editor() -> Element {
+    // One draft for the page. Created here (a component scope) rather
+    // than at module level: `from_live` makes a signal per token, and
+    // it has to read the theme this app installed at boot.
+    let draft = ThemeDraft::from_live();
+
+    // What the output panel shows. Filled by the buttons rather than
+    // recomputed on every keystroke — `to_rust()` reads all 74 token
+    // signals, and re-highlighting a code block on each character typed
+    // would make the panel above it feel sticky.
+    let output = signal(String::new());
+
+    let export_rust: Rc<dyn Fn()> = {
+        let draft = draft.clone();
+        Rc::new(move || {
+            output.set(draft.to_rust().unwrap_or_else(|| {
+                "// Nothing has changed yet — edit a token above, then press this again.".to_string()
+            }));
+        })
+    };
+    let export_json: Rc<dyn Fn()> = {
+        let draft = draft.clone();
+        Rc::new(move || output.set(draft.to_json()))
+    };
+    let revert: Rc<dyn Fn()> = {
+        let draft = draft.clone();
+        Rc::new(move || {
+            draft.revert();
+            output.set(String::new());
+        })
+    };
+
+    body(vec![
+        ui! {
+            Section(title = "Live editing".to_string()) {
+                P(content = "Every control below is one token of the theme this page is \
+                    painted with. Editing one applies it immediately, so the whole site — \
+                    sidebar, header, and the panel itself — re-tints as you type. Nothing is \
+                    sandboxed: this is the same install the app booted with.".to_string())
+                P(content = "A value that does not parse marks its own row and is not \
+                    applied, so half-typed text never reaches the app. Revert puts every \
+                    control back to the value the page opened with; a browser reload brings \
+                    back the stock palette.".to_string())
+                Callout(label = "What the editor cannot reach".to_string()) {
+                    P(content = "Only tokenized values move. Stylesheets also carry \
+                        hand-written literals — a 1px border width, a fixed opacity — and \
+                        those are not tokens, so no editor can reach them. Editing a theme \
+                        is not editing every rule.".to_string())
+                }
+                DemoSurface {
+                    ThemeEditor(draft = draft.clone())
+                }
+            }
+        },
+        ui! {
+            Section(title = "Taking it with you".to_string()) {
+                P(content = "The panel renders controls and nothing else — file dialogs and \
+                    clipboards belong to the app around it. Everything else is a plain method \
+                    on the draft, which is what these buttons call.".to_string())
+                Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
+                    Button(label = "Export as Rust".to_string(), on_click = export_rust)
+                    Button(
+                        label = "Save as JSON".to_string(),
+                        on_click = export_json,
+                        variant = variant::Soft,
+                    )
+                    Button(
+                        label = "Revert".to_string(),
+                        on_click = revert,
+                        variant = variant::Soft,
+                        tone = tone::Danger,
+                    )
+                }
+                view {
+                    if output.get().is_empty() {
+                        P(content = "Press a button to see the output.".to_string())
+                    } else {
+                        CodePanel(src = output.get())
+                    }
+                }
+                P(content = "Rust export is the EDITS only, assigned onto a theme binding you \
+                    already have — this crate cannot know which palette your app installed. \
+                    Tokens with no theme field behind them (radius-pill is Length::Full by \
+                    design, and extension tokens have no accessor at all) come out as an \
+                    update_tokens call instead, so an edit is never silently dropped."
+                    .to_string())
+                P(content = "JSON is the save format: every token as name and text, in the \
+                    order the panel lays them out. Loading one is all-or-nothing — a file \
+                    with a single bad value applies nothing rather than leaving the app half \
+                    themed.".to_string())
+            }
+        },
+    ])
 }

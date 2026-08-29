@@ -152,7 +152,15 @@ pub fn requested_corner_radius_px(style: &StyleRules) -> f64 {
     .filter_map(|r| {
         r.map(|t| match t.resolve() {
             Length::Px(v) => v as f64,
-            _ => 0.0,
+            // The pill, deliberately unbounded. Every consumer of this
+            // value clamps it to half the box's shorter side
+            // (`resolve_corner_radius` here, `sync_corner_radius` on a
+            // later resize), so infinity lands on a true pill at
+            // whatever size the box turns out to be — which is the
+            // whole point of `Full` over a baked 999.
+            Length::Full => f64::INFINITY,
+            // Resolve at layout time; no useful value at this point.
+            Length::Percent(_) | Length::Auto => 0.0,
         })
     })
     .fold(0.0_f64, f64::max)
@@ -189,6 +197,9 @@ pub fn layout_affecting_key(style: &StyleRules) -> String {
                 }
                 Some(Length::Auto) => {
                     let _ = write!(s, "a");
+                }
+                Some(Length::Full) => {
+                    let _ = write!(s, "f");
                 }
                 None => {
                     let _ = write!(s, "_");

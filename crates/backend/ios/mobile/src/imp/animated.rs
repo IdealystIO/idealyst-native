@@ -295,7 +295,12 @@ impl IosBackend {
                     Transform::TranslateY(Length::Px(_)) => style_writes_ty = true,
                     Transform::TranslateX(Length::Percent(_)) => style_writes_pct_x = true,
                     Transform::TranslateY(Length::Percent(_)) => style_writes_pct_y = true,
-                    Transform::TranslateX(Length::Auto) | Transform::TranslateY(Length::Auto) => {}
+                    // Neither `Auto` nor `Full` means anything on a
+                    // translate: `Auto` defers to layout, which a
+                    // transform has no part in, and `Full` is the
+                    // corner-radius pill. Both leave the identity.
+                    Transform::TranslateX(Length::Auto | Length::Full)
+                    | Transform::TranslateY(Length::Auto | Length::Full) => {}
                     Transform::Scale(_) => {
                         style_writes_sx = true;
                         style_writes_sy = true;
@@ -346,9 +351,10 @@ impl IosBackend {
                     Transform::TranslateY(Length::Percent(v)) => {
                         state.static_translate_pct_y = Some(*v)
                     }
-                    Transform::TranslateX(Length::Auto)
-                    | Transform::TranslateY(Length::Auto) => {
-                        // Auto doesn't make sense for translate — leave at identity.
+                    Transform::TranslateX(Length::Auto | Length::Full)
+                    | Transform::TranslateY(Length::Auto | Length::Full) => {
+                        // Neither Auto nor Full makes sense for a
+                        // translate — leave at identity.
                     }
                     Transform::Scale(v) => {
                         state.scale_x = Some(*v);

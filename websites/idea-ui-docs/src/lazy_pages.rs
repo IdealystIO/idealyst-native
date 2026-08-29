@@ -112,6 +112,12 @@ lazy_page!(OverviewPage, overview, pages::overview::overview);
 lazy_page!(ColorsPage, colors, pages::foundations::colors, crate::routes::COLORS_ROUTE);
 lazy_page!(IntentsPage, intents, pages::foundations::intents, crate::routes::INTENTS_ROUTE);
 lazy_page!(ScalePage, scale, pages::foundations::scale, crate::routes::SCALE_ROUTE);
+lazy_page!(
+    ThemeEditorPage,
+    theme_editor,
+    pages::foundations::theme_editor,
+    crate::routes::THEME_EDITOR_ROUTE
+);
 // Primitives
 lazy_page!(
     TypographyPage,
