@@ -45,9 +45,8 @@ pub(crate) fn create(
             on_change(v);
         }
     });
-    let _ = input.add_event_listener_with_callback("input", closure.as_ref().unchecked_ref());
     let id = b.node_id(&input.clone().unchecked_into::<Node>());
-    b.state_listeners.entry(id).or_default().push(closure);
+    b.track_listener(id, &input, "input", false, closure);
     input.unchecked_into::<Node>()
 }
 

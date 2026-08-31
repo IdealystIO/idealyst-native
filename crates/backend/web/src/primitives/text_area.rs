@@ -134,12 +134,8 @@ pub(crate) fn create(
         autosize(&textarea_clone);
         on_change(textarea_clone.value());
     });
-    let _ = textarea.add_event_listener_with_callback(
-        "input",
-        closure.as_ref().unchecked_ref(),
-    );
     let id = b.node_id(&textarea.clone().unchecked_into::<Node>());
-    b.state_listeners.entry(id).or_default().push(closure);
+    b.track_listener(id, &textarea, "input", false, closure);
     if let Some(handler) = on_key_down {
         attach_key_listener_textarea(&textarea, id, b, handler);
     }
@@ -397,11 +393,7 @@ fn attach_key_listener_textarea(
             }
         }
     });
-    let _ = textarea.add_event_listener_with_callback(
-        "keydown",
-        closure.as_ref().unchecked_ref(),
-    );
-    b.state_listeners.entry(id).or_default().push(closure);
+    b.track_listener(id, textarea, "keydown", false, closure);
 }
 
 pub(crate) fn update_value(node: &Node, value: &str) {

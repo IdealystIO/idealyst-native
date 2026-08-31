@@ -313,6 +313,41 @@ static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
 // crate and those handlers went with the runtime-v2 deletion, leaving the
 // counter with nothing to avoid and no call sites, so it was removed.
 
+/// One DOM event listener owned by a node's teardown record
+/// (`WebBackend::state_listeners`).
+///
+/// Holds the target and the event name alongside the closure so `Drop`
+/// can **detach the listener before the closure dies**. Dropping a
+/// `Closure` only invalidates its JS shim — the listener stays registered
+/// on the element — so a listener that fires afterwards throws "closure
+/// invoked recursively or after being dropped".
+///
+/// That is not hypothetical: node teardown runs the style effect's
+/// cleanup (`on_node_unstyled`, which clears this map) BEFORE the DOM
+/// removal, and removing a still-focused `<input>` makes the browser fire
+/// `blur` during the removal — so closing a menu or modal while a field
+/// inside it had focus threw on every close. Detaching first makes the
+/// dead listener unreachable instead.
+pub(crate) struct TrackedListener {
+    target: web_sys::EventTarget,
+    event: &'static str,
+    capture: bool,
+    closure: Closure<dyn FnMut(web_sys::Event)>,
+}
+
+impl Drop for TrackedListener {
+    fn drop(&mut self) {
+        // `Drop::drop` runs before the struct's fields drop, so the
+        // closure is still alive here — which is exactly what
+        // `removeEventListener` needs to match the registration.
+        let _ = self.target.remove_event_listener_with_callback_and_bool(
+            self.event,
+            self.closure.as_ref().unchecked_ref(),
+            self.capture,
+        );
+    }
+}
+
 pub struct WebBackend {
     pub(crate) doc: Document,
     pub(crate) mount: web_sys::Element,
@@ -394,7 +429,9 @@ pub struct WebBackend {
     /// the listeners for one node (pointerenter, pointerleave,
     /// pointerdown, pointerup, focusin, focusout) plus the
     /// pointer-event-type closures so the JS side keeps them alive.
-    pub(crate) state_listeners: FxHashMap<u32, Vec<Closure<dyn FnMut(web_sys::Event)>>>,
+    /// A [`TrackedListener`] DETACHES itself before its closure drops —
+    /// see the type's docs for the dropped-closure throw that guards.
+    pub(crate) state_listeners: FxHashMap<u32, Vec<TrackedListener>>,
     /// Per-node CSS properties the LAST inline-layer application set
     /// (`apply_inline_style`). CSSOM has no "replace layer" primitive —
     /// only per-property set/remove — so without this record a property
@@ -1969,6 +2006,30 @@ impl WebBackend {
     /// would restore the fast path without the correctness hole.
     /// Not measured yet; see `tests/web_perf.rs` for the
     /// benchmark when it lands.
+    /// Attach `closure` to `target` for `event` and keep it in the node's
+    /// teardown record, so the listener is detached (not merely orphaned)
+    /// when the node is torn down. The one way to register a per-node
+    /// event closure — see [`TrackedListener`].
+    pub(crate) fn track_listener(
+        &mut self,
+        id: u32,
+        target: &impl AsRef<web_sys::EventTarget>,
+        event: &'static str,
+        capture: bool,
+        closure: Closure<dyn FnMut(web_sys::Event)>,
+    ) {
+        let target: web_sys::EventTarget = target.as_ref().clone();
+        let _ = target.add_event_listener_with_callback_and_bool(
+            event,
+            closure.as_ref().unchecked_ref(),
+            capture,
+        );
+        self.state_listeners
+            .entry(id)
+            .or_default()
+            .push(TrackedListener { target, event, capture, closure });
+    }
+
     pub(crate) fn node_id(&mut self, node: &Node) -> u32 {
         // No Rust-side pointer cache: the framework regularly
         // constructs fresh `web_sys::Node` wrappers around the same

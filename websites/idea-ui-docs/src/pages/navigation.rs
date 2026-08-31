@@ -8,12 +8,12 @@
 use std::rc::Rc;
 
 use runtime_core::primitives::portal::AnchorTarget;
-use runtime_core::{signal, ui, Element, IntoElement, PressableHandle, Ref};
+use runtime_core::{rx, signal, ui, Element, IntoElement, PressableHandle, Ref, Signal};
 use icons_lucide::{CHEVRON_RIGHT, COPY, PENCIL, SHARE_2, TRASH_2};
 use idea_ui::{
-    tone, typography_kind, variant, Avatar, AvatarColor, AvatarSize, Breadcrumbs, Button, Crumb, Icon, List,
+    tone, typography_kind, variant, Avatar, AvatarColor, AvatarSize, Breadcrumbs, Button, Crumb, Field, Icon, List,
     ListItem, Menu, MenuEntry, MenuItem, MenuLabel, MenuSeparator, Pagination, Stack, StackAxis,
-    StackGap, SubMenu, Tab, TabIndicator, Tabs, Typography,
+    StackGap, SubMenu, SubMenuSlot, Tab, TabIndicator, Tabs, Typography,
 };
 
 use crate::pages::body;
@@ -362,6 +362,7 @@ ui! {
 }"##.to_string())
             }
         },
+        searchable_submenu(),
         ui! {
             Section(title = "Props".to_string()) {
                 PropsTable(rows = vec![
@@ -372,7 +373,11 @@ ui! {
                     Prop { name: "on_select",  ty: "Rc<dyn Fn()>",         desc: "MenuItem: fires when the row is chosen. Typically also closes the menu." },
                     Prop { name: "leading",    ty: "Option<Element>",      desc: "MenuItem: optional leading element (icon, avatar)." },
                     Prop { name: "trailing",   ty: "Option<Element>",      desc: "MenuItem: optional trailing element (shortcut hint, badge), pushed right." },
-                    Prop { name: "items",      ty: "Vec<MenuEntry>",       desc: "SubMenu: flyout contents as reconstructable data. MenuEntry::new(label, on_select)." },
+                    Prop { name: "header",     ty: "Option<Element>",      desc: "Menu: element pinned ABOVE the scrolling rows (a search field, a heading) — it stays put while the rows scroll." },
+                    Prop { name: "footer",     ty: "Option<Element>",      desc: "Menu: element pinned BELOW the scrolling rows (a \"Clear\" / \"Add ‹query›\" action)." },
+                    Prop { name: "items",      ty: "Reactive<Vec<MenuEntry>>", desc: "SubMenu: flyout contents as reconstructable data. A bare Vec is snapshotted per open; pass rx!(…) to filter the rows live." },
+                    Prop { name: "header",     ty: "Option<SubMenuSlot>",  desc: "SubMenu: slot pinned above the flyout's rows, built per open with a SubMenuSlotCx (cx.dismiss closes the flyout)." },
+                    Prop { name: "footer",     ty: "Option<SubMenuSlot>",  desc: "SubMenu: slot pinned below the flyout's rows. Same builder shape as header." },
                 ])
             }
         },
@@ -387,6 +392,107 @@ fn menu_icon(data: runtime_core::IconData) -> Element {
 /// A toned menu/list leading icon (e.g. the destructive Delete row).
 fn menu_icon_tone(data: runtime_core::IconData, t: idea_ui::ToneRef) -> Element {
     ui! { Icon(data = data, size = ROW_ICON_PX, tone = Some(t)) }
+}
+
+/// The folder list the searchable-submenu demo filters.
+const DEMO_FOLDERS: &[&str] =
+    &["Inbox", "Archive", "Spam", "Drafts", "Receipts", "Travel", "Design review"];
+
+/// The demo's live flyout rows: every folder whose name contains the query,
+/// each wired to close the menu on pick. Takes the open-state signal (`Copy`)
+/// rather than a handler `Rc` so it can be called from inside `rx!` — the
+/// row list is rebuilt on every keystroke, and a captured `Rc` couldn't be
+/// moved into that closure from the enclosing reactive scope.
+fn folder_entries(query: &str, open: Signal<bool>) -> Vec<MenuEntry> {
+    let q = query.to_lowercase();
+    DEMO_FOLDERS
+        .iter()
+        .filter(|name| name.to_lowercase().contains(&q))
+        .map(|name| MenuEntry::new(*name, Rc::new(move || open.set(false)) as Rc<dyn Fn()>))
+        .collect()
+}
+
+/// A `SubMenu` whose header pins a search field over a live `items` list.
+fn searchable_submenu() -> Element {
+    let open = signal(false);
+    let query = signal(String::new());
+    let trigger: Ref<PressableHandle> = Ref::new();
+    let open_menu: Rc<dyn Fn()> = Rc::new(move || open.set(true));
+    let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
+
+    ui! {
+        Section(title = "Searchable submenu".to_string()) {
+            P(content = "A SubMenu takes the same pinned slots as Menu, as BUILDERS — its \
+                flyout is constructed fresh on every open. The header holds the search field; \
+                the caller owns the query signal and hands the survivors back through a live \
+                items (rx!), so a keystroke re-renders the rows alone and the field keeps its \
+                caret. A flyout carrying a slot latches once the pointer has been inside it, \
+                so drifting off the panel can't close the box you are typing in — it closes \
+                on a pick, on Escape or an outside click, or when another submenu opens.".to_string())
+            DemoSurface {
+                Button(
+                    label = "Organize".to_string(),
+                    on_click = open_menu,
+                    tone = tone::Neutral,
+                    variant = variant::Soft,
+                    bind_to = Some(trigger),
+                )
+                if open.get() {
+                    Menu(target = Some(AnchorTarget::from(trigger)), on_dismiss = Some(close.clone())) {
+                        MenuLabel(text = "Organize")
+                        SubMenu(
+                            label = "Move to…",
+                            header = Some(SubMenuSlot::new(move |_cx| {
+                                // The caller owns the query: `Field` reports
+                                // edits, it never writes the signal itself —
+                                // and that write is what re-renders `items`.
+                                // Built inside the slot because the handler
+                                // `Rc` can't be moved in from the enclosing
+                                // reactive scope (the signal, being `Copy`,
+                                // can).
+                                let on_change: Rc<dyn Fn(String)> =
+                                    Rc::new(move |v: String| query.set(v));
+                                ui! {
+                                    Field(
+                                        value = query,
+                                        on_change = on_change,
+                                        placeholder = Some("Filter folders…".to_string()),
+                                    )
+                                }
+                            })),
+                            items = rx!(folder_entries(&query.get(), open)),
+                        )
+                    }
+                }
+            }
+            CodePanel(src = r##"let query = signal(String::new());
+
+ui! {
+    Menu(target = Some(AnchorTarget::from(trigger)), on_dismiss = Some(close.clone())) {
+        SubMenu(
+            label = "Move to…",
+            // Built fresh on every flyout open; `cx.dismiss` closes it. The
+            // handler is built HERE because an `Rc` can't be moved into the
+            // builder from the enclosing reactive scope — `query` (a `Copy`
+            // signal) can.
+            header = Some(SubMenuSlot::new(move |_cx| {
+                let on_change: Rc<dyn Fn(String)> = Rc::new(move |v| query.set(v));
+                ui! {
+                    Field(
+                        value = query,
+                        on_change = on_change,
+                        placeholder = Some("Filter folders…".to_string()),
+                    )
+                }
+            })),
+            // LIVE: read inside the flyout, so a keystroke re-renders the
+            // rows without rebuilding the panel the field sits on.
+            items = rx!(folder_entries(&query.get(), open)),
+        )
+    }
+}"##.to_string())
+        }
+    }
 }
 
 /// A muted right-pushed keyboard-shortcut hint.

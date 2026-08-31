@@ -207,7 +207,7 @@ pub use components::link::{Link, LinkProps};
 pub use components::list::{List, ListItem, ListItemProps, ListProps};
 pub use components::menu::{
     menu_checkbox, Menu, MenuEntry, MenuItem, MenuItemProps, MenuLabel, MenuLabelProps, MenuProps,
-    MenuSeparator, MenuSeparatorProps, SubMenu, SubMenuProps,
+    MenuSeparator, MenuSeparatorProps, SubMenu, SubMenuProps, SubMenuSlot, SubMenuSlotCx,
 };
 pub use components::pagination::{Pagination, PaginationProps};
 pub use components::tooltip::{Tooltip, TooltipProps};

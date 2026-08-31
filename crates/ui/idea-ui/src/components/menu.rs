@@ -36,6 +36,8 @@
 //!
 //! ```ignore
 //! let query = signal(String::new());
+//! // `Field` reports edits; the CALLER owns the write that re-renders the rows.
+//! let on_query: Rc<dyn Fn(String)> = Rc::new(move |v| query.set(v));
 //! let rows = rx!({
 //!     let q = query.get().to_lowercase();
 //!     options.iter().filter(|o| o.label.to_lowercase().contains(&q)).collect()
@@ -44,7 +46,7 @@
 //!     Menu(
 //!         target = AnchorTarget::from(trigger),
 //!         on_dismiss = Some(on_dismiss),
-//!         header = Some(ui! { Field(value = query, placeholder = "Search…") }),
+//!         header = Some(ui! { Field(value = query, on_change = on_query) }),
 //!     ) {
 //!         // …one MenuItem per surviving option, plus a "No matches" row
 //!         // when the query filters everything out.
@@ -53,12 +55,44 @@
 //! ```
 //!
 //! A menu with either slot set preserves focus across row presses, so the
-//! search box keeps its caret when a row is clicked. Note that `SubMenu` has
-//! no slots by design: its flyout opens and closes on HOVER, so a box you
-//! type into while the pointer drifts off would close under you. Anchor a
-//! searchable menu to a CLICK instead.
+//! search box keeps its caret when a row is clicked.
+//!
+//! # A searchable SUBmenu
+//!
+//! `SubMenu` takes the same pair, as builders (its flyout mounts on hover, so
+//! its contents are constructed per open — [`SubMenuSlot`]), and its `items`
+//! take a LIVE list so a keystroke re-renders the rows without rebuilding the
+//! panel the field sits on:
+//!
+//! ```ignore
+//! let query = signal(String::new());
+//! ui! {
+//!     Menu(target = AnchorTarget::from(trigger), on_dismiss = Some(on_dismiss)) {
+//!         SubMenu(
+//!             label = "Move to…",
+//!             // Built per open. The handler is built INSIDE the builder: an
+//!             // `Rc` can't be moved in from the enclosing reactive scope,
+//!             // while `query` — a `Copy` signal — can.
+//!             header = Some(SubMenuSlot::new(move |_cx| {
+//!                 let on_query: Rc<dyn Fn(String)> = Rc::new(move |v| query.set(v));
+//!                 ui! { Field(value = query, on_change = on_query) }
+//!             })),
+//!             items = rx!({
+//!                 let q = query.get().to_lowercase();
+//!                 folders.iter().filter(|f| f.name.to_lowercase().contains(&q))
+//!                     .map(|f| MenuEntry::new(f.name.clone(), on_move(f))).collect()
+//!             }),
+//!         )
+//!     }
+//! }
+//! ```
+//!
+//! A slotted flyout also LATCHES once the pointer has been inside it, so
+//! hover-out can't close the box you're typing in; it collapses on a row
+//! pick, on Escape / an outside click, or when another submenu opens. A
+//! SLOTLESS submenu is unchanged — pure hover, as before.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use runtime_core::primitives::overlay::BackdropMode;
@@ -85,16 +119,12 @@ fn grow() -> Element {
         .into_element()
 }
 
-/// The anchored panel surface shared by `Menu` and each `SubMenu` flyout.
-/// Delegates to the family-wide scrolling panel so a long item list (or a
-/// SubMenu with many entries) scrolls within a height-capped panel instead of
-/// running off the bottom of the viewport.
-fn panel(children: Vec<Element>) -> Element {
-    crate::components::menu_panel::scrolling_menu_panel(children)
-}
-
-/// [`panel`] with `Menu`'s optional pinned `header`/`footer` slots. Passing
-/// `None` for both is byte-for-byte [`panel`] — a slotless menu is unchanged.
+/// The anchored panel surface shared by `Menu` and each `SubMenu` flyout,
+/// with their optional pinned `header`/`footer` slots. Delegates to the
+/// family-wide scrolling panel so a long item list (or a SubMenu with many
+/// entries) scrolls within a height-capped panel instead of running off the
+/// bottom of the viewport; passing `None` for both slots is the plain
+/// scrolling panel, so a slotless menu or flyout is unchanged.
 fn slotted_panel(
     children: Vec<Element>,
     header: Option<Element>,
@@ -393,9 +423,169 @@ pub fn menu_checkbox(checked: impl Into<Reactive<bool>>) -> Element {
         .into_element()
 }
 
-// Reactive-by-default: `label` is already reactive; `items` is a LIST
-// (`Vec<MenuEntry>`, auto-skipped — the flyout structure, not a style sink);
-// `side` is structural overlay positioning, kept bare via `#[prop(static)]`.
+// =============================================================================
+// SubMenu slots
+// =============================================================================
+
+/// Context handed to a [`SubMenu`] slot builder each time the flyout opens.
+#[derive(Clone)]
+pub struct SubMenuSlotCx {
+    /// Collapse the flyout — the same path a picked row takes. A header
+    /// field's "done" action or a footer's "Add ‹what you typed›" calls it
+    /// once the host-side work is finished; without it a slot has no way to
+    /// reach the flyout's open state, which the component owns.
+    pub dismiss: Rc<dyn Fn()>,
+}
+
+/// A pinned flyout slot ([`SubMenuProps::header`] / [`SubMenuProps::footer`]):
+/// a builder invoked with a [`SubMenuSlotCx`] each time the flyout opens.
+///
+/// A builder rather than a plain `Element` for the same reason
+/// [`SubMenuProps::items`] is data: the flyout mounts conditionally, so its
+/// contents are constructed fresh on every open and an `Element` can only be
+/// mounted once. Mirrors `Autocomplete`'s slots and `Modal`'s content.
+/// (`Menu`'s own slots ARE plain `Element`s — its panel is built once, with
+/// the caller gating the mount.)
+#[derive(Clone)]
+pub struct SubMenuSlot(Rc<dyn Fn(SubMenuSlotCx) -> Element>);
+
+impl SubMenuSlot {
+    /// Build a slot from a closure:
+    /// `SubMenuSlot::new(move |cx| ui! { … })`.
+    pub fn new(build: impl Fn(SubMenuSlotCx) -> Element + 'static) -> Self {
+        Self(Rc::new(build))
+    }
+
+    /// Invoke the builder for one flyout-open cycle.
+    fn build(&self, cx: SubMenuSlotCx) -> Element {
+        (self.0)(cx)
+    }
+}
+
+// =============================================================================
+// SubMenu flyout: level coordination + hover-out policy
+// =============================================================================
+
+/// The submenu flyout currently open on the menu level, if any.
+///
+/// A `Menu`'s children are constructed by the CALLER before `Menu` itself
+/// runs, so a sibling `SubMenu` cannot be reached through `provide`/`inject`
+/// (there is no ancestor scope to hang the context on by the time the rows
+/// exist) — this thread-local is the level. One slot is enough because a
+/// `SubMenu`'s rows are [`MenuEntry`] data, which cannot nest another
+/// `SubMenu`: every submenu in a menu is a sibling on the same level.
+///
+/// Hover alone used to keep the "one open submenu at a time" invariant —
+/// hovering a sibling means the pointer LEFT this row, which collapsed it.
+/// A latching flyout ([`HoverLatch`]) deliberately stops obeying hover-out,
+/// so the invariant needs an explicit holder: opening any flyout collapses
+/// whichever one held the level.
+///
+/// Not a signal and not world context: the claim is made from hover
+/// callbacks, which backends dispatch OUTSIDE `World::enter` (the same
+/// constraint that parks `toast.rs`'s queue handle in a thread-local).
+thread_local! {
+    static OPEN_FLYOUT: RefCell<Option<OpenFlyout>> = const { RefCell::new(None) };
+    static NEXT_SUBMENU_ID: Cell<u64> = const { Cell::new(0) };
+}
+
+/// The level's open flyout: who holds it, and how to collapse it.
+struct OpenFlyout {
+    id: u64,
+    /// Liveness probe for `close`. The holder's component can unmount with
+    /// its claim still standing (the parent menu was dismissed), and a stale
+    /// kernel handle PANICS on write — so the closer only runs while the
+    /// signal it writes is still alive.
+    open: Signal<bool>,
+    close: Rc<dyn Fn()>,
+}
+
+/// A fresh per-`SubMenu` identity for the level claim.
+fn next_submenu_id() -> u64 {
+    NEXT_SUBMENU_ID.with(|c| {
+        let id = c.get();
+        c.set(id + 1);
+        id
+    })
+}
+
+/// Make `id` the level's open flyout, collapsing whichever one held it.
+/// Re-claiming for the same `id` (the pointer travelling trigger → flyout
+/// re-enters `open_now`) leaves it alone.
+fn claim_flyout_level(id: u64, open: Signal<bool>, close: Rc<dyn Fn()>) {
+    // Swap FIRST, then close the displaced holder outside the borrow: its
+    // `close` releases the level, and would otherwise both re-enter this
+    // RefCell and clear the claim just made.
+    let prev = OPEN_FLYOUT.with(|c| c.borrow_mut().replace(OpenFlyout { id, open, close }));
+    if let Some(prev) = prev {
+        if prev.id != id && prev.open.is_alive() {
+            (prev.close)();
+        }
+    }
+}
+
+/// Hand the level back, if `id` still holds it. A no-op when another submenu
+/// has already claimed it — that one is open and must not be cleared.
+fn release_flyout_level(id: u64) {
+    OPEN_FLYOUT.with(|c| {
+        let mut slot = c.borrow_mut();
+        if slot.as_ref().is_some_and(|f| f.id == id) {
+            *slot = None;
+        }
+    });
+}
+
+/// Hover-out policy for one `SubMenu`'s flyout.
+///
+/// A slotless flyout collapses on hover-out after the grace — the desktop
+/// standard, and the only way a pointer-driven nested menu tidies itself up.
+/// A flyout carrying a slot cannot afford that: a slot is exactly where a
+/// search field goes, and the pointer drifting off the panel mid-typing
+/// would close the box under the user.
+///
+/// So a SLOTTED flyout LATCHES once the pointer has actually been inside it.
+/// Before that it behaves normally (hover the trigger, drift away, it
+/// collapses — no stray panel left behind); after it, hover-out stops
+/// closing and the flyout collapses only on a row pick, Escape / an outside
+/// click, or another submenu on the level opening
+/// ([`claim_flyout_level`]).
+struct HoverLatch {
+    /// True for a flyout with a header or footer slot.
+    latching: bool,
+    engaged: Cell<bool>,
+}
+
+impl HoverLatch {
+    fn new(latching: bool) -> Self {
+        Self { latching, engaged: Cell::new(false) }
+    }
+
+    /// The pointer reached the flyout panel itself.
+    fn engage(&self) {
+        self.engaged.set(true);
+    }
+
+    /// The flyout closed — drop the latch so the next open starts fresh.
+    fn reset(&self) {
+        self.engaged.set(false);
+    }
+
+    /// Does a hover-out still schedule the collapse?
+    fn closes_on_hover_out(&self) -> bool {
+        !(self.latching && self.engaged.get())
+    }
+}
+
+// =============================================================================
+// SubMenu
+// =============================================================================
+
+// Reactive-by-default: `label` is already reactive; `items` is declared
+// `Reactive<Vec<MenuEntry>>` by hand (`#[props]` skips `Vec`, and a bare
+// `Vec` snapshot can't be filtered — see the field's docs); `side` is
+// structural overlay positioning, kept bare via `#[prop(static)]`; the slots
+// are ELEMENT-BUILDERS (the *children* category, reactive internally via the
+// slot cx), `#[prop(static)]` for the same reason as `Autocomplete`'s.
 #[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
@@ -403,41 +593,159 @@ pub struct SubMenuProps {
     /// Trigger row label.
     #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub label: Reactive<String>,
-    /// Flyout contents. Passed as reconstructable [`MenuEntry`] data
-    /// (not composed children) because the flyout mounts conditionally
-    /// — the `when`-gated builder must be able to rebuild it on each
-    /// open. Selecting an entry runs its `on_select` and closes the
-    /// flyout.
-    // TODO(reactive-sweep): route `items` to the flyout rows (list/structural
-    // — a live items list would rebuild the flyout). Kept bare for now.
+    /// Flyout contents. Passed as reconstructable [`MenuEntry`] data (not
+    /// composed children) because the flyout mounts conditionally — the
+    /// `when`-gated builder must be able to rebuild it on each open.
+    /// Selecting an entry runs its `on_select` and closes the flyout.
+    ///
+    /// A bare `Vec` is a snapshot taken when the flyout opens. Pass a LIVE
+    /// list (`rx!(…)`) to filter the rows from a header field: the read then
+    /// happens inside the flyout, so a keystroke re-renders the rows alone
+    /// and leaves the panel — and the caret in the field — untouched. A
+    /// `Vec` rebuilt by the caller's own scope instead would remount the
+    /// whole menu on every character.
     #[cfg_attr(feature = "docs", doc_control(skip))]
-    pub items: Vec<MenuEntry>,
+    #[schema(constraint = "reactive: static Vec<MenuEntry> or rx!")]
+    pub items: Reactive<Vec<MenuEntry>>,
     /// Which side the flyout opens toward. Default `End` (right in LTR).
     // TODO(reactive-sweep): route `side` to anchored_overlay `.side()`
     // (structural positioning, not a style sink). Kept bare for now.
     #[prop(static)]
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub side: ElementSide,
+    /// Optional slot pinned ABOVE the flyout's scrolling row area — it stays
+    /// put while the rows scroll under it. A search field narrowing a long
+    /// `items` list is the motivating case: the flyout holds the box, the
+    /// CALLER owns the query signal and feeds the survivors back through a
+    /// live `items`.
+    ///
+    /// Built per flyout-open with a [`SubMenuSlotCx`]. A flyout with either
+    /// slot set also LATCHES once the pointer has been inside it, so hover
+    /// can no longer collapse it under a typing user — see [`SubMenu`].
+    #[prop(static)]
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub header: Option<SubMenuSlot>,
+    /// Optional slot pinned BELOW the scrolling row area — see
+    /// [`SubMenuProps::header`]. Typically a "Clear" / "Add ‹what you typed›"
+    /// action that must stay reachable without scrolling to the end.
+    #[prop(static)]
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub footer: Option<SubMenuSlot>,
 }
 
 impl Default for SubMenuProps {
     fn default() -> Self {
         Self {
             label: Reactive::Static(String::new()),
-            items: Vec::new(),
+            items: Reactive::Static(Vec::new()),
             side: ElementSide::End,
+            header: None,
+            footer: None,
         }
     }
 }
 
+/// One flyout row: the entry's optional checkbox and label in a pressable.
+/// A checkable row keeps the flyout open — multi-select toggles stack
+/// without re-hovering (the checkbox itself re-marks reactively).
+fn flyout_row(entry: MenuEntry, close: Rc<dyn Fn()>) -> Element {
+    let on_select = entry.on_select;
+    let keep_open = entry.checked.is_some();
+    let mut kids: Vec<Element> = Vec::with_capacity(2);
+    if let Some(c) = entry.checked {
+        kids.push(menu_checkbox(c));
+    }
+    kids.push(runtime_core::text(entry.label).into_element());
+    runtime_core::pressable(kids, move || {
+        (on_select)();
+        if !keep_open {
+            (close)();
+        }
+    })
+    .with_style(|| StyleApplication::new(MenuItemRow::sheet()))
+    .into_element()
+}
+
+/// The flyout's rows.
+///
+/// A STATIC `items` builds its rows once — no effect, the shape `SubMenu`
+/// always had. A LIVE one goes through `switch`, which rebuilds the rows in
+/// place WITHOUT touching the panel around them; that boundary is the whole
+/// reason a header search field survives the list it filters (rebuilding the
+/// panel would remount the field and drop its caret and focus).
+fn flyout_rows(items: &Reactive<Vec<MenuEntry>>, close: Rc<dyn Fn()>) -> Vec<Element> {
+    if items.is_static() {
+        return items
+            .get_untracked()
+            .into_iter()
+            .map(|e| flyout_row(e, close.clone()))
+            .collect();
+    }
+    let identity = items.clone();
+    let build = items.clone();
+    vec![runtime_core::switch(
+        // The row list's identity: its labels, in order. Cheap to compare,
+        // and `switch`'s `PartialEq` dedup means a keystroke that doesn't
+        // change the matches leaves the mounted rows alone. Reading a
+        // reactive label here subscribes to it, so a label that changes
+        // re-renders the list too.
+        move || identity.get().iter().map(|e| e.label.get()).collect::<Vec<String>>(),
+        move |_| {
+            // Untracked: the identity read above is what this region tracks.
+            // Re-reading the source tracked here would subscribe the region
+            // twice, past its own dedup.
+            let close = close.clone();
+            runtime_core::fragment(
+                build
+                    .get_untracked()
+                    .into_iter()
+                    .map(|e| flyout_row(e, close.clone()))
+                    .collect(),
+            )
+        },
+    )]
+}
+
+/// The flyout's panel: the rows in the family's capped scroller, with the
+/// optional slots pinned OUTSIDE it (so a header stays put while the rows
+/// scroll) on a focus-preserving surface (so a row press can't blur a header
+/// field mid-typing). Both come from the shared [`slotted_panel`].
+///
+/// Split out of the `when` builder because a reactive hole is opaque to the
+/// element mirror — this is the seam the slot-pinning tests can reach.
+fn flyout_panel(
+    items: &Reactive<Vec<MenuEntry>>,
+    header: Option<&SubMenuSlot>,
+    footer: Option<&SubMenuSlot>,
+    close: Rc<dyn Fn()>,
+) -> Element {
+    let cx = SubMenuSlotCx { dismiss: close.clone() };
+    let header = header.map(|s| s.build(cx.clone()));
+    let footer = footer.map(|s| s.build(cx));
+    slotted_panel(flyout_rows(items, close), header, footer)
+}
+
 /// Renders a menu row with a trailing chevron whose nested flyout opens on
 /// HOVER — the desktop/web standard for nested menus. Only one submenu per
-/// level is open at a time: this falls out of hover naturally, since hovering
-/// a sibling row means the pointer has LEFT this one, which closes it (after a
-/// short grace) while the sibling opens. The grace bridges the gap between the
-/// trigger row and its flyout so moving the pointer into the flyout doesn't
-/// dismiss it. Hovering off the row/flyout collapses just this submenu; the
-/// parent Menu's catcher still closes the whole menu on an outside click.
+/// level is open at a time: hovering a sibling row means the pointer has LEFT
+/// this one, which collapses it (after a short grace) while the sibling
+/// opens, and the sibling's open also claims the level explicitly (see
+/// [`claim_flyout_level`]) so a latched flyout can't outlive it. The grace
+/// bridges the gap between the trigger row and its flyout so moving the
+/// pointer into the flyout doesn't dismiss it. Hovering off the row/flyout
+/// collapses just this submenu; the parent Menu's catcher still closes the
+/// whole menu on an outside click.
+///
+/// # Slots
+///
+/// `header` / `footer` pin an element above / below the scrolling rows, the
+/// same surface `Menu` offers — a search field that narrows a long `items`
+/// list is the motivating case. A slotted flyout LATCHES once the pointer
+/// has been inside it: hover-out stops collapsing it, because a box you are
+/// typing into must not close when the pointer drifts. It then closes on a
+/// row pick, on Escape / an outside click, or when another submenu on the
+/// level opens. Pair a slot with a LIVE `items` (`rx!`) — a plain `Vec` is
+/// snapshotted at open and no query will move it.
 ///
 /// Touch has no hover (`on_hover` is a no-op on iOS/Android), so the flyout
 /// won't expand there — mobile menus are a separate consideration.
@@ -445,32 +753,65 @@ impl Default for SubMenuProps {
 pub fn SubMenu(props: SubMenuProps) -> Element {
     let open: Signal<bool> = signal(false);
     let trigger_ref: Ref<ViewHandle> = Ref::new();
-    let items = Rc::new(props.items);
+    let items = props.items;
     let side = props.side;
+    let header = props.header;
+    let footer = props.footer;
+
+    // Identity for the level claim, and the hover-out policy: a flyout that
+    // carries a slot latches once the pointer has been inside it.
+    let level_id = next_submenu_id();
+    let latch = Rc::new(HoverLatch::new(header.is_some() || footer.is_some()));
 
     // Pending hover-out close. Stored (not detached) so a re-hover of the
     // trigger OR the flyout cancels it — the "hover intent" bridge. Owned by
     // this component scope; drops (cancelling any pending close) on unmount.
     let close_task: Rc<RefCell<Option<ScheduledTask>>> = Rc::new(RefCell::new(None));
 
-    // Hover-in: cancel any pending close and open immediately.
+    // The one collapse path, whatever asked for it (grace timer, row pick,
+    // Escape, a slot's `dismiss`, a sibling claiming the level): drop the
+    // pending close, drop the latch, hand the level back, close.
+    let close: Rc<dyn Fn()> = {
+        let ct = close_task.clone();
+        let latch = latch.clone();
+        Rc::new(move || {
+            if let Some(mut t) = ct.borrow_mut().take() {
+                t.cancel();
+            }
+            latch.reset();
+            release_flyout_level(level_id);
+            open.set(false);
+        })
+    };
+
+    // Hover-in: cancel any pending close, take the level (collapsing any
+    // other open flyout), and open immediately.
     let open_now = {
         let ct = close_task.clone();
+        let close = close.clone();
         move || {
             if let Some(mut t) = ct.borrow_mut().take() {
                 t.cancel();
             }
+            claim_flyout_level(level_id, open, close.clone());
             open.set(true);
         }
     };
-    // Hover-out: collapse after the grace, unless re-hovered first.
+    // Hover-out: collapse after the grace, unless re-hovered first — or
+    // unless the flyout has latched (a slot is being used).
     let schedule_close = {
         let ct = close_task.clone();
+        let latch = latch.clone();
+        let close = close.clone();
         move || {
+            if !latch.closes_on_hover_out() {
+                return;
+            }
             if let Some(mut t) = ct.borrow_mut().take() {
                 t.cancel();
             }
-            let task = after_ms(SUBMENU_HOVER_GRACE_MS, move || open.set(false));
+            let close = close.clone();
+            let task = after_ms(SUBMENU_HOVER_GRACE_MS, move || (close)());
             *ct.borrow_mut() = Some(task);
         }
     };
@@ -503,57 +844,42 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
 
     // Flyout — rebuilt from `items` each time it opens. Its panel ALSO tracks
     // hover so the pointer can travel from the trigger into it (and dwell
-    // there) without the grace timer collapsing it.
+    // there) without the grace timer collapsing it; reaching the panel is
+    // also what engages a slotted flyout's latch.
     let flyout = runtime_core::when(
         move || open.get(),
         {
             let items = items.clone();
+            let header = header.clone();
+            let footer = footer.clone();
+            let close = close.clone();
+            let latch = latch.clone();
             let open_now = open_now.clone();
             let schedule_close = schedule_close.clone();
             move || {
-                let mut rows: Vec<Element> = Vec::with_capacity(items.len());
-                for entry in items.iter() {
-                    let on_select = entry.on_select.clone();
-                    let label = entry.label.clone();
-                    // Checkable rows keep the flyout open — multi-select
-                    // toggles stack without re-hovering (the checkbox
-                    // itself re-marks reactively).
-                    let keep_open = entry.checked.is_some();
-                    let mut kids: Vec<Element> = Vec::with_capacity(2);
-                    if let Some(c) = entry.checked.clone() {
-                        kids.push(menu_checkbox(c));
-                    }
-                    kids.push(runtime_core::text(label).into_element());
-                    let row = runtime_core::pressable(kids, move || {
-                        (on_select)();
-                        if !keep_open {
-                            open.set(false);
-                        }
-                    })
-                    .with_style(|| StyleApplication::new(MenuItemRow::sheet()))
-                    .into_element();
-                    rows.push(row);
-                }
-                // Wrap the panel in a hover-tracking view so dwelling in the
-                // flyout keeps it open (cancels the trigger's hover-out close).
+                let panel =
+                    flyout_panel(&items, header.as_ref(), footer.as_ref(), close.clone());
                 let on_enter = open_now.clone();
                 let on_leave = schedule_close.clone();
-                let panel_view = runtime_core::view(vec![panel(rows)])
+                let latch = latch.clone();
+                let panel_view = runtime_core::view(vec![panel])
                     .on_hover(move |entering| {
                         if entering {
+                            latch.engage();
                             on_enter();
                         } else {
                             on_leave();
                         }
                     })
                     .into_element();
+                let dismiss = close.clone();
                 runtime_core::anchored_overlay(AnchorTarget::from(trigger_ref), vec![panel_view])
                     .side(side)
                     .align(ElementAlign::Start)
                     .offset(2.0)
                     .backdrop(BackdropMode::None)
                     .trap_focus(false)
-                    .on_dismiss(move || open.set(false))
+                    .on_dismiss(move || (dismiss)())
                     .into_element()
             }
         },
@@ -715,6 +1041,270 @@ mod tests {
                     _ => panic!("both of a Menu's children must be Portals"),
                 }
             }
+    });
+    }
+
+    // =========================================================================
+    // SubMenu slots
+    // =========================================================================
+
+    /// A `SubMenu`'s `header`/`footer` slots must reach the flyout panel
+    /// PINNED — direct panel children around the scrolling row area — and the
+    /// panel must preserve focus, exactly as `Menu`'s do. That pair is what
+    /// makes a search field on a flyout usable: it stays on screen while the
+    /// rows it filters scroll under it, and a row press doesn't blur it. If a
+    /// refactor routes the flyout back through the slotless panel the header
+    /// silently disappears.
+    #[test]
+    fn submenu_slots_reach_the_flyout_panel_pinned_around_the_scroller() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+
+            let noop: Rc<dyn Fn()> = Rc::new(|| {});
+            let items = Reactive::Static(vec![MenuEntry::new("Inbox", noop.clone())]);
+            let panel = flyout_panel(
+                &items,
+                Some(&SubMenuSlot::new(|_cx| {
+                    runtime_core::text("Search".to_string()).into_element()
+                })),
+                Some(&SubMenuSlot::new(|_cx| {
+                    runtime_core::text("Clear".to_string()).into_element()
+                })),
+                noop,
+            );
+
+            let P::View { preserves_focus, mut children, .. } = classify(panel) else {
+                panic!("the flyout panel is a View (the SelectMenu surface)");
+            };
+            assert!(
+                preserves_focus,
+                "a slotted flyout preserves focus so a row press can't blur the header field"
+            );
+            assert_eq!(children.len(), 3, "panel children are [header, scroller, footer]");
+            match classify(children.remove(0)) {
+                P::Text { text, .. } => assert_eq!(text.as_deref(), Some("Search")),
+                _ => panic!("the header slot is pinned as the panel's first child"),
+            }
+            assert!(
+                matches!(classify(children.remove(0)), P::ScrollView { .. }),
+                "the rows still scroll between the pinned slots"
+            );
+            match classify(children.remove(0)) {
+                P::Text { text, .. } => assert_eq!(text.as_deref(), Some("Clear")),
+                _ => panic!("the footer slot is pinned as the panel's last child"),
+            }
+    });
+    }
+
+    /// A slotless flyout is byte-for-byte what it always was: one scroller
+    /// child, no focus-preservation. The slots are additive — `SubMenu`'s
+    /// existing hover-only behaviour must not pick up a focus mark it never
+    /// had.
+    #[test]
+    fn a_slotless_flyout_panel_is_unchanged() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+
+            let noop: Rc<dyn Fn()> = Rc::new(|| {});
+            let items = Reactive::Static(vec![MenuEntry::new("Inbox", noop.clone())]);
+            let panel = flyout_panel(&items, None, None, noop);
+
+            let P::View { preserves_focus, children, .. } = classify(panel) else {
+                panic!("the flyout panel is a View (the SelectMenu surface)");
+            };
+            assert!(!preserves_focus, "a slotless flyout keeps its original focus behaviour");
+            assert_eq!(children.len(), 1, "the panel holds a single scroller child");
+    });
+    }
+
+    /// A slot builder gets a `dismiss` that actually collapses the flyout.
+    /// Without it a slot can't reach the open state (the component owns it),
+    /// so an "Add ‹query›" footer would leave the flyout hanging open after
+    /// doing its work.
+    #[test]
+    fn a_slot_builder_receives_a_dismiss_that_closes_the_flyout() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+
+            let closed = Rc::new(Cell::new(false));
+            let flag = closed.clone();
+            let close: Rc<dyn Fn()> = Rc::new(move || flag.set(true));
+            let items: Reactive<Vec<MenuEntry>> = Reactive::Static(Vec::new());
+            let panel = flyout_panel(
+                &items,
+                None,
+                Some(&SubMenuSlot::new(|cx| {
+                    let dismiss = cx.dismiss.clone();
+                    runtime_core::pressable(
+                        vec![runtime_core::text("Add".to_string()).into_element()],
+                        move || (dismiss)(),
+                    )
+                    .into_element()
+                })),
+                close,
+            );
+
+            let P::View { mut children, .. } = classify(panel) else {
+                panic!("the flyout panel is a View");
+            };
+            let footer = children.remove(1);
+            let P::Pressable { on_click, .. } = classify(footer) else {
+                panic!("the footer slot built a pressable");
+            };
+            assert!(!closed.get(), "building the slot must not close anything");
+            (on_click)();
+            assert!(closed.get(), "the slot's `cx.dismiss` collapses the flyout");
+    });
+    }
+
+    /// The point of a live `items`: the read must happen INSIDE the flyout's
+    /// reactive region, not at build time. A snapshot taken while building
+    /// the rows can never move again, so a header field would filter nothing
+    /// — the bug this guards. A STATIC list keeps the original build-once
+    /// shape (no reactive hole, no effect).
+    #[test]
+    fn a_live_items_list_is_read_inside_a_reactive_region_not_snapshotted() {
+        with_test_world(|| {
+            let noop: Rc<dyn Fn()> = Rc::new(|| {});
+
+            let reads = Rc::new(Cell::new(0));
+            let counted = reads.clone();
+            let entry = noop.clone();
+            let live: Reactive<Vec<MenuEntry>> = Reactive::derive(move || {
+                counted.set(counted.get() + 1);
+                vec![MenuEntry::new("Inbox", entry.clone())]
+            });
+            let rows = flyout_rows(&live, noop.clone());
+            assert_eq!(rows.len(), 1, "a live list contributes one reactive region");
+            assert!(
+                matches!(classify(rows.into_iter().next().expect("one region")), P::Other(_)),
+                "the rows sit in a reactive hole, so a keystroke re-renders them alone"
+            );
+            assert_eq!(
+                reads.get(),
+                0,
+                "the list must not be read while building — that would freeze the rows"
+            );
+
+            let stat = Reactive::Static(vec![
+                MenuEntry::new("Inbox", noop.clone()),
+                MenuEntry::new("Archive", noop.clone()),
+            ]);
+            let rows = flyout_rows(&stat, noop);
+            assert_eq!(rows.len(), 2, "a static list still builds its rows directly");
+    });
+    }
+
+    /// Picking a plain row closes the flyout; picking a CHECKABLE one does
+    /// not — multi-select toggles stack without re-hovering.
+    #[test]
+    fn a_checkable_row_keeps_the_flyout_open_and_a_plain_row_closes_it() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+
+            let closed = Rc::new(Cell::new(false));
+            let flag = closed.clone();
+            let close: Rc<dyn Fn()> = Rc::new(move || flag.set(true));
+            let noop: Rc<dyn Fn()> = Rc::new(|| {});
+
+            let P::Pressable { on_click, .. } =
+                classify(flyout_row(MenuEntry::checkable("Starred", true, noop.clone()), close.clone()))
+            else {
+                panic!("a flyout row is a pressable");
+            };
+            (on_click)();
+            assert!(!closed.get(), "a checkable row keeps the flyout open for the next toggle");
+
+            let P::Pressable { on_click, .. } =
+                classify(flyout_row(MenuEntry::new("Inbox", noop), close))
+            else {
+                panic!("a flyout row is a pressable");
+            };
+            (on_click)();
+            assert!(closed.get(), "a plain row closes the flyout after running its handler");
+    });
+    }
+
+    // =========================================================================
+    // SubMenu hover-out policy + level coordination
+    // =========================================================================
+
+    /// A SLOTLESS flyout always collapses on hover-out — the desktop
+    /// standard, and the only way a pointer-driven nested menu tidies itself
+    /// up. Entering the panel must not make it sticky.
+    #[test]
+    fn a_slotless_flyout_always_collapses_on_hover_out() {
+        let latch = HoverLatch::new(false);
+        assert!(latch.closes_on_hover_out());
+        latch.engage();
+        assert!(latch.closes_on_hover_out(), "no slot, no latch — hover still rules");
+    }
+
+    /// Regression: a slotted flyout must stop collapsing on hover-out once
+    /// the pointer has been inside it. Without the latch, a search field in
+    /// the header closes under the user the moment the pointer drifts off the
+    /// panel mid-typing — the reason SubMenu had no slots at all before.
+    /// Before the pointer ever reaches the flyout it still auto-collapses, so
+    /// merely brushing the trigger leaves no stray panel behind; and a close
+    /// resets the latch, so the next open starts fresh.
+    #[test]
+    fn regression_a_slotted_flyout_latches_once_the_pointer_reaches_it() {
+        let latch = HoverLatch::new(true);
+        assert!(
+            latch.closes_on_hover_out(),
+            "brushing the trigger without reaching the flyout still collapses it"
+        );
+        latch.engage();
+        assert!(
+            !latch.closes_on_hover_out(),
+            "a pointer that drifts off the panel must not close the box being typed in"
+        );
+        latch.reset();
+        assert!(latch.closes_on_hover_out(), "closing drops the latch for the next open");
+    }
+
+    /// Only one submenu per level is open at a time. Hover alone used to
+    /// carry that (hovering a sibling means the pointer LEFT this row), but a
+    /// latched flyout ignores hover-out — so opening any flyout must
+    /// explicitly collapse whichever one held the level, or two panels
+    /// overlap.
+    #[test]
+    fn opening_a_flyout_collapses_the_one_that_held_the_level() {
+        with_test_world(|| {
+            let first_closed = Rc::new(Cell::new(0));
+            let second_closed = Rc::new(Cell::new(0));
+            let a = first_closed.clone();
+            let b = second_closed.clone();
+            let first: Rc<dyn Fn()> = Rc::new(move || a.set(a.get() + 1));
+            let second: Rc<dyn Fn()> = Rc::new(move || b.set(b.get() + 1));
+            let open_a = signal(true);
+            let open_b = signal(true);
+
+            claim_flyout_level(1, open_a, first.clone());
+            assert_eq!(first_closed.get(), 0, "the first claim closes nothing");
+
+            // Re-hovering the same submenu (trigger → flyout) re-claims: it
+            // must not close itself.
+            claim_flyout_level(1, open_a, first.clone());
+            assert_eq!(first_closed.get(), 0, "re-claiming for the same submenu is a no-op");
+
+            claim_flyout_level(2, open_b, second);
+            assert_eq!(first_closed.get(), 1, "a sibling opening collapses the held flyout");
+            assert_eq!(second_closed.get(), 0);
+
+            // The displaced submenu releasing (its own close path ran) must
+            // not clear the level the sibling now holds.
+            release_flyout_level(1);
+            claim_flyout_level(3, signal(true), Rc::new(|| {}));
+            assert_eq!(second_closed.get(), 1, "the level still named the sibling");
+
+            release_flyout_level(3);
+            claim_flyout_level(4, signal(true), Rc::new(|| {}));
+            assert_eq!(
+                second_closed.get(),
+                1,
+                "a released level holds nobody — the next open closes nothing"
+            );
     });
     }
 }

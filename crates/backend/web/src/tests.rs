@@ -2109,6 +2109,95 @@ fn regression_web_preserves_focus_cancels_pointerdown_through_pressable_swallow(
     );
 }
 
+/// REGRESSION TEST.
+///
+/// The cancel above must NOT extend to a text-entry control inside the
+/// region. A menu panel with a pinned `header` slot (idea-ui's `Menu` /
+/// `SubMenu` search field) is marked so its ROWS don't blur the field —
+/// but the browser's focus move is `mousedown`'s default action, so a
+/// blanket cancel made the field impossible to focus by clicking it, which
+/// is the one thing a search slot exists for. AppKit's half of the mark
+/// already lets a press reach an `NSTextField` inside the region; the
+/// exemption is what keeps the two backends observably the same.
+#[wasm_bindgen_test]
+fn regression_web_preserves_focus_lets_a_press_focus_a_text_field_inside_it() {
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+
+    // The marked ancestor stands in for the slotted menu panel.
+    let panel = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&panel).unwrap();
+    backend.mark_preserves_focus_impl(&panel.clone().unchecked_into());
+
+    // The header slot's search field.
+    let input = doc.create_element("input").unwrap();
+    panel.append_child(&input).unwrap();
+
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    let ev = web_sys::PointerEvent::new_with_event_init_dict("pointerdown", &init)
+        .expect("construct bubbling pointerdown");
+    input.dispatch_event(&ev).expect("dispatch pointerdown");
+
+    assert!(
+        !ev.default_prevented(),
+        "a press on a text-entry control inside a preserves_focus region must \
+         keep its default (the focus move) — otherwise the pinned search field \
+         can never be focused by clicking it",
+    );
+}
+
+/// REGRESSION TEST.
+///
+/// A node's tracked listeners must be DETACHED when its teardown record is
+/// dropped, not merely orphaned. Dropping a `Closure` only invalidates its
+/// JS shim — the listener stays registered — and node teardown runs the
+/// style effect's cleanup (`on_node_unstyled`, which clears the record)
+/// BEFORE the DOM removal. Removing a still-focused `<input>` makes the
+/// browser fire `blur` during that removal, so closing a menu or a modal
+/// while a field inside it had focus threw "closure invoked recursively or
+/// after being dropped" on every close.
+#[wasm_bindgen_test]
+fn regression_web_node_teardown_detaches_listeners_before_dropping_them() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+
+    let input = doc.create_element("input").unwrap();
+    doc.body().unwrap().append_child(&input).unwrap();
+    let node: web_sys::Node = input.clone().unchecked_into();
+    let id = backend.node_id(&node);
+
+    let fired = Rc::new(Cell::new(0));
+    let counter = fired.clone();
+    let closure = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(
+        move |_e: web_sys::Event| counter.set(counter.get() + 1),
+    );
+    backend.track_listener(id, &input, "blur", false, closure);
+
+    let ev = web_sys::Event::new("blur").expect("construct blur");
+    input.dispatch_event(&ev).expect("dispatch blur");
+    assert_eq!(fired.get(), 1, "a tracked listener fires while the node is live");
+
+    // Teardown: what `on_node_unstyled` does to the node's record.
+    backend.state_listeners.remove(&id);
+
+    let ev = web_sys::Event::new("blur").expect("construct blur");
+    input.dispatch_event(&ev).expect("dispatch blur");
+    assert_eq!(
+        fired.get(),
+        1,
+        "after teardown the listener must be GONE from the element — a \
+         still-registered listener over a dropped closure throws when the \
+         removal of a focused input fires blur",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Pointer capture is bound to CONSUME, not to CLAIM.
 //

@@ -41,12 +41,8 @@ pub(crate) fn create(
     let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
         on_change(input_clone.checked());
     });
-    let _ = input.add_event_listener_with_callback(
-        "change",
-        closure.as_ref().unchecked_ref(),
-    );
     let id = b.node_id(&input.clone().unchecked_into::<Node>());
-    b.state_listeners.entry(id).or_default().push(closure);
+    b.track_listener(id, &input, "change", false, closure);
     // Consume the press from ancestor `on_touch` recognizers, exactly as
     // `button` / `link` / `pressable` do — a toggle inside a clickable row
     // must not ALSO trigger the row, which is native's single-view delivery.

@@ -51,15 +51,11 @@ pub(crate) fn create(
     let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
         on_change(input_clone.value());
     });
-    let _ = input.add_event_listener_with_callback(
-        "input",
-        closure.as_ref().unchecked_ref(),
-    );
     // Stash closure under a fresh node id so it lives as long as
     // the node does. Reuse `state_listeners` map since it's the
     // existing per-node closure holder.
     let id = b.node_id(&input.clone().unchecked_into::<Node>());
-    b.state_listeners.entry(id).or_default().push(closure);
+    b.track_listener(id, &input, "input", false, closure);
     if let Some(handler) = on_key_down {
         attach_key_listener_input(&input, id, b, handler);
     }
@@ -73,9 +69,7 @@ pub(crate) fn create(
                 let _ = input_for_blur.focus();
             }
         });
-        let _ = input
-            .add_event_listener_with_callback("blur", closure.as_ref().unchecked_ref());
-        b.state_listeners.entry(id).or_default().push(closure);
+        b.track_listener(id, &input, "blur", false, closure);
     }
     input.unchecked_into::<Node>()
 }
@@ -96,14 +90,12 @@ pub(crate) fn set_focus_handler(b: &mut WebBackend, node: &Node, handler: Rc<dyn
     let focus_cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
         on_focus(true);
     });
-    let _ = el.add_event_listener_with_callback("focus", focus_cb.as_ref().unchecked_ref());
-    b.state_listeners.entry(id).or_default().push(focus_cb);
+    b.track_listener(id, &el, "focus", false, focus_cb);
 
     let blur_cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
         handler(false);
     });
-    let _ = el.add_event_listener_with_callback("blur", blur_cb.as_ref().unchecked_ref());
-    b.state_listeners.entry(id).or_default().push(blur_cb);
+    b.track_listener(id, &el, "blur", false, blur_cb);
 }
 
 /// Wire a DOM `keydown` listener that calls the Rust `KeyDownHandler`
@@ -133,11 +125,7 @@ pub(crate) fn attach_key_listener_input(
             }
         }
     });
-    let _ = input.add_event_listener_with_callback(
-        "keydown",
-        closure.as_ref().unchecked_ref(),
-    );
-    b.state_listeners.entry(id).or_default().push(closure);
+    b.track_listener(id, input, "keydown", false, closure);
 }
 
 pub(crate) use super::keyboard::key_event_from;
