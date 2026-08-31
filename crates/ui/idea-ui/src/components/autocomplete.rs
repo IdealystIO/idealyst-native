@@ -57,6 +57,41 @@
 //!   focus-preserving panel, so pressing them never blurs the input; they
 //!   are click-only (the keyboard cursor and `Enter` stay on the rows).
 //!
+//! # Multi-select
+//!
+//! Binding a `selection: Signal<Vec<String>>` switches modes. Everything
+//! above still holds except where a list of picks makes it impossible:
+//!
+//! - Rows carry a leading CHECKBOX, and picking one TOGGLES it without
+//!   closing the menu — the same rule a checkable `MenuEntry` follows, so
+//!   several matches of one search stack without retyping it. The query is
+//!   kept across picks for the same reason.
+//! - A picked row never paints solid. "An open menu never shows two solid
+//!   rows" cannot survive a list of picks, so the mark carries the
+//!   selection and the row style carries the keyboard cursor alone.
+//! - The input holds the QUERY, never a committed label, so there is
+//!   nothing to revert to: blur / `Escape` clear the search instead, and
+//!   the picks are untouched.
+//! - `on_selection_change` fires with the WHOLE vec, not the one id that
+//!   changed. `value` / `on_change` are ignored.
+//! - The picked options are shown as a count summary in the placeholder,
+//!   and nothing more: the bordered box is the `text_input` itself so the
+//!   focus ring lands on the focusable element, and a filter bar already
+//!   shows its selection as removable chips BESIDE the control. Rendering
+//!   them is the host's job.
+//!
+//! ```ignore
+//! let picked: Signal<Vec<String>> = signal(Vec::new());
+//! ui! {
+//!     Autocomplete(
+//!         selection = Some(picked),
+//!         on_selection_change = Some(Rc::new(move |ids: Vec<String>| refetch(ids))),
+//!         placeholder = "Filter by heading…",
+//!         options = headings,
+//!     )
+//! }
+//! ```
+//!
 //! The dropdown deliberately reuses `Select`'s menu/row styling so the two
 //! controls drop visually identical menus, with two combobox-specific
 //! adjustments (see `menu_panel::combobox_menu_panel`): the panel's width is
@@ -177,6 +212,30 @@ pub struct AutocompleteProps {
     /// host-side on press, then `(cx.dismiss)()`. Built per menu-open.
     #[prop(static)]
     pub footer: Option<AutocompleteSlot>,
+    /// MULTI-SELECT. Bind a `Vec<String>` of chosen option ids and the
+    /// combobox switches modes: rows carry a checkbox, picking one toggles
+    /// it WITHOUT closing the menu, and the input holds the search query
+    /// rather than the committed label. `None` (the default) is the
+    /// single-select combobox, unchanged.
+    ///
+    /// `value` / `on_change` are ignored in this mode — the selection is a
+    /// list, so it has its own signal and its own callback
+    /// ([`AutocompleteProps::on_selection_change`]).
+    ///
+    /// The component does NOT render the picked options: the input shows a
+    /// count summary in its placeholder, and anything richer belongs to the
+    /// host, which is where removable chips already live. Two reasons, and
+    /// both matter — the bordered box is the `text_input` ITSELF so the
+    /// native focus ring lands on the focusable element (chips inside would
+    /// force the border onto a wrapper whose ring never lights up), and a
+    /// filter bar already shows its selection as chips BESIDE the control.
+    #[prop(static)]
+    pub selection: Option<Signal<Vec<String>>>,
+    /// Fires with the WHOLE selection after a multi-select toggle — the new
+    /// vec, not the one id that changed. Only meaningful alongside
+    /// [`AutocompleteProps::selection`].
+    #[prop(static)]
+    pub on_selection_change: Option<Rc<dyn Fn(Vec<String>)>>,
 }
 
 impl Default for AutocompleteProps {
@@ -190,6 +249,8 @@ impl Default for AutocompleteProps {
             empty_text: Reactive::Static(None),
             header: None,
             footer: None,
+            selection: None,
+            on_selection_change: None,
         }
     }
 }
@@ -261,6 +322,42 @@ pub(crate) fn initial_highlight(
         .unwrap_or(0)
 }
 
+/// One multi-select toggle: `id` leaves the selection if it is already
+/// there, otherwise joins it at the end. Order is INSERTION order, not
+/// option order — the host reads this vec back as "what was picked", and
+/// re-sorting picks under the user is surprising. Pure so the toggle is
+/// unit-tested without a backend.
+pub(crate) fn toggled(selection: &[String], id: &str) -> Vec<String> {
+    let mut next: Vec<String> = selection.to_vec();
+    match next.iter().position(|s| s == id) {
+        Some(pos) => {
+            next.remove(pos);
+        }
+        None => next.push(id.to_string()),
+    }
+    next
+}
+
+/// What a multi-select input shows when the user is not typing: nothing
+/// picked falls back to the host's own placeholder, ONE pick reads as its
+/// label (a count would be a worse way to say "Bolting"), and several read
+/// as a count. Pure so the summary is unit-tested without a backend.
+pub(crate) fn selection_summary(
+    ids: &[String],
+    options: &[SelectOption],
+    base: Option<String>,
+) -> Option<String> {
+    match ids.len() {
+        0 => base,
+        1 => options
+            .iter()
+            .find(|o| o.id == ids[0])
+            .map(|o| o.label.get())
+            .or(base),
+        n => Some(format!("{n} selected")),
+    }
+}
+
 /// Renders a searchable combobox: a `text_input` that filters an anchored
 /// dropdown of [`SelectOption`] rows, with keyboard navigation and
 /// constrained (id-only) selection.
@@ -269,7 +366,6 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
     let size = props.size.clone();
-    let placeholder = props.placeholder.clone();
     // TODO(reactive-sweep): `empty_text` is snapshotted here and moved into the
     // `when`/`each_keyed` dropdown closures that build the empty-state row
     // (structural list content). Routing a live `empty_text` would need the
@@ -280,16 +376,30 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
         .get()
         .unwrap_or_else(|| DEFAULT_EMPTY_TEXT.to_string());
     let options = Rc::new(props.options);
+    // MULTI-SELECT is the presence of a `selection` signal. It changes four
+    // things and nothing else: what a row press does (toggle, menu stays
+    // open), what the input holds (the query, never a committed label), what
+    // dismissal reverts to (nothing — it clears the query), and how a row
+    // marks itself (a checkbox rather than a solid fill).
+    let selection = props.selection;
+    let multi = selection.is_some();
+    let on_selection_change = props.on_selection_change.clone();
 
     // --- internal state -----------------------------------------------------
-    // `query` is the text in the input; it doubles as the filter. Seed it
-    // from the initial committed selection so the input shows the chosen
-    // label on first paint (external changes are synced via `on_defer` below).
-    let initial_query = options
-        .iter()
-        .find(|o| o.id == value.get())
-        .map(|o| o.label.get())
-        .unwrap_or_default();
+    // `query` is the text in the input; it doubles as the filter. In single
+    // mode seed it from the initial committed selection so the input shows the
+    // chosen label on first paint (external changes are synced via `on_defer`
+    // below). In multi mode the input is a SEARCH BOX and starts empty — there
+    // is no one label for a list of picks.
+    let initial_query = if multi {
+        String::new()
+    } else {
+        options
+            .iter()
+            .find(|o| o.id == value.get())
+            .map(|o| o.label.get())
+            .unwrap_or_default()
+    };
     let query: Signal<String> = signal(initial_query);
     let open: Signal<bool> = signal(false);
     // Keyboard highlight as a position into the *current* filtered list.
@@ -307,21 +417,41 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
         memo(move || {
             let q = query.get();
             let labels: Vec<String> = options.iter().map(|o| o.label.get()).collect();
-            let sel_id = value.get();
-            let sel_label = options.iter().find(|o| o.id == sel_id).map(|o| o.label.get());
+            // The "query equals the committed label ⇒ list everything" trick
+            // is single-mode only: in multi mode the input never holds a
+            // label, so the query is always a genuine search.
+            let sel_label = if multi {
+                None
+            } else {
+                let sel_id = value.get();
+                options.iter().find(|o| o.id == sel_id).map(|o| o.label.get())
+            };
             filter_indices(&labels, &q, sel_label.as_deref())
         })
     };
 
-    // Commit option `oi`: report its id, show its label, close the menu.
+    // Commit option `oi`. Single mode: report its id, show its label, close
+    // the menu. Multi mode: TOGGLE it and report the whole vec, leaving the
+    // menu open and the query intact — the same rule a checkable `MenuEntry`
+    // follows, so several matches of one search can be stacked without
+    // retyping it.
     let commit: Rc<dyn Fn(usize)> = {
         let options = options.clone();
         let on_change = on_change.clone();
         Rc::new(move |oi: usize| {
-            if let Some(o) = options.get(oi) {
+            let Some(o) = options.get(oi) else { return };
+            let Some(sel) = selection else {
                 (on_change)(o.id.clone());
                 query.set(o.label.get());
                 open.set(false);
+                return;
+            };
+            let next = toggled(&sel.get(), &o.id);
+            // Writes are staged, so hand the new vec on as a VALUE rather
+            // than re-reading the signal in this same pass.
+            sel.set(next.clone());
+            if let Some(cb) = &on_selection_change {
+                (cb)(next);
             }
         })
     };
@@ -331,6 +461,13 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let revert: Rc<dyn Fn()> = {
         let options = options.clone();
         Rc::new(move || {
+            // Multi mode has no committed label to revert TO — the field
+            // holds the query and the selection lives in the vec — so
+            // dismissing just abandons the search. The picks are untouched.
+            if multi {
+                query.set(String::new());
+                return;
+            }
             let label = options
                 .iter()
                 .find(|o| o.id == value.get())
@@ -349,7 +486,14 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
         let options = options.clone();
         Rc::new(move || {
             open.set(true);
-            highlight.set(initial_highlight(&filtered.get(), &options, &value.get()));
+            // Multi mode seeds on the FIRST pick — there is no single
+            // committed selection to land on, and the top row is the
+            // fallback either way.
+            let seed = match selection {
+                Some(sel) => sel.get().first().cloned().unwrap_or_default(),
+                None => value.get(),
+            };
+            highlight.set(initial_highlight(&filtered.get(), &options, &seed));
         })
     };
 
@@ -360,7 +504,9 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let _sync = {
         let options = options.clone();
         on_defer(value, move |new_id, _| {
-            if open.get() {
+            // Multi mode ignores `value` entirely, and the input holds a
+            // query that an out-of-band write must never clobber.
+            if multi || open.get() {
                 return;
             }
             let label = options
@@ -370,6 +516,19 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                 .unwrap_or_default();
             query.set(label);
         })
+    };
+
+    // The input is empty whenever the user isn't actively searching, so in
+    // multi mode the PLACEHOLDER is where the selection shows: one pick reads
+    // as its label, several as a count. Anything richer (removable chips) is
+    // the host's, for the reasons on `AutocompleteProps::selection`.
+    let placeholder = match selection {
+        None => props.placeholder.clone(),
+        Some(sel) => {
+            let base = props.placeholder.clone();
+            let opts = options.clone();
+            Reactive::derive(move || selection_summary(&sel.get(), &opts, base.get()))
+        }
     };
 
     // --- input --------------------------------------------------------------
@@ -522,7 +681,15 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                         let commit_row = snapshot_commit.clone();
                         let build: EachRowBuild =
                             Box::new(move || {
-                                vec![row(o, oi, commit_row, move || filtered.get(), highlight, value)]
+                                vec![row(
+                                    o,
+                                    oi,
+                                    commit_row,
+                                    move || filtered.get(),
+                                    highlight,
+                                    value,
+                                    selection,
+                                )]
                             });
                         (key, build)
                     })
@@ -577,6 +744,11 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
 /// cursor paints the subtle hover surface (`cursor`) — an open menu never
 /// shows two solid rows. When the cursor rests on the committed row (the
 /// seeded state right after opening), `on` wins.
+///
+/// MULTI-SELECT rows carry a leading checkbox instead, and never paint
+/// solid: "never two solid rows" cannot survive a list of picks, and a panel
+/// of them would be unreadable. The mark carries the selection, the row
+/// style is left to carry the cursor alone.
 fn row(
     o: SelectOption,
     oi: usize,
@@ -587,16 +759,25 @@ fn row(
     filtered: impl Fn() -> Vec<usize> + 'static,
     highlight: Signal<usize>,
     value: Signal<String>,
+    selection: Option<Signal<Vec<String>>>,
 ) -> Element {
     let id_for_style = o.id.clone();
     let label = o.label.clone();
-    pressable(vec![text(label).into_element()], move || (commit)(oi))
+    let mut kids = Vec::with_capacity(2);
+    if let Some(sel) = selection {
+        let id = o.id.clone();
+        kids.push(crate::components::menu::menu_checkbox(Reactive::derive(move || {
+            sel.get().iter().any(|s| s == &id)
+        })));
+    }
+    kids.push(text(label).into_element());
+    pressable(kids, move || (commit)(oi))
         .with_style(move || {
             let _ = idea_theme::active_theme_untracked()
                 .downcast_ref::<IdeaThemeRef>()
                 .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
             let highlighted = filtered().get(highlight.get()).copied() == Some(oi);
-            let selected = value.get() == id_for_style;
+            let selected = selection.is_none() && value.get() == id_for_style;
             let variant = if selected {
                 "on"
             } else if highlighted {
@@ -732,6 +913,106 @@ mod tests {
     });
     }
 
+    #[test]
+    fn multi_toggle_adds_then_removes_keeping_insertion_order() {
+        with_test_world(|| {
+            let picked = toggled(&[], "b");
+            assert_eq!(picked, labels(&["b"]));
+            let picked = toggled(&picked, "a");
+            assert_eq!(picked, labels(&["b", "a"]), "picks keep INSERTION order");
+            let picked = toggled(&picked, "b");
+            assert_eq!(picked, labels(&["a"]), "toggling a picked id removes it");
+            assert_eq!(toggled(&picked, "a"), Vec::<String>::new());
+    });
+    }
+
+    /// The multi-select input shows its selection in the PLACEHOLDER (the
+    /// box itself holds the search query). One pick reads as its label —
+    /// "1 selected" would be a worse way to say "Bolting" — and several as
+    /// a count. Nothing picked falls back to the host's placeholder.
+    #[test]
+    fn multi_placeholder_summarises_the_selection() {
+        with_test_world(|| {
+            let opts =
+                vec![SelectOption::new("a", "Alpha"), SelectOption::new("b", "Beta")];
+            let base = || Some("Search…".to_string());
+
+            assert_eq!(selection_summary(&[], &opts, base()), base());
+            assert_eq!(
+                selection_summary(&labels(&["b"]), &opts, base()),
+                Some("Beta".to_string()),
+                "a lone pick reads as its own label"
+            );
+            assert_eq!(
+                selection_summary(&labels(&["a", "b"]), &opts, base()),
+                Some("2 selected".to_string())
+            );
+            // An id with no matching option can't be labelled — fall back
+            // rather than showing a blank box.
+            assert_eq!(selection_summary(&labels(&["gone"]), &opts, base()), base());
+    });
+    }
+
+    /// A multi-select row carries a leading checkbox and NEVER paints solid:
+    /// "an open menu never shows two solid rows" cannot survive a list of
+    /// picks, so the mark carries the selection and the row style is left to
+    /// carry the keyboard cursor alone.
+    #[test]
+    fn multi_rows_carry_a_checkbox_and_never_paint_solid() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+
+            let filtered = memo(|| vec![0, 1]);
+            let highlight: Signal<usize> = runtime_core::signal(1);
+            let value: Signal<String> = runtime_core::signal(String::new());
+            let selection: Signal<Vec<String>> = runtime_core::signal(labels(&["a"]));
+            let el = row(
+                SelectOption::new("a", "A"),
+                0,
+                Rc::new(|_| {}),
+                move || filtered.get(),
+                highlight,
+                value,
+                Some(selection),
+            );
+            let P::Pressable { style: Some(style), children, .. } = classify(el) else {
+                panic!("a menu row is a styled pressable");
+            };
+            assert_eq!(children.len(), 2, "a multi row is [checkbox, label]");
+            let TStyle::AppFn(style) = style else {
+                panic!("row style is reactive (cursor resolves live)");
+            };
+            // Row 0 IS selected but the cursor is on row 1, so it must not
+            // paint solid — in single mode this same state would be `on`.
+            let bg = runtime_core::resolve_style(&style()).background.clone();
+            let selected_bg = bg.map(|b| b.resolve());
+
+            let single = row(
+                SelectOption::new("a", "A"),
+                0,
+                Rc::new(|_| {}),
+                move || filtered.get(),
+                highlight,
+                runtime_core::signal("a".to_string()),
+                None,
+            );
+            let P::Pressable { style: Some(TStyle::AppFn(single_style)), children: single_kids, .. } =
+                classify(single)
+            else {
+                panic!("a single-mode row is a styled pressable");
+            };
+            assert_eq!(single_kids.len(), 1, "a single-mode row is the label alone");
+            let single_bg = runtime_core::resolve_style(&single_style())
+                .background
+                .clone()
+                .map(|b| b.resolve());
+            assert_ne!(
+                selected_bg, single_bg,
+                "a picked multi row must not borrow single mode's solid selection paint"
+            );
+    });
+    }
+
     // REGRESSION: the keyboard-cursor row and the committed-selection row
     // used the same `active: on` style, so an open menu showed two solid
     // rows. The three states must resolve to three distinct paints:
@@ -751,6 +1032,7 @@ mod tests {
                 move || filtered.get(),
                 highlight,
                 value,
+                None,
             );
             let P::Pressable { style: Some(style), .. } = classify(el) else {
                 panic!("a menu row is a styled pressable");
