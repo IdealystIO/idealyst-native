@@ -15,10 +15,37 @@
 //! `None`).
 //!
 //! Native scroll / pinch on the subscribed element is suppressed via
-//! `touch-action: none`. Once a handler returns `claim: true`, we
-//! call `setPointerCapture` so subsequent events stay locked to this
-//! element even if the finger / cursor leaves its bounds — that's
-//! the web-side implementation of the claim protocol.
+//! `touch-action: none`; the native text selection a press would
+//! otherwise anchor is suppressed via `selectstart` (see that listener
+//! for why not `preventDefault` and not `user-select`).
+//!
+//! **`setPointerCapture` runs when a handler CONSUMES the `Began`, not
+//! when it claims.** Consuming already means "this pointer is mine":
+//! `runtime_shared::touch` documents that whichever handler consumes the
+//! `Began` keeps every later event for that `TouchId`, and every native
+//! backend delivers that for free — UIKit `touchesMoved:`, AppKit
+//! `mouseDragged:` and Android's touch target all keep reporting to the
+//! view that took the down, however far outside its bounds the finger
+//! travels. DOM delivery does not: an uncaptured `pointermove` goes to
+//! whatever is under the cursor, so an element hears only about motion
+//! that stays inside its own rect.
+//!
+//! That silently broke every slop-gated recognizer (pan, drag, pinch),
+//! which by construction cannot claim until it has measured N px of
+//! travel — the travel it needs the events to see. Chrome coalesces
+//! `pointermove` to one dispatch per frame, aimed at the element under
+//! the cursor's FINAL position that frame, so a normal-speed flick's
+//! first sample is already off a small handle and the recognizer hears
+//! nothing after `Began`. It presented as "a drag only starts if you
+//! press and move slowly", and imposed an unwritten floor of ~2× the
+//! activation slop on the size of any drag handle.
+//!
+//! Capture is delivery, not preemption — it cancels no native scroller
+//! by itself, and native scrolling from this element is already off via
+//! `touch-action: none` — so it is not a claim and must not wait for
+//! one. The `claim`-driven capture on a later `Moved` stays as a
+//! fallback (it is idempotent, and re-tries a press-time capture the
+//! browser refused).
 //!
 //! A release that lands off the element still has to finish the
 //! gesture, so there is also a safety net on `window` — but exactly
@@ -65,9 +92,9 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
     // on this element, which we track here. Touch never hovers, so
     // this filter is effectively a no-op for finger input.
     //
-    // We also track captured pointers (those for which a handler
-    // returned `claim: true`) so future logic — e.g. an element
-    // suppressing scroll while claimed — can read it.
+    // We also track captured pointers — those routed to this element by
+    // `setPointerCapture`, i.e. every gesture whose `Began` this handler
+    // consumed — so a later `claim: true` doesn't re-capture needlessly.
     let active: Rc<RefCell<SmallIdSet<i32>>> = Rc::new(RefCell::new(SmallIdSet::new()));
     let captured: Rc<RefCell<SmallIdSet<i32>>> = Rc::new(RefCell::new(SmallIdSet::new()));
 
@@ -228,9 +255,12 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
                     // for as long as the gesture is live (mirrors `active` /
                     // `origins`, cleared by the same `finish`).
                     register_gesture(ev.pointer_id(), &finish);
-                    if response.claim {
-                        capture_pointer(&element_for_capture, ev.pointer_id(), &captured);
-                    }
+                    // Capture on the CONSUME, not on a later claim — see
+                    // the module docs. Without it a recognizer that has to
+                    // measure travel before it can claim never sees the
+                    // travel, because DOM delivery is bounded by this
+                    // element's rect until something captures.
+                    capture_pointer(&element_for_capture, ev.pointer_id(), &captured);
                 }
             }
         });
@@ -419,6 +449,49 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
             "pointermove",
             closure.as_ref().unchecked_ref(),
         );
+        super::own_listener(closure);
+    }
+
+    // selectstart — suppress the native text selection a gesture press would
+    // otherwise anchor.
+    //
+    // A press this element consumed is a gesture, not a caret placement, and
+    // on every native backend it selects nothing (AppKit labels are
+    // `isSelectable: false` by default, UIKit/Android labels likewise) — so
+    // the browser sweeping a highlight across whatever sits beside a drag
+    // handle is a web-only divergence. It is also the *visible* half of a
+    // gesture that failed to pick up: the drag silently doesn't happen and
+    // the user gets a stray highlight, which reads as a styling bug.
+    //
+    // Cancelling `selectstart` is the narrow tool for this. The two
+    // alternatives are both worse:
+    //   - `preventDefault()` on the consumed `pointerdown` suppresses the
+    //     compatibility `mousedown`, and the browser's focus move IS that
+    //     event's default action — the framework relies on exactly this
+    //     elsewhere (`mark_preserves_focus`). Cancelling it here would stop
+    //     a press on a gesture surface from focusing anything inside it and
+    //     from blurring whatever was focused before, so a text input inside
+    //     a draggable card would go dead.
+    //   - `user-select: none` written next to `touch-action: none` is an
+    //     INLINE declaration, so it would outrank the stylesheet rule the
+    //     style system emits for the `user_select` prop — an author could no
+    //     longer opt a gesture surface back into selection at all.
+    //
+    // Gated on a live consumed press so ordinary selection through this
+    // element (no gesture in flight) is untouched, and skipped when the
+    // press landed somewhere that owns its own selection — an editable
+    // field, or a subtree whose computed `user-select` is an explicit
+    // opt-in.
+    {
+        let active = active.clone();
+        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
+            if active.borrow().is_empty() || target_owns_its_selection(&ev) {
+                return;
+            }
+            ev.prevent_default();
+        });
+        let _ = element
+            .add_event_listener_with_callback("selectstart", closure.as_ref().unchecked_ref());
         super::own_listener(closure);
     }
 
@@ -720,11 +793,74 @@ fn pressure_to_force(pressure: f32) -> Option<f32> {
     }
 }
 
+/// Whether the node a `selectstart` fired on owns its own text selection, and
+/// so must keep it even while this element has a gesture press in flight:
+/// an editable field (its caret / drag-select IS the selection), or a subtree
+/// carrying an explicit `user-select` opt-in from the author's `user_select`
+/// prop. Everything else — plain labels, the gesture surface itself — has no
+/// business anchoring a highlight off a press the handler took.
+///
+/// `getComputedStyle` forces a style recalc, which is why this runs on
+/// `selectstart` (once per press) and never on the `pointermove` hot path.
+fn target_owns_its_selection(ev: &web_sys::Event) -> bool {
+    let Some(target) = ev.target() else {
+        return false;
+    };
+    let Ok(el) = target.dyn_into::<Element>() else {
+        return false;
+    };
+    if let Some(html) = el.dyn_ref::<web_sys::HtmlElement>() {
+        if html.is_content_editable() {
+            return true;
+        }
+    }
+    if matches!(el.tag_name().as_str(), "INPUT" | "TEXTAREA") {
+        return true;
+    }
+    let Some(win) = web_sys::window() else {
+        return false;
+    };
+    let Ok(Some(style)) = win.get_computed_style(&el) else {
+        return false;
+    };
+    // Safari only landed the unprefixed property recently; the style system
+    // emits both (see `css::rules_to_css`), so read both.
+    ["user-select", "-webkit-user-select"].iter().any(|prop| {
+        matches!(
+            style.get_property_value(prop).unwrap_or_default().as_str(),
+            "text" | "all"
+        )
+    })
+}
+
 /// Call `Element.setPointerCapture(pointer_id)` and record the
 /// capture in `captured`. Suppresses the call on browsers that
 /// haven't implemented it (we fall back to whatever
 /// `add_event_listener` plus `touch-action: none` give us).
 fn capture_pointer(element: &Element, pointer_id: i32, captured: &Rc<RefCell<SmallIdSet<i32>>>) {
+    #[cfg(test)]
+    record_capture_attempt(pointer_id);
     let _ = element.set_pointer_capture(pointer_id);
     captured.borrow_mut().insert(pointer_id);
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Pointer ids `capture_pointer` was called for, newest last. The browser
+    /// itself refuses `setPointerCapture` for a synthetic pointer id (it
+    /// matches no *active* pointer, so it throws `NotFoundError` and
+    /// `hasPointerCapture` stays false), so a wasm test can only observe that
+    /// the backend ASKED — which is the decision under test.
+    static CAPTURE_ATTEMPTS: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn record_capture_attempt(pointer_id: i32) {
+    CAPTURE_ATTEMPTS.with(|c| c.borrow_mut().push(pointer_id));
+}
+
+/// Test hook: drain the pointer ids captured since the last call.
+#[cfg(test)]
+pub(crate) fn take_capture_attempts() -> Vec<i32> {
+    CAPTURE_ATTEMPTS.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }

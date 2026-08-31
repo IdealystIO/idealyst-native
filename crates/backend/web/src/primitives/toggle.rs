@@ -47,6 +47,22 @@ pub(crate) fn create(
     );
     let id = b.node_id(&input.clone().unchecked_into::<Node>());
     b.state_listeners.entry(id).or_default().push(closure);
+    // Consume the press from ancestor `on_touch` recognizers, exactly as
+    // `button` / `link` / `pressable` do — a toggle inside a clickable row
+    // must not ALSO trigger the row, which is native's single-view delivery.
+    //
+    // For a checkbox this is load-bearing beyond the double-fire: a checkbox
+    // activates on the synthesized `click`, and `click` is dispatched at the
+    // element the pointer was TARGETED at, which an ancestor's
+    // `setPointerCapture` moves off the checkbox. Since the ancestor captures
+    // as soon as its handler consumes the `Began` (see
+    // `touch::install`), an unswallowed checkbox inside a gesture surface
+    // stops toggling at all — verified in Chrome, where the `change` event
+    // simply never fires. Swallowing the press means the ancestor never
+    // consumes it, so it never captures. (A slider and a text field are not
+    // exposed the same way: Blink drives a range thumb and caret placement
+    // from its own internal capture, both verified unaffected.)
+    super::touch::swallow_ancestor_touch(input.as_ref());
     input.unchecked_into::<Node>()
 }
 

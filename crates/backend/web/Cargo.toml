@@ -129,6 +129,11 @@ features = [
     "Element",
     "ErrorEvent",
     "Event",
+    # `EventInit` is test-only today: the gesture-press selection tests
+    # fabricate the cancelable, bubbling `selectstart` the browser fires when
+    # a press starts anchoring a highlight. web-sys features aren't
+    # test-scoped, so it lives here with the rest.
+    "EventInit",
     "History",
     "HtmlAnchorElement",
     "HtmlElement",

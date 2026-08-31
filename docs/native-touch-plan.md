@@ -121,6 +121,14 @@ Per-platform delivery:
 | wgpu     | Unify winit `Touch` + `CursorMoved` + `MouseInput` into a single `PointerEvent` stream. Hit-test in renderer (already happens for clicks). | Stable `TouchId` per mouse button or per OS touch id. |
 | web      | Pointer Events API (`pointerdown/move/up/cancel`), `setPointerCapture` on Began. | `touch-action: none` on subscribed nodes. |
 
+Note on the web row: capture is bound to the handler CONSUMING the
+`Began`, not to `claim` — it is how the DOM is made to honor "the handler
+that consumed keeps the gesture", which the native platforms do by
+themselves. An uncaptured `pointermove` goes to whatever is under the
+cursor, so gating capture on `claim` made every slop-gated recognizer
+unable to see the travel it needs in order to claim. Capture preempts
+nothing on its own; the claim protocol below is separate.
+
 ## Claim protocol — the hard part
 
 When a row inside a vertical `ScrollView` wants to recognize a horizontal

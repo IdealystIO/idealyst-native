@@ -2110,6 +2110,264 @@ fn regression_web_preserves_focus_cancels_pointerdown_through_pressable_swallow(
 }
 
 // ---------------------------------------------------------------------------
+// Pointer capture is bound to CONSUME, not to CLAIM.
+//
+// The responder model promises that whichever handler consumes the `Began`
+// keeps every later event for that `TouchId`. Every native backend gives that
+// for free; the DOM does not — an uncaptured `pointermove` is dispatched to
+// whatever is under the cursor, so an element only heard about motion that
+// stayed inside its own rect. Capture used to wait for `claim: true`, which no
+// slop-gated recognizer (pan, drag, pinch) can return until it has measured
+// travel — travel it can only measure from events it is no longer being sent.
+// A normal-speed flick off a small handle therefore produced a `Began` and
+// then silence, and the press became a native text selection instead.
+// ---------------------------------------------------------------------------
+
+/// Build a bubbling, cancelable pointer event of `kind` for `pointer_id` and
+/// dispatch it on `target`. Wider than [`dispatch_bubbling_pointerdown`]: the
+/// capture tests need a specific pointer id, and the selection tests need the
+/// matching `pointerup` to close the gesture back down.
+fn dispatch_bubbling_pointer(target: &web_sys::Element, kind: &str, pointer_id: i32) {
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_pointer_id(pointer_id);
+    let ev = web_sys::PointerEvent::new_with_event_init_dict(kind, &init)
+        .unwrap_or_else(|_| panic!("construct bubbling {kind}"));
+    target.dispatch_event(&ev).expect("dispatch pointer event");
+}
+
+/// Dispatch the bubbling, cancelable `selectstart` a browser fires when a
+/// press starts anchoring a highlight, and report whether it was cancelled.
+fn selectstart_was_suppressed(target: &web_sys::Element) -> bool {
+    let init = web_sys::EventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    let ev = web_sys::Event::new_with_event_init_dict("selectstart", &init)
+        .expect("construct selectstart");
+    target.dispatch_event(&ev).expect("dispatch selectstart");
+    ev.default_prevented()
+}
+
+/// REGRESSION TEST.
+///
+/// A handler that CONSUMES the `Began` and never claims must still get the
+/// pointer captured, because capture is how the DOM keeps delivering. Before
+/// the fix capture was gated on `claim: true`, so a `DragRecognizer` at the
+/// default 8 px slop was unrecognizable on any handle smaller than ~2× the
+/// slop: the first coalesced `pointermove` of a real flick lands outside the
+/// handle and is dispatched somewhere else entirely.
+///
+/// The browser refuses `setPointerCapture` for a pointer id that matches no
+/// *active* pointer, which a synthesized event never does, so what is
+/// observable here is that the backend ASKED — which is the decision the bug
+/// was in.
+#[wasm_bindgen_test]
+fn regression_web_consumed_press_captures_pointer_without_a_claim() {
+    use runtime_shared::TouchResponse;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+
+    let el = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&el).unwrap();
+    backend.install_touch_handler_impl(
+        &el.clone().unchecked_into(),
+        // CONSUMED, never CLAIMED — exactly what every slop-gated recognizer
+        // returns for its whole tracking phase.
+        Rc::new(move |_| TouchResponse::CONSUMED),
+    );
+
+    let _ = crate::primitives::touch::take_capture_attempts();
+    dispatch_bubbling_pointer(&el, "pointerdown", 41);
+
+    assert_eq!(
+        crate::primitives::touch::take_capture_attempts(),
+        vec![41],
+        "a consumed Began must capture the pointer so the gesture keeps \
+         receiving moves once the cursor leaves the element",
+    );
+
+    dispatch_bubbling_pointer(&el, "pointerup", 41);
+}
+
+/// COMPANION.
+///
+/// Capture follows ownership: a handler that IGNORED the press does not own
+/// the pointer, so the backend must not lock the pointer to it — the `Began`
+/// is still bubbling up to look for an ancestor that wants it.
+#[wasm_bindgen_test]
+fn web_touch_ignored_press_does_not_capture_the_pointer() {
+    use runtime_shared::TouchResponse;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+
+    let el = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&el).unwrap();
+    backend.install_touch_handler_impl(
+        &el.clone().unchecked_into(),
+        Rc::new(move |_| TouchResponse::IGNORED),
+    );
+
+    let _ = crate::primitives::touch::take_capture_attempts();
+    dispatch_bubbling_pointer(&el, "pointerdown", 42);
+
+    assert!(
+        crate::primitives::touch::take_capture_attempts().is_empty(),
+        "an unconsumed press must not be captured — the Began is still \
+         looking for an ancestor to own it",
+    );
+}
+
+/// REGRESSION TEST.
+///
+/// The second-order damage of a gesture press: the browser treats it as a
+/// selection anchor, so a press that fails to become a drag sweeps a
+/// highlight across whatever sits beside the handle. That is the symptom
+/// users actually report ("it highlights the text instead of dragging"),
+/// and on every native backend the same press selects nothing. While this
+/// element owns a press, `selectstart` under it is cancelled.
+#[wasm_bindgen_test]
+fn regression_web_gesture_press_suppresses_native_text_selection() {
+    use runtime_shared::TouchResponse;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+
+    let handle = doc.create_element("div").unwrap();
+    let label = doc.create_element("span").unwrap();
+    label.set_text_content(Some("drag me"));
+    handle.append_child(&label).unwrap();
+    doc.body().unwrap().append_child(&handle).unwrap();
+    backend.install_touch_handler_impl(
+        &handle.clone().unchecked_into(),
+        Rc::new(move |_| TouchResponse::CONSUMED),
+    );
+
+    assert!(
+        !selectstart_was_suppressed(&label),
+        "with no press in flight the element must not interfere with \
+         ordinary text selection",
+    );
+
+    dispatch_bubbling_pointer(&handle, "pointerdown", 43);
+    assert!(
+        selectstart_was_suppressed(&label),
+        "a press this handler consumed is a gesture, not a selection anchor",
+    );
+
+    dispatch_bubbling_pointer(&handle, "pointerup", 43);
+    assert!(
+        !selectstart_was_suppressed(&label),
+        "the suppression must last only as long as the gesture — the release \
+         hands selection back",
+    );
+}
+
+/// COMPANION.
+///
+/// Suppression stops where something else owns the selection: an editable
+/// field (its caret IS the selection) and any subtree the author opted back
+/// in through `user_select`. Without these a text input inside a draggable
+/// card would go un-selectable, and the `UserSelect::Text` prop would be
+/// unreachable on any gesture surface.
+#[wasm_bindgen_test]
+fn web_gesture_press_leaves_owned_selections_alone() {
+    use runtime_shared::TouchResponse;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+
+    let card = doc.create_element("div").unwrap();
+    let field = doc.create_element("input").unwrap();
+    let selectable = doc.create_element("span").unwrap();
+    selectable
+        .set_attribute("style", "user-select: text; -webkit-user-select: text")
+        .unwrap();
+    card.append_child(&field).unwrap();
+    card.append_child(&selectable).unwrap();
+    doc.body().unwrap().append_child(&card).unwrap();
+    backend.install_touch_handler_impl(
+        &card.clone().unchecked_into(),
+        Rc::new(move |_| TouchResponse::CONSUMED),
+    );
+
+    dispatch_bubbling_pointer(&card, "pointerdown", 44);
+
+    assert!(
+        !selectstart_was_suppressed(&field),
+        "an editable field owns its own selection even inside a gesture surface",
+    );
+    assert!(
+        !selectstart_was_suppressed(&selectable),
+        "an explicit user-select opt-in must survive a gesture press",
+    );
+
+    dispatch_bubbling_pointer(&card, "pointerup", 44);
+}
+
+/// REGRESSION TEST.
+///
+/// A `Toggle` inside a view that carries `on_touch` must swallow the press,
+/// like `Button` / `Link` / `Pressable` already do. The double-fire is the
+/// same bug they had, but for a checkbox it is worse than cosmetic: a
+/// checkbox activates on the synthesized `click`, which is dispatched at the
+/// element the pointer was targeted at — and an ancestor that captures the
+/// pointer (which it now does the moment its handler consumes the `Began`)
+/// moves that target off the checkbox, so the toggle silently stops toggling.
+/// Verified in Chrome against a bare page: with an ancestor capturing at
+/// press, a real click on a nested checkbox never fires `change`.
+#[wasm_bindgen_test]
+fn regression_web_toggle_swallows_ancestor_on_touch() {
+    use runtime_shared::TouchResponse;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+
+    let row = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&row).unwrap();
+    let row_fired = Rc::new(Cell::new(false));
+    let rf = row_fired.clone();
+    backend.install_touch_handler_impl(
+        &row.clone().unchecked_into(),
+        Rc::new(move |_| {
+            rf.set(true);
+            TouchResponse::CONSUMED
+        }),
+    );
+
+    let toggle: web_sys::Node =
+        backend.create_toggle_impl(false, Rc::new(|_| {}), &Default::default());
+    row.append_child(&toggle).unwrap();
+    let toggle_el: web_sys::Element = toggle.unchecked_into();
+
+    let _ = crate::primitives::touch::take_capture_attempts();
+    dispatch_bubbling_pointerdown(&toggle_el);
+
+    assert!(
+        !row_fired.get(),
+        "a press on a Toggle must NOT reach the ancestor row's on_touch",
+    );
+    assert!(
+        crate::primitives::touch::take_capture_attempts().is_empty(),
+        "the row never consumed the press, so it must not capture the pointer \
+         away from the checkbox's click",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Secondary-press delivery via `contextmenu` — FRAMEWORK-NOTES #95.
 // ---------------------------------------------------------------------------
 

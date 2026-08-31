@@ -30,15 +30,18 @@
 //!
 //! ## Two footguns this model creates
 //!
-//! 1. **A `claim` on an ancestor captures the whole subtree's gesture.**
-//!    [`CLAIMED`] (i.e. `claim: true`) invokes the backend's capture
-//!    protocol — `setPointerCapture` on web, disallow-intercept / claim
-//!    on native. Once an ancestor captures a pointer, descendant controls
-//!    that rely on their own touch stream — or on a synthesized `click`,
-//!    which web only fires when `pointerdown`+`pointerup` both land on the
-//!    same element — never see the gesture and go dead. **Put the handler
-//!    on the leaf that should claim, not on a container that wraps live
-//!    controls.** An ancestor that only needs to stop a touch from
+//! 1. **An ancestor that takes the press takes the whole subtree's
+//!    gesture.** Consuming the `Began` already binds the pointer to that
+//!    handler for the rest of the gesture (that is the promise above, and
+//!    on web `setPointerCapture` is what keeps it — see
+//!    `backend_web::primitives::touch`); [`CLAIMED`] additionally invokes
+//!    the backend's preemption protocol, disallow-intercept / cancel the
+//!    ancestor scroller on native. Either way, descendant controls that
+//!    rely on their own touch stream — or on a synthesized `click`, which
+//!    web only fires when `pointerdown`+`pointerup` both land on the same
+//!    element — never see the gesture and go dead. **Put the handler on
+//!    the leaf that should own the press, not on a container that wraps
+//!    live controls.** An ancestor that only needs to stop a touch from
 //!    falling through to a surface *beneath* it (e.g. a scrim over a
 //!    canvas) should return [`CONSUMED`] (consume **without** `claim`) and
 //!    must not enclose the controls it means to keep interactive.
@@ -158,11 +161,24 @@ pub struct TouchResponse {
     /// [`TouchId`]. An unconsumed `Began` re-tries one level up; this
     /// repeats until either a handler consumes or the chain runs out
     /// (and the event is dropped).
+    ///
+    /// **Consuming is what guarantees delivery** — including motion that
+    /// leaves the view's bounds, which native gives for free (UIKit
+    /// `touchesMoved:`, AppKit `mouseDragged:`, Android's touch target)
+    /// and web buys with `setPointerCapture` at this moment. A recognizer
+    /// that has to measure travel before it can decide the gesture is its
+    /// own therefore consumes from `Began`; it does NOT need to `claim`
+    /// to keep hearing about the pointer.
     pub consumed: bool,
     /// `true` → preempt any competing native consumers of this touch.
-    /// Triggers the backend's claim protocol (e.g. cancelling parent
-    /// scroll views, capturing the pointer on web). Idempotent: calling
-    /// claim on every subsequent event is harmless.
+    /// Triggers the backend's claim protocol (cancelling parent scroll
+    /// views, disallow-intercept). Idempotent: calling claim on every
+    /// subsequent event is harmless.
+    ///
+    /// Strictly about preemption, never about delivery — `consumed` is
+    /// what routes the rest of the gesture here. Don't claim early to buy
+    /// events; that steals the touch from any scroller the handler sits
+    /// in, which is exactly wrong on mobile.
     ///
     /// Typical use: a horizontal pan recognizer inside a vertical
     /// `ScrollView` returns `claim: true` once it has seen ≥ 8 px of
