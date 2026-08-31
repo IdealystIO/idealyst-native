@@ -26,6 +26,37 @@
 //! as reconstructable [`MenuEntry`] data (mirroring `Select`'s menu),
 //! whereas top-level `Menu` contents are composed children. See the
 //! note on `SubMenuProps::items`.
+//!
+//! # A searchable menu
+//!
+//! `header` and `footer` pin an element outside the scrolling row area, so it
+//! stays put while a long list scrolls. The framework pins the slot; the
+//! CALLER owns the filtering — which keeps the slot equally usable for a
+//! section heading, a hint, or a bulk action:
+//!
+//! ```ignore
+//! let query = signal(String::new());
+//! let rows = rx!({
+//!     let q = query.get().to_lowercase();
+//!     options.iter().filter(|o| o.label.to_lowercase().contains(&q)).collect()
+//! });
+//! ui! {
+//!     Menu(
+//!         target = AnchorTarget::from(trigger),
+//!         on_dismiss = Some(on_dismiss),
+//!         header = Some(ui! { Field(value = query, placeholder = "Search…") }),
+//!     ) {
+//!         // …one MenuItem per surviving option, plus a "No matches" row
+//!         // when the query filters everything out.
+//!     }
+//! }
+//! ```
+//!
+//! A menu with either slot set preserves focus across row presses, so the
+//! search box keeps its caret when a row is clicked. Note that `SubMenu` has
+//! no slots by design: its flyout opens and closes on HOVER, so a box you
+//! type into while the pointer drifts off would close under you. Anchor a
+//! searchable menu to a CLICK instead.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -60,6 +91,16 @@ fn grow() -> Element {
 /// running off the bottom of the viewport.
 fn panel(children: Vec<Element>) -> Element {
     crate::components::menu_panel::scrolling_menu_panel(children)
+}
+
+/// [`panel`] with `Menu`'s optional pinned `header`/`footer` slots. Passing
+/// `None` for both is byte-for-byte [`panel`] — a slotless menu is unchanged.
+fn slotted_panel(
+    children: Vec<Element>,
+    header: Option<Element>,
+    footer: Option<Element>,
+) -> Element {
+    crate::components::menu_panel::slotted_menu_panel(children, header, footer)
 }
 
 // =============================================================================
@@ -102,6 +143,22 @@ pub struct MenuProps {
     /// Panel contents — compose [`MenuItem`], [`MenuLabel`],
     /// [`MenuSeparator`], and [`SubMenu`] children.
     pub children: Vec<Element>,
+    /// Optional element pinned ABOVE the scrolling row area — it stays put
+    /// while the rows scroll under it. A search field is the motivating case:
+    /// the panel holds the box, and the CALLER owns what typing in it does
+    /// (filter your own rows and pass the survivors as `children`). The
+    /// framework deliberately knows nothing about the query, so a header is
+    /// equally a section heading, a hint, or a bulk action.
+    ///
+    /// A menu with either slot set preserves focus across row presses, so a
+    /// focusable header keeps its caret when a row is clicked.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub header: Option<Element>,
+    /// Optional element pinned BELOW the scrolling row area — see
+    /// [`MenuProps::header`]. Typically a "Clear" / "Add ‹what you typed›"
+    /// action that must stay reachable without scrolling to the end.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub footer: Option<Element>,
 }
 
 impl Default for MenuProps {
@@ -113,6 +170,8 @@ impl Default for MenuProps {
             align: ElementAlign::Start,
             offset: 4.0,
             children: Vec::new(),
+            header: None,
+            footer: None,
         }
     }
 }
@@ -136,7 +195,8 @@ pub fn Menu(props: MenuProps) -> Element {
 
     // The anchored panel itself carries NO backdrop — the catcher (below) owns
     // outside-click dismissal; this `on_dismiss` is the Escape-key path.
-    let mut bound = runtime_core::anchored_overlay(target, vec![panel(content)])
+    let mut bound =
+        runtime_core::anchored_overlay(target, vec![slotted_panel(content, props.header, props.footer)])
         .side(props.side)
         .align(props.align)
         .offset(props.offset)
@@ -564,6 +624,67 @@ mod tests {
                 matches!(classify(kids.remove(0)), P::Portal { .. }),
                 "Menu's second child must be the anchored panel Portal"
             );
+    });
+    }
+
+    /// A `Menu`'s `header`/`footer` slots must reach the panel PINNED — direct
+    /// panel children around the scrolling row area, not inside it — so a
+    /// search field stays on screen while a long option list scrolls under it.
+    /// This is the whole point of the slots; if a refactor routes `Menu` back
+    /// through the slotless panel the header silently disappears.
+    #[test]
+    fn menu_slots_reach_the_panel_pinned_around_the_scroller() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+
+            let trigger: Ref<ViewHandle> = Ref::new();
+            let el = Menu(MenuProps {
+                target: Some(AnchorTarget::from(trigger)),
+                children: vec![runtime_core::text("Row".to_string()).into_element()],
+                header: Some(runtime_core::text("Search".to_string()).into_element()),
+                footer: Some(runtime_core::text("Clear".to_string()).into_element()),
+                ..Default::default()
+            });
+
+            // Menu = View[catcher, anchored panel portal]; the panel is the
+            // portal's child.
+            let mut kids = match classify(el) {
+                P::View { children, .. } => children,
+                _ => panic!("a targeted Menu must wrap [catcher, anchored] in a View"),
+            };
+            let anchored = kids.remove(1);
+            let mut portal_kids = match classify(anchored) {
+                P::Portal { children, .. } => children,
+                _ => panic!("Menu's second child must be the anchored panel Portal"),
+            };
+            // The portal's child is `anchored_overlay`'s positioning wrapper;
+            // the SelectMenu panel is inside it.
+            let mut positioned = match classify(portal_kids.remove(0)) {
+                P::View { children, .. } => children,
+                _ => panic!("the anchored portal's child is the positioning wrapper View"),
+            };
+            assert_eq!(positioned.len(), 1, "the positioner wraps the panel alone");
+            let P::View { preserves_focus, mut children, .. } = classify(positioned.remove(0))
+            else {
+                panic!("the positioner's child is the SelectMenu panel View");
+            };
+            assert!(
+                preserves_focus,
+                "a slotted menu preserves focus so a row press can't blur the header field"
+            );
+            assert_eq!(children.len(), 3, "panel children are [header, scroller, footer]");
+            match classify(children.remove(0)) {
+                P::Text { text, .. } => assert_eq!(text.as_deref(), Some("Search")),
+                _ => panic!("the header slot is pinned as the panel's first child"),
+            }
+            assert!(
+                matches!(classify(children.remove(0)), P::ScrollView { .. }),
+                "the rows still scroll between the pinned slots"
+            );
+            match classify(children.remove(0)) {
+                P::Text { text, .. } => assert_eq!(text.as_deref(), Some("Clear")),
+                _ => panic!("the footer slot is pinned as the panel's last child"),
+            }
     });
     }
 

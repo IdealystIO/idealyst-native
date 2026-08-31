@@ -16,7 +16,7 @@ use std::rc::Rc;
 use runtime_core::primitives::portal::AnchorTarget;
 use runtime_core::stylesheet;
 use runtime_core::{
-    ui, viewport_size, Element, FlexDirection, IntoElement, Length, StyleApplication, StyleRules,
+    viewport_size, Element, FlexDirection, IntoElement, Length, StyleApplication, StyleRules,
     StyleSheet, Tokenized
 };
 
@@ -107,8 +107,52 @@ stylesheet! {
 /// height cap is applied reactively from `viewport_size()` so it tracks
 /// orientation / split-view / window resizes and never exceeds the visible area.
 pub(crate) fn scrolling_menu_panel(rows: Vec<Element>) -> Element {
-    let scroller = capped_scroller(rows);
-    ui! { view(style = SelectMenu()) { scroller } }
+    slotted_menu_panel(rows, None, None)
+}
+
+/// The children every slot-capable panel shares: the pinned `header`, the
+/// capped row scroller, then the pinned `footer`. "Pinned" means OUTSIDE the
+/// scroller — a slot stays put while a long row list scrolls under it, which
+/// is the whole reason a search field or an "Add ‹query›" action can live on
+/// a menu at all.
+fn slotted_panel_children(
+    rows: Vec<Element>,
+    header: Option<Element>,
+    footer: Option<Element>,
+) -> Vec<Element> {
+    // Received-elements plumbing (the panel's children arrive as params),
+    // not ad-hoc child authoring — the legitimate Vec<Element> shape.
+    let mut children = Vec::with_capacity(3);
+    if let Some(h) = header {
+        children.push(h);
+    }
+    children.push(capped_scroller(rows));
+    if let Some(f) = footer {
+        children.push(f);
+    }
+    children
+}
+
+/// [`scrolling_menu_panel`] with optional pinned `header`/`footer` slots — the
+/// surface behind `Menu`'s slots. The caller composes whatever goes in them and
+/// owns what it does: the framework pins the slot and caps the rows, it does not
+/// know that a header happens to be a search field.
+///
+/// A slotted panel carries `preserves_focus(true)`, because a slot is exactly
+/// where a caller puts a focusable control — without it the first row press
+/// blurs the search box mid-typing. A panel with NO slots is left as it was:
+/// nothing on it is focusable, and flipping the mark for every `Select` /
+/// `Menu` / `SubMenu` dropdown in the app is a change this does not need to
+/// make.
+pub(crate) fn slotted_menu_panel(
+    rows: Vec<Element>,
+    header: Option<Element>,
+    footer: Option<Element>,
+) -> Element {
+    let slotted = header.is_some() || footer.is_some();
+    let panel = runtime_core::view(slotted_panel_children(rows, header, footer));
+    let panel = if slotted { panel.preserves_focus(true) } else { panel };
+    panel.with_style(|| StyleApplication::new(SelectMenu::sheet())).into_element()
 }
 
 /// [`scrolling_menu_panel`] shaped for a combobox (`Autocomplete`): the same
@@ -134,18 +178,8 @@ pub(crate) fn combobox_menu_panel(
     header: Option<Element>,
     footer: Option<Element>,
 ) -> Element {
-    // Received-elements plumbing (the panel's children arrive as params),
-    // not ad-hoc child authoring — the legitimate Vec<Element> shape.
-    let mut children = Vec::with_capacity(3);
-    if let Some(h) = header {
-        children.push(h);
-    }
-    children.push(capped_scroller(rows));
-    if let Some(f) = footer {
-        children.push(f);
-    }
     let viewport = viewport_size();
-    runtime_core::view(children)
+    runtime_core::view(slotted_panel_children(rows, header, footer))
         .preserves_focus(true)
         .with_style(move || {
             // Reading the viewport subscribes this style: a window resize
@@ -329,6 +363,65 @@ mod tests {
                 P::Text { text, .. } => assert_eq!(text.as_deref(), Some("Footer")),
                 _ => panic!("the footer slot is the panel's last child, outside the scroller"),
             }
+    });
+    }
+
+    /// The slot-capable panel pins `header`/`footer` around the capped
+    /// scroller and marks itself focus-preserving — the two things a search
+    /// field on a menu needs. If a refactor moves a slot inside the scroller
+    /// it scrolls away with the rows; if it drops `preserves_focus`, the
+    /// first row press blurs the box mid-typing.
+    #[test]
+    fn slotted_panel_pins_slots_outside_the_scroller_and_preserves_focus() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+
+            let panel = slotted_menu_panel(
+                vec![runtime_core::text("Row".to_string()).into_element()],
+                Some(runtime_core::text("Header".to_string()).into_element()),
+                Some(runtime_core::text("Footer".to_string()).into_element()),
+            );
+
+            let P::View { preserves_focus, mut children, .. } = classify(panel) else {
+                panic!("the slotted panel is a View (the SelectMenu surface)");
+            };
+            assert!(preserves_focus, "a row press must not blur a focusable header slot");
+            assert_eq!(children.len(), 3, "panel children are [header, scroller, footer]");
+            match classify(children.remove(0)) {
+                P::Text { text, .. } => assert_eq!(text.as_deref(), Some("Header")),
+                _ => panic!("the header slot is the panel's first child, outside the scroller"),
+            }
+            assert!(
+                matches!(classify(children.remove(0)), P::ScrollView { .. }),
+                "the row scroller sits between the pinned slots"
+            );
+            match classify(children.remove(0)) {
+                P::Text { text, .. } => assert_eq!(text.as_deref(), Some("Footer")),
+                _ => panic!("the footer slot is the panel's last child, outside the scroller"),
+            }
+    });
+    }
+
+    /// A panel with NO slots is left exactly as it was — one scroller child,
+    /// and NOT focus-preserving. `preserves_focus` is deliberately scoped to
+    /// slotted panels: flipping it for every `Select` / `Menu` / `SubMenu`
+    /// dropdown in the app is a change this feature does not need to make.
+    #[test]
+    fn a_slotless_panel_is_unchanged_and_does_not_preserve_focus() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+
+            let panel = slotted_menu_panel(
+                vec![runtime_core::text("Row".to_string()).into_element()],
+                None,
+                None,
+            );
+
+            let P::View { preserves_focus, children, .. } = classify(panel) else {
+                panic!("the panel is a View (the SelectMenu surface)");
+            };
+            assert!(!preserves_focus, "a slotless menu panel keeps its original focus behaviour");
+            assert_eq!(children.len(), 1, "the panel holds a single scroller child");
     });
     }
 
