@@ -99,16 +99,24 @@
 //! (`runtime_scene::owned`), so the scopes live exactly as long as the
 //! subtree that uses them.
 //!
-//! # Built-cell post-processing ([`cell_base_application`] & co.)
+//! # Built-cell post-processing ([`map_cell_style`] & co.)
 //!
 //! idea-ui's clickable-row feature re-styles built cells and attaches
 //! touch/hover handlers AFTER the cell element exists. An
 //! `Element::Item` payload is type-erased, so this crate owns that
-//! knowledge: the [`cell_base_application`] / [`set_cell_style`] /
-//! [`set_cell_interaction`] helpers reach through the payload cell
-//! (`PrimCell::with_mut` — the payload is not yet mounted, so in-place
-//! mutation is sound) for BOTH lowerings (native `ViewPrim` grid item,
-//! web [`TableCellPrim`]).
+//! knowledge: the [`map_cell_style`] / [`cell_base_application`] /
+//! [`set_cell_style`] / [`set_cell_interaction`] helpers reach through
+//! the payload cell (`PrimCell::with_mut` — the payload is not yet
+//! mounted, so in-place mutation is sound) for BOTH lowerings (native
+//! `ViewPrim` grid item, web [`TableCellPrim`]).
+//!
+//! [`map_cell_style`] is the one to reach for when layering axes over
+//! a cell: it COMPOSES over whatever style the cell already has, so a
+//! cell styled reactively (a column width that moves under a resize
+//! drag) keeps its own reactivity and takes the overlay too. Reading a
+//! base with [`cell_base_application`] and writing a replacement with
+//! [`set_cell_style`] only ever worked for cells styled with a static
+//! sheet, and skipped the rest in silence.
 #![deny(missing_docs)]
 
 use std::rc::Rc;
@@ -835,6 +843,66 @@ pub fn cell_base_application(cell: &Element) -> Option<StyleApplication> {
         }
         _ => None,
     }
+}
+
+/// Layer reactive axis selections over a built cell's EXISTING style,
+/// whatever shape that style has. Returns whether a cell style was
+/// actually wrapped.
+///
+/// This is the composing counterpart of [`cell_base_application`] +
+/// [`set_cell_style`], and the one a row overlay should reach for. That
+/// pair can only read a STATIC [`StyleProp::Sheet`], so a cell whose
+/// style is already reactive — a column pinned to a width that moves
+/// under a resize drag, say — silently kept its style and lost the
+/// overlay entirely, with nothing logged. The failure is invisible in
+/// the common case (most cells in the row are static, so the row looks
+/// hovered) and reads as one column refusing to take the row's
+/// highlight.
+///
+/// Both reactive shapes end up as [`StyleProp::SheetDynamic`]: a static
+/// application is captured and re-mapped per evaluation, a dynamic one
+/// is composed with `f` around it, so the cell's own reactive inputs
+/// keep their subscriptions and `f`'s are added to them.
+///
+/// A style the sheet engine cannot see through — a preminted class, a
+/// resolved-rules closure, or no style at all — is left exactly as it
+/// was and `false` comes back: composition needs an application, and
+/// there is none to compose with. That is the same outcome those cells
+/// have always had.
+///
+/// Sound for the same reason [`set_cell_style`] is: the payload is not
+/// yet mounted, and realization takes it exactly once after this
+/// returns.
+pub fn map_cell_style(
+    cell: &Element,
+    f: Rc<dyn Fn(StyleApplication) -> StyleApplication>,
+) -> bool {
+    let mut f = Some(f);
+    let mut wrapped = false;
+    visit_cell(cell, &mut |view, table_cell| {
+        let slot = if let Some(p) = view {
+            &mut p.style
+        } else if let Some(p) = table_cell {
+            &mut p.style
+        } else {
+            return;
+        };
+        let Some(f) = f.take() else { return };
+        match slot.take() {
+            Some(StyleProp::Sheet(app)) => {
+                let app = *app;
+                *slot = Some(StyleProp::SheetDynamic(Box::new(move || f(app.clone()))));
+                wrapped = true;
+            }
+            Some(StyleProp::SheetDynamic(g)) => {
+                *slot = Some(StyleProp::SheetDynamic(Box::new(move || f(g()))));
+                wrapped = true;
+            }
+            // Not an application — put it back untouched.
+            other => *slot = other,
+        }
+    });
+    wrapped
 }
 
 /// Replace a built cell's style in place (no-op for non-cells, so a

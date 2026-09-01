@@ -198,7 +198,8 @@ TableCell {
                     `set_cell_touch` (row touch must live per-cell), bind drop-target geometry to \
                     the row's proxy surface with `bind_row`, anchor animated drag offsets per cell \
                     with `bind_cell`, and select the themed `dragging` / `drop_target` feedback \
-                    axes with `cell_base_application` + `set_cell_style`. The demo below wires the \
+                    axes with `map_cell_style`, which composes them over whatever style a cell already \
+                    carries. The demo below wires the \
                     `dnd` SDK through exactly those seams — long-press a row to pick it up.".to_string())
                 reorder_table()
                 CodePanel(src = r##"// Userland wiring — everything here is public `table` SDK + `dnd` SDK surface.
@@ -217,11 +218,9 @@ drop.bind(row_ref);
 table::bind_row(&row, move |h| row_ref.fill(h));   // row proxy = drop geometry
 
 table::visit_row_cells(&row, |cell| {
-    if let Some(base) = table::cell_base_application(cell) {
-        table::set_cell_style(cell, move || base.clone()
-            .with("dragging", if dragging.get() { "on" } else { "off" })
-            .with("drop_target", if over.get() { "on" } else { "off" }));
-    }
+    table::map_cell_style(cell, Rc::new(move |app| app
+        .with("dragging", if dragging.get() { "on" } else { "off" })
+        .with("drop_target", if over.get() { "on" } else { "off" })));
     table::set_cell_touch(cell, handler.clone());
     let cell_ref: Ref<ViewHandle> = Ref::new();
     table::bind_cell(cell, move |h| cell_ref.fill(h));
@@ -377,13 +376,13 @@ fn reorder_table() -> Element {
         table::bind_row(row, move |h| row_ref.fill(h));
 
         table::visit_row_cells(row, |cell| {
-            if let Some(base) = table::cell_base_application(cell) {
-                table::set_cell_style(cell, move || {
-                    base.clone()
-                        .with("dragging", if dragging.get() { "on" } else { "off" })
+            table::map_cell_style(
+                cell,
+                Rc::new(move |app: runtime_core::StyleApplication| {
+                    app.with("dragging", if dragging.get() { "on" } else { "off" })
                         .with("drop_target", if over.get() { "on" } else { "off" })
-                });
-            }
+                }),
+            );
             table::set_cell_touch(cell, handler.clone());
             let cell_ref: Ref<ViewHandle> = Ref::new();
             table::bind_cell(cell, move |h| cell_ref.fill(h));

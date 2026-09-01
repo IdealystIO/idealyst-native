@@ -67,8 +67,10 @@
 //!   per-cell; see the SDK docs for why).
 //! - `table::bind_cell` — per-cell node handles for binding animated
 //!   drag offsets (`AnimatedValue::bind`).
-//! - `table::cell_base_application` + `table::set_cell_style` — layer
-//!   reactive feedback over the themed cell styles. The cell sheets
+//! - `table::map_cell_style` — layer reactive feedback over the
+//!   themed cell styles, composing over whatever style a cell already
+//!   carries (`cell_base_application` + `set_cell_style` is the older
+//!   read-then-replace pair, and only sees static sheets). The cell sheets
 //!   ship inert `dragging` / `drop_target` axes (dim + highlight) so
 //!   a custom implementation can select themed arms instead of
 //!   inventing overrides.
@@ -256,15 +258,24 @@ fn make_row_cell_interactive(cell: Element, hovered: Signal<bool>, cb: Rc<dyn Fn
     // flip is a class swap through the reactive diversion — no engine —
     // while native resolves the same arms through the engine as always.
     // (The former `with_overrides` spelling disqualified every clickable
-    // cell from preminting.) A cell without a static sheet application
+    // cell from preminting.) A cell with no application to compose over
     // keeps its style untouched but stays clickable.
-    if let Some(base) = table::cell_base_application(&cell) {
-        table::set_cell_style(&cell, move || {
-            base.clone()
-                .with("interactive", "on")
+    //
+    // `map_cell_style` COMPOSES the axes over whatever style the cell
+    // already carries. Reading a base application and writing a
+    // replacement — what this did — could only see a STATIC
+    // `StyleProp::Sheet`, so a cell styled reactively (an author pinning
+    // a column to a width that moves under a resize drag) was skipped
+    // entirely: no pointer cursor, no hover tint, nothing logged. In a
+    // row of otherwise-static cells that reads as one column refusing
+    // the row's highlight, which is a long way from its cause.
+    table::map_cell_style(
+        &cell,
+        Rc::new(move |app: runtime_core::StyleApplication| {
+            app.with("interactive", "on")
                 .with("row_hovered", if hovered.get() { "on" } else { "off" })
-        });
-    }
+        }),
+    );
     // `tap(..)` yields the `TouchHandler` Rc directly; the hover reporter
     // feeds the row's shared flag.
     let recognizer = tap(TapRecognizer::new(), move || (cb)());
@@ -649,6 +660,55 @@ mod tests {
             assert_eq!(
                 bg.resolve().0.to_ascii_lowercase(),
                 colors.table_header.value().0.to_ascii_lowercase(),
+            );
+        });
+    }
+
+    /// A cell styled REACTIVELY takes the row's hover the same as any
+    /// other. This is the app-side shape the overlay used to miss: an
+    /// author who needs a width on a cell (idea-ui's `TableCell` has
+    /// none) drops to the SDK cell and hands it a style CLOSURE, because
+    /// the width has to move while a resize handle is being dragged. The
+    /// old read-then-replace wiring could only see a static
+    /// `StyleProp::Sheet`, so every such column sat un-tinted in a row
+    /// whose other cells lit up — sloppy, and with nothing logged to say
+    /// why. Composing means the cell keeps its width and takes the axes.
+    #[test]
+    fn regression_reactive_cell_style_still_takes_the_row_hover() {
+        with_test_world(|| {
+            let width_pinned = table::table_cell(table::TableCellProps {
+                header: false,
+                children: Vec::new(),
+            })
+            .with_style(|| {
+                TableBodyCell().into_style_application().with_overrides(StyleRules {
+                    width: Some(runtime_core::Tokenized::Literal(
+                        runtime_core::Length::Px(240.0),
+                    )),
+                    ..Default::default()
+                })
+            })
+            .into_element();
+
+            let row = TableRow(TableRowProps {
+                children: vec![width_pinned],
+                on_row_click: Some(Rc::new(|| {})),
+            });
+            let mut cells = row_cells(row);
+            let style = match classify(cells.remove(0)) {
+                P::View { style, .. } => style.expect("the cell keeps a style"),
+                _ => panic!("native cell must classify as a View"),
+            };
+            let rules = runtime_core::resolve_style(&style.application());
+            assert_eq!(
+                rules.cursor,
+                Some(Cursor::Pointer),
+                "the interactive arm reaches a reactively-styled cell"
+            );
+            assert_eq!(
+                rules.width,
+                Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(240.0))),
+                "and the cell's own width override survives the composition"
             );
         });
     }

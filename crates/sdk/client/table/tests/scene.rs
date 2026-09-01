@@ -19,8 +19,9 @@ use runtime_vocabulary::prims::{PrimCell, ViewPrim};
 use runtime_vocabulary::style_attach::StyleProp;
 use runtime_world::World;
 use table::{
-    bind_row, cell_base_application, item_lowering, set_cell_interaction, set_cell_style, table,
-    table_cell, table_row, TableCellPrim, TableCellProps, TableProps, TableRowPrim, TableRowProps,
+    bind_row, cell_base_application, item_lowering, map_cell_style, set_cell_interaction,
+    set_cell_style, table, table_cell, table_row, TableCellPrim, TableCellProps, TableProps,
+    TableRowPrim, TableRowProps,
 };
 
 // ===========================================================================
@@ -259,6 +260,116 @@ fn cell_helpers_reach_both_lowerings() {
             assert!(matches!(prim.style, Some(StyleProp::SheetDynamic(_))));
             assert!(prim.on_touch.is_some(), "web cell got the tap handler");
             assert!(prim.on_hover.is_some(), "web cell got the hover handler");
+        }
+        _ => panic!("web cell must be an Item"),
+    }
+}
+
+
+/// A cell styled REACTIVELY must still take a row overlay's axes.
+///
+/// [`cell_base_application`] only ever sees a static `StyleProp::Sheet`,
+/// so the read-then-replace pair skipped such a cell in SILENCE — which
+/// is how a width-pinned column (its width moves under a resize drag, so
+/// its style has to be a closure) became the one column in a clickable
+/// row that never lit up on hover, with nothing logged. `map_cell_style`
+/// composes over the closure instead of replacing it, so the cell keeps
+/// its own reactive width AND takes the row's highlight.
+#[test]
+fn map_cell_style_composes_over_a_reactive_cell_style() {
+    let sheet = Rc::new(glue::StyleSheet::new(|_vs: &glue::VariantSet| {
+        glue::StyleRules::default()
+    }));
+    let pinned = glue::StyleApplication::new(sheet).with("pinned", "left");
+    let cell = item_lowering::cell_item(
+        false,
+        Vec::new(),
+        Some(StyleProp::SheetDynamic(Box::new(move || pinned.clone()))),
+    );
+
+    assert!(
+        cell_base_application(&cell).is_none(),
+        "a reactive style is invisible to the read-then-replace pair — the gap this closes"
+    );
+    assert!(
+        map_cell_style(&cell, Rc::new(|app: glue::StyleApplication| {
+            app.with("row_hovered", "on")
+        })),
+        "map_cell_style reports that it wrapped the style"
+    );
+
+    match &cell {
+        Element::Item { data, .. } => {
+            let prim = data
+                .downcast_ref::<PrimCell<TableCellPrim>>()
+                .expect("web cell payload")
+                .take();
+            let Some(StyleProp::SheetDynamic(f)) = prim.style else {
+                panic!("a composed style stays reactive");
+            };
+            let app = f();
+            assert_eq!(
+                app.variants.0.get("pinned").map(String::as_str),
+                Some("left"),
+                "the cell's own axis survives the composition"
+            );
+            assert_eq!(
+                app.variants.0.get("row_hovered").map(String::as_str),
+                Some("on"),
+                "the overlay's axis lands on top of it"
+            );
+        }
+        _ => panic!("web cell must be an Item"),
+    }
+}
+
+/// A static sheet composes the same way — the path every ordinary
+/// `TableCell` in a clickable row takes.
+#[test]
+fn map_cell_style_composes_over_a_static_cell_style() {
+    let native_cell = cell();
+    assert!(
+        map_cell_style(&native_cell, Rc::new(|app: glue::StyleApplication| {
+            app.with("row_hovered", "on")
+        })),
+        "a static sheet is composable too"
+    );
+    let prim = take_view_prim(&native_cell);
+    let Some(StyleProp::SheetDynamic(f)) = prim.style else {
+        panic!("composing makes a static sheet reactive");
+    };
+    assert_eq!(
+        f().variants.0.get("row_hovered").map(String::as_str),
+        Some("on")
+    );
+}
+
+/// A style with no application to compose over — a preminted class, a
+/// resolved-rules closure — is left EXACTLY as it was, and the caller is
+/// told so. Overwriting it would drop styling the author asked for.
+#[test]
+fn map_cell_style_leaves_a_non_application_style_alone() {
+    let cell = item_lowering::cell_item(
+        false,
+        Vec::new(),
+        Some(StyleProp::Static(Rc::new(glue::StyleRules::default()))),
+    );
+    assert!(
+        !map_cell_style(&cell, Rc::new(|app: glue::StyleApplication| {
+            app.with("row_hovered", "on")
+        })),
+        "nothing to compose with, and the caller hears about it"
+    );
+    match &cell {
+        Element::Item { data, .. } => {
+            let prim = data
+                .downcast_ref::<PrimCell<TableCellPrim>>()
+                .expect("web cell payload")
+                .take();
+            assert!(
+                matches!(prim.style, Some(StyleProp::Static(_))),
+                "the author's style is untouched"
+            );
         }
         _ => panic!("web cell must be an Item"),
     }
