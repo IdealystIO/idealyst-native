@@ -19,9 +19,9 @@ use runtime_vocabulary::prims::{PrimCell, ViewPrim};
 use runtime_vocabulary::style_attach::StyleProp;
 use runtime_world::World;
 use table::{
-    bind_row, cell_base_application, item_lowering, map_cell_style, set_cell_interaction,
-    set_cell_style, table, table_cell, table_row, TableCellPrim, TableCellProps, TableProps,
-    TableRowPrim, TableRowProps,
+    bind_row, item_lowering, map_cell_style, set_cell_interaction, set_cell_style, table,
+    table_cell, table_row, TableCellPrim, TableCellProps, TableProps, TableRowPrim,
+    TableRowProps,
 };
 
 // ===========================================================================
@@ -216,12 +216,11 @@ fn peel_owned(mut el: Element) -> (Element, usize) {
 fn cell_helpers_reach_both_lowerings() {
     // --- native shape (host constructor arm) ---
     let native_cell = cell();
-    assert!(
-        cell_base_application(&native_cell).is_some(),
-        "native cell carries its default sheet application"
-    );
-    let base = cell_base_application(&native_cell).expect("checked");
-    set_cell_style(&native_cell, move || base.clone());
+    set_cell_style(&native_cell, || {
+        glue::StyleApplication::new(Rc::new(glue::StyleSheet::new(
+            |_vs: &glue::VariantSet| glue::StyleRules::default(),
+        )))
+    });
     set_cell_interaction(
         &native_cell,
         Rc::new(|_ev| runtime_shared::TouchResponse::default()),
@@ -242,10 +241,11 @@ fn cell_helpers_reach_both_lowerings() {
     let web_cell = item_lowering::cell_item(
         false,
         Vec::new(),
-        Some(StyleProp::Sheet(Box::new(glue::StyleApplication::new(sheet)))),
+        Some(StyleProp::Sheet(Box::new(glue::StyleApplication::new(
+            sheet.clone(),
+        )))),
     );
-    let base = cell_base_application(&web_cell).expect("web cell base application");
-    set_cell_style(&web_cell, move || base.clone());
+    set_cell_style(&web_cell, move || glue::StyleApplication::new(sheet.clone()));
     set_cell_interaction(
         &web_cell,
         Rc::new(|_ev| runtime_shared::TouchResponse::default()),
@@ -268,8 +268,9 @@ fn cell_helpers_reach_both_lowerings() {
 
 /// A cell styled REACTIVELY must still take a row overlay's axes.
 ///
-/// [`cell_base_application`] only ever sees a static `StyleProp::Sheet`,
-/// so the read-then-replace pair skipped such a cell in SILENCE — which
+/// The read-then-replace pair this replaced (`cell_base_application` +
+/// [`set_cell_style`], the reader removed in 1.4.0) only ever saw a
+/// static `StyleProp::Sheet`, so it skipped such a cell in SILENCE — which
 /// is how a width-pinned column (its width moves under a resize drag, so
 /// its style has to be a closure) became the one column in a clickable
 /// row that never lit up on hover, with nothing logged. `map_cell_style`
@@ -287,10 +288,6 @@ fn map_cell_style_composes_over_a_reactive_cell_style() {
         Some(StyleProp::SheetDynamic(Box::new(move || pinned.clone()))),
     );
 
-    assert!(
-        cell_base_application(&cell).is_none(),
-        "a reactive style is invisible to the read-then-replace pair — the gap this closes"
-    );
     assert!(
         map_cell_style(&cell, Rc::new(|app: glue::StyleApplication| {
             app.with("row_hovered", "on")

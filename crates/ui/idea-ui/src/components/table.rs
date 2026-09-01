@@ -69,8 +69,7 @@
 //!   drag offsets (`AnimatedValue::bind`).
 //! - `table::map_cell_style` — layer reactive feedback over the
 //!   themed cell styles, composing over whatever style a cell already
-//!   carries (`cell_base_application` + `set_cell_style` is the older
-//!   read-then-replace pair, and only sees static sheets). The cell sheets
+//!   carries. The cell sheets
 //!   ship inert `dragging` / `drop_target` axes (dim + highlight) so
 //!   a custom implementation can select themed arms instead of
 //!   inventing overrides.
@@ -236,8 +235,8 @@ pub fn TableRow(props: TableRowProps) -> Element {
 /// sheet, and the tap recognizer + shared hover flag ride on the cell's OWN
 /// backend node — a grid item on native, a `<td>`/`<th>` on web. The scene
 /// payload is type-erased, so the cell introspection lives in the table SDK
-/// (`cell_base_application` / `set_cell_style` / `set_cell_interaction`,
-/// which reach both shapes). Payloads are pre-mount, so in-place mutation is
+/// (`map_cell_style` / `set_cell_interaction`, which reach both
+/// shapes). Payloads are pre-mount, so in-place mutation is
 /// the sanctioned path (the navigator handlers' style-override fold uses the
 /// same `PrimCell::with_mut` mechanism).
 ///
@@ -374,20 +373,19 @@ pub fn TableCell(props: TableCellProps) -> Element {
     // `IntoStyleSource` resolves on the call (not on a `Box<dyn>`,
     // which the trait doesn't support).
     // A cell's style is handed over as an EXPLICIT `StyleProp::Sheet`, not
-    // as a bare application. A clickable row re-derives each cell's
-    // `StyleApplication` from the built element
-    // (`table::cell_base_application`) to select the `interactive` /
-    // `row_hovered` axes on it, and a `--premint` build's opaque
-    // `Preminted` class cannot provide one — the app must stay
-    // introspectable in the payload.
+    // as a bare application. A clickable row composes the `interactive` /
+    // `row_hovered` axes onto each cell's own style
+    // (`table::map_cell_style`), and a `--premint` build's opaque
+    // `Preminted` class carries no application to compose with — the app
+    // must stay introspectable in the payload.
     //
     // `.into_style_application()` alone used to say that and stopped:
     // `IntoStyleProp for StyleApplication` gained a preminted fast path, so
-    // the application preminted anyway, `cell_base_application` returned
-    // `None`, and `make_row_cell_interactive` silently skipped the whole
-    // overlay — clickable rows lost their pointer cursor and their hover
-    // highlight in every `--premint` build, with nothing logged. Naming the
-    // variant is what actually pins the intent, and
+    // the application preminted anyway, the composition found nothing to
+    // compose with, and `make_row_cell_interactive` silently skipped the
+    // whole overlay — clickable rows lost their pointer cursor and their
+    // hover highlight in every `--premint` build, with nothing logged.
+    // Naming the variant is what actually pins the intent, and
     // `regression_premint_keeps_table_cells_on_the_live_engine` holds it
     // there.
     //
@@ -517,7 +515,7 @@ mod tests {
     /// (54 differing `cursor` properties across the table pages), not by a
     /// test — which is why there are now two.
     ///
-    /// This half asserts the SEAM: the application must be recoverable.
+    /// This half asserts the SEAM: the cell's style must be composable.
     /// Under the default (non-premint) cfg it passes either way, so
     /// `premint_must_not_reach_table_cell_styles` guards the actual
     /// spelling.
@@ -526,10 +524,10 @@ mod tests {
         with_test_world(|| {
             let cell = body_cell("x");
             assert!(
-                table::cell_base_application(&cell).is_some(),
-                "a clickable row re-derives the cell's StyleApplication to \
-                 layer the pointer cursor + hover highlight over it; without \
-                 one the overlay is skipped silently"
+                table::map_cell_style(&cell, Rc::new(|app| app)),
+                "a clickable row composes the pointer cursor + hover \
+                 highlight onto the cell's own style; a cell with no \
+                 application behind it is skipped silently"
             );
         });
     }
@@ -761,8 +759,12 @@ mod tests {
                 pinned: Some(ColumnPin::Left),
                 ..Default::default()
             });
-            let app = table::cell_base_application(&left)
-                .expect("pinned cell keeps an introspectable application");
+            let app = match classify(left) {
+                P::View { style, .. } => style
+                    .expect("pinned cell keeps an introspectable application")
+                    .application(),
+                _ => panic!("native cell must classify as a View"),
+            };
             assert!(
                 app.preminted_class_list().is_some(),
                 "the pinned axis must premint (build-time CSS arms)"
@@ -791,9 +793,11 @@ mod tests {
                 pinned: Some(ColumnPin::Right),
                 ..Default::default()
             });
-            let rules = runtime_core::resolve_style(
-                &table::cell_base_application(&right).expect("application"),
-            );
+            let right_app = match classify(right) {
+                P::View { style, .. } => style.expect("application").application(),
+                _ => panic!("native cell must classify as a View"),
+            };
+            let rules = runtime_core::resolve_style(&right_app);
             assert_eq!(rules.position, Some(runtime_core::Position::Sticky));
             assert!(
                 matches!(

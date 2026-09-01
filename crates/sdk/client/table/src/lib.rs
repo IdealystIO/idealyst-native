@@ -104,19 +104,21 @@
 //! idea-ui's clickable-row feature re-styles built cells and attaches
 //! touch/hover handlers AFTER the cell element exists. An
 //! `Element::Item` payload is type-erased, so this crate owns that
-//! knowledge: the [`map_cell_style`] / [`cell_base_application`] /
-//! [`set_cell_style`] / [`set_cell_interaction`] helpers reach through
-//! the payload cell (`PrimCell::with_mut` — the payload is not yet
-//! mounted, so in-place mutation is sound) for BOTH lowerings (native
-//! `ViewPrim` grid item, web [`TableCellPrim`]).
+//! knowledge: the [`map_cell_style`] / [`set_cell_style`] /
+//! [`set_cell_interaction`] helpers reach through the payload cell
+//! (`PrimCell::with_mut` — the payload is not yet mounted, so in-place
+//! mutation is sound) for BOTH lowerings (native `ViewPrim` grid item,
+//! web [`TableCellPrim`]).
 //!
 //! [`map_cell_style`] is the one to reach for when layering axes over
 //! a cell: it COMPOSES over whatever style the cell already has, so a
 //! cell styled reactively (a column width that moves under a resize
-//! drag) keeps its own reactivity and takes the overlay too. Reading a
-//! base with [`cell_base_application`] and writing a replacement with
-//! [`set_cell_style`] only ever worked for cells styled with a static
-//! sheet, and skipped the rest in silence.
+//! drag) keeps its own reactivity and takes the overlay too. Before
+//! 1.4.0 this was a read-then-replace pair — `cell_base_application`
+//! handed back a cell's application and `set_cell_style` wrote a
+//! replacement — which only ever worked for cells styled with a STATIC
+//! sheet and skipped every other cell in silence. The reader is gone;
+//! see the 1.3 → 1.4 migration guide.
 #![deny(missing_docs)]
 
 use std::rc::Rc;
@@ -817,41 +819,14 @@ mod native_styles {
 // target-agnostic.
 // ============================================================================
 
-/// Read the STATIC sheet application off a built cell (`None` for
-/// non-cells and for cells whose style is not a static sheet). The
-/// clickable-row hover overlay derives its reactive style from this
-/// base.
-pub fn cell_base_application(cell: &Element) -> Option<StyleApplication> {
-    match cell {
-        Element::Owned { element, .. } => cell_base_application(element),
-        Element::Item { data, .. } => {
-            let mut out = None;
-            if let Some(c) = data.downcast_ref::<PrimCell<prims::ViewPrim>>() {
-                c.with_mut(|p| {
-                    if let Some(StyleProp::Sheet(app)) = &p.style {
-                        out = Some((**app).clone());
-                    }
-                });
-            } else if let Some(c) = data.downcast_ref::<PrimCell<TableCellPrim>>() {
-                c.with_mut(|p| {
-                    if let Some(StyleProp::Sheet(app)) = &p.style {
-                        out = Some((**app).clone());
-                    }
-                });
-            }
-            out
-        }
-        _ => None,
-    }
-}
-
 /// Layer reactive axis selections over a built cell's EXISTING style,
 /// whatever shape that style has. Returns whether a cell style was
 /// actually wrapped.
 ///
-/// This is the composing counterpart of [`cell_base_application`] +
-/// [`set_cell_style`], and the one a row overlay should reach for. That
-/// pair can only read a STATIC [`StyleProp::Sheet`], so a cell whose
+/// This is what a row overlay reaches for. It replaces a
+/// read-then-replace pair (`cell_base_application` + [`set_cell_style`],
+/// the reader removed in 1.4.0) that could only see a STATIC
+/// [`StyleProp::Sheet`], so a cell whose
 /// style is already reactive — a column pinned to a width that moves
 /// under a resize drag, say — silently kept its style and lost the
 /// overlay entirely, with nothing logged. The failure is invisible in

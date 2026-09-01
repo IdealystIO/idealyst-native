@@ -13,7 +13,7 @@ when writing a new one.
 
 ## Versioning policy
 
-Idealyst reached **1.0** — the current release is `1.2.0`. The guiding
+Idealyst reached **1.0** — the current release is `1.4.0`. The guiding
 principle is **one clean experience per version — no legacy-support hacks**:
 
 - **Breaking changes land in place.** When a design is wrong, we fix it at the
@@ -30,7 +30,10 @@ principle is **one clean experience per version — no legacy-support hacks**:
     no-op that silently swallowed the registration the [[sdks]] guide told
     people to make. The bar is deliberately high: the change must be mechanical,
     scoped to a handful of names, and fully covered by its migration guide. It
-    is not a licence to land ordinary breaks in minors.
+    is not a licence to land ordinary breaks in minors. 1.4.0 is the second
+    use — `table::cell_base_application` returned `None` for a legitimate cell
+    and every documented call site was an `if let` that then skipped its own
+    work in silence.
 - **Every bump is documented.** A breaking release is accompanied by a
   migration guide between the two consecutive versions (`X` → `Y`). No silent
   breaks.
@@ -49,6 +52,7 @@ principle is **one clean experience per version — no legacy-support hacks**:
 | 1.0 → 1.1 | [[migration-1-0-0-to-1-1-0]] |
 | 1.1 → 1.2 | [[migration-1-1-0-to-1-2-0]] |
 | 1.2 → 1.3 | [[migration-1-2-0-to-1-3-0]] |
+| 1.3 → 1.4 | [[migration-1-3-0-to-1-4-0]] |
 
 ## Updating the dependency
 

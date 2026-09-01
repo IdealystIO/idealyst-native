@@ -792,8 +792,8 @@ used exclusively by preminted rules loads without a preload hint
   fast path, so a bare application premints to an OPAQUE class and the
   introspection silently finds nothing. That shipped: `Table`'s
   clickable rows lost their pointer cursor and their hover highlight in
-  every `--premint` build, because `cell_base_application` returned
-  `None` and the overlay was skipped without a word.
+  every `--premint` build, because `map_cell_style` found no application
+  to compose with and the overlay was skipped without a word.
 
   The explicit spelling costs the premint nothing, because what the
   introspector COMPOSES must itself be premintable: `Table`'s row
