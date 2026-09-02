@@ -57,6 +57,14 @@ pub(crate) enum RobotMode {
 #[derive(Clone)]
 pub struct CatalogService {
     catalog: Arc<RwLock<ResolvedCatalog>>,
+    /// Freshness of `catalog` — whether it is current, being rebuilt, or
+    /// stale because the last rebuild failed. Kept in its OWN lock so
+    /// reading status never queues behind a rebuild holding the catalog
+    /// write lock, which is exactly when a caller most wants to ask.
+    status: Arc<RwLock<crate::catalog_status::CatalogStatus>>,
+    /// Broadcasts the status generation so `catalog_status` can wait for
+    /// an in-flight rebuild to land instead of making callers poll.
+    status_tx: Arc<tokio::sync::watch::Sender<u64>>,
     /// How robot control is reached (off / discovery / explicit addr).
     robot_mode: RobotMode,
     /// Legacy single-bridge mode — used when the server was
@@ -608,6 +616,23 @@ pub struct FilterRequest {
     pub app: Option<String>,
 }
 
+/// Args for `catalog_status`.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct CatalogStatusRequest {
+    /// Block until the catalog is current instead of returning
+    /// immediately. Use after editing a component when you need props
+    /// that reflect the change: one waiting call costs less than polling
+    /// this tool across several turns. Defaults to false.
+    #[serde(default)]
+    pub wait_for_current: Option<bool>,
+    /// How long to wait, in seconds, when `wait_for_current` is set.
+    /// Defaults to 120, capped at 600. On timeout the current status is
+    /// returned — a timeout is an answer ("still building"), not an
+    /// error.
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SlugRequest {
     /// Guide slug (e.g. `getting-started`).
@@ -765,8 +790,11 @@ impl CatalogService {
         } else {
             (RobotMode::Discovery, None, crate::app_discovery::start())
         };
+        let (status_tx, _) = tokio::sync::watch::channel(0u64);
         Self {
             catalog: Arc::new(RwLock::new(ResolvedCatalog::build())),
+            status: Arc::new(RwLock::new(crate::catalog_status::CatalogStatus::default())),
+            status_tx: Arc::new(status_tx),
             robot_mode,
             robot,
             resolver: Arc::new(RobotResolver::default()),
@@ -811,8 +839,129 @@ impl CatalogService {
     /// thread (phase 5). After replacing, the service should send
     /// `notifications/resources/list_changed` via the rmcp peer.
     pub async fn replace_catalog(&self, new_cat: ResolvedCatalog) {
-        let mut guard = self.catalog.write().await;
-        *guard = new_cat;
+        {
+            let mut guard = self.catalog.write().await;
+            *guard = new_cat;
+        }
+        self.mark_build_succeeded(None).await;
+    }
+
+    /// Wrap catalog-derived tool output with a freshness marker when the
+    /// catalog is not current.
+    ///
+    /// The marker rides on the response a caller was already going to
+    /// read, because a caller only thinks to ask `catalog_status` AFTER
+    /// something looks wrong — which is too late to stop them acting on
+    /// stale props. Silent in the happy path, so it never becomes noise.
+    /// The marker is a SEPARATE content block rather than a prefix on the
+    /// payload: a reader sees it first either way, but the JSON block
+    /// stays independently parseable for anything that consumes these
+    /// results programmatically.
+    async fn catalog_text(&self, body: String) -> CallToolResult {
+        match self.status().await.marker() {
+            Some(marker) => {
+                CallToolResult::success(vec![Content::text(marker), Content::text(body)])
+            }
+            None => CallToolResult::success(vec![Content::text(body)]),
+        }
+    }
+
+    /// Snapshot the current freshness.
+    pub async fn status(&self) -> crate::catalog_status::CatalogStatus {
+        self.status.read().await.clone()
+    }
+
+    /// Publish the current generation so any `catalog_status` waiter
+    /// re-evaluates. Cheap and lossless for our purpose: waiters check
+    /// the status itself after each tick, so a coalesced notification
+    /// still wakes them.
+    async fn publish_status(&self) {
+        let generation = self.status.read().await.generation;
+        let _ = self.status_tx.send(generation);
+    }
+
+    /// A rebuild has started. The catalog keeps serving throughout.
+    pub async fn mark_build_started(&self) {
+        {
+            let mut st = self.status.write().await;
+            st.rebuild_started_at = Some(std::time::SystemTime::now());
+        }
+        self.publish_status().await;
+    }
+
+    /// A rebuild produced a catalog. Clears any previous failure — a
+    /// successful build supersedes it entirely.
+    pub async fn mark_build_succeeded(&self, took: Option<std::time::Duration>) {
+        {
+            let mut st = self.status.write().await;
+            st.state = crate::catalog_status::CatalogState::Current;
+            st.built_at = Some(std::time::SystemTime::now());
+            st.last_attempt_at = Some(std::time::SystemTime::now());
+            if took.is_some() {
+                st.build_duration = took;
+            }
+            st.rebuild_started_at = None;
+            st.last_error = None;
+            st.reason = None;
+            st.generation = st.generation.saturating_add(1);
+        }
+        self.publish_status().await;
+    }
+
+    /// A rebuild failed. The previous catalog stays in place — that is
+    /// the point — but it is now marked stale so callers are told the
+    /// data predates whatever broke the build.
+    pub async fn mark_build_failed(&self, error: impl Into<String>) {
+        {
+            let mut st = self.status.write().await;
+            let error = error.into();
+            // A first build that never succeeded leaves nothing to serve;
+            // say so rather than calling an empty catalog "stale".
+            st.state = if st.built_at.is_some() {
+                crate::catalog_status::CatalogState::Stale
+            } else {
+                st.reason = Some(error.clone());
+                crate::catalog_status::CatalogState::Unavailable
+            };
+            st.last_error = Some(trim_error(&error));
+            st.last_attempt_at = Some(std::time::SystemTime::now());
+            st.rebuild_started_at = None;
+        }
+        self.publish_status().await;
+    }
+
+    /// No catalog can be produced at all, and no build is running — a
+    /// misconfigured project root, say. Distinct from an empty catalog
+    /// that built fine, which is the distinction this whole type exists
+    /// to preserve.
+    pub async fn mark_unavailable(&self, reason: impl Into<String>) {
+        {
+            let mut st = self.status.write().await;
+            st.state = crate::catalog_status::CatalogState::Unavailable;
+            st.reason = Some(reason.into());
+            st.rebuild_started_at = None;
+        }
+        self.publish_status().await;
+    }
+
+    /// Wait until the catalog is settled and current, or `timeout`
+    /// elapses. Returns the status either way — a timeout is an answer
+    /// ("still building after Ns"), not an error.
+    pub async fn wait_for_current(
+        &self,
+        timeout: std::time::Duration,
+    ) -> crate::catalog_status::CatalogStatus {
+        let mut rx = self.status_tx.subscribe();
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let st = self.status().await;
+            if st.is_settled_current() {
+                return st;
+            }
+            if tokio::time::timeout_at(deadline, rx.changed()).await.is_err() {
+                return self.status().await;
+            }
+        }
     }
 
     /// Re-extract the catalog from the *current process's* inventory
@@ -898,9 +1047,9 @@ impl CatalogService {
             });
         }
 
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "Get the full record for one component: docs, params, file/line, and its composes edges with resolution status. Accepts a short-name or a fully-qualified name.")]
@@ -912,9 +1061,9 @@ impl CatalogService {
         let entry = resolve_component(&cat, &req.name, req.app.as_deref())?;
         let edges = cat.dependencies(&EntryRef::of(entry));
         let json = entry_to_json(&cat, entry, edges);
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "Find every component that composes the given target. Returns reverse adjacency as a JSON array of FQN strings.")]
@@ -926,9 +1075,9 @@ impl CatalogService {
         let entry = resolve_component(&cat, &req.name, req.app.as_deref())?;
         let users = cat.uses(&EntryRef::of(entry));
         let json: Vec<String> = users.iter().map(|r| r.fqn()).collect();
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "Find the components a given host composes. Returns forward adjacency as a JSON array of { raw_name, resolved_fqn, status } per edge.")]
@@ -955,9 +1104,9 @@ impl CatalogService {
                 })
             })
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "List `#[idealyst_tool]`-registered functions. Lightweight { name, fqn, return_type, summary }; pass `filter` (case-insensitive, glob `*`, matches name/fqn) to narrow, then `describe_tool` for params + full docs.")]
@@ -1249,6 +1398,30 @@ impl CatalogService {
             }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
         }
+    }
+
+    #[tool(
+        description = "How fresh is the catalog? Reports whether the served catalog is current, being rebuilt, or STALE because the last rebuild failed — plus how long a build takes, so you can judge whether waiting is worth it. The catalog comes from compiling the project, so after an edit it lags, and a project that does not compile leaves the PREVIOUS catalog in place. Call this when you have just changed a component and need to know whether what you are reading reflects it. Set `wait_for_current` to block until an in-flight rebuild lands instead of polling; on timeout it returns the status rather than failing."
+    )]
+    async fn catalog_status(
+        &self,
+        Parameters(req): Parameters<CatalogStatusRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let status = if req.wait_for_current.unwrap_or(false) {
+            // Bounded on purpose: an unbounded wait would sit past the
+            // client's own tool timeout and fail in a way that looks like
+            // a hung server rather than a slow build.
+            const DEFAULT: u64 = 120;
+            const CAP: u64 = 600;
+            let secs = req.timeout_seconds.unwrap_or(DEFAULT).min(CAP);
+            self.wait_for_current(std::time::Duration::from_secs(secs))
+                .await
+        } else {
+            self.status().await
+        };
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&status.to_json()).unwrap(),
+        )]))
     }
 
     #[tool(description = "List every running idealyst app — discovered via per-process registration files at `~/.idealyst/apps/<name>-<pid>.json` that the running app's Robot bridge writes on bind. Each entry includes name, bundle_id, project_root, bridge_addr, and pid. Entries are removed automatically when the app exits (RAII cleanup on graceful shutdown; stale ones get pruned at scan time when `kill(pid, 0)` reports the process is gone).")]
@@ -2695,9 +2868,9 @@ impl CatalogService {
             })
             .collect();
 
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "Run the idealyst source linter over a project and return its findings as JSON. Same engine and rules as the `idealyst lint` CLI: it flags idiom drift in un-expanded Rust source — drift from the canonical reactive surface (`Signal::new` and the removed `signal!` macro→the `signal(…)` function, the removed `memo!` macro→the `memo(move || …)` function, `Effect::new`→`effect!`), hand-built elements instead of `ui!`/`jsx!` (`builder::…`, `BuildElement::build`, `Element::Variant {…}`), and non-PascalCase `#[component]` functions. Respects `idealyst-lint.toml` (rule levels) and inline `// idealyst-lint-disable` directives discovered from the target path. Pass `path` to lint a specific file/dir; omit it to lint the single live app's project root, else the server's working directory. Returns { path, files_scanned, error_count, warn_count, total_diagnostics, failed, truncated, parse_errors, diagnostics[] } where each diagnostic is { rule, severity, message, help, file, line, column, end_line, end_column, source_line }.")]
@@ -2976,6 +3149,33 @@ fn matched_terms(terms: &[String], fields: &[&str], body: &str) -> Vec<String> {
 /// the first hit — consumers wanting strict disambiguation should
 /// pass the FQN. The MCP `--check` lint (phase 6) is what surfaces
 /// short-name conflicts at the project level.
+/// Trim extractor stderr down to something worth putting in a tool
+/// response: the first few meaningful lines. A full cargo failure runs to
+/// hundreds of lines of warnings, and the useful part is at the top.
+fn trim_error(raw: &str) -> String {
+    const MAX_LINES: usize = 4;
+    const MAX_CHARS: usize = 600;
+    let mut out: Vec<&str> = Vec::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("warning:") || line.starts_with("Compiling") {
+            continue;
+        }
+        out.push(line);
+        if out.len() == MAX_LINES {
+            break;
+        }
+    }
+    if out.is_empty() {
+        out = raw.lines().take(MAX_LINES).collect();
+    }
+    let mut joined = out.join(" / ");
+    if joined.chars().count() > MAX_CHARS {
+        joined = joined.chars().take(MAX_CHARS).collect::<String>() + "…";
+    }
+    joined
+}
+
 /// Does `origin` satisfy an optional `app` filter? An unset filter
 /// matches everything. The filter accepts either spelling of a crate
 /// name (`crewforge-main` or `crewforge_main`), since users read the
@@ -3723,10 +3923,12 @@ mod tests {
     /// Parse a `list_*` tool result into `(name, has_summary, keys)`
     /// triples so tests can assert on shape + contents.
     fn component_names(result: &CallToolResult) -> Vec<String> {
+        // Last text block — a freshness marker may precede the payload.
         let payload = result
             .content
             .iter()
-            .find_map(|c| c.as_text().map(|t| t.text.clone()))
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .next_back()
             .expect("tool result has a text content block");
         let v: serde_json::Value =
             serde_json::from_str(&payload).expect("response is valid JSON");
@@ -3807,11 +4009,18 @@ mod tests {
     }
 
     /// Parse a tool's JSON-array result into a `serde_json::Value`.
+    /// The JSON payload of a tool result.
+    ///
+    /// Catalog tools may prepend a freshness marker as its own content
+    /// block, so the payload is the LAST text block — and it must still
+    /// be valid JSON on its own, which is the point of keeping the marker
+    /// separate.
     fn parse_array(result: &CallToolResult) -> serde_json::Value {
         let payload = result
             .content
             .iter()
-            .find_map(|c| c.as_text().map(|t| t.text.clone()))
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .next_back()
             .expect("tool result has a text content block");
         serde_json::from_str(&payload).expect("response is valid JSON")
     }
@@ -4859,5 +5068,176 @@ mod tests {
         assert!(app_matches(Some("beta_app"), "beta_app"));
         assert!(app_matches(Some("beta-app"), "beta_app"));
         assert!(!app_matches(Some("beta_app"), "alpha_app"));
+    }
+
+    // ---- catalog freshness ----
+
+    use crate::catalog_status::CatalogState;
+
+    #[tokio::test]
+    async fn a_current_catalog_carries_no_marker() {
+        // The happy path must stay silent: a marker on every response is
+        // noise, and noise is skimmed past exactly when it matters.
+        let svc = multi_project_service().await;
+        assert!(svc.status().await.marker().is_none());
+        let out = svc
+            .list_components(Parameters(FilterRequest::default()))
+            .await
+            .unwrap();
+        assert!(!format!("{out:?}").contains("[catalog:"), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn an_in_flight_rebuild_is_announced_on_the_response() {
+        let svc = multi_project_service().await;
+        svc.mark_build_started().await;
+
+        let st = svc.status().await;
+        assert!(!st.is_settled_current());
+        let marker = st.marker().expect("in-flight rebuild must be announced");
+        assert!(marker.contains("REBUILDING"), "{marker}");
+
+        // And it rides on the tool output itself, not only on the
+        // status tool nobody thinks to call.
+        let out = svc
+            .list_components(Parameters(FilterRequest::default()))
+            .await
+            .unwrap();
+        assert!(format!("{out:?}").contains("REBUILDING"), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_rebuild_keeps_the_catalog_and_marks_it_stale() {
+        // The invariant this whole feature protects: a failed rebuild
+        // must NOT tear down what is being served. What changes is that
+        // the staleness is now visible instead of silent.
+        let svc = multi_project_service().await;
+        let before = component_names(
+            &svc.list_components(Parameters(FilterRequest::default()))
+                .await
+                .unwrap(),
+        );
+
+        svc.mark_build_started().await;
+        svc.mark_build_failed("error[E0432]: unresolved import `crate::widgets::Missing`")
+            .await;
+
+        let st = svc.status().await;
+        assert_eq!(st.state, CatalogState::Stale);
+        let marker = st.marker().unwrap();
+        assert!(marker.contains("STALE"), "{marker}");
+        assert!(marker.contains("E0432"), "marker must carry the reason: {marker}");
+
+        // Still serving every component it had — and the payload is
+        // still valid JSON, because the marker is its own content block
+        // rather than a prefix smuggled into the body.
+        let out = svc
+            .list_components(Parameters(FilterRequest::default()))
+            .await
+            .unwrap();
+        assert_eq!(out.content.len(), 2, "marker and payload are separate blocks");
+        let after = component_names(&out);
+        assert_eq!(before, after, "a failed rebuild must not drop the catalog");
+    }
+
+    #[tokio::test]
+    async fn a_first_build_that_never_succeeded_is_unavailable_not_stale() {
+        // "Stale" implies there is good older data. When the very first
+        // build failed there is none, and an empty result would otherwise
+        // read as "this project has no components".
+        let svc = CatalogService::new();
+        svc.mark_build_started().await;
+        svc.mark_build_failed("the project does not compile").await;
+
+        let st = svc.status().await;
+        assert_eq!(st.state, CatalogState::Unavailable);
+        let marker = st.marker().unwrap();
+        assert!(marker.contains("UNAVAILABLE"), "{marker}");
+        assert!(
+            marker.contains("NOT because the project has no components"),
+            "the marker must rule out the wrong reading: {marker}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_successful_build_clears_a_previous_failure() {
+        let svc = multi_project_service().await;
+        svc.mark_build_failed("transient breakage").await;
+        assert_eq!(svc.status().await.state, CatalogState::Stale);
+
+        svc.mark_build_succeeded(Some(std::time::Duration::from_secs(71)))
+            .await;
+        let st = svc.status().await;
+        assert_eq!(st.state, CatalogState::Current);
+        assert!(st.last_error.is_none(), "a good build supersedes the failure");
+        assert!(st.marker().is_none());
+        // The build cost is what a caller needs to judge whether waiting
+        // for the next rebuild is worth it.
+        assert_eq!(st.build_duration.map(|d| d.as_secs()), Some(71));
+    }
+
+    #[tokio::test]
+    async fn generation_advances_only_on_a_successful_build() {
+        let svc = multi_project_service().await;
+        let g0 = svc.status().await.generation;
+        svc.mark_build_failed("nope").await;
+        assert_eq!(svc.status().await.generation, g0, "a failure is not a new catalog");
+        svc.mark_build_succeeded(None).await;
+        assert_eq!(svc.status().await.generation, g0 + 1);
+    }
+
+    #[tokio::test]
+    async fn wait_for_current_returns_as_soon_as_a_rebuild_lands() {
+        let svc = Arc::new(multi_project_service().await);
+        svc.mark_build_started().await;
+
+        let waiter = {
+            let svc = svc.clone();
+            tokio::spawn(async move {
+                svc.wait_for_current(std::time::Duration::from_secs(30)).await
+            })
+        };
+        // Let the waiter park before the build completes.
+        tokio::task::yield_now().await;
+        svc.mark_build_succeeded(Some(std::time::Duration::from_secs(2)))
+            .await;
+
+        let st = waiter.await.unwrap();
+        assert!(st.is_settled_current(), "{st:?}");
+    }
+
+    #[tokio::test]
+    async fn wait_for_current_times_out_into_a_status_not_an_error() {
+        // A timeout is an answer — "still building after N seconds" —
+        // and must not surface as a failed tool call.
+        let svc = multi_project_service().await;
+        svc.mark_build_started().await;
+        let st = svc
+            .wait_for_current(std::time::Duration::from_millis(50))
+            .await;
+        assert!(!st.is_settled_current());
+        assert!(st.marker().unwrap().contains("REBUILDING"));
+    }
+
+    #[test]
+    fn trim_error_keeps_the_diagnosis_and_drops_the_noise() {
+        // Cargo failures are mostly warnings; the useful line is at the
+        // top and the response should not carry hundreds of lines.
+        let raw = "warning: unused import: `Foo`\n\
+                   Compiling my-app v0.1.0\n\
+                   error[E0432]: unresolved import `crate::Missing`\n\
+                   \n\
+                   help: a similar path exists\n";
+        let out = trim_error(raw);
+        assert!(out.contains("E0432"), "{out}");
+        assert!(!out.contains("warning:"), "{out}");
+        assert!(!out.contains("Compiling"), "{out}");
+    }
+
+    #[test]
+    fn trim_error_falls_back_when_everything_looked_like_noise() {
+        // Never return an empty reason — a blank explanation is worse
+        // than a noisy one.
+        assert!(!trim_error("warning: only warnings here").is_empty());
     }
 }

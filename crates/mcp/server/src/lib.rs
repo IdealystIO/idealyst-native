@@ -11,6 +11,7 @@
 mod adb;
 mod app_discovery;
 mod catalog_service;
+mod catalog_status;
 mod dev_runner;
 pub mod lint;
 mod robot_bridge;
@@ -52,6 +53,12 @@ pub struct ServerOptions {
     /// catalog when no app is currently running.
     subprocess: Option<std::sync::Arc<dyn Fn() -> std::process::Command + Send + Sync>>,
     watch_paths: Vec<std::path::PathBuf>,
+    /// Why no catalog extractor could be set up, when that is the case.
+    /// Recorded on the service so `catalog_status` and the freshness
+    /// marker can say WHY the catalog is empty — otherwise an empty
+    /// `list_components` reads as "this project has no components", which
+    /// is the confusion this whole path exists to prevent.
+    unavailable_reason: Option<String>,
 }
 
 impl ServerOptions {
@@ -96,6 +103,14 @@ impl ServerOptions {
         self.watch_paths = paths;
         self
     }
+
+    /// Record that no catalog could be produced, and why. The server
+    /// still starts — live apps may supply one — but every catalog tool
+    /// then says the catalog is unavailable rather than looking empty.
+    pub fn with_unavailable_catalog(mut self, reason: impl Into<String>) -> Self {
+        self.unavailable_reason = Some(reason.into());
+        self
+    }
 }
 
 /// Start the MCP server on stdio with the supplied options. Most
@@ -129,6 +144,11 @@ pub async fn run_stdio_with_full_options(opts: ServerOptions) -> Result<()> {
     // warnings — the server still starts with an empty catalog.
     if let Some(factory) = &opts.subprocess {
         watch::preload_subprocess_catalog(&svc, factory.as_ref()).await;
+    } else if let Some(reason) = &opts.unavailable_reason {
+        // No extractor could be set up. Record why, so an empty catalog
+        // explains itself instead of looking like a project with no
+        // components.
+        svc.mark_unavailable(reason.clone()).await;
     }
 
     let service = svc

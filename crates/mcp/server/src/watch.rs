@@ -206,33 +206,48 @@ pub(crate) async fn preload_subprocess_catalog(
     svc: &CatalogService,
     cmd_factory: &(dyn Fn() -> std::process::Command + Send + Sync + 'static),
 ) {
+    // Timed and status-tracked: an extraction compiles the project, so
+    // callers need to know both that one is running and what it costs.
+    let started = std::time::Instant::now();
+    svc.mark_build_started().await;
     let mut cmd = cmd_factory();
     let output = match tokio::task::spawn_blocking(move || cmd.output()).await {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => {
             tracing::warn!("subprocess spawn failed: {:?}", e);
+            svc.mark_build_failed(format!("could not run the catalog extractor: {e}"))
+                .await;
             return;
         }
         Err(e) => {
             tracing::warn!("subprocess join failed: {:?}", e);
+            svc.mark_build_failed(format!("catalog extractor did not complete: {e}"))
+                .await;
             return;
         }
     };
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         tracing::warn!(
             "subprocess exited with non-zero ({}); stderr: {}",
             output.status,
-            String::from_utf8_lossy(&output.stderr)
+            stderr
         );
+        svc.mark_build_failed(stderr.as_ref()).await;
         return;
     }
     let json = String::from_utf8_lossy(&output.stdout);
     match mcp_catalog::ResolvedCatalog::build_from_json(&json) {
         Ok(c) => {
             svc.replace_catalog(c).await;
+            svc.mark_build_succeeded(Some(started.elapsed())).await;
             tracing::info!("loaded catalog from subprocess");
         }
-        Err(e) => tracing::warn!("subprocess output not valid catalog JSON: {}", e),
+        Err(e) => {
+            tracing::warn!("subprocess output not valid catalog JSON: {}", e);
+            svc.mark_build_failed(format!("catalog extractor emitted invalid JSON: {e}"))
+                .await;
+        }
     }
 }
 
@@ -244,24 +259,35 @@ async fn run_subprocess_reload(
     peer: &Peer<RoleServer>,
     cmd_factory: &(dyn Fn() -> std::process::Command + Send + Sync + 'static),
 ) {
+    // Every exit path records status. A failed rebuild deliberately
+    // leaves the previous catalog in place — the marker is what stops
+    // that becoming a silently wrong answer.
+    let started = std::time::Instant::now();
+    svc.mark_build_started().await;
     let mut cmd = cmd_factory();
     let output = match tokio::task::spawn_blocking(move || cmd.output()).await {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => {
             tracing::warn!("subprocess spawn failed: {:?}", e);
+            svc.mark_build_failed(format!("could not run the catalog extractor: {e}"))
+                .await;
             return;
         }
         Err(e) => {
             tracing::warn!("subprocess join failed: {:?}", e);
+            svc.mark_build_failed(format!("catalog extractor did not complete: {e}"))
+                .await;
             return;
         }
     };
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         tracing::warn!(
             "subprocess exited with non-zero ({}); stderr: {}",
             output.status,
-            String::from_utf8_lossy(&output.stderr)
+            stderr
         );
+        svc.mark_build_failed(stderr.as_ref()).await;
         return;
     }
     let json = String::from_utf8_lossy(&output.stdout);
@@ -269,10 +295,13 @@ async fn run_subprocess_reload(
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("subprocess output not valid catalog JSON: {}", e);
+            svc.mark_build_failed(format!("catalog extractor emitted invalid JSON: {e}"))
+                .await;
             return;
         }
     };
     svc.replace_catalog(new_cat).await;
+    svc.mark_build_succeeded(Some(started.elapsed())).await;
 
     if let Err(e) = peer.notify_resource_list_changed().await {
         tracing::warn!("failed to notify resource list_changed: {:?}", e);

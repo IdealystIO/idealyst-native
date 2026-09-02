@@ -245,11 +245,19 @@ pub fn run(args: Args) -> Result<()> {
             if projects.is_empty() {
                 // Nothing wrappable. Leave the catalog to live apps / the
                 // in-process fallback rather than failing startup — but
-                // say why, since an empty catalog is otherwise
-                // indistinguishable from a project with no components.
+                // record why on the SERVICE, not just stderr. An MCP
+                // client never sees our stderr, so a stderr-only
+                // explanation is invisible exactly where it is needed:
+                // `list_components` would return `[]` and read as "this
+                // project has no components".
                 for err in &expand_errors {
                     eprintln!("[idealyst mcp] no project catalog available from {err}");
                 }
+                opts = opts.with_unavailable_catalog(if expand_errors.is_empty() {
+                    "no idealyst project was found to build a catalog from".to_string()
+                } else {
+                    expand_errors.join("; ")
+                });
             } else {
                 if !expand_errors.is_empty() {
                     for err in &expand_errors {
@@ -308,6 +316,8 @@ pub fn run(args: Args) -> Result<()> {
                     }
                     Err(e) => {
                         eprintln!("[idealyst mcp] could not build a catalog wrapper: {e:#}");
+                        opts = opts
+                            .with_unavailable_catalog(format!("catalog wrapper could not be generated: {e:#}"));
                     }
                 }
             }
