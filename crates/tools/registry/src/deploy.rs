@@ -155,9 +155,10 @@ pub fn put_release(
 
 /// Upload `config.json` and `releases.json`.
 pub fn put_metadata(staging: &Path, target: &Target) -> Result<()> {
-    for (local, remote) in [
-        ("index/config.json", "index/config.json"),
-        ("releases.json", "releases.json"),
+    for (local, remote, ctype) in [
+        ("index/config.json", "index/config.json", "application/json"),
+        ("releases.json", "releases.json", "application/json"),
+        ("index.html", "index.html", "text/html; charset=utf-8"),
     ] {
         let p = staging.join(local);
         if !p.exists() {
@@ -172,7 +173,7 @@ pub fn put_metadata(staging: &Path, target: &Target) -> Result<()> {
                 "--cache-control",
                 INDEX_CACHE,
                 "--content-type",
-                "application/json",
+                ctype,
             ]),
             &format!("aws s3 cp ({local})"),
         )?;

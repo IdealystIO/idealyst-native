@@ -272,6 +272,69 @@ fn workspace_dep_extras(root: &Path) -> Result<BTreeMap<String, Vec<(String, tom
 
 /// Relative path from one directory to another, in the `../sibling` form
 /// cargo manifests use.
+/// How many crates the registry already holds, for the landing page.
+fn published_count(r: &RemoteArgs) -> Result<usize> {
+    if r.from_scratch {
+        return Ok(0);
+    }
+    let Some(raw) = deploy::fetch_release_state(&target(r)?)? else {
+        return Ok(0);
+    };
+    let state: ReleaseState = serde_json::from_str(&raw).context("parsing releases.json")?;
+    Ok(state.crates.len())
+}
+
+/// A human landing page at the bucket root.
+///
+/// A sparse registry has no browsable root — cargo only ever fetches
+/// `index/…` and `crates/…` — so `https://crates.idealyst.io/` otherwise
+/// answers 403 (the bucket deliberately grants no listing). Anyone who pastes
+/// the registry URL into a browser, which is everyone at least once, deserves
+/// the setup instructions rather than an access error.
+fn write_landing_page(out: &Path, url: &str, registry: &str, crates: usize) -> Result<()> {
+    let url = url.trim_end_matches('/');
+    let html = format!(
+        r#"<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>idealyst crate registry</title>
+<style>
+  :root {{ color-scheme: light dark; }}
+  body {{ font: 15px/1.6 ui-sans-serif, system-ui, sans-serif; max-width: 44rem;
+         margin: 4rem auto; padding: 0 1.5rem; }}
+  code, pre {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }}
+  pre {{ background: color-mix(in srgb, currentColor 7%, transparent);
+        padding: 1rem; border-radius: 6px; overflow-x: auto; }}
+  .muted {{ opacity: .65; }}
+</style>
+<h1>idealyst crate registry</h1>
+<p>A <a href="https://doc.rust-lang.org/cargo/reference/registry-index.html#sparse-protocol">sparse</a>
+cargo registry hosting the idealyst framework crates.
+Currently <strong>{crates}</strong> crates.</p>
+
+<h2>Use it</h2>
+<p>Add the registry to <code>.cargo/config.toml</code>:</p>
+<pre>[registries.{registry}]
+index = "sparse+{url}/index/"</pre>
+<p>Then depend on crates by version:</p>
+<pre>[dependencies]
+idealyst = {{ version = "1.5", registry = "{registry}" }}
+idea-ui  = {{ version = "1.5", registry = "{registry}" }}</pre>
+<p><strong>Always include <code>registry = "{registry}"</code>.</strong> Many of these
+crates have short names that belong to unrelated packages on crates.io; without
+it cargo resolves the wrong one.</p>
+
+<h2 class="muted">Browsing</h2>
+<p class="muted">There is no index to browse — a sparse registry is just static
+files. A crate's metadata lives at <code>{url}/index/&lt;path&gt;</code> using
+cargo's index layout, e.g.
+<a href="{url}/index/id/ea/idea-ui"><code>/index/id/ea/idea-ui</code></a>.</p>
+"#
+    );
+    std::fs::write(out.join("index.html"), html)?;
+    Ok(())
+}
+
 /// The checksum a version already carries in the index, if it is there.
 fn published_checksum(index_lines: &str, version: &str) -> Result<Option<String>> {
     for line in index_lines.lines().filter(|l| !l.trim().is_empty()) {
@@ -527,6 +590,14 @@ fn build(
 ) -> Result<Vec<String>> {
     let (out, verify) = (b.out.as_path(), b.verify);
     if plan.is_empty() {
+        // Still refresh the metadata. config.json and the landing page are
+        // properties of the registry, not of any release, and a run that
+        // releases nothing is the normal way to correct them.
+        write_config(out, &r.url)?;
+        write_landing_page(out, &r.url, &r.registry_name, published_count(r)?)?;
+        if execute {
+            deploy::put_metadata(out, &target(r)?)?;
+        }
         return Ok(vec![]);
     }
     if !version::is_clean(&ws.root)? && !b.allow_dirty {
@@ -538,6 +609,9 @@ fn build(
     std::fs::create_dir_all(out.join("index"))?;
     std::fs::create_dir_all(out.join("crates"))?;
     write_config(out, &r.url)?;
+    // The landing page advertises the registry's total, not this run's slice.
+    let total = published_count(r)?.max(plan.len());
+    write_landing_page(out, &r.url, &r.registry_name, total)?;
     // config.json has to be live BEFORE the first crate is packaged, not with
     // the metadata at the end. It is the first thing cargo fetches when it
     // touches the registry, and the registry gets touched as soon as a crate

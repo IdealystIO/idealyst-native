@@ -277,6 +277,33 @@ cmd_dns() {
 
 # --- status -----------------------------------------------------------------
 
+# Serve index.html at the bucket root. A sparse registry has no browsable
+# root, so without this `https://crates.idealyst.io/` answers 403 — the bucket
+# grants no listing by design — and anyone who pastes the URL into a browser
+# gets an access error instead of the setup instructions.
+cmd_root() {
+    local id; id="$(dist_id)"
+    if [ "$id" = "None" ] || [ -z "$id" ]; then die "no distribution yet — run \`$0 distribution\`"; fi
+
+    local tmp; tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' RETURN
+    aws cloudfront get-distribution-config --id "$id" > "$tmp/full.json"
+    local etag
+    etag="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ETag"])' "$tmp/full.json")"
+    # Update in place: CloudFront replaces the WHOLE config, so the existing
+    # one has to be round-tripped with just this field changed.
+    python3 -c 'import json,sys
+full=json.load(open(sys.argv[1]))
+cfg=full["DistributionConfig"]
+cfg["DefaultRootObject"]="index.html"
+json.dump(cfg, open(sys.argv[2],"w"))' "$tmp/full.json" "$tmp/config.json"
+
+    say "setting DefaultRootObject=index.html on ${id}"
+    aws cloudfront update-distribution --id "$id" --if-match "$etag" \
+        --distribution-config "file://$tmp/config.json" \
+        --query "Distribution.Status" --output text | sed 's/^/  /'
+}
+
 cmd_status() {
     say "account"; info "$(account_id)  profile=${AWS_PROFILE:-default}"
 
@@ -327,7 +354,8 @@ case "${1:-status}" in
     bucket)       cmd_bucket ;;
     distribution) cmd_distribution ;;
     dns)          cmd_dns ;;
-    all)          cmd_cert; cmd_bucket; cmd_distribution; cmd_dns; cmd_status ;;
+    root)         cmd_root ;;
+    all)          cmd_cert; cmd_bucket; cmd_distribution; cmd_dns; cmd_root; cmd_status ;;
     status)       cmd_status ;;
-    *) echo "usage: $0 {cert|bucket|distribution|dns|all|status}" >&2; exit 1 ;;
+    *) echo "usage: $0 {cert|bucket|distribution|dns|root|all|status}" >&2; exit 1 ;;
 esac
