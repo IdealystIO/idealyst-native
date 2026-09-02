@@ -7,7 +7,7 @@
 //!
 //! Rather than make every project carry that binary + an `catalog` feature
 //! (the old scaffold did), the CLI generates a throwaway wrapper crate
-//! under `target/idealyst/<project>/catalog/` — the same place and
+//! under `target/idealyst/<project(s)>/catalog/` — the same place and
 //! shape as the per-platform `{web,ios,android}` wrappers. The wrapper
 //! path-deps the project and turns on `runtime-core/catalog`; Cargo's
 //! feature unification then builds `runtime-macros` with emission on for
@@ -16,6 +16,21 @@
 //!
 //! This is the mechanism that lets `idealyst mcp` work against any
 //! project — old or new — with zero per-project boilerplate.
+//!
+//! ## Several projects, one catalog
+//!
+//! A wrapper can link MORE than one project. `inventory` registration is
+//! additive at link time, so N project libs in one extractor produce one
+//! catalog spanning all of them, and each component still reports the
+//! crate it came from via `module_path`.
+//!
+//! That is what makes `idealyst mcp` useful in a monorepo: pointed at a
+//! cargo workspace root, [`resolve_project_roots`] discovers every member
+//! carrying `[package.metadata.idealyst]` and they are wrapped together.
+//! Before this, a workspace root simply failed to parse as a project and
+//! the server served an EMPTY catalog with only a line on stderr to say
+//! why — indistinguishable, to a client, from a project with no
+//! components.
 //!
 //! ## Force-linking dependency component crates
 //!
@@ -56,7 +71,52 @@ use crate::framework_source;
 /// repeated calls don't invalidate cargo's fingerprints and trigger
 /// needless rebuilds.
 pub fn generate(project_root: &Path) -> Result<PathBuf> {
-    generate_with(project_root, "catalog", "catalog", "dump_catalog_json")
+    generate_for_roots(std::slice::from_ref(&project_root.to_path_buf()))
+}
+
+/// Generate one catalog wrapper linking **every** project in
+/// `project_roots`, so a single extractor emits a catalog covering all of
+/// them. Each component keeps its originating crate in `module_path`, so
+/// provenance survives the merge.
+///
+/// This is what `idealyst mcp` uses: pair it with [`resolve_project_roots`]
+/// to turn a workspace root into the set of projects to wrap.
+pub fn generate_for_roots(project_roots: &[PathBuf]) -> Result<PathBuf> {
+    generate_with(project_roots, "catalog", "catalog", "dump_catalog_json")
+}
+
+/// Directory name for a wrapper covering `projects`.
+///
+/// One project keeps its own name, so a single-project wrapper lands at
+/// exactly the path it always did. Several projects are joined by `+` in
+/// sorted order — stable across runs, readable in a build log, and
+/// distinct per project set, so changing the set correctly lands in a
+/// fresh wrapper rather than silently reusing the old one. Long sets are
+/// truncated to keep the path manageable.
+fn wrapper_name(names: &[&str]) -> String {
+    const MAX: usize = 64;
+    let joined = names.join("+");
+    if joined.len() <= MAX {
+        return joined;
+    }
+    format!("{}+{}-more", names[0], names.len() - 1)
+}
+
+/// Cargo package name for the wrapper crate.
+///
+/// [`wrapper_name`] joins projects with `+`, which is fine in a path but
+/// is NOT a legal cargo package name — cargo requires Unicode XID
+/// characters plus `-` and `_`, and rejects the manifest outright:
+///
+/// ```text
+/// error: invalid character `+` in package name
+/// ```
+///
+/// A single-project wrapper has no `+`, so its package name is unchanged
+/// by this — existing wrappers keep their identity and their warm build
+/// cache across the upgrade.
+fn wrapper_package_name(names: &[&str]) -> String {
+    wrapper_name(names).replace('+', "-")
 }
 
 /// Parameterized core of [`generate`]. Builds an ephemeral wrapper that
@@ -67,25 +127,159 @@ pub fn generate(project_root: &Path) -> Result<PathBuf> {
 /// `subdir` names the staging dir under `target/idealyst/<project>/`, so
 /// distinct extractors (the MCP catalog vs. the external-export manifest)
 /// don't clobber each other's build fingerprints.
+/// Directory name of the catalog wrapper's dedicated build output,
+/// under the project/workspace cargo target root.
+///
+/// Peer of the web bundle's `idealyst-web-<config_key>` and the dev
+/// server's `idealyst-dev-server`: every CLI-managed build gets its own
+/// target dir so it never competes for the bare `target/` build lock
+/// that the user's own `cargo` invocations (and rust-analyzer) hold.
+pub const SIDECAR_TARGET_DIR: &str = "idealyst-mcp";
+
+/// Where the generated catalog wrapper writes its build output.
+///
+/// Rooted at [`FrameworkSource::cargo_target_dir`], so sibling projects
+/// under one framework source share a warm dependency cache — the same
+/// rooting the web and dev-server target dirs use.
+pub fn sidecar_target_dir(source: &FrameworkSource, project_root: &Path) -> PathBuf {
+    source.cargo_target_dir(project_root).join(SIDECAR_TARGET_DIR)
+}
+
+/// Expand a user-supplied root into the set of idealyst projects to wrap.
+///
+/// A project directory (one whose `Cargo.toml` has a `[package]`) yields
+/// itself. A **workspace root** yields every member carrying
+/// `[package.metadata.idealyst]` — the framework's own marker for "this
+/// crate is an idealyst project", the same key [`build_ios::parse_manifest`]
+/// reads. Plain library members are deliberately not wrapped directly:
+/// their components still reach the catalog through the apps that depend
+/// on them, and wrapping every lib in a large workspace would build far
+/// more than the catalog needs.
+///
+/// This is what makes a bare `idealyst mcp` work at a workspace root.
+/// Previously that errored and the server degraded to an empty catalog.
+pub fn resolve_project_roots(root: &Path) -> Result<Vec<PathBuf>> {
+    let root = fs::canonicalize(root)
+        .with_context(|| format!("canonicalize {}", root.display()))?;
+    // A real project: wrap exactly it.
+    if build_ios::parse_manifest(&root).is_ok() {
+        return Ok(vec![root]);
+    }
+    let found = discover_workspace_projects(&root)?;
+    if found.is_empty() {
+        anyhow::bail!(
+            "{} is a cargo workspace with no idealyst projects in it. An \
+             idealyst project is a member crate whose Cargo.toml has a \
+             [package.metadata.idealyst] section; add one, or point \
+             --project-root at a project directory",
+            root.join("Cargo.toml").display(),
+        );
+    }
+    Ok(found)
+}
+
+/// Run `cargo metadata` at a workspace root and return the member
+/// directories that are idealyst projects. Cargo resolves `members`
+/// globs for us, which hand-globbing would get wrong.
+fn discover_workspace_projects(workspace_root: &Path) -> Result<Vec<PathBuf>> {
+    let manifest_path = workspace_root.join("Cargo.toml");
+    let output = std::process::Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .output()
+        .with_context(|| format!("run cargo metadata for {}", manifest_path.display()))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "cargo metadata failed for {}: {}",
+            manifest_path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let json: Value = serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("parse cargo metadata for {}", manifest_path.display()))?;
+    Ok(collect_workspace_projects(&json))
+}
+
+/// Pure core of [`discover_workspace_projects`], unit-testable against a
+/// synthetic `cargo metadata` document.
+///
+/// Returns member directories sorted by path, so the generated wrapper is
+/// byte-stable across runs — an unstable order would rewrite the wrapper
+/// on every call and defeat the idempotence that keeps cargo from
+/// rebuilding.
+fn collect_workspace_projects(meta: &Value) -> Vec<PathBuf> {
+    let members: Vec<&str> = meta
+        .get("workspace_members")
+        .and_then(|m| m.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    let Some(packages) = meta.get("packages").and_then(|p| p.as_array()) else {
+        return Vec::new();
+    };
+    let mut roots: Vec<PathBuf> = packages
+        .iter()
+        .filter(|pkg| {
+            pkg.get("id")
+                .and_then(|i| i.as_str())
+                .is_some_and(|id| members.contains(&id))
+        })
+        // The framework's own definition of an idealyst project.
+        .filter(|pkg| {
+            pkg.get("metadata")
+                .and_then(|m| m.get("idealyst"))
+                .is_some()
+        })
+        .filter_map(|pkg| {
+            let manifest = pkg.get("manifest_path")?.as_str()?;
+            Path::new(manifest).parent().map(Path::to_path_buf)
+        })
+        .collect();
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
 pub fn generate_with(
-    project_root: &Path,
+    project_roots: &[PathBuf],
     subdir: &str,
     bin_name: &str,
     dump_call: &str,
 ) -> Result<PathBuf> {
-    // Absolute project path — the wrapper lives elsewhere on disk and
-    // references the project by path, so a relative `.` / cwd would
-    // resolve against the wrapper dir, not here.
-    let project_root = fs::canonicalize(project_root)
-        .with_context(|| format!("canonicalize project dir {}", project_root.display()))?;
+    if project_roots.is_empty() {
+        anyhow::bail!("no project roots to build a catalog wrapper for");
+    }
 
-    let manifest = build_ios::parse_manifest(&project_root)
-        .context("read the project's Cargo.toml to build a catalog wrapper")?;
-    let source = framework_source::resolve(&project_root)?;
+    // Absolute project paths — the wrapper lives elsewhere on disk and
+    // references each project by path, so a relative `.` / cwd would
+    // resolve against the wrapper dir, not here.
+    //
+    // Sorted so the emitted wrapper is byte-stable regardless of the
+    // order roots arrived in: an unstable order would rewrite the files
+    // on every call and defeat the idempotence cargo's fingerprints rely
+    // on.
+    let mut projects: Vec<(PathBuf, build_ios::Manifest)> = Vec::new();
+    for root in project_roots {
+        let root = fs::canonicalize(root)
+            .with_context(|| format!("canonicalize project dir {}", root.display()))?;
+        let manifest = build_ios::parse_manifest(&root)
+            .context("read the project's Cargo.toml to build a catalog wrapper")?;
+        projects.push((root, manifest));
+    }
+    projects.sort_by(|a, b| a.1.name.cmp(&b.1.name));
+    projects.dedup_by(|a, b| a.0 == b.0);
+
+    // The anchor project roots the wrapper on disk and picks the
+    // framework source. Every project in one workspace resolves the
+    // framework the same way, so the anchor's answer holds for all.
+    let (anchor_root, _) = &projects[0];
+    let source = framework_source::resolve(anchor_root)?;
+
+    let project_names: Vec<&str> = projects.iter().map(|(_, m)| m.name.as_str()).collect();
 
     let wrapper_dir = source
-        .wrapper_root(&project_root)
-        .join(&manifest.name)
+        .wrapper_root(anchor_root)
+        .join(wrapper_name(&project_names))
         .join(subdir);
     fs::create_dir_all(wrapper_dir.join("src"))
         .with_context(|| format!("create {}", wrapper_dir.join("src").display()))?;
@@ -113,7 +307,25 @@ pub fn generate_with(
     // project references any of its components (see module docs).
     // Non-fatal: a metadata failure just means we link the project lib
     // only, the same behaviour as before this was added.
-    let forced = discover_forced_deps(&project_root, &source, &manifest.name);
+    // Union of every project's component-library deps. Two apps in one
+    // workspace normally share most of these (the component library, the
+    // icon pack), so dedup by package name — declaring the same dep twice
+    // is a manifest error, and the first spelling wins.
+    //
+    // A project is never force-linked as another's dep: it is already an
+    // explicit `[dependencies]` entry below, and re-declaring it would
+    // collide.
+    let mut forced: Vec<ForcedDep> = Vec::new();
+    for (root, manifest) in &projects {
+        for dep in discover_forced_deps(root, &source, &manifest.name) {
+            if project_names.contains(&dep.pkg_name.as_str()) {
+                continue;
+            }
+            if !forced.iter().any(|d| d.pkg_name == dep.pkg_name) {
+                forced.push(dep);
+            }
+        }
+    }
 
     let forced_dep_lines = forced
         .iter()
@@ -124,13 +336,31 @@ pub fn generate_with(
         .map(|d| format!("use {} as _;\n", d.lib_ident))
         .collect::<String>();
 
+    // One `[dependencies]` entry per wrapped project. Several projects
+    // in one wrapper is what lets a single catalog cover every app in a
+    // workspace: `inventory` registration is additive at link time, so
+    // linking N project libs collects N projects' components into one
+    // catalog, each still carrying its own crate in `module_path`.
+    let project_dep_lines = projects
+        .iter()
+        .map(|(root, m)| format!("{} = {{ path = \"{}\" }}\n", m.name, root.display()))
+        .collect::<String>();
+    let project_use_lines = projects
+        .iter()
+        .map(|(_, m)| format!("use {} as _;\n", m.lib_name))
+        .collect::<String>();
+
     let cargo_toml = format!(
         r#"# GENERATED by `idealyst mcp`. Do not edit — rewritten on demand.
 #
-# Ephemeral catalog-extraction wrapper. Links the project's library and
-# turns on `runtime-core/catalog` so every `#[component]` in the project (and
-# its component-library deps) registers in the MCP catalog. The project
-# itself needs no `[[bin]] catalog` and no `catalog` feature.
+# Ephemeral catalog-extraction wrapper. Links each project's library and
+# turns on `runtime-core/catalog` so every `#[component]` in those projects
+# (and their component-library deps) registers in the MCP catalog. A
+# project itself needs no `[[bin]] catalog` and no `catalog` feature.
+#
+# More than one project appears here when the wrapper was generated for a
+# workspace: one catalog covering every app, with each component's origin
+# still recoverable from its `module_path`.
 #
 # Empty `[workspace]` declares this wrapper standalone even though it
 # lives under the framework workspace's `target/idealyst/...`; without it
@@ -149,14 +379,12 @@ path = "src/main.rs"
 
 [dependencies]
 runtime-core = {fcore_dep}
-{user_name} = {{ path = "{user_path}" }}
-{forced_dep_lines}{patch_block}"#,
-        name = manifest.name,
+{project_dep_lines}{forced_dep_lines}{patch_block}"#,
+        name = wrapper_package_name(&project_names),
         subdir = subdir,
         bin_name = bin_name,
         fcore_dep = fcore_dep,
-        user_name = manifest.name,
-        user_path = project_root.display(),
+        project_dep_lines = project_dep_lines,
         forced_dep_lines = forced_dep_lines,
         patch_block = patch_block,
     );
@@ -164,37 +392,48 @@ runtime-core = {fcore_dep}
     let main_rs = format!(
         r#"//! GENERATED by `idealyst mcp` — ephemeral catalog extractor.
 //!
-//! `use {lib} as _;` links the project's library so its
+//! Each `use <project> as _;` links a project's library so its
 //! `inventory::submit!` component registrations are present; the wrapper
 //! is built with `runtime-core/catalog`, so those registrations were
-//! emitted. Each `use <dep> as _;` below force-links a component-library
-//! dependency so its registrations survive linking too (see the wrapper
-//! generator's module docs). `dump_catalog_json` serializes the
-//! collected catalog to stdout.
+//! emitted. Registration is additive at link time, which is why several
+//! projects can share one extractor. Each `use <dep> as _;` below
+//! force-links a component-library dependency so its registrations
+//! survive linking too (see the wrapper generator's module docs).
+//! `dump_catalog_json` serializes the collected catalog to stdout.
 
-use {lib} as _;
-{forced_use_lines}
+{project_use_lines}{forced_use_lines}
 fn main() {{
     runtime_core::__mcp::{dump_call}();
 }}
 "#,
-        lib = manifest.lib_name,
+        project_use_lines = project_use_lines,
         forced_use_lines = forced_use_lines,
         dump_call = dump_call,
     );
 
-    // Share the project/workspace target dir so common dependencies stay
-    // warm across builds and the produced binary lives at a predictable
-    // path. (The `catalog`-feature build of runtime-core is a distinct cargo
-    // fingerprint from the project's normal build, so they coexist
-    // rather than clobber each other.)
+    // The wrapper builds into its OWN sidecar target dir under the
+    // project/workspace target root — never the bare target dir. This is
+    // the same isolation the web bundle (`idealyst-web-<config_key>`) and
+    // the dev server (`idealyst-dev-server`) already take, for the same
+    // reason: this build carries a different feature union than the
+    // project's own (`runtime-core/catalog` and each component library's
+    // `catalog`), and under `--watch` it reruns on every save.
+    //
+    // Sharing the bare target dir made every catalog refresh contend for
+    // the one cargo build lock that `cargo check`, `cargo test` and
+    // rust-analyzer also take — so a watch-triggered extraction would
+    // stall the editor. The lost cache sharing is smaller than it looks:
+    // the project's own dev builds live in the sibling `idealyst-web-*` /
+    // `idealyst-dev-server` dirs already, so the bare dir held little the
+    // wrapper could reuse.
     let cargo_config = format!(
-        "# GENERATED. Redirect this wrapper's build output to the shared\n\
-         # target dir so subsequent extractions reuse the cache.\n\
+        "# GENERATED. Redirect this wrapper's build output to a dedicated\n\
+         # sidecar target dir, so catalog extraction never takes the build\n\
+         # lock the project's own cargo commands use.\n\
          \n\
          [build]\n\
          target-dir = \"{}\"\n",
-        source.cargo_target_dir(&project_root).display(),
+        sidecar_target_dir(&source, anchor_root).display(),
     );
 
     write_if_changed(&wrapper_dir.join("Cargo.toml"), &cargo_toml)?;
@@ -547,6 +786,183 @@ mod tests {
         dir
     }
 
+    /// A project with a chosen package name, so multi-project tests can
+    /// tell the two apart in the emitted wrapper.
+    fn fake_named_project(tag: &str, pkg: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "idealyst-catwrap-{}-{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"{pkg}\"\nversion = \"0.0.1\"\nedition = \"2021\"\n\
+                 [dependencies]\nruntime-core = {{ path = \"./does-not-exist/crates/runtime/core\" }}\n"
+            ),
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn generate_links_every_project_into_one_wrapper() {
+        // The point of the merge: ONE extractor binary linking N project
+        // libs. `inventory` registration is additive at link time, so the
+        // emitted catalog spans every app.
+        let a = fake_named_project("multi-a", "alpha-app");
+        let b = fake_named_project("multi-b", "beta-app");
+        let wrapper = generate_for_roots(&[b.clone(), a.clone()]).expect("generate");
+
+        let cargo = fs::read_to_string(wrapper.join("Cargo.toml")).unwrap();
+        assert!(cargo.contains("alpha-app = { path ="), "cargo: {cargo}");
+        assert!(cargo.contains("beta-app = { path ="), "cargo: {cargo}");
+
+        let main_rs = fs::read_to_string(wrapper.join("src/main.rs")).unwrap();
+        assert!(main_rs.contains("use alpha_app as _;"), "main: {main_rs}");
+        assert!(main_rs.contains("use beta_app as _;"), "main: {main_rs}");
+
+        // Named for the project set, in sorted order — so the roots
+        // arriving as [b, a] above still land in the same wrapper as
+        // [a, b] would.
+        assert!(
+            wrapper.ends_with("alpha-app+beta-app/catalog"),
+            "{wrapper:?}"
+        );
+
+        let _ = fs::remove_dir_all(&a);
+        let _ = fs::remove_dir_all(&b);
+    }
+
+    #[test]
+    fn multi_project_generate_is_order_independent_and_idempotent() {
+        // Root order must not churn cargo fingerprints: a watch-triggered
+        // regenerate that rewrote files would force a rebuild every time.
+        let a = fake_named_project("ord-a", "alpha-app");
+        let b = fake_named_project("ord-b", "beta-app");
+        let first = generate_for_roots(&[a.clone(), b.clone()]).expect("first");
+        let main_path = first.join("src/main.rs");
+        let mtime1 = fs::metadata(&main_path).unwrap().modified().unwrap();
+
+        let second = generate_for_roots(&[b.clone(), a.clone()]).expect("second");
+        assert_eq!(first, second, "root order must not move the wrapper");
+        let mtime2 = fs::metadata(&main_path).unwrap().modified().unwrap();
+        assert_eq!(mtime1, mtime2, "reordered roots must not rewrite files");
+
+        let _ = fs::remove_dir_all(&a);
+        let _ = fs::remove_dir_all(&b);
+    }
+
+    #[test]
+    fn collect_workspace_projects_takes_only_members_marked_idealyst() {
+        // The framework's own marker for "this crate is a project" is
+        // `[package.metadata.idealyst]` — the key `parse_manifest` reads.
+        // Plain library members are NOT wrapped directly: their
+        // components still arrive via the apps that depend on them, and
+        // wrapping every lib in a big workspace would build far more than
+        // the catalog needs.
+        let meta = json!({
+            "workspace_members": ["app-a 0.1.0 (path+file:///w/a)", "lib-b 0.1.0 (path+file:///w/b)"],
+            "packages": [
+                {
+                    "id": "app-a 0.1.0 (path+file:///w/a)",
+                    "name": "app-a",
+                    "manifest_path": "/w/a/Cargo.toml",
+                    "metadata": {"idealyst": {"app_name": "A"}}
+                },
+                {
+                    "id": "lib-b 0.1.0 (path+file:///w/b)",
+                    "name": "lib-b",
+                    "manifest_path": "/w/b/Cargo.toml",
+                    "metadata": null
+                },
+                {
+                    // A non-member (a path dependency outside the
+                    // workspace) is never wrapped, marker or not.
+                    "id": "vendor-c 0.1.0 (path+file:///elsewhere)",
+                    "name": "vendor-c",
+                    "manifest_path": "/elsewhere/Cargo.toml",
+                    "metadata": {"idealyst": {}}
+                }
+            ]
+        });
+        assert_eq!(
+            collect_workspace_projects(&meta),
+            vec![PathBuf::from("/w/a")]
+        );
+    }
+
+    #[test]
+    fn collect_workspace_projects_is_sorted_and_deduped() {
+        // Byte-stability of the generated wrapper depends on this order.
+        let meta = json!({
+            "workspace_members": ["z 0.1.0 (p)", "a 0.1.0 (q)"],
+            "packages": [
+                {"id": "z 0.1.0 (p)", "name": "z", "manifest_path": "/w/z/Cargo.toml",
+                 "metadata": {"idealyst": {}}},
+                {"id": "a 0.1.0 (q)", "name": "a", "manifest_path": "/w/a/Cargo.toml",
+                 "metadata": {"idealyst": {}}}
+            ]
+        });
+        assert_eq!(
+            collect_workspace_projects(&meta),
+            vec![PathBuf::from("/w/a"), PathBuf::from("/w/z")]
+        );
+    }
+
+    #[test]
+    fn collect_workspace_projects_empty_when_nothing_is_marked() {
+        // A workspace of plain crates yields nothing, and the caller
+        // turns that into an explanatory error rather than an empty
+        // catalog that looks like "this project has no components".
+        let meta = json!({
+            "workspace_members": ["lib 0.1.0 (p)"],
+            "packages": [
+                {"id": "lib 0.1.0 (p)", "name": "lib",
+                 "manifest_path": "/w/lib/Cargo.toml", "metadata": null}
+            ]
+        });
+        assert!(collect_workspace_projects(&meta).is_empty());
+    }
+
+    #[test]
+    fn wrapper_name_is_the_sole_project_name_when_there_is_one() {
+        // Single-project wrappers must land at exactly the path they
+        // always did — this is what keeps existing on-disk wrappers and
+        // their warm build caches valid across the upgrade.
+        assert_eq!(wrapper_name(&["solo-app"]), "solo-app");
+    }
+
+    #[test]
+    fn wrapper_package_name_is_a_legal_cargo_package_name() {
+        // Regression: the `+` that separates projects in the wrapper's
+        // DIRECTORY name is illegal in a cargo PACKAGE name. Emitting it
+        // made cargo reject the generated manifest, so the extractor
+        // exited 101 and the catalog silently stayed empty.
+        let pkg = wrapper_package_name(&["alpha-app", "beta-app"]);
+        assert!(!pkg.contains('+'), "{pkg}");
+        assert!(
+            pkg.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'),
+            "package name must be cargo-legal: {pkg}"
+        );
+        // Single-project wrappers keep the name they always had.
+        assert_eq!(wrapper_package_name(&["solo-app"]), "solo-app");
+    }
+
+    #[test]
+    fn wrapper_name_truncates_a_large_project_set() {
+        // A monorepo with many apps must not produce an unusable path.
+        let owned: Vec<String> = (0..30)
+            .map(|i| format!("some-fairly-long-app-name-{i}"))
+            .collect();
+        let many: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let name = wrapper_name(&many);
+        assert!(name.ends_with("+29-more"), "{name}");
+        assert!(name.len() < 80, "{name}");
+    }
+
     #[test]
     fn generate_emits_a_runnable_catalog_wrapper() {
         let project = fake_project("emit");
@@ -572,7 +988,38 @@ mod tests {
         assert!(main_rs.contains("use my_app as _;"), "main: {main_rs}");
         assert!(main_rs.contains("dump_catalog_json"));
 
+        // Build output goes to the dedicated sidecar dir, NOT the bare
+        // target dir — otherwise every catalog extraction takes the same
+        // cargo build lock as the user's `cargo check` and rust-analyzer.
+        let cfg = fs::read_to_string(wrapper.join(".cargo/config.toml")).unwrap();
+        let target_line = cfg
+            .lines()
+            .find(|l| l.starts_with("target-dir"))
+            .unwrap_or_else(|| panic!("no target-dir in config: {cfg}"));
+        assert!(
+            target_line.contains(SIDECAR_TARGET_DIR),
+            "wrapper must build into the {SIDECAR_TARGET_DIR} sidecar: {target_line}"
+        );
+        assert!(
+            !target_line.trim_end().ends_with("target\""),
+            "wrapper must not build into the bare target dir: {target_line}"
+        );
+
         let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn sidecar_target_dir_is_a_child_of_the_cargo_target_root() {
+        // Peer of `idealyst-web-*` / `idealyst-dev-server`: rooted at the
+        // same cargo target dir so sibling projects under one framework
+        // source still share a warm dependency cache, but namespaced so
+        // the build lock is ours alone.
+        let src = FrameworkSource::Workspace {
+            root: PathBuf::from("/fw"),
+        };
+        let dir = sidecar_target_dir(&src, Path::new("/proj"));
+        assert_eq!(dir, PathBuf::from("/fw/target").join(SIDECAR_TARGET_DIR));
+        assert_eq!(dir.parent().unwrap(), src.cargo_target_dir(Path::new("/proj")));
     }
 
     #[test]

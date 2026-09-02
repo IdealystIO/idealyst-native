@@ -142,7 +142,7 @@ pub fn run(args: Args) -> Result<()> {
 /// Build + run the ephemeral external-manifest extractor and parse its JSON.
 fn discover(project: &Path) -> Result<Vec<cg::ExternalComponent>> {
     let wrapper = super::catalog_wrapper::generate_with(
-        project,
+        std::slice::from_ref(&project.to_path_buf()),
         "external-manifest",
         "external-manifest",
         "dump_external_components_json",
