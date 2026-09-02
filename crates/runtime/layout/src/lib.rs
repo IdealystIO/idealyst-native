@@ -336,6 +336,30 @@ impl LayoutTree {
     /// `view` builds (children then style) — is handled in `set_style`,
     /// which resets a grid's existing children when its display becomes
     /// Grid.
+    /// Is `node` inside the subtree rooted at `root` (inclusive)?
+    ///
+    /// Used to scope the table-grid repin to the root being computed —
+    /// see the call site for why touching another root's grids corrupts
+    /// them. Walks parents, so it is O(depth); the alternative (tracking
+    /// a root per grid at registration) would go stale the moment a
+    /// subtree is reparented, which navigation does constantly.
+    fn is_under(&self, node: NodeId, root: NodeId) -> bool {
+        if node == root {
+            return true;
+        }
+        let mut cur = node;
+        // Depth is bounded by the view tree; the guard is against a
+        // malformed cycle, not expected input.
+        for _ in 0..512 {
+            match self.tree.parent(cur) {
+                Some(p) if p == root => return true,
+                Some(p) => cur = p,
+                None => return false,
+            }
+        }
+        false
+    }
+
     fn mark_grid_item_if_grid_parent(&mut self, parent: NodeId, child: NodeId) {
         let parent_is_grid = self
             .tree
@@ -1176,6 +1200,23 @@ impl LayoutTree {
             let mut repinned = false;
             for (grid, n) in &grids {
                 let n = *n;
+                // ONLY grids under the root being computed.
+                //
+                // `table_grids` is global to the tree, but a host can have
+                // several Taffy ROOTS — iOS makes one per screen mounted
+                // into a `UIViewController`, and portals are orphan roots
+                // by construction — and drives them with one `compute` per
+                // root. The isolation measure below lays each CELL out as
+                // its own root, which overwrites that cell's location with
+                // (0, 0); only the final re-layout of `root` puts them
+                // back. A grid under a DIFFERENT root gets scrambled here
+                // and never repaired, so every one of its cells ends up
+                // stacked at the grid's origin — correct sizes, no
+                // positions. Whichever root happened to be computed last
+                // was the only one that looked right.
+                if !self.is_under(*grid, root.0) {
+                    continue;
+                }
                 let w = self.tree.layout(*grid).map(|l| l.size.width).unwrap_or(0.0);
                 let children = self.tree.children(*grid).unwrap_or_default();
                 if n == 0 || children.is_empty() || w <= 0.0 {
@@ -2261,6 +2302,72 @@ mod tests {
                 "equal-content auto columns share the width evenly (~100), got {w}",
             );
         }
+    }
+
+    /// A table grid under a DIFFERENT root must survive a `compute` of
+    /// this one.
+    ///
+    /// A host can have several Taffy roots — iOS makes one per screen
+    /// mounted into a `UIViewController`, portals are orphan roots — and
+    /// drives them with one `compute` per root. The table-grid pass
+    /// measures each cell by laying it out as its OWN root, which
+    /// overwrites the cell's location with (0, 0), and only the final
+    /// re-layout of the computed root restores it. While that pass ran
+    /// over every registered grid, computing root A left root B's cells
+    /// stacked at the grid origin: correct sizes, no positions, and only
+    /// whichever root ran last looked right.
+    ///
+    /// The user-visible shape was a table that rendered on first paint
+    /// and collapsed into one overlapping pile after navigating between
+    /// screens — each screen adding another root.
+    #[test]
+    fn regression_table_grid_under_another_root_survives_a_foreign_compute() {
+        let mut t = LayoutTree::new();
+
+        // Root A: an ordinary box, nothing to do with the table.
+        let root_a = t.new_node();
+        let filler = t.new_node();
+        t.set_intrinsic_size(filler, 50.0, 10.0);
+        t.add_child(root_a, filler);
+
+        // Root B: a 3-column auto table with one row.
+        let root_b = t.new_node();
+        let grid = t.new_node();
+        let mut gr = StyleRules::default();
+        gr.display = Some(runtime_shared::DisplayKind::Grid);
+        gr.grid_template_columns = Some(vec![runtime_shared::TrackSize::Auto; 3]);
+        t.set_style(grid, &gr);
+        t.add_child(root_b, grid);
+        let mut cells = Vec::new();
+        for w in [60.0_f32, 40.0, 40.0] {
+            let cell = t.new_node();
+            t.set_intrinsic_size(cell, w, 10.0);
+            t.add_child(grid, cell);
+            cells.push(cell);
+        }
+
+        // Lay out B so its cells have real positions...
+        t.compute(root_b, 300.0, 0.0);
+        let placed: Vec<f32> = cells.iter().map(|c| t.frame_of(*c).x).collect();
+        assert!(
+            placed.windows(2).all(|w| w[0] < w[1]),
+            "sanity: a laid-out row places its cells left to right, got {placed:?}",
+        );
+
+        // ...then compute the OTHER root, as a multi-root host does every
+        // pass. B's cells must not move.
+        t.compute(root_a, 300.0, 0.0);
+        let after: Vec<f32> = cells.iter().map(|c| t.frame_of(*c).x).collect();
+        assert_eq!(
+            placed, after,
+            "computing a foreign root must not disturb this grid's cells; \
+             all-zero here is the bug — every cell stacked at the grid origin",
+        );
+        assert!(
+            after.iter().any(|x| *x > 0.0),
+            "at least one cell must be off the origin; {after:?} means the \
+             isolation measure scrambled them and nothing repaired it",
+        );
     }
 
     /// `auto` grid columns are CONTENT-sized, like `table-layout: auto`:
