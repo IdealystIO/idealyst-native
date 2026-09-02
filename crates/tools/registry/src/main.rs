@@ -272,6 +272,21 @@ fn workspace_dep_extras(root: &Path) -> Result<BTreeMap<String, Vec<(String, tom
 
 /// Relative path from one directory to another, in the `../sibling` form
 /// cargo manifests use.
+/// The checksum a version already carries in the index, if it is there.
+fn published_checksum(index_lines: &str, version: &str) -> Result<Option<String>> {
+    for line in index_lines.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value =
+            serde_json::from_str(line).context("parsing an existing index line")?;
+        if v.get("vers").and_then(|x| x.as_str()) == Some(version) {
+            return Ok(v
+                .get("cksum")
+                .and_then(|x| x.as_str())
+                .map(str::to_owned));
+        }
+    }
+    Ok(None)
+}
+
 /// Teach this workspace where the registry lives.
 ///
 /// `[workspace.dependencies]` now names `registry = "<name>"` on every internal
@@ -577,8 +592,29 @@ fn build(
         } else {
             deploy::fetch_index_file(&target(r)?, &ipath)?.unwrap_or_default()
         };
-        if lines.lines().any(|l| l.contains(&format!("\"vers\":\"{}\"", rel.to))) {
-            bail!("{} {} is already published — versions are immutable", p.name, rel.to);
+        // A 133-crate publish that dies halfway must be restartable, so an
+        // already-present version is a skip rather than a failure — PROVIDED
+        // the bytes match. `cargo package` output is byte-reproducible (it
+        // normalizes mtimes), so a checksum comparison is exact. A MISMATCH
+        // is the real fault: the source moved without the version moving, and
+        // silently leaving the old tarball up would ship a registry that
+        // disagrees with this commit.
+        if let Some(published) = published_checksum(&lines, &rel.to.to_string())? {
+            if published == entry.cksum {
+                println!("  skipped {} {} (already published, identical)", p.name, rel.to);
+                state.crates.insert(
+                    p.name.clone(),
+                    Released { version: rel.to.to_string(), commit: head.clone() },
+                );
+                continue;
+            }
+            bail!(
+                "{} {} is already published with different content\n                   published: {}\n  local:     {}\nA published version is immutable — bump instead.",
+                p.name,
+                rel.to,
+                published,
+                entry.cksum
+            );
         }
         if !lines.is_empty() && !lines.ends_with('\n') {
             lines.push('\n');
@@ -683,6 +719,26 @@ mod tests {
             "https://crates.idealyst.io/crates/{crate}/{version}/download"
         );
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Regression: a 133-crate publish that dies partway must be restartable.
+    /// Treating an already-present version as a hard error stranded the run —
+    /// but only a matching checksum makes the skip safe, since a differing one
+    /// means the source moved without the version moving.
+    #[test]
+    fn regression_resume_skips_identical_but_catches_changed_content() {
+        let lines = concat!(
+            r#"{"name":"wire","vers":"1.5.1","cksum":"aaa","deps":[]}"#,
+            "\n",
+            r#"{"name":"wire","vers":"1.5.2","cksum":"bbb","deps":[]}"#,
+            "\n",
+        );
+        assert_eq!(published_checksum(lines, "1.5.2").unwrap().as_deref(), Some("bbb"));
+        assert_eq!(published_checksum(lines, "1.5.1").unwrap().as_deref(), Some("aaa"));
+        // Not published yet -> nothing to compare against, so it publishes.
+        assert_eq!(published_checksum(lines, "1.5.3").unwrap(), None);
+        // Blank lines and a trailing newline must not derail the scan.
+        assert_eq!(published_checksum("", "1.5.2").unwrap(), None);
     }
 
     #[test]
