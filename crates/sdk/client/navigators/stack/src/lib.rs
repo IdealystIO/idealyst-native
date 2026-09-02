@@ -41,137 +41,78 @@
 //! no opt-in (every navigator registers with the host-installed
 //! `handlers::nav_url_sync::UrlSyncService`).
 //!
-//! # The native push surface — lost in the runtime-v2 migration, and how to restore it
+//! # Native push — real transitions and the interactive back gesture
 //!
-//! Before runtime v2 this crate shipped `src/ios.rs` and `src/android.rs`:
-//! `NavigatorHandler<IosBackend>` / `NavigatorHandler<AndroidBackend>`
-//! implementations that seated a real `UINavigationController` (via
-//! `ios-navigator-helpers`) or a Kotlin `RustNavigator` **inside** the
-//! outlet, so a stack got native push/pop transitions and — the part that
-//! is not cosmetic — the **interactive swipe-back gesture** and the
-//! system Back button. Chrome stayed author layout in both (the native
-//! bar was force-hidden, `header_shown: Some(false)`), so output was
-//! uniform per CLAUDE.md §7 while the *transition mechanics* were
-//! platform-idiomatic.
+//! On a host that installs a **stack presenter**, this navigator does not
+//! swap its outlet at all. It drives a real platform navigation container
+//! seated inside the outlet, which is what buys animated push/pop and —
+//! the part that is not cosmetic — the **interactive swipe-back gesture**
+//! and the system Back button.
 //!
-//! Those files were deleted in the migration because they were written
-//! against the old per-backend navigator registry
-//! (`runtime_core::primitives::navigator::NavigatorHandler` +
-//! `Backend::create_navigator`), a seam the surviving core does not have:
-//! navigation is now `runtime_vocabulary::handlers::navigator`'s built-in,
-//! generic over `NavCaps`. **This is a real capability regression** — iOS
-//! and Android currently have no swipe-back and no system-Back
-//! integration on a stack — and it should be restored, not accepted. It
-//! cannot be restored from this crate alone: the presenter has to be
-//! consulted by the vocabulary handler, which is where every stack
-//! mutation lands.
+//! Chrome stays author layout everywhere: the native bar is hidden and
+//! the author's `StackHeader` renders on every backend, so observable
+//! output is uniform per CLAUDE.md §7 while the *transition mechanics*
+//! are platform-idiomatic.
 //!
-//! ## The seam the vocabulary must grow
+//! ## The seam
 //!
-//! Mirror `handlers::navigator::url_sync` exactly — same shape, same
-//! lifecycle, same type-erasure trick. That module is already the worked
-//! precedent for "a host installs a service at boot; the navigator
-//! handler consults it if present, and behaves exactly as today if not".
+//! [`runtime_vocabulary::handlers::nav_native_push`] — shaped after
+//! `nav_url_sync`, and for the same reason: a capability only some hosts
+//! can provide, consulted from a handler that is generic over every host.
+//! A host installs one `StackPresenter` at boot; the vocabulary's stack
+//! handler calls `attach(outlet)` at mount and, if the presenter accepts,
+//! routes its five direction-tagged reveals (`seat` / `push` / `pop` /
+//! `replace` / `reset`) at the returned `NativePushHandle` instead of
+//! inserting into the outlet.
 //!
-//! ```ignore
-//! // crates/runtime/vocabulary/src/handlers/navigator.rs
-//! pub mod native_push {
-//!     /// The per-host presenter. Node types are erased (`Rc<dyn Any>`
-//!     /// around the backend's `Node`) for the same reason
-//!     /// `NavSyncRegistration::outlet` erases them: the trait must be
-//!     /// object-safe and installable from a host that the generic
-//!     /// handler knows nothing about. A presenter downcasts to its own
-//!     /// node type and MUST decline (return `None` from `attach`) on a
-//!     /// foreign one.
-//!     pub trait StackPresenter {
-//!         /// One-time setup inside the navigator's outlet, before the
-//!         /// initial screen is seated. Return the node the handler
-//!         /// should treat as the content host (the nav controller's
-//!         /// container), or `None` to decline — declining must leave
-//!         /// today's behavior byte-identical.
-//!         fn attach(&self, outlet: Rc<dyn Any>) -> Option<NativePushHandle>;
-//!     }
+//! **Direction is the whole point.** A stack push and a stack pop make
+//! the same content change — the top screen is swapped — and differ only
+//! in which way the user went. A `UINavigationController` needs that to
+//! animate; the gesture needs it to exist at all. The handler's previous
+//! single direction-blind reveal could not express it.
 //!
-//!     /// What a presenter hands back: the content host plus the four
-//!     /// directional transitions the handler drives, plus the reverse
-//!     /// channel for a USER-initiated back.
-//!     pub struct NativePushHandle {
-//!         pub host: Rc<dyn Any>,
-//!         /// Seat the bottom screen, unanimated.
-//!         pub seat:    Rc<dyn Fn(Rc<dyn Any>)>,
-//!         /// Push on top, animated.
-//!         pub push:    Rc<dyn Fn(Rc<dyn Any>)>,
-//!         /// Pop the top, animated, revealing the given screen.
-//!         pub pop:     Rc<dyn Fn(Rc<dyn Any>)>,
-//!         /// Swap the top in place, unanimated (Replace).
-//!         pub replace: Rc<dyn Fn(Rc<dyn Any>)>,
-//!         /// Collapse to a single screen, unanimated (Reset).
-//!         pub reset:   Rc<dyn Fn(Rc<dyn Any>)>,
-//!         /// Install the handler's LOGICAL-ONLY pop. The presenter
-//!         /// calls this when the user completed a swipe-back or hit
-//!         /// system Back, i.e. the native stack ALREADY popped. The
-//!         /// handler must then pop its `Vec<StackEntry>`, republish
-//!         /// depth/chrome/active_* and notify url-sync — and must NOT
-//!         /// call `pop` back into the presenter (that would double-pop).
-//!         pub set_user_pop: Rc<dyn Fn(Rc<dyn Fn()>)>,
-//!     }
+//! A presenter that declines (`attach` returns `None`) leaves the outlet
+//! swap byte-identical, which is what
+//! `native_push_declined_presenter_falls_back_to_the_outlet_swap` pins.
 //!
-//!     thread_local! { static PRESENTER: RefCell<Option<Rc<dyn StackPresenter>>> = … }
-//!     pub fn install_stack_presenter(p: Rc<dyn StackPresenter>);
-//!     pub fn clear_stack_presenter();
-//!     pub(super) fn presenter() -> Option<Rc<dyn StackPresenter>>;
-//! }
-//! ```
+//! ## User-initiated back flows the other way
 //!
-//! ## Where it plugs in (exact call sites, as of this writing)
+//! A completed swipe-back or a system Back press moves the native
+//! container *before* the handler knows. The presenter therefore calls
+//! the closure it was handed via `set_user_pop`, which pops the logical
+//! stack and republishes depth/chrome/active state **without** calling
+//! `pop` back into the presenter — that would pop it twice. See
+//! `native_push_user_pop_reconciles_without_driving_the_presenter`.
 //!
-//! All of them are in `StackShared<H>` in
-//! `crates/runtime/vocabulary/src/handlers/navigator.rs`:
+//! One consequence worth knowing: on that path the popped screen's
+//! `Realized` is dropped AFTER the animation, so author cleanups fire
+//! with the revealed screen already on screen. The app-initiated path
+//! keeps the original drop-then-reveal ordering. The difference is
+//! inherent to a gesture the user drives and may cancel.
 //!
-//! - `mount_stack_navigator` — after the outlet node exists, call
-//!   `native_push::presenter()` and `attach(outlet)`. Store the
-//!   `Option<NativePushHandle>` on `StackShared` next to `outlet`.
-//! - `show_top()` is the ONE place that reveals a screen today
-//!   (`clear_children(outlet)` + `insert`). It is deliberately
-//!   direction-blind, which is precisely why it cannot be the hook:
-//!   `UINavigationController` needs to know push from pop. **Replace the
-//!   five `self.show_top()` call sites with direction-tagged reveals** —
-//!   `seat_initial` ⇒ `seat`, `push` ⇒ `push`, `pop` ⇒ `pop`,
-//!   `replace` ⇒ `replace`, `reset` ⇒ `reset` — each of which falls
-//!   through to today's `show_top()` body verbatim when no presenter is
-//!   attached. That keeps the no-presenter op stream byte-identical, so
-//!   the existing scene-parity `nav_stack_push_pop` golden still pins it.
-//! - `pop()` — split into `pop()` (app-initiated: drive the presenter)
-//!   and `pop_logical()` (presenter-initiated: everything except the
-//!   presenter call). Hand `pop_logical` to `set_user_pop` at attach.
-//!   Note the existing ordering invariant must survive: the popped
-//!   screen's `Realized` is dropped (author cleanups run) BEFORE the
-//!   revealed screen is shown. On a user-initiated pop the native
-//!   transition has already run, so the drop happens after the animation
-//!   — that is a behavior difference worth a comment, not a bug.
-//! - `seat_initial` cold-deep-link path — the synthesized parent below
-//!   the deep-linked screen must be seated into the presenter too
-//!   (`seat` then `push`), or the native back-stack has one entry while
-//!   the logical stack has two and swipe-back dead-ends. The old
-//!   `ios.rs` called this "cold-start deep-link back-stack
-//!   reconstruction" and it was the subtlest part of the original.
-//! - `StackRetention` — a native presenter retains covered screens by
-//!   construction, so `Rebuild` (`dispose_covered_top`) is incompatible
-//!   with it. The old iOS handler documented exactly this and forced
-//!   `Retain`. The handler should do the same when a presenter is
-//!   attached, and say so.
+//! ## Retention is tightened on attach
 //!
-//! ## Then, in this crate and the backends
+//! A native container retains what it covers, so [`StackRetention::Rebuild`]
+//! — which disposes the screen a push covers — would tear down a subtree
+//! the container is still displaying. A successful attach forces
+//! `Retain`, whatever the app asked for.
 //!
-//! Nothing in this crate's *authored* surface changes — that is the point
-//! of the outlet model. The presenters are backend-side
-//! (`backend_ios::newcore` installs the `UINavigationController` one at
-//! boot; `backend_android::newcore` the `RustNavigator` one), and both
-//! can reuse `ios-navigator-helpers` / `android-navigator-helpers`
-//! unchanged: those crates are engine code, not old-core code. The
-//! recoverable originals are `git show HEAD:crates/sdk/client/navigators/stack/src/ios.rs`
-//! and `…/android.rs`.
+//! ## Where the presenters live
 //!
+//! Implementations are per-platform helper crates, not backends:
+//! `ios-navigator-helpers::IosStackPresenter` is the
+//! `UINavigationController` one. They cannot be installed from the
+//! backend crate — the helpers depend on *it*, so that would be a
+//! dependency cycle — and this crate depends on both sides, which is why
+//! the install lives in `StackNavigator::new` (idempotent, once per
+//! thread).
+//!
+//! **Android is not wired yet.** The seam is platform-agnostic and
+//! `android-navigator-helpers` carries the engine, but the Kotlin-side
+//! `RustNavigator` presenter has not been written, so an Android stack
+//! still takes the outlet-swap path — correct, but with no transition
+//! and no predictive-back integration.
+
 //! # The header-options carrier
 //!
 //! Per-screen header options ride the vocabulary's [`Screen`] value
