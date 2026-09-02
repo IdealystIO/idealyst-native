@@ -30,7 +30,7 @@
 
 [package]
 name = "runtime-shared"
-version = "1.5.2"
+version = "1.5.3"
 edition.workspace = true
 license.workspace = true
 description = "Idealyst shared runtime substrate: style engine, assets, animation, input types, scheduling, robot — the non-walker half of runtime-core."
