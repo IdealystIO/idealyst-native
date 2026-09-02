@@ -996,6 +996,13 @@ impl CatalogService {
         let live = self.live_apps();
 
         for app in &live {
+            // The `app` filter narrows to one app here just as it does on
+            // the static path below. Applying it to only one of the two
+            // arms — as this did — meant the filter silently did nothing
+            // whenever a live app was registered.
+            if !app_matches(req.app.as_deref(), &app.name) {
+                continue;
+            }
             // Live path: hit the Robot bridge's `get_catalog`.
             let bridge = RobotBridge::new(app.bridge_addr.clone());
             let cat = match self.catalog_cache.get_via_bridge(&bridge).await {
@@ -5327,5 +5334,35 @@ mod tests {
         svc.replace_catalog(cat).await;
         let st = waiter.await.unwrap();
         assert!(st.is_settled_current(), "{st:?}");
+    }
+
+    #[tokio::test]
+    async fn the_app_filter_applies_to_the_live_arm_too() {
+        // Regression: `app_matches` guarded only the static arm, so with
+        // a live app registered the filter silently matched everything.
+        // Explicit robot mode synthesizes one live app named "app" at an
+        // address nothing answers on.
+        let svc = CatalogService::with_robot_mode(true, Some("127.0.0.1:1".into()));
+        let cat = ResolvedCatalog::build_from_json(&multi_project_catalog().to_string()).unwrap();
+        svc.replace_catalog(cat).await;
+
+        // Filtering to a DIFFERENT app must skip the live entry entirely
+        // and fall through to the static catalog — which is how we can
+        // tell the guard ran without needing a reachable bridge.
+        let out = svc
+            .list_components(Parameters(FilterRequest {
+                filter: None,
+                app: Some("beta_app".into()),
+            }))
+            .await
+            .unwrap();
+        let mut names = component_names(&out);
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["AppRoot".to_string(), "PinPad".to_string()],
+            "a non-matching live app must not contribute, and must not \
+             suppress the static catalog"
+        );
     }
 }

@@ -60,8 +60,14 @@ pub struct Args {
     #[arg(long, value_name = "HOST", default_value = "127.0.0.1")]
     pub robot_host: String,
 
-    /// Lint the catalog and exit non-zero on findings instead of
-    /// starting the server. Useful as a CI gate.
+    /// Lint the project's catalog and exit non-zero on findings instead
+    /// of starting the server. Useful as a CI gate.
+    ///
+    /// Builds the catalog the same way the server does — honoring
+    /// `--project-root`, and discovering every idealyst member of a
+    /// workspace root — so it lints what the server would actually
+    /// serve. It fails if the catalog cannot be built, and if it builds
+    /// empty: a gate that examined nothing must not report success.
     #[arg(long)]
     pub check: bool,
 
@@ -164,7 +170,11 @@ pub fn run(args: Args) -> Result<()> {
         };
     }
     if args.check {
-        return run_check(args.strict_scopes);
+        return run_check(
+            args.strict_scopes,
+            args.project_root.clone(),
+            std::env::current_dir().ok(),
+        );
     }
 
     let mut opts = mcp_server::ServerOptions::new();
@@ -471,8 +481,90 @@ fn run_install(args: InstallArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_check(strict_scopes: bool) -> Result<()> {
-    let cat = mcp_catalog::ResolvedCatalog::build();
+/// Build the project's catalog the same way the server does, for
+/// `--check`.
+///
+/// `--check` used to lint `ResolvedCatalog::build()` — the CLI process's
+/// OWN `inventory` slice, which is empty, because the CLI links no app
+/// crates and is not built with the `catalog` feature. So the gate
+/// reported "OK — 0 components" and exited 0 for every project on earth,
+/// and could never have failed. A CI gate that cannot fail is worse than
+/// no gate: it reports success for a check that never ran.
+fn check_catalog(
+    project_roots: Vec<std::path::PathBuf>,
+    cwd: Option<std::path::PathBuf>,
+) -> Result<(mcp_catalog::ResolvedCatalog, Vec<std::path::PathBuf>)> {
+    let roots: Vec<std::path::PathBuf> = if project_roots.is_empty() {
+        cwd.into_iter().collect()
+    } else {
+        project_roots
+    };
+    if roots.is_empty() {
+        anyhow::bail!("no project directory to check (pass --project-root)");
+    }
+
+    let mut projects: Vec<std::path::PathBuf> = Vec::new();
+    for root in &roots {
+        for p in super::catalog_wrapper::resolve_project_roots(root)
+            .with_context(|| format!("resolve idealyst projects under {}", root.display()))?
+        {
+            if !projects.contains(&p) {
+                projects.push(p);
+            }
+        }
+    }
+
+    let wrapper = super::catalog_wrapper::generate_for_roots(&projects)
+        .context("generate the catalog extractor")?;
+    let output = std::process::Command::new("cargo")
+        .current_dir(&wrapper)
+        .args(["run", "-q", "--bin", "catalog"])
+        .output()
+        .context("run the catalog extractor")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "the catalog extractor failed ({}):\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let cat = mcp_catalog::ResolvedCatalog::build_from_json(&String::from_utf8_lossy(
+        &output.stdout,
+    ))
+    .map_err(|e| anyhow::anyhow!("catalog extractor emitted invalid JSON: {e}"))?;
+    Ok((cat, projects))
+}
+
+fn run_check(
+    strict_scopes: bool,
+    project_roots: Vec<std::path::PathBuf>,
+    cwd: Option<std::path::PathBuf>,
+) -> Result<()> {
+    let (cat, projects) = check_catalog(project_roots, cwd)?;
+    let names: Vec<String> = projects
+        .iter()
+        .map(|p| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.display().to_string())
+        })
+        .collect();
+    eprintln!(
+        "[idealyst mcp --check] linting {} components from {}",
+        cat.entries().len(),
+        names.join(", ")
+    );
+    // An empty catalog is a failed check, not a passed one. Reaching here
+    // means extraction SUCCEEDED and still found nothing, which for a
+    // project that declares itself an idealyst app is a misconfiguration
+    // — and reporting OK for it is the exact bug this gate had.
+    if cat.entries().is_empty() {
+        anyhow::bail!(
+            "the catalog built but contains no components. That is almost \
+             always a misconfiguration rather than a project with nothing \
+             in it; refusing to report OK for a check that examined nothing"
+        );
+    }
     let opts = mcp_server::LintOptions {
         strict_scopes,
         // `--check` runs against the project's own catalog; treat every
@@ -667,5 +759,50 @@ mod tests {
                 b.join("Cargo.toml"),
             ]
         );
+    }
+
+    #[test]
+    fn check_refuses_when_there_is_no_project_to_check() {
+        // Regression: `--check` linted the CLI's own (empty) inventory
+        // slice, so it printed "OK — 0 components" and exited 0 for every
+        // project, and could never fail. A gate that examined nothing
+        // must not report success.
+        let err = check_catalog(Vec::new(), None).expect_err("no roots must fail");
+        assert!(
+            format!("{err:#}").contains("no project directory"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn check_refuses_a_directory_that_is_not_an_idealyst_project() {
+        // A path with no Cargo.toml at all: the failure must surface
+        // rather than degrade into an empty-but-green check.
+        let dir = tmp_dir("check-not-a-project");
+        let err = check_catalog(vec![dir.clone()], None)
+            .expect_err("a non-project must fail the check");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("resolve idealyst projects") || msg.contains("cargo metadata"),
+            "{msg}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_prefers_explicit_roots_over_cwd() {
+        // Same precedence as the server's resolve_catalog_source: an
+        // explicit --project-root narrows deliberately and must not be
+        // unioned with the cwd.
+        let explicit = tmp_dir("check-explicit");
+        let cwd = tmp_dir("check-cwd");
+        // Both are non-projects, so this fails — but the error must name
+        // the EXPLICIT root, proving the cwd was not consulted.
+        let err = check_catalog(vec![explicit.clone()], Some(cwd.clone())).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains(&explicit.display().to_string()), "{msg}");
+        assert!(!msg.contains(&cwd.display().to_string()), "{msg}");
+        let _ = fs::remove_dir_all(&explicit);
+        let _ = fs::remove_dir_all(&cwd);
     }
 }
