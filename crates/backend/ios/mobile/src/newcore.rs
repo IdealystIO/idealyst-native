@@ -644,12 +644,59 @@ mod ios_impl {
         // out after `run_in_view` returns. See the viewport-source
         // section (host-compilable half).
         set_viewport_sink(Some(vp_sig));
+        // Point the Robot bridge at the registry this boot actually fills.
+        #[cfg(feature = "robot")]
+        install_robot_env();
         NewCoreApp {
             realized,
             _backend: backend,
             _registry: registry,
             world,
         }
+    }
+
+    /// Wire the Robot bridge to this backend's element registry.
+    ///
+    /// The bridge transport (`runtime_shared::robot::bridge`) and the
+    /// element registry (`runtime_vocabulary::robot`) do not know about
+    /// each other; the host joins them. Without this an iOS dev build
+    /// connects, answers, and reports an EMPTY tree — reachable and
+    /// blind. `backend_linux::newcore::install_robot_env` is the
+    /// reference, and its own comment names the same symptom.
+    ///
+    /// Two halves:
+    /// - `install_driver_env` gives the registry a way to run a query
+    ///   inside the mounted world (identity lookups read signals) and to
+    ///   settle staged writes afterwards, so a `tap` is observable by the
+    ///   next query rather than a frame later.
+    /// - `install_verb_router` forwards a bridge verb to the vocabulary's
+    ///   command table, passing `None` for commands it does not own so
+    ///   the transport's own verbs still resolve.
+    #[cfg(feature = "robot")]
+    fn install_robot_env() {
+        runtime_vocabulary::robot::install_driver_env(
+            |f| match crate::newcore::mounted_world() {
+                Some(world) => world.enter(|| f()),
+                // Pre-boot / post-stop there is no world; run plainly so a
+                // query still resolves static labels instead of panicking.
+                None => f(),
+            },
+            || {
+                if let Some(world) = crate::newcore::mounted_world() {
+                    // Re-entrant flush would panic; the in-flight one will
+                    // commit these writes anyway.
+                    if !world.is_flushing() {
+                        world.flush();
+                    }
+                }
+            },
+        );
+        runtime_shared::robot::bridge::install_verb_router(|cmd, args| {
+            match runtime_vocabulary::robot::bridge::invoke_command(cmd, args) {
+                Err(e) if e.starts_with("unknown command:") => None,
+                other => Some(other),
+            }
+        });
     }
 
     // =======================================================================

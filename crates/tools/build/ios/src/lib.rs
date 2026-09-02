@@ -807,10 +807,17 @@ runtime-shared = {shared_dep}
 
 [features]
 # `idealyst dev` builds with `--features dev`: the catalog + automation
-# surface (`runtime-core/dev` = robot registry + catalog emission
-# gate) plus the bridge TRANSPORT (`runtime-shared/robot`), which is
-# what makes `robot::bridge::set_app_identity` below resolve.
-dev = ["runtime-core/dev", "runtime-shared/robot"]
+# surface. Three features, and all three are load-bearing:
+#
+#   runtime-core/dev          the robot element REGISTRY + catalog gate
+#   runtime-shared/robot      the bridge TRANSPORT (`robot::bridge` resolves)
+#   backend-ios-mobile/robot  the boot-time `install_robot_env`, which
+#                             POINTS the transport at the registry
+#
+# Dropping the third yields an app that connects and answers with an
+# empty tree — reachable and blind. The Linux wrapper carries the same
+# third feature via `host-gtk/robot`.
+dev = ["runtime-core/dev", "runtime-shared/robot", "backend-ios-mobile/robot"]
 
 [target.'cfg(target_os = "ios")'.dependencies]
 backend-ios-mobile = {bios_dep}
@@ -1116,6 +1123,22 @@ mod regression_tests {
              (run_in_view at {mount}, relay at {dial}, listener at {listen}); \
              got:\n{lib_rs}",
         );
+
+        // The third feature is what POINTS the transport at the element
+        // registry (`backend-ios-mobile`'s boot-time `install_robot_env`).
+        // With only the first two the app connects, answers, and reports an
+        // empty tree — reachable and blind, which reads as a broken app
+        // rather than a missing feature.
+        let cargo =
+            std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).expect("read Cargo.toml");
+        for feat in ["runtime-core/dev", "runtime-shared/robot", "backend-ios-mobile/robot"] {
+            assert!(
+                cargo.contains(feat),
+                "the wrapper's `dev` feature must enable {feat} — registry, \
+                 transport and the wiring between them are three separate \
+                 gates; got:\n{cargo}",
+            );
+        }
     }
 
     /// `ios_main` boots through `backend_ios::newcore::run_in_view`,
