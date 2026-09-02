@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Runs the platform-agnostic `welcome` app natively on the GTK4 backend (backend-linux) via host-gtk — the proof that the same author tree renders as real native Linux widgets. Linux-only; run with `cargo run -p welcome-gtk`."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [[bin]]
 name = "welcome-gtk"

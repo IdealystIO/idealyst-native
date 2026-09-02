@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Interactive terminal panel for `idealyst dev --interactive` — dogfoods the framework's terminal backend to show per-target state + a live log stream."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

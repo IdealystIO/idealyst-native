@@ -1,6 +1,6 @@
 [package]
 name = "swap-demo"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Minimal swap-navigator demo — three co-equal tab screens switched via a bottom TabBar. The bar is author layout (idea-ui-nav) wrapping the navigator's single outlet; no push/pop depth. The canonical 'TabBar wired to a router' case."

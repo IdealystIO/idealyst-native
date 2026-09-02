@@ -3,6 +3,9 @@ name = "reactive-refs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 # Prototype crate for first-class component refs. Validates the
 # `Ref<H>` + trait-dispatched handle design before threading it through

@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Cross-platform conformance app: mounts the framework's primitives, idea-ui components, and navigators in deliberately weird configurations, each tagged with a stable test_id, and drives them with an in-app robot-e2e suite. Run it on any backend to get a pass/fail verdict on the framework core."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 # `cdylib` for the standalone web build (`wasm-pack build --target web`);

@@ -1,0 +1,42 @@
+[package]
+name = "registry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Release tooling for the idealyst cargo registry — per-crate semver bumps, sparse-index generation, and S3/CloudFront deployment"
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
+
+# Why this exists, and why it is NOT `cargo publish`:
+#
+# Pinning consumers to a git tag means every release changes the git rev,
+# which changes every package's SourceId, which invalidates every fingerprint
+# — so an app rebuilds its whole framework graph even when one leaf crate
+# changed. Measured over the last 25 releases of this repo, a typical app
+# rebuilt 38/38 framework crates every time; under per-crate versions on a
+# registry the median is 2/38, and 7 of those 25 releases would have cost the
+# consumer nothing at all.
+#
+# The registry is a SPARSE one (cargo's `sparse+https://` protocol), which is
+# nothing but static files: a `config.json`, one JSON-lines index file per
+# crate, and the `.crate` tarballs. That means it can live in an S3 bucket
+# behind CloudFront with no server to run — but it also means there is no
+# `api` endpoint, and `cargo publish` REQUIRES one. So this tool does what
+# `cargo publish` would: package, compute the index entry, upload.
+
+[dependencies]
+anyhow = { workspace = true }
+# `env` so bucket/distribution can come from CI secrets without a flag.
+clap = { workspace = true, features = ["env"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+flate2 = { workspace = true }
+tar = "0.4"
+semver = "1"
+# `toml_edit`, not `toml`: these manifests carry a great deal of explanatory
+# comment, and a release must not reformat or drop any of it. `toml_edit`
+# preserves the document byte-for-byte apart from the spans it is asked to
+# change.
+toml_edit = "0.22"

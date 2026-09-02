@@ -1,6 +1,6 @@
 [package]
 name = "svg"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -66,7 +66,7 @@ runtime-shared = { workspace = true }
 [dev-dependencies]
 # tests/scene.rs mounts `Svg(...)` through the scene registry end-to-end
 # on the shared host-mock recording substrate.
-host-mock = { workspace = true }
+host-mock = { path = "../../../dev/host-mock" }
 
 # The wasm32 handler is `WebBackend`-concrete (`innerHTML` has no
 # caps-trait expression), so `Registry<WebBackend>` needs the backend's

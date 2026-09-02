@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Premint style-dump assembly: turns the framework's PREMINT_SHEETS registry into the shipped .css asset. Linked only by the CLI's ephemeral dump wrapper, never by shipped apps."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [dependencies]
 # The author-surface facade, aliased to `runtime_core` at the crate root

@@ -25,3 +25,21 @@ dist/
 **/.env
 # Generated design-sync upload bundle (rebuild: see .design-sync/NOTES.md)
 ds-bundle/
+
+# Locally-installed chromedriver for the backend-web WebDriver tests. The
+# binary is ~16 MB and was committed by accident; cargo materializes a full
+# worktree per git rev, so every committed megabyte is multiplied across
+# every pinned release in ~/.cargo/git/checkouts. Install it yourself:
+#   brew install --cask chromedriver     # macOS
+# See crates/backend/web/src/tests.rs for the rest of the test setup.
+/chromedriver/
+
+# Scratch output: dependency-tree dumps and ad-hoc screenshots taken while
+# debugging. Neither is a build input.
+.deptree.tmp
+/*.png
+
+# DeepFilterNet 3 weights for denoise-demo's web build. Upstream publishes the
+# exact bytes; fetch them with ./scripts/fetch-denoise-model.sh rather than
+# multiplying 7.8 MB across every pinned release checkout.
+/crates/sdk/client/denoise/examples/denoise-demo/assets/DeepFilterNet3_onnx.tar.gz

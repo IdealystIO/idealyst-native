@@ -1,6 +1,6 @@
 [package]
 name = "screen-recorder-demo"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Screen-recorder SDK demo — captures the current tab/window/screen via getDisplayMedia and streams raw frames, showing a live frame counter + resolution. Exercises the `screen-recorder` SDK's capture capability (frame-callback only; no file output)."

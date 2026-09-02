@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Runner for the tests/ apps. Shells out to the installed `idealyst` CLI to build each app at --web --release (which enables data-segment pruning by default), asserts dist artifacts exist, and optionally (--browser) drives a headless Chrome to assert DOM + console state."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [[bin]]
 name = "prune-regression"

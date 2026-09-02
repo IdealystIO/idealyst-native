@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Two `#[component(external)]` components exported to every supported front-end framework, with a standalone consumer app per framework under `consumers/`."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

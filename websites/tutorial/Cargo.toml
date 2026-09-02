@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Idealyst tutorial — a step-by-step teacher for the framework's core concepts (staged-commit reactivity, stylesheets, media queries), built with idealyst-native itself."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

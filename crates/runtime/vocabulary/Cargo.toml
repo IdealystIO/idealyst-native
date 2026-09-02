@@ -16,7 +16,7 @@
 
 [package]
 name = "runtime-vocabulary"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -88,7 +88,7 @@ runtime-vocabulary = { path = ".", features = ["async-driver", "robot"] }
 # Dev-dep cycle (host-mock depends on this crate's lib) is fine — Cargo
 # permits dev-dependency cycles, and it keeps the suites off the old
 # `Backend` trait ahead of the deletion wave.
-host-mock = { workspace = true }
+host-mock = { path = "../../dev/host-mock" }
 # `ui!` / `#[component]`, for the tests that must pin the AUTHOR-FACING
 # spelling of a feature this crate owns rather than its builder form
 # (`tests/slots.rs`). Safe as a dev-dep here: the macros always emit
@@ -96,4 +96,4 @@ host-mock = { workspace = true }
 # this crate's own test targets, and the `new-core` lowering switch that
 # used to make a proc-macro feature a cross-crate unification hazard is
 # gone (see runtime-macros/Cargo.toml).
-runtime-macros = { workspace = true }
+runtime-macros = { path = "../macros" }

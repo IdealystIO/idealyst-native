@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Kitchen-sink navigation demo — a Drawer at the root hosting Tabs (with a Stack inside a tab), a Stepper (an obscure swap variant), and a standalone Stack. Exercises swap + stack navigators nested in each other, with idea-ui-nav chrome."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

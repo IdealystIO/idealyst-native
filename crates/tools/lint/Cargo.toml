@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Idealyst source linter — flags idiom drift (raw reactive primitives, hand-built elements, non-PascalCase components) over the un-expanded AST"
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 # Plain library: both `idealyst lint` (the CLI subcommand) and the

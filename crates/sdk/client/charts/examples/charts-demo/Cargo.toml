@@ -1,6 +1,6 @@
 [package]
 name = "charts-demo"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Charts demo — the charts SDK across line / smooth / area / bar / stacked / scatter, with live data, hover tooltips and a hover readout."

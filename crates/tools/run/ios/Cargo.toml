@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Build and launch an idealyst app on iOS. Simulator path compiles Swift directly via swiftc + simctl (no Xcode project); device path (`device` module) generates a signed .app via a self-written pbxproj + xcodebuild auto-provisioning and installs with ios-deploy."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [dependencies]
 anyhow = "1"

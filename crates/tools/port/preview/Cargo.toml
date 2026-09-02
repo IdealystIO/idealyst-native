@@ -3,6 +3,9 @@ name = "port-preview"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 # Port + compile a React/Vue/Svelte project end-to-end so the user
 # can evaluate whether the porter's output is actually buildable

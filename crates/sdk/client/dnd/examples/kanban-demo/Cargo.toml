@@ -1,6 +1,6 @@
 [package]
 name = "kanban-demo"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Animated Kanban board — drag cards between columns. Showcases the `dnd` SDK (drag layer ghost, column hover highlight, source dim) wired to the animation system (presence enter/exit on cards, spring-driven color)."

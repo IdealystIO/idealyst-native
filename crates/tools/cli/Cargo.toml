@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Idealyst framework CLI — scaffold, dev-serve, build, and run idealyst apps"
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 # The package is `idealyst-cli` so `cargo install idealyst-cli` is
 # discoverable, but the binary itself is `idealyst` — what users type.

@@ -1,6 +1,6 @@
 [package]
 name = "render-wgpu"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 # Retained stub — see `build.rs`. No custom cfgs surfaced today.

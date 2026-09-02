@@ -1,6 +1,6 @@
 [package]
 name = "mcp-catalog"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -35,9 +35,9 @@ serde = { workspace = true }
 # whose contract it pins. It could not be a normal dependency, and
 # dev-dependencies cannot be optional; with one core there is nothing
 # left to condition on.
-runtime-core = { workspace = true, features = ["catalog"] }
+runtime-core = { path = "../../runtime/core", features = ["catalog"] }
 # `#[component]`'s submission spells the absolute path
 # `::runtime_vocabulary::glue::__mcp`, so the vocabulary must be nameable
 # from the test crate's extern prelude.
-runtime-vocabulary = { workspace = true, features = ["catalog"] }
-runtime-macros = { workspace = true, features = ["catalog"] }
+runtime-vocabulary = { path = "../../runtime/vocabulary", features = ["catalog"] }
+runtime-macros = { path = "../../runtime/macros", features = ["catalog"] }

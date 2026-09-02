@@ -33,6 +33,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Integration app: a ui! + #[component] authored tree, e2e-tested through the vocabulary registry."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [dependencies]
 runtime-macros = { workspace = true }

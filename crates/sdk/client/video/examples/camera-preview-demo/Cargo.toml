@@ -1,6 +1,6 @@
 [package]
 name = "camera-preview-demo"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Camera → Video demo — the camera SDK yields a MediaStream and the video SDK displays it. On web the stream's native_source (a web_sys::MediaStream) is attached as <video> srcObject (zero-copy). Exercises the phase-2 MediaStream consumer path end to end."

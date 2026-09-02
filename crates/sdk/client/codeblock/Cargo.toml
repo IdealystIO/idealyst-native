@@ -1,6 +1,6 @@
 [package]
 name = "codeblock"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -43,7 +43,7 @@ runtime-world = { workspace = true }
 # the scene registry end-to-end on the shared host-mock recording
 # substrate.
 [dev-dependencies]
-host-mock = { workspace = true }
+host-mock = { path = "../../../dev/host-mock" }
 
 # No wasm32-specific dependency: the web arm IS the portable
 # caps-generic handler, so `register` needs no backend-web dep there.

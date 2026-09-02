@@ -1,7 +1,7 @@
 [package]
 name = "wasm-split-macro"
 edition = "2024"
-version = { workspace = true }
+version = "1.5.2"
 authors = ["Jonathan Kelley"]
 description = "macro crate for wasm-split - a tool for splitting up large WASM binaries into smaller chunks"
 repository = "https://github.com/DioxusLabs/dioxus/"

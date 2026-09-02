@@ -3,6 +3,9 @@ name = "hello-roku"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 # Plain library — `idealyst build roku` generates the snapshot
 # binary that calls `app()` on its own. Authors don't have to write

@@ -1,6 +1,6 @@
 [package]
 name = "idea-ui-docs-derive"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "#[derive(DocControls)] proc macro for idea-ui-docs-core"

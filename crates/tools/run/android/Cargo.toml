@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Build and launch an idealyst Android app on emulator or device without Gradle — compiles Java with javac, DEXes with d8, packages via aapt2, signs via apksigner, installs via adb."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [dependencies]
 anyhow = "1"

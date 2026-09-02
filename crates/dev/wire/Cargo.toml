@@ -1,6 +1,6 @@
 [package]
 name = "wire"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -18,18 +18,18 @@ serde_json = { workspace = true }
 # Used by the round-trip integration test (tests/roundtrip.rs), which
 # exercises the dev-side recorder + app-side replay engine against a
 # stand-in `TraceHost`, and by tests/virtual_layout_roundtrip.rs.
-runtime-shared = { workspace = true }
+runtime-shared = { path = "../../runtime/shared" }
 # The scene + capability surface the stand-in replay target implements,
 # and the builders/registry the recorder-side scenes are realized
 # through.
-runtime-scene = { workspace = true }
-runtime-vocabulary = { workspace = true }
-runtime-world = { workspace = true }
-dev-client = { workspace = true, features = ["dev-hot-reload"] }
+runtime-scene = { path = "../../runtime/scene" }
+runtime-vocabulary = { path = "../../runtime/vocabulary" }
+runtime-world = { path = "../../runtime/world" }
+dev-client = { path = "../client", features = ["dev-hot-reload"] }
 # `connect_and_run` lives here (moved from dev-client). tests/transport.rs
 # exercises it against a TraceBackend.
-runtime-server-shell-native = { workspace = true, features = ["runtime-server"] }
-dev-server = { workspace = true }
+runtime-server-shell-native = { path = "../runtime-server-shell", features = ["runtime-server"] }
+dev-server = { path = "../server" }
 # Used by tests/transport.rs to open the WebSocket directly so it can
 # run the read loop on this thread (the WireBackend isn't Send).
 tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }

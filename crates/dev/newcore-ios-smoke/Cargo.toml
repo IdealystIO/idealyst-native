@@ -24,6 +24,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Smoke app for backend-ios-mobile's Host + caps boot path."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 # `staticlib` for the swiftc link; `rlib` so `cargo check`/workspace

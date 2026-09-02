@@ -1,6 +1,6 @@
 [package]
 name = "canvas-native"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -115,7 +115,7 @@ jni = "0.21"
 [dev-dependencies]
 # tests/canvas.rs: the placeholder arm on the shared host-mock recording
 # substrate.
-host-mock = { workspace = true }
+host-mock = { path = "../../../../dev/host-mock" }
 
 # Unconditional in tests so the self-register gate tests can iterate the
 # registry even when the feature (and the optional runtime dep) is off.

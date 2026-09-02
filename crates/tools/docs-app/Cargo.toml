@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Catalog-driven documentation app — renders an Idealyst project's component catalog (every #[component], primitive, utility, type, guide) for humans, built with idea-ui + the docs SDKs. Backs the `idealyst docs` command; catalog source is injectable via the IDEALYST_DOCS_CATALOG env var at build time."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 # `cdylib` for the wasm target; `rlib` so CLI-generated native wrappers
 # under `target/idealyst/<platform>/` can depend on this crate as a

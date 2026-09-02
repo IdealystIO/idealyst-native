@@ -1,6 +1,6 @@
 [package]
 name = "backend-ios-mobile"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 

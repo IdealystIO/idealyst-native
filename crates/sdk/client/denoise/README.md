@@ -32,6 +32,23 @@ echo cancellation — that needs a far-end reference signal and is a different S
   `process` returns `Ok`, streaming itself doesn't error (a transient per-frame
   model fault emits silence for that block).
 
+## Running `denoise-demo`
+
+The demo embeds the DeepFilterNet 3 weights on its web build, and those weights
+are **not committed** — cargo materializes a full worktree of this repo per
+pinned git rev, so a 7.8 MB tracked blob costs 7.8 MB in every release a
+consumer has ever pinned. Fetch them once:
+
+```sh
+./scripts/fetch-denoise-model.sh
+```
+
+The script pulls the exact upstream bytes for the `deep_filter` rev this SDK
+pins, verifies the sha256, and is a no-op if the file is already there. Without
+it, `denoise-demo` fails to compile for wasm32 with a missing-file error on the
+`include_bytes!` in `web_model`. Native builds are unaffected — they get the
+model from `deep_filter`'s `default-model` feature.
+
 **Output is always 48 kHz mono** — DeepFilterNet's native format. Input of any
 rate / channel count is accepted: it's downmixed to mono and resampled to 48 kHz
 first. The output stream carries its own 48 kHz monotonic clock, not the input's

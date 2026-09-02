@@ -1,6 +1,6 @@
 [package]
 name = "idea-ui-docs"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Self-referencing documentation app for idea-ui"
@@ -60,7 +60,7 @@ standalone-web = []
 # `robot-test` drives the running app over the Robot bridge — see
 # `tests/parity.rs`.
 [dev-dependencies]
-robot-test = { workspace = true }
+robot-test = { path = "../../crates/dev/robot-test" }
 serde_json = "1"
 # `tests/parity.rs` returns `anyhow::Result` from its bridge helpers, matching
 # `RobotClient::call`'s own error type.

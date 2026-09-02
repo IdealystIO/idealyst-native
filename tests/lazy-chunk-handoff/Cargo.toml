@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Framework regression test: a small app wrapping a lazy! { … } subtree. Verifies the main bundle ↔ chunk boundary survives release-mode data pruning (chunks reference main-bundle data symbols for shared vtables, statics, and panic strings)."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

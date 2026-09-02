@@ -1,6 +1,6 @@
 [package]
 name = "idea-theme"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Theming abstraction + extensibility for the idealyst design system"

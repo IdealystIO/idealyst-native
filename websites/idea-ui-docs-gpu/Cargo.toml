@@ -8,7 +8,7 @@
 # Run with: `cargo run -p idea-ui-docs-gpu`
 [package]
 name = "idea-ui-docs-gpu"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "idea-ui-docs rendered on the wgpu (GPU) backend as a native desktop window"
@@ -28,7 +28,7 @@ path = "src/main.rs"
 # instance with the feature on, so this is dep weight rather than a
 # correctness issue — but it stays off to keep the preview's per-op cost
 # honest.
-idea-ui-docs = { path = "../idea-ui-docs", default-features = false }
+idea-ui-docs = { path = "../idea-ui-docs", default-features = false , version = "1.5" }
 # The GPU backend + its desktop winit host. `headless` powers the
 # offscreen render test (`tests/render.rs`) — capturing the app to a PNG
 # with no window, so CI can prove it renders without a display.

@@ -1,6 +1,6 @@
 [package]
 name = "canvas-core"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -53,5 +53,5 @@ decode = ["dep:image"]
 # tests/canvas.rs mounts `Canvas(...)` through the scene registry on the
 # shared host-mock recording substrate; `runtime-shared` names the style
 # vocabulary the assertions build.
-host-mock = { workspace = true }
-runtime-shared = { workspace = true }
+host-mock = { path = "../../../../dev/host-mock" }
+runtime-shared = { path = "../../../../runtime/shared" }

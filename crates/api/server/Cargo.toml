@@ -1,6 +1,6 @@
 [package]
 name = "server"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -63,7 +63,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
-runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-core = { path = "../../runtime/core", features = ["async-driver"] }
 # Raw WS counterpart for the typed-socket client-mode test.
 tokio-tungstenite = "0.21"
 futures-util = "0.3"

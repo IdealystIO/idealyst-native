@@ -8,6 +8,9 @@ repository = "https://github.com/DioxusLabs/dioxus/"
 license = "MIT OR Apache-2.0"
 keywords = ["wasm", "cli", "split", "dioxus"]
 rust-version = "1.85.0"
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 
 [dependencies]

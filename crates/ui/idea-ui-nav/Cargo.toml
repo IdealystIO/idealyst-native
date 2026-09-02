@@ -1,6 +1,6 @@
 [package]
 name = "idea-ui-nav"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Themed navigation chrome (TabBar / Drawer / StackHeader) for the idealyst swap & stack navigators — the author-layout that wraps a navigator's outlet."
@@ -29,7 +29,7 @@ idea-ui = { workspace = true }
 
 [dev-dependencies]
 # Theme install + resolve for component tests.
-idea-theme = { workspace = true }
+idea-theme = { path = "../idea-theme" }
 # The recording scene `Host` + capability mock every render test mounts on
 # (`crates/dev/host-mock`).
-host-mock = { workspace = true }
+host-mock = { path = "../../dev/host-mock" }

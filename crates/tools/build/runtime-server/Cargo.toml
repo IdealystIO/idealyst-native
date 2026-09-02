@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Generates and builds the runtime-server dev-host wrapper for a user project — a Rust binary that runs the project's `app()` against `dev-server::WireRecordingBackend` and serves the wire stream over a WebSocket."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [dependencies]
 anyhow = "1"

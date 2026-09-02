@@ -1,6 +1,6 @@
 [package]
 name = "file-drop-demo"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Drop OS files onto the app with the file-picker SDK's FileDropZone. A dashed drop zone highlights while a file drag hovers it; on drop it lists each file's name, MIME, and size and reads just the first chunk via the streaming reader — proving a dropped multi-GB file is never buffered whole. Drag-in works on web (HTML5 DataTransfer) and macOS (NSDraggingDestination)."

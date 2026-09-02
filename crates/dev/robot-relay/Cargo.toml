@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Robot bridge relay for web (wasm) apps. A browser tab can't bind a TCP listener, so a web app can't host the Robot bridge directly. This relay does it on the app's behalf: the web app DIALS OUT to the relay over a WebSocket, while the relay exposes the normal newline-delimited-JSON TCP bridge (and `~/.idealyst/apps` registration) that the MCP server already knows how to discover and drive. Mechanism diverges (the app dials instead of listens), behavior converges — the MCP/evaluator side is identical to a native app."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

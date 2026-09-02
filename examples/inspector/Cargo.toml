@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Idealyst Inspector — a runtime debugging dashboard. Connects to a running idealyst app's robot bridge (the single TCP newline-JSON transport) and shows, live: every loaded navigator (current + back-stack), the element tree, components and their callable methods, reactive-arena + perf phase counters, watched signal values, and captured logs. MVP host: macOS desktop."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

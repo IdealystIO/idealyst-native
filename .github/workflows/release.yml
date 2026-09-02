@@ -1,0 +1,84 @@
+# Publish changed crates to the idealyst cargo registry.
+#
+# There is no global version tag any more. Each crate carries its own version
+# and is republished only when its own files changed — which is the whole
+# point: a consumer that upgrades after a release touching one leaf crate
+# rebuilds that leaf, not the 38-crate framework graph it used to.
+#
+# The job commits the computed version bumps back to master. That commit is
+# what makes the NEXT release's "changed since" comparison meaningful, since
+# `releases.json` records the commit each crate was cut from.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Plan only — do not upload"
+        type: boolean
+        default: true
+  push:
+    branches: [master]
+
+concurrency:
+  # Two releases racing would each compute bumps against the same
+  # `releases.json` and the second would try to republish a version that
+  # already exists. Serialize them.
+  group: registry-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write      # push the version-bump commit
+  id-token: write      # OIDC for AWS, so there are no stored access keys
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Skip the run this job's own bump commit triggers.
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The bump is computed from `git log <last-release-commit>..HEAD`,
+          # so a shallow clone would silently see no history and release
+          # nothing.
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_RELEASE_ROLE }}
+          aws-region: us-east-1
+
+      - name: Build the release tool
+        run: cargo build -p registry --release
+
+      - name: Plan
+        env:
+          IDEALYST_REGISTRY_BUCKET: ${{ vars.REGISTRY_BUCKET }}
+        run: ./target/release/registry plan
+
+      - name: Publish
+        if: ${{ github.event_name == 'push' || !inputs.dry_run }}
+        env:
+          IDEALYST_REGISTRY_BUCKET: ${{ vars.REGISTRY_BUCKET }}
+          IDEALYST_REGISTRY_DISTRIBUTION: ${{ vars.REGISTRY_DISTRIBUTION }}
+        run: ./target/release/registry publish --execute
+
+      - name: Commit the version bumps
+        if: ${{ github.event_name == 'push' || !inputs.dry_run }}
+        run: |
+          if git diff --quiet; then
+            echo "no version changes to commit"
+            exit 0
+          fi
+          git config user.name  "idealyst-release"
+          git config user.email "support@merciersoftware.com"
+          git add -A '*Cargo.toml' Cargo.lock
+          git commit -m "chore(release): publish changed crates [skip ci]"
+          git push

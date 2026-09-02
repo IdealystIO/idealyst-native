@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "SSR build orchestration: generates an ephemeral binary wrapper around a user's app crate that calls backend_ssr::serve(...) and runs it. Same wrapper-crate pattern as build-web / build-ios / build-macos."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [dependencies]
 anyhow = "1"

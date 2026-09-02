@@ -1,6 +1,6 @@
 [package]
 name = "wasm-splitter"
-version = { workspace = true }
+version = "1.5.2"
 edition = "2024"
 authors = ["Jonathan Kelley"]
 description = "A tool for splitting up large WASM binaries into smaller chunks"

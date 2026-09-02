@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Whiteboard demo — a freehand-drawable canvas (canvas SDK) that records its OWN output zero-copy (canvas self-capture → media-writer), with a live camera composited into the canvas as a texture layer, a floating overlay toolbar, and an in-app recording preview."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

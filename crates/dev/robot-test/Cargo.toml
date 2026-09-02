@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Cross-platform end-to-end tests authored in Rust. A `#[robot_test]` function drives a relay-connected `App` (Playwright-flavoured locate → act → assert) and runs as a standard `#[test]` — the relay makes web, macOS, iOS, and Android apps reachable as the same bridge. Powers `idealyst test`."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

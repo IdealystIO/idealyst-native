@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Web build orchestration: generates an ephemeral cdylib wrapper around a user's app crate and drives wasm-pack to produce a .wasm + JS shim. Same pattern as build-ios / build-android."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [dependencies]
 anyhow = "1"

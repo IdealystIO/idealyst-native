@@ -8,6 +8,9 @@ repository = "https://github.com/DioxusLabs/dioxus/"
 homepage = "https://dioxuslabs.com"
 description = "wasm-used implementation for Rust"
 keywords = ["wasm", "wasm-used", "wasm-split", "dioxus" ]
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [dependencies]
 walrus = { workspace = true, features = ["parallel"] }

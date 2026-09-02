@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Framework regression test: many #[component(lazy)] split points dispatched through a static fn-pointer catalog. Catches wasm-split call-graph misclassification under duplicate mangled names (the release-only 'function signature mismatch' boot trap)."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

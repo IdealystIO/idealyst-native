@@ -8,7 +8,7 @@
 # `idealyst::boot`.
 [package]
 name = "idealyst-macros"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Entry-point macro for idealyst apps"

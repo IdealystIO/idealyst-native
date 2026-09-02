@@ -2,7 +2,7 @@
 name = "icons-lucide"
 description = "Lucide icon pack for the idealyst-native framework. Only icons you reference end up in the binary."
 edition.workspace = true
-version.workspace = true
+version = "1.5.2"
 license.workspace = true
 
 [features]

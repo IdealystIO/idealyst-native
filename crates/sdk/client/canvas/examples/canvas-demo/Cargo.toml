@@ -1,6 +1,6 @@
 [package]
 name = "canvas-demo"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Canvas SDK demo — programmatic 2D drawing (paths, fills, strokes, gradients, transforms, clip, animation) rendered via canvas-native's Canvas2D replay. Exercises the renderer-agnostic Scene end to end on web."

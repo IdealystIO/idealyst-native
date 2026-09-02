@@ -1,6 +1,6 @@
 [package]
 name = "idea-ui-docs-gtk"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Runs the idea-ui docs app natively on the GTK4 backend (backend-linux) via host-gtk. Diagnostic harness for the native Linux path — exercises codeblock, table, icons and the builtin swap navigator. Linux-only; run with `cargo run -p idea-ui-docs-gtk`."
@@ -20,9 +20,9 @@ host-gtk = { workspace = true }
 # screenshot capture), which the backend gates so a release app does not carry
 # them. A dev/test build opts in exactly as the CLI-generated wrapper's own
 # `dev` feature does.
-backend-linux = { workspace = true, features = ["robot"] }
-runtime-shared = { workspace = true }
+backend-linux = { path = "../../crates/backend/linux", features = ["robot"] }
+runtime-shared = { path = "../../crates/runtime/shared" }
 # The capability traits the tests assert against directly
 # (`caps::IntrospectionOps` for the screenshot/geometry verbs) — they are
 # trait methods, so the trait has to be in scope at the call site.
-runtime-vocabulary = { workspace = true }
+runtime-vocabulary = { path = "../../crates/runtime/vocabulary" }

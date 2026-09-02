@@ -3,6 +3,9 @@ name = "android-sim"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 # Android (Material 3) simulator skin for the wgpu native runtime.
 #

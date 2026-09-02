@@ -1,6 +1,6 @@
 [package]
 name = "maps"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -32,7 +32,7 @@ runtime-vocabulary = { workspace = true }
 [dev-dependencies]
 # tests/maps.rs mounts `MapView(...)` through the scene registry
 # end-to-end on the shared host-mock recording substrate.
-host-mock = { workspace = true }
+host-mock = { path = "../../../dev/host-mock" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 maps-web = { workspace = true }

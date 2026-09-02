@@ -1,6 +1,6 @@
 [package]
 name = "idea-ui"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Cross-platform UI component library for the idealyst framework"
@@ -103,24 +103,24 @@ table = { workspace = true, optional = true }
 # stylesheets) need a native `Host`. `host-mock` implements `Host` plus
 # every capability trait over a recording op log — it exists for exactly
 # this. Used by `collapsible_direct_mount.rs`.
-host-mock = { workspace = true }
+host-mock = { path = "../../dev/host-mock" }
 # The CSS-emission half of the design-sync converter
 # (`examples/design_sync_dump.rs`). Turns the PREMINT_SHEETS registry
 # this crate's `stylesheet!` blocks register into (under
 # `--cfg idealyst_premint_dump`) into the shipped .css text. Dev-only:
 # examples never link into a shipped app.
-premint-dump = { workspace = true }
+premint-dump = { path = "../../tools/premint-dump" }
 # The HTML-emission half of the design-sync converter
 # (`examples/design_sync_render.rs`). Rendering each component through the
 # real SSR backend is what makes the exported markup ground truth: the
 # framework decides the DOM shape and the preminted class list, rather
 # than the converter inferring either. Dev-only.
-backend-ssr = { workspace = true }
-runtime-scene = { workspace = true }
+backend-ssr = { path = "../../backend/ssr" }
+runtime-scene = { path = "../../runtime/scene" }
 # `tests/loading_button_spawn.rs` drives `spawn_then` through a manually
 # pumped test executor (the `tests/scoped_spawn.rs` pattern in
 # runtime-vocabulary): the executor install seam lives in
 # runtime-shared's driver, and `runtime_core::spawn_then` only exists
 # with `async-driver` on (feature unification covers the lib build).
-runtime-shared = { workspace = true, features = ["async-driver"] }
-runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-shared = { path = "../../runtime/shared", features = ["async-driver"] }
+runtime-core = { path = "../../runtime/core", features = ["async-driver"] }

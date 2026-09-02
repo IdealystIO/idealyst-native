@@ -1,6 +1,6 @@
 [package]
 name = "dev-server"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -140,8 +140,8 @@ serde_json = { workspace = true }
 # see `[features]` above.
 # `catalog` links mcp-catalog + the static core recipes so the bridge's
 # `get_catalog` verb is live under test (`tests/newcore_robot_catalog.rs`).
-runtime-shared = { workspace = true, features = ["catalog"] }
-idea-ui = { workspace = true }
+runtime-shared = { path = "../../runtime/shared", features = ["catalog"] }
+idea-ui = { path = "../../ui/idea-ui" }
 # `tests/runtime_server_shell_e2e.rs` drives the *real* native
 # runtime-server client shell (the worker-thread WebSocket transport +
 # `RuntimeServerShell::drain`) against this crate's loopback dev-server,
@@ -149,7 +149,7 @@ idea-ui = { workspace = true }
 # path is guarded. `runtime-server` activates the tungstenite worker.
 # No dependency cycle: the shell crate depends on dev-client/wire/
 # runtime-shared, never on dev-server.
-runtime-server-shell-native = { workspace = true, features = ["runtime-server"] }
+runtime-server-shell-native = { path = "../runtime-server-shell", features = ["runtime-server"] }
 # `tests/aas_async_reactor.rs` stands up a loopback TCP listener and
 # drives a `tokio::net::TcpStream` through `spawn_async` to prove the
 # session-thread async executor provides a reactor (the E2 regression).

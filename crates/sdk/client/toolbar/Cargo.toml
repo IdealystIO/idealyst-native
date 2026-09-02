@@ -1,6 +1,6 @@
 [package]
 name = "toolbar"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -30,7 +30,7 @@ runtime-world = { workspace = true }
 # tests/toolbar.rs mounts `Toolbar(...)` through the scene registry
 # end-to-end on the shared host-mock recording substrate (the generic
 # placeholder arm — HostMock is not a desktop backend).
-host-mock = { workspace = true }
+host-mock = { path = "../../../dev/host-mock" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 backend-windows = { workspace = true }

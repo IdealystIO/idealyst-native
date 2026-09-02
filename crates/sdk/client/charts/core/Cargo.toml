@@ -1,6 +1,6 @@
 [package]
 name = "charts-core"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Renderer-agnostic charting: a chart spec in, a vector mark IR + label placements out."

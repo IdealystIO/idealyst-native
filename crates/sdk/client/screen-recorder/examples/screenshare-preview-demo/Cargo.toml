@@ -1,6 +1,6 @@
 [package]
 name = "screenshare-preview-demo"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Screen share → Video demo — the screen-recorder SDK yields a MediaStream (ReplayKit on iOS) and the video SDK displays it. In-app capture records the app's own screen, so the Video shows a recursive 'hall of mirrors' that proves the capture → MediaStream → display path end to end. Sibling of camera-preview-demo for the other MediaStream producer."

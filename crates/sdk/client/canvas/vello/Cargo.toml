@@ -1,6 +1,6 @@
 [package]
 name = "canvas-vello"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -107,7 +107,7 @@ libc = "0.2"
 vello = "0.9"
 wgpu = { version = "29", default-features = false, features = ["webgpu", "wgsl"] }
 raw-window-handle = "0.6"
-canvas-native = { path = "../native", default-features = false }
+canvas-native = { path = "../native", default-features = false , version = "1.5" }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
@@ -147,7 +147,7 @@ serde_json = { workspace = true }
 # CPU-vs-GPU rasterization benchmark (`bench_cpu_vs_gpu_rasterization`, #[ignore])
 # loads a real PDF page into a canvas Scene. `pdf` depends only on `canvas-core`
 # (no cycle back to `canvas-vello`).
-pdf = { workspace = true }
+pdf = { path = "../../pdf" }
 
 # Linux dma-buf export spike (`dmabuf_export_spike`, #[ignore], interactive): a
 # live `GtkGLArea` is the only way to get the EGL display+context the GL path uses,

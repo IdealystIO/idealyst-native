@@ -1,6 +1,6 @@
 [package]
 name = "mic-demo"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Microphone SDK demo — opens a live input stream and shows a real-time level meter. Exercises the `microphone` SDK and the capability-based permission injection (declares `microphone` + a reason string)."

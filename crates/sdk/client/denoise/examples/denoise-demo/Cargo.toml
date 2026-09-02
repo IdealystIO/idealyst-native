@@ -1,6 +1,6 @@
 [package]
 name = "denoise-demo"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Noise-suppression SDK demo — opens the mic, runs it through `denoise` (DeepFilterNet 3), and shows raw-input vs. denoised level meters side by side. Make background noise without speaking: the denoised bar drops while the raw bar stays up."

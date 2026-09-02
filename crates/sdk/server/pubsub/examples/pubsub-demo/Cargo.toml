@@ -1,6 +1,6 @@
 [package]
 name = "pubsub-demo"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Full-stack pub/sub on the `pubsub` SDK. A `#[server] say` publishes to a topic; a `#[subscription] room_feed` bridges that topic to a WebSocket, so every connected client — on ANY server instance sharing the backend — sees the message. Demonstrates decentralized WebSocket fan-out."
@@ -61,7 +61,7 @@ optional = true
 
 # End-to-end WS fan-out test (run with --features server).
 [dev-dependencies]
-net = { workspace = true }
+net = { path = "../../../../client/net" }
 serde_json = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net"] }
 

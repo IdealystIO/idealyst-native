@@ -1,6 +1,6 @@
 [package]
 name = "dev-client"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -47,4 +47,4 @@ runtime-scene = { workspace = true }
 runtime-vocabulary = { workspace = true }
 
 [dev-dependencies]
-mock-backend = { workspace = true }
+mock-backend = { path = "../mock-backend" }

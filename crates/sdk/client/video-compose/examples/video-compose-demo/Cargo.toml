@@ -1,6 +1,6 @@
 [package]
 name = "video-compose-demo"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Video compositing demo — the camera SDK yields an input MediaStream; video-compose overlays a watermark + drawn label and emits a NEW output MediaStream. Two live previews sit side by side: the untouched input and the composited output, so the 'ops live only on the product' guarantee is visible. A button drives the watermark opacity reactively."

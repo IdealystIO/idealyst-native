@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Eager-registration variant of the handler-split measurement: register_scene_extensions installs the heavy SDK's mount handler at boot, so main.wasm statically reaches its 512 KiB payload. Paired with lazy-payload-split-lazy; the prune-regression runner diffs the two main.wasm sizes."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

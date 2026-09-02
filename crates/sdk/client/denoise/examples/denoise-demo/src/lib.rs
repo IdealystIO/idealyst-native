@@ -154,6 +154,10 @@ async fn make_denoiser() -> Result<Denoiser, String> {
 /// returns the now-resident `&'static [u8]`.
 #[cfg(target_arch = "wasm32")]
 mod web_model {
+    // The weights are NOT committed — run `./scripts/fetch-denoise-model.sh`
+    // once to populate `assets/`. If this line fails with a missing-file
+    // error, that's the fix. (Not a build.rs download: that would put the
+    // network in the compile path and break offline/sandboxed builds.)
     fn model_bytes(_: ()) -> &'static [u8] {
         include_bytes!("../assets/DeepFilterNet3_onnx.tar.gz")
     }

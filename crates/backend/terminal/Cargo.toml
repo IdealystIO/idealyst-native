@@ -1,6 +1,6 @@
 [package]
 name = "backend-terminal"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -32,4 +32,4 @@ runtime-vocabulary = { workspace = true }
 [dev-dependencies]
 # Frozen old-core output for the cross-core parity corpus, so the gate
 # survives the deletion of the old core. See tests/goldens/README.md.
-parity-goldens = { workspace = true }
+parity-goldens = { path = "../../dev/parity-goldens" }

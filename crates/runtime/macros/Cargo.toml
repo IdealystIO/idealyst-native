@@ -1,6 +1,6 @@
 [package]
 name = "runtime-macros"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 # `ui!`/`jsx!` distinguish rustc from IDE proc-macro servers by whether

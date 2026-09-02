@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Walk-through of the mcp-catalog catalog. Defines a handful of components — including a cross-module duplicate and one doc-less entry — then prints both the flat catalog (raw bare-ident composes) and the resolved adjacency graph (proximity-disambiguated FQNs + reverse uses)."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [[bin]]
 name = "mcp-demo"

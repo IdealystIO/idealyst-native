@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Dev-time HTTP host for web bundles. Serves static files + injects the dev-server URL read from a port-file sentinel."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 # Replaces the per-example `serve.py` scripts. Architecturally separate
 # from the runtime-server dev-server itself: the dev-server owns the wire

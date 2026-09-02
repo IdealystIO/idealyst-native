@@ -3,6 +3,9 @@ name = "posix-log-capture"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 # POSIX implementation of `runtime_shared::robot::logs::LogCapture`.
 # Splices stdout/stderr through pipes via `libc::dup`/`pipe`/`dup2`,

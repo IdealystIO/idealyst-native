@@ -1,6 +1,6 @@
 [package]
 name = "stack-demo"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Outlet-model stack demo — root pushes detail screens; the header is author layout (idea-ui-nav StackHeader) wrapping the navigator's outlet, with a back arrow gated on can_go_back."

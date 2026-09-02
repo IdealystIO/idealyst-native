@@ -1,6 +1,6 @@
 [package]
 name = "dnd-demo"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Drag-and-drop demo — drag color chips into bins. Exercises the `dnd` SDK end to end: Draggable sources, Droppable targets with reactive is_over highlight, payload delivery, and snap-back on a miss. One author tree, identical behavior on every backend."

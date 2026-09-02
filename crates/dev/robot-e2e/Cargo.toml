@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Shared, in-app Playwright-style E2E harness built on the framework's Robot API. Provides Page/Locator/expect + a multi-suite runner that narrates every step to the platform console and emits a machine-readable `[E2E-RESULT]` summary for cross-platform automation."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

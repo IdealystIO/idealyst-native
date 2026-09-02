@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Framework regression test: exercises Box<dyn Trait> dispatch across many vtables to catch data-segment pruning that zeroes vtable bytes."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 # `rlib` only — the CLI generates the per-platform wrapper crate that
 # carries cdylib/staticlib and the entry point.

@@ -3,6 +3,9 @@ name = "build-terminal"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 # Terminal-host build orchestration for `idealyst dev --terminal`
 # (and a future `idealyst build --terminal`).

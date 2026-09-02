@@ -1,6 +1,6 @@
 [package]
 name = "host-win32"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -30,7 +30,7 @@ runtime-core = { workspace = true, features = ["async-driver"] }
 # end-to-end check that the host opens a window and mounts a real app.
 # Pure rlib, cheap, and reuses the workspace's cached build artifacts.
 [dev-dependencies]
-welcome = { workspace = true }
+welcome = { path = "../../../examples/welcome" }
 
 [[example]]
 name = "smoke"

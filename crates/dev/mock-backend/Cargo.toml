@@ -3,6 +3,9 @@ name = "mock-backend"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 # A headless, queryable `runtime_scene::Host` + `runtime_vocabulary::caps`
 # implementation plus an over-the-wire test harness. Lets runtime-server /

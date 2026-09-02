@@ -1,6 +1,6 @@
 [package]
 name = "stack-navigator"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -39,22 +39,22 @@ runtime-vocabulary = { workspace = true }
 [dev-dependencies]
 # `tests/navigator.rs` + `tests/stack_local.rs`: the shared host-mock
 # recording substrate drives the authored surface end-to-end.
-runtime-scene = { workspace = true }
-runtime-world = { workspace = true }
-runtime-shared = { workspace = true }
-host-mock = { workspace = true }
+runtime-scene = { path = "../../../../runtime/scene" }
+runtime-world = { path = "../../../../runtime/world" }
+runtime-shared = { path = "../../../../runtime/shared" }
+host-mock = { path = "../../../../dev/host-mock" }
 # `tests/ssr.rs`: render-at-path + SSG crawl for the outlet-model stack.
 #
 # COORDINATION (runtime-v2 deletion wave): `` is
 # still required because backend-ssr's `newcore` render path is
 # feature-gated. Drop the forward once it is unconditional.
-backend-ssr = { workspace = true }
+backend-ssr = { path = "../../../../backend/ssr" }
 
 # Browser-run hydration test (`tests/hydration_web.rs`): SSR HTML is
 # rendered in-test, injected, and adopted by the real web backend's
 # `newcore::hydrate_in`.
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-backend-web = { workspace = true, features = ["hydrate"] }
+backend-web = { path = "../../../../backend/web", features = ["hydrate"] }
 wasm-bindgen-test = "0.3"
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = ["History"] }

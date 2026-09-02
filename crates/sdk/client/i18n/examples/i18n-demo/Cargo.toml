@@ -1,6 +1,6 @@
 [package]
 name = "i18n-demo"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -45,9 +45,9 @@ dev-server = { workspace = true, optional = true }
 [dev-dependencies]
 # `tests/opt_in.rs` builds the app inside an explicit `World` (signal()
 # resolves the ambient world; a top-level `app()` call aborts).
-runtime-world = { workspace = true }
+runtime-world = { path = "../../../../../runtime/world" }
 # The SSG example renders on the host against the SSR backend.
-backend-ssr = { workspace = true }
+backend-ssr = { path = "../../../../../backend/ssr" }
 
 [package.metadata.idealyst.app]
 name      = "i18n Demo"

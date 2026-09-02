@@ -1,6 +1,6 @@
 [package]
 name = "pdf"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -36,4 +36,4 @@ serde_json = { workspace = true }
 # The `PdfReactive` doctest drives the element from a reactive source, so it
 # needs the author surface. Dev-only — the lib itself needs only the style
 # substrate above.
-runtime-core = { workspace = true }
+runtime-core = { path = "../../../runtime/core" }

@@ -1,6 +1,6 @@
 [package]
 name = "email-demo"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Render an idealyst email template to email-safe HTML (SSG-for-emails) and send it through the `email` SDK. Uses the in-memory capture provider by default; set IDEALYST_EMAIL_PROVIDER=ses (feature `ses`) for real AWS SES delivery."

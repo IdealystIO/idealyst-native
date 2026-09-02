@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Stdio MCP server that surfaces the framework's component catalog. Provides list_components / describe_component / find_uses / find_dependencies tools, plus the `idealyst://catalog` resource. Consumes the `mcp-catalog` ResolvedCatalog built from the linked-in inventory."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [dependencies]
 # `mcp-catalog` provides the catalog data; consumers of this crate

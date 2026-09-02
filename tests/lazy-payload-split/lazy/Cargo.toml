@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Late-registration variant of the handler-split measurement: the heavy SDK's mount handler installs itself from inside the #[component(lazy)] chunk via Registry::register_deferred, keeping its 512 KiB payload out of main.wasm. Paired with lazy-payload-split-eager."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

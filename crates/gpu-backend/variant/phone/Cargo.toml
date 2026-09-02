@@ -3,6 +3,9 @@ name = "variant-phone"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 # Phone-sized native runtime variant. The window size +
 # simulator skin are configured here; all rendering + event

@@ -1,6 +1,6 @@
 [package]
 name = "offload"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -38,7 +38,7 @@ wasmworker = { version = "0.4", features = ["macros"] }
 # Native: the no-op `#[job]` attribute + a oneshot to bridge the worker thread's
 # result back into the awaited future.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-offload-macro = { path = "../offload-macro" }
+offload-macro = { path = "../offload-macro" , version = "1.5" }
 futures-channel = "0.3"
 
 [dev-dependencies]

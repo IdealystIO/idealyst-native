@@ -16,7 +16,7 @@
 # `runtime_vocabulary::glue`, next to the machinery it wraps — not here.
 [package]
 name = "runtime-core"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Idealyst author surface: runtime_vocabulary::glue re-export plus the macro set."

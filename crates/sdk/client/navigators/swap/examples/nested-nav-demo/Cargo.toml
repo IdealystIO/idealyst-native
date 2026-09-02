@@ -1,6 +1,6 @@
 [package]
 name = "nested-nav-demo"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Nested navigators with two simultaneous sidebars — a primary section sidebar (outer swap) whose 'Reports' screen body is a second swap navigator with its own secondary tool sidebar. Both `.layout(...)` chromes render at once."

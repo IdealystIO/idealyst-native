@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Interactive Idealyst fiddle — code editor + browser-side simulator + server-side compile worker, all in one binary"
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 # The fiddle is just the server. The template crate it compiles is
 # under `template/` and is its own `[workspace]` so the parent

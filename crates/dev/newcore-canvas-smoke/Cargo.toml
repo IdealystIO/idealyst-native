@@ -15,6 +15,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Smoke app: the canvas SDK on the web boot path (External-SDK wave)."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

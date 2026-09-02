@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "AWS Lambda build orchestration: generates an ephemeral binary wrapper around a user's app crate that force-links its #[server] fns and runs them under the Lambda runtime via server_aws::run(), builds it with `cargo lambda build` into a `bootstrap`, and emits an RIE Dockerfile for local image-fidelity testing. Same wrapper-crate pattern as build-ssr / build-web."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [dependencies]
 anyhow = "1"

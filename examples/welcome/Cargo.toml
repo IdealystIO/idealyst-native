@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Animated welcome demo — three-act cinematic intro driven by the framework's animation system (springs + tweens + a raf-driven sun/vignette/planet pulse). Also the source of truth for the `idealyst new` scaffold; the CLI copies this project verbatim."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 # The library half stays platform-agnostic: no `#[cfg(target_os =
 # "...")]` blocks, no `web.rs`/`ios.rs`/`android.rs`, the same bytes to

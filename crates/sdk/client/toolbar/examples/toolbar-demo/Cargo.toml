@@ -1,6 +1,6 @@
 [package]
 name = "toolbar-demo"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Smoke-test binary for the `toolbar` SDK. Boots a host-appkit window with an NSToolbar attached, demonstrating the reactive items + click handler shape end-to-end."

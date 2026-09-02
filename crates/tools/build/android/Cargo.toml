@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Android build orchestration: generates an ephemeral cdylib wrapper around a user's app crate, points cargo at the NDK toolchain, and produces a libnatve.so suitable for packaging into an APK."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [dependencies]
 anyhow = "1"

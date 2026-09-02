@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Full-stack login demo: a #[server] login sets an httpOnly session cookie (the BFF pattern), an auth-guard middleware reads it for Auth<Principal>, and a CSRF Origin guard + SameSite cookie defend against cross-site requests. Run with `idealyst build --web` + `cargo run --bin server --features server`."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

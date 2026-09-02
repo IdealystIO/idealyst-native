@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Browse the full Lucide icon set — a searchable, virtualized grid of every icon. Showcases the icons-lucide `registry` feature and flat_list virtualization."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 # Pure `rlib` — the CLI generates the per-platform wrapper crates with the
 # cdylib/staticlib crate-type + entry points; this crate is platform-agnostic.

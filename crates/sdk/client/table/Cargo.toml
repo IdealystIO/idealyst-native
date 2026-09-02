@@ -1,6 +1,6 @@
 [package]
 name = "table"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
@@ -46,10 +46,10 @@ runtime-shared = { workspace = true }
 # COORDINATION: `` is still needed because
 # backend-ssr's newcore render path is feature-gated. When that feature
 # is made unconditional (backend flattening wave), drop the forward.
-backend-ssr = { workspace = true }
-runtime-world = { workspace = true }
-runtime-scene = { workspace = true }
-runtime-vocabulary = { workspace = true }
+backend-ssr = { path = "../../../backend/ssr" }
+runtime-world = { path = "../../../runtime/world" }
+runtime-scene = { path = "../../../runtime/scene" }
+runtime-vocabulary = { path = "../../../runtime/vocabulary" }
 
 # No wasm32-specific dependency: the web `<table>` handlers are generic
 # over the vocabulary caps traits, so nothing here touches `web-sys` or

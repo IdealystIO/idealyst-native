@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Cross-platform render-parity model + diff over the `introspect_native` robot verb. Lean (serde only): deserializes the verb's wire payload, walks an element tree into a path-keyed capture, and diffs two captures' canonical props with per-type tolerance. Shared by the `robot-test` harness and the MCP server's parity tools so the comparison logic lives once."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
 
 [lib]
 crate-type = ["rlib"]
