@@ -4,6 +4,8 @@ use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, MainThreadMarker, NSObject, NSString};
 use objc2_ui_kit::{UIColor, UIView};
+use backend_apple_core::cg::CATransform3D;
+use crate::style_diff::{icon_scale, ICON_NATURAL};
 use std::rc::Rc;
 use block2::ConcreteBlock;
 use crate::phase_record;
@@ -537,19 +539,49 @@ pub fn sync_icon_sublayer(view: &UIView) {
             if (&*name_ptr).to_string() != "idealyst_icon" {
                 continue;
             }
-            // Center the 24×24 path-space layer at the view's midpoint.
+            // Scale the baked glyph to the box, then centre it.
             //
+            // The path is built once at ICON_NATURAL x ICON_NATURAL
+            // (`icon::create_icon` is not even passed a size), so without a
+            // layer transform `Icon(size = N)` painted a 24 px glyph inside
+            // an N-px box — too small in a 32 px button, overflowing a 16 px
+            // one. macOS calls the pre-fix state "the chevrons are huge bug"
+            // and fixes it exactly this way.
+            let scale = icon_scale(w, h);
+
+            // Skip when the scale already matches. Position and bounds
+            // depend only on the (unchanged) box, so a matching scale means
+            // the layer is already correct — which makes an ordinary
+            // re-render (a colour change, a sibling's text reflow) touch
+            // this layer zero times.
+            let current: CATransform3D = msg_send![sub_ptr, transform];
+            if (current.scale_factor() - scale).abs() < 1e-3 {
+                continue;
+            }
+
             // Inside a disabled-actions transaction: this is a CAShapeLayer
             // the backend inserted itself, so it has no view delegate to
-            // veto CoreAnimation's default action, and `position` is
-            // animatable. Unguarded, the first layout pass — which is where
-            // the glyph gets its real centre — EASES the icon into place
-            // over ~0.25 s, so every icon on a screen visibly slides on
-            // first render. The macOS backend hit the same artifact and
-            // guards it the same way (`imp::icon::sync_icon_sublayer`).
+            // veto CoreAnimation's default action, and `position`, `bounds`
+            // and `transform` are all animatable. Unguarded, the first
+            // layout pass — which is where the glyph gets its real centre
+            // and scale — EASES the icon into place over ~0.25 s, so every
+            // icon on a screen visibly slides and grows on first render.
             let _guard = backend_apple_core::implicit_animations::NoImplicitAnimations::begin();
+            // Keep the layer in 24x24 path space and let the transform do
+            // the sizing: rewriting `bounds` to the box instead would leave
+            // the path drawn at its baked size in a bigger coordinate
+            // space, which moves the glyph without resizing it.
+            let _: () = msg_send![sub_ptr, setAnchorPoint: CGPoint { x: 0.5, y: 0.5 }];
+            let _: () = msg_send![
+                sub_ptr,
+                setBounds: CGRect {
+                    origin: CGPoint { x: 0.0, y: 0.0 },
+                    size: CGSize { width: ICON_NATURAL, height: ICON_NATURAL },
+                }
+            ];
             let center = CGPoint { x: w / 2.0, y: h / 2.0 };
             let _: () = msg_send![sub_ptr, setPosition: center];
+            let _: () = msg_send![sub_ptr, setTransform: CATransform3D::scale(scale)];
         }
     }
 }
@@ -1361,4 +1393,3 @@ fn install_border_side(
         }
     }
 }
-

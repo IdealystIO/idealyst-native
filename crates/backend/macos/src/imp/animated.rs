@@ -9,6 +9,9 @@
 //! `NSView.setAlphaValue:` instead of `setAlpha:` and writing
 //! transforms via the CALayer (NSView itself has no transform).
 
+// The 4x4 matrix ABI is shared with the iOS backend — one definition, one
+// host-testable encoding (see `backend_apple_core::cg`).
+use backend_apple_core::cg::CATransform3D;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -658,29 +661,6 @@ pub(crate) fn apply_layer_scale(layer: &NSObject, s: f64) {
         m41: 0.0, m42: 0.0, m43: 0.0, m44: 1.0,
     };
     let _: () = unsafe { msg_send![layer, setTransform: m] };
-}
-
-/// CATransform3D layout — 4x4 column-major matrix of f64. Matches
-/// the C ABI Core Animation exposes.
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
-struct CATransform3D {
-    m11: f64, m12: f64, m13: f64, m14: f64,
-    m21: f64, m22: f64, m23: f64, m24: f64,
-    m31: f64, m32: f64, m33: f64, m34: f64,
-    m41: f64, m42: f64, m43: f64, m44: f64,
-}
-
-unsafe impl objc2::encode::Encode for CATransform3D {
-    const ENCODING: objc2::encode::Encoding = objc2::encode::Encoding::Struct(
-        "CATransform3D",
-        &[
-            f64::ENCODING, f64::ENCODING, f64::ENCODING, f64::ENCODING,
-            f64::ENCODING, f64::ENCODING, f64::ENCODING, f64::ENCODING,
-            f64::ENCODING, f64::ENCODING, f64::ENCODING, f64::ENCODING,
-            f64::ENCODING, f64::ENCODING, f64::ENCODING, f64::ENCODING,
-        ],
-    );
 }
 
 #[cfg(test)]

@@ -316,6 +316,33 @@ pub fn is_layout_affecting(prev: Option<&str>, next_key: &str) -> bool {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Icon glyph sizing
+// ---------------------------------------------------------------------------
+
+/// The edge length every icon path is baked at.
+///
+/// `icon::create_icon` builds the `UIBezierPath` at this size and is not
+/// passed the author's size at all, so the layout pass is the only place that
+/// can make `Icon(size = N)` actually render at N — see [`icon_scale`]. The
+/// mobile crate's `icon::DEFAULT_SIZE` is defined from this constant so the
+/// bake size and the scale denominator cannot drift apart; a mismatch would
+/// silently render every icon at the wrong size.
+pub const ICON_NATURAL: f64 = 24.0;
+
+/// Uniform scale fitting the baked glyph into a `width` x `height` box.
+///
+/// Square — the smaller side wins — so a non-square box letterboxes the glyph
+/// instead of distorting it.
+///
+/// Lives here rather than beside its one call site in `style` because that
+/// module is `cfg`-gated to iOS/tvOS: a test written next to the call site
+/// never runs during a host `cargo test` and guards nothing. This module
+/// exists for exactly that reason.
+pub fn icon_scale(width: f64, height: f64) -> f64 {
+    width.min(height) / ICON_NATURAL
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,5 +640,32 @@ mod tests {
             effective_input_text_color(Some(&explicit)),
             effective_text_color(Some(&explicit)),
         );
+    }
+
+    // --- icon glyph sizing -------------------------------------------------
+
+    /// The ratio the layout pass applies. A box at the natural size must be
+    /// identity — anything else means every default-sized icon in the app is
+    /// being rescaled for nothing.
+    #[test]
+    fn icon_scale_natural_box_is_identity() {
+        assert!((super::icon_scale(super::ICON_NATURAL, super::ICON_NATURAL) - 1.0).abs() < 1e-9);
+    }
+
+    /// The bug this fixes: before it, iOS painted a 24 px glyph whatever size
+    /// the author asked for, because nothing ever scaled the shape layer.
+    #[test]
+    fn icon_scale_tracks_the_requested_box() {
+        assert!((super::icon_scale(48.0, 48.0) - 2.0).abs() < 1e-9, "48px box = 2x");
+        assert!((super::icon_scale(12.0, 12.0) - 0.5).abs() < 1e-9, "12px box = 0.5x");
+        assert!((super::icon_scale(16.0, 16.0) - 16.0 / 24.0).abs() < 1e-9);
+    }
+
+    /// A non-square box letterboxes: the glyph stays square and fits inside,
+    /// rather than stretching to the longer side.
+    #[test]
+    fn icon_scale_non_square_box_uses_the_smaller_side() {
+        assert_eq!(super::icon_scale(48.0, 12.0), super::icon_scale(12.0, 12.0));
+        assert_eq!(super::icon_scale(12.0, 48.0), super::icon_scale(12.0, 12.0));
     }
 }

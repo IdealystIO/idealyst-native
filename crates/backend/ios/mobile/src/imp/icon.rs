@@ -120,7 +120,11 @@ impl<'a> PathEmitter for UIBezierEmitter<'a> {
 /// Taffy `measure_fn` (see `install_icon_measure`) reports the same, so
 /// flex layout reserves a real box for the glyph instead of collapsing
 /// it to 0×0 (which let row siblings overlap it) or stretching it.
-pub(crate) const DEFAULT_SIZE: CGFloat = 24.0;
+/// Defined from the core constant, not repeated: this is the size the path
+/// is BAKED at, and `style_diff::icon_scale` divides by the same number to
+/// size the glyph at layout. Two independent 24s would drift and render
+/// every icon at the wrong scale.
+pub(crate) const DEFAULT_SIZE: CGFloat = backend_ios_core::style_diff::ICON_NATURAL;
 
 pub(crate) fn create_icon(
     mtm: MainThreadMarker,
