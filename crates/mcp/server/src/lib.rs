@@ -138,12 +138,11 @@ pub async fn run_stdio_with_full_options(opts: ServerOptions) -> Result<()> {
     // Discovery → per-call `~/.idealyst/apps/` routing.
     let svc = CatalogService::with_robot_mode(opts.robot_enabled, opts.robot_addr.clone());
 
-    // Pre-serve subprocess load: do this BEFORE binding to stdio so
-    // the very first `tools/call list_components` sees the populated
-    // catalog rather than racing the extractor. Failures are
-    // warnings — the server still starts with an empty catalog.
-    if let Some(factory) = &opts.subprocess {
-        watch::preload_subprocess_catalog(&svc, factory.as_ref()).await;
+    // Status is set BEFORE stdio binds, so the first `tools/call` after
+    // connect already reports the truth rather than racing the task that
+    // sets it.
+    if opts.subprocess.is_some() {
+        svc.mark_initializing().await;
     } else if let Some(reason) = &opts.unavailable_reason {
         // No extractor could be set up. Record why, so an empty catalog
         // explains itself instead of looking like a project with no
@@ -157,6 +156,37 @@ pub async fn run_stdio_with_full_options(opts: ServerOptions) -> Result<()> {
         .await
         .inspect_err(|e| tracing::error!("serving error: {:?}", e))?;
     let peer = service.peer().clone();
+
+    // The first catalog extraction runs in the BACKGROUND, after stdio is
+    // bound — never before it.
+    //
+    // Extraction compiles the project: seconds warm, minutes cold. Doing
+    // it before binding meant the client's connect timeout (30s in Claude
+    // Code) expired first, so a cold cache did not produce a slow server,
+    // it produced one that never connected at all — and the process kept
+    // compiling, invisible, behind a failed connection.
+    //
+    // Serving immediately makes that state observable instead: the
+    // catalog reports `initializing`, every catalog tool says so on its
+    // own response, and `catalog_status(wait_for_current)` can wait for
+    // the build. An empty-but-explained catalog beats an unreachable
+    // server.
+    if let Some(factory) = opts.subprocess.clone() {
+        let svc = svc.clone();
+        let peer = peer.clone();
+        tokio::spawn(async move {
+            watch::preload_subprocess_catalog(&svc, factory.as_ref()).await;
+            // Nudge the client to re-query now that the catalog is real.
+            // Best-effort: the catalog is already swapped, and a missed
+            // notification only means stale data until it asks again.
+            if let Err(e) = peer.notify_tool_list_changed().await {
+                tracing::warn!("failed to notify tool list_changed: {:?}", e);
+            }
+            if let Err(e) = peer.notify_resource_list_changed().await {
+                tracing::warn!("failed to notify resource list_changed: {:?}", e);
+            }
+        });
+    }
 
     // If a watcher was configured, spawn it. Whether it uses the
     // subprocess flavor or the in-process flavor depends on

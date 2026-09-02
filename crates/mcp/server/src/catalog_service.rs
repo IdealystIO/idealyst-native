@@ -880,6 +880,19 @@ impl CatalogService {
         let _ = self.status_tx.send(generation);
     }
 
+    /// No catalog exists yet and the first extraction is about to run.
+    ///
+    /// Called SYNCHRONOUSLY before stdio is bound, so the very first
+    /// `tools/call` already reports `initializing` instead of racing the
+    /// background task that sets it.
+    pub async fn mark_initializing(&self) {
+        {
+            let mut st = self.status.write().await;
+            st.state = crate::catalog_status::CatalogState::Initializing;
+        }
+        self.publish_status().await;
+    }
+
     /// A rebuild has started. The catalog keeps serving throughout.
     pub async fn mark_build_started(&self) {
         {
@@ -5239,5 +5252,80 @@ mod tests {
         // Never return an empty reason — a blank explanation is worse
         // than a noisy one.
         assert!(!trim_error("warning: only warnings here").is_empty());
+    }
+
+    #[tokio::test]
+    async fn initializing_is_distinct_from_an_empty_catalog_that_built_fine() {
+        // The whole point: before this, a first build in flight reported
+        // state "current" over an empty catalog, which reads as "this
+        // project has no components".
+        let svc = CatalogService::new();
+        svc.mark_initializing().await;
+
+        let st = svc.status().await;
+        assert_eq!(st.state, CatalogState::Initializing);
+        assert!(!st.is_settled_current());
+        let marker = st.marker().unwrap();
+        assert!(marker.contains("INITIALIZING"), "{marker}");
+        assert!(
+            marker.contains("not built yet") && marker.contains("NOT"),
+            "the marker must rule out the wrong reading: {marker}"
+        );
+    }
+
+    #[tokio::test]
+    async fn initializing_rides_on_catalog_tool_responses() {
+        // A client that connects mid-build must learn this WITHOUT
+        // having thought to call catalog_status.
+        let svc = CatalogService::new();
+        svc.mark_initializing().await;
+        let out = svc
+            .list_components(Parameters(FilterRequest::default()))
+            .await
+            .unwrap();
+        assert!(format!("{out:?}").contains("INITIALIZING"), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn the_first_successful_build_clears_initializing() {
+        let svc = CatalogService::new();
+        svc.mark_initializing().await;
+        let cat =
+            ResolvedCatalog::build_from_json(&multi_project_catalog().to_string()).unwrap();
+        svc.replace_catalog(cat).await;
+
+        let st = svc.status().await;
+        assert_eq!(st.state, CatalogState::Current);
+        assert!(st.is_settled_current());
+        assert!(st.marker().is_none(), "a landed catalog is silent again");
+    }
+
+    #[tokio::test]
+    async fn a_failed_first_build_becomes_unavailable_not_initializing() {
+        // Still initializing would imply "wait, it's coming". It isn't.
+        let svc = CatalogService::new();
+        svc.mark_initializing().await;
+        svc.mark_build_failed("the project does not compile").await;
+        assert_eq!(svc.status().await.state, CatalogState::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn wait_for_current_covers_the_initializing_window() {
+        // The affordance that makes a non-blocking start usable: one
+        // waiting call instead of polling across turns.
+        let svc = Arc::new(CatalogService::new());
+        svc.mark_initializing().await;
+        let waiter = {
+            let svc = svc.clone();
+            tokio::spawn(async move {
+                svc.wait_for_current(std::time::Duration::from_secs(30)).await
+            })
+        };
+        tokio::task::yield_now().await;
+        let cat =
+            ResolvedCatalog::build_from_json(&multi_project_catalog().to_string()).unwrap();
+        svc.replace_catalog(cat).await;
+        let st = waiter.await.unwrap();
+        assert!(st.is_settled_current(), "{st:?}");
     }
 }

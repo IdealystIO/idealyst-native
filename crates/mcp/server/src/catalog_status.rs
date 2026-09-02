@@ -37,6 +37,16 @@ use std::time::{Duration, SystemTime};
 pub enum CatalogState {
     /// Built successfully and nothing has invalidated it.
     Current,
+    /// No catalog has ever been built and the first extraction is
+    /// running. Distinct from [`Self::Current`] with a rebuild in
+    /// flight: there is nothing to serve yet, so an empty result means
+    /// "not built", not "nothing found".
+    ///
+    /// The server binds stdio BEFORE this finishes — a first extraction
+    /// compiles the project and can take minutes, far longer than an MCP
+    /// client's connect timeout, so blocking on it made the server
+    /// unreachable rather than merely empty.
+    Initializing,
     /// A rebuild was attempted and failed. The catalog below is the last
     /// one that built — usable, but it predates whatever the user just
     /// changed.
@@ -51,6 +61,7 @@ impl CatalogState {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Current => "current",
+            Self::Initializing => "initializing",
             Self::Stale => "stale",
             Self::Unavailable => "unavailable",
         }
@@ -158,16 +169,18 @@ impl CatalogStatus {
                     },
                 ))
             }
+            CatalogState::Initializing => Some(format!(
+                "[catalog: INITIALIZING — the first extraction is still running{}. \
+                 It compiles the project, so this takes tens of seconds warm and \
+                 minutes cold. The catalog is EMPTY until it lands: an empty result \
+                 below means \"not built yet\", NOT \"no components\". Call \
+                 catalog_status with wait_for_current to wait for it.{cost}]",
+                self.rebuild_started_at
+                    .map(|t| format!(" ({}s so far)", secs_since(t)))
+                    .unwrap_or_default(),
+            )),
             CatalogState::Current => {
                 let started = self.rebuild_started_at?;
-                if self.built_at.is_none() {
-                    return Some(format!(
-                        "[catalog: BUILDING — the first extraction has been running \
-                         for {}s and no catalog exists yet. An empty result below \
-                         means \"not built\", NOT \"no components\".{cost}]",
-                        secs_since(started)
-                    ));
-                }
                 Some(format!(
                     "[catalog: REBUILDING — started {}s ago. Results below are the \
                      previous build and do not include changes since.{cost}]",
