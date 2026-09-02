@@ -3092,6 +3092,18 @@ impl IosBackend {
         }
     }
 
+    /// A screen (or any subtree) the framework has DISCARDED: free
+    /// everything the backend keeps for it. See
+    /// [`Self::unregister_subtree`] for what leaks without this, and
+    /// `runtime_scene::Host::release_subtree` for why this cannot be
+    /// folded into `clear_children`.
+    pub(crate) fn release_subtree_impl(&mut self, node: &IosNode) {
+        self.unregister_subtree(node.as_view());
+        // The subtree is gone from the layout tree, so the parent it
+        // hung from has a stale cached size until something dirties it.
+        schedule_layout_pass();
+    }
+
     pub(crate) fn clear_children_impl(&mut self, node: &IosNode) {
         // Mirror the UIKit teardown in Taffy. The earlier shape only
         // called `removeFromSuperview()` — UIKit dropped the child
@@ -3184,12 +3196,18 @@ impl IosBackend {
             // otherwise outlive the child it belongs to, and evict the cached
             // frame so a re-insert at the same geometry still re-attaches it.
             backend_ios_core::style::detach_shadow_sibling(&sub);
-            // Drop the whole discarded subtree from the layout registry
-            // BEFORE detaching it — `unregister_subtree` walks
-            // `subviews()` to find the descendants, so it has to run
-            // while the subtree is still assembled. This subsumes the
-            // bare `applied_frames.remove` that used to be here.
-            self.unregister_subtree(&sub);
+            // NOT `unregister_subtree` here, however tempting. The
+            // navigator's `show_in_outlet` clears the outlet for BOTH
+            // meanings of "this screen is going away": a `LazyDisposing`
+            // eviction (really gone) and a `LazyPersistent` switch-away
+            // (detached, and the SAME node is re-inserted on return
+            // without the route builder re-running). `clear_children`
+            // cannot tell them apart, and freeing a retained screen's
+            // Taffy nodes leaves it with no layout and no way to get one
+            // back. The disposal that IS unambiguous comes from the
+            // handler dropping the screen's `Realized` — see
+            // `release_subtree`, which is where the teardown lives.
+            self.applied_frames.remove(&(&*sub as *const UIView as usize));
             unsafe { sub.removeFromSuperview() };
         }
     }

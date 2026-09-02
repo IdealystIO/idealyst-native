@@ -311,6 +311,27 @@ fn fold_style_overrides(element: &mut Element, rules: &Rc<StyleRules>) {
 // Screen mounting
 // ===========================================================================
 
+/// Tell the host to free a discarded screen's subtree, then drop the
+/// screen.
+///
+/// Order matters both ways. The host call comes FIRST, while the
+/// subtree is still assembled — a host that walks its own children to
+/// find what to free (iOS walks `subviews()`) would find nothing after
+/// the teardown. And the backend borrow is released BEFORE the drop,
+/// because dropping a `LiveScreen` runs author cleanups that may
+/// navigate and re-enter these cells — the same borrow hygiene the
+/// eviction path has always kept.
+fn release_and_drop<H: NavCaps + 'static>(
+    backend: &Rc<RefCell<H>>,
+    screen: Option<LiveScreen<H::Node>>,
+) {
+    let Some(screen) = screen else { return };
+    if let Ok(mut b) = backend.try_borrow_mut() {
+        b.release_subtree(&screen.node);
+    }
+    drop(screen);
+}
+
 /// A mounted screen: its root node + the `Realized` that owns its
 /// entire reactive scope + the screen's opaque options (its
 /// [`Screen`](crate::prims::Screen) payload — the stack publishes the
@@ -1091,7 +1112,12 @@ impl<H: NavCaps + 'static> SwapShared<H> {
             // hygiene is kept anyway — cleanups can also read state.
             let prev_key = self.active.borrow().as_ref().map(|(_, u)| u.clone());
             let evicted = prev_key.and_then(|k| self.mounted.borrow_mut().remove(&k));
-            drop(evicted); // screen teardown: effects die, cleanups fire
+            // Screen teardown: effects die, cleanups fire — and the host
+            // frees whatever it kept for the subtree. This is the ONLY
+            // unambiguous "really gone" for a swap screen; the
+            // `clear_children` that detached it is also what a
+            // `LazyPersistent` switch-away does.
+            release_and_drop(&self.backend, evicted);
         }
 
         let cached = self
@@ -1635,7 +1661,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
             return;
         }
         let covered = self.stack.borrow_mut().last_mut().and_then(|e| e.live.take());
-        drop(covered);
+        release_and_drop(&self.backend, covered);
     }
 
     /// Seat the initial screen. When a cold-start deep link resolved a
@@ -1750,7 +1776,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
         // Popped screen teardown FIRST, then reveal — the old
         // release_screen-then-show ordering (cleanups fire before the
         // revealed screen's insert). Dropped outside any stack borrow.
-        drop(popped);
+        release_and_drop(&self.backend, popped.and_then(|e| e.live));
         self.materialize_top();
         // On the presenter-initiated path the container already shows
         // the revealed screen; revealing again would animate a pop that
@@ -1801,7 +1827,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
         }
         let live = self.mount(name, &url, params, query.clone());
         let old = self.stack.borrow_mut().pop();
-        drop(old);
+        release_and_drop(&self.backend, old.and_then(|e| e.live));
         self.stack.borrow_mut().push(StackEntry { route: name, path: url, query, live: Some(live) });
         self.reveal(Reveal::Replace);
         self.publish_depth();
@@ -1811,7 +1837,9 @@ impl<H: NavCaps + 'static> StackShared<H> {
     fn reset(&self, name: &'static str, params: Box<dyn Any>, query: QueryParams, url: String) {
         // Release the whole stack, then seat the new single screen.
         let old: Vec<_> = self.stack.borrow_mut().drain(..).collect();
-        drop(old);
+        for entry in old {
+            release_and_drop(&self.backend, entry.live);
+        }
         let live = self.mount(name, &url, params, query.clone());
         self.stack.borrow_mut().push(StackEntry { route: name, path: url, query, live: Some(live) });
         self.reveal(Reveal::Reset);

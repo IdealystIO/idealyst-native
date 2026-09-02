@@ -249,6 +249,76 @@ fn swap_lazy_disposing_evicts_and_remounts() {
     });
 }
 
+/// A disposed screen must be RELEASED to the host, not merely detached.
+///
+/// The host keeps per-node state the node itself doesn't own — iOS holds
+/// a strong `Retained<UIView>` and a Taffy node per view in a side
+/// registry — and `clear_children` is not permission to free it, because
+/// the same call detaches a retained screen that is coming back. Without
+/// this signal the iOS backend leaked every disposed screen: measured at
+/// 10,425 registered views across 478 Taffy roots on one project screen,
+/// climbing with every tab switch, with each unparented node counted as
+/// another root to lay out on every later pass.
+#[test]
+fn swap_lazy_disposing_releases_the_evicted_subtree_to_the_host() {
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let fx = mount_swap(&h, MountPolicy::LazyDisposing);
+        h.take_log();
+
+        fx.handle.select(&ABOUT, ());
+        world.flush();
+
+        let log = h.take_log();
+        assert!(
+            log.iter().any(|l| l.starts_with("release_subtree")),
+            "an evicted screen is discarded, so the host is told to free it: {log:?}"
+        );
+    });
+}
+
+/// The other half, and the reason this cannot just live in
+/// `clear_children`: a `LazyPersistent` screen is detached and the SAME
+/// node is re-inserted on return, without the route builder re-running.
+/// A host that freed its per-node state here would leave the screen with
+/// no layout and no way to rebuild one.
+#[test]
+fn swap_lazy_persistent_never_releases_a_screen_it_will_reuse() {
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let fx = mount_swap(&h, MountPolicy::LazyPersistent);
+        h.take_log();
+
+        // Away...
+        fx.handle.select(&ABOUT, ());
+        world.flush();
+        let log = h.take_log();
+        assert!(
+            log.iter().any(|l| l.starts_with("clear_children")),
+            "the outlet IS cleared — which is exactly why it cannot mean disposal: {log:?}"
+        );
+        assert!(
+            !log.iter().any(|l| l.starts_with("release_subtree")),
+            "...but the retained screen must NOT be released: {log:?}"
+        );
+
+        // ...and back, on the SAME node: the builder does not re-run.
+        fx.handle.select(&HOME, ());
+        world.flush();
+        assert_eq!(
+            fx.builds_home.get(),
+            1,
+            "persistent return reuses the cached screen rather than rebuilding it"
+        );
+        assert!(
+            !h.take_log().iter().any(|l| l.starts_with("release_subtree")),
+            "and returning to it releases nothing either"
+        );
+    });
+}
+
 #[test]
 #[should_panic(expected = "navigator_outlet()")]
 fn swap_layout_without_outlet_panics_in_debug() {

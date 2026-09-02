@@ -422,6 +422,13 @@ impl Host for HostMock {
         }
     }
 
+    /// Recorded so tests can tell a real DISPOSAL from the
+    /// `clear_children` that merely detaches a retained screen — the
+    /// distinction `Host::release_subtree` exists to carry.
+    fn release_subtree(&mut self, node: &Node) {
+        self.s.rec("release_subtree", format!("release_subtree n{node}"));
+    }
+
     fn create_anchor(&mut self) -> Node {
         self.mint("anchor".into())
     }

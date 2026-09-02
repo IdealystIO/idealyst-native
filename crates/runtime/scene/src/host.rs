@@ -42,6 +42,32 @@ pub trait Host: 'static {
     /// Detach ALL of `node`'s children (the anchored swap primitive).
     fn clear_children(&mut self, node: &Self::Node);
 
+    /// The subtree rooted at `node` is being DISCARDED — not merely
+    /// detached — and the host may free whatever it keeps for it.
+    ///
+    /// [`clear_children`](Self::clear_children) cannot carry this
+    /// meaning, because the navigator uses it for both: a
+    /// `LazyDisposing` eviction really is gone, while a
+    /// `LazyPersistent` switch-away is detached and the SAME node is
+    /// re-inserted on return without the route builder re-running. A
+    /// host that freed its per-node state on `clear_children` would
+    /// leave a retained screen with nothing to come back to.
+    ///
+    /// Called by the navigator handler at the points where it drops a
+    /// screen's `Realized` — the eviction, stack pop / replace / reset,
+    /// and navigator teardown — while the subtree is still assembled,
+    /// so a host that walks its own children can still find them.
+    ///
+    /// Default: no-op. Hosts that keep no per-node state outside the
+    /// node itself (web, SSR — the DOM node dies with its last
+    /// reference) need nothing here. It matters for a host holding a
+    /// side registry keyed by node, which is exactly the iOS backend:
+    /// its `view_to_layout` owns a strong `Retained<UIView>` and a
+    /// Taffy node per view, and without this seam a disposed screen's
+    /// entries lived forever — every later layout pass walking them,
+    /// and each unparented node counted as another root to compute.
+    fn release_subtree(&mut self, _node: &Self::Node) {}
+
     /// Create a reactive anchor: a layout-transparent container the
     /// anchored drivers swap subtrees under (`display: contents` on web; a
     /// plain view elsewhere).

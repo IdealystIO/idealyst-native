@@ -729,6 +729,10 @@ mod ios_impl {
             IosBackend::clear_children_impl(self, node)
         }
 
+        fn release_subtree(&mut self, node: &Self::Node) {
+            IosBackend::release_subtree_impl(self, node)
+        }
+
         fn create_anchor(&mut self) -> Self::Node {
             // Runtime v2: `Host::create_anchor` is REQUIRED, and this backend
             // never overrode the old `Backend::create_reactive_anchor`, whose
