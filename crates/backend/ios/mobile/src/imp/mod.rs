@@ -625,6 +625,28 @@ impl IosBackend {
         // ...and for styled-text runs: a recycled pointer must not make
         // the new label re-realize a dead label's runs on theme swap.
         self.styled_texts.remove(&key);
+        // ...and for the last-written frame. This is the one that bites
+        // hardest, because the layout pass's short-circuit is an EQUALITY
+        // test: `applied_frames.get(key) == Some(&frame_key)` skips the
+        // write. A recycled pointer whose new frame happens to equal the
+        // dead view's cached frame therefore never gets a frame written
+        // at all, and the view sits at 0x0 — the same "empty card"
+        // symptom the teardown path's `applied_frames.remove` documents.
+        //
+        // Clearing it HERE and not only at teardown is what makes it
+        // sound: the end-of-pass `retain(still_present)` cannot catch
+        // this case (the recycled address IS present — as the new view),
+        // and any release path that misses the teardown plan leaves the
+        // stale entry behind. Registration is the one point every view
+        // passes through.
+        //
+        // Tables are the worst case and the reason this surfaced: cells
+        // share column widths and row heights, so a recycled cell
+        // pointer very often lands on geometry identical to the dead
+        // cell's. What is a coincidence elsewhere is the norm in a grid,
+        // which is why a table would render as a mostly-empty box with a
+        // few stray cells — the ones whose frames happened to differ.
+        self.applied_frames.remove(&key);
         node
     }
 
