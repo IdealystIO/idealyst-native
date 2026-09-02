@@ -4,6 +4,9 @@ version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Drag-and-drop demo — drag color chips into bins. Exercises the `dnd` SDK end to end: Draggable sources, Droppable targets with reactive is_over highlight, payload delivery, and snap-back on a miss. One author tree, identical behavior on every backend."
+# Not published to the idealyst registry: this crate is a runnable example,
+# not a library consumers depend on.
+publish = false
 
 # Pure `rlib` app crate — the CLI-generated per-target wrappers carry the
 # platform crate-type + entry point.

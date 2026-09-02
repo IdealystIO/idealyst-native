@@ -67,12 +67,12 @@ hydrate = ["backend-web/hydrate"]
 # actually has.
 
 [dependencies]
-idealyst-macros = { path = "../idealyst-macros" , version = "1.5" }
+idealyst-macros = { path = "../idealyst-macros", version = "1.5", registry = "idealyst" }
 # `async-driver` here is the other half: it forwards to the
 # vocabulary so `driver::spawn_async` / `render_loop` resolve.
-runtime-core = { path = "../runtime/core", features = ["async-driver"] , version = "1.5" }
-runtime-vocabulary = { path = "../runtime/vocabulary" , version = "1.5" }
-runtime-scene = { path = "../runtime/scene" , version = "1.5" }
+runtime-core = { path = "../runtime/core", features = ["async-driver"], version = "1.5", registry = "idealyst" }
+runtime-vocabulary = { path = "../runtime/vocabulary", version = "1.5", registry = "idealyst" }
+runtime-scene = { path = "../runtime/scene", version = "1.5", registry = "idealyst" }
 
 # --- Web --------------------------------------------------------------
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -81,7 +81,7 @@ runtime-scene = { path = "../runtime/scene" , version = "1.5" }
 # `install_render_loop()` / `install_async_executor()` exist at all.
 # Without it the app renders and then panics at the first `spawn_async`
 # — i.e. the first server-fn call or resource fetch.
-backend-web = { path = "../backend/web", features = ["async-driver"] , version = "1.5" }
+backend-web = { path = "../backend/web", features = ["async-driver"], version = "1.5", registry = "idealyst" }
 console_error_panic_hook = "0.1"
 # Backs `alloc::Small`, the opt-in small-bundle allocator. NOT optional
 # and NOT the default: the type is only instantiated by the
@@ -94,8 +94,8 @@ console_error_panic_hook = "0.1"
 lol_alloc = "0.4"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["Window", "Navigator", "console"] }
-dev-client = { path = "../dev/client", optional = true , version = "1.5" }
+dev-client = { path = "../dev/client", optional = true, version = "1.5", registry = "idealyst" }
 
 # --- Native -----------------------------------------------------------
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-host-terminal = { path = "../gpu-backend/host/terminal", optional = true , version = "1.5" }
+host-terminal = { path = "../gpu-backend/host/terminal", optional = true, version = "1.5", registry = "idealyst" }

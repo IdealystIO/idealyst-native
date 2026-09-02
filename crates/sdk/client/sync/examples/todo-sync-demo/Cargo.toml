@@ -4,6 +4,9 @@ version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Full-stack offline-first TODO list on the `sync` SDK. The server (`--bin server --features server`) holds the authoritative data behind two `#[server]` fns (pull/push) and serves the wasm client. The client downloads tasks, edits them offline (per-task badges turn Pending), and reconnects to replay/reconcile — each task's status comes from `Partition::entries()`."
+# Not published to the idealyst registry: this crate is a runnable example,
+# not a library consumers depend on.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

@@ -4,6 +4,9 @@ version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Markdown SDK demo — renders a CommonMark/GFM document through the SDK's one caps-generic scene handler (semantic host DOM on every backend), with a live light/dark theme toggle proving styles re-apply on theme change."
+# Not published to the idealyst registry: this crate is a runnable example,
+# not a library consumers depend on.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

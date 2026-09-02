@@ -4,6 +4,9 @@ version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Microphone SDK demo — opens a live input stream and shows a real-time level meter. Exercises the `microphone` SDK and the capability-based permission injection (declares `microphone` + a reason string)."
+# Not published to the idealyst registry: this crate is a runnable example,
+# not a library consumers depend on.
+publish = false
 
 # Pure `rlib` — platform-agnostic app crate. The CLI-generated per-target
 # wrappers carry the platform crate-type + entry point; this crate has no

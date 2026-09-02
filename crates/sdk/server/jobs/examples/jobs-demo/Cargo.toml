@@ -4,6 +4,9 @@ version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Full-stack background jobs on the `jobs` SDK. A `#[server]` fn enqueues a `#[job]`; a worker drains the queue and runs it off the request path. The server bin runs an in-process worker (memory backend); the worker bin is the dedicated/dev-spawned drainer. Demonstrates the typed enqueue surface + State<T> injection into a job handler."
+# Not published to the idealyst registry: this crate is a runnable example,
+# not a library consumers depend on.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

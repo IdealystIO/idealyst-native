@@ -1,0 +1,5 @@
+# Where the idealyst framework crates resolve from. Internal deps in
+# [workspace.dependencies] name this registry explicitly, because most
+# of their bare names are taken by unrelated crates on crates.io.
+[registries.idealyst]
+index = "sparse+https://crates.idealyst.io/index/"

@@ -4,6 +4,9 @@ version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Camera SDK demo — opens a live camera stream and tints the page to the average color of what the camera sees, plus a resolution + frame counter. Exercises the `camera` SDK and capability-based permission injection (declares `camera` + a reason string)."
+# Not published to the idealyst registry: this crate is a runnable example,
+# not a library consumers depend on.
+publish = false
 
 # Pure `rlib` — platform-agnostic app crate. The CLI-generated per-target
 # wrappers carry the platform crate-type + entry point; this crate has no

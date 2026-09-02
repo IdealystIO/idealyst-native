@@ -40,76 +40,6 @@ fn run(cmd: &mut Command, what: &str) -> Result<()> {
     Ok(())
 }
 
-/// Upload the tarballs first, then the index.
-///
-/// Order matters and is not cosmetic: the index is what tells cargo a version
-/// exists. If the index landed first, a consumer resolving in that window
-/// would find the entry, request the tarball, and get a 404. Publishing the
-/// bytes before announcing them makes the window harmless.
-pub fn sync(staging: &Path, target: &Target) -> Result<()> {
-    let crates_dir = staging.join("crates");
-    if crates_dir.exists() {
-        run(
-            Command::new("aws").args([
-                "s3",
-                "sync",
-                &crates_dir.to_string_lossy(),
-                &format!("s3://{}/crates", target.bucket),
-                "--cache-control",
-                CRATE_CACHE,
-                "--content-type",
-                "application/x-tar",
-                // A published version is immutable, so an object that already
-                // exists is already correct — never re-upload it.
-                "--size-only",
-            ]),
-            "aws s3 sync (crates)",
-        )?;
-    }
-
-    let index_dir = staging.join("index");
-    run(
-        Command::new("aws").args([
-            "s3",
-            "sync",
-            &index_dir.to_string_lossy(),
-            &format!("s3://{}/index", target.bucket),
-            "--cache-control",
-            INDEX_CACHE,
-            "--content-type",
-            "text/plain",
-        ]),
-        "aws s3 sync (index)",
-    )?;
-
-    // `index/config.json` went up with the index sync above, but as
-    // text/plain. Re-put it with a JSON content type — cargo does not care,
-    // but anything else looking at the bucket will.
-    for (local, remote) in [
-        ("index/config.json", "index/config.json"),
-        ("releases.json", "releases.json"),
-    ] {
-        let p = staging.join(local);
-        if !p.exists() {
-            continue;
-        }
-        run(
-            Command::new("aws").args([
-                "s3",
-                "cp",
-                &p.to_string_lossy(),
-                &format!("s3://{}/{remote}", target.bucket),
-                "--cache-control",
-                INDEX_CACHE,
-                "--content-type",
-                "application/json",
-            ]),
-            &format!("aws s3 cp ({local})"),
-        )?;
-    }
-    Ok(())
-}
-
 /// Invalidate the index surface. The `.crate` objects are deliberately left
 /// alone — they are new paths, so nothing can be cached for them yet.
 pub fn invalidate(target: &Target) -> Result<()> {
@@ -169,4 +99,83 @@ pub fn fetch_index_file(target: &Target, index_path: &str) -> Result<Option<Stri
         return Ok(None);
     }
     Ok(Some(String::from_utf8_lossy(&out.stdout).to_string()))
+}
+
+/// Upload one crate's tarball and index entry, in that order.
+///
+/// This runs INSIDE the publish loop rather than after it. `cargo package`
+/// resolves a crate's dependencies as if it were already published, so a crate
+/// with internal deps cannot be packaged until those deps are actually
+/// retrievable from the registry. Staging all 165 first and uploading at the
+/// end therefore fails on the third crate — the first one that depends on a
+/// sibling.
+///
+/// Tarball before index, for the same reason the bulk sync does it in that
+/// order: the index is what announces a version exists.
+pub fn put_release(
+    target: &Target,
+    name: &str,
+    version: &str,
+    crate_file: &Path,
+    index_path: &str,
+    index_body: &str,
+) -> Result<()> {
+    run(
+        Command::new("aws").args([
+            "s3",
+            "cp",
+            &crate_file.to_string_lossy(),
+            &format!("s3://{}/crates/{name}/{version}/download", target.bucket),
+            "--cache-control",
+            CRATE_CACHE,
+            "--content-type",
+            "application/x-tar",
+        ]),
+        &format!("aws s3 cp ({name}-{version}.crate)"),
+    )?;
+
+    let tmp = std::env::temp_dir().join(format!("idealyst-index-{name}"));
+    std::fs::write(&tmp, index_body)?;
+    let res = run(
+        Command::new("aws").args([
+            "s3",
+            "cp",
+            &tmp.to_string_lossy(),
+            &format!("s3://{}/index/{index_path}", target.bucket),
+            "--cache-control",
+            INDEX_CACHE,
+            "--content-type",
+            "text/plain",
+        ]),
+        &format!("aws s3 cp (index/{index_path})"),
+    );
+    let _ = std::fs::remove_file(&tmp);
+    res
+}
+
+/// Upload `config.json` and `releases.json`.
+pub fn put_metadata(staging: &Path, target: &Target) -> Result<()> {
+    for (local, remote) in [
+        ("index/config.json", "index/config.json"),
+        ("releases.json", "releases.json"),
+    ] {
+        let p = staging.join(local);
+        if !p.exists() {
+            continue;
+        }
+        run(
+            Command::new("aws").args([
+                "s3",
+                "cp",
+                &p.to_string_lossy(),
+                &format!("s3://{}/{remote}", target.bucket),
+                "--cache-control",
+                INDEX_CACHE,
+                "--content-type",
+                "application/json",
+            ]),
+            &format!("aws s3 cp ({local})"),
+        )?;
+    }
+    Ok(())
 }

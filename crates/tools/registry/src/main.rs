@@ -41,6 +41,8 @@ enum Cmd {
         /// Show what would change without writing anything.
         #[arg(long)]
         dry_run: bool,
+        #[command(flatten)]
+        remote: RemoteArgs,
     },
     /// Report the release each publishable crate has earned.
     Plan(RemoteArgs),
@@ -102,13 +104,16 @@ struct RemoteArgs {
     /// publish, and to rebuild a registry from scratch.
     #[arg(long)]
     from_scratch: bool,
+    /// The registry's name as consumers spell it in `.cargo/config.toml`.
+    #[arg(long, env = "IDEALYST_REGISTRY_NAME", default_value = "idealyst")]
+    registry_name: String,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let ws = Workspace::load(&cli.dir)?;
     match cli.cmd {
-        Cmd::Migrate { dry_run } => migrate(&ws, dry_run),
+        Cmd::Migrate { dry_run, remote } => migrate(&ws, dry_run, &remote),
         Cmd::Plan(r) => {
             let plan = plan(&ws, &r)?;
             report(&ws, &plan);
@@ -117,20 +122,22 @@ fn main() -> Result<()> {
         Cmd::Build { remote, build: b } => {
             let plan = scoped(plan(&ws, &remote)?, &b.only);
             report(&ws, &plan);
-            build(&ws, &plan, &remote, &b)?;
+            build(&ws, &plan, &remote, &b, false)?;
             println!("\nstaged in {}", b.out.display());
             Ok(())
         }
         Cmd::Publish { remote, build: b, execute } => {
             let plan = scoped(plan(&ws, &remote)?, &b.only);
             report(&ws, &plan);
-            let state = build(&ws, &plan, &remote, &b)?;
+            let state = build(&ws, &plan, &remote, &b, execute)?;
             if !execute {
                 println!("\nstaged in {} — re-run with --execute to upload", b.out.display());
                 return Ok(());
             }
             let target = target(&remote)?;
-            deploy::sync(&b.out, &target)?;
+            // The per-crate uploads already happened inside the loop; this
+            // just publishes the metadata and clears the edge caches.
+            deploy::put_metadata(&b.out, &target)?;
             deploy::invalidate(&target)?;
             println!("\npublished {} crates to {}", state.len(), remote.url);
             Ok(())
@@ -163,7 +170,7 @@ fn target(r: &RemoteArgs) -> Result<deploy::Target> {
 // migrate
 
 /// Turn a lockstep workspace into one where each crate carries its own version.
-fn migrate(ws: &Workspace, dry_run: bool) -> Result<()> {
+fn migrate(ws: &Workspace, dry_run: bool, r: &RemoteArgs) -> Result<()> {
     let versions: BTreeMap<String, semver::Version> = ws
         .publishable()
         .map(|p| (p.name.clone(), p.version.clone()))
@@ -183,7 +190,7 @@ fn migrate(ws: &Workspace, dry_run: bool) -> Result<()> {
         let mut doc = manifest::read(&p.manifest_path)?;
         manifest::set_package_version(&mut doc, &p.version)?;
         let lookup = |n: &str| versions.get(n).cloned();
-        let touched = manifest::version_literal_path_deps(&mut doc, &lookup)?;
+        let touched = manifest::version_literal_path_deps(&mut doc, &lookup, &r.registry_name)?;
         if !touched.is_empty() {
             println!("  {} — versioned literal path deps: {}", p.name, touched.join(", "));
         }
@@ -213,12 +220,19 @@ fn migrate(ws: &Workspace, dry_run: bool) -> Result<()> {
     let mut added = 0;
     for p in ws.publishable() {
         let rel = pathdiff(&p.manifest_path, &ws.root);
-        if manifest::set_workspace_dep_version(&mut root, &p.name, &p.version, &rel)? {
+        if manifest::set_workspace_dep_version(
+            &mut root,
+            &p.name,
+            &p.version,
+            &rel,
+            &r.registry_name,
+        )? {
             added += 1;
         }
     }
     if !dry_run {
         manifest::write(&root_manifest, &root)?;
+        write_cargo_config(&ws.root, r)?;
     }
 
     println!(
@@ -258,6 +272,40 @@ fn workspace_dep_extras(root: &Path) -> Result<BTreeMap<String, Vec<(String, tom
 
 /// Relative path from one directory to another, in the `../sibling` form
 /// cargo manifests use.
+/// Teach this workspace where the registry lives.
+///
+/// `[workspace.dependencies]` now names `registry = "<name>"` on every internal
+/// crate, and cargo refuses to build until that name resolves to an index. It
+/// belongs in the repo rather than in each developer's `~/.cargo/config.toml`
+/// because a fresh clone has to build without setup.
+fn write_cargo_config(root: &Path, r: &RemoteArgs) -> Result<()> {
+    let dir = root.join(".cargo");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("config.toml");
+    let entry = format!(
+        "[registries.{}]\nindex = \"sparse+{}/index/\"\n",
+        r.registry_name,
+        r.url.trim_end_matches('/')
+    );
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    if existing.contains(&format!("[registries.{}]", r.registry_name)) {
+        return Ok(());
+    }
+    let header = concat!(
+        "# Where the idealyst framework crates resolve from. Internal deps in\n",
+        "# [workspace.dependencies] name this registry explicitly, because most\n",
+        "# of their bare names are taken by unrelated crates on crates.io.\n",
+    );
+    let out = if existing.is_empty() {
+        format!("{header}{entry}")
+    } else {
+        format!("{}\n{header}{entry}", existing.trim_end())
+    };
+    std::fs::write(&path, out)?;
+    println!("  wrote .cargo/config.toml");
+    Ok(())
+}
+
 /// Write the registry's `config.json`.
 ///
 /// Cargo fetches `<index-url>/config.json`, so this belongs at the root of the
@@ -272,7 +320,7 @@ fn workspace_dep_extras(root: &Path) -> Result<BTreeMap<String, Vec<(String, tom
 /// produces a `.crate` under the OLD name and a confusing "expected …" error.
 /// CI commits the result back, which is what makes the next release's
 /// "changed since" comparison meaningful.
-fn apply_plan(ws: &Workspace, plan: &BTreeMap<String, Release>) -> Result<()> {
+fn apply_plan(ws: &Workspace, plan: &BTreeMap<String, Release>, r: &RemoteArgs) -> Result<()> {
     for (name, rel) in plan {
         let Some(p) = ws.packages.get(name) else { continue };
         let mut doc = manifest::read(&p.manifest_path)?;
@@ -294,7 +342,7 @@ fn apply_plan(ws: &Workspace, plan: &BTreeMap<String, Release>) -> Result<()> {
         }
         let Some(p) = ws.packages.get(name) else { continue };
         let dir = pathdiff(&p.manifest_path, &ws.root);
-        if manifest::set_workspace_dep_version(&mut root, name, &rel.to, &dir)? {
+        if manifest::set_workspace_dep_version(&mut root, name, &rel.to, &dir, &r.registry_name)? {
             moved += 1;
         }
     }
@@ -460,6 +508,7 @@ fn build(
     plan: &BTreeMap<String, Release>,
     r: &RemoteArgs,
     b: &BuildArgs,
+    execute: bool,
 ) -> Result<Vec<String>> {
     let (out, verify) = (b.out.as_path(), b.verify);
     if plan.is_empty() {
@@ -469,7 +518,7 @@ fn build(
         bail!("working tree is dirty — a release must record the commit it was cut from (--allow-dirty to rehearse)");
     }
     let head = version::head_commit(&ws.root)?;
-    apply_plan(ws, plan)?;
+    apply_plan(ws, plan, r)?;
 
     std::fs::create_dir_all(out.join("index"))?;
     std::fs::create_dir_all(out.join("crates"))?;
@@ -539,7 +588,7 @@ fn build(
 
         let dest = out.join("index").join(&ipath);
         std::fs::create_dir_all(dest.parent().unwrap())?;
-        std::fs::write(&dest, lines)?;
+        std::fs::write(&dest, &lines)?;
 
         let tarball = out
             .join("crates")
@@ -547,6 +596,21 @@ fn build(
             .join(rel.to.to_string());
         std::fs::create_dir_all(&tarball)?;
         std::fs::copy(&crate_file, tarball.join("download"))?;
+
+        // Upload before moving on. The next crate in topological order may
+        // depend on this one, and `cargo package` resolves against the real
+        // registry — so it has to be there already, not queued for a bulk
+        // sync at the end.
+        if execute {
+            deploy::put_release(
+                &target(r)?,
+                &p.name,
+                &rel.to.to_string(),
+                &crate_file,
+                &ipath,
+                &lines,
+            )?;
+        }
 
         state.crates.insert(
             p.name.clone(),

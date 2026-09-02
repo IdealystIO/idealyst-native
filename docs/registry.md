@@ -27,7 +27,7 @@ Two things are required for that, and either alone buys nothing:
 
 1. **A registry.** Per-crate tarballs keyed by version, so cargo reuses the
    compiled artifact of a crate whose version did not move.
-2. **Per-crate versions.** If all 165 publishable crates still bumped in
+2. **Per-crate versions.** If all 133 publishable crates still bumped in
    lockstep, every version would move on every release and the registry would
    reuse nothing.
 
@@ -40,7 +40,8 @@ Add the registry to `.cargo/config.toml`:
 index = "sparse+https://crates.idealyst.io/index/"
 ```
 
-Then depend on crates by version instead of by git:
+Then depend on crates by version instead of by git. The `registry` key is
+**required**, not decoration — see the warning below:
 
 ```toml
 [workspace.dependencies]
@@ -48,6 +49,14 @@ idealyst       = { version = "1.5", registry = "idealyst" }
 runtime-core   = { version = "1.5", registry = "idealyst" }
 idea-ui        = { version = "1.5", registry = "idealyst" }
 ```
+
+> **Always name the registry.** Most of these crates have bare names that are
+> already taken on crates.io by unrelated packages — `css`, `wire`, `net`,
+> `table`, `form`, `menu`, `video`, `canvas`, `charts`, `wasm-splitter` and
+> more. A dependency without `registry = "idealyst"` resolves against
+> crates.io and silently picks up a stranger's crate. This repo's own
+> `.cargo/config.toml` and `[workspace.dependencies]` are set up this way for
+> the same reason; the workspace will not even load without them.
 
 Requirements are carets on `major.minor`, so a patch release is picked up by
 `cargo update -p <crate>` without touching anything else.
@@ -88,6 +97,13 @@ touched that crate's directory since its last release:
 An unrecognised subject earns a patch rather than nothing — a commit that
 changed a crate's files still changed it, and skipping it would publish a
 registry that disagrees with the source.
+
+Publishing is **incremental**, one crate at a time in dependency order, with
+each crate's tarball and index entry uploaded before the next is packaged.
+That is not an optimisation: `cargo package` resolves a crate's dependencies
+as if it were already published, so a crate with internal deps cannot be
+packaged until those deps are actually retrievable from the registry. Staging
+all of them first and uploading at the end fails on the third crate.
 
 A **major** bump republishes dependents too, because their requirement has to
 be rewritten. Minor and patch bumps deliberately do not: `1.5` already admits
@@ -134,7 +150,18 @@ entry and 404s on the download.
   into an unpublishable workspace — `wire` dev-depends on `dev-client`, which
   depends on `wire`, and neither could be packaged first. `registry migrate`
   de-links all 73 of them.
-- **Workspace-internal crates are `publish = false`** — 92 of them: tooling,
-  demos, smoke tests, benchmarks. Consumers never name them.
+- **Workspace-internal crates are `publish = false`** — 125 of them: tooling,
+  the 31 runnable examples under `*/examples/`, smoke tests, benchmarks.
+  Consumers never name them.
+- **A renamed dependency is keyed by its alias.**
+  `wasm-split = { path = "…", package = "wasm-splitter" }` lives under the key
+  `wasm-split`, so looking it up by package name misses it — and appending a
+  second entry leaves the real one unversioned, which `cargo package` then
+  rejects. `registry migrate` resolves aliases.
+- **`denoise` cannot be published** and is marked `publish = false`. It
+  depends on `deep_filter` by git rev, cargo refuses to package a crate with a
+  git dependency, and the `deep_filter` on crates.io is the old
+  dataset/training library with no DF3 runtime. Publishing the SDK means first
+  mirroring `deep_filter` v0.5.6 into this registry and depending on that.
 - **A published version is immutable.** Re-cutting one is refused; bump
   instead.

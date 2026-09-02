@@ -4,6 +4,9 @@ version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Two Video components fed by two different live MediaStream producers — a camera (camera SDK) and a screen share (getDisplayMedia). Same component, same prop; only the source differs. Demonstrates the producer-agnostic MediaStream abstraction."
+# Not published to the idealyst registry: this crate is a runnable example,
+# not a library consumers depend on.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

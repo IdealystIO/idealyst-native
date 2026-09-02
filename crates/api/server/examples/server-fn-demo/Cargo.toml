@@ -3,6 +3,9 @@ name = "server-fn-demo"
 version = "1.5.2"
 edition.workspace = true
 license.workspace = true
+# Not published to the idealyst registry: this crate is a runnable example,
+# not a library consumers depend on.
+publish = false
 
 # Full-stack server-functions demo:
 #

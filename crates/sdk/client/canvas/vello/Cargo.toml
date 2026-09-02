@@ -107,7 +107,7 @@ libc = "0.2"
 vello = "0.9"
 wgpu = { version = "29", default-features = false, features = ["webgpu", "wgsl"] }
 raw-window-handle = "0.6"
-canvas-native = { path = "../native", default-features = false , version = "1.5" }
+canvas-native = { path = "../native", default-features = false, version = "1.5", registry = "idealyst" }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"

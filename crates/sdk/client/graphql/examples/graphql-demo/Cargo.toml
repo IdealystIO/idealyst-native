@@ -4,6 +4,9 @@ version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Full-stack GraphQL on the `graphql` SDK. The server (`--bin server --features server`) holds an async-graphql schema behind ONE `#[server]` fn and serves the wasm client; the client runs typed `graphql_client` operations through `use_query`/`use_mutation`. Demonstrates 'works with server functions without depending on them'."
+# Not published to the idealyst registry: this crate is a runnable example,
+# not a library consumers depend on.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

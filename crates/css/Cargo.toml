@@ -11,4 +11,4 @@ license.workspace = true
 # `prim-*` default set back on for size-conscious apps via unification.
 # Style data model + tokens now live in runtime-shared (the non-walker
 # half of the old runtime-core); this crate never needed the walker.
-runtime-shared = { path = "../runtime/shared", default-features = false , version = "1.5" }
+runtime-shared = { path = "../runtime/shared", default-features = false, version = "1.5", registry = "idealyst" }

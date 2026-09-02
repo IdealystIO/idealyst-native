@@ -4,6 +4,9 @@ version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Animated Kanban board — drag cards between columns. Showcases the `dnd` SDK (drag layer ghost, column hover highlight, source dim) wired to the animation system (presence enter/exit on cards, spring-driven color)."
+# Not published to the idealyst registry: this crate is a runnable example,
+# not a library consumers depend on.
+publish = false
 
 [lib]
 crate-type = ["rlib"]

@@ -28,7 +28,7 @@ path = "src/main.rs"
 # instance with the feature on, so this is dep weight rather than a
 # correctness issue — but it stays off to keep the preview's per-op cost
 # honest.
-idea-ui-docs = { path = "../idea-ui-docs", default-features = false , version = "1.5" }
+idea-ui-docs = { path = "../idea-ui-docs", default-features = false, version = "1.5", registry = "idealyst" }
 # The GPU backend + its desktop winit host. `headless` powers the
 # offscreen render test (`tests/render.rs`) — capturing the app to a PNG
 # with no window, so CI can prove it renders without a display.

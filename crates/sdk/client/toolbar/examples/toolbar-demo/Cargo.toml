@@ -4,6 +4,9 @@ version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Smoke-test binary for the `toolbar` SDK. Boots a host-appkit window with an NSToolbar attached, demonstrating the reactive items + click handler shape end-to-end."
+# Not published to the idealyst registry: this crate is a runnable example,
+# not a library consumers depend on.
+publish = false
 
 # Plain bin — runs via `cargo run -p toolbar-demo`. No app bundle,
 # no Info.plist; NSApp is activated via `setActivationPolicy` in the

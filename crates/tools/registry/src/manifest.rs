@@ -35,18 +35,27 @@ pub fn set_package_version(doc: &mut DocumentMut, v: &semver::Version) -> Result
     Ok(())
 }
 
-/// Set `version` on a `[workspace.dependencies]` entry, adding the entry if it
-/// is missing.
+/// Set `version` and `registry` on a `[workspace.dependencies]` entry, adding
+/// the entry if it is missing.
 ///
 /// The requirement is a caret on major.minor (`1.5`), not the exact version.
 /// An exact pin would force every dependent to be republished for a patch it
 /// does not care about — which is the git-tag behaviour this whole exercise
 /// exists to escape.
+///
+/// `registry` is NOT optional decoration. Without it cargo resolves these
+/// names against crates.io, where most of them are taken by unrelated crates —
+/// `wasm-split-macro`, `css`, `wire`, `net`, `table` and a dozen more all
+/// exist there. A published crate would then depend on a stranger's package
+/// that merely shares a name. Packaging fails loudly in the lucky cases (the
+/// versions do not match) and silently succeeds in the unlucky ones, so this
+/// key is what makes the whole scheme safe.
 pub fn set_workspace_dep_version(
     doc: &mut DocumentMut,
     name: &str,
     v: &semver::Version,
     rel_path: &str,
+    registry: &str,
 ) -> Result<bool> {
     let deps = doc
         .get_mut("workspace")
@@ -55,6 +64,25 @@ pub fn set_workspace_dep_version(
         .context("root manifest has no [workspace.dependencies] table")?;
 
     let req = format!("{}.{}", v.major, v.minor);
+
+    // A dependency may be RENAMED: `wasm-split = { path = "…", package =
+    // "wasm-splitter" }`. The table key is then the alias, not the package
+    // name, so a plain lookup misses it — and the "not found" branch would
+    // add a SECOND entry for the same path while leaving the real one
+    // unversioned. Resolve the alias first.
+    let key = deps
+        .iter()
+        .find(|(k, item)| {
+            *k != name
+                && item
+                    .as_table_like()
+                    .and_then(|t| t.get("package"))
+                    .and_then(|p| p.as_str())
+                    == Some(name)
+        })
+        .map(|(k, _)| k.to_string())
+        .unwrap_or_else(|| name.to_string());
+    let name = key.as_str();
 
     match deps.get_mut(name) {
         Some(item) => {
@@ -65,10 +93,13 @@ pub fn set_workspace_dep_version(
                 bail!("[workspace.dependencies] {name} has no `path`; refusing to touch it");
             }
             let existing = t.get("version").and_then(|i| i.as_str()).map(str::to_owned);
-            if existing.as_deref() == Some(req.as_str()) {
+            let has_registry =
+                t.get("registry").and_then(|i| i.as_str()) == Some(registry);
+            if existing.as_deref() == Some(req.as_str()) && has_registry {
                 return Ok(false);
             }
             t.insert("version", value(req));
+            t.insert("registry", value(registry));
             // Inserting into an inline table appends after the previous
             // value's trailing decor, which renders as `"path" , version`.
             // `fmt` normalizes the whole entry to `{ k = v, k = v }`.
@@ -81,25 +112,32 @@ pub fn set_workspace_dep_version(
             let mut t = Table::new().into_inline_table();
             t.insert("path", rel_path.into());
             t.insert("version", req.into());
+            t.insert("registry", registry.into());
             deps.insert(name, value(t));
             Ok(true)
         }
     }
 }
 
-/// Give a literal `path = "…"` dependency inside a member manifest a version.
+/// Give a literal `path = "…"` dependency inside a member manifest a version
+/// and a registry.
 ///
 /// Cargo refuses to package a crate whose non-dev dependencies are path-only:
 /// the published artifact would have no way to name them. Most of this
 /// workspace already routes internal deps through `{ workspace = true }`, so
-/// this covers the handful that spell the path directly.
+/// this covers the handful that spell the path directly — and they need the
+/// `registry` key for exactly the reason described on
+/// [`set_workspace_dep_version`]. `offload` -> `offload-macro` was the case
+/// that caught this: with a version but no registry, cargo went looking on
+/// crates.io.
 pub fn version_literal_path_deps(
     doc: &mut DocumentMut,
     versions: &dyn Fn(&str) -> Option<semver::Version>,
+    registry: &str,
 ) -> Result<Vec<String>> {
     let mut touched = Vec::new();
     for section in ["dependencies", "build-dependencies"] {
-        collect(doc.as_table_mut(), section, versions, &mut touched)?;
+        collect(doc.as_table_mut(), section, versions, registry, &mut touched)?;
     }
     Ok(touched)
 }
@@ -109,6 +147,7 @@ fn collect(
     table: &mut Table,
     section: &str,
     versions: &dyn Fn(&str) -> Option<semver::Version>,
+    registry: &str,
     touched: &mut Vec<String>,
 ) -> Result<()> {
     if let Some(deps) = table.get_mut(section).and_then(Item::as_table_like_mut) {
@@ -117,11 +156,22 @@ fn collect(
             let Some(t) = deps.get_mut(&name).and_then(Item::as_table_like_mut) else {
                 continue;
             };
-            if t.get("path").is_none() || t.get("version").is_some() {
+            if t.get("path").is_none() {
                 continue;
             }
             let Some(v) = versions(&name) else { continue };
+            // A version without a registry is worse than neither: cargo
+            // resolves the name against crates.io.
+            if t.get("version").is_some() && t.get("registry").is_some() {
+                continue;
+            }
             t.insert("version", value(format!("{}.{}", v.major, v.minor)));
+            t.insert("registry", value(registry));
+            // Normalize `{ path = "x" , version = … }` back to one space per
+            // separator; inserting appends after the previous value's decor.
+            if let Some(inline) = deps.get_mut(&name).and_then(Item::as_inline_table_mut) {
+                inline.fmt();
+            }
             touched.push(name);
         }
     }
@@ -129,7 +179,7 @@ fn collect(
         let keys: Vec<String> = targets.iter().map(|(k, _)| k.to_string()).collect();
         for k in keys {
             if let Some(t) = targets.get_mut(&k).and_then(Item::as_table_mut) {
-                collect(t, section, versions, touched)?;
+                collect(t, section, versions, registry, touched)?;
             }
         }
     }
@@ -279,22 +329,53 @@ runtime-world = { path = "crates/runtime/world" }
         .parse()
         .unwrap();
         let v = semver::Version::new(1, 5, 2);
-        assert!(set_workspace_dep_version(&mut doc, "runtime-world", &v, "crates/runtime/world").unwrap());
-        assert!(doc
-            .to_string()
-            .contains(r#"runtime-world = { path = "crates/runtime/world", version = "1.5" }"#));
+        assert!(set_workspace_dep_version(&mut doc, "runtime-world", &v, "crates/runtime/world", "idealyst").unwrap());
+        assert!(doc.to_string().contains(
+            r#"runtime-world = { path = "crates/runtime/world", version = "1.5", registry = "idealyst" }"#
+        ));
         // Idempotent: a second pass changes nothing.
-        assert!(!set_workspace_dep_version(&mut doc, "runtime-world", &v, "crates/runtime/world").unwrap());
+        assert!(!set_workspace_dep_version(&mut doc, "runtime-world", &v, "crates/runtime/world", "idealyst").unwrap());
+    }
+
+    /// Regression: `wasm-split = { path = "…", package = "wasm-splitter" }` is
+    /// keyed by its ALIAS. Looking the package name up directly missed it and
+    /// appended a second entry for the same path, leaving the real one without
+    /// a version — so `cargo package` then refused runtime-shared for a
+    /// path-only dependency.
+    #[test]
+    fn regression_renamed_workspace_deps_are_updated_in_place() {
+        let mut doc: DocumentMut = r#"
+[workspace.dependencies]
+wasm-split = { path = "crates/tools/wasm-split/wasm-split", package = "wasm-splitter" }
+"#
+        .parse()
+        .unwrap();
+        let v = semver::Version::new(1, 5, 2);
+        assert!(set_workspace_dep_version(
+            &mut doc,
+            "wasm-splitter",
+            &v,
+            "crates/tools/wasm-split/wasm-split",
+            "idealyst"
+        )
+        .unwrap());
+        let out = doc.to_string();
+        assert!(
+            out.contains(r#"package = "wasm-splitter", version = "1.5", registry = "idealyst""#),
+            "{out}"
+        );
+        // Exactly one entry — no duplicate keyed by the package name.
+        assert_eq!(out.matches("crates/tools/wasm-split/wasm-split\"").count(), 1, "{out}");
     }
 
     #[test]
     fn a_missing_workspace_dep_entry_is_added() {
         let mut doc: DocumentMut = "[workspace.dependencies]\n".parse().unwrap();
         let v = semver::Version::new(1, 5, 2);
-        assert!(set_workspace_dep_version(&mut doc, "table", &v, "crates/sdk/client/table").unwrap());
-        assert!(doc
-            .to_string()
-            .contains(r#"table = { path = "crates/sdk/client/table", version = "1.5" }"#));
+        assert!(set_workspace_dep_version(&mut doc, "table", &v, "crates/sdk/client/table", "idealyst").unwrap());
+        assert!(doc.to_string().contains(
+            r#"table = { path = "crates/sdk/client/table", version = "1.5", registry = "idealyst" }"#
+        ));
     }
 
     #[test]

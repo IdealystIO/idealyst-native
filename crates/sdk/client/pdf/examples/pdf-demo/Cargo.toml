@@ -4,6 +4,9 @@ version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "PDF SDK demo — renders a PDF page on the GPU. The page is interpreted (hayro) into a renderer-agnostic canvas Scene (text → glyph runs, vectors → fills, images → blits) and drawn by canvas-vello (vello/Metal/Vulkan/WebGPU), falling back to canvas-native (CPU) where the GPU can't run."
+# Not published to the idealyst registry: this crate is a runnable example,
+# not a library consumers depend on.
+publish = false
 
 [lib]
 crate-type = ["rlib"]
