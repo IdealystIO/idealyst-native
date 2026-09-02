@@ -34,6 +34,7 @@
 //! tab-navigator, drawer-navigator) call into for UIKit glue.
 
 mod chrome;
+mod presenter;
 mod stack;
 
 use backend_ios::IosNode;
@@ -49,6 +50,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 pub use chrome::{apply_header_options, apply_header_options_with_nav};
+pub use presenter::{install as install_stack_presenter, IosStackPresenter};
 
 // ---------------------------------------------------------------------------
 // Local callback bundle types

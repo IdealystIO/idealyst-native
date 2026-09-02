@@ -17,6 +17,10 @@ runtime-shared = { workspace = true }
 # handlers cfg-gate their `use ios_navigator_helpers::...` to iOS, so
 # host-side code never touches anything here.
 [target.'cfg(target_os = "ios")'.dependencies]
+# The `native_push` seam (`handlers::nav_native_push`) the stack
+# presenter implements. iOS-only like the rest of this crate's real
+# dependencies — the whole crate is `#![cfg(target_os = "ios")]`.
+runtime-vocabulary = { workspace = true }
 backend-ios-mobile = { workspace = true }
 backend-ios-core = { workspace = true }
 runtime-layout = { workspace = true }

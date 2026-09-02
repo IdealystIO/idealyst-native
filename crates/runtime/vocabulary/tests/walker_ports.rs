@@ -82,6 +82,9 @@ use runtime_vocabulary::handlers::nav_url_sync::{
     clear_url_sync_service, install_url_sync_service, CommittedKind, NavSyncKind,
     NavSyncRegistration, UrlSyncService,
 };
+use runtime_vocabulary::handlers::nav_native_push::{
+    clear_stack_presenter, install_stack_presenter, NativePushHandle, StackPresenter,
+};
 use runtime_vocabulary::prims::{MountPolicy, NavHandle, StackNav, StackRetention, SwapNav};
 use runtime_vocabulary::{on_teardown, theme};
 use runtime_world::{effect, inject};
@@ -1684,5 +1687,214 @@ fn registration_reports_which_url_source_seated_the_screen() {
 
     h.world.enter(|| drop(realized));
     clear_url_sync_service();
+    set_initial_path(None);
+}
+
+// ===========================================================================
+// Native push presenter — `handlers::nav_native_push`
+// ===========================================================================
+//
+// The seam that lets a host drive a real platform navigation container
+// (iOS `UINavigationController`) instead of the outlet swap, which is
+// what buys push/pop animation and the interactive swipe-back gesture.
+// These pin the vocabulary's half of the contract: which reveal fires
+// for which command, that an attached presenter takes over placement
+// entirely, that a user-initiated pop reconciles WITHOUT driving the
+// presenter back, and that declining leaves today's behavior intact.
+
+#[derive(Default)]
+struct PresenterProbe {
+    /// One tag per reveal, in order.
+    reveals: RefCell<Vec<&'static str>>,
+    /// The handler's logical-only pop, handed over at attach.
+    user_pop: RefCell<Option<Rc<dyn Fn()>>>,
+    /// Whether `attach` accepts. `false` exercises the decline path.
+    accept: Cell<bool>,
+    /// How many times `attach` was consulted.
+    attaches: Cell<usize>,
+}
+
+struct ProbePresenter(Rc<PresenterProbe>);
+
+impl StackPresenter for ProbePresenter {
+    fn attach(&self, outlet: Rc<dyn Any>) -> Option<NativePushHandle> {
+        self.0.attaches.set(self.0.attaches.get() + 1);
+        if !self.0.accept.get() {
+            return None;
+        }
+        // A real presenter refuses a node type it cannot drive; the mock
+        // host's node is the one this probe accepts.
+        outlet.downcast_ref::<host_mock::Node>()?;
+        let tag = |p: Rc<PresenterProbe>, t: &'static str| -> Rc<dyn Fn(Rc<dyn Any>)> {
+            Rc::new(move |_node| p.reveals.borrow_mut().push(t))
+        };
+        let p = self.0.clone();
+        Some(NativePushHandle {
+            host: Rc::new(()),
+            seat: tag(p.clone(), "seat"),
+            push: tag(p.clone(), "push"),
+            pop: tag(p.clone(), "pop"),
+            replace: tag(p.clone(), "replace"),
+            reset: tag(p.clone(), "reset"),
+            set_user_pop: {
+                let p = p.clone();
+                Rc::new(move |cb| *p.user_pop.borrow_mut() = Some(cb))
+            },
+        })
+    }
+}
+
+fn probe_presenter() -> Rc<PresenterProbe> {
+    let probe: Rc<PresenterProbe> = Rc::default();
+    probe.accept.set(true);
+    install_stack_presenter(Rc::new(ProbePresenter(probe.clone())));
+    probe
+}
+
+/// Mount a two-screen stack and hand back the harness, its root node and
+/// the bound handle.
+fn stack_fixture(h: &Harness) -> (runtime_scene::Realized<host_mock::Node>, NavHandle) {
+    let handle_slot: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+    let realized = h.mount({
+        let handle_slot = handle_slot.clone();
+        stack_navigator(&HOME)
+            .screen(HOME, |_| view().child(text().content("HOME")).build())
+            .screen(DETAIL, |_| view().child(text().content("DETAIL")).build())
+            .retention(StackRetention::Retain)
+            .layout(|| view().child(navigator_outlet()).build())
+            .on_handle(move |handle| *handle_slot.borrow_mut() = Some(handle))
+            .build()
+    });
+    let handle = handle_slot.borrow().clone().expect("bound");
+    (realized, handle)
+}
+
+/// The no-presenter path must stay exactly what it was: the screen lands
+/// in the outlet and is reachable from the navigator root.
+#[test]
+fn native_push_absent_leaves_the_outlet_swap_untouched() {
+    clear_stack_presenter();
+    let h = Harness::new();
+    let (realized, handle) = stack_fixture(&h);
+    let root = one_root(&realized);
+
+    assert!(shows(&h, root, "HOME"), "seat lands in the outlet");
+    handle.push(&DETAIL, ());
+    h.flush();
+    assert!(shows(&h, root, "DETAIL"), "push lands in the outlet");
+    handle.pop();
+    h.flush();
+    assert!(shows(&h, root, "HOME"), "pop restores the outlet");
+}
+
+/// With a presenter attached, every command routes to its own reveal and
+/// NOTHING is inserted into the outlet — the presenter owns placement,
+/// and a handler that also inserted would parent the screen twice.
+#[test]
+fn native_push_routes_each_command_to_its_own_reveal() {
+    let probe = probe_presenter();
+    let h = Harness::new();
+    let (realized, handle) = stack_fixture(&h);
+    let root = one_root(&realized);
+
+    assert_eq!(probe.reveals.borrow().as_slice(), ["seat"]);
+    assert!(
+        !shows(&h, root, "HOME"),
+        "the presenter owns placement; the outlet must stay empty"
+    );
+
+    handle.push(&DETAIL, ());
+    h.flush();
+    handle.pop();
+    h.flush();
+    handle.replace(&DETAIL, ());
+    h.flush();
+    handle.reset(&HOME, ());
+    h.flush();
+
+    assert_eq!(
+        probe.reveals.borrow().as_slice(),
+        ["seat", "push", "pop", "replace", "reset"],
+        "each command drives its own direction"
+    );
+    assert!(
+        !shows(&h, root, "DETAIL"),
+        "no command may fall through to the outlet while a presenter is attached"
+    );
+    clear_stack_presenter();
+}
+
+/// A completed swipe-back / system Back has ALREADY moved the native
+/// container, so the handler must reconcile its logical stack without
+/// calling `pop` back into the presenter. Driving it would pop twice.
+#[test]
+fn native_push_user_pop_reconciles_without_driving_the_presenter() {
+    let probe = probe_presenter();
+    let h = Harness::new();
+    let (_realized, handle) = stack_fixture(&h);
+
+    handle.push(&DETAIL, ());
+    h.flush();
+    assert_eq!(probe.reveals.borrow().as_slice(), ["seat", "push"]);
+
+    // The presenter reports the user's pop.
+    let user_pop = probe.user_pop.borrow().clone().expect("handler installed its logical pop");
+    user_pop();
+    h.flush();
+
+    assert_eq!(
+        probe.reveals.borrow().as_slice(),
+        ["seat", "push"],
+        "a user-initiated pop must NOT drive the presenter — that is the double-pop"
+    );
+    // …but the logical stack did move: a further app-initiated pop is
+    // refused because we are back at the root.
+    handle.pop();
+    h.flush();
+    assert_eq!(
+        probe.reveals.borrow().as_slice(),
+        ["seat", "push"],
+        "the logical stack really popped — the root pop is a no-op"
+    );
+    clear_stack_presenter();
+}
+
+/// A presenter that declines (foreign node type, or a host with no
+/// native container) must leave the outlet-swap path byte-identical.
+#[test]
+fn native_push_declined_presenter_falls_back_to_the_outlet_swap() {
+    let probe: Rc<PresenterProbe> = Rc::default();
+    probe.accept.set(false);
+    install_stack_presenter(Rc::new(ProbePresenter(probe.clone())));
+
+    let h = Harness::new();
+    let (realized, handle) = stack_fixture(&h);
+    let root = one_root(&realized);
+
+    assert_eq!(probe.attaches.get(), 1, "the presenter was consulted");
+    assert!(probe.reveals.borrow().is_empty(), "and drove nothing");
+    assert!(shows(&h, root, "HOME"), "the outlet swap still runs");
+    handle.push(&DETAIL, ());
+    h.flush();
+    assert!(shows(&h, root, "DETAIL"));
+    clear_stack_presenter();
+}
+
+/// A cold-start deep link synthesizes an index BELOW the linked screen.
+/// The native back-stack has to be given both, or the container holds
+/// one entry while the logical stack holds two and swipe-back dead-ends.
+#[test]
+fn native_push_cold_deep_link_seats_the_index_then_pushes() {
+    let probe = probe_presenter();
+    set_initial_path(Some("/detail".to_string()));
+    let h = Harness::new();
+    let (_realized, _handle) = stack_fixture(&h);
+
+    assert_eq!(
+        probe.reveals.borrow().as_slice(),
+        ["seat", "push"],
+        "the synthesized index is seated, then the deep-linked screen pushed on top"
+    );
+    clear_stack_presenter();
     set_initial_path(None);
 }

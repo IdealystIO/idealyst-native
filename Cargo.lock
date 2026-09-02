@@ -6462,6 +6462,7 @@ dependencies = [
  "objc2-ui-kit",
  "runtime-layout",
  "runtime-shared",
+ "runtime-vocabulary",
 ]
 
 [[package]]

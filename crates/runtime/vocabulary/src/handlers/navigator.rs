@@ -659,7 +659,121 @@ pub mod url_sync {
     }
 }
 
+/// Native stack transitions — the seam a host uses to drive a real
+/// platform navigation container instead of the outlet swap.
+///
+/// Deliberately shaped like [`url_sync`]: same install-at-boot
+/// lifecycle, same `Rc<dyn Any>` node erasure, same "consult if present,
+/// behave exactly as before if absent" contract. Both solve the same
+/// problem — a capability only some hosts can provide, consulted from a
+/// handler that is generic over every host and cannot name their types.
+///
+/// # Why the stack needs this and the swap does not
+///
+/// A swap has no depth: "which screen is showing" is the whole story,
+/// and `clear_children` + `insert` tells it completely. A stack push and
+/// a stack pop produce the *same* outlet content change — the top screen
+/// is swapped — and differ only in **direction**. Direction is exactly
+/// what `UINavigationController` needs in order to animate, and what the
+/// interactive swipe-back gesture needs in order to exist at all. So
+/// the single direction-blind reveal this handler used to have could
+/// not be the hook. The five directions of [`Reveal`] are.
+///
+/// # The two-way contract
+///
+/// Navigation initiated by the app flows *down*: the handler mutates its
+/// `Vec<StackEntry>`, then calls the matching handle fn so the presenter
+/// animates. Navigation initiated by the *user* — a completed swipe-back
+/// or a system Back press — flows *up*: the native container has already
+/// popped, so the presenter calls the closure it was given via
+/// [`NativePushHandle::set_user_pop`], which pops the logical stack and
+/// republishes state WITHOUT calling back down into the presenter. Going
+/// back down on a user-initiated pop would double-pop.
+pub mod native_push {
+    use super::*;
+
+    /// What a presenter hands back: the content host plus the five
+    /// direction-tagged reveals the handler drives, plus the reverse
+    /// channel for a user-initiated back.
+    ///
+    /// Every reveal takes the screen node the handler wants visible,
+    /// erased to `Rc<dyn Any>` (an `Rc<H::Node>`). A presenter downcasts
+    /// to its own node type and ignores anything else.
+    pub struct NativePushHandle {
+        /// The node the handler should treat as the content host — the
+        /// native container the presenter seated inside the outlet.
+        pub host: Rc<dyn Any>,
+        /// Seat the bottom screen, unanimated.
+        pub seat: Rc<dyn Fn(Rc<dyn Any>)>,
+        /// Push on top, animated.
+        pub push: Rc<dyn Fn(Rc<dyn Any>)>,
+        /// Pop the top, animated, revealing the given screen.
+        pub pop: Rc<dyn Fn(Rc<dyn Any>)>,
+        /// Swap the top in place, unanimated (Replace).
+        pub replace: Rc<dyn Fn(Rc<dyn Any>)>,
+        /// Collapse to a single screen, unanimated (Reset).
+        pub reset: Rc<dyn Fn(Rc<dyn Any>)>,
+        /// Install the handler's LOGICAL-ONLY pop. The presenter calls
+        /// this when the user completed a swipe-back or hit system Back,
+        /// i.e. the native stack ALREADY popped. The handler then pops
+        /// its `Vec<StackEntry>`, republishes depth/chrome/active_*, and
+        /// notifies url-sync — and must NOT call [`Self::pop`] back into
+        /// the presenter.
+        pub set_user_pop: Rc<dyn Fn(Rc<dyn Fn()>)>,
+    }
+
+    /// The per-host presenter, installed once at boot.
+    pub trait StackPresenter {
+        /// One-time setup inside the navigator's outlet, before the
+        /// initial screen is seated. Return the handle the stack should
+        /// drive, or `None` to decline — declining must leave today's
+        /// behavior byte-identical.
+        ///
+        /// `outlet` is an `Rc<H::Node>` erased to `Rc<dyn Any>`. A
+        /// presenter MUST return `None` for a foreign node type: one
+        /// presenter is installed per process, but a process can host
+        /// more than one backend (a runtime-server sidecar beside the
+        /// real one), and attaching to a node it cannot drive would
+        /// leave that navigator with no reveal path at all.
+        fn attach(&self, outlet: Rc<dyn Any>) -> Option<NativePushHandle>;
+    }
+
+    thread_local! {
+        static PRESENTER: RefCell<Option<Rc<dyn StackPresenter>>> =
+            const { RefCell::new(None) };
+    }
+
+    /// Install the host's stack presenter (idempotent replace). Called
+    /// once at boot, BEFORE the app mounts.
+    pub fn install_stack_presenter(presenter: Rc<dyn StackPresenter>) {
+        PRESENTER.with(|p| *p.borrow_mut() = Some(presenter));
+    }
+
+    /// Remove the installed presenter (host teardown / tests).
+    pub fn clear_stack_presenter() {
+        PRESENTER.with(|p| *p.borrow_mut() = None);
+    }
+
+    pub(super) fn presenter() -> Option<Rc<dyn StackPresenter>> {
+        PRESENTER.with(|p| p.borrow().clone())
+    }
+}
+
+use native_push::NativePushHandle;
 use url_sync::{CommittedKind, NavSyncKind, NavSyncRegistration};
+
+/// Which direction a stack reveal is going. A presenter animates on
+/// this; the no-presenter path ignores it and performs the same outlet
+/// swap for all five (see [`StackShared::reveal`]).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum Reveal {
+    /// The bottom screen arriving at mount — never animated.
+    Seat,
+    Push,
+    Pop,
+    Replace,
+    Reset,
+}
 
 /// The per-navigator sync half the dispatch closure and driver share:
 /// the service id arrives only after registration (end of mount), while
@@ -1357,7 +1471,16 @@ struct StackShared<H: NavCaps + 'static> {
     base: String,
     outlet: RefCell<Option<H::Node>>,
     stack: RefCell<Vec<StackEntry<H::Node>>>,
-    retention: StackRetention,
+    /// A `Cell` because a successful presenter attach TIGHTENS it: a
+    /// native container retains covered screens by construction, so
+    /// `Rebuild` (which disposes the screen a push covers) would tear
+    /// down a subtree the container is still displaying. Resolved at
+    /// mount, tightened a few lines later once `attach` has answered.
+    retention: std::cell::Cell<StackRetention>,
+    /// The attached native presenter, when a host installed one AND it
+    /// accepted this navigator's outlet node. `None` is the universal
+    /// path: outlet swap, no animation, no gesture.
+    presenter: RefCell<Option<NativePushHandle>>,
     initial_route: &'static str,
     initial_path: String,
     /// The configured initial route's own query defaults (from a
@@ -1429,15 +1552,46 @@ impl<H: NavCaps + 'static> StackShared<H> {
         self.screen_chrome.set(ScreenChrome { rev, options });
     }
 
-    /// Show the top entry's node in the outlet. Invariant: the top entry
-    /// is live whenever this runs (`materialize_top` before reveal).
-    fn show_top(&self) {
+    /// Reveal the top entry's node, tagged with the direction the
+    /// navigation went. Invariant: the top entry is live whenever this
+    /// runs (`materialize_top` before reveal).
+    fn reveal(&self, dir: Reveal) {
         let top = self
             .stack
             .borrow()
             .last()
             .and_then(|e| e.live.as_ref().map(|l| l.node.clone()));
-        if let (Some(outlet), Some(node)) = (self.outlet.borrow().clone(), top) {
+        if let Some(node) = top {
+            self.reveal_node(dir, node);
+        }
+    }
+
+    /// The reveal itself, on an explicit node — `seat_initial` needs to
+    /// reveal an entry that is not the top one (the synthesized index
+    /// below a cold-start deep link).
+    ///
+    /// With no presenter attached, all five directions collapse to the
+    /// same `clear_children` + `insert` this handler has always done, so
+    /// the emitted op stream is byte-identical to the pre-presenter one
+    /// — which is what the `nav_stack_push_pop` scene-parity golden pins.
+    fn reveal_node(&self, dir: Reveal, node: H::Node) {
+        if let Some(handle) = self.presenter.borrow().as_ref() {
+            // The presenter owns placement: it seated a native container
+            // inside the outlet at attach, and screens go into THAT.
+            // Inserting into the outlet here as well would parent the
+            // screen twice.
+            let erased: Rc<dyn Any> = Rc::new(node);
+            match dir {
+                Reveal::Seat => (handle.seat)(erased),
+                Reveal::Push => (handle.push)(erased),
+                Reveal::Pop => (handle.pop)(erased),
+                Reveal::Replace => (handle.replace)(erased),
+                Reveal::Reset => (handle.reset)(erased),
+            }
+            return;
+        }
+        let _ = dir;
+        if let Some(outlet) = self.outlet.borrow().clone() {
             let mut b = self.backend.borrow_mut();
             b.clear_children(&outlet);
             let mut parent = outlet;
@@ -1477,7 +1631,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
     /// about to cover. The `Realized` is taken out before dropping so no
     /// stack borrow is held across author cleanups.
     fn dispose_covered_top(&self) {
-        if self.retention != StackRetention::Rebuild {
+        if self.retention.get() != StackRetention::Rebuild {
             return;
         }
         let covered = self.stack.borrow_mut().last_mut().and_then(|e| e.live.take());
@@ -1503,7 +1657,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
             // the screen it addressed, and leaking it onto the index below
             // would make Back land on an index filtered by the detail
             // screen's parameters.
-            let under = match self.retention {
+            let under = match self.retention.get() {
                 StackRetention::Rebuild => None,
                 _ => Some(self.mount(
                     self.initial_route,
@@ -1519,13 +1673,38 @@ impl<H: NavCaps + 'static> StackShared<H> {
                 live: under,
             });
         }
+        let synthesized_index = route != self.initial_route;
         self.stack.borrow_mut().push(StackEntry {
             route,
             path,
             query,
             live: Some(live),
         });
-        self.show_top();
+        // A cold-start deep link synthesized an index BELOW the linked
+        // screen. With a presenter the native back-stack has to be given
+        // both, or the container holds one entry while the logical stack
+        // holds two and swipe-back dead-ends on the deep-linked screen.
+        // Seat the index unanimated, then push the linked screen onto it
+        // — which is also what gives the gesture something to pop to.
+        //
+        // The index is live here whenever a presenter is attached: attach
+        // tightens retention to `Retain`, and only `Rebuild` leaves it
+        // cold.
+        let seated_index = if synthesized_index && self.presenter.borrow().is_some() {
+            self.stack
+                .borrow()
+                .first()
+                .and_then(|e| e.live.as_ref().map(|l| l.node.clone()))
+        } else {
+            None
+        };
+        match seated_index {
+            Some(index_node) => {
+                self.reveal_node(Reveal::Seat, index_node);
+                self.reveal(Reveal::Push);
+            }
+            None => self.reveal(Reveal::Seat),
+        }
         self.publish_depth();
         self.sync_chrome();
     }
@@ -1534,12 +1713,35 @@ impl<H: NavCaps + 'static> StackShared<H> {
         let live = self.mount(name, &url, params, query.clone());
         self.dispose_covered_top();
         self.stack.borrow_mut().push(StackEntry { route: name, path: url, query, live: Some(live) });
-        self.show_top();
+        self.reveal(Reveal::Push);
         self.publish_depth();
         self.sync_chrome();
     }
 
+    /// App-initiated pop: mutate the logical stack, then drive the
+    /// presenter so the native container animates along with us.
     fn pop(&self) {
+        self.pop_inner(true);
+    }
+
+    /// Presenter-initiated pop — a completed swipe-back or a system Back
+    /// press. The native container has ALREADY popped, so this does
+    /// everything except call back down into it; driving `pop` here
+    /// would pop the container a second time.
+    ///
+    /// The teardown ordering necessarily differs from the app-initiated
+    /// path. There, the popped screen's `Realized` is dropped BEFORE the
+    /// revealed screen is shown. Here the transition has already run, so
+    /// author cleanups fire with the revealed screen already on screen.
+    /// That is inherent to an interactive gesture the user drives (and
+    /// may cancel), not a defect — holding the popped subtree alive
+    /// across the gesture would be the alternative, and it would leak
+    /// for as long as the user hesitates mid-swipe.
+    fn pop_logical(&self) {
+        self.pop_inner(false);
+    }
+
+    fn pop_inner(&self, drive_presenter: bool) {
         // Never pop the root.
         if self.stack.borrow().len() <= 1 {
             return;
@@ -1550,7 +1752,13 @@ impl<H: NavCaps + 'static> StackShared<H> {
         // revealed screen's insert). Dropped outside any stack borrow.
         drop(popped);
         self.materialize_top();
-        self.show_top();
+        // On the presenter-initiated path the container already shows
+        // the revealed screen; revealing again would animate a pop that
+        // has already happened. Without a presenter there is nothing to
+        // have moved, so the outlet swap still has to run.
+        if drive_presenter || self.presenter.borrow().is_none() {
+            self.reveal(Reveal::Pop);
+        }
         self.publish_depth();
         // Pop carries no route through the command — mirror the revealed
         // entry ourselves (old `active_changed`). Copied out so no stack
@@ -1595,7 +1803,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
         let old = self.stack.borrow_mut().pop();
         drop(old);
         self.stack.borrow_mut().push(StackEntry { route: name, path: url, query, live: Some(live) });
-        self.show_top();
+        self.reveal(Reveal::Replace);
         self.publish_depth();
         self.sync_chrome();
     }
@@ -1606,7 +1814,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
         drop(old);
         let live = self.mount(name, &url, params, query.clone());
         self.stack.borrow_mut().push(StackEntry { route: name, path: url, query, live: Some(live) });
-        self.show_top();
+        self.reveal(Reveal::Reset);
         self.publish_depth();
         self.sync_chrome();
     }
@@ -1676,7 +1884,8 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         base: base.clone(),
         outlet: RefCell::new(None),
         stack: RefCell::new(Vec::new()),
-        retention,
+        retention: std::cell::Cell::new(retention),
+        presenter: RefCell::new(None),
         initial_route: prim.config.initial,
         initial_path: join_path(&base, cfg_initial_path),
         initial_query: cfg_initial_query,
@@ -1856,6 +2065,37 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         backend.borrow_mut().insert(&mut parent, layout_root);
     }
     *shared.outlet.borrow_mut() = outlet;
+
+    // Native transitions, if a host installed a presenter AND it accepts
+    // this outlet's node type. Must run BEFORE `seat_initial`: the seat
+    // is the first reveal, and it has to land inside the presenter's
+    // container rather than in the outlet it is about to cover.
+    if let Some(p) = native_push::presenter() {
+        let outlet_erased: Rc<dyn Any> = match shared.outlet.borrow().clone() {
+            Some(node) => Rc::new(node),
+            None => Rc::new(()),
+        };
+        if let Some(handle) = p.attach(outlet_erased) {
+            // A native container keeps covered screens alive, so the
+            // `Rebuild` disposal would tear down a subtree it is still
+            // displaying. Tighten before the first reveal.
+            shared.retention.set(StackRetention::Retain);
+            // The reverse channel: a completed swipe-back or a system
+            // Back press has already moved the container, so the
+            // presenter tells US, and we reconcile without driving it
+            // back. `Weak` so the closure the presenter holds for the
+            // navigator's lifetime cannot keep the navigator alive.
+            let weak = Rc::downgrade(&shared);
+            let user_pop: Rc<dyn Fn()> = Rc::new(move || {
+                if let Some(shared) = weak.upgrade() {
+                    shared.pop_logical();
+                }
+            });
+            (handle.set_user_pop)(user_pop);
+            *shared.presenter.borrow_mut() = Some(handle);
+        }
+    }
+
     shared.seat_initial(initial_route, initial_path.clone(), initial_query, initial);
 
     // URL sync registration — after seat, so `depth` reflects any

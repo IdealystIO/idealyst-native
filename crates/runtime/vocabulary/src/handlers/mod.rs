@@ -46,6 +46,12 @@ pub use navigator::{
 /// The platform-URL synchronization seam a URL-bearing host installs
 /// (see `navigator::url_sync`).
 pub use navigator::url_sync as nav_url_sync;
+
+/// The native stack-transition seam: a host installs a `StackPresenter`
+/// at boot and the stack handler drives it instead of swapping the
+/// outlet, which is what buys real push/pop animation and the
+/// interactive back gesture (see `navigator::native_push`).
+pub use navigator::native_push as nav_native_push;
 pub use portal::{mount_portal, register_portal};
 pub use presence::{mount_presence, register_presence};
 pub use repeat::{mount_repeat, register_repeat};

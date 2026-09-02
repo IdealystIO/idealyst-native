@@ -432,9 +432,45 @@ pub struct StackNavigator {
 impl StackNavigator {
     /// Start a stack whose root screen is `initial`.
     pub fn new(initial: &Route<()>) -> Self {
+        install_native_presenter();
         Self {
             b: builders::stack_navigator(initial).nav_label(STACK_LABEL),
         }
+    }
+}
+
+/// Install this platform's native-transition presenter, once per thread.
+///
+/// # Why here and not at backend boot
+///
+/// The presenter implementations live in the per-platform helper crates
+/// (`ios-navigator-helpers`, `android-navigator-helpers`), and those
+/// depend on their backend crate — so the backend cannot install one
+/// without a dependency cycle. This crate depends on both sides, which
+/// makes it the only place the wiring can live.
+///
+/// # Why on `new` and not on `bind`
+///
+/// The seam must be populated before any stack MOUNTS, and `new` is the
+/// one call every stack makes first. It is idempotent and costs a
+/// thread-local bool after the first call, so paying it per navigator is
+/// cheaper than the alternatives are complicated.
+///
+/// On a platform with no presenter this compiles to nothing and the
+/// handler keeps its outlet-swap path.
+fn install_native_presenter() {
+    #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+    {
+        use std::cell::Cell;
+        thread_local! {
+            static INSTALLED: Cell<bool> = const { Cell::new(false) };
+        }
+        INSTALLED.with(|done| {
+            if !done.get() {
+                ios_navigator_helpers::install_stack_presenter();
+                done.set(true);
+            }
+        });
     }
 }
 

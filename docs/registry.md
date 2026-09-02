@@ -129,7 +129,7 @@ Releases are cut **by hand**:
 ```sh
 AWS_PROFILE=idealyst \
 IDEALYST_REGISTRY_BUCKET=idealyst-crates \
-IDEALYST_REGISTRY_DISTRIBUTION=<distribution-id> \
+IDEALYST_REGISTRY_DISTRIBUTION=EWTO387ZA9GEV \
   cargo run -p registry -- publish --execute
 ```
 
