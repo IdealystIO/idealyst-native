@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use build_ios::{FrameworkSource, GitDefaults, GitRef};
+use build_ios::{FrameworkSource, GitDefaults, GitRef, RegistryDefaults};
 
 /// Absolutize a project dir for framework-source ancestor walking,
 /// tolerating VM-mapped shares.
@@ -80,8 +80,25 @@ fn compile_time_refspec() -> GitRef {
     }
 }
 
+/// Registry defaults for scaffolding, overridable at runtime.
+///
+/// A fresh project pins the framework by VERSION, not by git rev. A git pin
+/// makes every framework release change each package's source id, which
+/// invalidates every fingerprint and rebuilds the consumer's whole graph —
+/// the problem the registry exists to solve.
+pub fn registry_defaults() -> RegistryDefaults {
+    RegistryDefaults {
+        name: std::env::var("IDEALYST_REGISTRY_NAME")
+            .unwrap_or_else(|_| env!("IDEALYST_REGISTRY_NAME_DEFAULT").to_string()),
+        index: std::env::var("IDEALYST_REGISTRY_INDEX")
+            .unwrap_or_else(|_| env!("IDEALYST_REGISTRY_INDEX_DEFAULT").to_string()),
+        version: std::env::var("IDEALYST_REGISTRY_VERSION")
+            .unwrap_or_else(|_| env!("IDEALYST_REGISTRY_VERSION_DEFAULT").to_string()),
+    }
+}
+
 /// Resolve the framework source for `project_dir`. Single entry point
 /// used by every command handler that produces wrapper Cargo.tomls.
 pub fn resolve(project_dir: &Path) -> Result<FrameworkSource> {
-    FrameworkSource::detect(project_dir, git_defaults())
+    FrameworkSource::detect(project_dir, git_defaults(), registry_defaults())
 }

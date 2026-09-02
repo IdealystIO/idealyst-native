@@ -42,7 +42,8 @@ pub mod source;
 pub mod web_html;
 
 pub use source::{
-    remap_path_flags, FrameworkSource, GitDefaults, GitRef, require_workspace_root,
+    registry_config_block, remap_path_flags, FrameworkSource, GitDefaults, GitRef,
+    RegistryDefaults, require_workspace_root, REGISTRY_NAME,
 };
 pub use web_html::{font_preload_tags, inject_into_head};
 

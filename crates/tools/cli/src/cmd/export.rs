@@ -252,6 +252,10 @@ web-sys = {{ version = "0.3", features = ["Element"] }}
         "# GENERATED. Share the project target dir.\n[build]\ntarget-dir = \"{}\"\n",
         source.cargo_target_dir(project).display(),
     );
+    // The wrapper Cargo.toml carries a `[patch.<registry>]` section, and an
+    // undefined registry name there is a hard error. Define it here rather than
+    // relying on an ancestor config having done so.
+    let cargo_config = cargo_config + &build_ios::registry_config_block();
 
     write_if_changed(&bridge_dir.join("Cargo.toml"), &cargo_toml)?;
     write_if_changed(&bridge_dir.join("src/lib.rs"), &lib_rs)?;

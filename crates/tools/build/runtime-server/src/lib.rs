@@ -554,6 +554,10 @@ fn write_shared_target_config(dir: &Path, target_dir: &Path) -> Result<()> {
          target-dir = \"{}\"\n",
         target_dir.display(),
     );
+    // The wrapper Cargo.toml carries a `[patch.<registry>]` section, and an
+    // undefined registry name there is a hard error. Define it here rather
+    // than relying on an ancestor config having done so.
+    let config = config + &build_ios::registry_config_block();
     fs::create_dir_all(dir.join(".cargo"))?;
     fs::write(dir.join(".cargo/config.toml"), config)?;
     Ok(())

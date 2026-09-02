@@ -56,6 +56,38 @@ fn main() {
     // whatever value we picked, so older builds that imported it
     // don't break mid-upgrade. New code reads the KIND + VALUE pair.
     println!("cargo:rustc-env=IDEALYST_FRAMEWORK_GIT_REV_DEFAULT={}", value);
+
+    // --- Registry defaults --------------------------------------------
+    //
+    // What a freshly-scaffolded project pins the framework to. Git stays
+    // available for forks and for projects that predate the registry, but
+    // a version-keyed dep is the default: cargo reuses the compiled
+    // artifact of any crate whose version did not move, which a git pin
+    // makes impossible (its source id carries the commit, so every crate
+    // in the graph gets a new PackageId on every bump).
+    //
+    // The version requirement is a caret on this build's major.minor, so
+    // a CLI built from 1.5.2 scaffolds `version = "1.5"` and picks up
+    // 1.5.x patches without a re-scaffold.
+    println!("cargo:rerun-if-env-changed=IDEALYST_REGISTRY_NAME");
+    println!("cargo:rerun-if-env-changed=IDEALYST_REGISTRY_INDEX");
+    println!("cargo:rerun-if-env-changed=IDEALYST_REGISTRY_VERSION");
+
+    let reg_name = std::env::var("IDEALYST_REGISTRY_NAME")
+        .unwrap_or_else(|_| "idealyst".to_string());
+    let reg_index = std::env::var("IDEALYST_REGISTRY_INDEX")
+        .unwrap_or_else(|_| "sparse+https://crates.idealyst.io/index/".to_string());
+    let reg_version = std::env::var("IDEALYST_REGISTRY_VERSION").unwrap_or_else(|_| {
+        let v = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "1.5.0".into());
+        let mut it = v.split('.');
+        match (it.next(), it.next()) {
+            (Some(major), Some(minor)) => format!("{major}.{minor}"),
+            _ => v,
+        }
+    });
+    println!("cargo:rustc-env=IDEALYST_REGISTRY_NAME_DEFAULT={}", reg_name);
+    println!("cargo:rustc-env=IDEALYST_REGISTRY_INDEX_DEFAULT={}", reg_index);
+    println!("cargo:rustc-env=IDEALYST_REGISTRY_VERSION_DEFAULT={}", reg_version);
 }
 
 /// Returns `(refspec_kind, refspec_value)` where `refspec_kind` is

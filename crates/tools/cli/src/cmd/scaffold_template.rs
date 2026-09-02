@@ -33,6 +33,37 @@ pub enum Kind {
 
 /// Materialize the chosen scaffold under `dir`.
 ///
+
+/// Write `.cargo/config.toml` naming the framework registry.
+///
+/// A scaffolded project pins the framework by version, and every one of those
+/// deps carries `registry = "idealyst"` — which cargo cannot resolve until the
+/// registry is defined. Without this file the project does not build at all
+/// ("registry index was not found"). It goes in the project rather than in the
+/// developer's `~/.cargo/config.toml` so a fresh clone builds with no setup.
+///
+/// Skipped in workspace/git mode: those deps name no registry, and writing a
+/// config that points at a registry the project never uses is just noise.
+fn write_cargo_config(dir: &Path, source: &FrameworkSource) -> Result<()> {
+    if source.registry_name().is_none() {
+        return Ok(());
+    }
+    fs::create_dir_all(dir.join(".cargo"))
+        .with_context(|| format!("create {}", dir.join(".cargo").display()))?;
+    let body = format!(
+        "# Where the idealyst framework crates resolve from.\n\
+         #\n\
+         # Each framework dependency names this registry explicitly. That is not\n\
+         # optional: several framework crates share a name with an unrelated\n\
+         # package on crates.io, so a bare version requirement would silently\n\
+         # resolve to the wrong crate.\n{}",
+        build_ios::registry_config_block().trim_start_matches('\n'),
+    );
+    fs::write(dir.join(".cargo/config.toml"), body)
+        .with_context(|| format!("write {}", dir.join(".cargo/config.toml").display()))?;
+    Ok(())
+}
+
 /// `dir` must already exist and be empty (or the caller is happy to
 /// have it stomped — `new` enforces emptiness, `init` does not).
 pub fn write(
@@ -152,6 +183,7 @@ fn write_project(
     fs::write(dir.join("Cargo.toml"), project_cargo_toml(name, &app_title, &bundle_id, source))?;
     fs::write(dir.join("index.html"), project_index_html(&app_title, lib_name))?;
     fs::write(dir.join(".gitignore"), GITIGNORE)?;
+    write_cargo_config(dir, source)?;
     fs::write(dir.join(".mcp.json"), MCP_JSON)?;
     fs::write(dir.join("dev.toml"), DEV_TOML)?;
 
@@ -441,6 +473,7 @@ backend-android-mobile = {bandroid_dep}
     fs::write(dir.join("src/ios.rs"), library_ios_rs(&pascal, &props_type))?;
     fs::write(dir.join("src/android.rs"), library_android_rs(&pascal, &props_type))?;
     fs::write(dir.join(".gitignore"), GITIGNORE)?;
+    write_cargo_config(dir, source)?;
     Ok(())
 }
 

@@ -469,6 +469,10 @@ fn main() {{
          target-dir = \"{}\"\n",
         sidecar_target_dir(&source, anchor_root).display(),
     );
+    // The wrapper Cargo.toml carries a `[patch.<registry>]` section, and an
+    // undefined registry name there is a hard error. Define it here rather than
+    // relying on an ancestor config having done so.
+    let cargo_config = cargo_config + &build_ios::registry_config_block();
 
     write_if_changed(&wrapper_dir.join("Cargo.toml"), &cargo_toml)?;
     write_if_changed(&wrapper_dir.join("src/main.rs"), &main_rs)?;
@@ -771,6 +775,21 @@ fn dep_line_for(
             }
             let (key, value) = refspec.as_pair();
             Some(format!("{{ git = \"{}\", {} = \"{}\"{} }}", url, key, value, feat))
+        }
+        FrameworkSource::Registry { registry, version } => {
+            // Same rule as the git arm: only force-link crates that come
+            // from OUR registry. Re-declaring a crates.io package here
+            // would fork the graph — and several framework crates share a
+            // name with an unrelated crates.io package, so the check is
+            // doing real work rather than being defensive.
+            let src = pkg_source?;
+            if !src.contains("sparse+") && !src.starts_with("registry+") {
+                return None;
+            }
+            Some(format!(
+                "{{ version = \"{}\", registry = \"{}\"{} }}",
+                version, registry, feat
+            ))
         }
     }
 }

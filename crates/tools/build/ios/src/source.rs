@@ -72,10 +72,30 @@ pub enum FrameworkSource {
     /// `IDEALYST_FRAMEWORK_PATH` pointed us at a checkout. Wrapper
     /// deps are emitted as `path = "<root>/crates/..."`.
     Workspace { root: PathBuf },
-    /// External project — wrapper deps go through git. Used as the
-    /// fallback when no framework workspace is found near the user's
-    /// project.
+    /// External project — wrapper deps go through git. Kept for
+    /// projects scaffolded before the registry existed, and for anyone
+    /// deliberately pinning a fork by rev.
     Git { url: String, refspec: GitRef },
+    /// External project resolving from the idealyst cargo registry.
+    /// This is the default for anything scaffolded now: a registry dep
+    /// is version-keyed, so cargo reuses the compiled artifact of any
+    /// crate whose version did not move between releases. A git pin
+    /// cannot — its source id carries the commit, so every crate in the
+    /// graph gets a new PackageId on every bump and the whole framework
+    /// rebuilds.
+    Registry { registry: String, version: String },
+}
+
+/// Compile-time registry defaults baked into the CLI binary, the
+/// registry counterpart of [`GitDefaults`].
+#[derive(Clone, Debug)]
+pub struct RegistryDefaults {
+    /// Name the registry is spelled as in `.cargo/config.toml`.
+    pub name: String,
+    /// Sparse index URL, needed to write that `.cargo/config.toml`.
+    pub index: String,
+    /// Version requirement to scaffold with — a caret on major.minor.
+    pub version: String,
 }
 
 /// Compile-time git defaults baked into the CLI binary.
@@ -136,13 +156,18 @@ impl FrameworkSource {
     /// reports the *resolved* source after all of those, so step 3
     /// is correct by construction for dep forms nobody here has
     /// thought of yet.
-    pub fn detect(project_dir: &Path, git: GitDefaults) -> Result<Self> {
-        let resolved = Self::detect_inner(project_dir, git)?;
+    pub fn detect(project_dir: &Path, git: GitDefaults, reg: RegistryDefaults) -> Result<Self> {
+        let resolved = Self::detect_inner(project_dir, git, reg)?;
         eprintln!("idealyst: framework source — {}", resolved.describe());
         Ok(resolved)
     }
 
-    fn detect_inner(project_dir: &Path, git: GitDefaults) -> Result<Self> {
+    fn detect_inner(
+        project_dir: &Path,
+        git: GitDefaults,
+        reg: RegistryDefaults,
+    ) -> Result<Self> {
+        let _ = &git;
         if let Ok(p) = std::env::var("IDEALYST_FRAMEWORK_PATH") {
             let root = PathBuf::from(&p);
             if !is_framework_root(&root) {
@@ -165,7 +190,11 @@ impl FrameworkSource {
         if let Some(from_project) = read_project_framework_dep(project_dir) {
             return Ok(from_project);
         }
-        Ok(Self::Git { url: git.url, refspec: git.refspec })
+        // Nothing told us how this project pins the framework — this is
+        // fresh `idealyst new` scaffolding, with no Cargo.toml yet. Scaffold
+        // against the registry: a git pin would make every framework release
+        // rebuild the consumer's entire graph.
+        Ok(Self::Registry { registry: reg.name, version: reg.version })
     }
 
     /// One-line summary for the "which framework am I building
@@ -183,6 +212,9 @@ impl FrameworkSource {
                 let (key, value) = refspec.as_pair();
                 format!("git {url} ({key} {value})")
             }
+            Self::Registry { registry, version } => {
+                format!("registry {registry} ({version})")
+            }
         }
     }
 
@@ -197,7 +229,7 @@ impl FrameworkSource {
     pub fn workspace_root(&self) -> Option<&Path> {
         match self {
             Self::Workspace { root } => Some(root.as_path()),
-            Self::Git { .. } => None,
+            Self::Git { .. } | Self::Registry { .. } => None,
         }
     }
 
@@ -208,7 +240,7 @@ impl FrameworkSource {
     pub fn wrapper_root(&self, project_dir: &Path) -> PathBuf {
         match self {
             Self::Workspace { root } => root.join("target/idealyst"),
-            Self::Git { .. } => project_dir.join("target/idealyst"),
+            Self::Git { .. } | Self::Registry { .. } => project_dir.join("target/idealyst"),
         }
     }
 
@@ -218,7 +250,7 @@ impl FrameworkSource {
     pub fn cargo_target_dir(&self, project_dir: &Path) -> PathBuf {
         match self {
             Self::Workspace { root } => root.join("target"),
-            Self::Git { .. } => project_dir.join("target"),
+            Self::Git { .. } | Self::Registry { .. } => project_dir.join("target"),
         }
     }
 
@@ -253,7 +285,20 @@ impl FrameworkSource {
         // instances ("expected `Element`, found `Element`"). A hardcoded
         // list rotted exactly that way (it predated the runtime-v2 split
         // and listed 9 crates). Unused entries only cost a cargo warning.
-        for (name, dir) in Self::workspace_framework_crates(root) {
+        let crates = Self::workspace_framework_crates(root);
+        for (name, dir) in &crates {
+            out.push_str(&format!("{name} = {{ path = \"{}\" }}\n", dir.display()));
+        }
+        // Projects scaffolded since the registry landed pin the framework by
+        // version rather than by git, so the redirect has to cover that source
+        // too. Both sections are emitted because one wrapper may be built for
+        // either kind of project; an unused `[patch]` costs a cargo warning,
+        // whereas a MISSING one costs two `runtime_scene` instances and
+        // "expected `Element`, found `Element`".
+        let registry = std::env::var("IDEALYST_REGISTRY_NAME")
+            .unwrap_or_else(|_| REGISTRY_NAME.to_string());
+        out.push_str(&format!("\n[patch.{registry}]\n"));
+        for (name, dir) in &crates {
             out.push_str(&format!("{name} = {{ path = \"{}\" }}\n", dir.display()));
         }
         out
@@ -357,6 +402,22 @@ impl FrameworkSource {
                     url, key, value, features_clause,
                 )
             }
+            // `registry` is not optional. Most framework crates have short
+            // names that belong to unrelated packages on crates.io — `css`,
+            // `wire`, `net`, `table`, `menu`, `video`, `canvas` — so a bare
+            // version requirement resolves to a stranger's crate.
+            Self::Registry { registry, version } => format!(
+                "{{ version = \"{}\", registry = \"{}\"{} }}",
+                version, registry, features_clause,
+            ),
+        }
+    }
+
+    /// The registry this source resolves from, when it is a registry.
+    pub fn registry_name(&self) -> Option<&str> {
+        match self {
+            Self::Registry { registry, .. } => Some(registry.as_str()),
+            _ => None,
         }
     }
 }
@@ -662,10 +723,53 @@ fn package_to_source(pkg: &serde_json::Value) -> Option<FrameworkSource> {
             })
         }
         Some(s) if s.starts_with("git+") => parse_git_source(s),
-        // registry+/sparse+ — a published `runtime-core`. Wrapper deps
-        // only know how to spell path and git, so leave it alone.
+        // `registry+sparse+https://…` — a published `runtime-core`. Mirror
+        // the app's own pin so the wrapper resolves the identical crate;
+        // the version comes from the resolved package, narrowed to
+        // major.minor so a patch release does not split the graph.
+        Some(s) if s.contains("sparse+") || s.starts_with("registry+") => {
+            let version = pkg.get("version").and_then(|v| v.as_str())?;
+            let (major, minor) = {
+                let mut it = version.split('.');
+                (it.next()?, it.next()?)
+            };
+            Some(FrameworkSource::Registry {
+                registry: REGISTRY_NAME.to_string(),
+                version: format!("{major}.{minor}"),
+            })
+        }
         Some(_) => None,
     }
+}
+
+/// The registry name a generated Cargo.toml should spell.
+///
+/// Cargo's metadata reports the index URL, never the local alias, and offers
+/// no reverse mapping — the alias lives only in the consumer's
+/// `.cargo/config.toml`. The framework's registry is the sole alternative
+/// registry these projects use, and the CLI writes that config itself, so the
+/// name is ours to fix.
+pub const REGISTRY_NAME: &str = "idealyst";
+
+/// Sparse index the framework registry is served from.
+const REGISTRY_INDEX: &str = "sparse+https://crates.idealyst.io/index/";
+
+/// The `[registries.…]` stanza a generated wrapper needs in its own
+/// `.cargo/config.toml`.
+///
+/// Cargo merges config files up the directory tree, so a wrapper under a
+/// project that already defines the registry would inherit it — but a wrapper
+/// generated for a project that pins the framework by git would not, and
+/// [`FrameworkSource::patch_block`] emits a `[patch.idealyst]` section
+/// unconditionally. An undefined registry name there is a hard error
+/// ("registry index was not found"), so every wrapper defines it itself
+/// rather than hoping an ancestor did.
+pub fn registry_config_block() -> String {
+    let index = std::env::var("IDEALYST_REGISTRY_INDEX")
+        .unwrap_or_else(|_| REGISTRY_INDEX.to_string());
+    let name = std::env::var("IDEALYST_REGISTRY_NAME")
+        .unwrap_or_else(|_| REGISTRY_NAME.to_string());
+    format!("\n[registries.{name}]\nindex = \"{index}\"\n")
 }
 
 /// Parse a cargo git source id: `git+<url>[?<ref>]#<sha>`.
@@ -774,6 +878,20 @@ fn read_project_framework_dep(project_dir: &Path) -> Option<FrameworkSource> {
 /// Interpret one `runtime-core` dep table. `base_dir` is the directory
 /// holding the manifest the table was written in — a relative `path`
 /// resolves against it, per cargo's rules.
+fn registry_dep_from_table(dep: &toml::Table) -> Option<FrameworkSource> {
+    let registry = dep.get("registry")?.as_str()?;
+    let version = dep.get("version")?.as_str()?;
+    // Narrow to major.minor: the wrapper must not pin a patch the app has
+    // not, or cargo resolves two `runtime-core`s and nothing type-checks
+    // across the wrapper boundary.
+    let mut it = version.trim_start_matches(['^', '~', '=']).split('.');
+    let (major, minor) = (it.next()?, it.next().unwrap_or("0"));
+    Some(FrameworkSource::Registry {
+        registry: registry.to_string(),
+        version: format!("{major}.{minor}"),
+    })
+}
+
 fn framework_dep_from_table(table: &toml::Table, base_dir: &Path) -> Option<FrameworkSource> {
     if let Some(path_str) = table.get("path").and_then(|v| v.as_str()) {
         // Resolve against `base_dir` and canonicalize so the recovered
@@ -807,6 +925,12 @@ fn framework_dep_from_table(table: &toml::Table, base_dir: &Path) -> Option<Fram
             }
         }
         return None;
+    }
+
+    // A registry dep before a git one: `{ version, registry }` carries no
+    // `git` key, so this only fires when the project pins the registry.
+    if let Some(reg) = registry_dep_from_table(table) {
+        return Some(reg);
     }
 
     let url = table.get("git").and_then(|v| v.as_str())?.to_string();
@@ -927,6 +1051,14 @@ mod tests {
         }
     }
 
+    fn registry_defaults() -> RegistryDefaults {
+        RegistryDefaults {
+            name: "idealyst".into(),
+            index: "sparse+https://crates.idealyst.io/index/".into(),
+            version: "1.5".into(),
+        }
+    }
+
     fn git_defaults() -> GitDefaults {
         GitDefaults {
             url: "https://example.invalid/framework.git".to_string(),
@@ -953,7 +1085,7 @@ runtime-core = { git = "https://github.com/IdealystIO/idealyst-native", rev = "d
 "#,
         );
 
-        let src = FrameworkSource::detect(&proj.path, git_defaults())
+        let src = FrameworkSource::detect(&proj.path, git_defaults(), registry_defaults())
             .expect("detect must succeed on out-of-tree projects");
 
         match &src {
@@ -961,6 +1093,9 @@ runtime-core = { git = "https://github.com/IdealystIO/idealyst-native", rev = "d
                 assert_eq!(url, "https://github.com/IdealystIO/idealyst-native");
                 assert!(matches!(refspec, GitRef::Rev(s) if s == "deadbeef"));
             }
+            FrameworkSource::Registry { registry, version } => panic!(
+                "expected the project's git pin to win, got registry {registry} {version}"
+            ),
             FrameworkSource::Workspace { root } => panic!(
                 "expected Git source, got Workspace {{ root: {} }} — \
                  the out-of-tree path is regressing back to workspace-required",
@@ -987,7 +1122,7 @@ runtime-core = { git = "https://github.com/IdealystIO/idealyst-native", tag = "v
 "#,
         );
 
-        let src = FrameworkSource::detect(&proj.path, git_defaults()).expect("detect");
+        let src = FrameworkSource::detect(&proj.path, git_defaults(), registry_defaults()).expect("detect");
         match src {
             FrameworkSource::Git { refspec: GitRef::Tag(t), .. } => assert_eq!(t, "v0.1.0"),
             other => panic!("expected Git/Tag, got {other:?}"),
@@ -998,7 +1133,7 @@ runtime-core = { git = "https://github.com/IdealystIO/idealyst-native", tag = "v
     /// CLI's compile-time git defaults. Covers the very-first
     /// `idealyst new` step before the scaffold's Cargo.toml is written.
     #[test]
-    fn detect_falls_back_to_git_defaults_when_project_has_no_framework_dep() {
+    fn detect_falls_back_to_the_registry_when_project_has_no_framework_dep() {
         let proj = TempProject::new("nodep");
         proj.write_cargo(
             r#"
@@ -1011,14 +1146,65 @@ edition = "2021"
 "#,
         );
 
-        let src = FrameworkSource::detect(&proj.path, git_defaults()).expect("detect");
+        let src = FrameworkSource::detect(&proj.path, git_defaults(), registry_defaults())
+            .expect("detect");
         match src {
-            FrameworkSource::Git { url, refspec: GitRef::Tag(t) } => {
-                assert_eq!(url, "https://example.invalid/framework.git");
-                assert_eq!(t, "v0.0.1");
+            FrameworkSource::Registry { registry, version } => {
+                assert_eq!(registry, "idealyst");
+                assert_eq!(version, "1.5");
             }
-            other => panic!("expected Git defaults fallback, got {other:?}"),
+            other => panic!("expected the registry fallback, got {other:?}"),
         }
+    }
+
+    /// A project that already pins the framework by version + registry keeps
+    /// that pin, so the generated wrapper resolves the identical crate. The
+    /// version is narrowed to major.minor — pinning a patch the app has not
+    /// would give cargo two `runtime-core`s and nothing would type-check
+    /// across the wrapper boundary.
+    #[test]
+    fn detect_preserves_a_projects_registry_pin() {
+        let proj = TempProject::new("regdep");
+        proj.write_cargo(
+            r#"
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+runtime-core = { version = "1.5.2", registry = "idealyst" }
+"#,
+        );
+
+        let src = FrameworkSource::detect(&proj.path, git_defaults(), registry_defaults())
+            .expect("detect");
+        match src {
+            FrameworkSource::Registry { registry, version } => {
+                assert_eq!(registry, "idealyst");
+                assert_eq!(version, "1.5", "patch must be dropped from the requirement");
+            }
+            other => panic!("expected the project's registry pin, got {other:?}"),
+        }
+    }
+
+    /// The emitted dep table must always name the registry. Most framework
+    /// crates share a name with an unrelated crates.io package, so a bare
+    /// version requirement silently resolves to a stranger's crate.
+    #[test]
+    fn registry_dep_names_the_registry_and_carries_features() {
+        let src = FrameworkSource::Registry {
+            registry: "idealyst".into(),
+            version: "1.5".into(),
+        };
+        assert_eq!(
+            src.dep("crates/runtime/core", &["async-driver"]),
+            r#"{ version = "1.5", registry = "idealyst", features = ["async-driver"] }"#
+        );
+        assert_eq!(
+            src.dep("crates/css", &[]),
+            r#"{ version = "1.5", registry = "idealyst" }"#
+        );
     }
 
     /// In Git mode the wrapper and target dirs must be project-local —
@@ -1091,7 +1277,7 @@ runtime-core = { path = "../fw/crates/runtime/core" }
         )
         .expect("write proj Cargo.toml");
 
-        let src = FrameworkSource::detect(&proj, git_defaults()).expect("detect");
+        let src = FrameworkSource::detect(&proj, git_defaults(), registry_defaults()).expect("detect");
         match src {
             FrameworkSource::Workspace { root } => {
                 assert!(
@@ -1109,6 +1295,9 @@ runtime-core = { path = "../fw/crates/runtime/core" }
             FrameworkSource::Git { .. } => {
                 panic!("relative path dep must resolve to Workspace, not Git")
             }
+            FrameworkSource::Registry { registry, version } => panic!(
+                "expected a workspace path, got registry {registry} {version}"
+            ),
         }
     }
 

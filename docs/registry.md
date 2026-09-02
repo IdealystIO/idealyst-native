@@ -31,6 +31,16 @@ Two things are required for that, and either alone buys nothing:
    lockstep, every version would move on every release and the registry would
    reuse nothing.
 
+## Starting a new project
+
+`idealyst new` scaffolds registry deps and writes the `.cargo/config.toml` that
+defines the registry. Nothing else to set up.
+
+Existing projects pinned by git keep working — the CLI mirrors whatever the
+project already resolves `runtime-core` to, so a git-pinned project still gets
+git-pinned wrappers. Only the fallback for a project with no framework dep yet
+changed, from git to the registry.
+
 ## Using it (consumers)
 
 Add the registry to `.cargo/config.toml`:
@@ -114,8 +124,21 @@ last cut from. It is our bookkeeping, not part of cargo's schema — an index
 entry records a version but not the commit that produced it, and "what changed
 since?" needs the commit.
 
-CI (`.github/workflows/release.yml`) runs this on every push to master and
-commits the version bumps back with `[skip ci]`.
+Releases are cut **by hand**:
+
+```sh
+AWS_PROFILE=idealyst \
+IDEALYST_REGISTRY_BUCKET=idealyst-crates \
+IDEALYST_REGISTRY_DISTRIBUTION=<distribution-id> \
+  cargo run -p registry -- publish --execute
+```
+
+Commit the version bumps it writes; the next release compares against that
+commit. Run `plan` first to see what it would do — it touches nothing.
+
+`.github/workflows/release.yml` holds the same steps for when there is CI. It
+is `workflow_dispatch` only and not wired up: a `push` trigger would fire on
+every merge and fail on the missing `AWS_RELEASE_ROLE` secret.
 
 ## Layout in the bucket
 

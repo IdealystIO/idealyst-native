@@ -339,6 +339,10 @@ fn write_shared_target_config(dir: &Path, target_dir: &Path) -> Result<()> {
         // escape backslashes so a Windows path stays valid TOML.
         target_dir.display().to_string().replace('\\', "/"),
     );
+    // The wrapper Cargo.toml carries a `[patch.<registry>]` section, and an
+    // undefined registry name there is a hard error. Define it here rather
+    // than relying on an ancestor config having done so.
+    let config = config + &build_ios::registry_config_block();
     fs::create_dir_all(dir.join(".cargo"))?;
     write_replacing(&dir.join(".cargo/config.toml"), &config, "#")?;
     Ok(())

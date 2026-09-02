@@ -1,5 +1,17 @@
 # Publish changed crates to the idealyst cargo registry.
 #
+# NOT WIRED UP. Releases are cut by hand today:
+#
+#   AWS_PROFILE=idealyst IDEALYST_REGISTRY_BUCKET=idealyst-crates \
+#   IDEALYST_REGISTRY_DISTRIBUTION=<id> \
+#     cargo run -p registry -- publish --execute
+#
+# This file is kept as the ready-made CI path for when there is CI. It is
+# `workflow_dispatch` only, deliberately: a `push` trigger would fire on
+# every merge and fail on the missing AWS_RELEASE_ROLE secret, and a
+# permanently red check trains people to ignore checks. Add the push trigger
+# at the same time as the secrets.
+#
 # There is no global version tag any more. Each crate carries its own version
 # and is republished only when its own files changed — which is the whole
 # point: a consumer that upgrades after a release touching one leaf crate
@@ -17,8 +29,6 @@ on:
         description: "Plan only — do not upload"
         type: boolean
         default: true
-  push:
-    branches: [master]
 
 concurrency:
   # Two releases racing would each compute bumps against the same
@@ -34,8 +44,6 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    # Skip the run this job's own bump commit triggers.
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -64,14 +72,14 @@ jobs:
         run: ./target/release/registry plan
 
       - name: Publish
-        if: ${{ github.event_name == 'push' || !inputs.dry_run }}
+        if: ${{ !inputs.dry_run }}
         env:
           IDEALYST_REGISTRY_BUCKET: ${{ vars.REGISTRY_BUCKET }}
           IDEALYST_REGISTRY_DISTRIBUTION: ${{ vars.REGISTRY_DISTRIBUTION }}
         run: ./target/release/registry publish --execute
 
       - name: Commit the version bumps
-        if: ${{ github.event_name == 'push' || !inputs.dry_run }}
+        if: ${{ !inputs.dry_run }}
         run: |
           if git diff --quiet; then
             echo "no version changes to commit"
