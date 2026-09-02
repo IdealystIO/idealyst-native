@@ -99,6 +99,29 @@ pub struct PropsSchemaEntry {
     pub fields: &'static [PropFieldSpec],
 }
 
+/// The crate a catalog entry originated in — the first segment of its
+/// `module_path`.
+///
+/// This is the catalog's notion of provenance. One extractor can link
+/// several projects (see the CLI's catalog wrapper), so a single catalog
+/// routinely spans multiple apps plus their shared component libraries;
+/// this is what tells them apart, and what the MCP `app` filter matches
+/// against. Derived rather than stored: `module_path` already carries it,
+/// so nothing extra has to cross the wire.
+///
+/// ```
+/// # use mcp_catalog::origin_crate;
+/// assert_eq!(origin_crate("crewforge_main::screens::crew"), "crewforge_main");
+/// assert_eq!(origin_crate("solo"), "solo");
+/// ```
+pub fn origin_crate(module_path: &str) -> &str {
+    module_path
+        .split("::")
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(module_path)
+}
+
 /// A component the `#[component]` proc-macro registered at compile time.
 /// Fields are all `&'static str` so the entry can live in a linker
 /// section without any heap allocation. `line` is a `u32` because

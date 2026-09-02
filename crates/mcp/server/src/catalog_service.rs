@@ -229,13 +229,17 @@ pub struct NameRequest {
     /// (e.g. `mcp_demo::components::card`). Short-name lookups are
     /// resolved via spec §6 proximity rules.
     pub name: String,
-    /// Optional app filter (from `list_apps`). Surface-level today —
-    /// the field exists so callers can pre-tag the request; the
-    /// per-app catalog routing for describe/search/find_uses lands
-    /// in a follow-up. For now the lookup is against the in-memory
-    /// catalog.
+    /// Restrict the lookup to components from ONE crate — an app, or a
+    /// shared component library.
+    ///
+    /// One catalog can span every project in a workspace, so a short
+    /// name may match several components (two apps may each define an
+    /// `AppRoot`). Without this, such a lookup is reported as ambiguous
+    /// and names its candidates; pass the crate here — or a
+    /// fully-qualified `name` — to pick one. Either spelling works
+    /// (`my-app` or `my_app`); `list_components` reports each
+    /// component's crate in its `app` field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[allow(dead_code)]
     pub app: Option<String>,
 }
 
@@ -594,6 +598,14 @@ pub struct FilterRequest {
     /// Omit / empty to list everything.
     #[serde(default)]
     pub filter: Option<String>,
+    /// Restrict results to components from ONE crate — an app, or a
+    /// shared component library. One catalog can span every project in a
+    /// workspace, so this is how you ask for just the kiosk's components
+    /// rather than the whole monorepo's. Match is on the originating
+    /// crate; either spelling works (`my-app` or `my_app`). Each result's
+    /// `app` field tells you what to pass here. Omit to list everything.
+    #[serde(default)]
+    pub app: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -863,8 +875,16 @@ impl CatalogService {
                 if !matches_filter(&req.filter, &[e.name, &fqn]) {
                     continue;
                 }
+                // Provenance: which crate this component came from. One
+                // catalog can span several projects (the extractor links
+                // them all), so this is what tells two apps' components
+                // apart — and it used to be a hardcoded `null`.
+                let origin = mcp_catalog::origin_crate(e.module_path);
+                if !app_matches(req.app.as_deref(), origin) {
+                    continue;
+                }
                 json.push(serde_json::json!({
-                    "app": null,
+                    "app": origin,
                     "name": e.name,
                     "fqn": fqn,
                     "summary": doc_summary(e.docs),
@@ -889,8 +909,7 @@ impl CatalogService {
         Parameters(req): Parameters<NameRequest>,
     ) -> Result<CallToolResult, McpError> {
         let cat = self.catalog.read().await;
-        let entry = find_by_name(&cat, &req.name)
-            .ok_or_else(|| McpError::invalid_params(format!("component {:?} not found", req.name), None))?;
+        let entry = resolve_component(&cat, &req.name, req.app.as_deref())?;
         let edges = cat.dependencies(&EntryRef::of(entry));
         let json = entry_to_json(&cat, entry, edges);
         Ok(CallToolResult::success(vec![Content::text(
@@ -904,8 +923,7 @@ impl CatalogService {
         Parameters(req): Parameters<NameRequest>,
     ) -> Result<CallToolResult, McpError> {
         let cat = self.catalog.read().await;
-        let entry = find_by_name(&cat, &req.name)
-            .ok_or_else(|| McpError::invalid_params(format!("component {:?} not found", req.name), None))?;
+        let entry = resolve_component(&cat, &req.name, req.app.as_deref())?;
         let users = cat.uses(&EntryRef::of(entry));
         let json: Vec<String> = users.iter().map(|r| r.fqn()).collect();
         Ok(CallToolResult::success(vec![Content::text(
@@ -919,8 +937,7 @@ impl CatalogService {
         Parameters(req): Parameters<NameRequest>,
     ) -> Result<CallToolResult, McpError> {
         let cat = self.catalog.read().await;
-        let entry = find_by_name(&cat, &req.name)
-            .ok_or_else(|| McpError::invalid_params(format!("component {:?} not found", req.name), None))?;
+        let entry = resolve_component(&cat, &req.name, req.app.as_deref())?;
         let edges = cat.dependencies(&EntryRef::of(entry));
         let json: Vec<serde_json::Value> = edges
             .iter()
@@ -2959,22 +2976,105 @@ fn matched_terms(terms: &[String], fields: &[&str], body: &str) -> Vec<String> {
 /// the first hit — consumers wanting strict disambiguation should
 /// pass the FQN. The MCP `--check` lint (phase 6) is what surfaces
 /// short-name conflicts at the project level.
+/// Does `origin` satisfy an optional `app` filter? An unset filter
+/// matches everything. The filter accepts either spelling of a crate
+/// name (`crewforge-main` or `crewforge_main`), since users read the
+/// hyphenated package name in Cargo.toml but `module_path` reports the
+/// underscored lib name.
+fn app_matches(filter: Option<&str>, origin: &str) -> bool {
+    match filter {
+        None => true,
+        Some(want) => want.replace('-', "_") == origin.replace('-', "_"),
+    }
+}
+
+/// Outcome of resolving a component name against the catalog.
+enum NameLookup<'a> {
+    Found(&'a ComponentEntry),
+    /// Several components share this short name. With one catalog
+    /// spanning several projects this is reachable in ordinary use — two
+    /// apps may each define an `AppRoot` — so it must be reported, not
+    /// silently resolved to whichever entry happened to be first.
+    Ambiguous(Vec<&'a ComponentEntry>),
+    NotFound,
+}
+
+/// Resolve a component by fully-qualified name or short name.
+///
+/// A fully-qualified name is unambiguous by construction and wins
+/// outright. A short name may match several components once the catalog
+/// covers more than one project; `app` narrows the candidates first, and
+/// anything still tied is reported as [`NameLookup::Ambiguous`].
 fn find_by_name<'a>(
     cat: &'a ResolvedCatalog,
     needle: &str,
-) -> Option<&'a ComponentEntry> {
-    for e in cat.entries() {
-        if e.name == needle {
-            return Some(*e);
-        }
-    }
+    app: Option<&str>,
+) -> NameLookup<'a> {
+    // Exact FQN first: the caller was specific, so honour it even if some
+    // other crate has a component with the same short name.
     for e in cat.entries() {
         let fqn = format!("{}::{}", e.module_path, e.name);
         if fqn == needle {
-            return Some(*e);
+            return NameLookup::Found(*e);
         }
     }
-    None
+    let matches: Vec<&ComponentEntry> = cat
+        .entries()
+        .iter()
+        .copied()
+        .filter(|e| e.name == needle)
+        .filter(|e| app_matches(app, mcp_catalog::origin_crate(e.module_path)))
+        .collect();
+    match matches.len() {
+        0 => NameLookup::NotFound,
+        1 => NameLookup::Found(matches[0]),
+        _ => NameLookup::Ambiguous(matches),
+    }
+}
+
+/// Turn a lookup into either the entry or an actionable MCP error.
+///
+/// The ambiguous case names every candidate and says exactly how to
+/// disambiguate, because the alternative — picking one — produces a
+/// confidently wrong answer that reads as correct.
+fn resolve_component<'a>(
+    cat: &'a ResolvedCatalog,
+    needle: &str,
+    app: Option<&str>,
+) -> Result<&'a ComponentEntry, McpError> {
+    match find_by_name(cat, needle, app) {
+        NameLookup::Found(e) => Ok(e),
+        NameLookup::NotFound => Err(McpError::invalid_params(
+            format!("component {needle:?} not found"),
+            None,
+        )),
+        NameLookup::Ambiguous(candidates) => {
+            let mut fqns: Vec<String> = candidates
+                .iter()
+                .map(|e| format!("{}::{}", e.module_path, e.name))
+                .collect();
+            fqns.sort();
+            Err(McpError::invalid_params(
+                format!(
+                    "component {needle:?} is ambiguous — {} components share that name: {}. \
+                     Pass one of those fully-qualified names, or narrow with the `app` \
+                     argument (one of: {}).",
+                    fqns.len(),
+                    fqns.join(", "),
+                    {
+                        let mut apps: Vec<&str> = candidates
+                            .iter()
+                            .map(|e| mcp_catalog::origin_crate(e.module_path))
+                            .collect();
+                        apps.sort_unstable();
+                        apps.dedup();
+                        apps.join(", ")
+                    }
+                ),
+                None,
+            ))
+        }
+    }
 }
 
 /// Best-effort guide → recipe join for `read_guide`'s "Related recipes"
@@ -3687,6 +3787,7 @@ mod tests {
         let hit = svc
             .list_components(Parameters(FilterRequest {
                 filter: Some("regression_canary".into()),
+                app: None,
             }))
             .await
             .unwrap();
@@ -3697,6 +3798,7 @@ mod tests {
         let miss = svc
             .list_components(Parameters(FilterRequest {
                 filter: Some("definitely-no-such-component-xyz".into()),
+                app: None,
             }))
             .await
             .unwrap();
@@ -3895,7 +3997,7 @@ mod tests {
 
         // Filter narrows to the data crates.
         let filtered = svc
-            .list_sdks(Parameters(FilterRequest { filter: Some("data".into()) }))
+            .list_sdks(Parameters(FilterRequest { filter: Some("data".into()), app: None }))
             .await
             .unwrap();
         let fv = parse_array(&filtered);
@@ -4599,5 +4701,163 @@ mod tests {
         assert!(body.contains("Related recipes:"), "{body}");
         assert!(body.contains("list_recipes"), "{body}");
         assert!(body.contains("describe_recipe"), "{body}");
+    }
+
+    // ---- provenance across a multi-project catalog ----
+
+    /// Two apps plus a shared library, the shape a workspace-wide
+    /// catalog actually has. `beta_app::AppRoot` and `alpha_app::AppRoot`
+    /// deliberately collide: that is the case a merged catalog makes
+    /// ordinary and a single-project one never produced.
+    fn multi_project_catalog() -> serde_json::Value {
+        let comp = |module: &str, name: &str| {
+            serde_json::json!({
+                "name": name,
+                "module_path": module,
+                "file": format!("/w/{module}/src/lib.rs"),
+                "line": 1,
+                "docs": format!("{name} from {module}."),
+                "composes": [],
+                "params": [],
+            })
+        };
+        serde_json::json!({
+            "components": [
+                comp("alpha_app::screens", "AppRoot"),
+                comp("alpha_app::screens", "CrewSheet"),
+                comp("beta_app::kiosk", "AppRoot"),
+                comp("beta_app::kiosk", "PinPad"),
+                comp("shared_ui::widgets", "DateJumper"),
+            ]
+        })
+    }
+
+    async fn multi_project_service() -> CatalogService {
+        let cat = ResolvedCatalog::build_from_json(&multi_project_catalog().to_string()).unwrap();
+        let svc = CatalogService::new();
+        svc.replace_catalog(cat).await;
+        svc
+    }
+
+    #[tokio::test]
+    async fn list_components_reports_the_originating_crate() {
+        // Regression: this field was hardcoded `null` on the static
+        // catalog path, so a merged catalog gave no way to tell which
+        // app a component belonged to.
+        let svc = multi_project_service().await;
+        let out = svc
+            .list_components(Parameters(FilterRequest::default()))
+            .await
+            .unwrap();
+        let rows = parse_array(&out);
+        let rows = rows.as_array().unwrap();
+        assert_eq!(rows.len(), 5, "{rows:#?}");
+        for row in rows {
+            let app = row["app"].as_str().unwrap_or("");
+            assert!(
+                ["alpha_app", "beta_app", "shared_ui"].contains(&app),
+                "every row must name its crate, got {row:#?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn list_components_app_filter_narrows_to_one_project() {
+        let svc = multi_project_service().await;
+        let out = svc
+            .list_components(Parameters(FilterRequest {
+                filter: None,
+                app: Some("beta_app".into()),
+            }))
+            .await
+            .unwrap();
+        let mut names = component_names(&out);
+        names.sort();
+        assert_eq!(names, vec!["AppRoot".to_string(), "PinPad".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn app_filter_accepts_the_hyphenated_package_spelling() {
+        // Users read `beta-app` in Cargo.toml but `module_path` reports
+        // the underscored lib name. Requiring the underscore form would
+        // make the filter fail in exactly the way that looks like "no
+        // such app".
+        let svc = multi_project_service().await;
+        let out = svc
+            .list_components(Parameters(FilterRequest {
+                filter: None,
+                app: Some("beta-app".into()),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(component_names(&out).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn describe_component_reports_ambiguity_instead_of_guessing() {
+        // The important one. Two apps each define `AppRoot`; picking the
+        // first match would answer confidently with the wrong component's
+        // props. The error must name the candidates AND how to choose.
+        let svc = multi_project_service().await;
+        let err = svc
+            .describe_component(Parameters(NameRequest {
+                name: "AppRoot".into(),
+                app: None,
+            }))
+            .await
+            .expect_err("ambiguous short name must not resolve");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("ambiguous"), "{msg}");
+        assert!(msg.contains("alpha_app::screens::AppRoot"), "{msg}");
+        assert!(msg.contains("beta_app::kiosk::AppRoot"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn describe_component_disambiguates_by_app_or_fqn() {
+        let svc = multi_project_service().await;
+
+        // By app.
+        let out = svc
+            .describe_component(Parameters(NameRequest {
+                name: "AppRoot".into(),
+                app: Some("beta_app".into()),
+            }))
+            .await
+            .unwrap();
+        assert!(format!("{out:?}").contains("beta_app::kiosk"), "{out:?}");
+
+        // By fully-qualified name — unambiguous by construction, so it
+        // resolves with no `app` at all.
+        let out = svc
+            .describe_component(Parameters(NameRequest {
+                name: "alpha_app::screens::AppRoot".into(),
+                app: None,
+            }))
+            .await
+            .unwrap();
+        assert!(format!("{out:?}").contains("alpha_app::screens"), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn unique_short_names_still_resolve_bare() {
+        // Ambiguity handling must not tax the common case: a name only
+        // one component has resolves with no ceremony.
+        let svc = multi_project_service().await;
+        let out = svc
+            .describe_component(Parameters(NameRequest {
+                name: "DateJumper".into(),
+                app: None,
+            }))
+            .await
+            .unwrap();
+        assert!(format!("{out:?}").contains("shared_ui::widgets"), "{out:?}");
+    }
+
+    #[test]
+    fn app_matches_is_spelling_insensitive_and_open_when_unset() {
+        assert!(app_matches(None, "anything"));
+        assert!(app_matches(Some("beta_app"), "beta_app"));
+        assert!(app_matches(Some("beta-app"), "beta_app"));
+        assert!(!app_matches(Some("beta_app"), "alpha_app"));
     }
 }
