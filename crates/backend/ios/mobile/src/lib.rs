@@ -33,6 +33,12 @@ mod portal_policy;
 // any host; the `UIView animateWithDuration:` half is ios-only.
 mod transform_transition_policy;
 
+// Pure four-way decision for draining the coalesced layout pass (run /
+// retry / abandon / no-op). Un-gated so the regression tests run from
+// any host; the half that borrows the backend and runs Taffy is
+// ios-only. See the module docs for the dropped-pass bug it pins.
+mod layout_drain_policy;
+
 // idea-lite core migration (iOS mirror of P4a): `runtime_scene::Host` +
 // all 30 `runtime_vocabulary::caps` traits directly on `IosBackend`,
 // the new-core mount path (`newcore::run_in_view`), and its

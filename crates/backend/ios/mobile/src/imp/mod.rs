@@ -373,17 +373,6 @@ pub fn set_animated_color(
     };
 }
 
-/// Schedule a fresh layout pass on the next main-queue turn. Safe to
-/// call from anywhere on the main thread; no-op if the backend has
-/// been dropped or no self ref is installed.
-///
-/// We **always defer** rather than running synchronously: many
-/// callers are reached while the framework holds `backend.borrow_mut()`
-/// (e.g. inside `Backend::insert` from the build walker). Running
-/// `run_layout_pass_global` immediately in that state hits
-/// `RefCell::try_borrow_mut` → `Err` and silently drops the pass.
-/// Deferring to the next runloop turn ensures the framework's borrow
-/// is released first.
 thread_local! {
     /// Coalescing flag: set when a layout pass is queued but not yet
     /// fired. Subsequent `schedule_layout_pass()` calls are dropped
@@ -442,12 +431,12 @@ fn sync_layout_already_done_this_turn() -> bool {
     SYNC_LAYOUT_DONE_THIS_TURN.with(|c| c.get())
 }
 
-pub fn schedule_layout_pass() {
-    if LAYOUT_PASS_QUEUED.with(|q| q.replace(true)) {
-        // Already queued — drop this call. The pending pass will
-        // pick up whatever state changes our caller just made.
-        return;
-    }
+/// Post the main-queue backstop that drains a queued layout pass.
+///
+/// Unconditional — the coalescing decision belongs to the callers
+/// ([`schedule_layout_pass`] posts once per queued pass;
+/// [`drain_queued_layout_pass`] re-posts when it had to give up).
+fn post_layout_drain() {
     extern "C" {
         static _dispatch_main_q: std::ffi::c_void;
         fn dispatch_async_f(
@@ -458,29 +447,13 @@ pub fn schedule_layout_pass() {
     }
 
     extern "C" fn trampoline(_ctx: *mut std::ffi::c_void) {
-        // Clear the queued flag BEFORE running the pass. Any
-        // `schedule_layout_pass` invocations that arrive during the
-        // pass itself will re-arm and fire AFTER this one — they
-        // reflect post-layout state we couldn't have captured here.
-        LAYOUT_PASS_QUEUED.with(|q| q.set(false));
         // libdispatch is C and a Rust panic unwinding back into it is
         // undefined behavior. catch_unwind here only prints the panic
         // message before we abort \u{2014} project policy is crash-loud
         // so the layout pass never silently keeps running on top of
         // a partially-mutated reactive state.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let weak = IOS_BACKEND_SELF.with(|s| s.borrow().clone());
-            let Some(weak) = weak else { return };
-            let Some(rc) = weak.upgrade() else { return };
-            // By the time this fires the original `borrow_mut()` should
-            // have ended. If something else is mid-borrow we still bail
-            // rather than panic.
-            let mut backend = match rc.try_borrow_mut() {
-                Ok(b) => b,
-                Err(_) => return,
-            };
-            backend.run_layout_pass_global();
-        }));
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(drain_queued_layout_pass));
         if let Err(payload) = result {
             let msg = if let Some(s) = payload.downcast_ref::<String>() {
                 s.clone()
@@ -501,6 +474,92 @@ pub fn schedule_layout_pass() {
             trampoline,
         );
     }
+}
+
+/// Run the queued layout pass, if one is still queued.
+///
+/// Called from two places that race deliberately — the pre-commit
+/// runloop observer (early, same turn, so the frames land in the paint
+/// that shows the new views) and the main-queue backstop (late, but
+/// guaranteed to happen). Whichever arrives first does the work; the
+/// other finds the flag clear and returns.
+fn drain_queued_layout_pass() {
+    use crate::layout_drain_policy::{decide, Drain};
+
+    let queued = LAYOUT_PASS_QUEUED.with(|q| q.get());
+    if !queued {
+        // Hot path: the pre-commit observer calls this on EVERY runloop
+        // turn, including every frame of a scroll. Bail on the flag read
+        // alone rather than cloning the self-ref and taking a borrow to
+        // reach the same `Drain::Nothing` below.
+        return;
+    }
+    // `IOS_BACKEND_SELF` is unset in runtime-server mode (the backend is
+    // owned by value inside `RuntimeServerClient`, which drives layout
+    // itself) and dangling once the app tears down.
+    let rc = IOS_BACKEND_SELF
+        .with(|s| s.borrow().clone())
+        .and_then(|weak| weak.upgrade());
+    // Take the borrow up front: whether it is available IS one of the
+    // three facts the decision needs, and there is no way to ask
+    // without asking.
+    let borrowed = rc.as_ref().map(|rc| rc.try_borrow_mut());
+    let borrow_available = matches!(borrowed, Some(Ok(_)));
+
+    match decide(queued, rc.is_some(), borrow_available) {
+        Drain::Nothing => {}
+        Drain::Abandon => LAYOUT_PASS_QUEUED.with(|q| q.set(false)),
+        Drain::Retry => post_layout_drain(),
+        Drain::Run => {
+            // Clear the queued flag BEFORE running the pass. Any
+            // `schedule_layout_pass` invocations that arrive during the
+            // pass itself will re-arm and fire AFTER this one — they
+            // reflect post-layout state we couldn't have captured here.
+            LAYOUT_PASS_QUEUED.with(|q| q.set(false));
+            let Some(Ok(mut backend)) = borrowed else {
+                unreachable!("Drain::Run implies the borrow succeeded")
+            };
+            backend.run_layout_pass_global();
+        }
+    }
+}
+
+/// Schedule a fresh layout pass. Safe to call from anywhere on the
+/// main thread; no-op if the backend has been dropped or no self ref
+/// is installed.
+///
+/// We **always defer** rather than running synchronously: many
+/// callers are reached while the framework holds `backend.borrow_mut()`
+/// (e.g. inside `Backend::insert` from the build walker). Running
+/// `run_layout_pass_global` immediately in that state hits
+/// `RefCell::try_borrow_mut` → `Err` and drops the pass. Deferring
+/// ensures the framework's borrow is released first.
+///
+/// The queued pass has two drain points, and the earliest one wins:
+///
+/// 1. **The pre-commit runloop observer** — end of the current turn,
+///    before CoreAnimation commits. This is what keeps a freshly
+///    mounted screen from painting once at its parent's origin before
+///    anything has laid it out.
+/// 2. **The main queue** — next turn. Slower, but it is the one that
+///    always happens, including for work scheduled from inside the
+///    commit phase (UIKit's `layoutSubviews`, i.e. rotation) which the
+///    observer has already run past.
+///
+/// See `backend_apple_core::pre_commit` for why both are needed.
+pub fn schedule_layout_pass() {
+    if LAYOUT_PASS_QUEUED.with(|q| q.replace(true)) {
+        // Already queued — drop this call. The pending pass will
+        // pick up whatever state changes our caller just made.
+        return;
+    }
+    // Drain before this turn's CoreAnimation commit when we can, so a
+    // freshly mounted screen is positioned in the same frame UIKit
+    // first shows it. Idempotent; costs one thread-local read after
+    // the first call. See `backend_apple_core::pre_commit` for why the
+    // dispatch below still has to exist.
+    backend_apple_core::pre_commit::install_pre_commit_hook(drain_queued_layout_pass);
+    post_layout_drain();
 }
 
 /// Walk the subtree rooted at `view`, checking each subview's

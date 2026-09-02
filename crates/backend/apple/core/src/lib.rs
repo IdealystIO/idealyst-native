@@ -125,3 +125,12 @@ pub mod pointer_events_policy;
 /// pure `std` state, host-testable, and the new-core glue in the leaf
 /// backends compiles it on the host for its own unit tests.
 pub mod dispatch_hook;
+
+/// Pre-commit runloop hook: run deferred work at the end of the current
+/// runloop turn but before CoreAnimation commits, so writes that must
+/// be visible in the next paint aren't a frame late. The iOS backend
+/// drains its coalesced layout pass here — see the module docs for the
+/// "screen mounts collapsed into the top-left corner" bug it fixes.
+/// NOT OS-gated: the slot itself is pure `std` and host-testable; only
+/// the observer registration is Apple-only.
+pub mod pre_commit;
