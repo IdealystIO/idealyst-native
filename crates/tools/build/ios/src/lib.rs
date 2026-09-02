@@ -877,27 +877,6 @@ pub unsafe extern "C" fn ios_main(root_view: *mut std::ffi::c_void) {{
                 project_root: ::std::option::Option::None,
             }},
         );
-        // ...and actually START a bridge, or the identity above is all
-        // anyone ever sees: the app shows up in `~/.idealyst/apps` (the
-        // relay registers it) and then fails every Robot call with "no
-        // app connected to the relay".
-        //
-        // A relay URL means "dial out to a host-side relay"; otherwise
-        // bind a local listener. Same choice the Linux wrapper and the
-        // runtime-server sidecar make. `simctl` delivers the URL to a
-        // simulator app as `SIMCTL_CHILD_IDEALYST_ROBOT_RELAY_URL`
-        // (stripped on the way in) — see `tools/run/ios`'s `launch_app`,
-        // which has always forwarded it; nothing was listening for it.
-        //
-        // Safe to call here rather than from a run-loop hook: both
-        // spawn their own thread, and `ios_main` is already on the main
-        // thread with the run loop up.
-        match ::runtime_shared::robot::bridge::relay_url_from_env() {{
-            Some(url) => ::runtime_shared::robot::bridge::start_relay_client(url),
-            None => ::runtime_shared::robot::bridge::start_auto_polling(
-                ::runtime_shared::robot::bridge::DEFAULT_PORT,
-            ),
-        }}
     }}
 
     // `run_in_view` performs the idempotent installs (scheduler,
@@ -913,6 +892,34 @@ pub unsafe extern "C" fn ios_main(root_view: *mut std::ffi::c_void) {{
         )
     }};
     APP.with(|slot| *slot.borrow_mut() = Some(app));
+
+    // Start the Robot bridge — AFTER `run_in_view`, which is what
+    // installs the platform scheduler.
+    //
+    // Ordering is load-bearing, not stylistic. Both entry points end in
+    // `schedule_periodic_poll()`, and that is what DRAINS the bridge's
+    // command queue on the main thread; it needs the scheduler already
+    // installed (`start_auto_polling`'s docs say so outright). Started
+    // before the mount, the relay still connects and commands still
+    // arrive — they simply queue forever, and every Robot call fails
+    // with "app response timed out" instead of the more honest "no app
+    // connected". Connected-but-inert is the worse failure of the two.
+    //
+    // A relay URL means "dial out to a host-side relay"; otherwise bind
+    // a local listener. Same choice the Linux wrapper and the
+    // runtime-server sidecar make. `simctl` delivers the URL to a
+    // simulator app as `SIMCTL_CHILD_IDEALYST_ROBOT_RELAY_URL` (stripped
+    // on the way in) — see `tools/run/ios`'s `launch_app`, which has
+    // always forwarded it; nothing was listening for it.
+    #[cfg(feature = "dev")]
+    {{
+        match ::runtime_shared::robot::bridge::relay_url_from_env() {{
+            Some(url) => ::runtime_shared::robot::bridge::start_relay_client(url),
+            None => ::runtime_shared::robot::bridge::start_auto_polling(
+                ::runtime_shared::robot::bridge::DEFAULT_PORT,
+            ),
+        }}
+    }}
 }}
 
 /// Tear down the active mount. Safe to call from anywhere on the main
@@ -1090,6 +1097,24 @@ mod regression_tests {
         assert!(
             lib_rs.contains("set_app_identity"),
             "identity still has to be stamped for attribution; got:\n{lib_rs}",
+        );
+
+        // ...and start it AFTER the mount. Both entry points end in
+        // `schedule_periodic_poll()`, which is what drains the command
+        // queue, and that needs the platform scheduler `run_in_view`
+        // installs. Started earlier the relay still CONNECTS and
+        // commands still arrive — they queue forever, and every Robot
+        // call fails with "app response timed out". That is a worse
+        // failure than not connecting at all, because the app looks
+        // healthy from the outside, so it is worth pinning.
+        let mount = lib_rs.find("run_in_view").expect("wrapper mounts via run_in_view");
+        let dial = lib_rs.find("start_relay_client").expect("checked above");
+        let listen = lib_rs.find("start_auto_polling").expect("checked above");
+        assert!(
+            dial > mount && listen > mount,
+            "the bridge must start after `run_in_view` installs the scheduler \
+             (run_in_view at {mount}, relay at {dial}, listener at {listen}); \
+             got:\n{lib_rs}",
         );
     }
 
