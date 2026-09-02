@@ -109,6 +109,29 @@ pub(crate) struct StickyScrollEntry {
     /// `Some` while any child is registered. Invalidated and
     /// cleared when the last child deregisters.
     display_link: Option<Retained<NSObject>>,
+    /// The `(scroll, viewport)` the last tick actually pinned against.
+    ///
+    /// The display link fires every vsync whether or not anything moved,
+    /// and the per-child loop reads each child's CURRENT transform back
+    /// out of UIKit (`current_translate`) to decide whether to write. So
+    /// a motionless scroller still cost one `msg_send` per sticky child
+    /// per frame — 120 a second each, forever, for a screen nobody is
+    /// touching. This makes the module doc's "small constant number of
+    /// transforms per registered child" true by skipping the loop
+    /// entirely when neither input has changed.
+    ///
+    /// `None` means "recompute unconditionally". Set on registration and
+    /// after every layout pass, because a child's natural position or
+    /// size can change with NO scroll movement — a cache keyed on scroll
+    /// alone would pin against stale geometry.
+    ///
+    /// The trade-off: if something OUTSIDE this module overwrites a
+    /// pinned child's transform, the correction now waits for the next
+    /// real scroll instead of the next vsync. Two owners writing one
+    /// `transform` is already ill-defined (see `apply_translate`), so
+    /// this trades a per-frame repair of a broken state for not paying
+    /// for it on every healthy frame.
+    last_applied: Option<((f32, f32), (f32, f32))>,
 }
 
 /// Map from scroll view pointer → sticky bookkeeping.
@@ -180,6 +203,7 @@ pub(crate) fn register(
         scroll_view: scroll_view.clone(),
         children: HashMap::new(),
         display_link: None,
+        last_applied: None,
     });
 
     entry.children.insert(
@@ -191,6 +215,9 @@ pub(crate) fn register(
             size: (0.0, 0.0),
         },
     );
+    // A child that arrives without the scroll offset moving still needs
+    // its first pin.
+    entry.last_applied = None;
 
     // Raise the pinned view above its static siblings, matching how
     // CSS paints positioned elements above non-positioned ones — a
@@ -377,8 +404,22 @@ fn start_display_link(mtm: MainThreadMarker, scroll_key: usize) -> Retained<NSOb
 /// to the child's `CGAffineTransform`. Skips the write when both axes
 /// are within [`STICKY_EPSILON`] of the live value, matching the
 /// portal anchor tracker's idle-frame discipline.
+/// Whether the per-child pin loop has to run for these inputs.
+///
+/// Pure, so the caching rule is testable without a `UIScrollView` — the
+/// tick itself needs UIKit and is only reachable on a device. `None`
+/// always repins: that is the "recompute unconditionally" signal set on
+/// registration and after a layout pass.
+fn needs_repin(
+    last_applied: Option<((f32, f32), (f32, f32))>,
+    scroll: (f32, f32),
+    viewport: (f32, f32),
+) -> bool {
+    last_applied != Some((scroll, viewport))
+}
+
 fn tick(backend: &mut crate::imp::IosBackend, scroll_key: usize) {
-    let Some(entry) = backend.sticky_registry.get(&scroll_key) else {
+    let Some(entry) = backend.sticky_registry.get_mut(&scroll_key) else {
         return;
     };
     let scroll: (f32, f32) = {
@@ -394,6 +435,15 @@ fn tick(backend: &mut crate::imp::IosBackend, scroll_key: usize) {
         let bounds: objc2_foundation::CGRect = unsafe { msg_send![&*entry.scroll_view, bounds] };
         (bounds.size.width as f32, bounds.size.height as f32)
     };
+    // Nothing moved since the last pin: every child's transform is
+    // already what this pass would compute, so skip the read-back loop.
+    // See `last_applied` for why layout changes clear it rather than
+    // being folded into the key.
+    if !needs_repin(entry.last_applied, scroll, viewport) {
+        return;
+    }
+    entry.last_applied = Some((scroll, viewport));
+
     for (_, child) in entry.children.iter() {
         let (tx, ty) = translate(child.insets, child.natural, child.size, scroll, viewport);
         let (cur_x, cur_y) = current_translate(&child.view);
@@ -425,6 +475,13 @@ pub(crate) fn refresh_layout_positions(
     view_to_layout: &HashMap<usize, (Retained<UIView>, runtime_layout::LayoutNode)>,
 ) {
     for (scroll_key, entry) in registry.iter_mut() {
+        // A layout pass can move a child's natural position or change its
+        // extent with the scroll offset untouched, so the tick's
+        // unchanged-inputs early-out must not survive one. Cleared for
+        // every entry, not just the ones whose children resolved below:
+        // a child that failed to trace this pass keeps stale `natural`
+        // and still needs re-pinning once it does resolve.
+        entry.last_applied = None;
         for (child_key, child) in entry.children.iter_mut() {
             let Some(natural) = compute_natural_in_scroll(
                 *child_key,
@@ -511,6 +568,47 @@ mod tests {
     //! `regression_sticky_falls_back_to_relative_without_scroll_ancestor`.
 
     use super::*;
+
+    /// The display link fires every vsync regardless of movement, and
+    /// the pin loop reads every child's transform back out of UIKit to
+    /// decide whether to write. Unchanged inputs must therefore skip the
+    /// loop, or a motionless screen pays one `msg_send` per sticky child
+    /// per frame forever.
+    #[test]
+    fn unchanged_scroll_and_viewport_skip_the_pin_loop() {
+        let scroll = (0.0_f32, 120.0_f32);
+        let viewport = (390.0_f32, 800.0_f32);
+        assert!(
+            !needs_repin(Some((scroll, viewport)), scroll, viewport),
+            "nothing moved — the children already carry this pin",
+        );
+    }
+
+    /// …but any real movement must still repin, on either axis and for a
+    /// viewport change (a rotation moves trailing-edge pins with the
+    /// scroll offset untouched).
+    #[test]
+    fn moved_scroll_or_resized_viewport_repins() {
+        let scroll = (0.0_f32, 120.0_f32);
+        let viewport = (390.0_f32, 800.0_f32);
+        let last = Some((scroll, viewport));
+        assert!(needs_repin(last, (0.0, 121.0), viewport), "vertical scroll");
+        assert!(needs_repin(last, (5.0, 120.0), viewport), "horizontal scroll");
+        assert!(needs_repin(last, scroll, (800.0, 390.0)), "rotation");
+    }
+
+    /// `None` is the "recompute unconditionally" signal — set when a
+    /// child registers and after every layout pass, because a child's
+    /// natural position or size can change with the scroll offset
+    /// untouched. A cache keyed on scroll alone would pin it against
+    /// stale geometry.
+    #[test]
+    fn cleared_cache_always_repins() {
+        assert!(
+            needs_repin(None, (0.0, 120.0), (390.0, 800.0)),
+            "a cleared cache must repin even though nothing scrolled",
+        );
+    }
 
     /// Which TRANSFORM COMPONENTS the tick writes. The pin
     /// arithmetic's own regressions live with the arithmetic, in
@@ -647,6 +745,7 @@ mod tests {
                 );
                 m
             },
+            last_applied: None,
             display_link: None,
         };
         registry.insert(scroll_key, entry);
