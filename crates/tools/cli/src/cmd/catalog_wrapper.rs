@@ -67,6 +67,24 @@ pub fn generate(project_root: &Path) -> Result<PathBuf> {
 /// `subdir` names the staging dir under `target/idealyst/<project>/`, so
 /// distinct extractors (the MCP catalog vs. the external-export manifest)
 /// don't clobber each other's build fingerprints.
+/// Directory name of the catalog wrapper's dedicated build output,
+/// under the project/workspace cargo target root.
+///
+/// Peer of the web bundle's `idealyst-web-<config_key>` and the dev
+/// server's `idealyst-dev-server`: every CLI-managed build gets its own
+/// target dir so it never competes for the bare `target/` build lock
+/// that the user's own `cargo` invocations (and rust-analyzer) hold.
+pub const SIDECAR_TARGET_DIR: &str = "idealyst-mcp";
+
+/// Where the generated catalog wrapper writes its build output.
+///
+/// Rooted at [`FrameworkSource::cargo_target_dir`], so sibling projects
+/// under one framework source share a warm dependency cache — the same
+/// rooting the web and dev-server target dirs use.
+pub fn sidecar_target_dir(source: &FrameworkSource, project_root: &Path) -> PathBuf {
+    source.cargo_target_dir(project_root).join(SIDECAR_TARGET_DIR)
+}
+
 pub fn generate_with(
     project_root: &Path,
     subdir: &str,
@@ -183,18 +201,29 @@ fn main() {{
         dump_call = dump_call,
     );
 
-    // Share the project/workspace target dir so common dependencies stay
-    // warm across builds and the produced binary lives at a predictable
-    // path. (The `catalog`-feature build of runtime-core is a distinct cargo
-    // fingerprint from the project's normal build, so they coexist
-    // rather than clobber each other.)
+    // The wrapper builds into its OWN sidecar target dir under the
+    // project/workspace target root — never the bare target dir. This is
+    // the same isolation the web bundle (`idealyst-web-<config_key>`) and
+    // the dev server (`idealyst-dev-server`) already take, for the same
+    // reason: this build carries a different feature union than the
+    // project's own (`runtime-core/catalog` and each component library's
+    // `catalog`), and under `--watch` it reruns on every save.
+    //
+    // Sharing the bare target dir made every catalog refresh contend for
+    // the one cargo build lock that `cargo check`, `cargo test` and
+    // rust-analyzer also take — so a watch-triggered extraction would
+    // stall the editor. The lost cache sharing is smaller than it looks:
+    // the project's own dev builds live in the sibling `idealyst-web-*` /
+    // `idealyst-dev-server` dirs already, so the bare dir held little the
+    // wrapper could reuse.
     let cargo_config = format!(
-        "# GENERATED. Redirect this wrapper's build output to the shared\n\
-         # target dir so subsequent extractions reuse the cache.\n\
+        "# GENERATED. Redirect this wrapper's build output to a dedicated\n\
+         # sidecar target dir, so catalog extraction never takes the build\n\
+         # lock the project's own cargo commands use.\n\
          \n\
          [build]\n\
          target-dir = \"{}\"\n",
-        source.cargo_target_dir(&project_root).display(),
+        sidecar_target_dir(&source, &project_root).display(),
     );
 
     write_if_changed(&wrapper_dir.join("Cargo.toml"), &cargo_toml)?;
@@ -572,7 +601,38 @@ mod tests {
         assert!(main_rs.contains("use my_app as _;"), "main: {main_rs}");
         assert!(main_rs.contains("dump_catalog_json"));
 
+        // Build output goes to the dedicated sidecar dir, NOT the bare
+        // target dir — otherwise every catalog extraction takes the same
+        // cargo build lock as the user's `cargo check` and rust-analyzer.
+        let cfg = fs::read_to_string(wrapper.join(".cargo/config.toml")).unwrap();
+        let target_line = cfg
+            .lines()
+            .find(|l| l.starts_with("target-dir"))
+            .unwrap_or_else(|| panic!("no target-dir in config: {cfg}"));
+        assert!(
+            target_line.contains(SIDECAR_TARGET_DIR),
+            "wrapper must build into the {SIDECAR_TARGET_DIR} sidecar: {target_line}"
+        );
+        assert!(
+            !target_line.trim_end().ends_with("target\""),
+            "wrapper must not build into the bare target dir: {target_line}"
+        );
+
         let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn sidecar_target_dir_is_a_child_of_the_cargo_target_root() {
+        // Peer of `idealyst-web-*` / `idealyst-dev-server`: rooted at the
+        // same cargo target dir so sibling projects under one framework
+        // source still share a warm dependency cache, but namespaced so
+        // the build lock is ours alone.
+        let src = FrameworkSource::Workspace {
+            root: PathBuf::from("/fw"),
+        };
+        let dir = sidecar_target_dir(&src, Path::new("/proj"));
+        assert_eq!(dir, PathBuf::from("/fw/target").join(SIDECAR_TARGET_DIR));
+        assert_eq!(dir.parent().unwrap(), src.cargo_target_dir(Path::new("/proj")));
     }
 
     #[test]
