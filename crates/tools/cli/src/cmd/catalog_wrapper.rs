@@ -81,6 +81,40 @@ pub fn generate(project_root: &Path) -> Result<PathBuf> {
 ///
 /// This is what `idealyst mcp` uses: pair it with [`resolve_project_roots`]
 /// to turn a workspace root into the set of projects to wrap.
+/// Path to an already-built extractor for `project_roots`, if one is on
+/// disk.
+///
+/// Running it directly costs ~70ms against ~470ms for `cargo run` plus
+/// ~450ms of `cargo metadata` — and, more importantly, takes NO cargo
+/// build lock, so it cannot contend with a concurrent build.
+///
+/// The wrapper's `main` dumps the catalog unconditionally, so the binary
+/// needs no argument; `--emit-catalog` is passed anyway to match the
+/// `--from-bin` contract, and is ignored.
+///
+/// This deliberately does NOT check whether the binary is older than the
+/// project's sources. It is only used under `--no-watch`, whose contract
+/// is already "loaded once at startup, never refreshed" — a caller that
+/// opted out of freshness gets the fast path it asked for. With watching
+/// on, the managed `cargo run` path stays in charge.
+pub fn prebuilt_catalog_bin(project_roots: &[PathBuf]) -> Option<PathBuf> {
+    let anchor = project_roots
+        .iter()
+        .filter_map(|r| {
+            let root = fs::canonicalize(r).ok()?;
+            let manifest = build_ios::parse_manifest(&root).ok()?;
+            Some((root, manifest.name))
+        })
+        .min_by(|a, b| a.1.cmp(&b.1))?;
+    let source = framework_source::resolve(&anchor.0).ok()?;
+    let target = sidecar_target_dir(&source, &anchor.0);
+    // Release first: if someone built one, it is the faster binary.
+    ["release", "debug"]
+        .iter()
+        .map(|profile| target.join(profile).join("catalog"))
+        .find(|p| p.is_file())
+}
+
 pub fn generate_for_roots(project_roots: &[PathBuf]) -> Result<PathBuf> {
     generate_with(project_roots, "catalog", "catalog", "dump_catalog_json")
 }

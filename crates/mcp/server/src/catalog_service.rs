@@ -1078,7 +1078,8 @@ impl CatalogService {
         Parameters(req): Parameters<NameRequest>,
     ) -> Result<CallToolResult, McpError> {
         let cat = self.catalog.read().await;
-        let entry = resolve_component(&cat, &req.name, req.app.as_deref())?;
+        let live: Vec<String> = self.live_apps().into_iter().map(|a| a.name).collect();
+        let entry = resolve_component(&cat, &req.name, req.app.as_deref(), &live)?;
         let edges = cat.dependencies(&EntryRef::of(entry));
         let json = entry_to_json(&cat, entry, edges);
         Ok(self
@@ -1092,7 +1093,8 @@ impl CatalogService {
         Parameters(req): Parameters<NameRequest>,
     ) -> Result<CallToolResult, McpError> {
         let cat = self.catalog.read().await;
-        let entry = resolve_component(&cat, &req.name, req.app.as_deref())?;
+        let live: Vec<String> = self.live_apps().into_iter().map(|a| a.name).collect();
+        let entry = resolve_component(&cat, &req.name, req.app.as_deref(), &live)?;
         let users = cat.uses(&EntryRef::of(entry));
         let json: Vec<String> = users.iter().map(|r| r.fqn()).collect();
         Ok(self
@@ -1106,7 +1108,8 @@ impl CatalogService {
         Parameters(req): Parameters<NameRequest>,
     ) -> Result<CallToolResult, McpError> {
         let cat = self.catalog.read().await;
-        let entry = resolve_component(&cat, &req.name, req.app.as_deref())?;
+        let live: Vec<String> = self.live_apps().into_iter().map(|a| a.name).collect();
+        let entry = resolve_component(&cat, &req.name, req.app.as_deref(), &live)?;
         let edges = cat.dependencies(&EntryRef::of(entry));
         let json: Vec<serde_json::Value> = edges
             .iter()
@@ -1887,9 +1890,9 @@ impl CatalogService {
                 })
             })
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "Get the full record for one framework primitive: docs, every prop (name/type/doc/constraint), backend support, category. Accepts snake_case (`scroll_view`) or PascalCase (`ScrollView`).")]
@@ -1928,9 +1931,9 @@ impl CatalogService {
             "docs": entry.docs,
             "props": props,
         });
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "List framework utility functions — free helpers authors call outside `ui!` (`platform()`, `parse_color()`, `now_micros()`). Lightweight { name, fqn, category, return_type, summary }; pass `filter` (case-insensitive, glob `*`, matches name/fqn/category) to narrow, then `describe_utility` for params + full docs.")]
@@ -1956,9 +1959,9 @@ impl CatalogService {
                 }))
             })
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "Get the full record for one framework utility: docs, params, return type. Inlines the return type's `TypeEntry` (variants for enums, fields for structs) when known.")]
@@ -2020,9 +2023,9 @@ impl CatalogService {
         if let Some(s) = cat.scope_for(entry.module_path) {
             obj.insert("scope".into(), s.slug.into());
         }
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&serde_json::Value::Object(obj)).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&serde_json::Value::Object(obj)).unwrap())
+            .await)
     }
 
     #[tool(description = "List the framework authoring macros — the verbs of writing an app (`effect!`, `ui!`, `#[component]`, `stylesheet!`, `animated!`). NOTE: signal creation is the plain `signal(value)` FUNCTION (see `list_utilities`), not a macro. Lightweight { name, invocation, kind, summary }; pass `filter` (case-insensitive, glob `*`, matches name/invocation/kind) to narrow, then `describe_macro` for full docs + what it expands to.")]
@@ -2046,9 +2049,9 @@ impl CatalogService {
                 }))
             })
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "Get the full record for one authoring macro: what it does, the crate it's exported from, the canonical invocation syntax, and a one-line sketch of what it expands to (so you see the primitive underneath — e.g. `effect!` → `Effect::scoped(move || …)`). Accepts the bare name or a trailing `!` (`effect` and `effect!` both resolve).")]
@@ -2074,9 +2077,9 @@ impl CatalogService {
             "docs": entry.docs,
             "expansion": entry.expansion,
         });
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "List the four framework interaction states (`hovered`, `pressed`, `focused`, `disabled`) — the valid names for `state foo(theme) { … }` arms in `stylesheet!`. Returns { name, docs, backends }.")]
@@ -2093,9 +2096,9 @@ impl CatalogService {
                 })
             })
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "List the theme tokens a `stylesheet!` can name through its block binding — the token vocabulary as data. Returns { name, path, namespace, value_type, default_value, vocabulary } where `path` is what you type (`spacing.md` → `t.spacing.md()`) and `name` is the registry key it resolves under (`spacing-md`). Use this instead of guessing a token string: a name that isn't here does not exist, and referencing one that doesn't exist is a compile error.")]
@@ -2116,9 +2119,9 @@ impl CatalogService {
                 })
             })
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "Describe one theme token by its registry name (`spacing-md`) or accessor path (`spacing.md`). Returns the accessor to write inside a `stylesheet!`, the registry name it resolves under, its value type, and the vocabulary's base value.")]
@@ -2155,9 +2158,9 @@ impl CatalogService {
                 entry.vocabulary, entry.path
             ),
         });
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "List bundled framework usage guides — markdown documents covering getting started, concepts, reactivity, styling, navigation, backends. Returns { slug, title, order, tags } sorted by order.")]
@@ -2175,9 +2178,9 @@ impl CatalogService {
                 })
             })
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "Read the full markdown body of one framework guide by slug. Cross-references in the body use the `[[name]]` convention — resolve them via `describe_component`/`describe_primitive`/`describe_utility`/`describe_type`.")]
@@ -2226,9 +2229,9 @@ impl CatalogService {
             "tags": entry.tags,
             "body": body,
         });
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "List every imperative method declared via `#[method] fn foo(…) { … }` inside `#[component]` bodies. Returns one entry per method, tagged with its parent component. Filter by passing the parent component's name.")]
@@ -2267,9 +2270,9 @@ impl CatalogService {
                 })
             })
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "List every `AnimatedValue` declared inside a `#[component]` body (`let x = animated!(…)`). Filter by parent component name. Each entry is { parent_fqn, binding, initial, line }.")]
@@ -2296,9 +2299,9 @@ impl CatalogService {
                 })
             })
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "List types registered via `#[derive(IdealystSchema)]` (structs and enums). Returns { short_name, fqn, kind }; pass `filter` (case-insensitive, glob `*`, matches name/fqn/kind) to narrow, then `describe_type` for fields/variants.")]
@@ -2326,9 +2329,9 @@ impl CatalogService {
                 }))
             })
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "Describe one type — struct fields (name, type, doc, constraint) or enum variants (name, docs, payload). Accepts a short-name or fully-qualified name.")]
@@ -2382,9 +2385,9 @@ impl CatalogService {
                     None,
                 )
             })?;
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&type_entry_json(entry)).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&type_entry_json(entry)).unwrap())
+            .await)
     }
 
     #[tool(description = "List recipes — compile-checked usage examples for any catalog entity (component, utility, function, or type). Lightweight { name, target, fqn, summary }; pass `filter` (case-insensitive, glob `*`, matches name/target/fqn) to narrow, then `describe_recipe` for the full example source. Recipes are how you learn the canonical, type-verified way to use something.")]
@@ -2427,9 +2430,9 @@ impl CatalogService {
             };
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "Get one recipe in full: its target entity, docs, the compile-verified source code, and the entities it uses. Accepts the recipe's short-name or fully-qualified name. The `source` is a working, copy-pasteable example proven to type-check against the current API.")]
@@ -2464,9 +2467,9 @@ impl CatalogService {
             "source": entry.source,
             "uses": entry.uses,
         });
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "List documentation scopes — flat labels (declared with `doc_scope!`) that group components/utilities by feature area. Lightweight { slug, title, order, summary }; pass `filter` (case-insensitive, glob `*`, matches slug/title) to narrow, then `describe_scope` for a scope's docs + the entities it contains.")]
@@ -2490,9 +2493,9 @@ impl CatalogService {
                 }))
             })
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "Describe one documentation scope by its slug: title, docs, and the entities (components, utilities) assigned to it by module proximity. A component declared inside a nearer scope belongs to that nearer scope, not this one — so this lists what lives *directly* in the scope. The way to see what a feature area contains.")]
@@ -2537,9 +2540,9 @@ impl CatalogService {
             "components": components,
             "utilities": utilities,
         });
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "List the opt-in SDK crates — peripheral capabilities that ship OUTSIDE runtime-core (networking, persistence, camera, the component library, …) and are invisible to list_components/list_primitives/list_utilities because they expose plain functions/types or scene-registry extension primitives. THIS is how you discover which crate makes a network request (`net`), persists data (`storage`/`credentials`), or renders a map (`maps`). Lightweight { name, category, kind, dep_line, summary }; pass `filter` (case-insensitive, glob `*`, matches name/category/kind) to narrow, then `describe_sdk` for the full record. Prose home: the `sdks` guide (read_guide).")]
@@ -2564,9 +2567,9 @@ impl CatalogService {
                 })
             })
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "Get the full record for one opt-in SDK crate: summary, the `Cargo.toml` dependency line to add, capability category, whether its surface is plain API or a `ui!` extension primitive, and the guide that documents it. Accepts the crate name (`net`, `storage`, `idea-ui`).")]
@@ -2597,9 +2600,9 @@ impl CatalogService {
             "kind": entry.kind.as_str(),
             "guide": entry.guide,
         });
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "List the icon packs available — crates like `icons-lucide` that expose named icon `const`s for the `icon(...)` primitive. Lightweight { name, title, icon_count, import_path, license, homepage }; the per-icon names are deliberately NOT included (a pack has ~1600). To find an icon, use `search_icons`; to browse one pack, page through `describe_icon_set`. Pass `filter` (case-insensitive, glob `*`, matches name/title) to narrow.")]
@@ -2623,9 +2626,9 @@ impl CatalogService {
                 })
             })
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "Page through the icons in one pack. Returns { name, title, docs, import_path, license, icon_count, offset, limit, icons: [{ name, ident, import }] } where `import` is the paste-ready `use` path (`icons_lucide::ARROW_RIGHT`). Icons are name-sorted; page with `offset`/`limit` (limit default 100, max 500). To find a specific icon by keyword instead of paging, prefer `search_icons`.")]
@@ -2674,9 +2677,9 @@ impl CatalogService {
             "limit": limit,
             "icons": icons,
         });
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
     }
 
     #[tool(description = "Search icons across every pack by name keyword (case-insensitive substring) — THE way to find an icon without dumping ~1600 names. Returns up to `limit` (default 50, max 200) matches as { set, name, ident, import }, where `import` is the paste-ready `use icons_lucide::ARROW_RIGHT;` path you drop into the `icon(...)` primitive. Pass `set` to restrict to one pack.")]
@@ -2711,9 +2714,9 @@ impl CatalogService {
                 }
             }
         }
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&out).unwrap(),
-        )]))
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&out).unwrap())
+            .await)
     }
 
     #[tool(description = "Fulltext search over EVERY catalog slice — components, primitives, utilities, macros, guides, types, methods, recipes, scopes, tools, states, animations, icon packs. Multi-word queries are tokenized on whitespace and OR'd: an entry matches if ANY term appears in its name or docs, and results are ranked by how many distinct query terms each entry hit (best first). So `search('http fetch network request')` surfaces the networking guide/utility even though no single field contains the whole phrase. Returns a JSON array of { kind, name, fqn, score, matched_terms, docs_excerpt } tagged with the slice the match came from. (For individual ICONS, use `search_icons` — this searches pack-level metadata only.)")]
@@ -3261,11 +3264,29 @@ fn resolve_component<'a>(
     cat: &'a ResolvedCatalog,
     needle: &str,
     app: Option<&str>,
+    live_apps: &[String],
 ) -> Result<&'a ComponentEntry, McpError> {
     match find_by_name(cat, needle, app) {
         NameLookup::Found(e) => Ok(e),
         NameLookup::NotFound => Err(McpError::invalid_params(
-            format!("component {needle:?} not found"),
+            // `list_components` fans out across live Robot bridges; this
+            // lookup does not, and that asymmetry is a real gap. Until it
+            // closes, a miss must not be reported as a flat "not found"
+            // when a live app was never consulted — that is a confidently
+            // wrong answer, and the caller has no way to know it should
+            // be asking somewhere else.
+            if live_apps.is_empty() {
+                format!("component {needle:?} not found")
+            } else {
+                format!(
+                    "component {needle:?} not found in the project catalog. NOTE: {} live \
+                     app(s) are registered ({}) and this lookup does NOT search them — \
+                     only list_components does. If the component belongs to a running \
+                     app, it may exist despite this answer.",
+                    live_apps.len(),
+                    live_apps.join(", "),
+                )
+            },
             None,
         )),
         NameLookup::Ambiguous(candidates) => {
@@ -3882,6 +3903,12 @@ impl ServerHandler for CatalogService {
 
                 let body = serde_json::json!({
                     "catalog_version": 2,
+                    // Freshness travels with the resource too. It serves
+                    // the same catalog the tools do, so it can be just as
+                    // stale or as empty — and a consumer parsing this
+                    // document has no other way to tell an unbuilt
+                    // catalog from a project with nothing in it.
+                    "catalog_status": self.status().await.to_json(),
                     "components": components,
                     "primitives": primitives,
                     "utilities": utilities,
@@ -4961,9 +4988,14 @@ mod tests {
         })
     }
 
+    /// Robot DISABLED on purpose: `CatalogService::new()` starts the
+    /// discovery thread, which reads the real `~/.idealyst/apps/`. A
+    /// developer with an app running would then change these tests'
+    /// results — which is exactly how this helper was caught, when a
+    /// background build registered a bridge mid-suite.
     async fn multi_project_service() -> CatalogService {
         let cat = ResolvedCatalog::build_from_json(&multi_project_catalog().to_string()).unwrap();
-        let svc = CatalogService::new();
+        let svc = CatalogService::with_robot_mode(false, None);
         svc.replace_catalog(cat).await;
         svc
     }
@@ -5165,7 +5197,7 @@ mod tests {
         // "Stale" implies there is good older data. When the very first
         // build failed there is none, and an empty result would otherwise
         // read as "this project has no components".
-        let svc = CatalogService::new();
+        let svc = CatalogService::with_robot_mode(false, None);
         svc.mark_build_started().await;
         svc.mark_build_failed("the project does not compile").await;
 
@@ -5266,7 +5298,7 @@ mod tests {
         // The whole point: before this, a first build in flight reported
         // state "current" over an empty catalog, which reads as "this
         // project has no components".
-        let svc = CatalogService::new();
+        let svc = CatalogService::with_robot_mode(false, None);
         svc.mark_initializing().await;
 
         let st = svc.status().await;
@@ -5284,7 +5316,7 @@ mod tests {
     async fn initializing_rides_on_catalog_tool_responses() {
         // A client that connects mid-build must learn this WITHOUT
         // having thought to call catalog_status.
-        let svc = CatalogService::new();
+        let svc = CatalogService::with_robot_mode(false, None);
         svc.mark_initializing().await;
         let out = svc
             .list_components(Parameters(FilterRequest::default()))
@@ -5295,7 +5327,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_first_successful_build_clears_initializing() {
-        let svc = CatalogService::new();
+        let svc = CatalogService::with_robot_mode(false, None);
         svc.mark_initializing().await;
         let cat =
             ResolvedCatalog::build_from_json(&multi_project_catalog().to_string()).unwrap();
@@ -5310,7 +5342,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_first_build_becomes_unavailable_not_initializing() {
         // Still initializing would imply "wait, it's coming". It isn't.
-        let svc = CatalogService::new();
+        let svc = CatalogService::with_robot_mode(false, None);
         svc.mark_initializing().await;
         svc.mark_build_failed("the project does not compile").await;
         assert_eq!(svc.status().await.state, CatalogState::Unavailable);
@@ -5320,7 +5352,7 @@ mod tests {
     async fn wait_for_current_covers_the_initializing_window() {
         // The affordance that makes a non-blocking start usable: one
         // waiting call instead of polling across turns.
-        let svc = Arc::new(CatalogService::new());
+        let svc = Arc::new(CatalogService::with_robot_mode(false, None));
         svc.mark_initializing().await;
         let waiter = {
             let svc = svc.clone();
@@ -5364,5 +5396,97 @@ mod tests {
             "a non-matching live app must not contribute, and must not \
              suppress the static catalog"
         );
+    }
+
+    #[tokio::test]
+    async fn every_catalog_tool_carries_the_marker_when_not_current() {
+        // The marker started on 5 of ~30 catalog tools, so `list_recipes`
+        // and `list_icon_sets` could return [] mid-build with nothing to
+        // say why — the same defect the marker exists to prevent, just
+        // hiding in the tools nobody checked. The catalog is swapped
+        // WHOLESALE, so every slice can differ across a build; every tool
+        // that reads it must be able to say so.
+        let svc = CatalogService::with_robot_mode(false, None);
+        svc.mark_initializing().await;
+
+        macro_rules! assert_marked {
+            ($label:expr, $call:expr) => {{
+                let out = $call.await.expect($label);
+                assert!(
+                    format!("{out:?}").contains("INITIALIZING"),
+                    "{} must carry the freshness marker",
+                    $label
+                );
+            }};
+        }
+
+        assert_marked!("list_components", svc.list_components(Parameters(FilterRequest::default())));
+        assert_marked!("list_recipes", svc.list_recipes(Parameters(FilterRequest::default())));
+        assert_marked!("list_icon_sets", svc.list_icon_sets(Parameters(FilterRequest::default())));
+        assert_marked!("list_types", svc.list_types(Parameters(FilterRequest::default())));
+        assert_marked!("list_primitives", svc.list_primitives(Parameters(FilterRequest::default())));
+        assert_marked!("list_sdks", svc.list_sdks(Parameters(FilterRequest::default())));
+        assert_marked!("list_macros", svc.list_macros(Parameters(FilterRequest::default())));
+        assert_marked!("list_scopes", svc.list_scopes(Parameters(FilterRequest::default())));
+        assert_marked!("list_tokens", svc.list_tokens());
+        assert_marked!("list_guides", svc.list_guides());
+    }
+
+    #[tokio::test]
+    async fn a_current_catalog_leaves_every_tool_silent() {
+        // The other half of the contract: zero noise in the happy path,
+        // or the marker becomes wallpaper and stops being read.
+        let svc = multi_project_service().await;
+        for (label, out) in [
+            ("list_components", svc.list_components(Parameters(FilterRequest::default())).await.unwrap()),
+            ("list_recipes", svc.list_recipes(Parameters(FilterRequest::default())).await.unwrap()),
+            ("list_icon_sets", svc.list_icon_sets(Parameters(FilterRequest::default())).await.unwrap()),
+            ("list_guides", svc.list_guides().await.unwrap()),
+        ] {
+            assert_eq!(out.content.len(), 1, "{label} must return payload only when current");
+            assert!(!format!("{out:?}").contains("[catalog:"), "{label} must be silent");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_miss_says_so_when_live_apps_were_not_searched() {
+        // describe_component / find_uses / find_dependencies resolve
+        // against the project catalog only, while list_components fans
+        // out across live bridges. Reporting a flat "not found" while a
+        // live app went unconsulted is a confidently wrong answer.
+        let svc = CatalogService::with_robot_mode(true, Some("127.0.0.1:1".into()));
+        let cat = ResolvedCatalog::build_from_json(&multi_project_catalog().to_string()).unwrap();
+        svc.replace_catalog(cat).await;
+
+        let err = svc
+            .describe_component(Parameters(NameRequest {
+                name: "NoSuchComponent".into(),
+                app: None,
+            }))
+            .await
+            .expect_err("a miss is still an error");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("not found"), "{msg}");
+        assert!(
+            msg.contains("does NOT search them"),
+            "a miss must disclose the unsearched live apps: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_miss_with_no_live_apps_stays_a_plain_not_found() {
+        // No caveat when there is nothing unsearched — the note must not
+        // become boilerplate on every miss.
+        let svc = multi_project_service().await;
+        let err = svc
+            .describe_component(Parameters(NameRequest {
+                name: "NoSuchComponent".into(),
+                app: None,
+            }))
+            .await
+            .unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("not found"), "{msg}");
+        assert!(!msg.contains("live"), "no caveat when nothing was skipped: {msg}");
     }
 }

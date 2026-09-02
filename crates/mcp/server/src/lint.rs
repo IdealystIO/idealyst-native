@@ -89,7 +89,7 @@ pub fn run_with(cat: &ResolvedCatalog, opts: &LintOptions) -> Vec<LintFinding> {
                     // unresolved. Suppress those — they're not a user
                     // authoring issue. Any other unresolved reference is
                     // a real typo / dangling edge and should be flagged.
-                    if is_framework_primitive(edge.raw_name) {
+                    if is_framework_primitive(cat, edge.raw_name) {
                         continue;
                     }
                     findings.push(LintFinding {
@@ -166,12 +166,30 @@ fn is_first_party(module_path: &str, first_party: &[String]) -> bool {
 }
 
 /// Match the framework's built-in primitives — these have no
-/// `#[component]` entry and *should* show as unresolved in the
-/// catalog without that being flagged as a problem. The framework's
-/// dispatch is transform-free, so a primitive call site is its exact
-/// PascalCase name; match those directly. Keep this list in sync with
-/// `crates/runtime/macros/src/ui.rs`'s primitive match arms.
-fn is_framework_primitive(raw_name: &str) -> bool {
+/// `#[component]` entry and *should* show as unresolved in the catalog
+/// without that being flagged as a problem.
+///
+/// **Both spellings count.** This used to match PascalCase only, on the
+/// premise that "a primitive call site is its exact PascalCase name".
+/// That is not what authors write: inside `ui!` the leaf primitives are
+/// snake_case (`view`, `scroll_view`) and only components are PascalCase
+/// — the rule the `component-hygiene` guide states outright. So the
+/// suppression never fired for real code, and every `view` in every
+/// component was reported as a dangling edge. On one two-app workspace
+/// that was 415 of 600 findings, none of them real, which is enough
+/// noise to make the whole lint unreadable.
+///
+/// The catalog's own primitive slice is the source of truth now, so the
+/// list cannot drift from `ui.rs` the way a hand-maintained one does.
+/// The literals below remain only for tags with no catalog entry.
+fn is_framework_primitive(cat: &ResolvedCatalog, raw_name: &str) -> bool {
+    if cat
+        .primitives()
+        .iter()
+        .any(|p| p.name == raw_name || p.pascal_name == raw_name)
+    {
+        return true;
+    }
     matches!(
         raw_name,
         "Text" | "Button" | "View" | "When"
@@ -179,6 +197,13 @@ fn is_framework_primitive(raw_name: &str) -> bool {
             | "Slider" | "WebView" | "Video" | "ActivityIndicator"
             | "FlatList" | "Link" | "Overlay" | "AnchoredOverlay" | "Presence"
             | "Graphics" | "DrawerNavigator" | "CardTabs"
+            // snake_case peers of the entries above that the catalog
+            // does not carry (navigators, and SDK-provided tags).
+            | "text" | "button" | "view" | "when"
+            | "image" | "icon" | "text_input" | "toggle" | "scroll_view"
+            | "slider" | "webview" | "video" | "activity_indicator"
+            | "flat_list" | "link" | "overlay" | "anchored_overlay" | "presence"
+            | "graphics" | "drawer_navigator" | "card_tabs"
     )
 }
 
@@ -312,6 +337,30 @@ mod tests {
             f.iter().any(|x| x.message.contains("ambiguous")),
             "got {:?}",
             f
+        );
+    }
+
+    #[test]
+    fn snake_case_primitive_call_sites_are_suppressed() {
+        // Regression: the suppression matched PascalCase only, but `ui!`
+        // spells primitives snake_case — so every `view` a component
+        // composed was reported as a dangling edge. 415 of 600 findings
+        // on a real workspace, none of them real.
+        let cat = mcp_catalog::ResolvedCatalog::build();
+        for name in ["view", "text", "scroll_view", "overlay", "text_input"] {
+            assert!(
+                is_framework_primitive(&cat, name),
+                "`{name}` is how authors actually write this primitive"
+            );
+        }
+        // PascalCase tags keep working.
+        for name in ["View", "Text", "ScrollView", "Overlay"] {
+            assert!(is_framework_primitive(&cat, name), "{name}");
+        }
+        // A genuine dangling edge is still reported.
+        assert!(
+            !is_framework_primitive(&cat, "TotallyNotAPrimitive"),
+            "a real typo must still be flagged"
         );
     }
 }

@@ -299,6 +299,35 @@ pub fn run(args: Args) -> Result<()> {
                 // keeps progress chatter off stdout so the child's stdout
                 // stays pure catalog JSON; build diagnostics still go to
                 // stderr.
+                // `--no-watch` means "load once, never refresh", so an
+                // already-built extractor is exactly what it asks for:
+                // ~70ms to exec versus ~470ms of `cargo run` plus ~450ms
+                // of `cargo metadata`, and no cargo build lock taken at
+                // all. This is the path the --no-watch help has always
+                // documented and never actually had.
+                let prebuilt = if want_watch {
+                    // Watching implies refreshing, which needs the
+                    // managed wrapper that can actually rebuild.
+                    None
+                } else {
+                    super::catalog_wrapper::prebuilt_catalog_bin(&projects)
+                };
+                if let Some(bin) = prebuilt {
+                    eprintln!(
+                        "[idealyst mcp] --no-watch: using the prebuilt extractor at {}",
+                        bin.display()
+                    );
+                    managed_projects = projects.clone();
+                    let bin = std::sync::Arc::new(bin);
+                    opts = opts.with_subprocess_catalog(move || {
+                        let mut c = std::process::Command::new(bin.as_path());
+                        c.arg("--emit-catalog");
+                        c
+                    });
+                    // `managed` stays false: this source cannot rebuild,
+                    // which is precisely why the watcher must not be
+                    // default-enabled for it.
+                } else {
                 match super::catalog_wrapper::generate_for_roots(&projects) {
                     Ok(wrapper_dir) => {
                         managed = true;
@@ -329,6 +358,7 @@ pub fn run(args: Args) -> Result<()> {
                         opts = opts
                             .with_unavailable_catalog(format!("catalog wrapper could not be generated: {e:#}"));
                     }
+                }
                 }
             }
         }
