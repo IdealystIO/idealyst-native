@@ -538,6 +538,14 @@ fn build(
     std::fs::create_dir_all(out.join("index"))?;
     std::fs::create_dir_all(out.join("crates"))?;
     write_config(out, &r.url)?;
+    // config.json has to be live BEFORE the first crate is packaged, not with
+    // the metadata at the end. It is the first thing cargo fetches when it
+    // touches the registry, and the registry gets touched as soon as a crate
+    // with internal deps is packaged — which is the third crate. Uploading it
+    // last means a 403 on `<index>/config.json` mid-run.
+    if execute {
+        deploy::put_metadata(out, &target(r)?)?;
+    }
 
     let mut released = Vec::new();
     let mut state = ReleaseState::default();
