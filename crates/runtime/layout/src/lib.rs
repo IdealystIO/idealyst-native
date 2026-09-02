@@ -453,6 +453,14 @@ impl LayoutTree {
         self.dropped.insert(node.0);
     }
 
+    /// Whether `node` was freed by [`Self::remove_node`]. The `set_style`
+    /// / `set_safe_area_extra` asserts use the same set to name a
+    /// lifecycle bug; this exposes it so callers and tests can ask
+    /// without tripping the panic.
+    pub fn is_dropped(&self, node: LayoutNode) -> bool {
+        self.dropped.contains(&node.0)
+    }
+
     /// Set per-side safe-area extra padding for a node. The Taffy
     /// node's effective padding becomes `author_padding +
     /// safe_area_extra` on each side. Called by the backend
@@ -2319,6 +2327,39 @@ mod tests {
     ///
     /// The user-visible shape was a table that rendered on first paint
     /// and collapsed into one overlapping pile after navigating between
+    /// Unparenting a node makes it a ROOT, and a root is something
+    /// `compute` runs against — so a backend that unparents a discarded
+    /// subtree and stops there has not discarded it at all: every later
+    /// pass re-lays-out the orphan against the viewport, forever. Only
+    /// `remove_node` actually retires it.
+    ///
+    /// This is the invariant `backend-ios`'s `unregister_subtree` rests
+    /// on. Its `clear_children` used to call `remove_child` alone, which
+    /// grew the app's root set by one per discarded child — measured at
+    /// 478 roots and 10,425 registered views on a project screen, still
+    /// climbing with every tab switch.
+    #[test]
+    fn unparenting_a_node_makes_it_a_root_until_it_is_removed() {
+        let mut t = LayoutTree::new();
+        let parent = t.new_node();
+        let child = t.new_node();
+        t.add_child(parent, child);
+
+        assert!(!t.is_root(child), "a parented child is not a root");
+
+        t.remove_child(parent, child);
+        assert!(
+            t.is_root(child),
+            "unparenting alone leaves an orphan that every later compute() picks up"
+        );
+
+        t.remove_node(child);
+        assert!(
+            t.is_dropped(child),
+            "remove_node is what actually retires the orphan"
+        );
+    }
+
     /// screens — each screen adding another root.
     #[test]
     fn regression_table_grid_under_another_root_survives_a_foreign_compute() {

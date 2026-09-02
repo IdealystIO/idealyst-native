@@ -3019,6 +3019,79 @@ impl IosBackend {
         }
     }
 
+    /// Drop every layout-side trace of the subtree rooted at `view`:
+    /// the `view_to_layout` registration (which holds a STRONG
+    /// `Retained<UIView>`), the Taffy node, and the pointer-keyed side
+    /// tables.
+    ///
+    /// This is the same teardown [`Self::release_portal_impl`] does, and
+    /// it exists for the same reason. `clear_children` used to
+    /// `layout.remove_child` each child and `removeFromSuperview` it,
+    /// and stop there. Both halves leaked:
+    ///
+    /// - `remove_child` unparents the child's Taffy node, which makes it
+    ///   a ROOT. `run_layout_pass_global` computes every root, so each
+    ///   discarded subtree was recomputed against the viewport on every
+    ///   later pass, forever.
+    /// - the registration outlives the view's use, and because it holds
+    ///   a `Retained`, the UIView can never deallocate. Every pass then
+    ///   walks it in the apply-frames loop.
+    ///
+    /// Measured on the running app before this fix: a project screen sat
+    /// at 10,425 registered views across 478 Taffy roots, climbing by
+    /// several hundred with every tab switch and never falling. One
+    /// layout pass took 13-19 ms, and a single tab switch ran six of
+    /// them.
+    ///
+    /// Call this while the subtree is still attached — it walks
+    /// `subviews()` to find the descendants.
+    fn unregister_subtree(&mut self, view: &UIView) {
+        let root_key = view as *const UIView as usize;
+        let mut descendant_keys: Vec<usize> = Vec::new();
+        fn collect(view: &UIView, out: &mut Vec<usize>) {
+            for sub in view.subviews().iter() {
+                out.push(&*sub as *const UIView as usize);
+                collect(&sub, out);
+            }
+        }
+        collect(view, &mut descendant_keys);
+
+        // Same dedup `release_portal_impl` relies on: `remove_node` frees
+        // a Taffy slot, and freeing one twice is a corruption bug, so the
+        // plan must name each key exactly once.
+        let plan = crate::portal_policy::teardown_plan(root_key, &descendant_keys);
+        for k in plan {
+            // A portal container / detached window root inside this
+            // subtree is NOT ours to free: it is an orphan Taffy root
+            // whose ordered teardown belongs to `release_portal` /
+            // `release_private_layer_window`, exactly as
+            // `remove_child_impl` skips them. Freeing it here would pull
+            // the slot out from under that path.
+            if self.portal_instances.contains_key(&k)
+                || self.detached_window_roots.contains_key(&k)
+            {
+                continue;
+            }
+            if let Some((_view, layout_node)) = self.view_to_layout.remove(&k) {
+                // Frees the Taffy slot AND marks it dropped, so a stray
+                // reactive style effect that outlived the scope hits the
+                // `set_style` "already-removed node" assert with a clear
+                // message instead of corrupting the tree.
+                self.layout.remove_node(layout_node);
+            }
+            // The pointer-keyed side tables, all of which would otherwise
+            // be inherited by whatever view the allocator next puts at
+            // this address — see `layout_for_view`'s re-registration,
+            // which clears the same set for that reason.
+            self.applied_frames.remove(&k);
+            self.layout_style_keys.remove(&k);
+            self.external_content_measures.remove(&k);
+            self.styled_texts.remove(&k);
+            self.pending_sticky.remove(&k);
+            self.impl_drop_animated_state(k);
+        }
+    }
+
     pub(crate) fn clear_children_impl(&mut self, node: &IosNode) {
         // Mirror the UIKit teardown in Taffy. The earlier shape only
         // called `removeFromSuperview()` — UIKit dropped the child
@@ -3111,7 +3184,12 @@ impl IosBackend {
             // otherwise outlive the child it belongs to, and evict the cached
             // frame so a re-insert at the same geometry still re-attaches it.
             backend_ios_core::style::detach_shadow_sibling(&sub);
-            self.applied_frames.remove(&(&*sub as *const UIView as usize));
+            // Drop the whole discarded subtree from the layout registry
+            // BEFORE detaching it — `unregister_subtree` walks
+            // `subviews()` to find the descendants, so it has to run
+            // while the subtree is still assembled. This subsumes the
+            // bare `applied_frames.remove` that used to be here.
+            self.unregister_subtree(&sub);
             unsafe { sub.removeFromSuperview() };
         }
     }
