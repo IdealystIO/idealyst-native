@@ -877,6 +877,27 @@ pub unsafe extern "C" fn ios_main(root_view: *mut std::ffi::c_void) {{
                 project_root: ::std::option::Option::None,
             }},
         );
+        // ...and actually START a bridge, or the identity above is all
+        // anyone ever sees: the app shows up in `~/.idealyst/apps` (the
+        // relay registers it) and then fails every Robot call with "no
+        // app connected to the relay".
+        //
+        // A relay URL means "dial out to a host-side relay"; otherwise
+        // bind a local listener. Same choice the Linux wrapper and the
+        // runtime-server sidecar make. `simctl` delivers the URL to a
+        // simulator app as `SIMCTL_CHILD_IDEALYST_ROBOT_RELAY_URL`
+        // (stripped on the way in) — see `tools/run/ios`'s `launch_app`,
+        // which has always forwarded it; nothing was listening for it.
+        //
+        // Safe to call here rather than from a run-loop hook: both
+        // spawn their own thread, and `ios_main` is already on the main
+        // thread with the run loop up.
+        match ::runtime_shared::robot::bridge::relay_url_from_env() {{
+            Some(url) => ::runtime_shared::robot::bridge::start_relay_client(url),
+            None => ::runtime_shared::robot::bridge::start_auto_polling(
+                ::runtime_shared::robot::bridge::DEFAULT_PORT,
+            ),
+        }}
     }}
 
     // `run_in_view` performs the idempotent installs (scheduler,
@@ -1037,6 +1058,39 @@ mod regression_tests {
         generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest)
             .expect("generate wrapper");
         (wrapper_dir, tmp)
+    }
+
+    /// The wrapper must START a bridge, not merely stamp the identity.
+    ///
+    /// The sibling Linux test says "every other platform's listener comes
+    /// from the dev-server sidecar" — and that assumption is what left this
+    /// hole. A real iOS app launched on a simulator by `idealyst dev --ios`
+    /// is a native binary; it never runs the sidecar, so nothing ever bound
+    /// a listener or dialed the relay. The app registered an identity, the
+    /// relay wrote it into `~/.idealyst/apps` (so `list_apps` LISTED it),
+    /// and every Robot call then failed with "no app connected to the
+    /// relay" — visible but undrivable, which is the worst shape for a
+    /// debugging tool to fail in.
+    #[test]
+    fn dev_builds_start_the_robot_bridge() {
+        let (wrapper_dir, _tmp) = run_generator();
+        let lib_rs =
+            std::fs::read_to_string(wrapper_dir.join("src/lib.rs")).expect("read lib.rs");
+        assert!(
+            lib_rs.contains("start_relay_client"),
+            "the wrapper must dial a host relay when one is configured — \
+             `simctl` delivers the URL as SIMCTL_CHILD_IDEALYST_ROBOT_RELAY_URL \
+             and nothing was reading it; got:\n{lib_rs}",
+        );
+        assert!(
+            lib_rs.contains("start_auto_polling"),
+            "...and bind its own listener when no relay is configured, or a \
+             plain `idealyst run ios` is undrivable; got:\n{lib_rs}",
+        );
+        assert!(
+            lib_rs.contains("set_app_identity"),
+            "identity still has to be stamped for attribution; got:\n{lib_rs}",
+        );
     }
 
     /// `ios_main` boots through `backend_ios::newcore::run_in_view`,
