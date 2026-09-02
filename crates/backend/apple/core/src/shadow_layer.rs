@@ -109,32 +109,7 @@ extern "C" {
     fn CGColorGetAlpha(color: CGColorRef) -> CGFloat;
 }
 
-/// Suppresses CoreAnimation's implicit animations for the duration of a scope.
-///
-/// A CALayer that does not back a view animates every property change over
-/// ~0.25 s by default. The sibling is exactly such a layer, so without this its
-/// frame and path would *ease* toward each new layout instead of tracking it —
-/// the shadow visibly lagging behind its card during a scroll or a resize.
-/// RAII so an early return can't leave a transaction open.
-struct NoImplicitAnimations;
-
-impl NoImplicitAnimations {
-    fn begin() -> Self {
-        unsafe {
-            let _: () = msg_send![class!(CATransaction), begin];
-            let _: () = msg_send![class!(CATransaction), setDisableActions: true];
-        }
-        Self
-    }
-}
-
-impl Drop for NoImplicitAnimations {
-    fn drop(&mut self) {
-        unsafe {
-            let _: () = msg_send![class!(CATransaction), commit];
-        }
-    }
-}
+use crate::implicit_animations::NoImplicitAnimations;
 
 /// True if this layer carries a box shadow that we installed.
 pub fn has_box_shadow(layer: &NSObject) -> bool {

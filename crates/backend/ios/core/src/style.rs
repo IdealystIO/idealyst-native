@@ -486,6 +486,13 @@ pub fn sync_gradient_sublayer(view: &UIView) {
             }
             let name_ref = &*name_ptr;
             if name_ref.to_string() == "idealyst_gradient" {
+                // Same disabled-actions requirement as the icon sync
+                // below: a CAGradientLayer the backend inserted has no
+                // view delegate, so an unguarded `setFrame` eases the
+                // gradient open from its 0x0 apply-style size over the
+                // first layout instead of simply being the right size.
+                let _guard =
+                    backend_apple_core::implicit_animations::NoImplicitAnimations::begin();
                 let bounds: objc2_foundation::CGRect = msg_send![view, bounds];
                 let _: () = msg_send![sub_ptr, setFrame: bounds];
             }
@@ -531,6 +538,16 @@ pub fn sync_icon_sublayer(view: &UIView) {
                 continue;
             }
             // Center the 24×24 path-space layer at the view's midpoint.
+            //
+            // Inside a disabled-actions transaction: this is a CAShapeLayer
+            // the backend inserted itself, so it has no view delegate to
+            // veto CoreAnimation's default action, and `position` is
+            // animatable. Unguarded, the first layout pass — which is where
+            // the glyph gets its real centre — EASES the icon into place
+            // over ~0.25 s, so every icon on a screen visibly slides on
+            // first render. The macOS backend hit the same artifact and
+            // guards it the same way (`imp::icon::sync_icon_sublayer`).
+            let _guard = backend_apple_core::implicit_animations::NoImplicitAnimations::begin();
             let center = CGPoint { x: w / 2.0, y: h / 2.0 };
             let _: () = msg_send![sub_ptr, setPosition: center];
         }

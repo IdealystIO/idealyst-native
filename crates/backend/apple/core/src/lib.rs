@@ -108,6 +108,8 @@ pub mod shadow;
 /// CALayer is the same class under UIKit and AppKit, so both backends share
 /// this file verbatim and contribute only the view→layer lookup.
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
+pub mod implicit_animations;
+
 pub mod shadow_layer;
 
 /// CSS `pointer-events` hit-test verdict shared by the UIKit + AppKit
