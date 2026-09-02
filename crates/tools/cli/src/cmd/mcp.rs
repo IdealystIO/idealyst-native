@@ -73,8 +73,8 @@ pub struct Args {
 
     /// Path to a project directory whose catalog should populate the
     /// server at startup. The CLI generates an ephemeral catalog wrapper
-    /// crate for the project (under `target/idealyst/<name>/catalog/`) and
-    /// runs it — the wrapper turns on the framework's `catalog` feature and each
+    /// crate (under `target/idealyst/<name>/catalog/`) and runs it — the
+    /// wrapper turns on the framework's `catalog` feature and each
     /// component-library dependency's own `catalog` feature, then
     /// force-links those deps, so the catalog is complete (every
     /// `#[component]` plus dependency-provided entries like icon sets). Use
@@ -82,11 +82,20 @@ pub struct Args {
     /// currently running — when an app IS running, the catalog flows
     /// automatically over its Robot bridge.
     ///
+    /// **Pass once per project** to cover several at once: they are linked
+    /// into ONE wrapper, so a single catalog spans every app and each
+    /// component still reports the crate it came from.
+    ///
+    /// **May also be a cargo workspace root**, in which case every member
+    /// crate with a `[package.metadata.idealyst]` section is discovered
+    /// and wrapped together — so a monorepo needs no flag at all.
+    ///
     /// **Defaults to the current directory** when neither this flag nor
     /// `--from-bin` is given, so the bare `idealyst mcp` the scaffolded
-    /// `.mcp.json` runs populates the catalog from the project cwd.
+    /// `.mcp.json` runs populates the catalog from the cwd — whether that
+    /// is a project or the workspace above it.
     #[arg(long, value_name = "DIR")]
-    pub project_root: Option<std::path::PathBuf>,
+    pub project_root: Vec<std::path::PathBuf>,
 
     /// Path to an explicit catalog binary. Bypasses the
     /// `--project-root` lookup. Same emit contract: invoked with
@@ -177,7 +186,6 @@ pub fn run(args: Args) -> Result<()> {
     // Code launches `idealyst mcp` with the project root as cwd via the
     // scaffolded `.mcp.json` (`{"args": ["mcp"]}`).
     let cwd = std::env::current_dir().ok();
-    let project_root = args.project_root.clone().or_else(|| cwd.clone());
 
     // Whether we'll watch + auto-refresh. Default ON (so adding a
     // component or dependency refreshes the catalog without restarting
@@ -195,6 +203,11 @@ pub fn run(args: Args) -> Result<()> {
     // `managed` records whether the chosen source rebuilds, so we only
     // default-enable the watcher when refreshing it would do something.
     let mut managed = false;
+    // The projects the wrapper actually covers, after workspace roots
+    // are expanded. The default watch set comes from THESE, not from the
+    // raw flag: watching a workspace root directly would observe the
+    // wrapper's own build output under `target/` and self-trigger.
+    let mut managed_projects: Vec<std::path::PathBuf> = Vec::new();
     match resolve_catalog_source(
         args.from_bin.clone(),
         args.project_root.clone(),
@@ -208,43 +221,94 @@ pub fn run(args: Args) -> Result<()> {
                 c
             });
         }
-        CatalogSource::Managed(root) => {
-            // Generate the catalog wrapper crate now (cheap, idempotent)
-            // — this both validates that `root` is a real project and
-            // builds the initial wrapper. The subprocess factory then
-            // regenerates it on every (re)load: regeneration re-reads the
-            // project's `Cargo.toml`, so a dependency added mid-session
-            // is force-linked into the wrapper (see `catalog_wrapper`)
-            // before the rebuild. `cargo run -q` keeps progress chatter
-            // off stdout so the child's stdout stays pure catalog JSON;
-            // build diagnostics still go to stderr.
-            match super::catalog_wrapper::generate(&root) {
-                Ok(wrapper_dir) => {
-                    managed = true;
-                    let root = std::sync::Arc::new(root);
-                    let wrapper_dir = std::sync::Arc::new(wrapper_dir);
-                    opts = opts.with_subprocess_catalog(move || {
-                        // Idempotent — only rewrites files when their
-                        // contents change, so a steady-state reload (no
-                        // dep change) doesn't churn cargo fingerprints.
-                        if let Err(e) = super::catalog_wrapper::generate(&root) {
-                            eprintln!("[idealyst mcp] catalog wrapper regenerate failed: {:#}", e);
+        CatalogSource::Managed(roots) => {
+            // Expand each root: a project directory yields itself, a
+            // workspace root yields every member carrying
+            // `[package.metadata.idealyst]`. This is what makes a bare
+            // `idealyst mcp` work at a monorepo root — it used to fail
+            // here and leave the server serving an empty catalog.
+            let mut projects: Vec<std::path::PathBuf> = Vec::new();
+            let mut expand_errors: Vec<String> = Vec::new();
+            for root in &roots {
+                match super::catalog_wrapper::resolve_project_roots(root) {
+                    Ok(found) => {
+                        for p in found {
+                            if !projects.contains(&p) {
+                                projects.push(p);
+                            }
                         }
-                        let mut c = std::process::Command::new("cargo");
-                        c.current_dir(wrapper_dir.as_path());
-                        c.args(["run", "-q", "--bin", "catalog"]);
-                        c
-                    });
+                    }
+                    Err(e) => expand_errors.push(format!("{}: {:#}", root.display(), e)),
                 }
-                Err(e) => {
-                    // Not a parseable project (e.g. cwd isn't an idealyst
-                    // project). Leave the catalog to live apps / the
-                    // in-process fallback rather than failing startup.
+            }
+
+            if projects.is_empty() {
+                // Nothing wrappable. Leave the catalog to live apps / the
+                // in-process fallback rather than failing startup — but
+                // say why, since an empty catalog is otherwise
+                // indistinguishable from a project with no components.
+                for err in &expand_errors {
+                    eprintln!("[idealyst mcp] no project catalog available from {err}");
+                }
+            } else {
+                if !expand_errors.is_empty() {
+                    for err in &expand_errors {
+                        eprintln!("[idealyst mcp] skipping {err}");
+                    }
+                }
+                if projects.len() > 1 {
+                    let names: Vec<String> = projects
+                        .iter()
+                        .map(|p| {
+                            p.file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| p.display().to_string())
+                        })
+                        .collect();
                     eprintln!(
-                        "[idealyst mcp] no project catalog available from {}: {:#}",
-                        root.display(),
-                        e
+                        "[idealyst mcp] catalog covers {} projects: {}",
+                        projects.len(),
+                        names.join(", ")
                     );
+                }
+                // Generate the catalog wrapper crate now (cheap,
+                // idempotent) — this both validates the projects and
+                // builds the initial wrapper. The subprocess factory then
+                // regenerates it on every (re)load: regeneration re-reads
+                // each project's `Cargo.toml`, so a dependency added
+                // mid-session is force-linked into the wrapper (see
+                // `catalog_wrapper`) before the rebuild. `cargo run -q`
+                // keeps progress chatter off stdout so the child's stdout
+                // stays pure catalog JSON; build diagnostics still go to
+                // stderr.
+                match super::catalog_wrapper::generate_for_roots(&projects) {
+                    Ok(wrapper_dir) => {
+                        managed = true;
+                        managed_projects = projects.clone();
+                        let projects = std::sync::Arc::new(projects);
+                        let wrapper_dir = std::sync::Arc::new(wrapper_dir);
+                        opts = opts.with_subprocess_catalog(move || {
+                            // Idempotent — only rewrites files when their
+                            // contents change, so a steady-state reload
+                            // (no dep change) doesn't churn cargo
+                            // fingerprints.
+                            if let Err(e) =
+                                super::catalog_wrapper::generate_for_roots(&projects)
+                            {
+                                eprintln!(
+                                    "[idealyst mcp] catalog wrapper regenerate failed: {:#}",
+                                    e
+                                );
+                            }
+                            let mut c = std::process::Command::new("cargo");
+                            c.current_dir(wrapper_dir.as_path());
+                            c.args(["run", "-q", "--bin", "catalog"]);
+                            c
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("[idealyst mcp] could not build a catalog wrapper: {e:#}");
+                    }
                 }
             }
         }
@@ -259,7 +323,7 @@ pub fn run(args: Args) -> Result<()> {
     let watch_paths = if explicit_watch {
         args.watch_dirs.clone()
     } else if want_watch && managed {
-        default_watch_paths(project_root.as_deref())
+        default_watch_paths(&managed_projects)
     } else {
         Vec::new()
     };
@@ -288,10 +352,13 @@ enum CatalogSource {
     /// concurrent `idealyst dev` build. Only produced by an explicit
     /// `--from-bin` — the no-toolchain / lock-free escape hatch.
     Prebuilt(std::path::PathBuf),
-    /// Generate a catalog wrapper crate for the project rooted here and
-    /// run it. The project needs no `[[bin]] catalog` and no `catalog`
+    /// Generate ONE catalog wrapper crate linking every project listed
+    /// and run it. The projects need no `[[bin]] catalog` and no `catalog`
     /// feature — the wrapper supplies both (see [`super::catalog_wrapper`]).
-    Managed(std::path::PathBuf),
+    ///
+    /// More than one entry when the user passed `--project-root` several
+    /// times, or when a workspace root expanded to its idealyst members.
+    Managed(Vec<std::path::PathBuf>),
     /// No project context at all (no cwd) — leave the catalog to the
     /// live-app bridge / in-process fallback.
     None,
@@ -319,39 +386,43 @@ enum CatalogSource {
 /// Use `--from-bin` for the explicit lock-free / no-toolchain case.
 fn resolve_catalog_source(
     from_bin: Option<std::path::PathBuf>,
-    project_root: Option<std::path::PathBuf>,
+    project_roots: Vec<std::path::PathBuf>,
     cwd: Option<std::path::PathBuf>,
 ) -> CatalogSource {
     if let Some(bin) = from_bin {
         return CatalogSource::Prebuilt(bin);
     }
-    match project_root.or(cwd) {
-        Some(root) => CatalogSource::Managed(root),
+    if !project_roots.is_empty() {
+        return CatalogSource::Managed(project_roots);
+    }
+    match cwd {
+        Some(root) => CatalogSource::Managed(vec![root]),
         None => CatalogSource::None,
     }
 }
 
 /// The default set of paths to watch when the user didn't pass an
-/// explicit `--watch`: the project's `src/` directory and its
+/// explicit `--watch`: each covered project's `src/` directory and its
 /// `Cargo.toml`. A source edit refreshes new/changed components; a
-/// `Cargo.toml` edit refreshes added/removed dependencies.
+/// `Cargo.toml` edit refreshes added/removed dependencies. With several
+/// projects in one catalog, every one of them is watched, so editing any
+/// app refreshes the shared catalog.
 ///
 /// Crucially this does NOT include the project root itself: the managed
 /// catalog wrapper writes its build output under `<root>/target/...`, so
 /// a recursive watch on the root would observe the wrapper's own rebuild
 /// and re-trigger endlessly.
-fn default_watch_paths(project_root: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
-    let Some(root) = project_root else {
-        return Vec::new();
-    };
+fn default_watch_paths(project_roots: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
     let mut paths = Vec::new();
-    let src = root.join("src");
-    if src.is_dir() {
-        paths.push(src);
-    }
-    let cargo = root.join("Cargo.toml");
-    if cargo.is_file() {
-        paths.push(cargo);
+    for root in project_roots {
+        let src = root.join("src");
+        if src.is_dir() {
+            paths.push(src);
+        }
+        let cargo = root.join("Cargo.toml");
+        if cargo.is_file() {
+            paths.push(cargo);
+        }
     }
     paths
 }
@@ -457,12 +528,12 @@ mod tests {
     fn no_flags_defaults_to_cwd_not_none() {
         let cwd = tmp_dir("cwd-default");
         // No --from-bin → the managed wrapper for the cwd project.
-        let src = resolve_catalog_source(None, None, Some(cwd.clone()));
-        assert_eq!(src, CatalogSource::Managed(cwd));
+        let src = resolve_catalog_source(None, Vec::new(), Some(cwd.clone()));
+        assert_eq!(src, CatalogSource::Managed(vec![cwd]));
 
         // The pre-fix behavior we must never regress to:
         assert_ne!(
-            resolve_catalog_source(None, None, Some(std::env::temp_dir())),
+            resolve_catalog_source(None, Vec::new(), Some(std::env::temp_dir())),
             CatalogSource::None,
             "no-flag invocation must not yield an empty catalog source \
              when a cwd is available"
@@ -477,13 +548,38 @@ mod tests {
         // catalog feature), so the catalog is always complete.
         let root = tmp_dir("proj-root");
         assert_eq!(
-            resolve_catalog_source(None, Some(root.clone()), None),
-            CatalogSource::Managed(root.clone())
+            resolve_catalog_source(None, vec![root.clone()], None),
+            CatalogSource::Managed(vec![root.clone()])
         );
         // cwd default resolves the same way.
         assert_eq!(
-            resolve_catalog_source(None, None, Some(root.clone())),
-            CatalogSource::Managed(root)
+            resolve_catalog_source(None, Vec::new(), Some(root.clone())),
+            CatalogSource::Managed(vec![root])
+        );
+    }
+
+    #[test]
+    fn several_project_roots_are_all_carried_into_one_wrapper() {
+        // `--project-root a --project-root b` covers BOTH in one catalog.
+        // The flag order is preserved here; the wrapper generator sorts,
+        // so the emitted crate stays byte-stable either way.
+        let a = tmp_dir("multi-a");
+        let b = tmp_dir("multi-b");
+        assert_eq!(
+            resolve_catalog_source(None, vec![a.clone(), b.clone()], None),
+            CatalogSource::Managed(vec![a, b])
+        );
+    }
+
+    #[test]
+    fn explicit_project_roots_beat_the_cwd_default() {
+        // An explicit root must not be silently unioned with the cwd —
+        // the user narrowed on purpose.
+        let root = tmp_dir("explicit-wins");
+        let cwd = tmp_dir("explicit-wins-cwd");
+        assert_eq!(
+            resolve_catalog_source(None, vec![root.clone()], Some(cwd)),
+            CatalogSource::Managed(vec![root])
         );
     }
 
@@ -494,7 +590,7 @@ mod tests {
         let root = tmp_dir("from-bin");
         let explicit = root.join("custom-catalog");
         assert_eq!(
-            resolve_catalog_source(Some(explicit.clone()), Some(root.clone()), Some(root)),
+            resolve_catalog_source(Some(explicit.clone()), vec![root.clone()], Some(root)),
             CatalogSource::Prebuilt(explicit)
         );
     }
@@ -504,7 +600,7 @@ mod tests {
         // Only when there is genuinely no project context (no cwd, no
         // flags) do we leave the catalog to live apps / in-process.
         assert_eq!(
-            resolve_catalog_source(None, None, None),
+            resolve_catalog_source(None, Vec::new(), None),
             CatalogSource::None
         );
     }
@@ -521,7 +617,7 @@ mod tests {
         // be watched.
         fs::create_dir_all(root.join("target").join("idealyst")).unwrap();
 
-        let paths = default_watch_paths(Some(root.as_path()));
+        let paths = default_watch_paths(std::slice::from_ref(&root));
         assert_eq!(paths, vec![root.join("src"), root.join("Cargo.toml")]);
         assert!(
             !paths.iter().any(|p| p.ends_with("target")),
@@ -535,9 +631,31 @@ mod tests {
         // not yet written) shouldn't hand notify a non-existent path.
         let root = tmp_dir("watch-paths-missing");
         fs::write(root.join("Cargo.toml"), b"[package]\n").unwrap();
-        let paths = default_watch_paths(Some(root.as_path()));
+        let paths = default_watch_paths(std::slice::from_ref(&root));
         assert_eq!(paths, vec![root.join("Cargo.toml")]);
 
-        assert!(default_watch_paths(None).is_empty());
+        assert!(default_watch_paths(&[]).is_empty());
+    }
+
+    #[test]
+    fn default_watch_paths_cover_every_covered_project() {
+        // With several projects in one catalog, editing ANY of them must
+        // refresh it — so each contributes its own src/ + Cargo.toml.
+        let a = tmp_dir("watch-multi-a");
+        let b = tmp_dir("watch-multi-b");
+        for d in [&a, &b] {
+            fs::create_dir_all(d.join("src")).unwrap();
+            fs::write(d.join("Cargo.toml"), b"[package]\n").unwrap();
+        }
+        let paths = default_watch_paths(&[a.clone(), b.clone()]);
+        assert_eq!(
+            paths,
+            vec![
+                a.join("src"),
+                a.join("Cargo.toml"),
+                b.join("src"),
+                b.join("Cargo.toml"),
+            ]
+        );
     }
 }
