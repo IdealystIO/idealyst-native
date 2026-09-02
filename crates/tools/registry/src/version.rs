@@ -96,18 +96,12 @@ pub fn classify(message: &str) -> Bump {
 /// at the version already in the manifest rather than bumping past it, so
 /// that the registry starts where the git tags left off instead of skipping a
 /// version for no reason.
-pub fn bump_for(root: &Path, rel_dir: &str, since: &str) -> Result<Bump> {
+pub fn bump_for(root: &Path, rel_dir: &str, nested: &[String], since: &str) -> Result<Bump> {
     // `%x1e` (record separator) between commits: commit bodies contain blank
     // lines, so no newline-based delimiter is safe here.
+    let args = log_args(rel_dir, nested, since);
     let out = Command::new("git")
-        .args([
-            "log",
-            "--no-merges",
-            "--format=%B%x1e",
-            &format!("{since}..HEAD"),
-            "--",
-            rel_dir,
-        ])
+        .args(&args)
         .current_dir(root)
         .output()
         .context("running `git log`")?;
@@ -127,6 +121,28 @@ pub fn bump_for(root: &Path, rel_dir: &str, since: &str) -> Result<Bump> {
         .map(classify)
         .max()
         .unwrap_or(Bump::None))
+}
+
+/// Arguments for the "what changed in this crate?" git query.
+///
+/// Nested workspace members own their own releases, so their files are
+/// excluded even though they live under this crate's path. There are 49 such
+/// nesting relationships in this workspace — every SDK with an `examples/`
+/// crate — so without the exclusions a demo edit republishes the SDK it
+/// demonstrates, and a demo under something like `runtime-shared` would make
+/// every consumer rebuild most of the framework for a change that is not in
+/// the crate at all.
+fn log_args(rel_dir: &str, nested: &[String], since: &str) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "log".into(),
+        "--no-merges".into(),
+        "--format=%B%x1e".into(),
+        format!("{since}..HEAD"),
+        "--".into(),
+        rel_dir.to_string(),
+    ];
+    args.extend(nested.iter().map(|d| format!(":(exclude){d}")));
+    args
 }
 
 pub fn head_commit(root: &Path) -> Result<String> {
@@ -181,6 +197,30 @@ mod tests {
     fn unconventional_subjects_still_earn_a_patch() {
         assert_eq!(classify("wip: next phase of migrations"), Bump::Patch);
         assert_eq!(classify("tidy up the scroll math"), Bump::Patch);
+    }
+
+    /// Regression: `crates/sdk/client/dnd/examples/kanban-demo` is its own
+    /// crate, but its files sit under `dnd`'s path — so a comment edit in the
+    /// demo planned a release of `dnd`. Nested members are excluded.
+    #[test]
+    fn regression_nested_members_are_excluded_from_a_crates_changes() {
+        let args = log_args(
+            "crates/sdk/client/dnd",
+            &["crates/sdk/client/dnd/examples/kanban-demo".to_string(),
+              "crates/sdk/client/dnd/examples/sortable-demo".to_string()],
+            "abc123",
+        );
+        assert_eq!(args[3], "abc123..HEAD");
+        assert_eq!(args[5], "crates/sdk/client/dnd");
+        assert_eq!(args[6], ":(exclude)crates/sdk/client/dnd/examples/kanban-demo");
+        assert_eq!(args[7], ":(exclude)crates/sdk/client/dnd/examples/sortable-demo");
+    }
+
+    #[test]
+    fn a_crate_with_no_nested_members_gets_no_exclusions() {
+        let args = log_args("crates/css", &[], "abc123");
+        assert_eq!(args.len(), 6);
+        assert_eq!(args.last().unwrap(), "crates/css");
     }
 
     #[test]

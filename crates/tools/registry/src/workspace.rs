@@ -41,6 +41,16 @@ pub struct Package {
     /// path we ask git "did anything here change?" about.
     pub rel_dir: String,
     pub publish: bool,
+    /// Directories of other workspace members nested INSIDE this crate's
+    /// directory — `crates/sdk/client/dnd/examples/kanban-demo` under
+    /// `crates/sdk/client/dnd`, and so on.
+    ///
+    /// "Did anything change here?" is asked of git by path, and a nested
+    /// member's files sit under its parent's path. Without excluding them, an
+    /// edit to a demo republishes the SDK it demonstrates — and if that SDK is
+    /// something like `runtime-shared`, every consumer rebuilds most of the
+    /// framework for a change that is not in the crate at all.
+    pub nested: Vec<String>,
     /// Workspace-internal dependencies, dev-dependencies excluded.
     ///
     /// Dev-deps are excluded deliberately: cargo strips a path-only dev-dep
@@ -105,6 +115,7 @@ impl Workspace {
                 p.name.clone(),
                 Package {
                     name: p.name.clone(),
+                    nested: Vec::new(),
                     version: semver::Version::parse(&p.version)
                         .with_context(|| format!("{} has a non-semver version", p.name))?,
                     manifest_path: p.manifest_path.clone(),
@@ -114,6 +125,21 @@ impl Workspace {
                     deps,
                 },
             );
+        }
+
+        // Second pass: a crate's nested members are only knowable once every
+        // member's directory is in hand.
+        let dirs: Vec<(String, String)> = packages
+            .values()
+            .map(|p| (p.name.clone(), p.rel_dir.clone()))
+            .collect();
+        for p in packages.values_mut() {
+            let prefix = format!("{}/", p.rel_dir);
+            p.nested = dirs
+                .iter()
+                .filter(|(name, dir)| name != &p.name && dir.starts_with(&prefix))
+                .map(|(_, dir)| dir.clone())
+                .collect();
         }
 
         Ok(Workspace {

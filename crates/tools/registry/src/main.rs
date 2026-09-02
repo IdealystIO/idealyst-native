@@ -515,7 +515,7 @@ fn plan(ws: &Workspace, r: &RemoteArgs) -> Result<BTreeMap<String, Release>> {
             );
             continue;
         };
-        let bump = version::bump_for(&ws.root, &p.rel_dir, &prev.commit)?;
+        let bump = version::bump_for(&ws.root, &p.rel_dir, &p.nested, &prev.commit)?;
         if bump == Bump::None {
             continue;
         }
