@@ -163,5 +163,16 @@ entry and 404s on the download.
   git dependency, and the `deep_filter` on crates.io is the old
   dataset/training library with no DF3 runtime. Publishing the SDK means first
   mirroring `deep_filter` v0.5.6 into this registry and depending on that.
-- **A published version is immutable.** Re-cutting one is refused; bump
-  instead.
+- **A published version is immutable.** Re-publishing the same version is a
+  no-op when the bytes match, and a hard error when they do not.
+- **Resume is scoped to one commit.** Cargo embeds `.cargo_vcs_info.json` —
+  the commit SHA — inside every `.crate`, so an interrupted publish can only be
+  resumed from the same commit. That covers what resume is for (a network
+  blip, an expired credential). It does NOT survive committing a fix and
+  retrying: every tarball's checksum changes, and every already-uploaded crate
+  then reports a content mismatch. In that situation the versions were never
+  consumed by anyone, so clear them and republish:
+
+  ```sh
+  aws s3 rm s3://idealyst-crates/ --recursive     # only while nothing consumes them
+  ```
