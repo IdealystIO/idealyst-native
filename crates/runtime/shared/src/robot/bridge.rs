@@ -1813,7 +1813,7 @@ mod tests {
 
     /// The `get_arena_stats` verb serializes all eight `ArenaStats`
     /// fields as a flat JSON object so the inspector's perf panel can
-    /// read reactive-arena occupancy over the bridge. Before this verb
+    /// read arena occupancy over the bridge. Before this verb
     /// the arena counts were reachable via `Robot::arena_stats()` only
     /// in-process — never over the wire.
     #[test]

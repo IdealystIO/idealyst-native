@@ -123,7 +123,7 @@ thread_local! {
     /// initialized to `EdgeInsets::ZERO` on first access; backends
     /// overwrite it as the platform reports changes.
     ///
-    /// Thread-local because `Signal` is reactive-arena-backed and the
+    /// Thread-local because `Signal` is arena-backed and the
     /// reactive runtime is single-threaded (UI thread).
     static INSETS: OnceCell<Signal<EdgeInsets>> = const { OnceCell::new() };
 }

@@ -84,7 +84,7 @@ fn default_log_path() -> std::path::PathBuf {
 /// its own try (a) so the user always sees what actually failed, even
 /// if backtrace capture later panics. Backtrace capture is wrapped in
 /// `catch_unwind` because `force_capture` touches TLS, and during
-/// teardown the reactive-arena TLS may already be destroyed — a panic
+/// teardown the arena TLS may already be destroyed — a panic
 /// in the panic hook becomes a fatal runtime abort that swallows the
 /// real message (saw this when the dev-tui shutdown raced with effect
 /// cleanup).

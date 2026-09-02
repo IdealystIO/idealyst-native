@@ -351,7 +351,6 @@ crates/
     ios/{core,mobile,tv}        android/{core,mobile,tv}
     macos/  apple/core/         # AppKit + shared objc2 helpers
     terminal/  cpu/  roku/  email/  linux/  windows/
-    posix-log-capture/  # Robot log-buffer LogCapture impl
 
   gpu-backend/          # Custom rendering on a GPU pipeline
     engine/             # render-wgpu

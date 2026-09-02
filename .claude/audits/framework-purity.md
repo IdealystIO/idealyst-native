@@ -7,8 +7,6 @@ targets:
   - crates/runtime/layout
   - crates/dev/wire
   - crates/dev/client
-  - crates/runtime/reactive/arena
-  - crates/runtime/reactive/refs
 severity: high
 ---
 

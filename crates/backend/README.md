@@ -21,7 +21,6 @@ reimplementation.
 | [`web/`](./web) | Web | DOM nodes, compiled to WebAssembly. |
 | [`roku/`](./roku) | Roku | SceneGraph component tree. Demonstrates that the trait isn't tied to traditional GUI toolkits. |
 | [`terminal/`](./terminal) | Terminal | TTY cell grid (ANSI). |
-| [`posix-log-capture/`](./posix-log-capture) | (utility) | Captures POSIX stdio so log output reaches the host. |
 
 The [GPU Backend](../gpu-backend/) is structurally different — it
 draws everything itself rather than inheriting from a toolkit, so it

@@ -9158,14 +9158,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "posix-log-capture"
-version = "1.5.2"
-dependencies = [
- "libc",
- "runtime-shared",
-]
-
-[[package]]
 name = "postcard"
 version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9604,14 +9596,6 @@ dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
 ]
-
-[[package]]
-name = "reactive-arena"
-version = "1.5.2"
-
-[[package]]
-name = "reactive-refs"
-version = "1.5.2"
 
 [[package]]
 name = "read-fonts"

@@ -28,8 +28,6 @@ members = [
     # primitive handlers, and `glue` — the author-surface module
     # `runtime-core` re-exports.
     "crates/runtime/vocabulary",
-    "crates/runtime/reactive/arena",
-    "crates/runtime/reactive/refs",
     "crates/runtime/layout",
 
     # Shared StyleRules → CSS conversion (used by web + ssr backends).
@@ -56,7 +54,6 @@ members = [
     "crates/backend/email",
     "crates/backend/windows",
     "crates/backend/linux",
-    "crates/backend/posix-log-capture",
 
     # GPU Backend — composed of Host + Painter + Engine.
     "crates/gpu-backend/api",
@@ -523,7 +520,6 @@ variant-phone = { path = "crates/gpu-backend/variant/phone" }
 variant-tablet = { path = "crates/gpu-backend/variant/tablet" }
 variant-tv = { path = "crates/gpu-backend/variant/tv" }
 runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", version = "1.5", registry = "idealyst" }
-posix-log-capture = { path = "crates/backend/posix-log-capture" }
 # One core: these crates carry no core-selector feature any more, so the
 # workspace specs are plain — a `{ workspace = true }` consumer gets each
 # crate's own defaults.

@@ -167,7 +167,7 @@ fn autoscroll_frame(board: &Board, viewport: ViewportRect) {
     };
     if new_sx != sx {
         // Clone the handle OUT of `Ref::with` before scrolling. `Ref::with`
-        // holds the reactive-arena borrow across its closure, and on iOS/macOS
+        // holds the arena borrow across its closure, and on iOS/macOS
         // `scroll_to` SYNCHRONOUSLY fires `on_scroll` → `scroll_x.set(..)` — a
         // signal write that re-borrows the arena → "RefCell already borrowed"
         // panic. (Web doesn't hit it: its DOM scroll event is async.) Calling

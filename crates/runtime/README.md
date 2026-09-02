@@ -16,7 +16,6 @@ Interface.
 | `runtime-vocabulary` | [`vocabulary/`](./vocabulary) | The ~30 capability (`*Ops`) traits over `Host`, the builtin primitive handlers, the style-attach engine, navigation, and `glue`. |
 | `runtime-shared` | [`shared/`](./shared) | The substrate: style engine + tokens, assets/typefaces, animation, input channels, scheduling, identity, introspection, the robot registry, and every primitive's prop/handle types. |
 | `runtime-macros` | [`macros/`](./macros) | `ui!`, `jsx!`, `#[component]`, `stylesheet!`, `#[method]`. Compile-time DSLs whose expansions target `runtime_vocabulary::glue`. No runtime cost. |
-| `reactive-arena` / `reactive-refs` | [`reactive/`](./reactive) | Legacy standalone reactive crates. Nothing in the framework depends on them any more — see their README. |
 | `runtime-layout` | [`layout/`](./layout) | Taffy wrapper (flex + grid). Used by backends that don't have a native layout engine — iOS, Android, macOS, Linux, Windows, terminal, CPU, and the GPU engine. Web inherits the browser's layout. |
 
 The Runtime's job is to turn app code (components, signals,

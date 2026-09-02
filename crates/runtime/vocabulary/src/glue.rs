@@ -267,7 +267,7 @@ pub use runtime_shared::assets;
 pub use runtime_shared::assets::{SystemFallback, Typeface, TypefaceId};
 
 // The animation driver (AnimatedValue + tweens): pure handle + shared
-// `scheduling`-registry machinery — no reactive-arena dependency — so it
+// `scheduling`-registry machinery — no reactive-kernel dependency — so it
 // runs unchanged on new-core mounts (vocabulary handlers fill the same
 // `ViewHandle`s through `make_view_handle`)… EXCEPT `AnimatedValue`'s
 // `bind*` family, whose lifetime anchoring is old-core-scope-based. The
@@ -425,7 +425,7 @@ pub mod animation {
 /// Session-persistent state (`session::animated` AVs, the session
 /// epoch, hot-patch survival) — the registry/epoch machinery is the
 /// shared old-core `session` module (pure thread-local state, no
-/// reactive-arena dependency), so most names re-export. Two shadows:
+/// reactive-kernel dependency), so most names re-export. Two shadows:
 ///
 /// - [`session::animated`] returns the glue [`animation::AnimatedValue`]
 ///   wrapper (new-core-safe `bind*`) around the SAME session-registry

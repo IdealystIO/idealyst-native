@@ -44,8 +44,9 @@ section (`set_skips_when_value_unchanged`, `touch_*`,
 `set_untracked_*`, batch-window netting, NaN, stale-handle no-ops).
 
 **Area:** `crates/runtime/core/src/reactive.rs`. The
-`crates/runtime/reactive/arena/src/lib.rs` prototype is unintegrated
-(nothing depends on it) and was intentionally left untouched.
+`crates/runtime/reactive/arena/src/lib.rs` prototype was unintegrated
+(nothing depended on it) and was intentionally left untouched; it has
+since been deleted, along with its `reactive/refs` sibling.
 
 ## What shipped (beyond the original proposal)
 
@@ -188,8 +189,8 @@ impl<T: PartialEq + 'static> Signal<T> {
 shape with an `f(&mut clone)`-then-compare, which *does* need `Clone`; offer it
 only if a caller wants it.)
 
-Apply the same addition to the arena `Signal` (`reactive/arena/src/lib.rs:277`)
-if that path is live.
+(The arena `Signal` this originally also pointed at — `reactive/arena` — was
+never integrated and has since been deleted.)
 
 ## Edge cases / risks
 
