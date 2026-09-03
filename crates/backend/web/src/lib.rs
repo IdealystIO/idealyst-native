@@ -3180,6 +3180,15 @@ impl WebBackend {
         self.impl_apply_style(node, style)
     }
 
+    /// Whether this scroller may travel past its content — see
+    /// `primitives::scroll_view::apply_bounces` for what the web's
+    /// `overscroll-behavior` does and does not share with iOS `bounces`.
+    pub(crate) fn apply_scroll_view_bounces_impl(&mut self, node: &Node, bounces: bool) {
+        if let Some(el) = node.dyn_ref::<web_sys::Element>() {
+            crate::primitives::scroll_view::apply_bounces(el, bounces);
+        }
+    }
+
     /// DOM scroll offset of `node` (0,0 for non-Element nodes and
     /// non-scrolling elements — `scrollLeft/Top` read 0 there). Used by
     /// the navigator substrate's URL sync for back-restores scroll.

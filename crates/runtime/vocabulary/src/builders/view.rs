@@ -197,6 +197,7 @@ pub fn scroll_view() -> ScrollViewBuilder {
             horizontal: false,
             on_scroll: None,
             safe_area: None,
+            bounces: None,
             style: None,
             a11y: AccessibilityProps::default(),
             ref_fill: None,
@@ -241,6 +242,14 @@ impl ScrollViewBuilder {
     /// on iOS insets a window-spanning scrollport for the status bar.
     pub fn safe_area(mut self, sides: SafeAreaSides) -> Self {
         self.prim.safe_area = Some(sides);
+        self
+    }
+
+    /// Clamp the scroll to its content (`false`), or ask for the
+    /// platform's overscroll spring (`true`). Saying nothing leaves the
+    /// platform default — see `ScrollViewPrim::bounces`.
+    pub fn bounces(mut self, bounces: bool) -> Self {
+        self.prim.bounces = Some(bounces);
         self
     }
 
@@ -299,6 +308,19 @@ mod tests {
             scroll_view().safe_area(SafeAreaSides::TOP).prim.safe_area,
             Some(SafeAreaSides::TOP)
         );
+    }
+
+    /// Overscroll is three-state for the same reason the safe area is:
+    /// a backend's own default must survive an author who said nothing.
+    /// `false` here is a real instruction — "clamp this scroller to its
+    /// content" — and it has to be distinguishable from silence, or
+    /// every scroll_view in every app would quietly assert the default
+    /// and no backend could ever choose differently.
+    #[test]
+    fn bounces_distinguishes_silence_from_a_stated_preference() {
+        assert_eq!(scroll_view().prim.bounces, None);
+        assert_eq!(scroll_view().bounces(false).prim.bounces, Some(false));
+        assert_eq!(scroll_view().bounces(true).prim.bounces, Some(true));
     }
 
     /// A plain `view`'s safe area is a bare set on purpose: it lowers to

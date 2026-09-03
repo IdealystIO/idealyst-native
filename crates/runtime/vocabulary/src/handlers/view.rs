@@ -244,6 +244,12 @@ where
             .borrow_mut()
             .apply_scroll_view_safe_area_inset(&node, sides);
     }
+    // Same three-state contract as `safe_area` above: only a stated
+    // preference reaches the backend, so a backend's own default is
+    // never overwritten by silence.
+    if let Some(bounces) = prim.bounces {
+        backend.borrow_mut().apply_scroll_view_bounces(&node, bounces);
+    }
     if let Some(fill) = prim.ref_fill {
         let handle = backend.borrow().make_scroll_view_handle(&node);
         fill(handle);

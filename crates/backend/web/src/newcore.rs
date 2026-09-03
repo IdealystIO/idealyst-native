@@ -1242,6 +1242,10 @@ impl caps::ScrollOps for WebBackend {
     fn make_scroll_view_handle(&self, node: &Self::Node) -> primitives::scroll_view::ScrollViewHandle {
         WebBackend::make_scroll_view_handle_impl(self, node)
     }
+
+    fn apply_scroll_view_bounces(&mut self, node: &Self::Node, bounces: bool) {
+        WebBackend::apply_scroll_view_bounces_impl(self, node, bounces)
+    }
 }
 
 impl caps::SafeAreaOps for WebBackend {

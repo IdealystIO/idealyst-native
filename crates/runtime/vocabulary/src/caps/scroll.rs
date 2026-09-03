@@ -40,6 +40,17 @@ pub trait ScrollOps: Host {
     #[allow(unused_variables)]
     fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {}
 
+    /// Whether the scroller may travel PAST its content and spring
+    /// back (iOS rubber-banding, Android's glow/stretch, the browser's
+    /// scroll-chaining bounce).
+    ///
+    /// Only called when the author said something — see
+    /// `ScrollViewPrim::bounces`. Default: no-op, which is right for
+    /// every backend whose scrollers do not overscroll in the first
+    /// place.
+    #[allow(unused_variables)]
+    fn apply_scroll_view_bounces(&mut self, node: &Self::Node, bounces: bool) {}
+
     /// Imperative-ref handle for a scroll view. Default: no-op.
     #[allow(unused_variables)]
     fn make_scroll_view_handle(&self, node: &Self::Node) -> primitives::scroll_view::ScrollViewHandle {

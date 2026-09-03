@@ -1174,6 +1174,10 @@ mod ios_impl {
         ) -> primitives::scroll_view::ScrollViewHandle {
             IosBackend::make_scroll_view_handle_impl(self, node)
         }
+
+        fn apply_scroll_view_bounces(&mut self, node: &Self::Node, bounces: bool) {
+            IosBackend::apply_scroll_view_bounces_impl(self, node, bounces)
+        }
     }
 
     impl caps::SafeAreaOps for IosBackend {

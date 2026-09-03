@@ -85,6 +85,20 @@ pub struct ScrollViewPrim {
     /// happened to span the window, which is not a property anything
     /// declares.
     pub safe_area: Option<SafeAreaSides>,
+    /// Whether the scroller may travel past its content and spring back
+    /// — iOS rubber-banding, Android's stretch, the browser's bounce.
+    ///
+    /// Three-state for the same reason `safe_area` is: `None` is
+    /// silence and the platform default stands, `Some(false)` clamps
+    /// the scroll to its content, `Some(true)` asks for the bounce
+    /// where a backend would otherwise suppress it.
+    ///
+    /// Bounce is a good default for a PAGE — it signals "you are at the
+    /// end" and it is what a native app does. It reads as a glitch on a
+    /// bounded pane inside a page: a table that springs away from its
+    /// own header has no end to signal, because the thing that scrolls
+    /// is not the thing the gesture appears to grab.
+    pub bounces: Option<bool>,
     pub style: Option<StyleProp>,
     pub a11y: AccessibilityProps,
     pub ref_fill: Option<Box<dyn FnOnce(ScrollViewHandle)>>,

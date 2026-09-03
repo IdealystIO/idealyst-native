@@ -45,6 +45,10 @@ pub(crate) fn create(
         "overflow-y: auto; overflow-x: hidden"
     };
     let _ = div.set_attribute("style", overflow);
+    // NOTE for `apply_scroll_view_bounces`: this writes the whole style
+    // ATTRIBUTE, so anything that lands here later must go through
+    // `style().set_property(...)` rather than a second `set_attribute`,
+    // which would drop the overflow above.
 
     // Wire `on_scroll`. The callback receives CSS-pixel offsets
     // (`scrollLeft`/`scrollTop`) directly \u{2014} same units the
@@ -98,4 +102,25 @@ impl ScrollViewOps for WebScrollViewOps {
             html.set_scroll_top(y as i32);
         }
     }
+}
+
+/// `overscroll-behavior` — the web's spelling of "may this scroller
+/// travel past its content".
+///
+/// Not a perfect analogue of iOS `bounces` and it does not pretend to
+/// be. `none` does two things: it stops the rubber-band on the mobile
+/// engines that have one (iOS Safari), and it stops SCROLL CHAINING —
+/// a gesture that reaches this scroller's end no longer continues into
+/// the page behind it. For a bounded pane inside a page, which is the
+/// case this exists for, both are wanted.
+///
+/// Written with `set_property` rather than `set_attribute`: the mount
+/// above writes the style ATTRIBUTE wholesale for the overflow, and a
+/// second attribute write would drop it.
+pub(crate) fn apply_bounces(el: &web_sys::Element, bounces: bool) {
+    let Some(html) = el.dyn_ref::<web_sys::HtmlElement>() else {
+        return;
+    };
+    let value = if bounces { "auto" } else { "none" };
+    let _ = html.style().set_property("overscroll-behavior", value);
 }

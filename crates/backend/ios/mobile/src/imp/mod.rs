@@ -3958,6 +3958,29 @@ impl IosBackend {
         let _: () = unsafe { msg_send![view, setContentInsetAdjustmentBehavior: behavior] };
     }
 
+    /// Whether the scroll view rubber-bands past its content.
+    ///
+    /// `bounces` alone is not enough. UIKit also exposes
+    /// `alwaysBounceVertical` / `alwaysBounceHorizontal`, which force a
+    /// bounce on an axis EVEN WHEN the content fits — a table shorter
+    /// than its pane still springs if one of those is on. Turning the
+    /// bounce off therefore has to clear all three, or the gesture
+    /// survives on whichever axis was forced.
+    ///
+    /// Turning it back on sets `bounces` only: the `alwaysBounce*` pair
+    /// is a stronger statement ("bounce even with nothing to scroll")
+    /// and asking for the platform's normal spring should not opt into
+    /// it.
+    pub(crate) fn apply_scroll_view_bounces_impl(&mut self, node: &IosNode, bounces: bool) {
+        let view = node.as_view();
+        let on: bool = bounces;
+        let _: () = unsafe { msg_send![view, setBounces: on] };
+        if !bounces {
+            let _: () = unsafe { msg_send![view, setAlwaysBounceVertical: false] };
+            let _: () = unsafe { msg_send![view, setAlwaysBounceHorizontal: false] };
+        }
+    }
+
     // =================================================================
     // Handle factories — override defaults so handles carry the
     // real iOS node, enabling `AnchorableHandle::rect()` to read
