@@ -196,7 +196,7 @@ pub fn scroll_view() -> ScrollViewBuilder {
             test_id: None,
             horizontal: false,
             on_scroll: None,
-            safe_area: SafeAreaSides::NONE,
+            safe_area: None,
             style: None,
             a11y: AccessibilityProps::default(),
             ref_fill: None,
@@ -232,8 +232,15 @@ impl ScrollViewBuilder {
         self
     }
 
+    /// Opt this scroller into — or explicitly OUT of — safe-area inset
+    /// adjustment.
+    ///
+    /// `SafeAreaSides::NONE` is a real opt-out, not a no-op: it tells
+    /// the backend to stop adjusting, so the scroller bleeds edge to
+    /// edge. Saying nothing at all leaves the platform default, which
+    /// on iOS insets a window-spanning scrollport for the status bar.
     pub fn safe_area(mut self, sides: SafeAreaSides) -> Self {
-        self.prim.safe_area = sides;
+        self.prim.safe_area = Some(sides);
         self
     }
 
@@ -262,5 +269,47 @@ impl ScrollViewBuilder {
 
     pub fn build(self) -> Element {
         item(PrimCell::new(self.prim), self.children)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The distinction the `Option` exists for. Before it, a
+    /// `scroll_view` had no way to say "do not adjust me": an empty
+    /// `SafeAreaSides` was indistinguishable from the author saying
+    /// nothing, so `mount_scroll_view` skipped the backend call and the
+    /// platform default (UIKit's `.automatic`) survived. The backends
+    /// implemented the opt-out the whole time and it was unreachable.
+    #[test]
+    fn scroll_view_distinguishes_silence_from_an_explicit_opt_out() {
+        // Said nothing — the backend must not be called at all, so the
+        // platform default stands.
+        assert_eq!(scroll_view().prim.safe_area, None);
+
+        // Said NONE — an opt-out, and it has to reach the backend.
+        assert_eq!(
+            scroll_view().safe_area(SafeAreaSides::NONE).prim.safe_area,
+            Some(SafeAreaSides::NONE)
+        );
+
+        // Said something — opted in for those sides.
+        assert_eq!(
+            scroll_view().safe_area(SafeAreaSides::TOP).prim.safe_area,
+            Some(SafeAreaSides::TOP)
+        );
+    }
+
+    /// A plain `view`'s safe area is a bare set on purpose: it lowers to
+    /// PADDING, where "no sides" and "said nothing" both mean "add
+    /// nothing" and there is no third state to express.
+    #[test]
+    fn plain_view_safe_area_stays_a_bare_set() {
+        assert_eq!(view().prim.safe_area, SafeAreaSides::NONE);
+        assert_eq!(
+            view().safe_area(SafeAreaSides::ALL).prim.safe_area,
+            SafeAreaSides::ALL
+        );
     }
 }

@@ -65,7 +65,26 @@ pub struct ScrollViewPrim {
     pub test_id: Option<&'static str>,
     pub horizontal: bool,
     pub on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
-    pub safe_area: SafeAreaSides,
+    /// Safe-area treatment, as a THREE-state value.
+    ///
+    /// - `None` — the author said nothing. The backend is not called and
+    ///   the platform default stands (on iOS, UIKit's
+    ///   `contentInsetAdjustmentBehavior = .automatic`).
+    /// - `Some(sides)` — the author opted in for those sides.
+    /// - `Some(SafeAreaSides::NONE)` — the author opted OUT explicitly.
+    ///   The scroller bleeds edge to edge and owns its own content
+    ///   offset.
+    ///
+    /// The third state is the reason this is an `Option` rather than a
+    /// bare `SafeAreaSides`. The backends have always implemented the
+    /// opt-out — `apply_scroll_view_safe_area_inset` maps an empty
+    /// `sides` to "never adjust" — but with a bare set there was no way
+    /// to REACH it: an empty set was indistinguishable from silence, the
+    /// call was skipped, and the platform default survived. That made a
+    /// container's inset depend on whether some ancestor scroller
+    /// happened to span the window, which is not a property anything
+    /// declares.
+    pub safe_area: Option<SafeAreaSides>,
     pub style: Option<StyleProp>,
     pub a11y: AccessibilityProps,
     pub ref_fill: Option<Box<dyn FnOnce(ScrollViewHandle)>>,

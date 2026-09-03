@@ -236,10 +236,13 @@ where
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);
     }
-    if !prim.safe_area.is_empty() {
+    // `Some(NONE)` is an explicit opt-out and MUST reach the backend —
+    // that is the whole reason this is an Option. Only silence (`None`)
+    // leaves the platform default alone.
+    if let Some(sides) = prim.safe_area {
         backend
             .borrow_mut()
-            .apply_scroll_view_safe_area_inset(&node, prim.safe_area);
+            .apply_scroll_view_safe_area_inset(&node, sides);
     }
     if let Some(fill) = prim.ref_fill {
         let handle = backend.borrow().make_scroll_view_handle(&node);
