@@ -414,7 +414,16 @@ fn build_table(children: Vec<Element>, style: Option<StyleProp>, scroll_x: bool)
         // against the scroller (their NEAREST scroll ancestor — the
         // surface's own overflow clip is further out).
         let table = item_lowering::table_item(children, None, scroll_x);
-        let scroller = glue::scroll_view(vec![table]).horizontal(true).into_element();
+        // `bounces(false)`: a table's column scroller is a bounded pane
+        // INSIDE a page, and an overscroll spring there has no end to
+        // signal — the thing that springs is not the thing the gesture
+        // appears to grab, so it reads as a glitch rather than as a
+        // boundary. On web this also stops the swipe chaining into the
+        // page behind the table once the columns run out.
+        let scroller = glue::scroll_view(vec![table])
+            .horizontal(true)
+            .bounces(false)
+            .into_element();
         let surface = glue::view(vec![scroller]);
         match style {
             Some(style) => surface.with_style(style).into_element(),
@@ -509,8 +518,10 @@ fn build_table(rows: Vec<Element>, style: Option<StyleProp>, scroll_x: bool) -> 
         let content = glue::view(vec![inner])
             .with_style(StyleProp::Static(Rc::new(native_styles::scroll_floor_rules())))
             .into_element();
+        // No overscroll spring — see the web lowering's note.
         let scroller = glue::scroll_view(vec![content])
             .horizontal(true)
+            .bounces(false)
             .with_style(StyleProp::Static(Rc::new(native_styles::scroll_wrapper_rules())))
             .into_element();
         let surface = glue::view(vec![scroller]);

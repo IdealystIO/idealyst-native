@@ -1874,6 +1874,14 @@ pub mod primitives {
                 self
             }
 
+            /// Clamp the scroll to its content (`false`), or ask for
+            /// the platform's overscroll spring (`true`). Saying
+            /// nothing leaves the platform default.
+            pub fn bounces(mut self, bounces: bool) -> Self {
+                self.b = self.b.bounces(bounces);
+                self
+            }
+
             pub fn on_scroll(mut self, handler: impl Fn(f32, f32) + 'static) -> Self {
                 self.b = self.b.on_scroll(handler);
                 self
