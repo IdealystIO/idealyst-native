@@ -5,7 +5,7 @@
 //! sees; `Fragment`/`Dyn`/`Keyed`/`Owned` are pure structure the scene
 //! manages itself.
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -62,10 +62,69 @@ pub enum Element {
 
 /// A primitive item: typed payload + children. The payload's `TypeId` is
 /// the [`Registry`](crate::Registry) dispatch key.
-pub fn item(data: impl Any, children: Vec<Element>) -> Element {
+pub fn item<T: Any>(data: T, children: Vec<Element>) -> Element {
+    // Remember what this TypeId is CALLED, so the "no handler
+    // registered" panic can name the payload instead of printing a hex
+    // hash nobody can map back to a type. See [`payload_type_name`].
+    #[cfg(debug_assertions)]
+    remember_payload_name::<T>();
     Element::Item {
         data: Box::new(data),
         children,
+    }
+}
+
+// ===========================================================================
+// Payload type-name registry (debug builds only)
+// ===========================================================================
+//
+// `Box<dyn Any>` can yield a `TypeId` and nothing else — there is no way
+// back to a name once the concrete type is erased. That makes the
+// unregistered-payload panic read `TypeId(0x97a1bdbe…)`, which tells you
+// only that SOMETHING is unregistered, not what. Finding out otherwise
+// means bisecting screens by hand.
+//
+// So the generic constructors record `type_name::<T>()` against the
+// `TypeId` on the way in. Debug-only: it costs a map insert per item
+// construction and exists purely to make a crash legible.
+
+#[cfg(debug_assertions)]
+thread_local! {
+    static PAYLOAD_NAMES: std::cell::RefCell<std::collections::HashMap<TypeId, &'static str>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+#[cfg(debug_assertions)]
+fn remember_payload_name<T: Any>() {
+    PAYLOAD_NAMES.with(|m| {
+        m.borrow_mut()
+            .entry(TypeId::of::<T>())
+            .or_insert_with(std::any::type_name::<T>);
+    });
+}
+
+/// The type name recorded for `id` by [`item`] / [`many`], if this build
+/// records them and something has constructed one. Used to make the
+/// registry's panics name the payload.
+pub fn payload_type_name(id: TypeId) -> Option<&'static str> {
+    #[cfg(debug_assertions)]
+    {
+        return PAYLOAD_NAMES.with(|m| m.borrow().get(&id).copied());
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = id;
+        None
+    }
+}
+
+/// Render `id` for a panic message: the recorded type name when we have
+/// one, else the bare `TypeId` (release builds, or a payload constructed
+/// by a path that does not record).
+pub fn describe_payload(id: TypeId) -> String {
+    match payload_type_name(id) {
+        Some(name) => format!("{name} ({id:?})"),
+        None => format!("{id:?} (name unavailable — this is a release build)"),
     }
 }
 

@@ -482,8 +482,9 @@ impl<'a, H: Host> MountCx<'a, H> {
                     let handler = self.registry.get_many(type_id).unwrap_or_else(|| {
                         panic!(
                             "runtime-scene: no MANY handler registered for item payload \
-                             ({type_id:?}) — register one via Registry::register_many before \
-                             realizing"
+                             {} — register one via Registry::register_many before \
+                             realizing",
+                            crate::element::describe_payload(type_id)
                         )
                     });
                     let payload: Rc<dyn Any> = Rc::from(data);
@@ -671,8 +672,9 @@ impl<'a, H: Host> MountCx<'a, H> {
             // its enclosing region caches. Mirrors the `Element::Many`
             // standalone-root rule, and for the same reason.
             if self.registry.is_deferred(type_id) {
+                let payload = crate::element::describe_payload(type_id);
                 panic!(
-                    "runtime-scene: a DEFERRED payload ({type_id:?}) appeared as a subtree root \
+                    "runtime-scene: a DEFERRED payload ({payload}) appeared as a subtree root \
                      (a `when`/`switch` branch, a keyed or static-`for` row, a navigator screen, \
                      or portal content). A deferred item is parked with a placeholder at a known \
                      index in a known parent, and the drain splices the real node in at that \
@@ -681,8 +683,9 @@ impl<'a, H: Host> MountCx<'a, H> {
                 )
             }
             panic!(
-                "runtime-scene: no handler registered for item payload ({type_id:?}) — \
-                 register one on this backend's Registry before realizing"
+                "runtime-scene: no handler registered for item payload {} — \
+                 register one on this backend's Registry before realizing",
+                crate::element::describe_payload(type_id)
             )
         });
         let payload: Rc<dyn Any> = Rc::from(data);
