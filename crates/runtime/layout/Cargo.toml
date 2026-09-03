@@ -1,6 +1,6 @@
 [package]
 name = "runtime-layout"
-version = "1.5.2"
+version = "1.5.3"
 edition.workspace = true
 license.workspace = true
 description = "Flex layout utility for native backends (iOS, Android). Wraps Taffy and translates runtime-core styles into Taffy styles."

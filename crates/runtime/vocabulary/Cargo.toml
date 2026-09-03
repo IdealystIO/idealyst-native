@@ -16,7 +16,7 @@
 
 [package]
 name = "runtime-vocabulary"
-version = "1.5.3"
+version = "1.5.4"
 edition.workspace = true
 license.workspace = true
 

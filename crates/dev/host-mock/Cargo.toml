@@ -8,7 +8,7 @@
 
 [package]
 name = "host-mock"
-version = "1.5.2"
+version = "1.5.3"
 edition.workspace = true
 license.workspace = true
 

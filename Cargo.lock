@@ -1383,7 +1383,7 @@ dependencies = [
 
 [[package]]
 name = "backend-apple-core"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "block2 0.5.1",
  "objc2 0.5.2",
@@ -1420,7 +1420,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-core"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "backend-apple-core",
  "block2 0.5.1",
@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "backend-apple-core",
  "backend-ios-core",
@@ -1495,7 +1495,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "backend-apple-core",
  "block2 0.5.1",
@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "css",
  "dev-client",
@@ -2357,7 +2357,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "charts"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "canvas-core",
  "charts-core",
@@ -2524,7 +2524,7 @@ dependencies = [
 
 [[package]]
 name = "codeblock"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
@@ -5564,7 +5564,7 @@ dependencies = [
 
 [[package]]
 name = "host-mock"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "runtime-scene",
  "runtime-shared",
@@ -5574,7 +5574,7 @@ dependencies = [
 
 [[package]]
 name = "host-terminal"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "backend-terminal",
  "crossterm",
@@ -6122,7 +6122,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -6452,7 +6452,7 @@ dependencies = [
 
 [[package]]
 name = "ios-navigator-helpers"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "backend-ios-core",
  "backend-ios-mobile",
@@ -7793,7 +7793,7 @@ dependencies = [
 
 [[package]]
 name = "net"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "block2 0.5.1",
  "futures-channel",
@@ -10065,7 +10065,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-layout"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "runtime-shared",
  "taffy",
@@ -10084,7 +10084,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-scene"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "runtime-world",
  "rustc-hash 2.1.2",
@@ -10104,7 +10104,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10123,7 +10123,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "host-mock",
  "mcp-catalog",
@@ -10744,7 +10744,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "axum",
  "futures-channel",
@@ -11343,7 +11343,7 @@ dependencies = [
 
 [[package]]
 name = "stack-navigator"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "android-navigator-helpers",
  "backend-android-mobile",
