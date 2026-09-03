@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "backend-apple-core",
  "backend-ios-core",
@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "css",
  "dev-client",
@@ -10123,7 +10123,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "1.5.5"
+version = "1.6.0"
 dependencies = [
  "host-mock",
  "mcp-catalog",
@@ -11795,7 +11795,7 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "backend-ssr",
  "runtime-scene",
