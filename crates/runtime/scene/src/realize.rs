@@ -1018,20 +1018,26 @@ fn drive_dyn_anchored<H: Host>(
         // handoff: assignment-into-borrowed-slot hazard).
         let old = slot_e.borrow_mut().realized.take();
         if let Some(old) = old {
+            // Collected BEFORE the branch: the `None` arm needs them to
+            // tell the host what it is about to discard, and `old` is
+            // moved either way.
+            let old_nodes = old.collect_nodes();
             match retire.as_mut() {
                 // Retire-owned teardown: nodes stay attached (no
                 // clear_children) while the hook plays the exit
                 // animation; the hook detaches + drops (see `Retired`).
+                // The release is the hook's to make when it finally drops
+                // them, not ours — they are still live until then.
                 Some(hook) => {
-                    let nodes = old.collect_nodes();
                     hook(Box::new(Retired {
                         realized: old,
                         parent: anchor_e.clone(),
-                        nodes,
+                        nodes: old_nodes,
                     }));
                 }
                 None => {
                     drop(old);
+                    release_discarded(&backend, &old_nodes);
                     backend.borrow_mut().clear_children(&anchor_e);
                 }
             }
@@ -1050,6 +1056,38 @@ fn drive_dyn_anchored<H: Host>(
     });
 
     (anchor, slot)
+}
+
+/// Tell the host that `nodes` — and everything beneath them — are being
+/// DISCARDED, not merely detached, so it can free whatever it keeps per
+/// node.
+///
+/// The host cannot infer this from the structural ops. `clear_children`
+/// and `remove_child` both mean "detach", and detach is also how a
+/// retained subtree gets parked: the navigator's `LazyPersistent` screens
+/// come back on the SAME nodes, so a host that freed on detach would
+/// leave them with nothing to return to. The layer that owns the
+/// lifetime has to say so, and that is here — the points where a
+/// `Realized` is dropped for good.
+///
+/// Backends that keep no per-node state outside the node itself (web,
+/// SSR — the DOM node dies with its last reference) inherit the trait's
+/// no-op and pay nothing. It matters for a host with a side registry
+/// keyed by node: `backend-ios` holds a strong `Retained<UIView>` plus a
+/// Taffy node per view, and without this the discarded subtree's entries
+/// lived forever — every later layout pass walking them, and every
+/// unparented node counting as another root to lay out.
+///
+/// Call it while the subtree is still assembled; a host that walks its
+/// own children to find what to free needs them there.
+fn release_discarded<H: Host>(backend: &Rc<RefCell<H>>, nodes: &[H::Node]) {
+    if nodes.is_empty() {
+        return;
+    }
+    let mut b = backend.borrow_mut();
+    for node in nodes {
+        b.release_subtree(node);
+    }
 }
 
 /// The spliced Dyn driver — port of `when_switch.rs::build_when_spliced` /
@@ -1111,6 +1149,7 @@ fn drive_dyn_spliced<H: Host>(
                         }
                     }
                     drop(old);
+                    release_discarded(&backend, &old_nodes);
                 }
             }
         }
@@ -1314,7 +1353,9 @@ fn drive_keyed_anchored<H: Host>(
         // then the anchor clears (mirrors the anchored Dyn swap).
         let old = slot_e.borrow_mut().take();
         if let Some(old) = old {
+            let old_nodes = old.collect_nodes();
             drop(old);
+            release_discarded(&backend, &old_nodes);
             backend.borrow_mut().clear_children(&anchor_e);
         }
         // Rebuild every row into the anchor through the child-splice loop

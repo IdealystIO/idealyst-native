@@ -91,11 +91,22 @@ fn portal_mounts_children_and_releases_on_swap_out() {
     let log = h.take_log();
     // Spliced dispose order: node out first, then the subtree's
     // teardown (which fires release_portal), then the replacement.
+    //
+    // `release_subtree` trails the portal's own teardown because the
+    // region genuinely IS discarding this subtree — the generic signal
+    // fires for every discarded node, and the portal's specialised
+    // `release_portal` is what actually frees it. The second call is a
+    // no-op by then: `release_portal` has already dropped the container
+    // and its descendants from the host's registries, so the generic
+    // walk finds nothing left to free (and `backend-ios` skips a live
+    // portal container outright, which is what makes the ORDER safe
+    // either way).
     assert_eq!(
         log,
         [
             "remove_child n0 -x n1",
             "release_portal n1",
+            "release_subtree n1",
             "create n3 text \"closed\"",
             "insert_at n0 <- n3 @ 0",
         ]
