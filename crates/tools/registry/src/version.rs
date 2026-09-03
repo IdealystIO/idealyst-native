@@ -62,6 +62,15 @@ impl Bump {
 /// crate, and silently not republishing it would ship a registry that
 /// disagrees with the source.
 pub fn classify(message: &str) -> Bump {
+    // Leading blank lines are trimmed FIRST. `bump_for` reads commits with
+    // `--format=%B%x1e` and splits on the separator, and git emits a newline
+    // between records — so every record except the first arrives starting
+    // with `\n`. Without this trim, `lines().next()` was `""` for all of
+    // them, no colon was found, and they each degraded to `Patch`: only the
+    // NEWEST commit touching a crate was ever really classified. A `feat`
+    // one commit back therefore shipped as x.y.(z+1) instead of
+    // x.(y+1).0 — and a published version is immutable.
+    let message = message.trim_start();
     let subject = message.lines().next().unwrap_or("").trim();
     if message
         .lines()
@@ -238,5 +247,39 @@ mod tests {
     fn the_strongest_signal_wins() {
         let msgs = ["fix: a", "feat: b", "chore: c"];
         assert_eq!(msgs.iter().map(|m| classify(m)).max().unwrap(), Bump::Minor);
+    }
+
+    /// Regression: the records `bump_for` feeds `classify` come from
+    /// `git log --format=%B%x1e` split on the separator, and git writes a
+    /// newline between records — so every commit but the NEWEST arrived with
+    /// a leading blank line, its subject was read as `""`, and it degraded
+    /// to `Patch`. `feat(ios): point the robot bridge at the element
+    /// registry` was three commits back in `backend-ios-mobile` and planned
+    /// as 1.5.3 instead of 1.6.0. Versions are immutable, so this had to be
+    /// caught before a publish, not after.
+    ///
+    /// `the_strongest_signal_wins` above missed it by handing `classify`
+    /// clean subjects the split never produces; this one uses the real
+    /// shape.
+    #[test]
+    fn regression_every_commit_in_a_log_split_is_classified_not_just_the_first() {
+        // One separator-delimited log, exactly as `bump_for` builds it.
+        let log = "fix: newest\n\u{1e}\nfeat: older\n\u{1e}\nchore: oldest\n\u{1e}";
+        let strongest = log
+            .split('\u{1e}')
+            .filter(|c| !c.trim().is_empty())
+            .map(classify)
+            .max()
+            .unwrap();
+        assert_eq!(
+            strongest,
+            Bump::Minor,
+            "a feat that is not the newest commit still earns a minor"
+        );
+
+        // And the pieces, so a failure says which half broke.
+        assert_eq!(classify("\nfeat(ios): reach the element registry"), Bump::Minor);
+        assert_eq!(classify("\n\nfeat!: drop Element::External"), Bump::Major);
+        assert_eq!(classify("\nfix(table): row hover reaches cells"), Bump::Patch);
     }
 }
