@@ -800,6 +800,18 @@ issued from an effect body to that effect's owner, so the callback is skipped
 if the component is torn down while the request is in flight, and a re-run of
 the effect does *not* cancel a request that already went out.
 
+**One trap in the handler case.** A call spawned from a handler is anchored
+to the node that mounted the handler — so if the handler's own first write
+destroys that node, the completion is dropped with no error anywhere
+(request sent, reply discarded, spinner forever). That is the busy-control
+shape: `busy.set(true)` then `spawn_then(save(…), done)`, with `busy` also
+driving the control's own structure. `idea-ui`'s `Button` re-anchors its
+`on_click` to the component's scope, so `loading = busy` is safe there; a
+control you build out of primitives must do the same — take
+`ScopeAlive::current()` in the component body and wrap the handler with
+`wrap0`, which publishes that scope for anything spawned inside. See
+`runtime_core::spawn_then`'s module docs.
+
 ### Batching (opt-in)
 
 Each call is a direct `POST` by default. Concurrent calls coalesce into one
@@ -868,7 +880,13 @@ async fn chat(mut ch: Socket<ClientMsg, ServerMsg>, user: Auth<Principal>)
 ```
 
 Client stub returns the mirrored `UseSocket<ServerMsg, ClientMsg>` —
-`send(msg)` up, `incoming()` down, closes on unmount.
+`send(msg)` up, `incoming()` down, closes on unmount. Unmounting while
+connected (or still connecting) is safe at any moment: the hook's
+driving task guards its writes with the calling scope's liveness token,
+so the close teardown itself performs reports nothing back into freed
+slots. A socket whose URL carries a value that can change — a
+credential read from storage, a room id — can therefore live under a
+`switch` keyed on it.
 
 ### `#[sse]` — server → client over plain HTTP
 

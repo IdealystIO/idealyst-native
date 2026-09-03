@@ -210,7 +210,98 @@ each entry links to its migration guide.
   unit. Reactive/non-static-sheet styles still take the fallback — those
   DO need per-node teardown.
 
+### Added
+
+- **`code_editor(..).min_rows(n)`** — keep the editable area at least
+  `n` lines tall. A `min_height` in author style cannot do this: it
+  sizes the author's box, and CSS gives a plain block box no way to pass
+  that height to a descendant, so the editable area stayed the text's
+  height and the rest of the rectangle was inert — it looked like a text
+  field and no click could focus it. `min_rows` raises the decorated
+  layer's measurement instead, which is the one thing both layers are
+  sized from, and rows are the unit that cannot drift out of step with
+  `EditorMetrics::line_height`. The stack also grows into a
+  flex-container author box (`flex_grow`), which covers the case CSS
+  does propagate.
+
+### Changed
+
+- **`spawn_then`'s docs name the busy-control trap and its remedy.**
+  Handler anchoring means a task dies if the handler's own first write
+  destroys the node that mounted it — which is what a control reporting
+  its own progress does (`busy.set(true)` then `spawn_then(io, done)`).
+  The completion was dropped with no error anywhere: request sent, reply
+  discarded, spinner forever. `idea-ui`'s `Button` has re-anchored its
+  `on_click` to the component's scope since 1.5.2, so the busy button
+  works there; a control built out of primitives has to do the same, and
+  the module docs now spell out the two-line
+  `ScopeAlive::current()` + `wrap0` remedy. Regression:
+  `handler_spawn_reanchored_to_the_component_survives_its_own_rebuild`.
+
 ### Fixed
+
+- **Unmounting a live `use_socket` / `use_sse` no longer aborts the
+  module.** Both hooks create their `incoming`/`status`/`sender` signals
+  in the calling scope and drive the connection from a fully detached
+  task (`driver::spawn_async`, which carries no liveness token) — and
+  closing the connection is exactly what scope teardown does, so the
+  ordinary unmount path woke that task into `status.set(…)` against
+  slots the dropped `Owned` had already freed:
+  `idealyst[stale-signal-handle]`, which on web aborts the wasm module.
+  It fired on every page load of an app whose socket URL carries a
+  credential read from storage (the key hydrates a microtask after
+  mount, the `switch` keyed on it re-keys, the first branch's socket
+  closes), and there was no app-side fix — the signals belong to a scope
+  the author does not own. Both hooks now take a `ScopeAlive` at hook
+  time and guard every write with it, so a post-teardown status report
+  is a no-op instead of an abort; a live scope still sees every status
+  change and message. Regression:
+  `server/tests/hook_scope_teardown.rs`.
+
+- **A failed WebSocket / EventSource connect no longer throws
+  `closure invoked recursively or after being dropped` into the browser
+  event loop.** Dropping a `wasm_bindgen::Closure` invalidates the JS
+  shim that forwards into wasm but does not unregister it from the
+  object it was assigned to, and both web arms dropped their event
+  closures on the connect-failure path while the JS object was still
+  live and still about to emit — `close` for the socket, an auto-retry
+  `error` for the stream (an unclosed `EventSource` retries forever, so
+  it threw once per retry). Nothing user-visible broke; it buried the
+  console in exceptions on exactly the connections someone was
+  debugging. The closures now live in a guard whose `Drop` clears the
+  JS handler slots, so every path — the `?` early return, teardown, a
+  panic between them — detaches on the way out. The web `WebSocket` also
+  gained the close-on-drop its docs and the native arm always had.
+  Regression: `net/tests/web_closure_lifetime.rs` (headless Chrome).
+
+- **`code_editor`'s two layers no longer desync in an ordinary
+  ancestor.** The primitive stretches an editing `text_area` over a
+  decorated `<pre>` that measures the text, so neither layer is meant to
+  scroll. But the web backend pinned `overflow: auto` INLINE on every
+  no-wrap `text_area`, which outranks any class rule and put the
+  property out of the style layer's reach entirely: where the ancestor
+  refused to let the box take the content's width (a block or
+  flex-column parent, including a plain vertical `scroll_view`), the
+  `<textarea>` scrolled itself while the highlight underneath stayed
+  put — two scrollbars, the highlight sliding off the glyphs, the caret
+  walking away from the text. The inline pin is gone (the UA default is
+  already `auto`, so nothing else changes) and both layers now declare
+  `Overflow::Hidden`, clipping in lockstep. The module docs state the
+  ancestor the contract needs (`scroll_view(horizontal = true)` → flex
+  row) and, honestly, the one hole a clip cannot close: a platform text
+  control still scrolls ITSELF to reveal its caret, and that offset is
+  not mirrored onto the decorated layer. Regressions:
+  `backend-web`'s `code_shape_textarea_overflow_is_styleable`
+  (browser) and `codeblock`'s editor style tests.
+
+- **A multi-line `code_editor` placeholder no longer clips.** The
+  editing layer is sized by the decorated layer, which measured the
+  (empty) buffer as one row — so a two-line placeholder was guaranteed
+  to clip, 46px of box against 68px of content. While the buffer is
+  empty the decorated layer now lays the placeholder out in transparent
+  glyphs: it reserves the real width and height, and the visible
+  placeholder is still the editing layer's own native one in the
+  platform's placeholder color.
 
 - **A text input inside a `Popover` or `Menu` can be focused and typed
   into.** The overlay family's fullscreen "click outside to close"

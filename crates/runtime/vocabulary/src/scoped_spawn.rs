@@ -103,6 +103,53 @@
 //! button's; between the other two the innermost dynamic scope wins. See
 //! `ScopeAlive::current` for the full rung order.
 //!
+//! # The trap: a handler whose own write tears its node down
+//!
+//! Handler anchoring guards a task against the row it was pressed on
+//! being dismissed. It also means the task dies if the handler's own
+//! FIRST write destroys the node that mounted it — which is what a
+//! control reporting its own progress does:
+//!
+//! ```ignore
+//! busy.set(true);                    // ← rebuilds the pressable this handler is on
+//! spawn_then(save(text), move |r| {
+//!     busy.set(false);               // ← never runs
+//!     draft.set(String::new());      // ← never runs
+//! });
+//! ```
+//!
+//! Nothing reports it: the request goes out, the reply is discarded, the
+//! spinner spins forever, and the user files the same thing twice. There
+//! is no spelling of that UI which avoids the collision — a `switch`
+//! keyed on the busy flag tears down the branch, and a live
+//! `disabled`/`loading` prop rebuilds the pressable in place.
+//!
+//! **The remedy is to anchor the spawn to the scope the author means by
+//! "while this screen is open" — the enclosing component — by publishing
+//! that scope's token around the handler call:**
+//!
+//! ```ignore
+//! // In the component body, where `current()` sees the component's own
+//! // ownership scope:
+//! let alive = ScopeAlive::current();
+//! let on_press = alive.wrap0(Rc::new(move || {
+//!     busy.set(true);
+//!     spawn_then(save(text), move |r| { busy.set(false); … });
+//! }));
+//! ```
+//!
+//! `wrap0` gates the call on that scope AND publishes its token for the
+//! duration, so a `spawn_then` reached from inside inherits it: alive
+//! across the control's own rebuilds, dead when the component actually
+//! unmounts. `idea-ui`'s `Button` does exactly this, which is why the
+//! busy-button shape works there
+//! (`idea-ui/tests/loading_button_spawn.rs`); a control built out of
+//! primitives has to do it itself.
+//!
+//! Regression: `handler_spawn_reanchored_to_the_component_survives_its_own_rebuild`
+//! (and its negative, `handler_spawned_task_dies_with_its_node`, which
+//! pins the default that makes the re-anchor necessary).
+//!
 //! Outside any world the token is permanently live, so a task spawned from
 //! a test or a boot path still applies its result.
 

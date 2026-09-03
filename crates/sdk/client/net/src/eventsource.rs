@@ -386,8 +386,34 @@ mod imp {
     pub struct EventSourceImpl {
         es: WebEventSource,
         inbound: fut_mpsc::UnboundedReceiver<Result<String, Error>>,
+        _handlers: Handlers,
+    }
+
+    /// Owns the stream's event closures and clears the JS handler slots
+    /// when they die — the `EventSource` twin of the WebSocket arm's
+    /// `Handlers` (see `websocket.rs` for the full rationale).
+    ///
+    /// It matters more here: an `EventSource` RECONNECTS by itself after
+    /// an error, so a stream whose closures were dropped without
+    /// detaching keeps firing into dead shims on a browser-chosen
+    /// retry timer — `closure invoked recursively or after being
+    /// dropped`, once per retry, forever.
+    ///
+    /// Regression: `tests/web_closure_lifetime.rs` (browser).
+    struct Handlers {
+        es: WebEventSource,
         _onmessage: Closure<dyn FnMut(MessageEvent)>,
         _onerror: Closure<dyn FnMut(web_sys::Event)>,
+    }
+
+    impl Drop for Handlers {
+        fn drop(&mut self) {
+            self.es.set_onmessage(None);
+            self.es.set_onerror(None);
+            // `onopen` is dropped once the stream opens, so its slot can
+            // be stale too.
+            self.es.set_onopen(None);
+        }
     }
 
     #[derive(Clone)]
@@ -449,17 +475,30 @@ mod imp {
         };
         es.set_onerror(Some(onerror.as_ref().unchecked_ref()));
 
+        let handlers = Handlers {
+            es: es.clone(),
+            _onmessage: onmessage,
+            _onerror: onerror,
+        };
+
         let result = open_rx
             .await
             .unwrap_or_else(|_| Err(Error::Network("event source open cancelled".into())));
+        es.set_onopen(None);
         drop(onopen);
-        result?;
+        if let Err(e) = result {
+            // The stream never opened, and an unclosed `EventSource`
+            // retries on its own — detach before dropping the closures,
+            // then close so there is no retry at all.
+            drop(handlers);
+            es.close();
+            return Err(e);
+        }
 
         Ok(EventSourceImpl {
             es,
             inbound: in_rx,
-            _onmessage: onmessage,
-            _onerror: onerror,
+            _handlers: handlers,
         })
     }
 
@@ -475,6 +514,9 @@ mod imp {
         }
     }
 
+    /// Close first (the body runs before the fields drop), so the
+    /// detach in `Handlers::drop` still lands ahead of anything the
+    /// browser might deliver.
     impl Drop for EventSourceImpl {
         fn drop(&mut self) {
             self.es.close();

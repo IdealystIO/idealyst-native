@@ -426,6 +426,96 @@ fn handler_spawned_task_applies_while_its_node_lives() {
     assert_eq!(scoped.get(), 7, "the node is still mounted — the result must apply");
 }
 
+/// The documented way out of the trap the test above pins: a control
+/// that rebuilds itself from its own handler's write re-anchors the
+/// handler to the scope that OWNS it, so the completion survives.
+///
+/// The shape is the busy button: press → flip a flag → the flag's
+/// structural hole rebuilds the pressable → the IO lands afterwards.
+/// Here the flag's hole is the inner `child`, the token is taken in the
+/// enclosing build (which stands in for a component body), and the
+/// handler is wrapped with `wrap0` so a `spawn_then` reached from
+/// inside inherits that outer scope. `idea-ui`'s `Button` does this for
+/// its `loading`/`disabled` props; `scoped_spawn`'s module docs point
+/// authors of custom controls here.
+#[test]
+fn handler_spawn_reanchored_to_the_component_survives_its_own_rebuild() {
+    ensure_executor();
+    let h = Harness::new();
+    let gate = Gate::new();
+    let applied: Rc<RefCell<Option<i32>>> = Rc::new(RefCell::new(None));
+
+    // Signals owned by the OUTER scope — the "component" — so the inner
+    // rebuild cannot free them.
+    let outer_state: Rc<RefCell<Option<Signal<i32>>>> = Rc::new(RefCell::new(None));
+    let hole: Rc<RefCell<Option<Signal<bool>>>> = Rc::new(RefCell::new(None));
+
+    let outer_b = outer_state.clone();
+    let hole_b = hole.clone();
+    let g = gate.clone();
+    let applied_b = applied.clone();
+    let _realized = h.mount(h.world.enter(|| {
+        // The component's own scope: state, plus the token every handler
+        // it declares should be anchored to.
+        let state = signal(0i32);
+        *outer_b.borrow_mut() = Some(state);
+        let busy = signal(false);
+        *hole_b.borrow_mut() = Some(busy);
+        let alive = runtime_vocabulary::callback_guard::ScopeAlive::current();
+
+        // The press: flips `busy` (which rebuilds the arm below, taking
+        // the pressable with it) and then spawns.
+        let on_press: Rc<dyn Fn()> = alive.wrap0(Rc::new(move || {
+            busy.set(true);
+            let g = g.clone();
+            let applied = applied_b.clone();
+            spawn_then(
+                async move {
+                    g.await;
+                    7i32
+                },
+                move |v| {
+                    state.set(v);
+                    *applied.borrow_mut() = Some(v);
+                },
+            );
+        }));
+
+        view()
+            .child(move || {
+                // Reading `busy` makes this a structural hole keyed on it:
+                // the flip rebuilds the arm, destroying the pressable that
+                // mounted the handler.
+                let _ = busy.get();
+                let on_press = on_press.clone();
+                view()
+                    .children(vec![runtime_vocabulary::builders::pressable(move || {
+                        on_press()
+                    })
+                    .build()])
+                    .build()
+            })
+            .build()
+    }));
+    h.world.flush();
+
+    h.press_handler(0)();
+    h.world.flush();
+    pump(); // IO in flight; the arm (and the pressable) has been rebuilt
+
+    gate.complete();
+    pump();
+    h.world.flush();
+
+    assert_eq!(
+        *applied.borrow(),
+        Some(7),
+        "a handler re-anchored to its component must survive the rebuild its own write caused"
+    );
+    let state = outer_state.borrow().expect("component state");
+    assert_eq!(state.get(), 7, "and its writes must land");
+}
+
 // ---------------------------------------------------------------------
 // Effect-body spawns — the data-loading shape.
 // ---------------------------------------------------------------------

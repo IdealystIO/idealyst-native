@@ -124,12 +124,36 @@ primitive and written to both layers — not author style. That is the
 whole point: styling one layer and forgetting the other is what makes
 glyphs walk away from the caret one row at a time.
 
-Neither layer scrolls internally. The decorated layer measures to the
-full text and the editor stretches to that same box, so scrolling
-happens on an ancestor and moves both layers as one — put the editor in
-a `scroll_view`. The editor is always code-mode (no soft wrap): the two
-layers would have to choose identical break points, and only `pre`
-guarantees that.
+Neither layer scrolls internally — both clip (`Overflow::Hidden`), so
+scrolling happens on an ancestor and moves them as one. The editor is
+always code-mode (no soft wrap): the two layers would have to choose
+identical break points, and only `pre` guarantees that.
+
+**Long lines need a specific ancestor**, because the box can only take
+the width of the longest line where something gives it unbounded space
+to measure into:
+
+```text
+scroll_view(horizontal = true)   ← unbounded available width
+  view(flex_direction = Row)     ← a flex item may not shrink below its content
+    code_editor(..)              ← box = longest line; both layers move as one
+```
+
+Anywhere else (a block or flex-column parent, including a plain vertical
+`scroll_view`) the box stays the container's width and both layers clip
+at it. Nothing the user scrolls can separate them, but a platform text
+control still scrolls itself to reveal its caret, and that offset is not
+mirrored onto the decorated layer — so typing past the right edge in a
+too-narrow ancestor drifts the highlight. The style substrate has no
+`max-content` width to size the box with instead; the horizontal
+scroller is what supplies it.
+
+**Height** comes from the text. `min_rows(n)` keeps the editable area at
+least `n` lines tall by raising the decorated layer's measurement — a
+`min_height` in author style sizes the author's box only, and the part
+of it past the text is inert. A multi-line `placeholder` is measured
+too (in transparent glyphs, while the buffer is empty), so it cannot
+clip.
 
 One handler serves every backend. The hard part — an attributed run list
 realized as one native node that wraps through the platform's own text
@@ -205,9 +229,13 @@ highlight** (the decorated layer not following an edit).
 
 - [x] **Web** — verified in `examples/fiddle`: both layers report identical
   font/size/line-height/padding/tab-size and the same bounding rect;
-  `scrollHeight == clientHeight` on the textarea (neither layer scrolls
-  internally); typing re-splits the runs in place; a dotted red
-  `Underline` renders under text whose own colour is unchanged.
+  `scrollWidth == clientWidth` and `scrollHeight == clientHeight` on the
+  textarea in the documented ancestor, with a 300-character line
+  (measured 2763 px on both layers — neither scrolls internally);
+  `overflow-x: hidden` reaches the textarea, so the style layer — not
+  the backend's old inline `overflow: auto` — decides; typing re-splits
+  the runs in place; a dotted red `Underline` renders under text whose
+  own colour is unchanged.
 - [ ] **iOS** — ⚠️ not yet device-confirmed. Caret should track the glyphs
   down a 200-line file; check the software keyboard's IME composition
   updates the decorated layer.

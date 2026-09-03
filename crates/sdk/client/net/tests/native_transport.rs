@@ -4,6 +4,11 @@
 //! exercising it — per CLAUDE.md rule 8. The harness spins up a fresh
 //! hyper server per test so they're independent and can run in parallel.
 
+// Native-only: the harness is a hyper/tokio server, which cannot build
+// for wasm32 (and `wasm-pack test` compiles every test target in the
+// crate, not just the one it runs).
+#![cfg(not(target_arch = "wasm32"))]
+
 mod common;
 
 use std::time::Duration;

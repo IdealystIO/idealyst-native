@@ -326,6 +326,14 @@ impl<In: Clone + PartialEq + 'static, Out: serde::Serialize + 'static> UseSocket
 /// `on_cleanup` (scope drop) closes the socket, which ends the spawned
 /// recv loop. Inbound messages land in the reactive `incoming()` signal.
 ///
+/// Unmounting while connected — or while still connecting — is safe at
+/// any moment: the recv loop's writes are guarded by the calling scope's
+/// liveness token, so the close that teardown itself performs reports
+/// nothing back into the freed `status`/`incoming` slots. The hook is
+/// therefore usable under a `switch` whose key can change while the
+/// socket is live (an API key that hydrates from storage and rides the
+/// connect URL is the case that found this).
+///
 /// ```ignore
 /// #[component]
 /// fn live_tasks() -> Element {
@@ -377,6 +385,28 @@ where
         });
     }
 
+    // Liveness token for every write the driving task makes. Taken HERE,
+    // in the calling component's scope (a build, so `ScopeAlive::current`
+    // anchors to the subtree being built) — not inside the async block,
+    // which resumes with no ambient scope to anchor to.
+    //
+    // The task below is DETACHED (`spawn_async` takes no token), and
+    // teardown is precisely what wakes it: the cleanup above closes the
+    // socket, `recv()` then yields `None`, and the continuation runs
+    // against a scope whose `Owned` has already freed `incoming`,
+    // `status` and `sender`. Every one of those writes then aborts the
+    // module with `idealyst[stale-signal-handle]` — on web, on every
+    // re-key of a `switch` that owns the hook. The token makes the
+    // post-teardown writes no-ops instead, which is the correct
+    // semantic: the scope that would have read them is gone.
+    //
+    // Per-write guarding (rather than `spawn_then`'s all-or-nothing
+    // callback) is right for this shape: each write here is a single
+    // independent status/message delivery, and the loop must keep
+    // running across many of them.
+    //
+    // Regression: `tests/hook_scope_teardown.rs`.
+    let alive = runtime_core::ScopeAlive::current();
     let url = url.into();
     runtime_core::driver::spawn_async(async move {
         match Socket::<In, Out>::connect(&url).await {
@@ -384,10 +414,11 @@ where
                 let tx = sock.sender();
                 {
                     let mut c = coord.borrow_mut();
-                    if c.cancelled {
+                    if c.cancelled || !alive.get() {
                         // Unmounted before the connect landed — close now.
+                        // No `status` write: `cancelled` is set by the
+                        // scope-drop cleanup, so the slot is already freed.
                         tx.close();
-                        status.set(SocketStatus::Closed);
                         return;
                     }
                     c.sender = Some(tx.clone());
@@ -401,6 +432,12 @@ where
                 status.set(SocketStatus::Open);
 
                 while let Some(res) = sock.recv().await {
+                    // Re-checked per iteration, not once: teardown can
+                    // land between any two deliveries, and the close it
+                    // performs is what resumes this loop.
+                    if !alive.get() {
+                        return;
+                    }
                     match res {
                         Ok(msg) => incoming.set_always(Some(msg)),
                         Err(_) => {
@@ -409,9 +446,18 @@ where
                         }
                     }
                 }
-                status.set(SocketStatus::Closed);
+                // The recv loop ends on ANY close, including the one
+                // teardown just performed — this guard is what keeps that
+                // ordinary path from writing a freed slot.
+                if alive.get() {
+                    status.set(SocketStatus::Closed);
+                }
             }
-            Err(_) => status.set(SocketStatus::Error),
+            Err(_) => {
+                if alive.get() {
+                    status.set(SocketStatus::Error);
+                }
+            }
         }
     });
 
@@ -529,6 +575,12 @@ where
         });
     }
 
+    // Same liveness token as `use_socket`, for the same reason — the
+    // driving task is detached and the scope drop that closes the stream
+    // is what resumes it. See `use_socket` for the full rationale.
+    //
+    // Regression: `tests/hook_scope_teardown.rs`.
+    let alive = runtime_core::ScopeAlive::current();
     let url = url.into();
     runtime_core::driver::spawn_async(async move {
         match net::EventSource::connect(&url).await {
@@ -536,9 +588,8 @@ where
                 let closer = es.closer();
                 {
                     let mut c = coord.borrow_mut();
-                    if c.cancelled {
+                    if c.cancelled || !alive.get() {
                         closer.close();
-                        status.set(SseStatus::Closed);
                         return;
                     }
                     c.closer = Some(closer);
@@ -546,6 +597,9 @@ where
                 status.set(SseStatus::Open);
 
                 while let Some(res) = es.recv().await {
+                    if !alive.get() {
+                        return;
+                    }
                     match res {
                         Ok(data) => {
                             if let Ok(value) = serde_json::from_str::<T>(&data) {
@@ -561,9 +615,15 @@ where
                         }
                     }
                 }
-                status.set(SseStatus::Closed);
+                if alive.get() {
+                    status.set(SseStatus::Closed);
+                }
             }
-            Err(_) => status.set(SseStatus::Error),
+            Err(_) => {
+                if alive.get() {
+                    status.set(SseStatus::Error);
+                }
+            }
         }
     });
 

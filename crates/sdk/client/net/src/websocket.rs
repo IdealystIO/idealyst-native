@@ -409,10 +409,46 @@ mod imp {
     pub struct WebSocketImpl {
         ws: WebSysWs,
         inbound: fut_mpsc::UnboundedReceiver<Result<WsMessage, Error>>,
-        // Closures must outlive the socket so the browser can call them.
+        // Closures must outlive the socket so the browser can call them
+        // — and must be DETACHED from it before they die. See `Handlers`.
+        _handlers: Handlers,
+    }
+
+    /// Owns the socket's event closures and clears the JS handler slots
+    /// when they die.
+    ///
+    /// Dropping a `Closure` invalidates the JS shim that forwards into
+    /// wasm, but it does not unregister anything: the slot on the JS
+    /// `WebSocket` still points at the dead shim. A socket that can
+    /// still emit — one whose handshake just failed, or one dropped
+    /// while open — then throws `closure invoked recursively or after
+    /// being dropped` into the event loop on its next `error`/`close`.
+    /// It does not trap the module, so nothing user-visible breaks; it
+    /// buries the console in exceptions on exactly the connections
+    /// someone is debugging.
+    ///
+    /// Tying the detach to the closures' own `Drop` makes the mistake
+    /// unrepresentable rather than path-by-path: `connect`'s `?` early
+    /// return, `WebSocketImpl`'s teardown and a panic between them all
+    /// clear the slots on the way out.
+    ///
+    /// Regression: `tests/web_closure_lifetime.rs` (browser).
+    struct Handlers {
+        ws: WebSysWs,
         _onmessage: Closure<dyn FnMut(MessageEvent)>,
         _onclose: Closure<dyn FnMut(CloseEvent)>,
         _onerror: Closure<dyn FnMut(Event)>,
+    }
+
+    impl Drop for Handlers {
+        fn drop(&mut self) {
+            self.ws.set_onmessage(None);
+            self.ws.set_onclose(None);
+            self.ws.set_onerror(None);
+            // `onopen` is dropped as soon as the handshake resolves, so
+            // its slot can be stale too.
+            self.ws.set_onopen(None);
+        }
     }
 
     pub async fn connect(url: &str) -> Result<WebSocketImpl, Error> {
@@ -475,19 +511,33 @@ mod imp {
         };
         ws.set_onerror(Some(onerror.as_ref().unchecked_ref()));
 
+        let handlers = Handlers {
+            ws: ws.clone(),
+            _onmessage: onmessage,
+            _onclose: onclose,
+            _onerror: onerror,
+        };
+
         // Await the handshake. `onopen` is only needed until this resolves.
         let result = open_rx
             .await
             .unwrap_or_else(|_| Err(Error::Network("websocket open cancelled".into())));
+        ws.set_onopen(None);
         drop(onopen);
-        result?;
+        if let Err(e) = result {
+            // The handshake failed, but the JS socket is still live and
+            // WILL deliver `close` after this `error`. Detach first, then
+            // close, so that event finds an empty slot instead of the
+            // dead shims of the closures we are about to drop.
+            drop(handlers);
+            let _ = ws.close();
+            return Err(e);
+        }
 
         Ok(WebSocketImpl {
             ws,
             inbound: in_rx,
-            _onmessage: onmessage,
-            _onclose: onclose,
-            _onerror: onerror,
+            _handlers: handlers,
         })
     }
 
@@ -505,6 +555,18 @@ mod imp {
             WsSenderImpl {
                 ws: self.ws.clone(),
             }
+        }
+    }
+
+    /// Close-on-drop, matching the type's documented contract and the
+    /// native arm's `Drop`. The web arm had none: a dropped socket
+    /// stayed open in the browser AND lost its handlers, which is the
+    /// dropped-closure throw again on the close that eventually came.
+    /// Closing here happens BEFORE `handlers` drops (fields drop after
+    /// the body), so the detach still lands ahead of the close event.
+    impl Drop for WebSocketImpl {
+        fn drop(&mut self) {
+            let _ = self.ws.close();
         }
     }
 

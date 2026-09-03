@@ -38,7 +38,7 @@ use wasm_bindgen::JsCast;
 /// Set up a `#app` element in the document so `WebBackend::new`
 /// can find a mount point. Idempotent — drops any prior `#app` and
 /// re-creates it so tests don't bleed state.
-fn install_mount() {
+pub(crate) fn install_mount() {
     let doc = web_sys::window().expect("window").document().expect("document");
     if let Some(existing) = doc.get_element_by_id("app") {
         existing.remove();

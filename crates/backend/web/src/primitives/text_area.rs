@@ -86,7 +86,18 @@ pub(crate) fn create(
         // Strip the browser-default border/outline so the editor sits
         // flush over its syntax-highlight overlay (the fiddle supplies
         // its own chrome via the attached class).
-        style.push_str(" border: 0; outline: none; white-space: pre; overflow: auto;");
+        // NOTE `overflow` is deliberately absent. An INLINE declaration
+        // outranks every class rule, so pinning `overflow: auto` here
+        // made the property unreachable from the style layer — and the
+        // `<textarea>` UA sheet already defaults a no-wrap box to
+        // `auto`, so scrolling behaviour is unchanged for anyone who
+        // says nothing. What it unblocks is a consumer that must say
+        // `Overflow::Hidden`: `codeblock`'s `code_editor` stretches the
+        // editing layer over a decorated layer that does NOT scroll, so
+        // a self-scrolling textarea slides the caret off the glyphs
+        // underneath it (the two-layer desync `editor.rs` documents).
+        // Regression: `code_shape_textarea_overflow_is_styleable`.
+        style.push_str(" border: 0; outline: none; white-space: pre;");
     }
     let _ = textarea.set_attribute("style", &style);
     if wrap {
@@ -462,6 +473,74 @@ mod tests {
         // `scrollHeight` omits, or the box lands short and overflows.
         assert_eq!(autosize_height(40, 2.0), 42.0);
         assert_eq!(autosize_height(40, 0.0), 40.0);
+    }
+
+    /// Regression: the code-editor shape (`wrap = false`) pinned
+    /// `overflow: auto` INLINE, which outranks every class rule and so
+    /// put the property out of the style layer's reach entirely.
+    /// `codeblock`'s `code_editor` needs `Overflow::Hidden` on this
+    /// node — its editing layer is stretched over a decorated layer
+    /// that does not scroll, so a self-scrolling textarea drags the
+    /// caret off the glyphs it is supposed to sit on.
+    ///
+    /// Both halves matter: a consumer that says nothing must still
+    /// scroll (the UA default), and a consumer that says `hidden` must
+    /// win. A browser test because "which declaration wins" is a
+    /// cascade question — a unit test on the seed string could not
+    /// answer it.
+    #[wasm_bindgen_test]
+    fn code_shape_textarea_overflow_is_styleable() {
+        crate::tests::install_mount();
+        let mut backend = WebBackend::new("#app");
+        let node = create(
+            &mut backend,
+            "a line wider than the box, by a long way indeed",
+            None,
+            false, // code-editor shape
+            None,
+            None,
+            Rc::new(|_| {}),
+            None,
+        );
+        let doc = web_sys::window().unwrap().document().unwrap();
+        let ta: web_sys::HtmlTextAreaElement = node.clone().unchecked_into();
+        let el: web_sys::Element = node.clone().unchecked_into();
+        doc.body().unwrap().append_child(&node).unwrap();
+
+        let inline = ta.get_attribute("style").unwrap_or_default();
+        assert!(
+            !inline.contains("overflow"),
+            "overflow must not be pinned inline — the style layer can never \
+             outrank it: {inline}"
+        );
+
+        let win = web_sys::window().unwrap();
+        let computed = |el: &web_sys::Element| {
+            win.get_computed_style(el)
+                .unwrap()
+                .unwrap()
+                .get_property_value("overflow-x")
+                .unwrap()
+        };
+        assert_eq!(
+            computed(&el),
+            "auto",
+            "saying nothing must keep the UA default: a no-wrap textarea scrolls"
+        );
+
+        // Now the case the code editor needs: a class rule clips it.
+        let style_tag = doc.create_element("style").unwrap();
+        style_tag.set_text_content(Some(".clip-me { overflow: hidden; }"));
+        doc.head().unwrap().append_child(&style_tag).unwrap();
+        el.set_class_name("clip-me");
+        assert_eq!(
+            computed(&el),
+            "hidden",
+            "a class rule must be able to stop the editing layer scrolling itself"
+        );
+
+        doc.body().unwrap().remove_child(&node).unwrap();
+        style_tag.remove();
     }
 
     #[wasm_bindgen_test]

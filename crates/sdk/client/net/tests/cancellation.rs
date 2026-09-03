@@ -7,6 +7,11 @@
 //! client's cancel races the response — and the simpler harness
 //! always replies eagerly.
 
+// Native-only: the harness is a hyper/tokio server, which cannot build
+// for wasm32 (and `wasm-pack test` compiles every test target in the
+// crate, not just the one it runs).
+#![cfg(not(target_arch = "wasm32"))]
+
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;

@@ -7816,6 +7816,8 @@ dependencies = [
  "tokio-tungstenite 0.21.0",
  "tungstenite 0.21.0",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
  "web-sys",
 ]
 
@@ -10754,6 +10756,7 @@ dependencies = [
  "net",
  "reqwest",
  "runtime-core",
+ "runtime-world",
  "serde",
  "serde_json",
  "server-macros",

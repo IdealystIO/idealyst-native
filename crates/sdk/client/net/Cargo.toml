@@ -125,7 +125,10 @@ ndk-context = "0.1"
 futures-channel = "0.3"
 tungstenite = "0.21"
 
-[dev-dependencies]
+# Native test servers (tokio/hyper/mio) cannot build for wasm32, so the
+# native dev-deps are target-gated — otherwise `wasm-pack test` fails to
+# compile the dev graph before reaching a single test.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
@@ -133,3 +136,14 @@ http-body-util = "0.1"
 # Echo server for the WebSocket round-trip test.
 tokio-tungstenite = "0.21"
 futures-util = "0.3"
+
+# Browser-side harness for the event-closure lifetime regressions
+# (`tests/web_closure_lifetime.rs`), which need a real JS WebSocket /
+# EventSource and the window `error` event. Runs via
+# `wasm-pack test --headless --chrome --package net`.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["ErrorEvent", "EventTarget", "Window"] }

@@ -41,9 +41,12 @@
 //! (`examples/fiddle`, before it moved onto this primitive) had:
 //!
 //! - **No scroll desync.** Neither layer scrolls internally: the
-//!   decorated layer measures to the full text, and the editor is
-//!   stretched to that same box, so the content always fits. Scrolling
-//!   happens on an ancestor and moves both layers as one. The
+//!   decorated layer measures to the full text, the editor is stretched
+//!   to that same box, and both layers clip rather than scroll
+//!   (`overflow: hidden` on each — see `editor_layer_style`). Scrolling
+//!   happens on an ancestor and moves both layers as one — which is why
+//!   the ancestor is part of the contract; see "the ancestor a long
+//!   line needs" below for what the box does without it. The
 //!   alternative — a fixed-height box with an internally scrolling
 //!   textarea — needs the highlight layer's scroll offset kept in sync
 //!   with the editor's on every wheel tick, keystroke and caret move,
@@ -54,16 +57,70 @@
 //!   one layer and forget the other — the failure that makes glyphs
 //!   walk away from the caret one row at a time.
 //!
-//! ## No soft wrap
+//! ## No soft wrap, and the ancestor a long line needs
 //!
 //! The editor is always code-mode (`white-space: pre` on web, the same
 //! no-wrap shape on native). Soft wrap would require the two layers to
 //! choose *identical* break points, and the framework's style substrate
 //! has no `white-space` property to put both of them in `pre-wrap` — the
 //! decorated layer relies on the `<pre>` element for its whitespace
-//! semantics on web. Long lines overflow horizontally; put the editor in
-//! a scrolling ancestor and both layers scroll together, because the
-//! decorated layer's own measured width drives the box.
+//! semantics on web.
+//!
+//! So long lines run off the side, and **which ancestor the editor sits
+//! in decides what happens then**. The box can only take the width of
+//! the longest line where something gives it unbounded space to measure
+//! into:
+//!
+//! ```text
+//! scroll_view(horizontal = true)   ← unbounded available width
+//!   view(flex_direction = Row)     ← a flex item may not shrink below its content
+//!     code_editor(..)              ← box = longest line; both layers scroll as one
+//! ```
+//!
+//! In any other ancestor — a block or flex-COLUMN parent, including a
+//! plain vertical `scroll_view` — the box stays the container's width
+//! and the text runs past it. Both layers then CLIP at that width
+//! (`overflow: Hidden` on each), so nothing the *user* scrolls can
+//! separate them: no scrollbars, and a wheel or trackpad gesture pans
+//! the ancestor, never one layer.
+//!
+//! **The remaining hole, and why the scroller above is a requirement
+//! rather than a suggestion.** A clipped editable box is still an
+//! editable box: every platform's text control scrolls ITSELF to keep
+//! the caret visible (a `<textarea>` at `overflow: hidden` does exactly
+//! this — measured at `scrollLeft: 2107` with the caret past the edge),
+//! and that offset is not mirrored onto the decorated layer. So typing
+//! beyond the right edge in a too-narrow ancestor still slides the
+//! glyphs out from under the caret.
+//!
+//! It is not fixable at this layer. The box can only cover its own text
+//! by being as wide as the longest line, and the style substrate has no
+//! `max-content` width to ask for that (nor does Taffy) — the
+//! horizontal scroller is what supplies the unbounded space instead.
+//! Mirroring the offset onto the decorated layer is the design this
+//! primitive exists to replace: it needs the editing layer's scroll
+//! offset piped through a capability the backend seam does not have,
+//! and it drifts the moment one path is missed.
+//!
+//! ## Height comes from the text — a minimum is `min_rows`
+//!
+//! The box is measured by the decorated layer, so the way to make the
+//! editor open taller than its buffer is
+//! [`CodeEditorBuilder::min_rows`], which raises that measurement.
+//!
+//! A `min_height` in [`CodeEditorBuilder::with_style`] sizes the
+//! author's own box instead — border, background, padding — and CSS
+//! gives a plain block box no way to pass that height to a descendant,
+//! so the editable area stays the text's height and the rest of the
+//! rectangle is inert: it looks like a text field and no click focuses
+//! it. Use `min_rows` for the editor and author style for the chrome.
+//! (Where the author's box IS a flex container, `stack_style`'s
+//! `flex_grow` does carry the extra height through.)
+//!
+//! What author style must never do is change the METRICS — font, size,
+//! line box and padding belong to [`EditorMetrics`] and are written to
+//! both layers together, because a mismatch between them is exactly
+//! what walks glyphs away from the caret.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -74,7 +131,7 @@ use runtime_shared::{
     Color, FontFamily, Length, Position, RunUnderline, StyleRules, TextRun, TextRunStyle, Tokenized,
 };
 use runtime_vocabulary::builders;
-use runtime_vocabulary::caps::{DocumentOps, TextOps};
+use runtime_vocabulary::caps::TextOps;
 use runtime_vocabulary::glue::IntoElement;
 use runtime_vocabulary::style_attach::{attach_style, IntoStyleProp, StyleProp, StyleServices};
 use runtime_world::{effect, ReadSignal, Signal};
@@ -178,6 +235,17 @@ pub(crate) struct CodeEditorPrim {
     pub(crate) value: Signal<String>,
     pub(crate) decorations: DecorationSource,
     pub(crate) metrics: EditorMetrics,
+    /// The editing layer's placeholder, kept HERE as well as on that
+    /// layer: the box both layers live in is measured by the DECORATED
+    /// layer, so an empty buffer with a two-line placeholder measured
+    /// one row and clipped the second. The decorated layer lays the
+    /// placeholder out in transparent glyphs while the buffer is empty
+    /// — it reserves the box, the editing layer's own native
+    /// placeholder paints it. See `layer_runs`.
+    pub(crate) placeholder: Option<String>,
+    /// Floor on the decorated layer's measured row count — see
+    /// [`CodeEditorBuilder::min_rows`].
+    pub(crate) min_rows: u32,
     pub(crate) style: RefCell<Option<StyleProp>>,
     pub(crate) editor: RefCell<Option<Element>>,
 }
@@ -191,6 +259,7 @@ pub struct CodeEditorBuilder {
     metrics: EditorMetrics,
     style: Option<StyleProp>,
     placeholder: Option<String>,
+    min_rows: u32,
     test_id: Option<&'static str>,
     ref_fill: Option<Box<dyn FnOnce(runtime_shared::primitives::text_area::TextAreaHandle)>>,
 }
@@ -224,6 +293,7 @@ pub fn code_editor(value: Signal<String>, on_change: impl Fn(String) + 'static) 
         metrics: EditorMetrics::default(),
         style: None,
         placeholder: None,
+        min_rows: 0,
         test_id: None,
         ref_fill: None,
     }
@@ -316,8 +386,37 @@ impl CodeEditorBuilder {
     }
 
     /// Placeholder shown while the buffer is empty.
+    ///
+    /// May be more than one line: while the buffer is empty the
+    /// decorated layer lays the placeholder out in transparent glyphs,
+    /// so the box measures the placeholder's own width and height
+    /// rather than one empty row (which clipped every line but the
+    /// first). The visible placeholder is still the editing layer's
+    /// native one, in the platform's placeholder color.
     pub fn placeholder(mut self, text: impl Into<String>) -> Self {
         self.placeholder = Some(text.into());
+        self
+    }
+
+    /// Keep the editable area at least `rows` lines tall, whatever the
+    /// buffer holds.
+    ///
+    /// This is the height knob for a code editor, and it is not the same
+    /// thing as a `min_height` in [`with_style`](Self::with_style).
+    /// Author style sizes the author's own BOX — border, background,
+    /// padding. The editable area is sized by the decorated layer's
+    /// measurement of the text, which is where a minimum has to be
+    /// applied for both layers to agree on it. A `min_height` that
+    /// exceeds the text therefore grows the box but leaves the lower
+    /// part of it inert: it looks like a text field and no click can
+    /// focus it. `min_rows` grows the measurement itself, so the whole
+    /// rectangle is the editor.
+    ///
+    /// Rows, not pixels, because the row height is
+    /// [`EditorMetrics::line_height`] — a px minimum would have to be
+    /// kept in step with it by hand.
+    pub fn min_rows(mut self, rows: u32) -> Self {
+        self.min_rows = rows;
         self
     }
 
@@ -379,6 +478,7 @@ impl IntoElement for CodeEditorBuilder {
         if let Some(k) = self.on_key_down {
             editor = editor.on_key_down(move |ev| k(ev));
         }
+        let placeholder = self.placeholder.clone();
         if let Some(p) = self.placeholder {
             editor = editor.placeholder(p);
         }
@@ -394,6 +494,8 @@ impl IntoElement for CodeEditorBuilder {
                 value: self.value,
                 decorations: self.decorations,
                 metrics: self.metrics,
+                placeholder,
+                min_rows: self.min_rows,
                 style: RefCell::new(self.style),
                 editor: RefCell::new(Some(editor.build())),
             },
@@ -405,10 +507,37 @@ impl IntoElement for CodeEditorBuilder {
 /// Style for the stack: the containing block the editing layer's
 /// `position: absolute` resolves against, stretched across the author's
 /// box.
+///
+/// `align_self: Stretch` stretches the CROSS axis (width) only, so the
+/// stack used to stay the text's height inside a taller author box —
+/// and with it the `inset: 0` editing layer, leaving a tall bordered
+/// rectangle whose lower half no click could focus. `flex_grow` closes
+/// that where the author's box is a flex container (any flex property
+/// in their style promotes it), and costs nothing when it has no spare
+/// height of its own — free space is zero, so the content-sized default
+/// is unchanged.
+///
+/// It cannot close it in general: a `min_height` on a plain block box
+/// reaches no descendant in CSS (a percentage height resolves against
+/// `height`, not `min-height`, and there is no free space to
+/// distribute). A minimum on the EDITABLE area is therefore
+/// [`CodeEditorBuilder::min_rows`], which raises the decorated layer's
+/// measurement — the one thing both layers are sized from.
+///
+/// `overflow: Hidden` keeps the two layers clipping IDENTICALLY. The
+/// decorated `<pre>` is in flow and overflows the box on a long line;
+/// the editing layer is `inset: 0` against that same box and no longer
+/// scrolls itself (see `editor_layer_style`). Without this the visible
+/// glyphs would spill past the author's border while the caret stopped
+/// at it. In the ancestor the contract asks for (a horizontal
+/// `scroll_view` → flex row) the box takes the longest line, so nothing
+/// overflows and this clip never bites.
 fn stack_style() -> StyleRules {
     StyleRules {
         position: Some(Position::Relative),
         align_self: Some(runtime_shared::AlignSelf::Stretch),
+        flex_grow: Some(Tokenized::Literal(1.0)),
+        overflow: Some(runtime_shared::Overflow::Hidden),
         ..Default::default()
     }
 }
@@ -464,6 +593,20 @@ fn editor_layer_style(m: &EditorMetrics) -> StyleRules {
             m.caret_color.clone().unwrap_or_else(|| m.text_color.clone()),
         )),
         background: Some(Tokenized::Literal(Color("transparent".into()))),
+        // The editing layer must NEVER be the thing that scrolls. It is
+        // stretched to the box the decorated layer measured, so by
+        // design it always fits — but when an ancestor refuses to let
+        // that box take the content's width (a block or flex-COLUMN
+        // parent, including a plain vertical `scroll_view`), the box
+        // stays the container's width while the text does not, and a
+        // `<textarea>` at the browser default `overflow: auto` then
+        // scrolls ITSELF. That is the layer desync the module docs
+        // promise cannot happen: two horizontal scrollbars, the
+        // highlight drifting off the glyphs, the caret walking away
+        // from the text. Hiding the overflow turns a silent desync into
+        // a plain clip, and the documented remedy (a horizontal
+        // `scroll_view` → flex row) removes the clip too.
+        overflow: Some(runtime_shared::Overflow::Hidden),
         ..Default::default()
     }
 }
@@ -492,6 +635,74 @@ pub(crate) fn runs_for(text: &str, decorations: &[Decoration]) -> Vec<TextRun> {
     // on that row either. Without this the decorated layer measures one
     // row short and the editor's last line is clipped.
     if text.is_empty() || text.ends_with('\n') {
+        runs.push(TextRun::plain(" "));
+    }
+    runs
+}
+
+/// The runs the DECORATED layer shows for one state of the editor:
+/// the buffer's decorated runs, or — while the buffer is empty and a
+/// placeholder is set — the placeholder itself in transparent glyphs.
+///
+/// The transparent pass exists purely to MEASURE. Everything about the
+/// editor's box comes from this layer, so an empty buffer measured one
+/// row and a two-line placeholder was guaranteed to clip (46px of box,
+/// 68px of content). Laying the placeholder out here reserves its real
+/// width and height; the visible placeholder is still the editing
+/// layer's own native one, which each backend paints in its platform's
+/// placeholder color.
+pub(crate) fn layer_runs(
+    text: &str,
+    decorations: &[Decoration],
+    placeholder: Option<&str>,
+    min_rows: u32,
+) -> Vec<TextRun> {
+    let (mut runs, shown) = match placeholder {
+        Some(p) if text.is_empty() && !p.is_empty() => (placeholder_runs(p), p),
+        _ => (runs_for(text, decorations), text),
+    };
+    pad_to_min_rows(&mut runs, shown, min_rows);
+    runs
+}
+
+/// Append blank rows until the layer measures `min_rows` of them.
+///
+/// The floor belongs HERE, on the layer that measures, and not on the
+/// author's box: the editing layer is stretched to whatever this layer
+/// measured, so a minimum applied anywhere else grows a rectangle whose
+/// lower half is not the editor. Whitespace rows are invisible in a
+/// layer whose glyphs are the only visible ones.
+fn pad_to_min_rows(runs: &mut Vec<TextRun>, shown: &str, min_rows: u32) {
+    let have = row_count(shown);
+    let want = min_rows as usize;
+    if want <= have {
+        return;
+    }
+    // A trailing " " for the same reason `runs_for` appends one: a row
+    // with nothing on it has nothing to lay out.
+    let mut pad = "\n".repeat(want - have);
+    pad.push(' ');
+    runs.push(TextRun::plain(pad));
+}
+
+/// Rows a buffer occupies. `""` is one row (the caret sits on it) and a
+/// trailing newline opens a real, empty last row.
+fn row_count(text: &str) -> usize {
+    text.split('\n').count()
+}
+
+/// The placeholder as one transparent run — plus the trailing-row
+/// treatment `runs_for` applies, for a placeholder that ends in a
+/// newline.
+fn placeholder_runs(placeholder: &str) -> Vec<TextRun> {
+    let mut runs = vec![TextRun::styled(
+        placeholder.to_string(),
+        TextRunStyle {
+            color: Some(Tokenized::Literal(Color("transparent".into()))),
+            ..Default::default()
+        },
+    )];
+    if placeholder.ends_with('\n') {
         runs.push(TextRun::plain(" "));
     }
     runs
@@ -559,7 +770,12 @@ where
         .attach_html_style(&pre, "tab-size", TAB_SIZE);
 
     let initial_text = prim.value.get();
-    let initial_runs = runs_for(&initial_text, &prim.decorations.compute(&initial_text));
+    let initial_runs = layer_runs(
+        &initial_text,
+        &prim.decorations.compute(&initial_text),
+        prim.placeholder.as_deref(),
+        prim.min_rows,
+    );
     let decorated = backend
         .borrow_mut()
         .create_styled_text(&initial_runs, &a11y);
@@ -578,7 +794,12 @@ where
         let prim = prim.clone();
         let _ = effect(move || {
             let text = prim.value.get();
-            let runs = runs_for(&text, &prim.decorations.compute(&text));
+            let runs = layer_runs(
+                &text,
+                &prim.decorations.compute(&text),
+                prim.placeholder.as_deref(),
+                prim.min_rows,
+            );
             b.borrow_mut().update_styled_text(&node, &runs);
         });
     }
@@ -698,6 +919,136 @@ mod tests {
             editor.caret_color,
             Some(Tokenized::Literal(Color(DEFAULT_TEXT_COLOR.into()))),
             "caret defaults to the text color, never to the transparent glyph color"
+        );
+    }
+
+    /// Regression: the editing layer is stretched to the box the
+    /// decorated layer measured, so it must never scroll itself. Where
+    /// the ancestor refuses to let that box take the content's width, a
+    /// `<textarea>` at the browser default `overflow: auto` scrolled
+    /// while the decorated layer under it did not — two scrollbars, the
+    /// highlight sliding off the glyphs, the caret walking away from
+    /// the text. The module docs promise this cannot happen.
+    #[test]
+    fn regression_editing_layer_never_scrolls_itself() {
+        let m = EditorMetrics::default();
+        assert_eq!(
+            editor_layer_style(&m).overflow,
+            Some(runtime_shared::Overflow::Hidden),
+            "the editing layer must clip, never scroll"
+        );
+    }
+
+    /// Both layers must clip at the same box, or the decorated glyphs
+    /// spill past the author's border while the caret stops at it.
+    #[test]
+    fn regression_both_layers_clip_at_the_same_box() {
+        let m = EditorMetrics::default();
+        assert_eq!(stack_style().overflow, Some(runtime_shared::Overflow::Hidden));
+        assert_eq!(editor_layer_style(&m).overflow, stack_style().overflow);
+    }
+
+    /// The stack must take BOTH axes of the box it is given: the cross
+    /// axis by stretching, the main axis by growing. Without the grow,
+    /// a flex-container author box taller than the text left the
+    /// `inset: 0` editing layer short, and the lower half of the
+    /// rectangle could not be clicked into focus. (A plain block author
+    /// box distributes no height at all in CSS — that case is
+    /// `min_rows`, pinned below.)
+    #[test]
+    fn stack_takes_both_axes_of_the_authors_box() {
+        assert_eq!(
+            stack_style().flex_grow,
+            Some(Tokenized::Literal(1.0)),
+            "the stack must grow into the author's box on the MAIN axis"
+        );
+        assert_eq!(
+            stack_style().align_self,
+            Some(runtime_shared::AlignSelf::Stretch),
+            "…while still stretching across it on the cross axis"
+        );
+    }
+
+    /// Regression: the editing layer is sized by the DECORATED layer,
+    /// which measured the (empty) buffer as one row — so a two-line
+    /// placeholder was guaranteed to clip: 46px of box against 68px of
+    /// content. The decorated layer now lays the placeholder out while
+    /// the buffer is empty.
+    #[test]
+    fn regression_multiline_placeholder_is_measured_by_the_decorated_layer() {
+        let runs = layer_runs("", &[], Some("first line\nsecond line"), 0);
+        let plain = runtime_shared::styled_text::plain_text_of(&runs);
+        assert_eq!(
+            plain, "first line\nsecond line",
+            "an empty buffer must measure the placeholder, not one blank row"
+        );
+        assert_eq!(
+            runs[0].style.as_ref().and_then(|s| s.color.clone()),
+            Some(Tokenized::Literal(Color("transparent".into()))),
+            "the measuring pass must paint nothing — the editing layer's own \
+             native placeholder is what the user sees"
+        );
+    }
+
+    /// The placeholder must vanish from the measuring layer the instant
+    /// there is a buffer to show, or it would double the box's width.
+    #[test]
+    fn a_non_empty_buffer_ignores_the_placeholder() {
+        let runs = layer_runs("x", &[], Some("a much longer placeholder"), 0);
+        assert_eq!(runtime_shared::styled_text::plain_text_of(&runs), "x");
+    }
+
+    /// With no placeholder the empty buffer keeps its one measurable
+    /// row (the caret has to have somewhere to sit).
+    #[test]
+    fn an_empty_buffer_without_a_placeholder_still_measures_one_row() {
+        let runs = layer_runs("", &[], None, 0);
+        assert_eq!(runtime_shared::styled_text::plain_text_of(&runs), " ");
+        let runs = layer_runs("", &[], Some(""), 0);
+        assert_eq!(runtime_shared::styled_text::plain_text_of(&runs), " ");
+    }
+
+    /// Regression: a `min_height` in author style grew the author's box
+    /// while the editable area — sized by the decorated layer's
+    /// measurement — kept the text's height, so the lower half of a
+    /// tall rectangle could not be clicked into focus. `min_rows`
+    /// applies the floor where the box is actually decided.
+    #[test]
+    fn min_rows_pads_the_measuring_layer_to_the_floor() {
+        let runs = layer_runs("one line", &[], None, 5);
+        let plain = runtime_shared::styled_text::plain_text_of(&runs);
+        assert_eq!(
+            plain.split('\n').count(),
+            5,
+            "the measuring layer must lay out 5 rows, got {plain:?}"
+        );
+        assert!(plain.starts_with("one line"), "the buffer still comes first: {plain:?}");
+    }
+
+    /// A buffer past the floor is untouched — the floor is a minimum,
+    /// not a height.
+    #[test]
+    fn min_rows_never_shrinks_or_pads_a_longer_buffer() {
+        let runs = layer_runs("a\nb\nc\nd", &[], None, 2);
+        assert_eq!(runtime_shared::styled_text::plain_text_of(&runs), "a\nb\nc\nd");
+    }
+
+    /// The floor also applies while the placeholder is what is being
+    /// measured, so an empty editor opens at its resting size.
+    #[test]
+    fn min_rows_applies_over_the_placeholder_measurement() {
+        let runs = layer_runs("", &[], Some("type here"), 4);
+        let plain = runtime_shared::styled_text::plain_text_of(&runs);
+        assert_eq!(plain.split('\n').count(), 4, "got {plain:?}");
+        assert!(plain.starts_with("type here"));
+    }
+
+    /// The default (`0`) must not add a single row.
+    #[test]
+    fn min_rows_default_is_inert() {
+        assert_eq!(
+            runtime_shared::styled_text::plain_text_of(&layer_runs("a", &[], None, 0)),
+            "a"
         );
     }
 

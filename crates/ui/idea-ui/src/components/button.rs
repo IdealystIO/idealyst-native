@@ -80,6 +80,15 @@ pub struct ButtonProps {
     /// button's text color) and blocks the press while the action runs.
     /// Default `false`. Unlike `disabled` it does not dim the surface — the
     /// button reads as "busy", not "off".
+    ///
+    /// Safe to drive from this button's own `on_click` (`busy.set(true)`
+    /// → `spawn_then(io, done)` → `busy.set(false)`): the flip rebuilds
+    /// the pressable, but the handler is re-anchored to the Button's own
+    /// scope, so work spawned from it survives that rebuild and dies
+    /// only when the Button unmounts. A control you build out of
+    /// primitives does NOT get this for free — see the trap and the
+    /// one-line remedy in `runtime_core::spawn_then`'s module docs.
+    /// Regression: `tests/loading_button_spawn.rs`.
     pub loading: bool,
     /// When `Some`, fills the given `Ref<PressableHandle>` on mount.
     /// Useful for anchoring an `Overlay` to this button. A `Ref` fills

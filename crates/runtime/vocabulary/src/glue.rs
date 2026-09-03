@@ -2533,6 +2533,12 @@ pub mod primitives {
             /// the box edge; `false` keeps them unwrapped and scrolls
             /// horizontally — the code-editor shape. Mirrors
             /// `TextAreaBuilder::wrap`, which this wrapper otherwise hid.
+            ///
+            /// The horizontal scrolling is the platform's own default for
+            /// an unwrapped text control, not something the framework
+            /// pins, so a style may say `Overflow::Hidden` and get a clip
+            /// instead — which is what `codeblock`'s `code_editor` does
+            /// for the layer it stretches over its highlight layer.
             pub fn wrap(mut self, wrap: bool) -> Self {
                 self.b = self.b.wrap(wrap);
                 self
