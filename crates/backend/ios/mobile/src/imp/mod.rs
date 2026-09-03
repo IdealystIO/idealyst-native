@@ -384,6 +384,28 @@ thread_local! {
     /// thread for hundreds of ms on a large screen.
     static LAYOUT_PASS_QUEUED: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
+
+    /// The hidden full-size observer installed by [`IosBackend::set_host_root`].
+    /// Marking it as needing layout is what enlists UIKit's own layout phase
+    /// as a drain point — see [`schedule_layout_pass`].
+    static LAYOUT_OBSERVER: std::cell::RefCell<Option<Retained<UIView>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Remember the layout observer so a queued pass can mark it as needing
+/// layout. Called once, from `set_host_root`.
+pub(crate) fn register_layout_observer(view: Retained<UIView>) {
+    LAYOUT_OBSERVER.with(|o| *o.borrow_mut() = Some(view));
+}
+
+/// Ask UIKit to run its layout phase, so the queued Taffy pass gets drained
+/// there. See [`schedule_layout_pass`] for why this is the drain that matters.
+fn invalidate_layout_observer() {
+    LAYOUT_OBSERVER.with(|o| {
+        if let Some(v) = o.borrow().as_ref() {
+            let _: () = unsafe { msg_send![&**v, setNeedsLayout] };
+        }
+    });
 }
 
 /// Post the main-queue backstop that drains a queued layout pass.
@@ -438,7 +460,7 @@ fn post_layout_drain() {
 /// that shows the new views) and the main-queue backstop (late, but
 /// guaranteed to happen). Whichever arrives first does the work; the
 /// other finds the flag clear and returns.
-fn drain_queued_layout_pass() {
+pub(crate) fn drain_queued_layout_pass() {
     use crate::layout_drain_policy::{decide, Drain};
 
     let queued = LAYOUT_PASS_QUEUED.with(|q| q.get());
@@ -514,6 +536,25 @@ pub fn schedule_layout_pass() {
     // the first call. See `backend_apple_core::pre_commit` for why the
     // dispatch below still has to exist.
     backend_apple_core::pre_commit::install_pre_commit_hook(drain_queued_layout_pass);
+    // THE drain that closes the gap the other two cannot.
+    //
+    // The runloop observer only fires at `BeforeWaiting`, and the dispatch
+    // backstop only when libdispatch next drains the main queue. Neither is
+    // reached by a CoreAnimation commit performed from INSIDE the commit
+    // phase — UIKit's own, during touch handling — so such a commit painted
+    // a subtree whose layout had not run: every child at its parent's
+    // origin, labels drawing nothing and icons drawing at their layer's
+    // natural size. That was the "stranded glyphs" artifact, and the
+    // off-centre spinner was the same thing one level up (a centring box
+    // with no size yet drops its child at its origin).
+    //
+    // UIKit runs its LAYOUT phase before every commit it makes, whatever
+    // triggered it. Marking the observer as needing layout enlists that
+    // phase as a drain point, so a queued pass is guaranteed to run before
+    // the next paint — and, unlike the synchronous pass `insert` used to
+    // run, it runs AFTER the whole mutation batch rather than partway
+    // through one, so it can never lay out a half-built tree.
+    invalidate_layout_observer();
     post_layout_drain();
 }
 
@@ -862,6 +903,16 @@ impl IosBackend {
         let _: () = unsafe { msg_send![&observer, setHidden: true] };
         let _: () = unsafe { msg_send![&observer, setUserInteractionEnabled: false] };
         unsafe { view.addSubview(&observer) };
+        // Hand the observer to the layout scheduler: a queued pass marks it
+        // as needing layout so UIKit's layout phase drains it before the
+        // next commit. See `schedule_layout_pass`.
+        {
+            let as_view: Retained<UIView> = unsafe {
+                let ptr = Retained::as_ptr(&observer) as *mut UIView;
+                Retained::retain(ptr).unwrap()
+            };
+            register_layout_observer(as_view);
+        }
         // Retain alongside other backend-owned ObjC objects so the
         // observer outlives this scope.
         let obj: Retained<NSObject> = unsafe {

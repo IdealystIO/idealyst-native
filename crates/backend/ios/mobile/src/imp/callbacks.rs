@@ -532,6 +532,22 @@ declare_class!(
         #[method(layoutSubviews)]
         fn layout_subviews(&self) {
             let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+            // Drain any queued Taffy pass HERE, in UIKit's layout phase.
+            //
+            // This is the only drain point that precedes every commit. The
+            // pre-commit runloop observer misses a commit made from inside
+            // the commit phase, and the dispatch backstop is a turn late —
+            // between them a freshly built subtree could be painted with no
+            // layout at all (children stacked at their parent's origin,
+            // which is what the stranded-glyph artifact was). UIKit always
+            // lays out before it commits, so draining here cannot be
+            // outrun. `schedule_layout_pass` marks this view as needing
+            // layout to bring us here.
+            //
+            // Ordering matters: this runs BEFORE the viewport-change work
+            // below, so a pass queued by ordinary reactivity is flushed on
+            // its own terms and a genuine resize still queues a fresh one.
+            crate::imp::drain_queued_layout_pass();
             let bounds: objc2_foundation::CGRect = unsafe { msg_send![self, bounds] };
             let w = bounds.size.width as f32;
             let h = bounds.size.height as f32;
