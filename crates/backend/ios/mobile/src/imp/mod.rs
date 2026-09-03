@@ -384,51 +384,6 @@ thread_local! {
     /// thread for hundreds of ms on a large screen.
     static LAYOUT_PASS_QUEUED: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
-
-    /// Whether the current runloop turn has already executed a
-    /// synchronous full-tree layout pass via `Backend::insert`'s
-    /// window-attached fast-path. The first insert into a live parent
-    /// still syncs (so `switch` / `when` toggles paint without flicker),
-    /// but every subsequent insert in the same turn falls through to the
-    /// coalesced `schedule_layout_pass()` instead — otherwise a fresh
-    /// screen mount with N children does N full-tree layouts in a row.
-    /// Cleared on the next libdispatch turn.
-    static SYNC_LAYOUT_DONE_THIS_TURN: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
-}
-
-/// Mark "a sync layout already ran this runloop turn" and arm a
-/// libdispatch callback to clear the flag at the start of the next
-/// turn. Idempotent — repeated calls in the same turn re-arm nothing.
-fn arm_sync_layout_done_reset() {
-    if SYNC_LAYOUT_DONE_THIS_TURN.with(|c| c.replace(true)) {
-        return; // already armed
-    }
-    extern "C" {
-        static _dispatch_main_q: std::ffi::c_void;
-        fn dispatch_async_f(
-            queue: *const std::ffi::c_void,
-            context: *mut std::ffi::c_void,
-            work: extern "C" fn(*mut std::ffi::c_void),
-        );
-    }
-    extern "C" fn reset(_ctx: *mut std::ffi::c_void) {
-        SYNC_LAYOUT_DONE_THIS_TURN.with(|c| c.set(false));
-    }
-    unsafe {
-        dispatch_async_f(
-            &_dispatch_main_q as *const _ as *const std::ffi::c_void,
-            std::ptr::null_mut(),
-            reset,
-        );
-    }
-}
-
-/// True iff a sync layout has already run this turn — caller should
-/// fall through to the deferred path instead of triggering another
-/// full-tree layout.
-fn sync_layout_already_done_this_turn() -> bool {
-    SYNC_LAYOUT_DONE_THIS_TURN.with(|c| c.get())
 }
 
 /// Post the main-queue backstop that drains a queued layout pass.
@@ -2741,35 +2696,34 @@ impl IosBackend {
         // surfaced as a too-tall panel after switching from a
         // long-content tab to a short-content one.
         self.layout.mark_dirty(p_layout);
-        // Layout strategy: sync only when the parent is already
-        // attached to a window (i.e. live in the host view
-        // hierarchy). That cleanly discriminates the two cases:
+        // ALWAYS defer. Never lay out from inside an insert.
         //
-        // - Mid-build insert (parent is a freshly-created floating
-        //   UIView, not yet added to any superview): `parent.window`
-        //   is nil. Defer — the build pass will keep inserting
-        //   ancestors and eventually `finish()` runs the closing
-        //   layout pass. A sync layout here would re-compute against
-        //   a partial tree and cache wrong sizes for the new node's
-        //   subtree (this was the user-visible "oversized CodeBlock"
-        //   bug from an earlier sync-on-mount shortcut).
+        // This used to sync on the first insert into a window-attached
+        // parent, so a `switch` / `when` toggle painted its new branch
+        // in the same frame as its UIKit insert rather than a tick
+        // late. The goal was right and the mechanism was wrong: a
+        // reactive rebuild is a TEARDOWN followed by N inserts, and
+        // `run_layout_pass_global` is global — so firing it on insert
+        // #1 laid out and applied frames for a tree in which every
+        // OTHER region torn down in the same flush was still empty.
         //
-        // - Post-mount insert into a live parent — `switch` branch
-        //   swaps, `when` toggles, dynamic list inserts: `parent.window`
-        //   is the app window. Sync — the new child needs a frame
-        //   in the same frame as its UIKit insert, otherwise the
-        //   one-tick deferred layout shows a visible flicker (blank
-        //   between `clear_children` and the next-tick paint).
-        let parent_window: *const NSObject = unsafe { msg_send![parent_view, window] };
-        if !parent_window.is_null() && !sync_layout_already_done_this_turn() {
-            // First window-attached insert this runloop turn — sync so
-            // a `switch`/`when` toggle paints without flicker. Arm the
-            // reset so subsequent inserts in the same turn coalesce.
-            arm_sync_layout_done_reset();
-            self.run_layout_pass_global();
-        } else {
-            schedule_layout_pass();
-        }
+        // What that looked like: switching a project tab tore down the
+        // header's three reactive regions (crumbs, title, context bar),
+        // and the first insert of the rebuild ran a full pass while
+        // they were empty. The header measured 16pt instead of 150,
+        // the page under it jumped up 67pt, and the next pass — 16ms
+        // later, a display frame — put it back. One frame of the whole
+        // screen lurching upward and dropping back, on every tab
+        // change.
+        //
+        // `schedule_layout_pass` is now strictly better at the very
+        // job the sync path existed for: its pre-commit runloop
+        // observer drains at the END of this turn but BEFORE
+        // CoreAnimation commits, so the new branch still paints in the
+        // frame that first shows it — laid out from the FINISHED tree
+        // instead of a half-built one. See
+        // `backend_apple_core::pre_commit`.
+        schedule_layout_pass();
 
         // Retry pending sticky registrations now that this subtree
         // is wired into the parent chain. The walker fires
@@ -2875,21 +2829,12 @@ impl IosBackend {
 
         // Reflow after the removal — SYMMETRIC with `insert_at`. Marking the
         // parent dirty only invalidates its cached size; nothing recomputes
-        // layout until a pass runs. `insert_at` runs one so a spliced child
-        // paints immediately; removal needs the mirror so a content-sized
-        // ancestor *shrinks* to fit the now-shorter child set in the same
-        // turn (the "Layers popover doesn't shrink on iOS" bug). Same
-        // window-attached discriminator: a live parent reflows synchronously;
-        // a mid-build removal on a floating parent defers to the closing
-        // `finish()` pass (a sync pass against a partial tree would cache
-        // wrong sizes).
-        let parent_window: *const NSObject = unsafe { msg_send![parent_view, window] };
-        if !parent_window.is_null() && !sync_layout_already_done_this_turn() {
-            arm_sync_layout_done_reset();
-            self.run_layout_pass_global();
-        } else {
-            schedule_layout_pass();
-        }
+        // layout until a pass runs, and a content-sized ancestor has to
+        // *shrink* to fit the now-shorter child set in the same turn (the
+        // "Layers popover doesn't shrink on iOS" bug). The pre-commit drain
+        // is what makes "the same turn" true; see the note in `insert` for
+        // why this is no longer a synchronous pass.
+        schedule_layout_pass();
     }
 
     /// Insert `child` into `parent` at `index` among its current subviews
@@ -2960,18 +2905,10 @@ impl IosBackend {
         // measured size.
         self.layout.mark_dirty(p_layout);
 
-        // Same window-attached layout-pass discriminator as `insert`. A
-        // splice into a live parent (the post-mount `when` toggle) syncs so
-        // the new branch paints in the same frame (no flicker); a mid-build
-        // splice into a floating parent defers to the closing `finish()`
-        // pass (a sync pass against a partial tree would cache wrong sizes).
-        let parent_window: *const NSObject = unsafe { msg_send![parent_view, window] };
-        if !parent_window.is_null() && !sync_layout_already_done_this_turn() {
-            arm_sync_layout_done_reset();
-            self.run_layout_pass_global();
-        } else {
-            schedule_layout_pass();
-        }
+        // Deferred, like `insert` — the pre-commit drain still paints the
+        // spliced branch in the frame that first shows it, and does it from
+        // the finished tree. See the note in `insert`.
+        schedule_layout_pass();
 
         // Retry pending sticky registrations for the just-spliced subtree,
         // exactly as `insert` does (the walker fires `apply_style` before
