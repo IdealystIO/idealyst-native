@@ -2083,6 +2083,32 @@ impl IosBackend {
         }
         unsafe { indicator.startAnimating() };
 
+        // Same intrinsic-size measurer as `create_slider`, `create_toggle`
+        // and the icon path: `UIActivityIndicatorView` has a real
+        // `intrinsicContentSize` (20x20 Medium, 37x37 Large) and Taffy does
+        // not know about it. Without this the spinner's box measures 0x0.
+        //
+        // A zero-size LABEL draws nothing, which is why this went unseen for
+        // so long. UIKit paints the indicator's own layer at its natural
+        // size regardless of the box, so the glyph lands at the top-left
+        // corner of an empty 0x0 box instead of where layout put it. Inside
+        // a centring container that reads as "roughly centred, slightly
+        // off", not as an obvious break — every loading state in the app was
+        // drawing its spinner ~10pt out of place.
+        let layout = self.layout_for_view(&indicator);
+        let indicator_for_measure = indicator.clone();
+        self.layout.set_measure_fn(
+            layout,
+            std::rc::Rc::new(move |known_dimensions, _available_space| {
+                let intrinsic: objc2_foundation::CGSize =
+                    unsafe { msg_send![&indicator_for_measure, intrinsicContentSize] };
+                runtime_layout::Size {
+                    width: known_dimensions.width.unwrap_or(intrinsic.width as f32),
+                    height: known_dimensions.height.unwrap_or(intrinsic.height as f32),
+                }
+            }),
+        );
+
         let node = IosNode::ActivityIndicator(indicator);
         a11y::apply(
             &node,
