@@ -63,9 +63,9 @@ impl Bump {
 /// disagrees with the source.
 pub fn classify(message: &str) -> Bump {
     // Leading blank lines are trimmed FIRST. `bump_for` reads commits with
-    // `--format=%B%x1e` and splits on the separator, and git emits a newline
-    // between records — so every record except the first arrives starting
-    // with `\n`. Without this trim, `lines().next()` was `""` for all of
+    // `--format=%H%x1f%B%x1e` and splits on the separator, and git emits a
+    // newline between records — so every record except the first arrives
+    // starting with `\n`. Without this trim, `lines().next()` was `""` for all of
     // them, no colon was found, and they each degraded to `Patch`: only the
     // NEWEST commit touching a crate was ever really classified. A `feat`
     // one commit back therefore shipped as x.y.(z+1) instead of
@@ -106,7 +106,8 @@ pub fn classify(message: &str) -> Bump {
 /// that the registry starts where the git tags left off instead of skipping a
 /// version for no reason.
 pub fn bump_for(root: &Path, rel_dir: &str, nested: &[String], since: &str) -> Result<Bump> {
-    // `%x1e` (record separator) between commits: commit bodies contain blank
+    // `%x1e` (record separator) between commits, `%x1f` (unit separator)
+    // between a commit's sha and its message: commit bodies contain blank
     // lines, so no newline-based delimiter is safe here.
     let args = log_args(rel_dir, nested, since);
     let out = Command::new("git")
@@ -124,15 +125,99 @@ pub fn bump_for(root: &Path, rel_dir: &str, nested: &[String], since: &str) -> R
         );
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    Ok(text
-        .split('\u{1e}')
-        .filter(|c| !c.trim().is_empty())
-        .map(classify)
-        .max()
-        .unwrap_or(Bump::None))
+    let mut strongest = Bump::None;
+    for record in text.split('\u{1e}').filter(|c| !c.trim().is_empty()) {
+        let (sha, message) = record.trim_start().split_once('\u{1f}').unwrap_or(("", record));
+        if !sha.is_empty() && is_own_version_bump(root, rel_dir, nested, sha)? {
+            continue;
+        }
+        strongest = strongest.max(classify(message));
+    }
+    Ok(strongest)
+}
+
+/// Is this commit, as far as this crate is concerned, nothing but the release
+/// that published it?
+///
+/// A release is cut from a clean tree — the tool records HEAD, *then* writes
+/// the new versions into the manifests, and the bumps are committed
+/// afterwards. So `releases.json` always names a commit that predates the
+/// bump commit, and the very next plan sees `<crate>/Cargo.toml` changed for
+/// every crate the last release touched. That republished 16 crates whose
+/// source had not moved a byte since — precisely the churn the registry
+/// migration exists to avoid, since a new version invalidates the consumer's
+/// cached build.
+///
+/// A commit is skipped only when its ENTIRE footprint in this crate is the
+/// `version` key of the crate's own manifest. Any other line in that file, or
+/// any other file, and it is a real change.
+fn is_own_version_bump(root: &Path, rel_dir: &str, nested: &[String], sha: &str) -> Result<bool> {
+    let manifest = format!("{rel_dir}/Cargo.toml");
+    let files = run_git(root, &show_args("--name-only", rel_dir, nested, sha))?;
+    let touched: Vec<&str> = files.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if touched != [manifest.as_str()] {
+        return Ok(false);
+    }
+    // `-U0`: no context lines, so every `+`/`-` line in the patch is a line
+    // the commit actually changed.
+    let patch = run_git(root, &show_args("-U0", &manifest, &[], sha))?;
+    Ok(is_version_only_patch(&patch))
+}
+
+fn show_args(mode: &str, path: &str, nested: &[String], sha: &str) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "show".into(),
+        "--format=".into(),
+        mode.to_string(),
+        sha.to_string(),
+        "--".into(),
+        path.to_string(),
+    ];
+    args.extend(nested.iter().map(|d| format!(":(exclude){d}")));
+    args
+}
+
+fn run_git(root: &Path, args: &[String]) -> Result<String> {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .with_context(|| format!("running `git {}`", args.join(" ")))?;
+    if !out.status.success() {
+        bail!("`git {}` failed:\n{}", args.join(" "), String::from_utf8_lossy(&out.stderr));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Does a unified diff change nothing but a top-level `version = "…"` line?
+///
+/// Deliberately strict: `version.workspace = true` has the key
+/// `version.workspace`, not `version`, and does not match — a publishable
+/// crate carries its own literal version, and anything else in that file is
+/// a change worth republishing for.
+fn is_version_only_patch(patch: &str) -> bool {
+    let mut saw_a_version_line = false;
+    for line in patch.lines() {
+        if line.starts_with("+++") || line.starts_with("---") {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix('+').or_else(|| line.strip_prefix('-')) else {
+            continue;
+        };
+        let Some((key, _)) = rest.split_once('=') else { return false };
+        if key.trim() != "version" {
+            return false;
+        }
+        saw_a_version_line = true;
+    }
+    saw_a_version_line
 }
 
 /// Arguments for the "what changed in this crate?" git query.
+///
+/// `%H%x1f%B%x1e` gives each record as `<sha>\x1f<message>`: the sha is what
+/// lets `bump_for` ask whether a commit's only footprint in this crate was
+/// the version line the last release wrote (see `is_own_version_bump`).
 ///
 /// Nested workspace members own their own releases, so their files are
 /// excluded even though they live under this crate's path. There are 49 such
@@ -145,7 +230,7 @@ fn log_args(rel_dir: &str, nested: &[String], since: &str) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "log".into(),
         "--no-merges".into(),
-        "--format=%B%x1e".into(),
+        "--format=%H%x1f%B%x1e".into(),
         format!("{since}..HEAD"),
         "--".into(),
         rel_dir.to_string(),
@@ -281,5 +366,96 @@ mod tests {
         assert_eq!(classify("\nfeat(ios): reach the element registry"), Bump::Minor);
         assert_eq!(classify("\n\nfeat!: drop Element::External"), Bump::Major);
         assert_eq!(classify("\nfix(table): row hover reaches cells"), Bump::Patch);
+    }
+
+    #[test]
+    fn the_log_format_carries_the_sha_ahead_of_the_message() {
+        let args = log_args("crates/css", &[], "abc123");
+        assert_eq!(args[2], "--format=%H%x1f%B%x1e");
+    }
+
+    /// The shape a release's own bump commit leaves behind: one `version`
+    /// line, nothing else.
+    #[test]
+    fn a_lone_version_line_is_recognised_as_a_release_bump() {
+        let patch = "--- a/crates/css/Cargo.toml\n+++ b/crates/css/Cargo.toml\n@@ -3 +3 @@\n-version = \"1.5.2\"\n+version = \"1.5.3\"\n";
+        assert!(is_version_only_patch(patch));
+    }
+
+    /// Anything alongside the version line makes it a real change. A commit
+    /// that bumps the version AND adds a dependency must still republish.
+    #[test]
+    fn a_version_line_beside_other_edits_is_a_real_change() {
+        let patch = "--- a/crates/css/Cargo.toml\n+++ b/crates/css/Cargo.toml\n@@ -3 +3 @@\n-version = \"1.5.2\"\n+version = \"1.5.3\"\n@@ -20 +20,2 @@\n+serde = { workspace = true }\n";
+        assert!(!is_version_only_patch(patch));
+        // An empty patch is not a version bump either — nothing was skipped.
+        assert!(!is_version_only_patch(""));
+        // `version.workspace = true` is a different key and does not count.
+        assert!(!is_version_only_patch("+version.workspace = true\n"));
+    }
+
+    /// Regression: a release records the commit it was cut from, then writes
+    /// the new versions and the bumps are committed AFTERWARDS — so the next
+    /// plan saw `<crate>/Cargo.toml` changed for every crate the previous
+    /// release touched and republished all of them, source unchanged. On the
+    /// 1.5.3 -> 1.5.4 plan that was 16 of 19 crates: pure churn, and a new
+    /// version throws away every consumer's cached build of that crate,
+    /// which is the one thing the registry migration exists to prevent.
+    ///
+    /// Driven against real git, because the bug is entirely in what `git log`
+    /// and `git show` report for a path — a unit test over strings would
+    /// have passed against the broken code.
+    #[test]
+    fn regression_a_releases_own_version_bump_does_not_plan_another_release() {
+        let dir = std::env::temp_dir().join(format!("registry-bumptest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("crates/css/src")).unwrap();
+        std::fs::create_dir_all(dir.join("crates/net/src")).unwrap();
+
+        let git = |args: &[&str]| {
+            let out = Command::new("git").args(args).current_dir(&dir).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+
+        let write = |path: &str, body: &str| std::fs::write(dir.join(path), body).unwrap();
+        write("crates/css/Cargo.toml", "[package]\nname = \"css\"\nversion = \"1.5.2\"\n");
+        write("crates/css/src/lib.rs", "pub fn a() {}\n");
+        write("crates/net/Cargo.toml", "[package]\nname = \"net\"\nversion = \"1.5.2\"\n");
+        write("crates/net/src/lib.rs", "pub fn a() {}\n");
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "feat: the world"]);
+
+        let released = String::from_utf8_lossy(
+            &Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&dir).output().unwrap().stdout,
+        )
+        .trim()
+        .to_string();
+
+        // The release's own bump commit — versions only, no source.
+        write("crates/css/Cargo.toml", "[package]\nname = \"css\"\nversion = \"1.5.3\"\n");
+        write("crates/net/Cargo.toml", "[package]\nname = \"net\"\nversion = \"1.5.3\"\n");
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "chore(release): 2 crates — 1.5.3"]);
+
+        // Then one real fix, in `css` alone.
+        write("crates/css/src/lib.rs", "pub fn a() {}\npub fn b() {}\n");
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "fix(css): promote a flex container"]);
+
+        assert_eq!(
+            bump_for(&dir, "crates/net", &[], &released).unwrap(),
+            Bump::None,
+            "net's only change since the last release was that release's own version bump"
+        );
+        assert_eq!(
+            bump_for(&dir, "crates/css", &[], &released).unwrap(),
+            Bump::Patch,
+            "css really did change and must still be released"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

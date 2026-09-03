@@ -108,6 +108,14 @@ An unrecognised subject earns a patch rather than nothing — a commit that
 changed a crate's files still changed it, and skipping it would publish a
 registry that disagrees with the source.
 
+**One commit is skipped: a release's own version bump.** A release is cut from
+a clean tree, so the tool records HEAD *before* writing the new versions, and
+the bumps are committed afterwards — the recorded commit therefore always
+predates the bump commit, and the next plan would see `<crate>/Cargo.toml`
+changed for every crate the last release touched. A commit is ignored only
+when its entire footprint in a crate is the `version` key of that crate's own
+manifest; a version bump alongside any other edit is still a real change.
+
 Publishing is **incremental**, one crate at a time in dependency order, with
 each crate's tarball and index entry uploaded before the next is packaged.
 That is not an optimisation: `cargo package` resolves a crate's dependencies
