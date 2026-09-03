@@ -1904,6 +1904,41 @@ mod tests {
         assert!(!css.contains("flex-direction"), "no flex-direction: {css}");
     }
 
+    // A stack screen's flow-fill overlay must make the screen root a flex
+    // CONTAINER, not merely a flex item. It carries `flex: 1 1 0` so the
+    // screen fills the outlet, and its whole point is that a screen taller
+    // than the outlet scrolls through its OWN scroll surfaces rather than
+    // blowing the column open — which needs those surfaces to be flex
+    // items that can shrink against `min-height: 0`.
+    //
+    // Without an explicit `display`, none of the properties it sets is a
+    // flex-CONTAINER property, so the auto-promotion never fires and the
+    // screen root lowers to `display: block` on web. A child sized with
+    // `flex_grow: 1` is then inert and collapses to content height, and a
+    // child scroll surface contributes zero intrinsic height — so a screen
+    // built as "pinned header over a growing scroller" renders as the
+    // header alone. That is invisible on native, where every view is a
+    // flex column by default; it is web-only, and it is why this assert
+    // exists rather than a comment.
+    #[test]
+    fn screen_flow_fill_makes_the_screen_root_a_flex_container() {
+        let rules = runtime_shared::primitives::navigator::screen_flow_fill_rules();
+        assert!(
+            flex_promoted(&rules),
+            "the flow-fill overlay must promote to a flex container"
+        );
+        let css = rules_to_css(&rules);
+        assert!(css.contains("display: flex"), "{css}");
+        // Direction is NOT set by the overlay: the pin supplies the
+        // framework's column default only when the merged set is silent,
+        // so a screen whose own root asks for `row` keeps it.
+        assert!(
+            rules.flex_direction.is_none(),
+            "the overlay must not pin a direction over the screen's own"
+        );
+        assert!(css.contains("flex-direction: column"), "{css}");
+    }
+
     // An explicit `display: flex` still emits flex + the mobile-first
     // `flex-direction: column` default; and grid track lowering covers the
     // non-`Fr` sizing functions.

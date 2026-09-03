@@ -1779,6 +1779,7 @@ pub fn stack_screen_fill_rules() -> Rc<crate::style::StyleRules> {
 pub fn screen_flow_fill_rules() -> Rc<crate::style::StyleRules> {
     use crate::style::Length;
     Rc::new(crate::style::StyleRules {
+        display: Some(crate::DisplayKind::Flex),
         width: Some(Length::Percent(100.0).into()),
         flex_grow: Some(1.0.into()),
         flex_shrink: Some(1.0.into()),
