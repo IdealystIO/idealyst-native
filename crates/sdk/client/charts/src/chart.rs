@@ -1002,24 +1002,64 @@ pub fn Chart(props: &ChartProps) -> Element {
     // when a label's text or position actually changes.
     let y_labels = {
         let label_style = label_style.clone();
+        // TWO nested switches, and the split is load-bearing.
+        //
+        // The OUTER one is keyed on the reserved width alone — which is
+        // spec-derived, so it changes when an author turns the axis off
+        // and effectively never otherwise. It owns the box that HOLDS the
+        // gutter's space in the plot row.
+        //
+        // The INNER one carries the label churn. Folding them into one
+        // switch keyed on `(width, labels)` — which is what this was —
+        // tore the whole gutter out of the flex row every time a label
+        // moved, and the labels carry PIXEL positions, so they move
+        // whenever the plot resizes. That closed a loop with no fixed
+        // point: gutter torn down -> the `flex_grow: 1` plot takes its
+        // 44px -> the wider plot is measured and written to `plot_w` ->
+        // `output` recomputes -> new label positions -> new key -> gutter
+        // torn down again. Measured on iOS at ~125 relayouts/second with
+        // the plot size cycling 312x166 / 356x166 / 312x188 — the swings
+        // are exactly the two gutters — and the canvas repainting on
+        // every one of them, which is what made the chart flicker.
         switch(
-            move || {
-                (
-                    gutters.get().0,
-                    output
-                        .get()
-                        .scene
-                        .labels
-                        .iter()
-                        .filter(|l| matches!(l.role, LabelRole::AxisY | LabelRole::AxisTitleY))
-                        .cloned()
-                        .collect::<Vec<_>>(),
-                )
-            },
-            move |(w, labels): &(f32, Vec<LabelPlacement>)| {
-                view(labels.iter().map(|l| label_element(l, label_style.clone(), *w)).collect())
+            move || gutters.get().0,
+            move |w: &f32| {
+                let w = *w;
+                let label_style = label_style.clone();
+                let inner = switch(
+                    move || {
+                        output
+                            .get()
+                            .scene
+                            .labels
+                            .iter()
+                            .filter(|l| matches!(l.role, LabelRole::AxisY | LabelRole::AxisTitleY))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    },
+                    move |labels: &Vec<LabelPlacement>| {
+                        view(
+                            labels
+                                .iter()
+                                .map(|l| label_element(l, label_style.clone(), w))
+                                .collect(),
+                        )
+                        .with_style(sheet(StyleRules {
+                            // Fills the gutter without sizing it, so the
+                            // rebuild above can never move the plot.
+                            position: Some(Position::Absolute),
+                            left: px(0.0),
+                            top: px(0.0),
+                            right: px(0.0),
+                            bottom: px(0.0),
+                            ..Default::default()
+                        }))
+                        .into_element()
+                    },
+                );
+                view(vec![inner])
                     .with_style(sheet(StyleRules {
-                        width: px(*w),
+                        width: px(w),
                         // Fixed gutter: never let the growing plot squeeze it.
                         flex_shrink: Some(Tokenized::Literal(0.0)),
                         position: Some(Position::Relative),
@@ -1032,26 +1072,48 @@ pub fn Chart(props: &ChartProps) -> Element {
 
     let x_labels = {
         let label_style = label_style.clone();
+        // Same split as the y gutter above, and for the same reason —
+        // see that comment. The outer key stays `gutters` whole because
+        // the x labels are offset by the Y gutter to get back into
+        // plot-local x, so this box depends on BOTH reserved sizes; both
+        // are spec-derived and stable.
         switch(
-            move || {
-                (
-                    gutters.get(),
-                    output
-                        .get()
-                        .scene
-                        .labels
-                        .iter()
-                        .filter(|l| matches!(l.role, LabelRole::AxisX | LabelRole::AxisTitleX))
-                        .cloned()
-                        .collect::<Vec<_>>(),
-                )
-            },
-            // The x labels are offset by the Y gutter to get back into
-            // plot-local x, so this layer depends on BOTH sizes.
-            move |((y_w, h), labels): &((f32, f32), Vec<LabelPlacement>)| {
-                view(labels.iter().map(|l| label_element(l, label_style.clone(), *y_w)).collect())
+            move || gutters.get(),
+            move |(y_w, h): &(f32, f32)| {
+                let (y_w, h) = (*y_w, *h);
+                let label_style = label_style.clone();
+                let inner = switch(
+                    move || {
+                        output
+                            .get()
+                            .scene
+                            .labels
+                            .iter()
+                            .filter(|l| matches!(l.role, LabelRole::AxisX | LabelRole::AxisTitleX))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    },
+                    move |labels: &Vec<LabelPlacement>| {
+                        view(
+                            labels
+                                .iter()
+                                .map(|l| label_element(l, label_style.clone(), y_w))
+                                .collect(),
+                        )
+                        .with_style(sheet(StyleRules {
+                            position: Some(Position::Absolute),
+                            left: px(0.0),
+                            top: px(0.0),
+                            right: px(0.0),
+                            bottom: px(0.0),
+                            ..Default::default()
+                        }))
+                        .into_element()
+                    },
+                );
+                view(vec![inner])
                     .with_style(sheet(StyleRules {
-                        height: px(*h),
+                        height: px(h),
                         flex_shrink: Some(Tokenized::Literal(0.0)),
                         position: Some(Position::Relative),
                         ..Default::default()
