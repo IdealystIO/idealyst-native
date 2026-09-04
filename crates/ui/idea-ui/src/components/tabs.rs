@@ -525,4 +525,90 @@ mod tests {
             );
         });
     }
+
+    /// The bar IS the divider, and the selection mark sits ON it.
+    ///
+    /// The host draws the divider and bottom-aligns the strip, so the
+    /// active tab's underline lands directly on that line. Left at the
+    /// default `flex-start` the host's height FLOOR put its slack below
+    /// the tabs instead, and the underline floated two points clear of
+    /// the divider — a tab bar hovering over a separate rule rather than
+    /// a tab bar that is one.
+    ///
+    /// Both halves are pinned because either alone restores the gap.
+    #[test]
+    fn the_bar_is_the_divider_and_the_underline_sits_on_it() {
+        with_test_world(|| {
+            theme();
+            let host = runtime_core::resolve_style(&StyleApplication::new(
+                crate::stylesheets::TabBarHost::sheet(),
+            ));
+            assert_eq!(
+                host.justify_content,
+                Some(runtime_core::JustifyContent::FlexEnd),
+                "the strip must sit on the bar's bottom edge, or the \
+                 underline floats above the divider"
+            );
+            assert_eq!(
+                host.border_bottom_width.as_ref().map(|t| t.resolve()),
+                Some(1.0),
+                "the bar draws the divider itself — a screen must not have \
+                 to add one under it"
+            );
+        });
+    }
+
+    /// The strip scrolls, but it must not LOOK like a scroll region.
+    ///
+    /// iOS draws a horizontal scroll indicator inside the scroller, a
+    /// couple of points above its bottom edge — which on a tab bar puts
+    /// a third grey line between the tabs and their selection underline,
+    /// itself just above the divider. Nothing about the bar's own
+    /// styling can reach it; the scroller has to be told.
+    #[test]
+    fn the_strip_shows_no_scroll_indicator() {
+        with_test_world(|| {
+            theme();
+            let rules = runtime_core::resolve_style(&StyleApplication::new(
+                crate::stylesheets::TabBarScroller::sheet(),
+            ));
+            assert_eq!(
+                rules.scrollbar,
+                Some(runtime_core::ScrollbarVisibility::Hidden),
+                "a tab bar is a control, not a scroll region"
+            );
+        });
+    }
+
+    /// Every tab is TAPPABLE, not just the ones that fit unscrolled.
+    ///
+    /// `flex_shrink: 0` on the strip stops the tabs being squashed, but
+    /// it says nothing about the strip's own box on the cross axis,
+    /// where a flex item stretches to its container by default. So the
+    /// strip stayed as wide as the scroll viewport while Taffy laid its
+    /// tabs out past the edge. Nothing clips them, so they PAINTED, and
+    /// the scroller's contentSize comes from a deep walk, so they
+    /// SCROLLED — but UIKit hit-tests a subview only where its
+    /// superview's bounds contain the point, so every tab past the first
+    /// viewport quietly ignored taps. Measured on an iPhone 17 Pro Max:
+    /// tabs answered up to content x=440 (the viewport) and were dead
+    /// beyond it, at every scroll offset.
+    ///
+    /// The symptom is invisible in a screenshot, which is why this is a
+    /// test and not something to eyeball.
+    #[test]
+    fn a_tab_is_tappable_however_far_along_the_strip_it_sits() {
+        with_test_world(|| {
+            theme();
+            let rules = runtime_core::resolve_style(&StyleApplication::new(
+                crate::stylesheets::TabBar::sheet(),
+            ));
+            assert_eq!(
+                rules.align_self,
+                Some(runtime_core::AlignSelf::FlexStart),
+                "the strip must size to its tabs on the CROSS axis too, or \
+                 its box clips hit-testing to the viewport"
+            );
+        });
+    }
 }

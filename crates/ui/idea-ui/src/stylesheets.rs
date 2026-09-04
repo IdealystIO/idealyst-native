@@ -1866,17 +1866,42 @@ stylesheet! {
             flex_shrink: 0.0,
             flex_grow: 0.0,
             flex_basis: Length::Auto,
+            // Size to the tabs on the CROSS axis as well. `flex_shrink`
+            // above stops the strip being compressed; this stops it being
+            // STRETCHED to the scroll viewport, which is a quieter bug
+            // with the same cause: the strip's own box stayed viewport-
+            // wide while its tabs were laid out past the edge. They
+            // painted (nothing clips them) and they scrolled, but UIKit
+            // hit-tests a subview only where its SUPERVIEW's bounds
+            // contain the point — so every tab past the first viewport
+            // was visible, moved with the strip, and silently ignored
+            // taps.
+            align_self: runtime_core::AlignSelf::FlexStart,
         }
     }
 }
 
 stylesheet! {
-    // The full-width frame around the scrolling strip: it owns the
-    // underline, so the line spans the viewport and stays put while the
-    // tabs move under it.
+    // The full-width frame around the scrolling strip. It owns the
+    // DIVIDER ([`TabBarRule`]) — a rule spanning the viewport that stays
+    // put while the tabs move over it — and bottom-aligns the strip so
+    // the active tab's underline lands ON that rule rather than two
+    // points above it.
+    //
+    // That alignment is the whole point of a tab bar's bottom edge: the
+    // bar IS the line between chrome and content, and the selection mark
+    // is a thickening of that line under one tab. A screen that draws its
+    // own divider under a tab bar draws a second one.
     pub TabBarHost<IdeaThemeRef> {
         base(t) {
             flex_direction: FlexDirection::Column,
+            // The containing block for `TabBarRule`.
+            position: Position::Relative,
+            // Sit the strip on the bottom edge. The host carries a height
+            // FLOOR (below), so in the common case it has a point or two
+            // of slack; left at the default `flex-start` that slack fell
+            // BELOW the tabs and pushed the underline off the rule.
+            justify_content: JustifyContent::FlexEnd,
             // Fill the space the parent offers rather than claiming
             // `width: 100%`. A tab bar is mounted inside rows as often
             // as columns (the app's context bar is a ROW), and a
@@ -1893,6 +1918,21 @@ stylesheet! {
             // than overflow. The floor is one tab: `spacing-sm` above
             // and below the body line, plus the 2px selection rule.
             min_height: Length::Px(40.0),
+            // Keep the strip clear of the divider band. A border draws
+            // OUTSIDE the content box and, on a native layer, ON TOP of
+            // the subviews inside it — so with the strip flush to the
+            // host's edge the divider painted over the bottom point of
+            // the active tab's 2px underline and left a 1px mark. One
+            // point of padding is the whole fix: the underline now ends
+            // exactly where the divider begins.
+            padding_bottom: Length::Px(1.0),
+            // The divider itself. A border (not an absolutely positioned
+            // rule) deliberately: out-of-flow content paints ABOVE in-flow
+            // siblings on every backend here, so a rule laid under the
+            // strip covered the active tab's underline instead of the
+            // other way round. As a border it draws just below the strip's
+            // bottom edge, and with `justify_content: FlexEnd` above the
+            // underline sits directly ON it with nothing between.
             border_bottom_width: 1.0,
             border_bottom_color: t.color.border(),
         }
@@ -1921,6 +1961,13 @@ stylesheet! {
             // what collapsed here.
             align_self: runtime_core::AlignSelf::Stretch,
             flex_shrink: 0.0,
+            // No scroll indicator. A tab bar reads as a CONTROL, not as
+            // a scroll region, and iOS draws the horizontal indicator
+            // inside the strip — a third line between the tabs and their
+            // selection underline, above the divider. Nothing about the
+            // bar's own styling could remove it; see
+            // `ScrollbarVisibility`.
+            scrollbar: runtime_core::ScrollbarVisibility::Hidden,
         }
     }
 }
