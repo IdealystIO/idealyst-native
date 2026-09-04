@@ -295,7 +295,8 @@ pub use touch::recognizer::{
     AsyncNotifier, GestureState, Recognizer, RecognizerCtx, RecognizerKind, RecognizerUpdate,
 };
 pub use touch::recognizers::{
-    long_press, pan, pinch, rotate, swipe, tap, LongPress, LongPressRecognizer, Pan, PanEvent,
+    long_press, pan, pinch, rotate, swipe, tap, tap_with_press, LongPress, LongPressRecognizer,
+    Pan, PanEvent,
     PanRecognizer, Pinch, PinchEvent, PinchRecognizer, Rotate, RotateEvent, RotateRecognizer,
     Swipe, SwipeDirection, SwipeDirs, SwipeRecognizer, Tap, TapRecognizer,
 };

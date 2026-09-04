@@ -854,7 +854,8 @@ pub use runtime_shared::{EdgeInsets, ViewportSize};
 // the `on_touch` channel (which the vocabulary's view handler installs
 // through `InputOps` on every backend) — core-agnostic by construction.
 pub use runtime_shared::{
-    long_press, pan, pinch, rotate, swipe, tap, LongPress, LongPressRecognizer, Pan, PanEvent,
+    long_press, pan, pinch, rotate, swipe, tap, tap_with_press, LongPress, LongPressRecognizer,
+    Pan, PanEvent,
     PanRecognizer, Pinch, PinchEvent, PinchRecognizer, Rotate, RotateEvent, RotateRecognizer,
     Swipe, SwipeDirection, SwipeDirs, SwipeRecognizer, Tap, TapRecognizer,
 };

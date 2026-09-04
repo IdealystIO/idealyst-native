@@ -121,6 +121,21 @@ impl Tap {
     }
 }
 
+impl Tap {
+    /// Whether a finger is down on this element right now AND the touch
+    /// is still a tap candidate.
+    ///
+    /// `Rejected` is deliberately NOT pressed: once slop or the timeout
+    /// has disqualified the touch the finger is still down, but the
+    /// element is no longer going to be tapped — which is the moment a
+    /// press highlight should clear, not the moment the finger lifts.
+    /// That is what makes a drag that starts on a row (to scroll it)
+    /// stop looking like a press as soon as it becomes a scroll.
+    pub fn is_pressed(&self) -> bool {
+        matches!(self.state, TapState::Tracking { .. })
+    }
+}
+
 impl Recognizer for Tap {
     fn name(&self) -> &'static str {
         "tap"
@@ -220,6 +235,40 @@ impl Recognizer for Tap {
         };
         RecognizerUpdate::new(state, response)
     }
+}
+
+/// [`tap`], plus a callback reporting whether the element is currently
+/// being pressed — fired only on CHANGE, `true` on touch-down and
+/// `false` when the touch ends, cancels, or stops being a tap candidate.
+///
+/// This is what gives a touch device the feedback a pointer gets from
+/// hover. A hover reporter never fires on a touch backend (there is no
+/// pointer to hover), so anything that tints on hover is inert there
+/// unless something else drives it; press is the equivalent signal, and
+/// it comes from the recognizer that already tracks the touch rather
+/// than from a second gesture competing for it.
+///
+/// The reporter is not a substitute for `on_tap`: it says "a finger is
+/// down here", not "this was activated". A touch that slides away
+/// reports `false` without ever firing `on_tap`.
+pub fn tap_with_press<F, P>(config: TapRecognizer, on_tap: F, on_press: P) -> TouchHandler
+where
+    F: Fn() + 'static,
+    P: Fn(bool) + 'static,
+{
+    let rec = Rc::new(RefCell::new(Tap::new(config, on_tap)));
+    let was_pressed = Rc::new(std::cell::Cell::new(false));
+    Rc::new(move |ev: &TouchEvent| -> TouchResponse {
+        let response = rec.borrow_mut().update(ev, &RecognizerCtx::UNGATED).response;
+        // Read AFTER the update and outside the mutable borrow: the
+        // callback may write a signal whose subscribers re-enter here.
+        let pressed = rec.borrow().is_pressed();
+        if pressed != was_pressed.get() {
+            was_pressed.set(pressed);
+            on_press(pressed);
+        }
+        response
+    })
 }
 
 /// Build a single-finger tap [`TouchHandler`] for a view's `on_touch`
@@ -1883,6 +1932,55 @@ mod tests {
             timestamp_ns: ts_ns,
             force: None,
         }
+    }
+
+    /// The press channel a touch backend uses in place of hover.
+    ///
+    /// Three properties, and the third is the one that matters for a
+    /// scrollable surface: a touch that slides away must CLEAR the press
+    /// even though the finger is still down, or every drag that starts
+    /// on a row leaves it stuck looking pressed until the finger lifts.
+    #[test]
+    fn tap_with_press_reports_down_up_and_slide_away() {
+        let log: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
+        let taps = Rc::new(Cell::new(0u32));
+
+        let h = {
+            let log = log.clone();
+            let taps = taps.clone();
+            tap_with_press(
+                TapRecognizer::new(),
+                move || taps.set(taps.get() + 1),
+                move |p| log.borrow_mut().push(p),
+            )
+        };
+
+        // Down, then up without moving: pressed on, pressed off, one tap.
+        h(&ev(TouchPhase::Began, 1, 10.0, 10.0, 0));
+        assert_eq!(*log.borrow(), vec![true], "finger down reports pressed");
+        h(&ev(TouchPhase::Ended, 1, 10.0, 10.0, 1_000_000));
+        assert_eq!(*log.borrow(), vec![true, false], "lift clears it");
+        assert_eq!(taps.get(), 1, "and it is still a tap");
+
+        // Down, then slide past slop: pressed clears WITHOUT a tap, while
+        // the finger is still down.
+        log.borrow_mut().clear();
+        taps.set(0);
+        h(&ev(TouchPhase::Began, 2, 10.0, 10.0, 2_000_000));
+        assert_eq!(*log.borrow(), vec![true]);
+        h(&ev(TouchPhase::Moved, 2, 200.0, 10.0, 3_000_000));
+        assert_eq!(
+            *log.borrow(),
+            vec![true, false],
+            "sliding away clears the press before the finger lifts"
+        );
+        h(&ev(TouchPhase::Ended, 2, 200.0, 10.0, 4_000_000));
+        assert_eq!(taps.get(), 0, "a slide is not a tap");
+        assert_eq!(
+            *log.borrow(),
+            vec![true, false],
+            "and the lift reports nothing new — it was already unpressed"
+        );
     }
 
     #[test]

@@ -187,9 +187,14 @@ pub struct TableRowProps {
     pub children: Vec<Element>,
     /// Optional row-click handler. When `Some`, the whole row becomes
     /// interactive: every cell shows a pointer cursor, hovering any cell
-    /// tints the entire row (`color-surface-alt`, web/macOS — a no-op on
-    /// touch backends where there is no hover), and a tap anywhere in the
-    /// row invokes this callback.
+    /// tints the entire row (`color-surface-alt`), and a tap anywhere in
+    /// the row invokes this callback.
+    ///
+    /// On a touch backend the tint comes from the PRESS instead — a
+    /// finger down on the row tints it and lifting clears it — so the
+    /// row gives the same feedback on a phone that a pointer gets from
+    /// hover. A touch that slides away (the start of a scroll) clears
+    /// the tint without invoking the callback.
     ///
     /// The click surface spans the full row, but it sits on each cell's
     /// own node rather than a layer above the content, so an interactive
@@ -218,10 +223,19 @@ pub fn TableRow(props: TableRowProps) -> Element {
     // handlers. The signal is created in this row's scope, so it lives as
     // long as the cells that subscribe to it.
     if let Some(cb) = props.on_row_click {
+        // TWO flags, not one. A pointer backend drives both — hover on
+        // enter/leave, press on down/up — and folding them into a single
+        // bool means whichever fires last wins: releasing a click would
+        // report "not pressed" and clear a tint the pointer is still
+        // entitled to, and any source that fails to report its own
+        // release leaves the row stuck lit with nothing able to correct
+        // it. Kept apart, each reports only about itself and the tint is
+        // their OR.
         let hovered = signal(false);
+        let pressed = signal(false);
         let cells: Vec<Element> = children
             .into_iter()
-            .map(|cell| make_row_cell_interactive(cell, hovered, cb.clone()))
+            .map(|cell| make_row_cell_interactive(cell, hovered, pressed, cb.clone()))
             .collect();
         return sdk_row(SdkTableRowProps { children: cells }).into_element();
     }
@@ -248,8 +262,13 @@ pub fn TableRow(props: TableRowProps) -> Element {
 /// native). Taps on plain content or empty space fall through to the row.
 /// This replaces the earlier web-only full-bleed overlay, which physically
 /// covered the cell's content and so swallowed a button's click.
-fn make_row_cell_interactive(cell: Element, hovered: Signal<bool>, cb: Rc<dyn Fn()>) -> Element {
-    use runtime_core::{tap, TapRecognizer};
+fn make_row_cell_interactive(
+    cell: Element,
+    hovered: Signal<bool>,
+    pressed: Signal<bool>,
+    cb: Rc<dyn Fn()>,
+) -> Element {
+    use runtime_core::{tap_with_press, TapRecognizer};
 
     // Reactive whole-row hover style: select the cell sheet's
     // `interactive`/`row_hovered` AXES instead of layering runtime
@@ -272,13 +291,39 @@ fn make_row_cell_interactive(cell: Element, hovered: Signal<bool>, cb: Rc<dyn Fn
         &cell,
         Rc::new(move |app: runtime_core::StyleApplication| {
             app.with("interactive", "on")
-                .with("row_hovered", if hovered.get() { "on" } else { "off" })
+                // The AXIS is still called `row_hovered`; what drives it
+                // is "hovered OR pressed", because a touch device has no
+                // hover and press is its equivalent. The arm name is part
+                // of the sheet's premint identity, so renaming it would
+                // churn every table's CSS class for a comment's worth of
+                // accuracy.
+                .with(
+                    "row_hovered",
+                    if hovered.get() || pressed.get() { "on" } else { "off" },
+                )
         }),
     );
-    // `tap(..)` yields the `TouchHandler` Rc directly; the hover reporter
-    // feeds the row's shared flag.
-    let recognizer = tap(TapRecognizer::new(), move || (cb)());
-    table::set_cell_interaction(&cell, recognizer, Rc::new(move |entering| hovered.set(entering)));
+    // Press drives the tint as well as hover, because a touch device has
+    // no hover and would otherwise get no row feedback at all: the hover
+    // reporter never fires there (nothing to hover with), so a clickable
+    // row on a phone looked identical to a static one right up until it
+    // navigated. Press is the touch equivalent — a finger down on a row
+    // means what a pointer over it does.
+    //
+    // Each reporter writes ONLY its own flag. A pointer backend drives
+    // both at once (enter, down, up, leave), so sharing one flag would
+    // make the last writer win: `mouseup` reporting "not pressed" would
+    // clear a tint the still-hovering pointer is entitled to.
+    let recognizer = tap_with_press(
+        TapRecognizer::new(),
+        move || (cb)(),
+        move |down| pressed.set(down),
+    );
+    table::set_cell_interaction(
+        &cell,
+        recognizer,
+        Rc::new(move |entering| hovered.set(entering)),
+    );
     cell
 }
 
