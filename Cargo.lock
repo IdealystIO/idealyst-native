@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "backend-apple-core",
  "backend-ios-core",
@@ -6122,7 +6122,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -10104,7 +10104,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.5.5"
+version = "1.6.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10123,7 +10123,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "host-mock",
  "mcp-catalog",
