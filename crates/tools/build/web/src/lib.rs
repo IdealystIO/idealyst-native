@@ -118,6 +118,18 @@ pub struct BuildOptions {
     /// dotfile). When `None`, the bundle step is skipped — the build
     /// behaves exactly as before.
     pub bundle_out_dir: Option<PathBuf>,
+    /// Robot relay to advertise to the browser app, injected into the
+    /// staged `index.html` as `window.IDEALYST_ROBOT_RELAY_URL`.
+    ///
+    /// Only the STAGED path can carry this: a full-stack project's own
+    /// server hands out `dist/web/index.html` as a plain file, so there
+    /// is no serve-time head injection to hook (the CLI's `dev-http`
+    /// static server, which a full-stack project never starts, injects
+    /// it there instead). Ignored when `bundle_out_dir` is `None`.
+    ///
+    /// `None` for every deploy build — a staged bundle must never ship
+    /// a dev machine's relay port.
+    pub robot_relay_url: Option<String>,
     /// Pre-gzip every text-ish file in the staged bundle, writing
     /// gzipped bytes under the original filename. Only meaningful
     /// when `bundle_out_dir` is `Some`; ignored otherwise. The static
@@ -706,6 +718,14 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
             &staged.join("index.html"),
             &manifest.app.web.preload_fonts,
         )?;
+        // Robot-on-web for a full-stack project. The app reads this
+        // global at boot (`idealyst::boot::web`) and dials the relay,
+        // which is what puts a web app in front of the MCP server /
+        // inspector / evaluators. Same `</head>` splice and the same
+        // pre-gzip ordering as the injections above.
+        if let Some(url) = opts.robot_relay_url.as_deref() {
+            inject_robot_relay_url_into_staged_index(&staged.join("index.html"), url)?;
+        }
         // Stage any EXTERNAL dirs the app links in (e.g. a component
         // library's `fonts/`), copied under their final path component so
         // `../whiteboard/fonts` → `<bundle>/fonts/`. Lets a library own the
@@ -1027,6 +1047,57 @@ fn inject_font_preloads_into_staged_index(index_path: &Path, paths: &[String]) -
     fs::write(index_path, rewritten)
         .with_context(|| format!("write {}", index_path.display()))?;
     Ok(())
+}
+
+/// Splice `window.IDEALYST_ROBOT_RELAY_URL` into the staged
+/// `index.html` head, so a browser-hosted app dials the dev session's
+/// robot relay. Same read-modify-write shape as the injectors above,
+/// and it must run BEFORE gzip for the same reason.
+fn inject_robot_relay_url_into_staged_index(index_path: &Path, url: &str) -> Result<()> {
+    let html = fs::read_to_string(index_path)
+        .with_context(|| format!("read {}", index_path.display()))?;
+    let rewritten = inject_into_head(html, &robot_relay_script_tag(url));
+    fs::write(index_path, rewritten)
+        .with_context(|| format!("write {}", index_path.display()))?;
+    Ok(())
+}
+
+/// The relay `<script>` tag itself — shared with the dev server's
+/// serve-time head injection (`cmd/dev.rs`), so the file a full-stack
+/// server hands out and the HTML `dev-http` synthesizes advertise the
+/// relay identically.
+///
+/// The URL is escaped rather than interpolated: it reaches us from
+/// `IDEALYST_ROBOT_RELAY_URL`, which a user can set to anything, and an
+/// unescaped `"` there would close the string literal and leave the rest
+/// of the page's `<head>` as executable script.
+pub fn robot_relay_script_tag(url: &str) -> String {
+    format!(
+        "\n    <script>window.IDEALYST_ROBOT_RELAY_URL=\"{}\";</script>",
+        escape_js_string(url),
+    )
+}
+
+/// Escape `s` for embedding in a double-quoted JS string literal that
+/// lives inside an inline `<script>`.
+///
+/// `<` becomes `\u003C` — not for the string literal's sake but for the
+/// HTML parser's: a literal `</script` anywhere in the body ends the
+/// block, whatever it is nested in, so a URL containing one would spill
+/// the rest of the tag into the document as markup.
+fn escape_js_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '<' => out.push_str("\\u003C"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Rasterize the project's master icon into the staged bundle and
@@ -2502,6 +2573,9 @@ mod regression_tests {
             debuginfo: DebugInfo::default(),
             dev_opt: DevOpt::default(),
             user_features: Vec::new(),
+            // Not graph-invalidating: it rewrites the staged
+            // `index.html`, never the cargo build.
+            robot_relay_url: None,
             bundle_out_dir: None,
             prune_dead_data_min: None,
         }
@@ -3774,5 +3848,73 @@ mod fingerprint_tests {
             find_hashed_entry(pkg, "demo").as_deref(),
             Some("demo.0123456789abcdef.js"),
         );
+    }
+}
+
+#[cfg(test)]
+mod robot_relay_tests {
+    use super::*;
+
+    /// A full-stack project's own server hands out the STAGED
+    /// `index.html` as a plain file, so the relay URL has to be written
+    /// into that file. It used never to be written anywhere, and the
+    /// browser app — with nothing on `window` to read — never dialed
+    /// the relay.
+    ///
+    /// This is the closest reachable test: the end-to-end chain
+    /// (bundle → browser → relay → MCP verb) needs a cargo build, a
+    /// server and a real headless browser, which is what
+    /// `robot-relay/tests/browser_handshake.rs` covers under `#[ignore]`.
+    /// What is unit-testable — and what actually broke — is that the
+    /// served HTML carries the global at all.
+    #[test]
+    fn regression_staged_index_advertises_the_relay() {
+        let tmp = tempfile::tempdir().unwrap();
+        let index = tmp.path().join("index.html");
+        fs::write(&index, "<html><head><title>App</title></head><body></body></html>").unwrap();
+
+        inject_robot_relay_url_into_staged_index(&index, "ws://127.0.0.1:44885").unwrap();
+
+        let html = fs::read_to_string(&index).unwrap();
+        assert!(
+            html.contains(r#"window.IDEALYST_ROBOT_RELAY_URL="ws://127.0.0.1:44885";"#),
+            "staged index must advertise the relay, got:\n{html}",
+        );
+        // Before `</head>`, like every other staged-index injection —
+        // the app reads the global at boot, so it must be set before
+        // the bundle's own script runs.
+        let script = html.find("IDEALYST_ROBOT_RELAY_URL").unwrap();
+        assert!(script < html.find("</head>").unwrap());
+    }
+
+    /// The URL arrives from an environment variable, so it is not
+    /// trusted input. A `"` would close the string literal and a
+    /// `</script>` would close the block, either one turning the rest
+    /// of the head into markup the browser executes.
+    #[test]
+    fn relay_url_cannot_break_out_of_the_script_tag() {
+        let tag = robot_relay_script_tag(r#"ws://x"</script><script>alert(1)"#);
+        assert!(!tag.contains("</script><script>"), "escaped: {tag}");
+        assert!(tag.contains(r#"\"#), "quote must be escaped: {tag}");
+        assert!(tag.contains(r"<"), "`<` must be escaped: {tag}");
+        // Exactly one script element, and it is ours.
+        assert_eq!(tag.matches("<script>").count(), 1);
+        assert_eq!(tag.matches("</script>").count(), 1);
+    }
+
+    /// A deploy bundle must never carry a dev machine's relay port —
+    /// the injection is opt-in via `robot_relay_url`, and every
+    /// `idealyst build` path leaves it `None`.
+    #[test]
+    fn plain_staged_index_carries_no_relay_global() {
+        let tmp = tempfile::tempdir().unwrap();
+        let index = tmp.path().join("index.html");
+        let original = "<html><head><title>App</title></head><body></body></html>";
+        fs::write(&index, original).unwrap();
+
+        // What `build()` does when `robot_relay_url` is None: nothing.
+        let html = fs::read_to_string(&index).unwrap();
+        assert_eq!(html, original);
+        assert!(!html.contains("IDEALYST_ROBOT_RELAY_URL"));
     }
 }

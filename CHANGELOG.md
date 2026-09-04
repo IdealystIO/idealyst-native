@@ -240,6 +240,37 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **Robot-on-web works for a full-stack project.** `idealyst dev --web
+  --local` on a project declaring `server_bin` / `server_manifest` built
+  its wasm bundle with NO cargo features and never advertised the relay,
+  so `idealyst::boot::web`'s dial-out — gated behind `#[cfg(feature =
+  "robot")]` — was not compiled in and had no URL to dial even if it had
+  been. Every Robot tool answered `no app connected to the relay`, on
+  every such project, since the full-stack dev path was added.
+
+  The failure looked like the opposite of what it was: `run()` still
+  started the relay and registered it in `~/.idealyst/apps/`, so
+  `list_apps` reported a healthy app with a `bridge_addr` — registration
+  proves a relay exists, not that a client is on the other end. The
+  static path was unaffected throughout, which is what made the gap easy
+  to miss.
+
+  Both halves now match the static path: the bundle builds with
+  `runtime-core/dev` + `robot` (`--no-robot` still opts out), and the
+  relay URL is injected into the STAGED `index.html` — a full-stack
+  project's own server hands that file out and never runs `dev-http`, so
+  there is no serve-time injection to hook. The headless web client
+  auto-launches here too, so a container / CI / SSH session with no
+  display gets a live client instead of a relay nothing ever dials.
+
+- **The MCP server no longer reports its Robot tools as disabled when
+  they work.** The instructions string read `self.robot`, which holds
+  only the pinned bridge of `--robot-port` and is `None` in the default
+  discovery mode — where the tools are fully live, routing per call
+  through `~/.idealyst/apps/`. Every discovery-mode session was told
+  "Robot tools present but disabled". It now reports the actual
+  `RobotMode`, and names `--no-robot` as the off switch it is.
+
 - **Unmounting a live `use_socket` / `use_sse` no longer aborts the
   module.** Both hooks create their `incoming`/`status`/`sender` signals
   in the calling scope and drive the connection from a fully detached

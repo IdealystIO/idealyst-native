@@ -593,6 +593,8 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
                 Vec::new()
             },
             bundle_out_dir: bundle_out_dir.clone(),
+            // A deploy bundle never advertises a dev machine's relay.
+            robot_relay_url: None,
             gzip: args.gzip,
             // `.br` siblings ride release builds only — the deploy
             // artifact. Debug bundles skip the q11 encode (seconds of

@@ -1120,26 +1120,38 @@ fn build_runtime_server_host(dir: &Path) -> Result<PathBuf> {
     Ok(artifact.host_binary)
 }
 
-/// Per-target launcher. Each variant handles its own runtime-server-vs-local
-/// branching internally, then either blocks (web's static server) or
-/// returns (iOS / Android, which fire-and-forget the device launch).
+/// Cargo features every dev web bundle is built with.
 ///
-/// `children` is the shared Vec the Ctrl-C handler walks on
-/// SIGINT — launchers that produce a `Child` (currently macOS in
-/// background mode) push it here so the binary gets killed when
-/// the dev session ends.
+/// `runtime-core/dev` activates the Robot bridge auto-start + the MCP
+/// catalog inventory. `robot` resolves to `idealyst/robot`
+/// (`feature_spec` in build-web) and is what compiles in the relay
+/// dial-out that `idealyst::boot::web` gates behind
+/// `#[cfg(feature = "robot")]` — without it the browser app cannot dial
+/// the relay no matter what URL it is handed.
 ///
-/// `runtime_server_port` is `Some(port)` in runtime-server mode (the
-/// CLI has already waited for the host's port-file to land); each
-/// per-platform launcher uses it to bake `IDEALYST_DEV_ENDPOINT` into
-/// the wrapper build / spawn env.
+/// Shared by BOTH web paths. The full-stack path used to build with no
+/// features at all, which is why robot-on-web silently never worked for
+/// a project declaring a `server_bin` / `server_manifest`: the relay
+/// started and registered in `~/.idealyst/apps`, so discovery looked
+/// healthy, and every verb then failed with "no app connected".
+fn web_dev_features(no_robot: bool) -> Vec<String> {
+    let mut f = vec!["runtime-core/dev".to_string()];
+    if !no_robot {
+        f.push("robot".to_string());
+    }
+    f
+}
+
 /// Whether to host the dev robot relay for this target set. Only in `--local`
 /// mode — that's when the framework runs IN the app, so it must dial out; in
 /// runtime-server mode the framework runs in the host sidecar where robot is
 /// already native. Delivery of the URL differs per platform: desktop natives
-/// inherit our process env, iOS-sim gets it via `simctl`, web-local gets it
-/// injected into served HTML. Android is handled in run-android (manifest
-/// placeholder + `adb reverse`), so it's excluded from the env path here.
+/// inherit our process env, iOS-sim gets it via `simctl`, and web-local gets
+/// it injected into HTML — at serve time by `dev-http` for a static project,
+/// or into the STAGED `index.html` for a full-stack one, whose own server
+/// hands that file out and never runs `dev-http`. Android is handled in
+/// run-android (manifest placeholder + `adb reverse`), so it's excluded from
+/// the env path here.
 fn wants_robot_relay(args: &Args, targets: &[Target]) -> bool {
     if !args.local {
         return false;
@@ -1156,6 +1168,19 @@ fn wants_robot_relay(args: &Args, targets: &[Target]) -> bool {
     })
 }
 
+/// Per-target launcher. Each variant handles its own runtime-server-vs-local
+/// branching internally, then either blocks (web's static server) or
+/// returns (iOS / Android, which fire-and-forget the device launch).
+///
+/// `children` is the shared Vec the Ctrl-C handler walks on
+/// SIGINT — launchers that produce a `Child` (currently macOS in
+/// background mode) push it here so the binary gets killed when
+/// the dev session ends.
+///
+/// `runtime_server_port` is `Some(port)` in runtime-server mode (the
+/// CLI has already waited for the host's port-file to land); each
+/// per-platform launcher uses it to bake `IDEALYST_DEV_ENDPOINT` into
+/// the wrapper build / spawn env.
 fn launch_target(
     target: Target,
     dir: &Path,
@@ -1359,7 +1384,7 @@ fn launch_web(
     // on save, and run the server (see `launch_web_with_backend`).
     let manifest = parse_manifest(dir)?;
     if manifest.app.server_bin.is_some() || manifest.app.server_manifest.is_some() {
-        return launch_web_with_backend(dir, args, &source, &manifest);
+        return launch_web_with_backend(dir, args, &source, &manifest, children);
     }
 
     // Past the full-stack branch there is no project server, so the
@@ -1434,6 +1459,7 @@ fn launch_web(
                         "runtime-server".to_string(),
                     ],
                     bundle_out_dir: None,
+                    robot_relay_url: None,
                     // Unreachable with premint flags set: run() bails on
                     // premint without --local, and this is the !local arm.
                     premint: false,
@@ -1512,14 +1538,12 @@ fn launch_web(
                     // Robot is on by default in dev → add the wrapper-local
                     // `robot` feature (→ `backend-web/robot`) so the local web
                     // bundle dials the relay run() hosts. --no-robot opts out.
-                    features: {
-                        let mut f = vec!["runtime-core/dev".to_string()];
-                        if !args.no_robot {
-                            f.push("robot".to_string());
-                        }
-                        f
-                    },
+                    features: web_dev_features(args.no_robot),
                     bundle_out_dir: None,
+                    // `dev-http` injects the relay URL at serve time on
+                    // this path (see below) — there is no staged
+                    // `index.html` to write it into.
+                    robot_relay_url: None,
                     premint: args.premint,
                     premint_only: args.premint_only,
                     premint_report: args.premint_report,
@@ -1584,7 +1608,10 @@ fn launch_web(
         //    IDEALYST_ROBOT_RELAY_URL; inject it so the browser app dials in.
         //    (Default on; --no-robot leaves the env unset and skips this.)
         if let Ok(url) = std::env::var("IDEALYST_ROBOT_RELAY_URL") {
-            let script = format!("<script>window.IDEALYST_ROBOT_RELAY_URL=\"{url}\";</script>");
+            // Same tag builder the staged-bundle path uses, so both
+            // web paths advertise the relay identically — and both
+            // escape a URL that ultimately came from the environment.
+            let script = build_web::robot_relay_script_tag(&url);
             head_ctx = Some(match head_ctx.take() {
                 Some(mut h) => {
                     h.html.push('\n');
@@ -1801,6 +1828,7 @@ fn launch_ssr(
                 source: source.clone(),
                 user_features: Vec::new(),
                 bundle_out_dir: Some(bundle_dir.clone()),
+                robot_relay_url: None,
                 gzip: false,
                 brotli: false,
                 strip_panics: false,
@@ -1937,11 +1965,54 @@ fn full_stack_web_bundle_dir(project_dir: &Path) -> PathBuf {
     project_dir.join("dist").join("web")
 }
 
+/// Build options for the full-stack path's web bundle.
+///
+/// Split out as a pure function so the robot wiring is testable: the
+/// loop it feeds spawns cargo, a file watcher and a server child, and
+/// the bug it guards against (see [`web_dev_features`]) was invisible
+/// for exactly as long as nothing asserted on these values.
+fn full_stack_bundle_options(
+    args: &Args,
+    source: &build_ios::FrameworkSource,
+    dist_web: PathBuf,
+    relay_url: Option<String>,
+) -> Result<dev_reload::BuildOptions> {
+    Ok(dev_reload::BuildOptions {
+        source: source.clone(),
+        // Robot-on-web, same as the static path — see
+        // `web_dev_features`.
+        features: web_dev_features(args.no_robot),
+        // Stage the full bundle into `dist/web` for BOTH shapes —
+        // it's the dir the server serves. `None` here (the old
+        // in-crate value) would sync `pkg/` into the project root
+        // instead, which no server reads → stale browser.
+        bundle_out_dir: Some(dist_web),
+        // This project's own server hands out `dist/web/index.html` as
+        // a plain file, so the relay URL has to be written INTO the
+        // staged copy — there is no `dev-http` in this path to inject
+        // it at serve time. Restaged (and so re-injected) every
+        // rebuild.
+        robot_relay_url: relay_url,
+        // Full-stack premint dev: the staged-bundle path injects
+        // the stylesheet <link> into the staged index.html itself,
+        // so threading the flags is the whole feature here.
+        premint: args.premint,
+        premint_only: args.premint_only,
+        premint_report: args.premint_report,
+        // Same override the plain local-web path honors — the
+        // full-stack loop rebuilds the same wasm on every save.
+        wasm_split: !args.no_split,
+        debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
+        dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
+    })
+}
+
 fn launch_web_with_backend(
     dir: &Path,
     args: &Args,
     source: &build_ios::FrameworkSource,
     manifest: &build_ios::Manifest,
+    children: Arc<Mutex<Vec<Child>>>,
 ) -> Result<()> {
     use std::time::Duration;
 
@@ -1955,6 +2026,10 @@ fn launch_web_with_backend(
     // rebuild and hand it to the server as `WEB_DIST`.
     let dist_web = full_stack_web_bundle_dir(dir);
     let server_target = server_target_dir(dir);
+    // The relay `run()` already started and exported (`--no-robot`
+    // leaves it unset). Read once: the port is fixed for the session,
+    // and every rebuild restages the `index.html` that advertises it.
+    let relay_url = std::env::var("IDEALYST_ROBOT_RELAY_URL").ok();
 
     // Phase 1: initial bundle build + spawn the watcher. `start_with`
     // runs the build before returning, so by the time we move on the
@@ -1970,26 +2045,7 @@ fn launch_web_with_backend(
         let handle = dev_reload::start_with(
             dir,
             signal.clone(),
-            dev_reload::BuildOptions {
-                source: source.clone(),
-                features: Vec::new(),
-                // Stage the full bundle into `dist/web` for BOTH shapes —
-                // it's the dir the server serves. `None` here (the old
-                // in-crate value) would sync `pkg/` into the project root
-                // instead, which no server reads → stale browser.
-                bundle_out_dir: Some(dist_web.clone()),
-                // Full-stack premint dev: the staged-bundle path injects
-                // the stylesheet <link> into the staged index.html itself,
-                // so threading the flags is the whole feature here.
-                premint: args.premint,
-                premint_only: args.premint_only,
-                premint_report: args.premint_report,
-                // Same override the plain local-web path honors — the
-                // full-stack loop rebuilds the same wasm on every save.
-                wasm_split: !args.no_split,
-                debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
-                dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
-            },
+            full_stack_bundle_options(args, source, dist_web.clone(), relay_url.clone())?,
         )
         .context("web bundle initial build + watcher start failed")?;
         // Hand the watcher thread to the runtime — it lives as long
@@ -2048,6 +2104,19 @@ fn launch_web_with_backend(
     // The server serves the UI same-origin, so its port is the only URL
     // the user needs. Open the browser once it's accepting connections.
     spawn_browser_opener("127.0.0.1", port);
+    // Headless web client, same policy as the static path: a web app's
+    // robot support is dial-out, so with no display nothing ever loads
+    // the page and the relay stays empty however well the bundle is
+    // built. `spawn_headless_client` waits for the port and logs rather
+    // than failing the session when no browser is installed.
+    if crate::headless_client::should_launch(
+        args.headless_client,
+        args.no_headless_client,
+        relay_url.is_some(),
+        crate::headless_client::has_display(),
+    ) {
+        spawn_headless_client("127.0.0.1", port, dir, Arc::clone(&children));
+    }
 
     // Phase 2: spawn the server. Captured so we can kill + respawn on
     // each rebuild.
@@ -3059,6 +3128,95 @@ mod tests {
         match TestCli::parse_from(argv).cmd {
             TestCmd::Dev(a) => a,
         }
+    }
+
+    /// A `FrameworkSource` for option-shaping tests. Which variant it
+    /// is never matters to the fields under test — it is passed
+    /// through verbatim.
+    fn test_source() -> build_ios::FrameworkSource {
+        build_ios::FrameworkSource::Registry {
+            registry: "idealyst".to_string(),
+            version: "1.5".to_string(),
+        }
+    }
+
+    /// A full-stack project (one declaring `server_bin` /
+    /// `server_manifest`) built its web bundle with NO cargo features,
+    /// so `idealyst::boot::web`'s relay dial-out — gated behind
+    /// `#[cfg(feature = "robot")]` — was never compiled in, and
+    /// robot-on-web could not work for such a project however the
+    /// session was launched.
+    ///
+    /// The failure was silent and looked like the opposite: `run()`
+    /// still started the relay and registered it in `~/.idealyst/apps`,
+    /// so `list_apps` reported a healthy app and every verb then failed
+    /// with "no app connected to the relay".
+    #[test]
+    fn regression_full_stack_web_bundle_compiles_in_robot() {
+        let args = parse_dev(&["idealyst", "dev", "--web", "--local"]);
+        let opts = full_stack_bundle_options(
+            &args,
+            &test_source(),
+            PathBuf::from("/tmp/dist/web"),
+            Some("ws://127.0.0.1:44885".to_string()),
+        )
+        .unwrap();
+
+        assert!(
+            opts.features.iter().any(|f| f == "robot"),
+            "full-stack bundle must compile in the relay dial-out; got {:?}",
+            opts.features,
+        );
+        assert!(
+            opts.features.iter().any(|f| f == "runtime-core/dev"),
+            "full-stack bundle must enable the dev bridge; got {:?}",
+            opts.features,
+        );
+    }
+
+    /// The other half of the same bug: the relay URL must reach the
+    /// STAGED `index.html`. A full-stack server hands that file out
+    /// directly, so unlike the static path there is no serve-time head
+    /// injection to fall back on — an un-advertised relay leaves the
+    /// browser app with nothing to dial even once `robot` is compiled
+    /// in.
+    #[test]
+    fn regression_full_stack_web_bundle_advertises_the_relay() {
+        let args = parse_dev(&["idealyst", "dev", "--web", "--local"]);
+        let opts = full_stack_bundle_options(
+            &args,
+            &test_source(),
+            PathBuf::from("/tmp/dist/web"),
+            Some("ws://127.0.0.1:44885".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(opts.robot_relay_url.as_deref(), Some("ws://127.0.0.1:44885"));
+        assert_eq!(opts.bundle_out_dir.as_deref(), Some(Path::new("/tmp/dist/web")));
+    }
+
+    /// `--no-robot` still buys a leaner bundle on the full-stack path,
+    /// and `run()` leaves the relay env unset there — so no URL either.
+    #[test]
+    fn no_robot_drops_the_feature_and_the_relay_url() {
+        let args = parse_dev(&["idealyst", "dev", "--web", "--local", "--no-robot"]);
+        let opts =
+            full_stack_bundle_options(&args, &test_source(), PathBuf::from("/tmp/dist/web"), None)
+                .unwrap();
+
+        assert_eq!(opts.features, vec!["runtime-core/dev".to_string()]);
+        assert_eq!(opts.robot_relay_url, None);
+    }
+
+    /// Both web paths take their features from one place, so the static
+    /// path cannot drift back ahead of the full-stack one.
+    #[test]
+    fn web_dev_features_gate_only_robot_on_no_robot() {
+        assert_eq!(
+            web_dev_features(false),
+            vec!["runtime-core/dev".to_string(), "robot".to_string()],
+        );
+        assert_eq!(web_dev_features(true), vec!["runtime-core/dev".to_string()]);
     }
 
     /// A project manifest with whatever `[package.metadata.idealyst.app]`

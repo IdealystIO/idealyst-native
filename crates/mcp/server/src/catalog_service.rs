@@ -3667,10 +3667,17 @@ impl ServerHandler for CatalogService {
         )
         .with_server_info(Implementation::from_build_env())
         .with_instructions({
-            let robot_status = if self.robot.is_some() {
-                " Robot tools enabled (find_element, click, type_text, get_snapshot, get_logs, etc.) — they proxy to the running app's bridge."
-            } else {
-                " Robot tools present but disabled — start the server with a bridge address to enable them."
+            // Keyed on the MODE, not on `self.robot`: that field only
+            // holds the PINNED bridge of `--robot-port`, and is None in
+            // the default Discovery mode — where the robot tools are
+            // fully live, routing per call through `~/.idealyst/apps/`.
+            // Reading it here told every discovery-mode session its
+            // robot tools were disabled when they were not, which is a
+            // sentence long enough to stop someone from trying them.
+            let robot_status = match &self.robot_mode {
+                RobotMode::Discovery => " Robot tools enabled (find_element, click, type_text, get_snapshot, get_logs, etc.) — they proxy to a running app's bridge, discovered via ~/.idealyst/apps (`list_apps` shows what is up).",
+                RobotMode::Explicit { .. } => " Robot tools enabled (find_element, click, type_text, get_snapshot, get_logs, etc.) — they proxy to the bridge pinned by --robot-port.",
+                RobotMode::Disabled => " Robot tools present but disabled (--no-robot) — restart the server without it to enable them.",
             };
             format!(
                 "Idealyst framework MCP catalog (schema v2). \
@@ -5337,6 +5344,36 @@ mod tests {
         assert_eq!(st.state, CatalogState::Current);
         assert!(st.is_settled_current());
         assert!(st.marker().is_none(), "a landed catalog is silent again");
+    }
+
+    /// The default mode is Discovery, where robot tools work by routing
+    /// per call through `~/.idealyst/apps/` — but the pinned-bridge
+    /// field they used to be reported from is `None` there, so every
+    /// discovery-mode session was told its robot tools were disabled.
+    #[test]
+    fn regression_discovery_mode_does_not_report_robot_disabled() {
+        let svc = CatalogService::with_robot_mode(true, None);
+        let instructions = svc.get_info().instructions.unwrap();
+        assert!(
+            instructions.contains("Robot tools enabled"),
+            "discovery mode is enabled: {instructions}",
+        );
+        assert!(!instructions.contains("disabled"), "{instructions}");
+    }
+
+    #[test]
+    fn robot_status_names_the_pinned_bridge_and_the_off_switch() {
+        let pinned = CatalogService::with_robot_mode(true, Some("127.0.0.1:1".into()));
+        assert!(pinned
+            .get_info()
+            .instructions
+            .unwrap()
+            .contains("--robot-port"));
+
+        let off = CatalogService::with_robot_mode(false, None);
+        let instructions = off.get_info().instructions.unwrap();
+        assert!(instructions.contains("disabled"), "{instructions}");
+        assert!(instructions.contains("--no-robot"), "{instructions}");
     }
 
     #[tokio::test]

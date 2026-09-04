@@ -172,6 +172,12 @@ pub struct BuildOptions {
     /// `None` keeps the default pkg-into-project behavior that the
     /// `dev-http` static server and in-crate full-stack server rely on.
     pub bundle_out_dir: Option<PathBuf>,
+    /// Robot relay URL to advertise from the STAGED `index.html`
+    /// ([`build_web::BuildOptions::robot_relay_url`]). Only the
+    /// full-stack path sets it: its server hands out the staged file
+    /// directly, so a rebuild that restages `index.html` would drop a
+    /// serve-time injection. `None` everywhere else.
+    pub robot_relay_url: Option<String>,
     /// Premint static styles on every rebuild (`idealyst dev … --premint`).
     /// Each build runs the native style dump and refreshes
     /// `pkg/premint.css` alongside the wasm, and the wasm compiles with
@@ -236,6 +242,7 @@ pub fn start(
             source,
             features: Vec::new(),
             bundle_out_dir: None,
+            robot_relay_url: None,
             premint: false,
             premint_only: false,
             premint_report: false,
@@ -669,6 +676,9 @@ fn to_build_web_options(opts: &BuildOptions) -> build_web::BuildOptions {
         // the plain dev-http / in-crate paths leave it `None` and
         // get the default pkg-into-project copy.
         bundle_out_dir: opts.bundle_out_dir.clone(),
+        // Re-injected on every rebuild because `stage_bundle` copies
+        // the project's `index.html` fresh each time.
+        robot_relay_url: opts.robot_relay_url.clone(),
         dev_opt: opts.dev_opt,
         gzip: false,
         // Dev rebuilds skip the q11 encode; `.br` siblings are a
@@ -787,6 +797,7 @@ mod tests {
             source: FrameworkSource::Workspace { root: std::path::PathBuf::from("/x") },
             features: Vec::new(),
             bundle_out_dir: None,
+            robot_relay_url: None,
             premint,
             premint_only: only,
             premint_report: report,
