@@ -30,12 +30,12 @@
 //! ```
 
 use runtime_core::{
-    component, pressable, resolve_style, text, ui, view, Element, IdealystSchema, Reactive, Signal,
-    StyleApplication, StyleRules, StyleSheet, VariantEnum,
+    component, pressable, resolve_style, text, ui, view, Element, IdealystSchema, IntoElement,
+    Reactive, Signal, StyleApplication, StyleRules, StyleSheet, VariantEnum,
 };
 use std::rc::Rc;
 
-use crate::stylesheets::{TabBar, TabButton, TabButtonDot, TabDot};
+use crate::stylesheets::{TabBar, TabBarHost, TabBarScroller, TabButton, TabButtonDot, TabDot};
 
 /// How the active tab is marked.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema)]
@@ -176,11 +176,37 @@ pub fn Tabs(props: TabsProps) -> Element {
     // Reactive, keyed list — tabs reconcile by `Tab::id` (a surviving tab keeps
     // its scope when the list changes). `for` over a `Signal<Vec<_>>` lowers to
     // the keyed `each`; each row is one `tab_button`.
-    ui! {
+    let strip = ui! {
         view(style = container_style) {
             for tab in tabs, key = tab.id.clone() {
                 tab_button(tab, active.clone(), on_change.clone(), indicator.clone())
             }
+        }
+    };
+
+    // The strip scrolls sideways when it does not fit.
+    //
+    // A tab bar is a flex ROW, so its children shrink by default — a strip
+    // with more tabs than fit did not clip or overflow, it SQUASHED, and the
+    // labels compressed until the strip was unusable. That is the state a
+    // phone-width viewport put every multi-tab screen in. Tabs now hold their
+    // natural width (`flex_shrink: 0` on `TabButton`) and the overflow is
+    // scrolled instead.
+    //
+    // It costs nothing when everything fits: a scroller whose content is
+    // narrower than its viewport has nothing to scroll, so wide layouts are
+    // unchanged.
+    //
+    // The underline lives on the HOST, not on the strip, so it spans the full
+    // width and stays put while the tabs move under it — on the strip it would
+    // have been only as wide as the tabs and would have slid away with them.
+    let scroller = runtime_core::primitives::scroll_view::scroll_view(vec![strip])
+        .horizontal(true)
+        .with_style(StyleApplication::new(TabBarScroller::sheet()))
+        .into_element();
+    ui! {
+        view(style = TabBarHost()) {
+            scroller
         }
     }
 }
@@ -429,5 +455,52 @@ mod tests {
             // (by id) rather than being a single inherited value.
             assert_ne!(active_color, inactive_color);
     });
+    }
+
+    /// A tab bar that does not fit must SCROLL, not squash.
+    ///
+    /// The failure this pins is not a crash or a clip: a flex row's
+    /// children shrink by default, so a strip with more tabs than fit
+    /// compressed every label until the bar was unusable — which is the
+    /// state every multi-tab screen was in at phone width. Two halves
+    /// make it scroll instead, and both are asserted: the strip is
+    /// wrapped in a HORIZONTAL scroller, and the tabs refuse to shrink.
+    #[test]
+    fn a_tab_strip_scrolls_sideways_rather_than_squashing() {
+        with_test_world(|| {
+            theme();
+            let host = Tabs(TabsProps {
+                tabs: runtime_core::signal(vec![Tab::new("a", "A"), Tab::new("b", "B")]),
+                active: Reactive::Static("a".to_string()),
+                ..Default::default()
+            });
+            let mut host_children = match crate::test_support::classify(host) {
+                crate::test_support::P::View { children, .. } => children,
+                _ => panic!("Tabs lowers to a host view"),
+            };
+            assert_eq!(host_children.len(), 1, "the host wraps exactly the scroller");
+            match host_children.remove(0) {
+                Element::Item { data, .. } => assert!(
+                    data.downcast_ref::<runtime_vocabulary::prims::PrimCell<
+                        runtime_vocabulary::prims::ScrollViewPrim,
+                    >>()
+                    .is_some_and(|c| c.take().horizontal),
+                    "the strip must sit in a HORIZONTAL scroll_view"
+                ),
+                _ => panic!("the host's child must be the scroll_view item"),
+            }
+
+            // The other half: without this the tabs are ordinary flex
+            // children and the scroller never has anything to scroll,
+            // because they shrink to fit instead.
+            let rules = runtime_core::resolve_style(
+                &StyleApplication::new(crate::stylesheets::TabButton::sheet()),
+            );
+            assert_eq!(
+                rules.flex_shrink.as_ref().map(|t| t.resolve()),
+                Some(0.0),
+                "a tab must hold its natural width, or the strip squashes"
+            );
+        });
     }
 }

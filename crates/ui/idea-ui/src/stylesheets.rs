@@ -1848,10 +1848,26 @@ stylesheet! {
 // row sits flush with the bar's bottom border.
 
 stylesheet! {
+    // The row of tabs itself. The underline moved to `TabBarHost` —
+    // on the strip it was only as wide as the tabs, and once the strip
+    // could scroll it would have slid away with them.
     pub TabBar<IdeaThemeRef> {
         base(t) {
             flex_direction: FlexDirection::Row,
             gap: t.spacing.xs(),
+        }
+    }
+}
+
+stylesheet! {
+    // The full-width frame around the scrolling strip: it owns the
+    // underline, so the line spans the viewport and stays put while the
+    // tabs move under it.
+    pub TabBarHost<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Column,
+            width: Length::pct(100.0),
+            min_width: Length::Px(0.0),
             border_bottom_width: 1.0,
             border_bottom_color: t.color.border(),
         }
@@ -1862,8 +1878,29 @@ stylesheet! {
 }
 
 stylesheet! {
+    // The horizontal scroller between the host and the strip.
+    //
+    // `scroll_view` seeds `flex_grow:1 / flex_basis:0` — the "fill a
+    // bounded parent" shape. A tab bar is content-HEIGHT, so that shape
+    // would collapse it; these put it back to sizing from its content,
+    // with `min_width: 0` so it may be narrower than the strip inside
+    // it (which is what gives it something to scroll).
+    pub TabBarScroller<IdeaThemeRef> {
+        base(_t) {
+            flex_grow: 0.0,
+            flex_basis: Length::Auto,
+            min_width: Length::Px(0.0),
+        }
+    }
+}
+
+stylesheet! {
     pub TabButton<IdeaThemeRef> {
         base(t) {
+            // Hold the label's natural width. Without this the tabs are
+            // ordinary flex children and a strip that does not fit
+            // compresses them instead of scrolling.
+            flex_shrink: 0.0,
             background: Color("transparent".into()),
             color: t.color.text_muted(),
             padding_vertical: t.spacing.sm(),
