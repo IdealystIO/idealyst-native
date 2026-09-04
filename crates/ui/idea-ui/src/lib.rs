@@ -224,7 +224,7 @@ pub use components::field::{Adornment, Field, FieldProps};
 // Style-level types, not component code — the Field/Textarea shared axes.
 pub use stylesheets::{FieldAppearance, FieldSize};
 pub use components::icon_button::{IconButton, IconButtonProps, IconButtonSize};
-pub use components::modal::{Modal, ModalContent, ModalProps};
+pub use components::modal::{Modal, ModalContent, ModalPresentation, ModalProps};
 pub use components::popover::{Popover, PopoverProps};
 pub use components::progress::{Progress, ProgressCap, ProgressMode, ProgressProps};
 pub use components::segmented_control::{
