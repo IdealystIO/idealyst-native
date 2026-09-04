@@ -6122,7 +6122,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -10073,7 +10073,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -10104,7 +10104,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
