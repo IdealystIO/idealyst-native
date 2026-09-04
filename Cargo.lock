@@ -1349,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.7.1"
+version = "1.7.2"
 dependencies = [
  "backend-apple-core",
  "backend-ios-core",
@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "css",
  "dev-client",
@@ -3014,7 +3014,7 @@ dependencies = [
 
 [[package]]
 name = "css"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "runtime-shared",
 ]
@@ -3517,7 +3517,7 @@ dependencies = [
 
 [[package]]
 name = "dnd"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "runtime-core",
  "runtime-shared",
@@ -4468,7 +4468,7 @@ dependencies = [
 
 [[package]]
 name = "gesture"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "runtime-shared",
 ]
@@ -6122,7 +6122,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -10104,7 +10104,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10123,7 +10123,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "host-mock",
  "mcp-catalog",
